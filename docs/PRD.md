@@ -107,7 +107,16 @@ The repository currently includes:
   `teamBilling.openPortal(...)`. Sporades retrieves and attests the exact active
   mode configuration on every attempt, permits only Price switches within one
   compatible quantity-policy configuration, requires period-end cancellation,
-  and rejects quantity editing or mutable Dashboard defaults. Supported
+  and rejects quantity editing or mutable Dashboard defaults. Cross-policy
+  switches use durable `teamBilling.requestPlanTransition(...)`: Sporades
+  reauthorizes the original actor, derives the exact current Team count where
+  required, and changes the Subscription item Price and quantity together with
+  stable proration and idempotency inputs. Team-counted Plans automatically
+  stage latest-wins seat convergence after membership commits; provider outage
+  never rolls back membership, one durable lane serializes provider writes per
+  Team across runtimes, and startup repair restores missing work. Provider
+  acknowledgement remains pending until exact verified Subscription evidence
+  settles the desired target. Supported
   verified Checkout, Subscription, and failed-invoice observations converge
   inside the cross-runtime atomic Stripe fence. Exact association, catalogue,
   item, quantity, period, and status validation plus semantic ratchets and a

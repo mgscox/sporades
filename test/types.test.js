@@ -684,6 +684,16 @@ teamBilling.openPortal({
   if (result.data?.state === "ready") result.data.url.toUpperCase();
   if (result.data?.state === "failed") result.data.reason.toUpperCase();
 });
+teamBilling.requestPlanTransition({
+  teamId: "00000000-0000-4000-8000-000000000000",
+  requestId: "33333333-3333-4333-8333-333333333333",
+  productKey: "agency",
+}).then((result) => {
+  if (result.data?.state === "pending") result.data.requestedAt.toUpperCase();
+  if (result.data?.state === "failed") result.data.reason.toUpperCase();
+});
+// @ts-expect-error managed Plan inputs never accept provider Price identifiers.
+teamBilling.requestPlanTransition({ teamId: "00000000-0000-4000-8000-000000000000", requestId: "33333333-3333-4333-8333-333333333333", productKey: "agency", priceId: "price_browser_owned" });
 // @ts-expect-error Portal inputs never accept Customer or configuration identifiers.
 teamBilling.openPortal({ teamId: "00000000-0000-4000-8000-000000000000", requestId: "22222222-2222-4222-8222-222222222222", customerId: "cus_browser_owned" });
 // @ts-expect-error Checkout inputs never accept a browser-selected Stripe Price.

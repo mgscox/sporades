@@ -64,7 +64,10 @@ sporades host push --restart
   accepted-Team-member quantity policy. Sporades rechecks current Team-admin
   authority plus the Capsule's transaction-bound policy on every operation and
   exposes the closed, provider-free `teamBilling.get(teamId)` projection plus
-  durable `teamBilling.startCheckout(...)` and `teamBilling.openPortal(...)`.
+  durable `teamBilling.startCheckout(...)`, `teamBilling.openPortal(...)`, and
+  `teamBilling.requestPlanTransition(...)`. Portal owns compatible same-policy
+  switches; Sporades manages fixed-to-Team-counted transitions and keeps a
+  Team-counted Subscription converged after membership commits.
   Those commands may return only validated, short-lived Stripe-hosted URL
   capabilities. Verified Checkout, Subscription, and failed-invoice evidence
   converges through runtime-owned semantic ratchets and terminal latches;

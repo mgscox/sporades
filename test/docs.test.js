@@ -209,7 +209,7 @@ test("Built-in Teams is discoverable without overstating its authorization model
 });
 
 test("headless Team Billing docs preserve the platform-mechanics and app-rendering boundary", async () => {
-  const [changes, readme, prd, context, reference, guide, convergenceAdr, serverTypes, clientTypes] = await Promise.all([
+  const [changes, readme, prd, context, reference, guide, convergenceAdr, managementAdr, serverTypes, clientTypes] = await Promise.all([
     readProjectFile("CHANGES.md"),
     readProjectFile("README.md"),
     readProjectFile("docs/PRD.md"),
@@ -217,6 +217,7 @@ test("headless Team Billing docs preserve the platform-mechanics and app-renderi
     readProjectFile("docs/reference/teams.md"),
     readProjectFile("docs/guide/reference.md"),
     readProjectFile("docs/adr/0047-team-billing-truth-converges-inside-the-atomic-stripe-fence.md"),
+    readProjectFile("docs/adr/0048-managed-team-billing-converges-from-durable-desired-state.md"),
     readProjectFile("src/types/server.d.ts"),
     readProjectFile("src/types/client.d.ts"),
   ]);
@@ -241,15 +242,24 @@ test("headless Team Billing docs preserve the platform-mechanics and app-renderi
   assert.match(reference, /Malformed supported evidence[\s\S]*Raw Stripe JSON[\s\S]*never enter Team Billing tables/i);
   assert.match(reference, /privilegedCtx\.teamBilling\.listQuarantines[\s\S]*provider object and Event IDs[\s\S]*capped at 100/i);
   assert.match(reference, /opt-in atomic[\s\S]*same transaction[\s\S]*legacy `stripeEvent\(handler\)`[\s\S]*after the platform commit/i);
+  assert.match(reference, /fixed quantity[\s\S]*accepted-Team-member[\s\S]*requestPlanTransition/i);
+  assert.match(reference, /Price and quantity together[\s\S]*create_prorations[\s\S]*stable `proration_date`[\s\S]*pending_if_incomplete/i);
+  assert.match(reference, /membership transaction[\s\S]*cannot roll that membership change back[\s\S]*per-Team lane/i);
+  assert.match(reference, /acknowledgement[\s\S]*public state remains\s+pending[\s\S]*verified `customer\.subscription\.\*` evidence/i);
   assert.match(convergenceAdr, /Verified delivery is evidence, not billing truth/i);
   assert.match(convergenceAdr, /deleted Subscription ID is permanently terminal/i);
   assert.match(convergenceAdr, /Provider Event identifiers are replay identities, not a business\s+ordering rule/i);
+  assert.match(managementAdr, /share one quantity policy[\s\S]*requestPlanTransition/i);
+  assert.match(managementAdr, /membership transactions never wait for Stripe/i);
+  assert.match(managementAdr, /durable per-Team claim[\s\S]*serializes them across independent SQLite, libSQL, and Postgres runtimes/i);
+  assert.match(managementAdr, /Provider acknowledgement[\s\S]*awaiting observation[\s\S]*verified Subscription evidence/i);
   assert.match(guide, /Declare headless Team Billing/);
   assert.match(serverTypes, /teamBilling\?: TeamBillingDefinition<Schema>/);
   assert.match(serverTypes, /PrivilegedTeamBillingApi[\s\S]*listQuarantines\(options\?: \{ limit\?: number \}\)/);
   assert.match(clientTypes, /get\(teamId: string\): Promise<SporadesResult<TeamBillingProjection>>/);
   assert.match(clientTypes, /startCheckout\(input: TeamBillingCheckoutRequest\): Promise<SporadesResult<TeamBillingCheckoutResult>>/);
   assert.match(clientTypes, /openPortal\(input: TeamBillingPortalRequest\): Promise<SporadesResult<TeamBillingPortalResult>>/);
+  assert.match(clientTypes, /requestPlanTransition\(input: TeamBillingPlanTransitionRequest\): Promise<SporadesResult<TeamBillingPlanTransitionResult>>/);
   assert.doesNotMatch(clientTypes, /providerCustomerId|providerSubscriptionId|providerPriceId|providerEventId|idempotencyKey/);
 });
 

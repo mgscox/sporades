@@ -158,6 +158,9 @@ export const teamBilling = {
   openPortal(input) {
     return connect().teamBillingOpenPortal(input);
   },
+  requestPlanTransition(input) {
+    return connect().teamBillingRequestPlanTransition(input);
+  },
 };
 
 export const journey = {
@@ -1231,6 +1234,7 @@ function createConnection() {
     teamBillingGet(teamId) { return request("teamBilling.get", { teamId }); },
     teamBillingStartCheckout(input) { return request("teamBilling.startCheckout", { input }); },
     teamBillingOpenPortal(input) { return request("teamBilling.openPortal", { input }); },
+    teamBillingRequestPlanTransition(input) { return request("teamBilling.requestPlanTransition", { input }); },
     journeyEnable(options = {}) {
       return request("journey.enable", { options }).then((result) => {
         if (!result.error) journeyConsentOptions = options;

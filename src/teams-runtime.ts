@@ -359,14 +359,21 @@ async function inspectTeamJoinLinkWithActivity(database: LooseRecord, code: any,
 async function countPrivilegedTeamMembers(database: LooseRecord, teamId: any, assertActive: () => void) {
   return withTeamTransaction(database, async (tx) => {
     assertActive();
-    await lockTeamLifecycle(tx, teamId, privilegedTeamNotFound);
+    const totalCount = await countAcceptedTeamMembers(tx, teamId, privilegedTeamNotFound);
     assertActive();
-    const total = await tx.prepare(tx.dialect.sql(
-      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?",
-    )).get(teamId);
-    assertActive();
-    return { totalCount: Number(total?.count ?? 0) };
+    return { totalCount };
   });
+}
+
+/** Transaction-bound exact accepted-member count shared by trusted platform work. */
+export async function countAcceptedTeamMembers(transaction: LooseRecord, teamId: any, denied: () => Error = privilegedTeamNotFound) {
+  await lockTeamLifecycle(transaction, teamId, denied);
+  const total = await transaction.prepare(transaction.dialect.sql(
+    "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?",
+  )).get(teamId);
+  const count = Number(total?.count ?? 0);
+  if (!Number.isSafeInteger(count) || count < 1 || count > 999_999) throw denied();
+  return count;
 }
 
 async function listPrivilegedTeamMembers(database: LooseRecord, teamId: any, options: LooseRecord = {}, assertActive: () => void) {
@@ -581,8 +588,21 @@ export async function joinCurrentUserTeam(database: LooseRecord, auth: LooseReco
     emitTeamSecurityEvent(database, eventContext, "teams.joinLink.join", auditUserId ?? auth?.userId, deniedTeamId, "denied", String(error?.code ?? "INVALID_JOIN_LINK"));
     throw error;
   }
+  await stageTeamBillingAfterMembershipCommit(database, joined.id);
   emitTeamSecurityEvent(database, eventContext, "teams.joined", auditUserId, joined.id, "succeeded", "TEAM_JOINED");
   return { team: joined };
+}
+
+async function stageTeamBillingAfterMembershipCommit(database: LooseRecord, teamId: string) {
+  if (typeof database.stageTeamBillingMembershipChange !== "function") return;
+  try {
+    await database.stageTeamBillingMembershipChange(teamId);
+  } catch (error: any) {
+    database.log?.warn?.("Team Billing seat convergence staging deferred.", {
+      event: "team-billing.membership-staging-deferred",
+      data: { teamId, code: String(error?.code ?? "UNAVAILABLE") },
+    });
+  }
 }
 
 async function enforceTeamJoinAdmission(database: LooseRecord, tx: LooseRecord, auth: LooseRecord, joiningUserId: string, teamId: string, signal?: AbortSignal) {
@@ -939,6 +959,7 @@ export async function removeTeamMember(database: LooseRecord, auth: LooseRecord,
     emitTeamSecurityEvent(database, eventContext, "teams.removeMember", auth.userId, isOpaqueTeamId(teamId) ? teamId : null, "denied", String(error?.code ?? "DENIED"));
     throw error;
   }
+  await stageTeamBillingAfterMembershipCommit(database, teamId);
   emitTeamSecurityEvent(database, eventContext, "teams.memberRemoved", auth.userId, teamId, "succeeded", "TEAM_MEMBER_REMOVED");
   return { removed: true };
 }
@@ -963,6 +984,7 @@ export async function leaveCurrentUserTeam(database: LooseRecord, auth: LooseRec
     emitTeamSecurityEvent(database, eventContext, "teams.leave", auth.userId, isOpaqueTeamId(teamId) ? teamId : null, "denied", String(error?.code ?? "DENIED"));
     throw error;
   }
+  await stageTeamBillingAfterMembershipCommit(database, teamId);
   emitTeamSecurityEvent(database, eventContext, "teams.left", auth.userId, teamId, "succeeded", "TEAM_LEFT");
   return { left: true };
 }

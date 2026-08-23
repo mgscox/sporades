@@ -351,11 +351,18 @@ export type TeamBillingPortalResult =
   | { state: "expired" | "superseded"; teamId: string; requestId: string }
   | { state: "failed"; teamId: string; requestId: string; reason: "authority-changed" | "unavailable" };
 
+export type TeamBillingPlanTransitionRequest = { teamId: string; requestId: string; productKey: string };
+export type TeamBillingPlanTransitionResult =
+  | { state: "pending"; teamId: string; requestId: string; productKey: string; requestedAt: string }
+  | { state: "completed" | "superseded"; teamId: string; requestId: string; productKey: string }
+  | { state: "failed"; teamId: string; requestId: string; productKey: string; reason: "authority-changed" | "payment-action-required" | "provider-state-ambiguous" | "unavailable" };
+
 /** Headless Team Billing transport. Apps own every rendered element and all copy. */
 export type TeamBillingApi = {
   get(teamId: string): Promise<SporadesResult<TeamBillingProjection>>;
   startCheckout(input: TeamBillingCheckoutRequest): Promise<SporadesResult<TeamBillingCheckoutResult>>;
   openPortal(input: TeamBillingPortalRequest): Promise<SporadesResult<TeamBillingPortalResult>>;
+  requestPlanTransition(input: TeamBillingPlanTransitionRequest): Promise<SporadesResult<TeamBillingPlanTransitionResult>>;
 };
 
 /** Hook state returned by `useQuery()`. */

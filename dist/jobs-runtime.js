@@ -57,6 +57,7 @@
 import { assertJsonCompatible, commandError } from "./runtime-errors.js";
 import { PASSWORD_RESET_MAIL_JOB, PASSWORD_RESET_REQUEST_JOB, privilegedAuthUserId } from "./auth-runtime.js";
 import { TEAM_BILLING_CHECKOUT_EXPIRY_JOB, TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_PORTAL_EXPIRY_JOB, TEAM_BILLING_PORTAL_JOB } from "./team-billing-runtime.js";
+import { TEAM_BILLING_PLAN_TRANSITION_JOB, TEAM_BILLING_SEAT_CONVERGENCE_JOB } from "./team-billing-management.js";
 // Synchronous access to a Node builtin without an import — see the header. Bound as one namespace
 // and **not destructured**: `bin/sporades.js` is the whole of `src/` in one esbuild scope, so a
 // top-level `const { createHash } = …` here would collide with `server-runtime-source.ts`'s
@@ -848,6 +849,8 @@ export function runtimeOwnedJobHandlers(runtime) {
         },
         { name: TEAM_BILLING_PORTAL_JOB, handler: runtime.performTeamBillingPortal },
         { name: TEAM_BILLING_PORTAL_EXPIRY_JOB, handler: runtime.expireTeamBillingPortal },
+        { name: TEAM_BILLING_PLAN_TRANSITION_JOB, handler: runtime.performTeamBillingPlanTransition },
+        { name: TEAM_BILLING_SEAT_CONVERGENCE_JOB, handler: runtime.performTeamBillingSeatConvergence },
         {
             name: STRIPE_EVENT_JOB,
             handler: runtime.dispatchStripeEvent,

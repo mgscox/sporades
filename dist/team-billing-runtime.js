@@ -52,6 +52,15 @@ export function createTeamBillingTables(adapter) {
         () => adapter.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_team_billing_replay] (" +
             "[providerEventId] TEXT PRIMARY KEY, [payloadDigest] TEXT NOT NULL, [settledAt] TEXT NOT NULL, [retainedUntil] TEXT NOT NULL" +
             ")")),
+        () => adapter.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_team_billing_desired_state] (" +
+            "[teamId] TEXT PRIMARY KEY, [intentId] TEXT NOT NULL UNIQUE, [kind] TEXT NOT NULL, [operationId] TEXT NULL, " +
+            "[targetProductKey] TEXT NOT NULL, [targetQuantity] INTEGER NOT NULL, [effectiveAt] INTEGER NOT NULL, " +
+            "[idempotencyKey] TEXT NOT NULL UNIQUE, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, " +
+            "[providerAcknowledgedAt] TEXT NULL, [activeJobGenerationId] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL" +
+            ")")),
+        () => adapter.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_team_billing_provider_lanes] (" +
+            "[teamId] TEXT PRIMARY KEY, [claimToken] TEXT NULL, [claimExpiresAt] TEXT NULL, [updatedAt] TEXT NOT NULL" +
+            ")")),
         ...(["mode", "quantity", "continuationUrl", "continuationExpiresAt", "attemptedAt", "providerExpiresAt", "terminalObservedAt", "providerCustomerId", "providerSubscriptionId", "configurationId", "returnPath"]
             .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", name, name === "quantity" || name === "providerExpiresAt" ? "INTEGER" : "TEXT"))),
         ...(["providerSubscriptionItemId", "currentPeriodStart", "lastEventOccurredAt", "lastEventKind"]
@@ -61,6 +70,7 @@ export function createTeamBillingTables(adapter) {
         ...(["eventType", "outcome", "safeReason"]
             .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", name, "TEXT"))),
         () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", "eventRank", "INTEGER"),
+        () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "activeJobGenerationId", "TEXT"),
     ]);
 }
 export function normalizeTeamBillingDefinition(value) {
@@ -575,8 +585,26 @@ export async function admitTeamBillingActor(database, transaction, auth, input) 
 }
 export async function safeTeamBillingProjection(transaction, definition, teamId) {
     const sql = transaction.dialect.sql;
+    const desired = await transaction.prepare(sql("SELECT [kind], [targetProductKey], [status], [safeFailureCode], [createdAt] FROM [sporades_team_billing_desired_state] WHERE [teamId] = ?")).get(teamId);
+    if (desired && ["queued", "running", "awaiting-observation"].includes(desired.status)) {
+        const requestedAt = canonicalTimestamp(desired.createdAt);
+        if (!requestedAt)
+            return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
+        return Object.freeze({
+            state: "pending",
+            teamId,
+            operation: desired.kind === "plan-transition" ? "plan-transition" : "reconciliation",
+            ...(typeof desired.targetProductKey === "string" && definition.catalogue[desired.targetProductKey]
+                ? { productKey: desired.targetProductKey } : {}),
+            requestedAt,
+        });
+    }
+    if (desired?.kind === "seat-convergence" && ["failed", "attention-required"].includes(desired.status)) {
+        return Object.freeze({ state: "attention-required", teamId,
+            reason: desired.safeFailureCode === "CATALOGUE_MISMATCH" ? "catalogue-mismatch" : "provider-state-ambiguous" });
+    }
     const operation = await transaction.prepare(sql("SELECT [kind], [productKey], [createdAt] FROM [sporades_team_billing_operations] " +
-        "WHERE [teamId] = ? AND [status] IN ('queued', 'running', 'retrying') ORDER BY [createdAt] DESC, [id] DESC LIMIT 1")).get(teamId);
+        "WHERE [teamId] = ? AND [status] IN ('queued', 'running', 'retrying', 'awaiting-observation') ORDER BY [createdAt] DESC, [id] DESC LIMIT 1")).get(teamId);
     if (operation) {
         const requestedAt = canonicalTimestamp(operation.createdAt);
         if (!requestedAt) {

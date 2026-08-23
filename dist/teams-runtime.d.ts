@@ -104,6 +104,8 @@ export declare function revokeTeamJoinLink(database: LooseRecord, auth: LooseRec
     revoked: boolean;
 }>;
 export declare function inspectTeamJoinLink(database: LooseRecord, code: any): Promise<TeamJoinLinkInspection>;
+/** Transaction-bound exact accepted-member count shared by trusted platform work. */
+export declare function countAcceptedTeamMembers(transaction: LooseRecord, teamId: any, denied?: () => Error): Promise<number>;
 export declare function validateTeamJoinLink(database: LooseRecord, auth: LooseRecord, code: any): Promise<{
     valid: any;
 }>;

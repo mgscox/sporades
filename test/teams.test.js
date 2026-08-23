@@ -5,10 +5,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { createWebSocketHub, handleFileHttpRoute, openDevDatabase, recoverExpiredJobLeases, routeEndpoint, runMutation, runQuery } from "../dist/server-runtime-source.js";
+import { createWebSocketHub, handleFileHttpRoute, openDevDatabase, recoverExpiredJobLeases, routeEndpoint, runAtomicStripeConsequence, runMutation, runQuery } from "../dist/server-runtime-source.js";
 import { Number as NumberField, String as StringField, endpoint, job, mutation, query, table } from "../dist/server.js";
 import { createAdditionalTeam, joinCurrentUserTeam } from "../dist/teams-runtime.js";
 import { applyVerifiedTeamBillingCheckoutObservation, expireTeamBillingCheckout, expireTeamBillingPortal, readCurrentUserTeamBilling } from "../dist/team-billing-runtime.js";
+import { applyVerifiedTeamBillingObservation } from "../dist/team-billing-convergence.js";
 import { createStripeCallbackEndpoint } from "../dist/stripe-webhook-runtime.js";
 import { withPostgresAdapter } from "./support/database-adapter-engines.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
@@ -2152,6 +2153,96 @@ test("headless Team Checkout durably deduplicates work and exposes only an autho
   }
 });
 
+test("headless managed Plan transition stays pending through provider acknowledgement and completes only from verified Stripe truth", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-headless-team-plan-transition-"));
+  const providerInputs = [];
+  const runtime = await startRuntime(path.join(dir, "data.db"), billingCapsule, {
+    serverEnv: { STRIPE_SECRET_KEY: "sk_test_team_plan", STRIPE_WEBHOOK_SECRET: "whsec_team_plan" },
+    config: { payments: { stripe: {
+      enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
+      publicOrigin: "https://checkout.example.test", callbackPath: "/stripe/webhook",
+      apiVersion: "2026-07-29.dahlia", livemode: false, requestTimeoutMs: 10_000,
+    } } },
+    runtimeOptions: {
+      createStripeCallbackEndpoint,
+      createStripeTeamBillingProvider: () => ({
+        async updateManagedSubscription(input) {
+          providerInputs.push(input);
+          return { ok: true, outcome: "acknowledged" };
+        },
+      }),
+    },
+  });
+  let owner; let member;
+  try {
+    await runtime.database.init();
+    owner = await runtime.open();
+    member = await runtime.open();
+    const ownerSignup = await signUp(owner, "plan-owner", "plan-owner@example.com", "Plan owner");
+    const memberSignup = await signUp(member, "plan-member", "plan-member@example.com", "Plan member");
+    const team = (await send(owner, { id: "plan-team", type: "teams.list", sessionToken: ownerSignup.data.sessionToken })).data.teams[0];
+    const holder = await send(owner, { id: "plan-holder", type: "mutation.run", mutation: "setBillingHolder", args: [team.id, ownerSignup.data.auth.userId], sessionToken: ownerSignup.data.sessionToken });
+    assert.equal(holder.error, null, JSON.stringify(holder.error));
+    const now = new Date().toISOString();
+    await runtime.database.adapter.prepare(
+      "INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)",
+    ).run(team.id, memberSignup.data.auth.userId, now);
+    await runtime.database.adapter.prepare(
+      "INSERT INTO [sporades_team_billing_customers] ([teamId], [mode], [providerCustomerId], [createdAt], [updatedAt]) VALUES (?, 'sandbox', 'cus_team_plan', ?, ?)",
+    ).run(team.id, now, now);
+    await runtime.database.adapter.prepare(
+      "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [observedAt], [updatedAt], [terminalLatch]) VALUES (?, ?, 'sandbox', 'sub_team_plan', 'price_test_studio', 'si_team_plan', 'studio', 1, 'active', 0, ?, ?, 0)",
+    ).run("12121212-1212-4121-8121-121212121212", team.id, now, now);
+
+    const input = { teamId: team.id, requestId: "13131313-1313-4131-8131-131313131313", productKey: "agency" };
+    const started = await send(owner, { id: "plan-start", type: "teamBilling.requestPlanTransition", input, sessionToken: ownerSignup.data.sessionToken });
+    assert.equal(started.data.state, "pending", JSON.stringify(started));
+    assert.doesNotMatch(JSON.stringify(started), /price_test|cus_team|sub_team|si_team|idempotency|intent/i);
+    const operation = await runtime.database.adapter.prepare(
+      "SELECT [actorUserId] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?",
+    ).get(team.id, input.requestId);
+    const reconstructed = await runtime.database.readTeamBillingActorAuth(runtime.database.adapter, operation.actorUserId);
+    assert.equal(reconstructed.userId, ownerSignup.data.auth.userId);
+    assert.deepEqual(await runtime.database.adapter.withTransaction((transaction) => runtime.database.runTeamBillingAuthority(transaction, reconstructed, {
+      operation: "plan-transition", teamId: team.id, teamRole: "admin", productKey: "agency",
+    })), { allow: true });
+    const awaiting = await waitForTeamPlanOperation(runtime.database, team.id, input.requestId, "awaiting-observation");
+    assert.equal(providerInputs.length, 1);
+    assert.deepEqual(providerInputs[0], {
+      mode: "sandbox", customerId: "cus_team_plan", subscriptionId: "sub_team_plan", subscriptionItemId: "si_team_plan",
+      sourcePriceId: "price_test_studio", targetPriceId: "price_test_agency", targetProductId: "prod_test_agency",
+      targetQuantity: 2, prorationDate: providerInputs[0].prorationDate, idempotencyKey: providerInputs[0].idempotencyKey,
+      operationKind: "plan-transition",
+    });
+    assert.equal(Number.isSafeInteger(providerInputs[0].prorationDate), true);
+    assert.match(providerInputs[0].idempotencyKey, /^sporades-team-billing-[a-f0-9]{64}$/);
+    const acknowledged = await send(owner, { id: "plan-acknowledged", type: "teamBilling.requestPlanTransition", input, sessionToken: ownerSignup.data.sessionToken });
+    assert.equal(acknowledged.data.state, "pending", "a successful Stripe response is not accepted billing truth");
+    assert.equal(awaiting.status, "awaiting-observation");
+
+    const periodStart = Math.floor(Date.now() / 1_000);
+    const event = verifiedManagedSubscriptionEvent({
+      providerEventId: "evt_team_plan_verified", occurred: periodStart + 1, subscriptionId: "sub_team_plan", customerId: "cus_team_plan",
+      itemId: "si_team_plan", priceId: "price_test_agency", productId: "prod_test_agency", quantity: 2,
+      periodStart, periodEnd: periodStart + 2_592_000,
+    });
+    await runAtomicStripeConsequence(
+      runtime.database, { signal: new AbortController().signal }, event, undefined, applyVerifiedTeamBillingObservation,
+    );
+    const completed = await send(owner, { id: "plan-completed", type: "teamBilling.requestPlanTransition", input, sessionToken: ownerSignup.data.sessionToken });
+    assert.deepEqual(completed.data, { state: "completed", ...input });
+    const billing = await send(owner, { id: "plan-billing", type: "teamBilling.get", teamId: team.id, sessionToken: ownerSignup.data.sessionToken });
+    assert.deepEqual(billing.data, {
+      state: "active", teamId: team.id, productKey: "agency", quantity: 2,
+      renewsAt: new Date((periodStart + 2_592_000) * 1_000).toISOString(),
+    });
+  } finally {
+    owner?.close(); member?.close();
+    await runtime.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("headless Team Portal pins reviewed configuration and exposes only an authorized short-lived continuation", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-headless-team-portal-"));
   const retrieved = [];
@@ -2464,6 +2555,37 @@ async function waitForTeamPortal(socket, input, sessionToken, state, timeoutMs =
     await new Promise((resolve) => setTimeout(resolve, 10));
   } while (Date.now() < deadline);
   assert.fail(`Team Portal did not reach ${state}: ${JSON.stringify(lastResult)}`);
+}
+
+async function waitForTeamPlanOperation(database, teamId, requestId, status, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  let row = null;
+  do {
+    row = await database.adapter.prepare(
+      "SELECT [status], [safeFailureCode] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ? AND [kind] = 'plan-transition'",
+    ).get(teamId, requestId);
+    if (row?.status === status) return row;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  } while (Date.now() < deadline);
+  assert.fail(`Team Plan operation did not reach ${status}: ${JSON.stringify(row)}`);
+}
+
+function verifiedManagedSubscriptionEvent(input) {
+  const occurredAt = new Date(input.occurred * 1_000).toISOString();
+  const object = {
+    id: input.subscriptionId, object: "subscription", customer: input.customerId, livemode: false,
+    status: "active", cancel_at_period_end: false, metadata: {},
+    items: { object: "list", has_more: false, data: [{
+      id: input.itemId, object: "subscription_item", subscription: input.subscriptionId, quantity: input.quantity,
+      current_period_start: input.periodStart, current_period_end: input.periodEnd,
+      price: { id: input.priceId, product: input.productId, recurring: { usage_type: "licensed" } },
+    }] },
+  };
+  return {
+    provider: "stripe", providerEventId: input.providerEventId, type: "customer.subscription.updated",
+    occurredAt, livemode: false, objectId: object.id,
+    raw: { id: input.providerEventId, object: "event", type: "customer.subscription.updated", livemode: false, created: input.occurred, data: { object } },
+  };
 }
 
 async function waitForCheckoutSignal(signal, description, timeoutMs = 2_000) {

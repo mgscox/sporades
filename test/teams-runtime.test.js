@@ -125,6 +125,33 @@ test("membership removal, leave, and eligible Team deletion clear active and ina
   });
 });
 
+test("a Team membership commit survives unavailable billing convergence staging", async () => {
+  await withDatabase(async (databasePath) => {
+    const config = { name: "team-billing-staging-outage", auth: { providers: { anonymous: true, email: true } } };
+    const database = await openDevDatabase(databasePath, "", {}, config, { name: "team-billing-staging-outage", schema: {} });
+    try {
+      const owner = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", { email: "billing-outage-owner@example.com", password: "password-123", name: "Owner" });
+      const member = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", { email: "billing-outage-member@example.com", password: "password-123", name: "Member" });
+      const team = (await listCurrentUserTeams(database, owner.auth)).teams[0];
+      await database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)").run(team.id, member.auth.userId, new Date().toISOString());
+      database.stageTeamBillingMembershipChange = async () => {
+        const error = new Error("provider dispatch unavailable");
+        error.code = "TEAM_BILLING_PROVIDER_UNAVAILABLE";
+        throw error;
+      };
+
+      assert.deepEqual(await removeTeamMember(database, owner.auth, team.id, member.auth.userId), { removed: true });
+      assert.equal(
+        database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?").get(team.id, member.auth.userId).count,
+        0,
+        "billing staging is best-effort after the membership transaction commits",
+      );
+    } finally {
+      await database.close();
+    }
+  });
+});
+
 test("a failed role write rolls the complete mixed add/remove update back", async () => {
   await withDatabase(async (databasePath) => {
     const config = { name: "team-role-write-rollback", auth: { providers: { anonymous: true, email: true } } };
@@ -1049,11 +1076,14 @@ test("Postgres public Team count observes a committed caller removal before auth
     const countAttempt = observeTeamLifecycleClaim(second.adapter);
     const secondAdapter = second.adapter;
     second.adapter = countAttempt.adapter;
-    const count = countTeamMembers(second, member.auth, team.id);
+    const count = countTeamMembers(second, member.auth, team.id).then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
     await countAttempt.started;
     removalPause.release();
     await removal;
-    await assert.rejects(count, (error) => error?.code === "DENIED");
+    assert.equal((await count).error?.code, "DENIED");
     assert.deepEqual(await countTeamMembers(second, owner.auth, team.id), { totalCount: 1 });
     second.adapter = secondAdapter;
   } finally {

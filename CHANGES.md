@@ -6,6 +6,11 @@ Changes since v0.8.7.
 
 ### 🚀 Features
 
+- Add durable managed Team Plan transitions and automatic accepted-member seat
+  convergence. Exact Price and quantity changes are serialized per Team across
+  runtimes, stale intent is superseded, membership commits survive provider
+  outages, and only verified Subscription evidence settles the provider-free
+  result while apps retain every rendered UI element.
 - Converge verified Team Checkout, Subscription, and failed-invoice evidence
   through the existing cross-runtime atomic Stripe fence, with exact catalogue
   validation, deterministic semantic ratchets, terminal cancellation latches,

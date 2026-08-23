@@ -22,6 +22,7 @@ import { readCurrentUserPreferences, updateCurrentUserPreferences, } from "./use
 import { countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createPrivilegedTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
 import { TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, TEAM_BILLING_PORTAL_EXPIRY_JOB, TEAM_BILLING_PORTAL_JOB, TEAM_BILLING_PORTAL_MAX_ATTEMPTS, createPrivilegedTeamBillingApi, expireTeamBillingCheckout, expireTeamBillingPortal, normalizeTeamBillingDefinition, performTeamBillingCheckout, performTeamBillingPortal, readCurrentUserTeamBilling, settleExhaustedTeamBillingCheckoutJob, startTeamBillingCheckout, startTeamBillingPortal, } from "./team-billing-runtime.js";
 import { applyVerifiedTeamBillingObservation } from "./team-billing-convergence.js";
+import { TEAM_BILLING_PLAN_TRANSITION_JOB, TEAM_BILLING_SEAT_CONVERGENCE_JOB, performTeamBillingPlanTransition, performTeamBillingSeatConvergence, repairTeamBillingDesiredStateAtStartup, requestTeamBillingPlanTransition, settleExhaustedTeamBillingManagementJob, stageTeamBillingMembershipChange, } from "./team-billing-management.js";
 // Batch 8. Eight names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
 // `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
@@ -582,6 +583,28 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             expireTeamBillingCheckout: (context, payload) => expireTeamBillingCheckout(database, context, payload),
             performTeamBillingPortal: (context, payload) => performTeamBillingPortal(database, context, payload, database.__runtimeJobAttempts.get(context) ?? 1),
             expireTeamBillingPortal: (context, payload) => expireTeamBillingPortal(database, context, payload),
+            performTeamBillingPlanTransition: async (context, payload) => {
+                try {
+                    return await performTeamBillingPlanTransition(database, context, payload);
+                }
+                catch (error) {
+                    if ((database.__runtimeJobAttempts.get(context) ?? 1) >= 3) {
+                        await settleExhaustedTeamBillingManagementJob(database, payload, error?.code);
+                    }
+                    throw error;
+                }
+            },
+            performTeamBillingSeatConvergence: async (context, payload) => {
+                try {
+                    return await performTeamBillingSeatConvergence(database, context, payload);
+                }
+                catch (error) {
+                    if ((database.__runtimeJobAttempts.get(context) ?? 1) >= 3) {
+                        await settleExhaustedTeamBillingManagementJob(database, payload, error?.code);
+                    }
+                    throw error;
+                }
+            },
         })];
     const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
     const clock = createRuntimeClock(options?.clock);
@@ -639,6 +662,44 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         enqueueTeamBillingCheckoutExpiryJob: (transaction, payload, idempotencyKey, availableAt) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, payload, idempotencyKey, undefined, true, availableAt),
         enqueueTeamBillingPortalJob: (transaction, payload, idempotencyKey) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_PORTAL_JOB, payload, idempotencyKey, { maxAttempts: TEAM_BILLING_PORTAL_MAX_ATTEMPTS, delayMs: 1_000 }, true),
         enqueueTeamBillingPortalExpiryJob: (transaction, payload, idempotencyKey, availableAt) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_PORTAL_EXPIRY_JOB, payload, idempotencyKey, undefined, true, availableAt),
+        enqueueTeamBillingPlanTransitionJob: (transaction, payload, idempotencyKey, availableAt) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_PLAN_TRANSITION_JOB, payload, idempotencyKey, { maxAttempts: 3, delayMs: 5_000 }, true, availableAt, availableAt !== undefined),
+        enqueueTeamBillingSeatConvergenceJob: (transaction, payload, idempotencyKey, availableAt) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_SEAT_CONVERGENCE_JOB, payload, idempotencyKey, { maxAttempts: 3, delayMs: 60_000 }, true, availableAt, availableAt !== undefined),
+        stageTeamBillingMembershipChange: (teamId) => stageTeamBillingMembershipChange(database, teamId),
+        readTeamBillingActorAuth: async (transaction, userId) => {
+            if (typeof userId !== "string")
+                return null;
+            const actor = await transaction.prepare(transaction.dialect.sql("SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider] FROM [sporades_auth_users] WHERE [id] = ?")).get(userId);
+            return actor ? Object.freeze({
+                userId: actor.id,
+                displayName: actor.displayName,
+                email: actor.email,
+                picture: actor.picture,
+                isAuthenticated: Boolean(actor.isAuthenticated),
+                isGuest: Boolean(actor.isGuest),
+                provider: actor.provider,
+            }) : null;
+        },
+        updateTeamBillingSubscription: async (context, input) => {
+            if (typeof database.createStripeTeamBillingProvider !== "function")
+                throw commandError("Team Billing provider is unavailable.", "Retry after the configured provider is available.", "TEAM_BILLING_PROVIDER_UNAVAILABLE");
+            const provider = database.createStripeTeamBillingProvider({
+                enabled: true, config: database.paymentsConfig.stripe, env: database.serverEnv, signal: context?.signal,
+                ...(database.stripeApiBaseUrl ? { apiBaseUrl: database.stripeApiBaseUrl } : {}),
+            });
+            return provider.updateManagedSubscription(Object.freeze({
+                mode: input.mode,
+                customerId: input.providerCustomerId,
+                subscriptionId: input.providerSubscriptionId,
+                subscriptionItemId: input.providerSubscriptionItemId,
+                sourcePriceId: input.sourcePriceId,
+                targetPriceId: input.targetPriceId,
+                ...(input.targetProductId ? { targetProductId: input.targetProductId } : {}),
+                targetQuantity: input.targetQuantity,
+                prorationDate: input.prorationDate,
+                idempotencyKey: input.idempotencyKey,
+                operationKind: input.operationKind,
+            }));
+        },
         scheduleTeamBillingJobDispatch: () => scheduleCurrentUserJobWorker(database),
         mail,
         authConfig: authStatus(config, serverEnv),
@@ -788,6 +849,8 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                     throw commandError("Invalid Capsule init hook.", "Declare hooks.init as a function.");
                 await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false }));
             }
+            if (database.teamBillingDefinition)
+                await repairTeamBillingDesiredStateAtStartup(database);
             database.__scheduleTimers = new Set();
             database.__activeScheduleOccurrences = new Set();
             database.__scheduleRecoveryTimer = null;
@@ -1606,13 +1669,26 @@ export async function recoverExpiredJobLeases(database) {
             const failure = storedFailure ?? (retry === null || retryEligible
                 ? invalidJobRetryPolicyFailure()
                 : { code: "JOB_LEASE_EXPIRED", message: "Job lease expired." });
-            await database.adapter.withTransaction(async (transaction) => {
+            const teamBillingReplacementScheduled = await database.adapter.withTransaction(async (transaction) => {
+                let replacementScheduled = false;
                 const settled = await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
                     "WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] = ? AND " + ownership.predicate)).run(JSON.stringify(failure), recoveredIso, JSON.stringify(history), row.id, row.leaseExpiresAt, ...ownership.params);
                 if (Number(settled?.changes ?? 0) === 1) {
                     await settleExhaustedTeamBillingCheckoutJob(transaction, row.handler, row.payload, recoveredIso);
+                    if ([TEAM_BILLING_PLAN_TRANSITION_JOB, TEAM_BILLING_SEAT_CONVERGENCE_JOB].includes(row.handler)) {
+                        let payload = null;
+                        try {
+                            payload = JSON.parse(row.payload);
+                        }
+                        catch { }
+                        const managementSettlement = await settleExhaustedTeamBillingManagementJob({ ...database, adapter: transaction, __transactionActive: true }, payload, "JOB_LEASE_EXPIRED");
+                        replacementScheduled = managementSettlement?.replacementScheduled === true;
+                    }
                 }
+                return replacementScheduled;
             });
+            if (teamBillingReplacementScheduled && !database.__jobStopped)
+                scheduleCurrentUserJobWorker(database);
         }
     }
     return earliestFutureLeaseAt;
@@ -3106,12 +3182,17 @@ export async function runAtomicStripeConsequence(database, parentContext, event,
             });
             commitPendingJobCancellationAborts(context);
             await dispatchPendingJobs(context);
+            if (database.__teamBillingDispatchPending) {
+                database.__teamBillingDispatchPending = false;
+                scheduleCurrentUserJobWorker(database);
+            }
             database.rowCache.clear();
             return result;
         }
         catch (error) {
             dropPendingJobCancellationAborts(context);
             dropPendingJobDispatch(context);
+            database.__teamBillingDispatchPending = false;
             database.rowCache.clear();
             await reindexPrivilegedAuditEventsAfterRollback(database, context);
             if (error?.code !== "STRIPE_CONSEQUENCE_FENCE_BUSY" || fenceAttempt === 200 || parentContext.signal?.aborted)
@@ -4467,6 +4548,31 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
             }
             return;
         }
+        if (message.type === "teamBilling.requestPlanTransition") {
+            try {
+                const input = message.input;
+                const data = await requestTeamBillingPlanTransition(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey);
+                sendJson(client, { id: message.id ?? null, type: "teamBilling.requestPlanTransition.result", data, error: null });
+            }
+            catch (error) {
+                const code = ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED", "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS"].includes(error?.code)
+                    ? error.code : "TEAM_BILLING_DENIED";
+                sendJson(client, {
+                    id: message.id ?? null,
+                    type: "error",
+                    data: null,
+                    error: {
+                        code,
+                        message: code === "TEAM_BILLING_REQUEST_CONFLICT" ? "Team Plan request conflicts with existing work."
+                            : code === "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED" ? "This Plan switch belongs in the configured Customer Portal."
+                                : code === "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS" ? "Team billing state requires attention." : "Team Plan change is unavailable.",
+                        hint: code === "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED" ? "Open the configured Customer Portal for a compatible quantity-policy switch."
+                            : "Sign in as the current policy-approved billing administrator and retry with a new request identifier.",
+                    },
+                });
+            }
+            return;
+        }
         if (message.type === "teams.create") {
             try {
                 const data = await createAdditionalTeam(database, client.session.auth, message.name);
@@ -4938,14 +5044,19 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
 // insert joins the handler transaction, while dispatch uses that transaction's
 // live context so the worker is not woken until commit. Outside a handler
 // transaction, runtime-owned Jobs retain ordinary immediate scheduling.
-async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey, retry = undefined, deferDispatch = false, availableAt = undefined) {
+async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey, retry = undefined, deferDispatch = false, availableAt = undefined, persistDelayed = false) {
     const queueDatabase = database.__rootDatabase ?? database;
     const jobAdapter = database.adapter;
     const now = queueDatabase.clock.now().toISOString();
+    const jobAvailableAt = availableAt ?? now;
+    // Checkout and Portal expiry Jobs have historically remained future queued
+    // rows. Only a provider-lane recovery successor opts into delayed storage so
+    // the delayed-Job wake timer durably owns its post-TTL rediscovery.
+    const status = persistDelayed && jobAvailableAt > now ? "delayed" : "queued";
     const payloadJson = boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Job payload");
     await jobAdapter.prepare(jobAdapter.dialect.sql("INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], " +
         "[availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) " +
-        "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, '[]', NULL, NULL)")).run(randomUUID(), handlerName, PRIVILEGED_AUTH_USER_ID, PRIVILEGED_AUTH_USER_ID, "privileged", payloadJson, availableAt ?? now, idempotencyKey, now, JSON.stringify(normalizeJobRetry(retry)));
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, '[]', NULL, NULL)")).run(randomUUID(), handlerName, PRIVILEGED_AUTH_USER_ID, PRIVILEGED_AUTH_USER_ID, "privileged", payloadJson, status, jobAvailableAt, idempotencyKey, now, JSON.stringify(normalizeJobRetry(retry)));
     if (!deferDispatch)
         deferOrScheduleJobDispatch(database, queueDatabase);
 }

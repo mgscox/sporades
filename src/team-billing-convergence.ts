@@ -2,6 +2,7 @@
 // Billing state. This module deliberately never owns a transaction: the Stripe
 // consequence runner supplies the already-serialized adapter as `database.adapter`.
 import { createHash, randomUUID } from "node:crypto";
+import { settleVerifiedTeamBillingTarget } from "./team-billing-management.js";
 
 type LooseRecord = Record<string, any>;
 
@@ -195,6 +196,10 @@ async function applySubscription(database: LooseRecord, event: LooseRecord, mode
       "UPDATE [sporades_team_billing_operations] SET [providerCustomerId] = ?, [providerSubscriptionId] = ?, [updatedAt] = ? WHERE [id] = ?",
     )).run(customerId, subscriptionId, event.occurredAt, operation.id);
   }
+  await settleVerifiedTeamBillingTarget(
+    { ...database, adapter: tx, __transactionActive: true, __rootDatabase: database.__rootDatabase ?? database },
+    { teamId, productKey: normalized.productKey, quantity: normalized.quantity, subscriptionId, occurredAt: event.occurredAt },
+  );
   return { teamId, objectId: subscriptionId, rank: normalized.rank };
 }
 

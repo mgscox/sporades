@@ -79,7 +79,106 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
       }
       return Object.freeze({ ok: true, sessionId: session.id, url: session.url });
     },
+    async updateManagedSubscription(input: LooseRecord) {
+      validateManagedSubscriptionInput(input, config.livemode);
+      throwIfAborted(options.signal);
+      let current: LooseRecord;
+      try {
+        current = await stripe.subscriptions.retrieve(input.subscriptionId);
+      } catch (error: any) {
+        throwProviderOperationFailure(error);
+      }
+      throwIfAborted(options.signal);
+      attestManagedSubscription(current, input, new Set([input.sourcePriceId, input.targetPriceId]), false);
+
+      let updated: LooseRecord;
+      try {
+        updated = await stripe.subscriptions.update(input.subscriptionId, {
+          items: [{
+            id: input.subscriptionItemId,
+            price: input.targetPriceId,
+            quantity: input.targetQuantity,
+          }],
+          proration_behavior: "create_prorations",
+          proration_date: input.prorationDate,
+          payment_behavior: "pending_if_incomplete",
+        }, { idempotencyKey: input.idempotencyKey });
+      } catch (error: any) {
+        throwProviderOperationFailure(error);
+      }
+      throwIfAborted(options.signal);
+      attestManagedSubscription(updated, input, new Set([input.targetPriceId]), true);
+      const paymentActionRequired = updated.pending_update != null
+        || ["incomplete", "past_due", "unpaid"].includes(updated.status);
+      return Object.freeze({
+        ok: true,
+        outcome: paymentActionRequired ? "payment-action-required" : "acknowledged",
+      });
+    },
   });
+}
+
+function validateManagedSubscriptionInput(input: LooseRecord, livemode: boolean) {
+  const required = ["customerId", "idempotencyKey", "mode", "operationKind", "prorationDate", "sourcePriceId", "subscriptionId", "subscriptionItemId", "targetPriceId", "targetQuantity"];
+  const keys = Object.keys(input ?? {}).filter((key) => key !== "targetProductId").sort();
+  if (!input || typeof input !== "object" || Array.isArray(input)
+    || keys.join("\0") !== required.join("\0")
+    || !["sandbox", "live"].includes(input.mode) || (input.mode === "live") !== livemode
+    || !["plan-transition", "seat-convergence"].includes(input.operationKind)
+    || !validCustomerId(input.customerId) || !validSubscriptionId(input.subscriptionId)
+    || !validSubscriptionItemId(input.subscriptionItemId)
+    || !validPriceId(input.sourcePriceId) || !validPriceId(input.targetPriceId)
+    || (input.targetProductId !== undefined && !validProductId(input.targetProductId))
+    || !Number.isInteger(input.targetQuantity) || input.targetQuantity < 1 || input.targetQuantity > 999_999
+    || !Number.isSafeInteger(input.prorationDate) || input.prorationDate < 1
+    || typeof input.idempotencyKey !== "string" || input.idempotencyKey.length < 8 || input.idempotencyKey.length > 255
+    || /[\r\n\0]/.test(input.idempotencyKey)) throw providerFailure(false);
+}
+
+function attestManagedSubscription(
+  subscription: LooseRecord,
+  input: LooseRecord,
+  acceptedPriceIds: Set<string>,
+  requireTarget: boolean,
+) {
+  const items = subscription?.items;
+  if (subscription?.object !== "subscription" || subscription.id !== input.subscriptionId
+    || subscription.customer !== input.customerId || subscription.livemode !== (input.mode === "live")
+    || items?.object !== "list" || items.has_more !== false || !Array.isArray(items.data) || items.data.length !== 1) {
+    throw providerFailure(false);
+  }
+  const item = items.data[0];
+  const price = item?.price;
+  if (item?.object !== "subscription_item" || item.id !== input.subscriptionItemId
+    || item.subscription !== input.subscriptionId || !acceptedPriceIds.has(price?.id)
+    || price?.object !== "price" || price.livemode !== (input.mode === "live")
+    || !validProductId(price?.product) || price?.recurring?.usage_type !== "licensed"
+    || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 999_999
+    || (requireTarget && price.id !== input.targetPriceId)
+    || (requireTarget && item.quantity !== input.targetQuantity)
+    || (requireTarget && input.targetProductId !== undefined && price.product !== input.targetProductId)) {
+    throw providerFailure(false);
+  }
+}
+
+function validCustomerId(value: any) {
+  return typeof value === "string" && /^cus_[A-Za-z0-9_]{1,120}$/.test(value);
+}
+
+function validSubscriptionId(value: any) {
+  return typeof value === "string" && /^sub_[A-Za-z0-9_]{1,240}$/.test(value);
+}
+
+function validSubscriptionItemId(value: any) {
+  return typeof value === "string" && /^si_[A-Za-z0-9_]{1,240}$/.test(value);
+}
+
+function validPriceId(value: any) {
+  return typeof value === "string" && /^price_[A-Za-z0-9_]{1,249}$/.test(value);
+}
+
+function validProductId(value: any) {
+  return typeof value === "string" && /^prod_[A-Za-z0-9_]{1,240}$/.test(value);
 }
 
 function validatePortalConfigurationInput(input: LooseRecord) {

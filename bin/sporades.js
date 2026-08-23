@@ -3,7 +3,7 @@
 
 // src/cli/sporades.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { createHash as createHash8, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes7, timingSafeEqual as timingSafeEqual4 } from "node:crypto";
+import { createHash as createHash9, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes7, timingSafeEqual as timingSafeEqual4 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
 import { appendFile, chmod as chmod2, cp, lstat as lstat7, mkdir as mkdir6, readdir as readdir2, readFile as readFile9, rename as rename5, rm as rm6, writeFile as writeFile7 } from "node:fs/promises";
@@ -180,6 +180,9 @@ export const teamBilling = {
   },
   openPortal(input) {
     return connect().teamBillingOpenPortal(input);
+  },
+  requestPlanTransition(input) {
+    return connect().teamBillingRequestPlanTransition(input);
   },
 };
 
@@ -1254,6 +1257,7 @@ function createConnection() {
     teamBillingGet(teamId) { return request("teamBilling.get", { teamId }); },
     teamBillingStartCheckout(input) { return request("teamBilling.startCheckout", { input }); },
     teamBillingOpenPortal(input) { return request("teamBilling.openPortal", { input }); },
+    teamBillingRequestPlanTransition(input) { return request("teamBilling.requestPlanTransition", { input }); },
     journeyEnable(options = {}) {
       return request("journey.enable", { options }).then((result) => {
         if (!result.error) journeyConsentOptions = options;
@@ -4710,7 +4714,7 @@ function restartPolicyStatus(mode, overrides = {}) {
 }
 
 // src/server-runtime-source.ts
-import { createHash as createHash6, randomBytes as randomBytes5, randomUUID as randomUUID5 } from "node:crypto";
+import { createHash as createHash7, randomBytes as randomBytes5, randomUUID as randomUUID6 } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 
 // src/mail-config-validation.ts
@@ -6421,7 +6425,7 @@ function createPreferencesError(message, hint, code) {
 }
 
 // src/teams-runtime.ts
-import { createHash as createHash5, createHmac as createHmac2, randomBytes as randomBytes4, randomUUID as randomUUID3, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+import { createHash as createHash6, createHmac as createHmac2, randomBytes as randomBytes4, randomUUID as randomUUID4, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 
 // src/maybe-promise.ts
 function isPromiseLike(value) {
@@ -7229,10 +7233,576 @@ function isPlainObject2(value) {
 }
 
 // src/team-billing-runtime.ts
-import { createHash as createHash4, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash5, randomUUID as randomUUID3 } from "node:crypto";
 
 // src/team-billing-convergence.ts
+import { createHash as createHash4, randomUUID as randomUUID2 } from "node:crypto";
+
+// src/team-billing-management.ts
 import { createHash as createHash3, randomUUID } from "node:crypto";
+var TEAM_BILLING_PLAN_TRANSITION_JOB = "_sporades.team-billing-plan-transition";
+var TEAM_BILLING_SEAT_CONVERGENCE_JOB = "_sporades.team-billing-seat-convergence";
+var CLAIM_TTL_MS = 5 * 60 * 1e3;
+var TEAM_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+async function requestTeamBillingPlanTransition(database, auth, teamId, requestId, productKey) {
+  const definition = database.teamBillingDefinition;
+  if (!TEAM_ID_PATTERN.test(String(teamId ?? "")) || !TEAM_ID_PATTERN.test(String(requestId ?? "")) || typeof productKey !== "string" || !definition?.catalogue?.[productKey]) throw denied();
+  let enqueued = false;
+  const result = await inTransaction(database, async (transaction) => {
+    await admitPlanTransition(database, transaction, auth, teamId, productKey);
+    const sql = transaction.dialect.sql;
+    const repeated = await transaction.prepare(sql(
+      "SELECT [id], [kind], [productKey], [status], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?"
+    )).get(teamId, requestId);
+    if (repeated) {
+      if (repeated.kind !== "plan-transition" || repeated.productKey !== productKey) throw conflict();
+      return planOperationResult(teamId, requestId, productKey, repeated);
+    }
+    const subscription = await currentSubscription(transaction, teamId);
+    const currentProduct = definition.catalogue[subscription.productKey];
+    const targetProduct = definition.catalogue[productKey];
+    assertCurrentModeAndCatalogue(database, subscription, currentProduct);
+    if (!currentProduct || sameQuantityPolicy(currentProduct.quantity, targetProduct.quantity)) throw transitionNotRequired();
+    const quantity = await targetQuantity(transaction, teamId, targetProduct);
+    const operationId = randomUUID();
+    const now = nowIso(database);
+    const effectiveAt = nowSeconds(database);
+    const staged = await stageDesired(transaction, database, {
+      teamId,
+      kind: "plan-transition",
+      operationId,
+      targetProductKey: productKey,
+      targetQuantity: quantity,
+      effectiveAt
+    });
+    await transaction.prepare(sql(
+      "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [teamId] = ? AND [kind] = 'plan-transition' AND [status] IN ('queued', 'running', 'awaiting-observation')"
+    )).run(now, teamId);
+    await transaction.prepare(sql(
+      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity]) VALUES (?, ?, ?, ?, 'plan-transition', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?)"
+    )).run(operationId, requestId, teamId, auth.userId, productKey, operationIdempotency(database, operationId), now, now, subscription.mode, quantity);
+    await enqueueIntent(database, transaction, staged);
+    enqueued = true;
+    return Object.freeze({ state: "pending", teamId, requestId, productKey, requestedAt: now });
+  });
+  if (enqueued) scheduleAfterOwnedTransaction(database);
+  return result;
+}
+async function stageTeamBillingMembershipChange(database, teamId, effectiveAt = nowSeconds(database)) {
+  if (!TEAM_ID_PATTERN.test(String(teamId ?? "")) || !Number.isSafeInteger(effectiveAt) || effectiveAt < 0) return { staged: false };
+  let enqueued = false;
+  const result = await inTransaction(database, async (transaction) => {
+    const subscription = await optionalCurrentSubscription(transaction, teamId);
+    if (!subscription) return Object.freeze({ staged: false });
+    const product = database.teamBillingDefinition?.catalogue?.[subscription.productKey];
+    if (product?.quantity?.kind !== "team-members") return Object.freeze({ staged: false });
+    const quantity = await countAcceptedTeamMembers(transaction, teamId, denied);
+    const existing = await desiredForTeam(transaction, teamId);
+    if (existing?.kind === "plan-transition") return Object.freeze({ staged: false, reason: "plan-transition-active" });
+    if (!existing && subscription.quantity === quantity) return Object.freeze({ staged: false });
+    const staged = await stageDesired(transaction, database, {
+      teamId,
+      kind: "seat-convergence",
+      operationId: null,
+      targetProductKey: subscription.productKey,
+      targetQuantity: quantity,
+      effectiveAt
+    });
+    let generationId = staged.activeJobGenerationId ?? null;
+    if (staged.enqueue) {
+      generationId = await enqueueIntent(database, transaction, staged);
+      enqueued = true;
+    }
+    return Object.freeze({ staged: true, intentId: staged.intentId, generationId, quantity });
+  });
+  if (enqueued) scheduleAfterOwnedTransaction(database);
+  return result;
+}
+async function performTeamBillingPlanTransition(database, context, payload) {
+  return performDesired(database, context, payload, "plan-transition");
+}
+async function performTeamBillingSeatConvergence(database, context, payload) {
+  return performDesired(database, context, payload, "seat-convergence");
+}
+async function performDesired(database, _context, payload, kind) {
+  if (typeof payload?.intentId !== "string" || typeof payload?.generationId !== "string") return { superseded: true };
+  const claimToken = randomUUID();
+  const snapshot = await inTransaction(database, async (transaction) => {
+    const desired = await desiredByIntent(transaction, payload.intentId);
+    if (!desired || desired.kind !== kind || desired.activeJobGenerationId !== payload.generationId || !["queued", "running", "awaiting-observation"].includes(desired.status)) return { superseded: true };
+    const subscription = await currentSubscription(transaction, desired.teamId);
+    const product = database.teamBillingDefinition?.catalogue?.[desired.targetProductKey];
+    if (!product) return attention(transaction, database, desired, "CATALOGUE_MISMATCH");
+    try {
+      assertCurrentModeAndCatalogue(database, subscription, database.teamBillingDefinition?.catalogue?.[subscription.productKey]);
+    } catch {
+      return attention(transaction, database, desired, "PROVIDER_STATE_AMBIGUOUS");
+    }
+    if (kind === "plan-transition") {
+      const auth = await database.readTeamBillingActorAuth?.(transaction, await actorForOperation(transaction, desired.operationId));
+      const admission = await tryAdmitPlanTransition(database, transaction, auth, desired.teamId, desired.targetProductKey);
+      if (!admission) return attention(transaction, database, desired, "AUTHORITY_CHANGED", true);
+      const exact = await targetQuantity(transaction, desired.teamId, product);
+      if (exact !== Number(desired.targetQuantity)) {
+        const replacement = await stageDesired(transaction, database, {
+          teamId: desired.teamId,
+          kind,
+          operationId: desired.operationId,
+          targetProductKey: desired.targetProductKey,
+          targetQuantity: exact,
+          effectiveAt: nowSeconds(database)
+        });
+        await enqueueIntent(database, transaction, replacement);
+        return { superseded: true, dispatch: true };
+      }
+    } else {
+      const exact = await countAcceptedTeamMembers(transaction, desired.teamId, denied);
+      if (exact !== Number(desired.targetQuantity) || subscription.productKey !== desired.targetProductKey) {
+        const targetProductKey = subscription.productKey;
+        const currentProduct = database.teamBillingDefinition?.catalogue?.[targetProductKey];
+        if (currentProduct?.quantity?.kind !== "team-members") return { superseded: true };
+        const replacement = await stageDesired(transaction, database, {
+          teamId: desired.teamId,
+          kind,
+          operationId: null,
+          targetProductKey,
+          targetQuantity: exact,
+          effectiveAt: nowSeconds(database)
+        });
+        await enqueueIntent(database, transaction, replacement);
+        return { superseded: true, dispatch: true };
+      }
+    }
+    const customer = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ? AND [mode] = ?"
+    )).get(desired.teamId, subscription.mode);
+    if (!customer?.providerCustomerId) return attention(transaction, database, desired, "PROVIDER_STATE_AMBIGUOUS");
+    const claimed = await claimLane(transaction, desired.teamId, claimToken, database);
+    if (!claimed) throw retryable("TEAM_BILLING_PROVIDER_LANE_BUSY");
+    await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_desired_state] SET [status] = 'running', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [intentId] = ?"
+    )).run(nowIso(database), desired.intentId);
+    const binding = modeBinding(database, product);
+    return {
+      desired: { ...desired },
+      provider: {
+        teamId: desired.teamId,
+        mode: subscription.mode,
+        providerCustomerId: customer.providerCustomerId,
+        providerSubscriptionId: subscription.providerSubscriptionId,
+        providerSubscriptionItemId: subscription.providerSubscriptionItemId,
+        sourcePriceId: subscription.providerPriceId,
+        targetPriceId: binding.priceId,
+        ...binding.productId ? { targetProductId: binding.productId } : {},
+        targetProductKey: desired.targetProductKey,
+        targetQuantity: Number(desired.targetQuantity),
+        effectiveAt: Number(desired.effectiveAt),
+        prorationDate: Number(desired.effectiveAt),
+        idempotencyKey: desired.idempotencyKey,
+        operationKind: desired.kind
+      }
+    };
+  });
+  if (snapshot.dispatch) database.scheduleTeamBillingJobDispatch?.();
+  if (snapshot.superseded) return { superseded: true };
+  if (snapshot.denied) throw denied();
+  try {
+    if (typeof database.updateTeamBillingSubscription !== "function") throw retryable("TEAM_BILLING_PROVIDER_UNAVAILABLE");
+    const providerResult = await database.updateTeamBillingSubscription(_context, Object.freeze(snapshot.provider));
+    if (!validProviderAcknowledgement(providerResult)) throw coded(
+      "Team Billing provider returned an invalid acknowledgement.",
+      "TEAM_BILLING_PROVIDER_REJECTED"
+    );
+    if (providerResult?.outcome === "payment-action-required") {
+      await releaseAfterFailure(database, snapshot.desired, claimToken, { retryable: false, code: "PAYMENT_ACTION_REQUIRED" });
+      return { failed: true, safeFailureCode: "PAYMENT_ACTION_REQUIRED" };
+    }
+  } catch (error) {
+    const classified = classifyProviderError(database, error);
+    await releaseAfterFailure(database, snapshot.desired, claimToken, classified);
+    if (classified.retryable) {
+      error.retryable = true;
+      error.code ??= classified.code;
+    }
+    throw error;
+  }
+  const acknowledged = await inTransaction(database, async (transaction) => {
+    const current = await desiredByIntent(transaction, snapshot.desired.intentId);
+    await releaseLane(transaction, snapshot.desired.teamId, claimToken, database);
+    if (!current) return false;
+    await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_desired_state] SET [status] = 'awaiting-observation', [providerAcknowledgedAt] = ?, [safeFailureCode] = NULL, [updatedAt] = ? WHERE [intentId] = ?"
+    )).run(nowIso(database), nowIso(database), current.intentId);
+    if (current.operationId) await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_operations] SET [status] = 'awaiting-observation', [updatedAt] = ? WHERE [id] = ?"
+    )).run(nowIso(database), current.operationId);
+    return true;
+  });
+  return acknowledged ? { providerAcknowledged: true } : { superseded: true };
+}
+async function settleVerifiedTeamBillingTarget(database, accepted) {
+  if (!accepted || typeof accepted.teamId !== "string" || typeof accepted.productKey !== "string" || !Number.isSafeInteger(accepted.quantity) || typeof accepted.subscriptionId !== "string") return { settled: false };
+  let enqueued = false;
+  const result = await inTransaction(database, async (transaction) => {
+    const sql = transaction.dialect.sql;
+    const subscription = await transaction.prepare(sql(
+      "SELECT [providerSubscriptionId] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [providerSubscriptionId] = ?"
+    )).get(accepted.teamId, accepted.subscriptionId);
+    if (!subscription) return { settled: false };
+    const desired = await desiredForTeam(transaction, accepted.teamId);
+    if (!desired) return { settled: false };
+    if (desired.targetProductKey === accepted.productKey && Number(desired.targetQuantity) === accepted.quantity) {
+      const product = database.teamBillingDefinition?.catalogue?.[accepted.productKey];
+      if (product?.quantity?.kind === "team-members") {
+        const exact = await countAcceptedTeamMembers(transaction, accepted.teamId, denied);
+        if (exact !== accepted.quantity) {
+          if (desired.operationId) await transaction.prepare(sql(
+            "UPDATE [sporades_team_billing_operations] SET [status] = 'completed', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [id] = ?"
+          )).run(accepted.occurredAt ?? nowIso(database), desired.operationId);
+          const replacement = await stageDesired(transaction, database, {
+            teamId: accepted.teamId,
+            kind: "seat-convergence",
+            operationId: null,
+            targetProductKey: accepted.productKey,
+            targetQuantity: exact,
+            effectiveAt: nowSeconds(database)
+          });
+          await enqueueIntent(database, transaction, replacement);
+          enqueued = true;
+          return { settled: true, repairRequired: true };
+        }
+      }
+      await transaction.prepare(sql("DELETE FROM [sporades_team_billing_desired_state] WHERE [intentId] = ?")).run(desired.intentId);
+      await transaction.prepare(sql(
+        "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ?"
+      )).run(accepted.occurredAt ?? nowIso(database), accepted.teamId);
+      if (desired.operationId) await transaction.prepare(sql(
+        "UPDATE [sporades_team_billing_operations] SET [status] = 'completed', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [id] = ?"
+      )).run(accepted.occurredAt ?? nowIso(database), desired.operationId);
+      return { settled: true };
+    }
+    if (desired.status === "awaiting-observation") {
+      await transaction.prepare(sql(
+        "UPDATE [sporades_team_billing_desired_state] SET [status] = 'queued', [safeFailureCode] = 'PROVIDER_DRIFT', [providerAcknowledgedAt] = NULL, [updatedAt] = ? WHERE [intentId] = ?"
+      )).run(accepted.occurredAt ?? nowIso(database), desired.intentId);
+      await enqueueIntent(database, transaction, { ...desired, enqueue: true });
+      enqueued = true;
+      return { settled: false, repairRequired: true };
+    }
+    return { settled: false };
+  });
+  if (enqueued) scheduleAfterOwnedTransaction(database);
+  return result;
+}
+async function repairTeamBillingDesiredState(database) {
+  let queued = 0;
+  await inTransaction(database, async (transaction) => {
+    const subscriptions = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [teamId], [productKey], [quantity] FROM [sporades_team_billing_subscriptions] WHERE [state] IN ('active', 'past-due') AND [terminalLatch] = 0 ORDER BY [teamId]"
+    )).all();
+    for (const subscription of subscriptions) {
+      const desired = await desiredForTeam(transaction, subscription.teamId);
+      if (desired) {
+        if (desired.targetProductKey === subscription.productKey && Number(desired.targetQuantity) === Number(subscription.quantity)) {
+          const product2 = database.teamBillingDefinition?.catalogue?.[subscription.productKey];
+          if (product2?.quantity?.kind === "team-members") {
+            const exact2 = await countAcceptedTeamMembers(transaction, subscription.teamId, denied);
+            if (exact2 !== Number(subscription.quantity)) {
+              const replacement = await stageDesired(transaction, database, {
+                teamId: subscription.teamId,
+                kind: "seat-convergence",
+                operationId: null,
+                targetProductKey: subscription.productKey,
+                targetQuantity: exact2,
+                effectiveAt: nowSeconds(database)
+              });
+              await enqueueIntent(database, transaction, replacement);
+              queued += 1;
+              continue;
+            }
+          }
+          if (desired.operationId) await transaction.prepare(transaction.dialect.sql(
+            "UPDATE [sporades_team_billing_operations] SET [status] = 'completed', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [id] = ?"
+          )).run(nowIso(database), desired.operationId);
+          await transaction.prepare(transaction.dialect.sql("DELETE FROM [sporades_team_billing_desired_state] WHERE [intentId] = ?")).run(desired.intentId);
+          continue;
+        }
+        await transaction.prepare(transaction.dialect.sql(
+          "UPDATE [sporades_team_billing_desired_state] SET [status] = 'queued', [providerAcknowledgedAt] = NULL, [updatedAt] = ? WHERE [intentId] = ?"
+        )).run(nowIso(database), desired.intentId);
+        await enqueueIntent(database, transaction, { ...desired, enqueue: true });
+        queued += 1;
+        continue;
+      }
+      const product = database.teamBillingDefinition?.catalogue?.[subscription.productKey];
+      if (product?.quantity?.kind !== "team-members") continue;
+      const exact = await countAcceptedTeamMembers(transaction, subscription.teamId, denied);
+      if (exact === Number(subscription.quantity)) continue;
+      const staged = await stageDesired(transaction, database, {
+        teamId: subscription.teamId,
+        kind: "seat-convergence",
+        operationId: null,
+        targetProductKey: subscription.productKey,
+        targetQuantity: exact,
+        effectiveAt: nowSeconds(database)
+      });
+      await enqueueIntent(database, transaction, staged);
+      queued += 1;
+    }
+  });
+  if (queued) scheduleAfterOwnedTransaction(database);
+  return { queued };
+}
+var repairTeamBillingDesiredStateAtStartup = repairTeamBillingDesiredState;
+async function settleExhaustedTeamBillingManagementJob(database, payload, safeFailureCode = "RETRY_EXHAUSTED") {
+  if (typeof payload?.intentId !== "string" || typeof payload?.generationId !== "string") return { settled: false };
+  const failureCode = safeCode(safeFailureCode);
+  let replacementScheduled = false;
+  const result = await inTransaction(database, async (transaction) => {
+    const desired = await desiredByIntent(transaction, payload.intentId);
+    if (!desired || desired.activeJobGenerationId !== payload.generationId || desired.status === "awaiting-observation") return { settled: false, stale: true };
+    const lane = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [claimToken], [claimExpiresAt] FROM [sporades_team_billing_provider_lanes] WHERE [teamId] = ?"
+    )).get(desired.teamId);
+    if (lane?.claimToken && typeof lane.claimExpiresAt === "string" && lane.claimExpiresAt > nowIso(database)) {
+      await enqueueIntent(database, transaction, { ...desired, enqueue: true }, lane.claimExpiresAt);
+      replacementScheduled = true;
+      return { settled: false, busy: true, replacementScheduled: true, availableAt: lane.claimExpiresAt };
+    }
+    if (failureCode === "TEAM_BILLING_PROVIDER_LANE_BUSY") {
+      const availableAt = nowIso(database);
+      await enqueueIntent(database, transaction, { ...desired, enqueue: true }, availableAt);
+      replacementScheduled = true;
+      return { settled: false, busy: true, replacementScheduled: true, availableAt };
+    }
+    const settled = await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_desired_state] SET [status] = 'failed', [safeFailureCode] = ?, [providerAcknowledgedAt] = NULL, [updatedAt] = ? WHERE [intentId] = ? AND [activeJobGenerationId] = ? AND [status] IN ('queued', 'running')"
+    )).run(failureCode, nowIso(database), desired.intentId, payload.generationId);
+    if (Number(settled?.changes ?? settled?.changesCount ?? 0) !== 1) return { settled: false, stale: true };
+    if (desired.operationId) await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = ?, [updatedAt] = ? WHERE [id] = ?"
+    )).run(failureCode, nowIso(database), desired.operationId);
+    return { settled: true };
+  });
+  if (replacementScheduled && !database.__transactionActive) scheduleAfterOwnedTransaction(database);
+  return result;
+}
+async function stageDesired(transaction, database, input) {
+  const existing = await desiredForTeam(transaction, input.teamId);
+  const unchanged = existing && existing.kind === input.kind && existing.targetProductKey === input.targetProductKey && Number(existing.targetQuantity) === input.targetQuantity;
+  if (unchanged) {
+    const transfersPlanOwnership = input.kind === "plan-transition" && typeof input.operationId === "string" && input.operationId !== existing.operationId;
+    const enqueue = transfersPlanOwnership || ["failed", "attention-required"].includes(existing.status);
+    if (enqueue) await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_desired_state] SET [operationId] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAcknowledgedAt] = NULL, [updatedAt] = ? WHERE [intentId] = ?"
+    )).run(transfersPlanOwnership ? input.operationId : existing.operationId, nowIso(database), existing.intentId);
+    return {
+      ...existing,
+      operationId: transfersPlanOwnership ? input.operationId : existing.operationId,
+      status: enqueue ? "queued" : existing.status,
+      enqueue
+    };
+  }
+  const intentId = randomUUID();
+  const idempotencyKey = intentIdempotency(database, input.teamId, intentId);
+  const now = nowIso(database);
+  if (existing) {
+    await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_desired_state] SET [intentId] = ?, [kind] = ?, [operationId] = ?, [targetProductKey] = ?, [targetQuantity] = ?, [effectiveAt] = ?, [idempotencyKey] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAcknowledgedAt] = NULL, [activeJobGenerationId] = NULL, [createdAt] = ?, [updatedAt] = ? WHERE [teamId] = ?"
+    )).run(intentId, input.kind, input.operationId, input.targetProductKey, input.targetQuantity, input.effectiveAt, idempotencyKey, now, now, input.teamId);
+  } else {
+    await transaction.prepare(transaction.dialect.sql(
+      "INSERT INTO [sporades_team_billing_desired_state] ([teamId], [intentId], [kind], [operationId], [targetProductKey], [targetQuantity], [effectiveAt], [idempotencyKey], [status], [safeFailureCode], [providerAcknowledgedAt], [activeJobGenerationId], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, NULL, NULL, ?, ?)"
+    )).run(input.teamId, intentId, input.kind, input.operationId, input.targetProductKey, input.targetQuantity, input.effectiveAt, idempotencyKey, now, now);
+  }
+  await ensureLane(transaction, input.teamId, database);
+  return { ...input, intentId, idempotencyKey, status: "queued", enqueue: true };
+}
+async function enqueueIntent(database, transaction, desired, availableAt) {
+  const callback = desired.kind === "plan-transition" ? database.enqueueTeamBillingPlanTransitionJob : database.enqueueTeamBillingSeatConvergenceJob;
+  if (typeof callback !== "function") throw retryable("TEAM_BILLING_PROVIDER_UNAVAILABLE");
+  const generationId = randomUUID();
+  const activated = await transaction.prepare(transaction.dialect.sql(
+    "UPDATE [sporades_team_billing_desired_state] SET [activeJobGenerationId] = ?, [updatedAt] = ? WHERE [intentId] = ?"
+  )).run(generationId, nowIso(database), desired.intentId);
+  if (Number(activated?.changes ?? activated?.changesCount ?? 0) !== 1) throw retryable("TEAM_BILLING_DESIRED_STATE_SUPERSEDED");
+  await callback(
+    transaction,
+    { intentId: desired.intentId, generationId },
+    `team-billing-management:${desired.intentId}:${generationId}`,
+    availableAt
+  );
+  return generationId;
+}
+async function admitPlanTransition(database, transaction, auth, teamId, productKey) {
+  if (!await tryAdmitPlanTransition(database, transaction, auth, teamId, productKey)) throw denied();
+}
+async function tryAdmitPlanTransition(database, transaction, auth, teamId, productKey) {
+  if (!auth?.userId || auth.isAuthenticated !== true || auth.isGuest === true) return false;
+  const membership = await transaction.prepare(transaction.dialect.sql(
+    "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
+  )).get(teamId, auth.userId);
+  if (membership?.role !== "admin") return false;
+  const decision = await database.runTeamBillingAuthority?.(transaction, auth, Object.freeze({
+    operation: "plan-transition",
+    teamId,
+    teamRole: "admin",
+    productKey
+  }));
+  return decision?.allow === true;
+}
+async function actorForOperation(transaction, operationId) {
+  if (typeof operationId !== "string") return null;
+  return (await transaction.prepare(transaction.dialect.sql(
+    "SELECT [actorUserId] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'plan-transition'"
+  )).get(operationId))?.actorUserId ?? null;
+}
+async function targetQuantity(transaction, teamId, product) {
+  return product.quantity.kind === "team-members" ? countAcceptedTeamMembers(transaction, teamId, denied) : Number(product.quantity.value);
+}
+async function currentSubscription(transaction, teamId) {
+  const rows = await transaction.prepare(transaction.dialect.sql(
+    "SELECT [teamId], [mode], [providerSubscriptionId], [providerSubscriptionItemId], [providerPriceId], [productKey], [quantity] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('active', 'past-due') AND [terminalLatch] = 0 ORDER BY [id]"
+  )).all(teamId);
+  if (rows.length !== 1 || !rows[0].providerSubscriptionItemId) throw attentionRequired();
+  return rows[0];
+}
+async function optionalCurrentSubscription(transaction, teamId) {
+  try {
+    return await currentSubscription(transaction, teamId);
+  } catch {
+    return null;
+  }
+}
+async function desiredForTeam(transaction, teamId) {
+  return transaction.prepare(transaction.dialect.sql(
+    "SELECT * FROM [sporades_team_billing_desired_state] WHERE [teamId] = ?"
+  )).get(teamId);
+}
+async function desiredByIntent(transaction, intentId) {
+  return transaction.prepare(transaction.dialect.sql(
+    "SELECT * FROM [sporades_team_billing_desired_state] WHERE [intentId] = ?"
+  )).get(intentId);
+}
+async function ensureLane(transaction, teamId, database) {
+  const existing = await transaction.prepare(transaction.dialect.sql(
+    "SELECT [teamId] FROM [sporades_team_billing_provider_lanes] WHERE [teamId] = ?"
+  )).get(teamId);
+  if (!existing) await transaction.prepare(transaction.dialect.sql(
+    "INSERT INTO [sporades_team_billing_provider_lanes] ([teamId], [claimToken], [claimExpiresAt], [updatedAt]) VALUES (?, NULL, NULL, ?)"
+  )).run(teamId, nowIso(database));
+}
+async function claimLane(transaction, teamId, token, database) {
+  await ensureLane(transaction, teamId, database);
+  const now = nowIso(database);
+  const expiresAt = new Date(database.clock.now().getTime() + CLAIM_TTL_MS).toISOString();
+  const result = await transaction.prepare(transaction.dialect.sql(
+    "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = ?, [claimExpiresAt] = ?, [updatedAt] = ? WHERE [teamId] = ? AND ([claimToken] IS NULL OR [claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)"
+  )).run(token, expiresAt, now, teamId, now);
+  return Number(result?.changes ?? result?.changesCount ?? 0) === 1;
+}
+async function releaseLane(transaction, teamId, token, database) {
+  await transaction.prepare(transaction.dialect.sql(
+    "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [claimToken] = ?"
+  )).run(nowIso(database), teamId, token);
+}
+async function releaseAfterFailure(database, desired, token, classified) {
+  await inTransaction(database, async (transaction) => {
+    await releaseLane(transaction, desired.teamId, token, database);
+    const current = await desiredByIntent(transaction, desired.intentId);
+    if (!current) return;
+    const updated = await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_desired_state] SET [status] = ?, [safeFailureCode] = ?, [updatedAt] = ? WHERE [intentId] = ? AND [activeJobGenerationId] = ?"
+    )).run(classified.retryable ? "queued" : "failed", classified.code, nowIso(database), desired.intentId, desired.activeJobGenerationId);
+    if (!classified.retryable && Number(updated?.changes ?? updated?.changesCount ?? 0) === 1 && current.operationId) await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = ?, [updatedAt] = ? WHERE [id] = ?"
+    )).run(classified.code, nowIso(database), current.operationId);
+  });
+}
+async function attention(transaction, database, desired, code, deniedResult = false) {
+  const updatedAt = nowIso(database);
+  await transaction.prepare(transaction.dialect.sql(
+    "UPDATE [sporades_team_billing_desired_state] SET [status] = 'attention-required', [safeFailureCode] = ?, [updatedAt] = ? WHERE [intentId] = ?"
+  )).run(code, updatedAt, desired.intentId);
+  if (desired.operationId) await transaction.prepare(transaction.dialect.sql(
+    "UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = ?, [updatedAt] = ? WHERE [id] = ?"
+  )).run(code, updatedAt, desired.operationId);
+  return deniedResult ? { denied: true } : { superseded: true };
+}
+function classifyProviderError(database, error) {
+  const classified = database.classifyTeamBillingProviderError?.(error);
+  return { retryable: classified?.retryable ?? error?.retryable === true, code: safeCode(classified?.code ?? error?.code ?? "PROVIDER_REJECTED") };
+}
+function modeBinding(database, product) {
+  return product.stripe[database.paymentsConfig?.stripe?.livemode ? "live" : "sandbox"];
+}
+function assertCurrentModeAndCatalogue(database, subscription, product) {
+  const mode = database.paymentsConfig?.stripe?.livemode ? "live" : "sandbox";
+  if (!product || subscription.mode !== mode || product.stripe?.[mode]?.priceId !== subscription.providerPriceId) throw attentionRequired();
+}
+function sameQuantityPolicy(left, right) {
+  return left?.kind === right?.kind && (left?.kind !== "fixed" || left.value === right.value);
+}
+function intentIdempotency(database, teamId, intentId) {
+  return `sporades-team-billing-${createHash3("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${teamId}\0${intentId}`).digest("hex")}`;
+}
+function operationIdempotency(database, operationId) {
+  return `sporades-team-billing-operation-${createHash3("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${operationId}`).digest("hex")}`;
+}
+async function inTransaction(database, callback) {
+  if (database.__transactionActive || typeof database.adapter?.withTransaction !== "function") return callback(database.adapter);
+  return database.adapter.withTransaction(callback);
+}
+function nowIso(database) {
+  return database.clock.now().toISOString();
+}
+function nowSeconds(database) {
+  return Math.floor(database.clock.now().getTime() / 1e3);
+}
+function scheduleAfterOwnedTransaction(database) {
+  if (database.__transactionActive) {
+    (database.__rootDatabase ?? database).__teamBillingDispatchPending = true;
+    return;
+  }
+  database.scheduleTeamBillingJobDispatch?.();
+}
+function safeCode(value) {
+  const text2 = String(value ?? "PROVIDER_REJECTED").toUpperCase().replace(/[^A-Z0-9_]/g, "_").slice(0, 64);
+  return text2 || "PROVIDER_REJECTED";
+}
+function validProviderAcknowledgement(value) {
+  return value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join("\0") === "ok\0outcome" && value.ok === true && ["acknowledged", "payment-action-required"].includes(value.outcome);
+}
+function planOperationResult(teamId, requestId, productKey, operation) {
+  if (operation.status === "completed" || operation.status === "superseded") {
+    return Object.freeze({ state: operation.status, teamId, requestId, productKey });
+  }
+  if (operation.status === "failed") {
+    const reason = operation.safeFailureCode === "AUTHORITY_CHANGED" ? "authority-changed" : operation.safeFailureCode === "PAYMENT_ACTION_REQUIRED" ? "payment-action-required" : ["PROVIDER_STATE_AMBIGUOUS", "CATALOGUE_MISMATCH", "PROVIDER_DRIFT"].includes(operation.safeFailureCode) ? "provider-state-ambiguous" : "unavailable";
+    return Object.freeze({ state: "failed", teamId, requestId, productKey, reason });
+  }
+  return Object.freeze({ state: "pending", teamId, requestId, productKey, requestedAt: operation.createdAt });
+}
+function coded(message, code, retry = false) {
+  return Object.assign(new Error(message), { code, ...retry ? { retryable: true } : {} });
+}
+function denied() {
+  return coded("Team Billing plan transition denied.", "TEAM_BILLING_DENIED");
+}
+function conflict() {
+  return coded("The Team Billing request conflicts with an existing request.", "TEAM_BILLING_REQUEST_CONFLICT");
+}
+function transitionNotRequired() {
+  return coded("This Plan transition does not require managed quantity policy work.", "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED");
+}
+function attentionRequired() {
+  return coded("Team Billing provider state requires attention.", "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS");
+}
+function retryable(code) {
+  return coded("Team Billing provider work should be retried.", code, true);
+}
+
+// src/team-billing-convergence.ts
 var SUPPORTED = /* @__PURE__ */ new Set([
   "checkout.session.completed",
   "checkout.session.expired",
@@ -7387,7 +7957,7 @@ async function applySubscription(database, event, mode) {
     await tx.prepare(tx.dialect.sql(
       "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodStart], [currentPeriodEnd], [observedAt], [updatedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )).run(
-      randomUUID(),
+      randomUUID2(),
       teamId,
       mode,
       subscriptionId,
@@ -7432,6 +8002,10 @@ async function applySubscription(database, event, mode) {
       "UPDATE [sporades_team_billing_operations] SET [providerCustomerId] = ?, [providerSubscriptionId] = ?, [updatedAt] = ? WHERE [id] = ?"
     )).run(customerId, subscriptionId, event.occurredAt, operation.id);
   }
+  await settleVerifiedTeamBillingTarget(
+    { ...database, adapter: tx, __transactionActive: true, __rootDatabase: database.__rootDatabase ?? database },
+    { teamId, productKey: normalized.productKey, quantity: normalized.quantity, subscriptionId, occurredAt: event.occurredAt }
+  );
   return { teamId, objectId: subscriptionId, rank: normalized.rank };
 }
 function normalizeSubscription(definition, object, operation, mode, deleted, teamId, desiredTeamQuantity) {
@@ -7549,7 +8123,7 @@ async function recordObservation(database, event, digest, teamId, objectId, rank
   await database.adapter.prepare(database.adapter.dialect.sql(
     "INSERT INTO [sporades_team_billing_observations] ([id], [teamId], [mode], [providerEventId], [providerObjectId], [payloadDigest], [observedAt], [createdAt], [eventType], [eventRank], [outcome], [safeReason]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT ([providerEventId]) DO NOTHING"
   )).run(
-    randomUUID(),
+    randomUUID2(),
     teamId,
     event.livemode ? "live" : "sandbox",
     event.providerEventId,
@@ -7584,7 +8158,7 @@ function boundedObjectId(value) {
 }
 function safeDigest(raw) {
   try {
-    return createHash3("sha256").update(JSON.stringify(raw)).digest("hex");
+    return createHash4("sha256").update(JSON.stringify(raw)).digest("hex");
   } catch {
     return null;
   }
@@ -7609,7 +8183,7 @@ var PRODUCT_ID_PATTERN = /^prod_[A-Za-z0-9_]{1,240}$/;
 var PORTAL_CONFIGURATION_ID_PATTERN = /^bpc_[A-Za-z0-9_]{1,240}$/;
 var CANONICAL_TIMESTAMP_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d\.\d{3}Z$/;
 var FIXED_QUANTITY_MAX = 999999;
-var TEAM_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+var TEAM_ID_PATTERN2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function createTeamBillingTables(adapter) {
   const sql = adapter.dialect.sql;
   return chainMaybePromise([
@@ -7628,11 +8202,18 @@ function createTeamBillingTables(adapter) {
     () => adapter.exec(sql(
       "CREATE TABLE IF NOT EXISTS [sporades_team_billing_replay] ([providerEventId] TEXT PRIMARY KEY, [payloadDigest] TEXT NOT NULL, [settledAt] TEXT NOT NULL, [retainedUntil] TEXT NOT NULL)"
     )),
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_desired_state] ([teamId] TEXT PRIMARY KEY, [intentId] TEXT NOT NULL UNIQUE, [kind] TEXT NOT NULL, [operationId] TEXT NULL, [targetProductKey] TEXT NOT NULL, [targetQuantity] INTEGER NOT NULL, [effectiveAt] INTEGER NOT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [providerAcknowledgedAt] TEXT NULL, [activeJobGenerationId] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
+    )),
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_provider_lanes] ([teamId] TEXT PRIMARY KEY, [claimToken] TEXT NULL, [claimExpiresAt] TEXT NULL, [updatedAt] TEXT NOT NULL)"
+    )),
     ...["mode", "quantity", "continuationUrl", "continuationExpiresAt", "attemptedAt", "providerExpiresAt", "terminalObservedAt", "providerCustomerId", "providerSubscriptionId", "configurationId", "returnPath"].map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", name, name === "quantity" || name === "providerExpiresAt" ? "INTEGER" : "TEXT")),
     ...["providerSubscriptionItemId", "currentPeriodStart", "lastEventOccurredAt", "lastEventKind"].map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name, "TEXT")),
     ...["lastEventRank", "terminalLatch"].map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name, "INTEGER")),
     ...["eventType", "outcome", "safeReason"].map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", name, "TEXT")),
-    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", "eventRank", "INTEGER")
+    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", "eventRank", "INTEGER"),
+    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "activeJobGenerationId", "TEXT")
   ]);
 }
 function normalizeTeamBillingDefinition(value) {
@@ -7716,7 +8297,7 @@ function invalidDeclaration() {
 }
 async function readCurrentUserTeamBilling(database, auth, teamId) {
   requireAuth({ auth }, { linked: true });
-  if (!database.teamBillingDefinition || !TEAM_ID_PATTERN.test(String(teamId ?? ""))) throw teamBillingDenied();
+  if (!database.teamBillingDefinition || !TEAM_ID_PATTERN2.test(String(teamId ?? ""))) throw teamBillingDenied();
   return database.adapter.withTransaction(async (transaction) => {
     await admitTeamBillingActor(database, transaction, auth, { operation: "read", teamId });
     return safeTeamBillingProjection(transaction, database.teamBillingDefinition, teamId);
@@ -7725,7 +8306,7 @@ async function readCurrentUserTeamBilling(database, auth, teamId) {
 async function startTeamBillingCheckout(database, auth, teamId, requestId, productKey) {
   requireAuth({ auth }, { linked: true });
   const definition = database.teamBillingDefinition;
-  if (!definition?.checkout || !database.paymentsConfig?.stripe?.enabled || !TEAM_ID_PATTERN.test(String(teamId ?? "")) || !TEAM_ID_PATTERN.test(String(requestId ?? "")) || typeof productKey !== "string" || !definition.catalogue[productKey]) throw teamBillingDenied();
+  if (!definition?.checkout || !database.paymentsConfig?.stripe?.enabled || !TEAM_ID_PATTERN2.test(String(teamId ?? "")) || !TEAM_ID_PATTERN2.test(String(requestId ?? "")) || typeof productKey !== "string" || !definition.catalogue[productKey]) throw teamBillingDenied();
   let enqueued = false;
   const result = await withTeamBillingAdmissionTransaction(database, async (transaction) => {
     await admitTeamBillingActor(database, transaction, auth, { operation: "checkout", teamId, productKey });
@@ -7749,7 +8330,7 @@ async function startTeamBillingCheckout(database, auth, teamId, requestId, produ
     } else if (active) {
       throw checkoutActive();
     }
-    const operationId = randomUUID2();
+    const operationId = randomUUID3();
     const idempotencyKey = checkoutIdempotencyKey(database.capsuleIdentity, teamId, requestId);
     const providerExpiresAt = Math.floor((database.clock.now().getTime() + 23 * 60 * 60 * 1e3) / 1e3);
     await transaction.prepare(sql(
@@ -7769,7 +8350,7 @@ async function startTeamBillingCheckout(database, auth, teamId, requestId, produ
 async function startTeamBillingPortal(database, auth, teamId, requestId) {
   requireAuth({ auth }, { linked: true });
   const definition = database.teamBillingDefinition;
-  if (!definition?.portal || !database.paymentsConfig?.stripe?.enabled || !TEAM_ID_PATTERN.test(String(teamId ?? "")) || !TEAM_ID_PATTERN.test(String(requestId ?? ""))) throw teamBillingDenied();
+  if (!definition?.portal || !database.paymentsConfig?.stripe?.enabled || !TEAM_ID_PATTERN2.test(String(teamId ?? "")) || !TEAM_ID_PATTERN2.test(String(requestId ?? ""))) throw teamBillingDenied();
   let enqueued = false;
   const result = await withTeamBillingAdmissionTransaction(database, async (transaction) => {
     await admitTeamBillingActor(database, transaction, auth, { operation: "portal", teamId });
@@ -7791,7 +8372,7 @@ async function startTeamBillingPortal(database, auth, teamId, requestId) {
         "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] = 'ready'"
       )).run(now, active.id);
     } else if (active) throw checkoutActive();
-    const operationId = randomUUID2();
+    const operationId = randomUUID3();
     const idempotencyKey = teamBillingOperationIdempotencyKey(database.capsuleIdentity, "portal", teamId, requestId);
     await transaction.prepare(sql(
       "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [teamId] = ? AND [kind] = 'portal' AND [status] = 'queued' AND [providerObjectId] IS NULL"
@@ -7821,7 +8402,7 @@ function transientSqliteLock(error) {
   return error?.code === "ERR_SQLITE_ERROR" && /(?:locked|busy)/i.test(String(error?.message ?? ""));
 }
 async function performTeamBillingCheckout(database, context, payload, attempt = 1) {
-  const operationId = payload && typeof payload === "object" && !Array.isArray(payload) && Object.keys(payload).join(",") === "operationId" && TEAM_ID_PATTERN.test(String(payload.operationId ?? "")) ? payload.operationId : null;
+  const operationId = payload && typeof payload === "object" && !Array.isArray(payload) && Object.keys(payload).join(",") === "operationId" && TEAM_ID_PATTERN2.test(String(payload.operationId ?? "")) ? payload.operationId : null;
   if (!operationId) throw checkoutUnavailable();
   let providerInput = null;
   try {
@@ -7927,8 +8508,8 @@ async function performTeamBillingCheckout(database, context, payload, attempt = 
     }
     return { ready: true };
   } catch (error) {
-    const retryable = error?.retryable !== false;
-    const willRetry = retryable && attempt < TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS;
+    const retryable2 = error?.retryable !== false;
+    const willRetry = retryable2 && attempt < TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS;
     await settleCheckoutFailure(database, operationId, willRetry ? "PROVIDER_RETRY" : "PROVIDER_REJECTED", willRetry ? "retrying" : "failed");
     if (!willRetry) error.retryable = false;
     throw error;
@@ -8023,15 +8604,15 @@ async function performTeamBillingPortal(database, context, payload, attempt = 1)
     if (Number(settled?.changes ?? 0) !== 1) throw checkoutUnavailable();
     return { ready: true };
   } catch (error) {
-    const retryable = error?.retryable !== false;
-    const willRetry = retryable && attempt < TEAM_BILLING_PORTAL_MAX_ATTEMPTS;
+    const retryable2 = error?.retryable !== false;
+    const willRetry = retryable2 && attempt < TEAM_BILLING_PORTAL_MAX_ATTEMPTS;
     await settleCheckoutFailure(database, operationId, willRetry ? "PROVIDER_RETRY" : "PROVIDER_REJECTED", willRetry ? "retrying" : "failed");
     if (!willRetry) error.retryable = false;
     throw error;
   }
 }
 async function expireTeamBillingCheckout(database, _context, payload) {
-  const operationId = payload && typeof payload === "object" && !Array.isArray(payload) && Object.keys(payload).join(",") === "operationId" && TEAM_ID_PATTERN.test(String(payload.operationId ?? "")) ? payload.operationId : null;
+  const operationId = payload && typeof payload === "object" && !Array.isArray(payload) && Object.keys(payload).join(",") === "operationId" && TEAM_ID_PATTERN2.test(String(payload.operationId ?? "")) ? payload.operationId : null;
   if (!operationId) throw checkoutUnavailable();
   const now = database.clock.now().toISOString();
   await database.adapter.prepare(database.adapter.dialect.sql(
@@ -8057,7 +8638,7 @@ async function settleExhaustedTeamBillingCheckoutJob(transaction, handler, paylo
   } catch {
     return;
   }
-  const operationId = payload && typeof payload === "object" && !Array.isArray(payload) && Object.keys(payload).join(",") === "operationId" && TEAM_ID_PATTERN.test(String(payload.operationId ?? "")) ? payload.operationId : null;
+  const operationId = payload && typeof payload === "object" && !Array.isArray(payload) && Object.keys(payload).join(",") === "operationId" && TEAM_ID_PATTERN2.test(String(payload.operationId ?? "")) ? payload.operationId : null;
   if (!operationId) return;
   await transaction.prepare(transaction.dialect.sql(
     "UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = 'PROVIDER_REJECTED', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [kind] = ? AND [status] IN ('queued', 'running', 'retrying')"
@@ -8082,8 +8663,29 @@ async function admitTeamBillingActor(database, transaction, auth, input) {
 }
 async function safeTeamBillingProjection(transaction, definition, teamId) {
   const sql = transaction.dialect.sql;
+  const desired = await transaction.prepare(sql(
+    "SELECT [kind], [targetProductKey], [status], [safeFailureCode], [createdAt] FROM [sporades_team_billing_desired_state] WHERE [teamId] = ?"
+  )).get(teamId);
+  if (desired && ["queued", "running", "awaiting-observation"].includes(desired.status)) {
+    const requestedAt = canonicalTimestamp2(desired.createdAt);
+    if (!requestedAt) return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
+    return Object.freeze({
+      state: "pending",
+      teamId,
+      operation: desired.kind === "plan-transition" ? "plan-transition" : "reconciliation",
+      ...typeof desired.targetProductKey === "string" && definition.catalogue[desired.targetProductKey] ? { productKey: desired.targetProductKey } : {},
+      requestedAt
+    });
+  }
+  if (desired?.kind === "seat-convergence" && ["failed", "attention-required"].includes(desired.status)) {
+    return Object.freeze({
+      state: "attention-required",
+      teamId,
+      reason: desired.safeFailureCode === "CATALOGUE_MISMATCH" ? "catalogue-mismatch" : "provider-state-ambiguous"
+    });
+  }
   const operation = await transaction.prepare(sql(
-    "SELECT [kind], [productKey], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [status] IN ('queued', 'running', 'retrying') ORDER BY [createdAt] DESC, [id] DESC LIMIT 1"
+    "SELECT [kind], [productKey], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [status] IN ('queued', 'running', 'retrying', 'awaiting-observation') ORDER BY [createdAt] DESC, [id] DESC LIMIT 1"
   )).get(teamId);
   if (operation) {
     const requestedAt = canonicalTimestamp2(operation.createdAt);
@@ -8300,11 +8902,11 @@ function checkoutIdempotencyKey(capsuleIdentity, teamId, requestId) {
   return teamBillingOperationIdempotencyKey(capsuleIdentity, "checkout", teamId, requestId);
 }
 function teamBillingOperationIdempotencyKey(capsuleIdentity, kind, teamId, requestId) {
-  const digest = createHash4("sha256").update(`${String(capsuleIdentity)}\0${kind}\0${teamId}\0${requestId}`).digest("base64url");
+  const digest = createHash5("sha256").update(`${String(capsuleIdentity)}\0${kind}\0${teamId}\0${requestId}`).digest("base64url");
   return `sporades:team-${kind}:${digest}`;
 }
 function exactOperationId(payload) {
-  return payload && typeof payload === "object" && !Array.isArray(payload) && Object.keys(payload).join(",") === "operationId" && TEAM_ID_PATTERN.test(String(payload.operationId ?? "")) ? payload.operationId : null;
+  return payload && typeof payload === "object" && !Array.isArray(payload) && Object.keys(payload).join(",") === "operationId" && TEAM_ID_PATTERN2.test(String(payload.operationId ?? "")) ? payload.operationId : null;
 }
 function validCheckoutContinuation(urlValue, sessionIdValue) {
   if (typeof sessionIdValue !== "string" || !/^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/.test(sessionIdValue) || typeof urlValue !== "string") return false;
@@ -8429,7 +9031,7 @@ async function cleanupExpiredStripeEventPayloads(database, options = {}) {
   }
   const adapter = database.adapter;
   const sql = adapter.dialect.sql;
-  const nowIso = database.clock.now().toISOString();
+  const nowIso2 = database.clock.now().toISOString();
   let assignedCount = 0;
   let classifiedCount = 0;
   let redactedCount = 0;
@@ -8438,11 +9040,11 @@ async function cleanupExpiredStripeEventPayloads(database, options = {}) {
   let sentinelRecheckAt = null;
   const due = await adapter.prepare(sql(
     "SELECT [id], [completedAt], [payloadRetentionUntil] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NOT NULL AND [payloadRetentionUntil] <> '' AND [payloadRetentionUntil] <= ? ORDER BY [payloadRetentionUntil] ASC, [id] ASC LIMIT ?"
-  )).all(STRIPE_EVENT_JOB, nowIso, remaining);
+  )).all(STRIPE_EVENT_JOB, nowIso2, remaining);
   for (const row of due) {
     const changed = await adapter.prepare(sql(
       "UPDATE [sporades_jobs] SET [payload]=?, [result]=NULL, [payloadRedactedAt]=? WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND [completedAt]=? AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]=? AND [payloadRetentionUntil] <= ? AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
-    )).run(REDACTED_STRIPE_EVENT_PAYLOAD, nowIso, row.id, STRIPE_EVENT_JOB, row.completedAt, row.payloadRetentionUntil, nowIso);
+    )).run(REDACTED_STRIPE_EVENT_PAYLOAD, nowIso2, row.id, STRIPE_EVENT_JOB, row.completedAt, row.payloadRetentionUntil, nowIso2);
     const mutations = Number(changed?.changes ?? 0);
     redactedCount += mutations;
     remaining -= mutations;
@@ -8452,7 +9054,7 @@ async function cleanupExpiredStripeEventPayloads(database, options = {}) {
   )).get(STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY);
   let observedMaintenanceValue = typeof cursorRow?.value === "string" ? cursorRow.value : serializeStripeEventPayloadSentinelMaintenance("", null);
   let sentinelMaintenance = parseStripeEventPayloadSentinelMaintenance(observedMaintenanceValue);
-  const recheckIsWaiting = sentinelMaintenance.afterId === "" && isCanonicalJobTimestamp(sentinelMaintenance.recheckAt) && String(sentinelMaintenance.recheckAt) > nowIso;
+  const recheckIsWaiting = sentinelMaintenance.afterId === "" && isCanonicalJobTimestamp(sentinelMaintenance.recheckAt) && String(sentinelMaintenance.recheckAt) > nowIso2;
   if (recheckIsWaiting) sentinelRecheckAt = sentinelMaintenance.recheckAt;
   const sentinelCandidates = remaining === 0 || recheckIsWaiting ? [] : await adapter.prepare(sql(
     "SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' AND [id]>? ORDER BY [id] ASC LIMIT ?"
@@ -8568,7 +9170,7 @@ async function cleanupExpiredStripeEventPayloads(database, options = {}) {
   )).get(STRIPE_EVENT_JOB);
   const nextDeadline = isCanonicalJobTimestamp(next?.payloadRetentionUntil) ? String(next.payloadRetentionUntil) : null;
   const scheduledCleanupAt = sentinelRecheckAt !== null && nextDeadline !== null ? sentinelRecheckAt < nextDeadline ? sentinelRecheckAt : nextDeadline : sentinelRecheckAt ?? nextDeadline;
-  const nextCleanupAt = moreUnassigned || sentinelScanPending ? nowIso : scheduledCleanupAt;
+  const nextCleanupAt = moreUnassigned || sentinelScanPending ? nowIso2 : scheduledCleanupAt;
   return Object.freeze({ assignedCount, classifiedCount, redactedCount, nextCleanupAt });
 }
 function scheduleStripeEventPayloadCleanup(database, dueAt) {
@@ -8967,7 +9569,7 @@ async function acquireSchedulePayloadFactoryLane(database, scheduleName) {
 }
 async function resolveSchedulePayload(database, definition, scheduledFor, context) {
   if (typeof definition.payload !== "function") return { ok: true, value: definition.payload };
-  let releaseLane;
+  let releaseLane2;
   let releaseSlot;
   const controller = new AbortController();
   const controllers = database.schedulePayloadFactoryControllers.get(definition.name) ?? /* @__PURE__ */ new Set();
@@ -8978,7 +9580,7 @@ async function resolveSchedulePayload(database, definition, scheduledFor, contex
   let timeout;
   let removeAbortListener;
   try {
-    releaseLane = await acquireSchedulePayloadFactoryLane(database, definition.name);
+    releaseLane2 = await acquireSchedulePayloadFactoryLane(database, definition.name);
     if (controller.signal.aborted || database.__scheduleStopped) throw schedulePayloadFactoryAbortError();
     releaseSlot = await acquireSchedulePayloadFactorySlot(database, controller.signal);
     if (controller.signal.aborted || database.__scheduleStopped) throw schedulePayloadFactoryAbortError();
@@ -9010,7 +9612,7 @@ async function resolveSchedulePayload(database, definition, scheduledFor, contex
     controllers.delete(controller);
     if (controllers.size === 0) database.schedulePayloadFactoryControllers.delete(definition.name);
     releaseSlot?.();
-    releaseLane?.();
+    releaseLane2?.();
   }
 }
 function abortSchedulePayloadFactories(database) {
@@ -9036,6 +9638,8 @@ function runtimeOwnedJobHandlers(runtime) {
     },
     { name: TEAM_BILLING_PORTAL_JOB, handler: runtime.performTeamBillingPortal },
     { name: TEAM_BILLING_PORTAL_EXPIRY_JOB, handler: runtime.expireTeamBillingPortal },
+    { name: TEAM_BILLING_PLAN_TRANSITION_JOB, handler: runtime.performTeamBillingPlanTransition },
+    { name: TEAM_BILLING_SEAT_CONVERGENCE_JOB, handler: runtime.performTeamBillingSeatConvergence },
     {
       name: STRIPE_EVENT_JOB,
       handler: runtime.dispatchStripeEvent
@@ -11986,21 +12590,21 @@ async function createTeamJoinLink(database, auth, teamId, email, options = {}, e
       await lockTeamLifecycle(tx, teamId);
       if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
       const now = database.clock?.now?.() ?? /* @__PURE__ */ new Date();
-      const nowIso = now.toISOString();
-      await pruneExpiredTeamJoinLinks(tx, nowIso);
-      await reconcileTeamJoinLinkCapacity(tx, teamId, nowIso);
-      await claimTeamJoinLinkCreationSlot(tx, teamId, auth.userId, nowIso);
-      await claimTeamJoinLinkCapacity(tx, teamId, nowIso);
-      const secret = await teamJoinSigningSecret(tx, nowIso);
-      const id = randomUUID3();
+      const nowIso2 = now.toISOString();
+      await pruneExpiredTeamJoinLinks(tx, nowIso2);
+      await reconcileTeamJoinLinkCapacity(tx, teamId, nowIso2);
+      await claimTeamJoinLinkCreationSlot(tx, teamId, auth.userId, nowIso2);
+      await claimTeamJoinLinkCapacity(tx, teamId, nowIso2);
+      const secret = await teamJoinSigningSecret(tx, nowIso2);
+      const id = randomUUID4();
       const selector = randomBytes4(16).toString("base64url");
       const verifier = randomBytes4(32).toString("base64url");
       const expiresAt = new Date(now.getTime() + ttlSeconds * 1e3).toISOString();
       const signature = teamJoinSignature(secret, id, selector, verifier, expiresAt);
       await tx.prepare(tx.dialect.sql(
         "INSERT INTO [sporades_team_join_links] ([id], [selector], [verifierHash], [teamId], [email], [createdByUserId], [createdAt], [expiresAt], [consumedAt], [revokedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)"
-      )).run(id, selector, hashTeamJoinVerifier(verifier), teamId, normalizedEmail, auth.userId, nowIso, expiresAt);
-      return { id, code: `v1.${selector}.${verifier}.${signature}`, createdAt: nowIso, expiresAt };
+      )).run(id, selector, hashTeamJoinVerifier(verifier), teamId, normalizedEmail, auth.userId, nowIso2, expiresAt);
+      return { id, code: `v1.${selector}.${verifier}.${signature}`, createdAt: nowIso2, expiresAt };
     });
   } catch (error) {
     emitTeamSecurityEvent(database, eventContext, "teams.joinLink.create", auth.userId, isOpaqueTeamId(teamId) ? teamId : null, "denied", String(error?.code ?? "DENIED"));
@@ -12088,14 +12692,19 @@ async function inspectTeamJoinLinkWithActivity(database, code, assertActive = vo
 async function countPrivilegedTeamMembers(database, teamId, assertActive) {
   return withTeamTransaction(database, async (tx) => {
     assertActive();
-    await lockTeamLifecycle(tx, teamId, privilegedTeamNotFound);
+    const totalCount = await countAcceptedTeamMembers(tx, teamId, privilegedTeamNotFound);
     assertActive();
-    const total = await tx.prepare(tx.dialect.sql(
-      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
-    )).get(teamId);
-    assertActive();
-    return { totalCount: Number(total?.count ?? 0) };
+    return { totalCount };
   });
+}
+async function countAcceptedTeamMembers(transaction, teamId, denied2 = privilegedTeamNotFound) {
+  await lockTeamLifecycle(transaction, teamId, denied2);
+  const total = await transaction.prepare(transaction.dialect.sql(
+    "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
+  )).get(teamId);
+  const count = Number(total?.count ?? 0);
+  if (!Number.isSafeInteger(count) || count < 1 || count > 999999) throw denied2();
+  return count;
 }
 async function listPrivilegedTeamMembers(database, teamId, options = {}, assertActive) {
   return withTeamTransaction(database, async (tx) => {
@@ -12265,8 +12874,20 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
     emitTeamSecurityEvent(database, eventContext, "teams.joinLink.join", auditUserId ?? auth?.userId, deniedTeamId, "denied", String(error?.code ?? "INVALID_JOIN_LINK"));
     throw error;
   }
+  await stageTeamBillingAfterMembershipCommit(database, joined.id);
   emitTeamSecurityEvent(database, eventContext, "teams.joined", auditUserId, joined.id, "succeeded", "TEAM_JOINED");
   return { team: joined };
+}
+async function stageTeamBillingAfterMembershipCommit(database, teamId) {
+  if (typeof database.stageTeamBillingMembershipChange !== "function") return;
+  try {
+    await database.stageTeamBillingMembershipChange(teamId);
+  } catch (error) {
+    database.log?.warn?.("Team Billing seat convergence staging deferred.", {
+      event: "team-billing.membership-staging-deferred",
+      data: { teamId, code: String(error?.code ?? "UNAVAILABLE") }
+    });
+  }
 }
 async function enforceTeamJoinAdmission(database, tx, auth, joiningUserId, teamId, signal) {
   if (typeof database.runTeamJoinAdmission !== "function") return;
@@ -12319,7 +12940,7 @@ function parseTeamJoinCode(code) {
   return { selector, verifier, signature };
 }
 function hashTeamJoinVerifier(verifier) {
-  return createHash5("sha256").update(verifier).digest("base64url");
+  return createHash6("sha256").update(verifier).digest("base64url");
 }
 function teamJoinSignature(secret, id, selector, verifier, expiresAt) {
   return createHmac2("sha256", secret).update(`v1.${id}.${selector}.${verifier}.${expiresAt}`).digest("base64url");
@@ -12458,7 +13079,7 @@ async function createAdditionalTeam(database, auth, name, eventContext) {
         "TEAM_LIMIT_REACHED"
       );
     }
-    const id = randomUUID3();
+    const id = randomUUID4();
     const now = (/* @__PURE__ */ new Date()).toISOString();
     await tx.prepare(tx.dialect.sql(
       "INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)"
@@ -12581,6 +13202,7 @@ async function removeTeamMember(database, auth, teamId, userId, eventContext) {
     emitTeamSecurityEvent(database, eventContext, "teams.removeMember", auth.userId, isOpaqueTeamId(teamId) ? teamId : null, "denied", String(error?.code ?? "DENIED"));
     throw error;
   }
+  await stageTeamBillingAfterMembershipCommit(database, teamId);
   emitTeamSecurityEvent(database, eventContext, "teams.memberRemoved", auth.userId, teamId, "succeeded", "TEAM_MEMBER_REMOVED");
   return { removed: true };
 }
@@ -12602,6 +13224,7 @@ async function leaveCurrentUserTeam(database, auth, teamId, eventContext) {
     emitTeamSecurityEvent(database, eventContext, "teams.leave", auth.userId, isOpaqueTeamId(teamId) ? teamId : null, "denied", String(error?.code ?? "DENIED"));
     throw error;
   }
+  await stageTeamBillingAfterMembershipCommit(database, teamId);
   emitTeamSecurityEvent(database, eventContext, "teams.left", auth.userId, teamId, "succeeded", "TEAM_LEFT");
   return { left: true };
 }
@@ -12773,7 +13396,7 @@ async function bootstrapInitialTeamForLinkedUser(tx, userId) {
 }
 async function ensureInitialTeamOnAdapter(tx, userId) {
   const sql = tx.dialect.sql;
-  const id = randomUUID3();
+  const id = randomUUID4();
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const claim = await tx.prepare(sql(
     "INSERT INTO [sporades_team_bootstrap] ([userId], [teamId], [createdAt]) VALUES (?, ?, ?) ON CONFLICT ([userId]) DO NOTHING"
@@ -13497,7 +14120,7 @@ async function completeAppleOAuth(database, context) {
     displayName: authorizationUser?.displayName ?? null
   };
 }
-function createAppleClientSecret(database, nowSeconds = Math.floor(Date.now() / 1e3)) {
+function createAppleClientSecret(database, nowSeconds2 = Math.floor(Date.now() / 1e3)) {
   const apple = database.authConfig.providers.apple;
   const privateKey = database.serverEnv[apple.privateKeyEnv];
   if (!privateKey || ![apple.clientId, apple.teamId, apple.keyId].every((value) => typeof value === "string" && /^[\x21-\x7e]{1,255}$/.test(value))) {
@@ -13527,8 +14150,8 @@ function createAppleClientSecret(database, nowSeconds = Math.floor(Date.now() / 
   const header = Buffer.from(JSON.stringify({ alg: "ES256", kid: apple.keyId, typ: "JWT" })).toString("base64url");
   const claims = Buffer.from(JSON.stringify({
     iss: apple.teamId,
-    iat: nowSeconds,
-    exp: nowSeconds + 300,
+    iat: nowSeconds2,
+    exp: nowSeconds2 + 300,
     aud: "https://appleid.apple.com",
     sub: apple.clientId
   })).toString("base64url");
@@ -14219,9 +14842,9 @@ async function verifyMicrosoftIdentityToken(database, token, expectedNonce, disc
   const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
   const expectedIssuer = discovery.issuer.replace("{tenantid}", claims.tid);
   const expectedKeyIssuer = jwk.issuer.replace("{tenantid}", claims.tid);
-  const nowSeconds = Math.floor(microsoftOidcNow(database) / 1e3);
+  const nowSeconds2 = Math.floor(microsoftOidcNow(database) / 1e3);
   const tenantAllowed = microsoftTenantAllowsClaims(microsoft.tenant, claims.tid, claims.iss, discovery.issuer);
-  const invalidCode = signatureCheckFailed ? "OAUTH_ID_TOKEN_SIGNATURE_CHECK_FAILED" : !signatureValid ? "OAUTH_ID_TOKEN_SIGNATURE_INVALID" : claims.iss !== expectedIssuer ? "OAUTH_ID_TOKEN_ISSUER_INVALID" : expectedKeyIssuer !== claims.iss ? "OAUTH_ID_TOKEN_KEY_ISSUER_INVALID" : !audiences.includes(clientId) ? "OAUTH_ID_TOKEN_AUDIENCE_INVALID" : claims.exp <= nowSeconds ? "OAUTH_ID_TOKEN_EXPIRED" : claims.nbf !== void 0 && claims.nbf > nowSeconds + 60 ? "OAUTH_ID_TOKEN_NOT_YET_VALID" : claims.iat !== void 0 && claims.iat > nowSeconds + 5 * 60 ? "OAUTH_ID_TOKEN_ISSUED_AT_INVALID" : claims.nonce !== expectedNonce ? "OAUTH_ID_TOKEN_NONCE_INVALID" : !tenantAllowed ? "OAUTH_TENANT_REJECTED" : null;
+  const invalidCode = signatureCheckFailed ? "OAUTH_ID_TOKEN_SIGNATURE_CHECK_FAILED" : !signatureValid ? "OAUTH_ID_TOKEN_SIGNATURE_INVALID" : claims.iss !== expectedIssuer ? "OAUTH_ID_TOKEN_ISSUER_INVALID" : expectedKeyIssuer !== claims.iss ? "OAUTH_ID_TOKEN_KEY_ISSUER_INVALID" : !audiences.includes(clientId) ? "OAUTH_ID_TOKEN_AUDIENCE_INVALID" : claims.exp <= nowSeconds2 ? "OAUTH_ID_TOKEN_EXPIRED" : claims.nbf !== void 0 && claims.nbf > nowSeconds2 + 60 ? "OAUTH_ID_TOKEN_NOT_YET_VALID" : claims.iat !== void 0 && claims.iat > nowSeconds2 + 5 * 60 ? "OAUTH_ID_TOKEN_ISSUED_AT_INVALID" : claims.nonce !== expectedNonce ? "OAUTH_ID_TOKEN_NONCE_INVALID" : !tenantAllowed ? "OAUTH_TENANT_REJECTED" : null;
   if (invalidCode) {
     const tenantFailure = invalidCode === "OAUTH_TENANT_REJECTED";
     throw commandError(
@@ -15879,7 +16502,7 @@ function sanitizeAccessKeyOperatorEnvelope(value, action, input, invalid) {
 }
 
 // src/database-runtime.ts
-import { randomUUID as randomUUID4 } from "node:crypto";
+import { randomUUID as randomUUID5 } from "node:crypto";
 
 // src/inspection-sql.ts
 function validateReadOnlyInspectionSql(sql) {
@@ -18576,7 +19199,7 @@ function migrateExistingAppTableInTransaction(sqlite, existingTable, nextTable) 
     const occupiedNames = new Set(tableNames);
     let tempTableName;
     do {
-      tempTableName = `__sporades_migrating_${randomUUID4().replaceAll("-", "")}`;
+      tempTableName = `__sporades_migrating_${randomUUID5().replaceAll("-", "")}`;
     } while (occupiedNames.has(tempTableName));
     return chainMaybePromise([
       ...addedFieldsForTable(existingTable, nextTable).filter((field) => field.kind === "Reference" && field.defaultValue !== void 0 && field.defaultValue !== null).map(
@@ -18997,7 +19620,27 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     performTeamBillingCheckout: (context, payload) => performTeamBillingCheckout(database, context, payload, database.__runtimeJobAttempts.get(context) ?? 1),
     expireTeamBillingCheckout: (context, payload) => expireTeamBillingCheckout(database, context, payload),
     performTeamBillingPortal: (context, payload) => performTeamBillingPortal(database, context, payload, database.__runtimeJobAttempts.get(context) ?? 1),
-    expireTeamBillingPortal: (context, payload) => expireTeamBillingPortal(database, context, payload)
+    expireTeamBillingPortal: (context, payload) => expireTeamBillingPortal(database, context, payload),
+    performTeamBillingPlanTransition: async (context, payload) => {
+      try {
+        return await performTeamBillingPlanTransition(database, context, payload);
+      } catch (error) {
+        if ((database.__runtimeJobAttempts.get(context) ?? 1) >= 3) {
+          await settleExhaustedTeamBillingManagementJob(database, payload, error?.code);
+        }
+        throw error;
+      }
+    },
+    performTeamBillingSeatConvergence: async (context, payload) => {
+      try {
+        return await performTeamBillingSeatConvergence(database, context, payload);
+      } catch (error) {
+        if ((database.__runtimeJobAttempts.get(context) ?? 1) >= 3) {
+          await settleExhaustedTeamBillingManagementJob(database, payload, error?.code);
+        }
+        throw error;
+      }
+    }
   })];
   const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
   const clock = createRuntimeClock(options?.clock);
@@ -19054,6 +19697,51 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     enqueueTeamBillingCheckoutExpiryJob: (transaction, payload, idempotencyKey, availableAt) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, payload, idempotencyKey, void 0, true, availableAt),
     enqueueTeamBillingPortalJob: (transaction, payload, idempotencyKey) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_PORTAL_JOB, payload, idempotencyKey, { maxAttempts: TEAM_BILLING_PORTAL_MAX_ATTEMPTS, delayMs: 1e3 }, true),
     enqueueTeamBillingPortalExpiryJob: (transaction, payload, idempotencyKey, availableAt) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_PORTAL_EXPIRY_JOB, payload, idempotencyKey, void 0, true, availableAt),
+    enqueueTeamBillingPlanTransitionJob: (transaction, payload, idempotencyKey, availableAt) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_PLAN_TRANSITION_JOB, payload, idempotencyKey, { maxAttempts: 3, delayMs: 5e3 }, true, availableAt, availableAt !== void 0),
+    enqueueTeamBillingSeatConvergenceJob: (transaction, payload, idempotencyKey, availableAt) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_SEAT_CONVERGENCE_JOB, payload, idempotencyKey, { maxAttempts: 3, delayMs: 6e4 }, true, availableAt, availableAt !== void 0),
+    stageTeamBillingMembershipChange: (teamId) => stageTeamBillingMembershipChange(database, teamId),
+    readTeamBillingActorAuth: async (transaction, userId) => {
+      if (typeof userId !== "string") return null;
+      const actor = await transaction.prepare(transaction.dialect.sql(
+        "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider] FROM [sporades_auth_users] WHERE [id] = ?"
+      )).get(userId);
+      return actor ? Object.freeze({
+        userId: actor.id,
+        displayName: actor.displayName,
+        email: actor.email,
+        picture: actor.picture,
+        isAuthenticated: Boolean(actor.isAuthenticated),
+        isGuest: Boolean(actor.isGuest),
+        provider: actor.provider
+      }) : null;
+    },
+    updateTeamBillingSubscription: async (context, input) => {
+      if (typeof database.createStripeTeamBillingProvider !== "function") throw commandError(
+        "Team Billing provider is unavailable.",
+        "Retry after the configured provider is available.",
+        "TEAM_BILLING_PROVIDER_UNAVAILABLE"
+      );
+      const provider = database.createStripeTeamBillingProvider({
+        enabled: true,
+        config: database.paymentsConfig.stripe,
+        env: database.serverEnv,
+        signal: context?.signal,
+        ...database.stripeApiBaseUrl ? { apiBaseUrl: database.stripeApiBaseUrl } : {}
+      });
+      return provider.updateManagedSubscription(Object.freeze({
+        mode: input.mode,
+        customerId: input.providerCustomerId,
+        subscriptionId: input.providerSubscriptionId,
+        subscriptionItemId: input.providerSubscriptionItemId,
+        sourcePriceId: input.sourcePriceId,
+        targetPriceId: input.targetPriceId,
+        ...input.targetProductId ? { targetProductId: input.targetProductId } : {},
+        targetQuantity: input.targetQuantity,
+        prorationDate: input.prorationDate,
+        idempotencyKey: input.idempotencyKey,
+        operationKind: input.operationKind
+      }));
+    },
     scheduleTeamBillingJobDispatch: () => scheduleCurrentUserJobWorker(database),
     mail,
     authConfig: authStatus2(config, serverEnv),
@@ -19188,6 +19876,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
         if (typeof database.lifecycleHooks.init !== "function") throw commandError("Invalid Capsule init hook.", "Declare hooks.init as a function.");
         await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false }));
       }
+      if (database.teamBillingDefinition) await repairTeamBillingDesiredStateAtStartup(database);
       database.__scheduleTimers = /* @__PURE__ */ new Set();
       database.__activeScheduleOccurrences = /* @__PURE__ */ new Set();
       database.__scheduleRecoveryTimer = null;
@@ -19385,7 +20074,7 @@ async function reconcileSchedules(database) {
               }
             }
           }
-          plans.push({ definition, row, nextOccurrence, exhausted, recoveredOccurrence, generationToken: randomUUID5() });
+          plans.push({ definition, row, nextOccurrence, exhausted, recoveredOccurrence, generationToken: randomUUID6() });
         }
         for (const row of persisted) {
           if (!declaredNames.has(String(row.name))) {
@@ -19602,11 +20291,11 @@ async function recordScheduledOccurrence(database, definition, occurrence) {
 async function claimScheduledOccurrence(database, definition, occurrence) {
   const scheduledFor = occurrence.toISOString();
   const id = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
-  const token = randomUUID5();
+  const token = randomUUID6();
   const now = database.clock.now();
-  const nowIso = now.toISOString();
+  const nowIso2 = now.toISOString();
   const fullLeaseExpiresAt = jobTimestampAfter(now, RUNTIME_CLAIM_LEASE_MS);
-  const expiresAt = fullLeaseExpiresAt ?? (isCanonicalJobTimestamp(nowIso) ? new Date(MAX_JOB_TIMESTAMP_MS).toISOString() : null);
+  const expiresAt = fullLeaseExpiresAt ?? (isCanonicalJobTimestamp(nowIso2) ? new Date(MAX_JOB_TIMESTAMP_MS).toISOString() : null);
   if (expiresAt === null) {
     throw commandError("Schedule occurrence claim exceeds the runtime timestamp domain.", "Run the Schedule before the end of the supported four-digit UTC timestamp range.", "SCHEDULE_TIME_DOMAIN_EXHAUSTED");
   }
@@ -19620,7 +20309,7 @@ async function claimScheduledOccurrence(database, definition, occurrence) {
     await database.scheduleOccurrenceFault?.("after-generation-lock", { scheduleName: definition.name, scheduledFor });
     const inserted = await transactionAdapter.prepare(sql(
       "INSERT INTO [sporades_schedule_occurrences] ([id], [scheduleName], [definitionFingerprint], [generationToken], [scheduledFor], [status], [claimToken], [claimExpiresAt], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?) ON CONFLICT DO NOTHING"
-    )).run(id, definition.name, definition.fingerprint, definition.generationToken, scheduledFor, token, expiresAt, nowIso, nowIso);
+    )).run(id, definition.name, definition.fingerprint, definition.generationToken, scheduledFor, token, expiresAt, nowIso2, nowIso2);
     if (Number(inserted.changes) === 1) return { claim: { id, token }, superseded: false };
     let existing = await transactionAdapter.prepare(sql("SELECT [id], [status], [scheduleName], [definitionFingerprint], [generationToken], [scheduledFor], [claimToken], [claimExpiresAt], [errorCode] FROM [sporades_schedule_occurrences] WHERE [id]=?")).get(id);
     if (!existing) {
@@ -19635,9 +20324,9 @@ async function claimScheduledOccurrence(database, definition, occurrence) {
     if (existing.status === "pending" && existing.definitionFingerprint === null && existing.generationToken === null && definition.__adoptLegacyPendingOccurrences === true) {
       const adopted = await transactionAdapter.prepare(sql(
         "UPDATE [sporades_schedule_occurrences] SET [definitionFingerprint]=?, [generationToken]=?, [updatedAt]=? WHERE [id]=? AND [scheduleName]=? AND [scheduledFor]=? AND [status]='pending' AND [definitionFingerprint] IS NULL AND [generationToken] IS NULL"
-      )).run(definition.fingerprint, definition.generationToken, nowIso, existing.id, definition.name, scheduledFor);
+      )).run(definition.fingerprint, definition.generationToken, nowIso2, existing.id, definition.name, scheduledFor);
       if (Number(adopted.changes) === 1) {
-        existing = { ...existing, definitionFingerprint: definition.fingerprint, generationToken: definition.generationToken, updatedAt: nowIso };
+        existing = { ...existing, definitionFingerprint: definition.fingerprint, generationToken: definition.generationToken, updatedAt: nowIso2 };
       } else {
         existing = await transactionAdapter.prepare(sql("SELECT [id], [status], [scheduleName], [definitionFingerprint], [generationToken], [scheduledFor], [claimToken], [claimExpiresAt], [errorCode] FROM [sporades_schedule_occurrences] WHERE [id]=?")).get(existing.id);
         if (!existing) return { claim: null, superseded: false };
@@ -19651,11 +20340,11 @@ async function claimScheduledOccurrence(database, definition, occurrence) {
       return { claim: null, superseded: false };
     }
     if (existing.status !== "pending") return { claim: null, superseded: false };
-    if (existing.claimExpiresAt && existing.claimExpiresAt > nowIso) {
+    if (existing.claimExpiresAt && existing.claimExpiresAt > nowIso2) {
       recoveryAt = existing.claimExpiresAt;
       return { claim: null, superseded: false };
     }
-    const result = await transactionAdapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [claimToken]=?, [claimExpiresAt]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [definitionFingerprint]=? AND [generationToken]=? AND ([claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)")).run(token, expiresAt, nowIso, id, definition.fingerprint, definition.generationToken, nowIso);
+    const result = await transactionAdapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [claimToken]=?, [claimExpiresAt]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [definitionFingerprint]=? AND [generationToken]=? AND ([claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)")).run(token, expiresAt, nowIso2, id, definition.fingerprint, definition.generationToken, nowIso2);
     return { claim: Number(result.changes) === 1 ? { id, token } : null, superseded: false };
   });
   if (claimed.superseded) definition.enabled = false;
@@ -19894,14 +20583,30 @@ async function recoverExpiredJobLeases(database) {
       )).run(retryAvailableAt, JSON.stringify(history), row.id, row.leaseExpiresAt, ...ownership.params);
     } else {
       const failure = storedFailure ?? (retry === null || retryEligible ? invalidJobRetryPolicyFailure() : { code: "JOB_LEASE_EXPIRED", message: "Job lease expired." });
-      await database.adapter.withTransaction(async (transaction) => {
+      const teamBillingReplacementScheduled = await database.adapter.withTransaction(async (transaction) => {
+        let replacementScheduled = false;
         const settled = await transaction.prepare(transaction.dialect.sql(
           "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] = ? AND " + ownership.predicate
         )).run(JSON.stringify(failure), recoveredIso, JSON.stringify(history), row.id, row.leaseExpiresAt, ...ownership.params);
         if (Number(settled?.changes ?? 0) === 1) {
           await settleExhaustedTeamBillingCheckoutJob(transaction, row.handler, row.payload, recoveredIso);
+          if ([TEAM_BILLING_PLAN_TRANSITION_JOB, TEAM_BILLING_SEAT_CONVERGENCE_JOB].includes(row.handler)) {
+            let payload = null;
+            try {
+              payload = JSON.parse(row.payload);
+            } catch {
+            }
+            const managementSettlement = await settleExhaustedTeamBillingManagementJob(
+              { ...database, adapter: transaction, __transactionActive: true },
+              payload,
+              "JOB_LEASE_EXPIRED"
+            );
+            replacementScheduled = managementSettlement?.replacementScheduled === true;
+          }
         }
+        return replacementScheduled;
       });
+      if (teamBillingReplacementScheduled && !database.__jobStopped) scheduleCurrentUserJobWorker(database);
     }
   }
   return earliestFutureLeaseAt;
@@ -20299,7 +21004,7 @@ function createLogEnvelope(input) {
     },
     release: input.release ?? config.release ?? null,
     request: input.request ? {
-      id: input.request.id ?? randomUUID5(),
+      id: input.request.id ?? randomUUID6(),
       method: input.request.method ?? null,
       path: input.request.path ?? null
     } : null,
@@ -21282,11 +21987,16 @@ async function runAtomicStripeConsequence(database, parentContext, event, subscr
       });
       commitPendingJobCancellationAborts(context);
       await dispatchPendingJobs(context);
+      if (database.__teamBillingDispatchPending) {
+        database.__teamBillingDispatchPending = false;
+        scheduleCurrentUserJobWorker(database);
+      }
       database.rowCache.clear();
       return result;
     } catch (error) {
       dropPendingJobCancellationAborts(context);
       dropPendingJobDispatch(context);
+      database.__teamBillingDispatchPending = false;
       database.rowCache.clear();
       await reindexPrivilegedAuditEventsAfterRollback(database, context);
       if (error?.code !== "STRIPE_CONSEQUENCE_FENCE_BUSY" || fenceAttempt === 200 || parentContext.signal?.aborted) throw error;
@@ -21662,7 +22372,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
     insert(values) {
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const row = {
-        id: randomUUID5(),
+        id: randomUUID6(),
         createdAt: now,
         updatedAt: now
       };
@@ -21699,7 +22409,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       }
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const row = {
-        id: randomUUID5(),
+        id: randomUUID6(),
         createdAt: now,
         updatedAt: now
       };
@@ -22603,6 +23313,26 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       }
       return;
     }
+    if (message.type === "teamBilling.requestPlanTransition") {
+      try {
+        const input = message.input;
+        const data = await requestTeamBillingPlanTransition(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey);
+        sendJson(client, { id: message.id ?? null, type: "teamBilling.requestPlanTransition.result", data, error: null });
+      } catch (error) {
+        const code = ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED", "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS"].includes(error?.code) ? error.code : "TEAM_BILLING_DENIED";
+        sendJson(client, {
+          id: message.id ?? null,
+          type: "error",
+          data: null,
+          error: {
+            code,
+            message: code === "TEAM_BILLING_REQUEST_CONFLICT" ? "Team Plan request conflicts with existing work." : code === "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED" ? "This Plan switch belongs in the configured Customer Portal." : code === "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS" ? "Team billing state requires attention." : "Team Plan change is unavailable.",
+            hint: code === "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED" ? "Open the configured Customer Portal for a compatible quantity-policy switch." : "Sign in as the current policy-approved billing administrator and retry with a new request identifier."
+          }
+        });
+      }
+      return;
+    }
     if (message.type === "teams.create") {
       try {
         const data = await createAdditionalTeam(database, client.session.auth, message.name);
@@ -23039,23 +23769,26 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     }
   }
 }
-async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey, retry = void 0, deferDispatch = false, availableAt = void 0) {
+async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey, retry = void 0, deferDispatch = false, availableAt = void 0, persistDelayed = false) {
   const queueDatabase = database.__rootDatabase ?? database;
   const jobAdapter = database.adapter;
   const now = queueDatabase.clock.now().toISOString();
+  const jobAvailableAt = availableAt ?? now;
+  const status = persistDelayed && jobAvailableAt > now ? "delayed" : "queued";
   const payloadJson = boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Job payload");
   await jobAdapter.prepare(
     jobAdapter.dialect.sql(
-      "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, '[]', NULL, NULL)"
+      "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, '[]', NULL, NULL)"
     )
   ).run(
-    randomUUID5(),
+    randomUUID6(),
     handlerName,
     PRIVILEGED_AUTH_USER_ID,
     PRIVILEGED_AUTH_USER_ID,
     "privileged",
     payloadJson,
-    availableAt ?? now,
+    status,
+    jobAvailableAt,
     idempotencyKey,
     now,
     JSON.stringify(normalizeJobRetry(retry))
@@ -23087,7 +23820,7 @@ async function sendEmailPasswordResetLink(database, session, email, options = {}
   return { ok: true };
 }
 function createWebSocketAccept(key) {
-  return createHash6("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+  return createHash7("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
 }
 function drainWebSocketFrames(client, onMessage) {
   while (client.buffer.length >= 2) {
@@ -23931,7 +24664,7 @@ async function runCurrentUserJobWorker(database) {
         await failInvalidQueuedJob(database, row, { code: "JOB_AVAILABLE_AT_INVALID", message: "The Job cannot acquire a canonical claim lease." });
         continue;
       }
-      const claimToken = randomUUID5();
+      const claimToken = randomUUID6();
       const claimed = await database.adapter.prepare(sql(
         "UPDATE [sporades_jobs] SET [status] = 'running', [attempts] = [attempts] + 1, [startedAt] = ?, [leaseExpiresAt] = ?, [claimToken] = ? WHERE [id] = ? AND [status] = 'queued' AND [availableAt] = ? AND COALESCE([retryJson], '') = COALESCE(?, '')"
       )).run(startedAt, leaseExpiresAt, claimToken, row.id, row.availableAt, row.retryJson);
@@ -24081,7 +24814,7 @@ async function runInsertMutation(database, context, mutationName, args) {
   }
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const values = {
-    id: randomUUID5(),
+    id: randomUUID6(),
     createdAt: now,
     updatedAt: now
   };
@@ -28356,7 +29089,7 @@ function writeResult(result, failed = false) {
 }
 
 // src/cli/project-config.ts
-import { createHash as createHash7 } from "node:crypto";
+import { createHash as createHash8 } from "node:crypto";
 import { chmod, mkdir as mkdir5, readFile as readFile7, writeFile as writeFile6 } from "node:fs/promises";
 import path9 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
@@ -28645,7 +29378,7 @@ async function resolveAuthorizedKeyLines(ssh, projectDir) {
 function authorizedKeyFingerprint(line) {
   const parts = line.split(/\s+/);
   const keyTypeIndex = parts.findIndex((part) => isOpenSshPublicKeyType(part));
-  const digest = createHash7("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
+  const digest = createHash8("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
   return `SHA256:${digest}`;
 }
 function withRuntimeSecuritySession(config, session) {
@@ -33203,7 +33936,7 @@ async function ensureHostProfileEnvKey(config, alias) {
   const hostKey = {
     publicKey,
     privateKey,
-    publicKeyFingerprint: createHash8("sha256").update(publicKey).digest("hex").slice(0, 16)
+    publicKeyFingerprint: createHash9("sha256").update(publicKey).digest("hex").slice(0, 16)
   };
   config.profiles[alias].sealedServerEnv = hostKey;
   return hostKey;

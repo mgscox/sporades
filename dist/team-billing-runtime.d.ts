@@ -51,15 +51,15 @@ export declare function admitTeamBillingActor(database: LooseRecord, transaction
     admitted: true;
 }>>;
 export declare function safeTeamBillingProjection(transaction: LooseRecord, definition: LooseRecord, teamId: string): Promise<Readonly<{
+    state: "attention-required";
+    teamId: string;
+    reason: "provider-state-ambiguous" | "catalogue-mismatch";
+}> | Readonly<{
     requestedAt: string;
     productKey?: any;
     state: "pending";
     teamId: string;
     operation: any;
-}> | Readonly<{
-    state: "attention-required";
-    teamId: string;
-    reason: "catalogue-mismatch" | "provider-state-ambiguous";
 }> | Readonly<{
     state: "inactive";
     teamId: string;
@@ -95,7 +95,7 @@ export declare function createPrivilegedTeamBillingApi(database: LooseRecord, co
             mode: "live" | "sandbox";
             eventType: string;
             occurredAt: string | null;
-            reason: "catalogue-mismatch" | "provider-state-ambiguous";
+            reason: "provider-state-ambiguous" | "catalogue-mismatch";
         }>[];
     }>>;
 }>;

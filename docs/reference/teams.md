@@ -251,6 +251,50 @@ it at local expiry even when the app is abandoned. The app renders every
 button, progress state, error, retry, and navigation action; Portal return and
 provider acknowledgement never update billing truth.
 
+Portal remains the surface for switches whose source and target share the same
+quantity policy. A switch between fixed quantity and accepted-Team-member
+quantity uses the managed command instead:
+
+```ts
+const transition = await teamBilling.requestPlanTransition({
+  teamId,
+  requestId: crypto.randomUUID(),
+  productKey: "agency",
+});
+```
+
+The app renders the returned `pending`, `completed`, `superseded`, or safe
+`failed` state. The response contains no intent, Job, Price, Customer,
+Subscription, item, or idempotency identity. Repeating the same
+Team/request/product observes the same operation; reusing its request ID for a
+different product is a safe conflict. Capsule `authorize` remains the local
+business-policy seam, including whether a downgrade is allowed.
+
+Admission and the desired-state Job commit together. Before each provider
+attempt Sporades reauthorizes the original linked Team administrator, re-reads
+the current Subscription and catalogue, and derives the exact accepted-member
+count when the target uses `team-members`. It updates the one attested
+Subscription item Price and quantity together using Stripe
+`create_prorations`, the desired intent's stable `proration_date`, and
+`pending_if_incomplete`; it does not create an immediate standalone invoice.
+Payment action required becomes a safe failed state for app-owned recovery.
+Retries preserve the exact provider tuple and idempotency key.
+
+For an active `team-members` Plan, a committed Join, removal, or leave stages
+seat convergence after the membership transaction. Staging or provider outage
+cannot roll that membership change back. New counts supersede stale queued or
+in-flight intent, and a durable per-Team lane permits only one provider write
+at a time across runtime instances. Startup repair compares accepted
+Subscription quantity with the exact Team count and reconstructs absent,
+failed, or drifted work. This is eventual provider convergence, not a database
+transaction held across Stripe I/O.
+
+A successful Stripe update is only acknowledgement: public state remains
+pending. Exact verified `customer.subscription.*` evidence settles the desired
+Price and quantity through the atomic Stripe consequence. Older or mismatched
+evidence leaves or requeues the latest desired target, so provider-response
+races cannot grant entitlement.
+
 Customer, Subscription, operation, observation, and replay correlation lives
 in runtime-owned storage on SQLite, libSQL, and Postgres. Supported verified
 `checkout.session.completed`, `checkout.session.expired`,
@@ -279,9 +323,8 @@ cannot be associated safely is visible only through bounded provider-free
 Stripe consequence shares the same transaction. A legacy `stripeEvent(handler)`
 runs after the platform commit and keeps its existing independent retry model.
 
-Managed Plan-transition, automatic Team-member quantity convergence, and
-erasure remain later operation-specific surfaces rather than a generic Stripe
-proxy.
+Erasure remains a later operation-specific surface rather than a generic
+Stripe proxy.
 
 ## Security, storage, and audit boundaries
 

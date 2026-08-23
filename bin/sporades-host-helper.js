@@ -177,6 +177,9 @@ var ACCESS_KEY_CLIENT_ADDRESS_HEADER = "x-sporades-client-address";
 // src/access-keys-runtime.ts
 var UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
 
+// src/team-billing-management.ts
+var CLAIM_TTL_MS = 5 * 60 * 1e3;
+
 // src/team-billing-convergence.ts
 var RANK = Object.freeze({ active: 20, cancelling: 30, "past-due": 40, cancelled: 50 });
 

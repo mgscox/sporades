@@ -46,6 +46,20 @@ const portalInput = {
   idempotencyKey: "sporades:team-portal:stable-provider-key",
 };
 
+const managedSubscriptionInput = {
+  mode: "sandbox",
+  customerId: "cus_existing_team",
+  subscriptionId: "sub_managed_team",
+  subscriptionItemId: "si_managed_team",
+  sourcePriceId: "price_test_agency_monthly",
+  targetPriceId: "price_test_studio_monthly",
+  targetProductId: "prod_studio",
+  targetQuantity: 17,
+  prorationDate: 2_000_000_123,
+  idempotencyKey: "sporades:team-subscription-update:stable-provider-key",
+  operationKind: "plan-transition",
+};
+
 test("the internal Team Billing provider sends one exact subscription Checkout envelope", async () => {
   let observed;
   await withProvider(async (request, response) => {
@@ -182,6 +196,161 @@ test("Portal session creation rejects mismatched provider correlation and unsafe
   }
 });
 
+test("managed subscription updates attest current state and send one stable atomic Price and quantity change", async () => {
+  const observed = [];
+  await withProvider(async (request, response) => {
+    const body = await readBody(request);
+    observed.push({ method: request.method, url: request.url, headers: request.headers, params: new URLSearchParams(body) });
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify(request.method === "GET"
+      ? validManagedSubscription({ priceId: managedSubscriptionInput.sourcePriceId, productId: "prod_agency", quantity: 14 })
+      : validManagedSubscription()));
+  }, async (apiBaseUrl) => {
+    const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+    assert.deepEqual(await provider.updateManagedSubscription(managedSubscriptionInput), { ok: true, outcome: "acknowledged" });
+  });
+
+  assert.equal(observed.length, 2);
+  assert.deepEqual(observed.map(({ method, url }) => ({ method, url })), [
+    { method: "GET", url: `/v1/subscriptions/${managedSubscriptionInput.subscriptionId}` },
+    { method: "POST", url: `/v1/subscriptions/${managedSubscriptionInput.subscriptionId}` },
+  ]);
+  assert.equal(observed[1].headers["idempotency-key"], managedSubscriptionInput.idempotencyKey);
+  assert.equal(observed[1].params.get("items[0][id]"), managedSubscriptionInput.subscriptionItemId);
+  assert.equal(observed[1].params.get("items[0][price]"), managedSubscriptionInput.targetPriceId);
+  assert.equal(observed[1].params.get("items[0][quantity]"), "17");
+  assert.equal(observed[1].params.get("proration_behavior"), "create_prorations");
+  assert.equal(observed[1].params.get("proration_date"), String(managedSubscriptionInput.prorationDate));
+  assert.equal(observed[1].params.get("payment_behavior"), "pending_if_incomplete");
+});
+
+test("managed subscription updates surface a bounded payment-action result without provider identifiers", async () => {
+  for (const paymentState of [
+    { pendingUpdate: { expires_at: 2_000_086_523 } },
+    { status: "past_due" },
+  ]) {
+    await withProvider(async (request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(request.method === "GET"
+        ? validManagedSubscription({ priceId: managedSubscriptionInput.targetPriceId })
+        : validManagedSubscription(paymentState)));
+    }, async (apiBaseUrl) => {
+      const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+      const result = await provider.updateManagedSubscription(managedSubscriptionInput);
+      assert.deepEqual(result, { ok: true, outcome: "payment-action-required" });
+      assert.equal(Object.isFrozen(result), true);
+      assert.equal(JSON.stringify(result).includes("sub_managed_team"), false);
+    });
+  }
+});
+
+test("managed subscription updates enforce the exact mode and operation envelope while allowing a declaration without Product", async () => {
+  for (const override of [
+    { mode: "live" },
+    { operationKind: "portal-change" },
+    { prorationDate: 2_000_000_123.5 },
+    { unexpected: true },
+  ]) {
+    let requestCount = 0;
+    await withProvider((_request, response) => {
+      requestCount += 1;
+      response.writeHead(500).end();
+    }, async (apiBaseUrl) => {
+      const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+      await assert.rejects(provider.updateManagedSubscription({ ...managedSubscriptionInput, ...override }), rejectedProviderFailure);
+    });
+    assert.equal(requestCount, 0);
+  }
+
+  const { targetProductId: _omittedProduct, ...withoutProduct } = managedSubscriptionInput;
+  await withProvider(async (_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify(validManagedSubscription()));
+  }, async (apiBaseUrl) => {
+    const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+    assert.deepEqual(await provider.updateManagedSubscription({
+      ...withoutProduct,
+      operationKind: "seat-convergence",
+      sourcePriceId: withoutProduct.targetPriceId,
+    }), { ok: true, outcome: "acknowledged" });
+  });
+});
+
+test("managed subscription updates reject incomplete lists and every correlation or catalogue drift", async () => {
+  const invalidRetrieved = [
+    { items: { has_more: true } },
+    { items: { data: [validManagedItem(), validManagedItem({ id: "si_another" })] } },
+    { customer: "cus_another_team" },
+    { livemode: true },
+    { id: "sub_another_team" },
+    { items: { data: [validManagedItem({ id: "si_another" })] } },
+    { items: { data: [validManagedItem({ subscription: "sub_another_team" })] } },
+    { items: { data: [validManagedItem({ priceId: "price_unknown" })] } },
+    { items: { data: [validManagedItem({ productId: "product_unknown" })] } },
+    { items: { data: [validManagedItem({ usageType: "metered" })] } },
+  ];
+  for (const override of invalidRetrieved) {
+    let requestCount = 0;
+    await withProvider((_request, response) => {
+      requestCount += 1;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(mergeManagedSubscription(validManagedSubscription({ priceId: managedSubscriptionInput.sourcePriceId, productId: "prod_agency" }), override)));
+    }, async (apiBaseUrl) => {
+      const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+      await assert.rejects(provider.updateManagedSubscription(managedSubscriptionInput), rejectedProviderFailure);
+    });
+    assert.equal(requestCount, 1);
+  }
+
+  for (const override of [
+    { customer: "cus_another_team" },
+    { items: { has_more: true } },
+    { items: { data: [validManagedItem({ priceId: managedSubscriptionInput.sourcePriceId })] } },
+    { items: { data: [validManagedItem({ quantity: 16 })] } },
+    { items: { data: [validManagedItem({ productId: "prod_unknown" })] } },
+  ]) {
+    await withProvider(async (request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(request.method === "GET"
+        ? validManagedSubscription({ priceId: managedSubscriptionInput.sourcePriceId, productId: "prod_agency" })
+        : mergeManagedSubscription(validManagedSubscription(), override)));
+    }, async (apiBaseUrl) => {
+      const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+      await assert.rejects(provider.updateManagedSubscription(managedSubscriptionInput), rejectedProviderFailure);
+    });
+  }
+});
+
+test("managed subscription updates classify retryable provider failures without retaining raw errors", async () => {
+  for (const [status, retryable] of [[400, false], [408, true], [409, true], [429, true], [500, true]]) {
+    await withProvider((_request, response) => {
+      response.writeHead(status, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: { message: `raw-secret-provider-message-${status}`, type: "fixture" } }));
+    }, async (apiBaseUrl) => {
+      const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+      await assert.rejects(provider.updateManagedSubscription(managedSubscriptionInput), (error) => {
+        assert.equal(error?.retryable, retryable);
+        assert.equal(error?.code, retryable ? "TEAM_BILLING_PROVIDER_UNAVAILABLE" : "TEAM_BILLING_PROVIDER_REJECTED");
+        assert.equal(String(error?.message).includes("raw-secret"), false);
+        assert.equal(String(error?.message).includes(managedSubscriptionInput.subscriptionId), false);
+        return true;
+      });
+    });
+  }
+
+  await withProvider((request) => {
+    request.socket.destroy();
+  }, async (apiBaseUrl) => {
+    const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+    await assert.rejects(provider.updateManagedSubscription(managedSubscriptionInput), (error) => {
+      assert.equal(error?.code, "TEAM_BILLING_PROVIDER_UNAVAILABLE");
+      assert.equal(error?.retryable, true);
+      assert.equal(String(error?.message).includes(managedSubscriptionInput.subscriptionId), false);
+      return true;
+    });
+  });
+});
+
 function validPortalConfiguration() {
   return {
     id: portalConfigurationInput.configurationId,
@@ -214,6 +383,60 @@ function mergePortalConfiguration(base, override) {
       subscription_cancel: { ...base.features.subscription_cancel, ...override.features?.subscription_cancel },
       subscription_update: { ...base.features.subscription_update, ...override.features?.subscription_update },
     },
+  };
+}
+
+function validManagedItem({
+  id = managedSubscriptionInput.subscriptionItemId,
+  subscription = managedSubscriptionInput.subscriptionId,
+  priceId = managedSubscriptionInput.targetPriceId,
+  productId = managedSubscriptionInput.targetProductId,
+  quantity = managedSubscriptionInput.targetQuantity,
+  usageType = "licensed",
+} = {}) {
+  return {
+    id,
+    object: "subscription_item",
+    subscription,
+    quantity,
+    price: {
+      id: priceId,
+      object: "price",
+      active: true,
+      livemode: false,
+      product: productId,
+      recurring: { interval: "month", usage_type: usageType },
+    },
+  };
+}
+
+function validManagedSubscription({
+  priceId = managedSubscriptionInput.targetPriceId,
+  productId = managedSubscriptionInput.targetProductId,
+  quantity = managedSubscriptionInput.targetQuantity,
+  pendingUpdate = null,
+  status = "active",
+} = {}) {
+  return {
+    id: managedSubscriptionInput.subscriptionId,
+    object: "subscription",
+    customer: managedSubscriptionInput.customerId,
+    livemode: false,
+    status,
+    pending_update: pendingUpdate,
+    items: {
+      object: "list",
+      has_more: false,
+      data: [validManagedItem({ priceId, productId, quantity })],
+    },
+  };
+}
+
+function mergeManagedSubscription(base, override) {
+  return {
+    ...base,
+    ...override,
+    items: override.items ? { ...base.items, ...override.items } : base.items,
   };
 }
 

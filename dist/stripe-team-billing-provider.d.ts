@@ -14,6 +14,10 @@ export declare function createStripeTeamBillingProvider(options: LooseRecord): R
         sessionId: any;
         url: any;
     }>>;
+    updateManagedSubscription(input: LooseRecord): Promise<Readonly<{
+        ok: true;
+        outcome: "payment-action-required" | "acknowledged";
+    }>>;
 }>;
 export {};
 //# sourceMappingURL=stripe-team-billing-provider.d.ts.map
