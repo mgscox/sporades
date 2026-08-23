@@ -394,6 +394,8 @@ for (const engine of ENGINES) {
           "idempotencyKey",
           "leaseExpiresAt",
           "payload",
+          "payloadRedactedAt",
+          "payloadRetentionUntil",
           "result",
           "retryJson",
           "scheduleName",

@@ -94,6 +94,7 @@ export const STRIPE_EVENT_PAYLOAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 export const STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE = 100;
 const REDACTED_STRIPE_EVENT_PAYLOAD = JSON.stringify({ kind: "stripe-event", retained: false });
 const STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY = "stripe-event-payload-retention-sentinel-cursor-v1";
+const STRIPE_EVENT_PAYLOAD_UNREPRESENTABLE_DEADLINE = "~";
 const STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS = 24 * 60 * 60 * 1_000;
 const STRIPE_EVENT_PAYLOAD_CLEANUP_RETRY_MS = 1_000;
 const STRIPE_EVENT_PAYLOAD_TIMER_CHUNK_MS = 2_147_483_647;
@@ -255,11 +256,14 @@ export async function cleanupExpiredStripeEventPayloads(database, options = {}) 
         let retried = false;
         while (row && remaining > 0) {
             const deadline = stripeEventPayloadRetentionDeadline(row.completedAt);
+            const unresolvedDeadline = deadline === null && isCanonicalJobTimestamp(row.completedAt)
+                ? STRIPE_EVENT_PAYLOAD_UNREPRESENTABLE_DEADLINE
+                : "";
             const changed = deadline === null
-                ? await adapter.prepare(sql("UPDATE [sporades_jobs] SET [payloadRetentionUntil]='' WHERE [id]=? AND [handler]=? " +
+                ? await adapter.prepare(sql("UPDATE [sporades_jobs] SET [payloadRetentionUntil]=? WHERE [id]=? AND [handler]=? " +
                     "AND [status]='succeeded' AND ([completedAt]=? OR ([completedAt] IS NULL AND ? IS NULL)) " +
                     "AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL " +
-                    "AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL")).run(row.id, STRIPE_EVENT_JOB, row.completedAt, row.completedAt)
+                    "AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL")).run(unresolvedDeadline, row.id, STRIPE_EVENT_JOB, row.completedAt, row.completedAt)
                 : await adapter.prepare(sql("UPDATE [sporades_jobs] SET [payloadRetentionUntil]=? WHERE [id]=? AND [handler]=? " +
                     "AND [status]='succeeded' AND ([completedAt]=? OR ([completedAt] IS NULL AND ? IS NULL)) " +
                     "AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL " +
@@ -1171,6 +1175,9 @@ function stripeEventPayloadRetentionState(row) {
             return Object.freeze({ state: "unresolved", code: "CANONICAL_REPAIR_PENDING", deadline: null });
         }
         return Object.freeze({ state: "unresolved", code: "INVALID_COMPLETED_AT", deadline: null });
+    }
+    if (row.payloadRetentionUntil === STRIPE_EVENT_PAYLOAD_UNREPRESENTABLE_DEADLINE) {
+        return Object.freeze({ state: "unresolved", code: "RETENTION_DEADLINE_UNREPRESENTABLE", deadline: null });
     }
     if (isCanonicalJobTimestamp(row.payloadRetentionUntil)) {
         return Object.freeze({ state: "retained", deadline: String(row.payloadRetentionUntil) });

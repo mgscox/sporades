@@ -117,7 +117,9 @@ Verified Stripe event only while delivery is unresolved and for a fixed 30-day
 period after successful settlement. Its deadline starts at the successful
 Job's durable `completedAt`. If the exact deadline cannot be represented in the
 canonical four-digit timestamp range, retention remains explicitly unresolved
-rather than expiring early. At a representable deadline, bounded runtime maintenance
+rather than expiring early. Safe Job inspection reports
+`RETENTION_DEADLINE_UNREPRESENTABLE` for that exception without exposing provider
+data. At a representable deadline, bounded runtime maintenance
 replaces the payload with a non-sensitive marker and clears its result. The
 successful Job row and digest-only idempotency key remain, so callback replay
 still returns the same terminal Job and never re-executes the consequence.
@@ -404,7 +406,9 @@ Reserved Stripe Event Jobs additionally include a non-sensitive
 `redacted` includes the deadline and redaction time; and `unresolved` includes
 an opaque reason code and an absent deadline. The unresolved codes are
 `JOB_NOT_SUCCESSFULLY_SETTLED`, `RETENTION_DEADLINE_UNASSIGNED`, and
-`INVALID_COMPLETED_AT`; a canonically repaired classified row temporarily uses
+`INVALID_COMPLETED_AT`; a canonical settlement whose exact deadline is outside
+the timestamp range uses `RETENTION_DEADLINE_UNREPRESENTABLE`, and a canonically
+repaired classified row temporarily uses
 `CANONICAL_REPAIR_PENDING`. None disclose provider values or make inspection a
 repair API.
 

@@ -7221,6 +7221,7 @@ var STRIPE_EVENT_PAYLOAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1e3;
 var STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE = 100;
 var REDACTED_STRIPE_EVENT_PAYLOAD = JSON.stringify({ kind: "stripe-event", retained: false });
 var STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY = "stripe-event-payload-retention-sentinel-cursor-v1";
+var STRIPE_EVENT_PAYLOAD_UNREPRESENTABLE_DEADLINE = "~";
 var STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS = 24 * 60 * 60 * 1e3;
 var STRIPE_EVENT_PAYLOAD_CLEANUP_RETRY_MS = 1e3;
 var STRIPE_EVENT_PAYLOAD_TIMER_CHUNK_MS = 2147483647;
@@ -7354,9 +7355,10 @@ async function cleanupExpiredStripeEventPayloads(database, options = {}) {
     let retried = false;
     while (row && remaining > 0) {
       const deadline = stripeEventPayloadRetentionDeadline(row.completedAt);
+      const unresolvedDeadline = deadline === null && isCanonicalJobTimestamp(row.completedAt) ? STRIPE_EVENT_PAYLOAD_UNREPRESENTABLE_DEADLINE : "";
       const changed = deadline === null ? await adapter.prepare(sql(
-        "UPDATE [sporades_jobs] SET [payloadRetentionUntil]='' WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND ([completedAt]=? OR ([completedAt] IS NULL AND ? IS NULL)) AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
-      )).run(row.id, STRIPE_EVENT_JOB, row.completedAt, row.completedAt) : await adapter.prepare(sql(
+        "UPDATE [sporades_jobs] SET [payloadRetentionUntil]=? WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND ([completedAt]=? OR ([completedAt] IS NULL AND ? IS NULL)) AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
+      )).run(unresolvedDeadline, row.id, STRIPE_EVENT_JOB, row.completedAt, row.completedAt) : await adapter.prepare(sql(
         "UPDATE [sporades_jobs] SET [payloadRetentionUntil]=? WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND ([completedAt]=? OR ([completedAt] IS NULL AND ? IS NULL)) AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
       )).run(deadline, row.id, STRIPE_EVENT_JOB, row.completedAt, row.completedAt);
       const mutations = Number(changed?.changes ?? 0);

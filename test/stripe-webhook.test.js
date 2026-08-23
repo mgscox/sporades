@@ -1099,6 +1099,132 @@ test("the runtime rejects forged atomic Stripe-event definitions", async () => {
   assert.equal(forgedHandlerCalls, 0, "a forged declaration must never receive an atomic context");
 });
 
+async function proveAtomicStripeContentionLifecycleAcrossRuntimes(openRuntimes) {
+  const firstClock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+  const secondClock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+  const capsule = {
+    schema: { stripeConsequences: table({ providerEventId: Text() }) },
+    stripeEvents: declareStripeEvent({ consequence: "atomic" }, async (ctx, event) => {
+      await ctx.db.stripeConsequences.insert({ providerEventId: event.providerEventId });
+    }),
+    mutations: {
+      cancelStripeEvent: mutation((ctx, jobId) => ctx.privileged.run(
+        { operation: "stripe-events.cancel-contention", targetResourceKind: "job-queue" },
+        (privilegedCtx) => privilegedCtx.jobs.cancel(jobId),
+      )),
+    },
+    queries: { consequences: query((ctx) => ctx.db.stripeConsequences.all()) },
+  };
+  let runtimes;
+  const injectContention = (database, beforeDeferral = null) => {
+    const adapter = database.adapter;
+    const originalPrepare = adapter.prepare;
+    const originalWithTransaction = adapter.withTransaction;
+    let remainingContentions = 200;
+    let deferralObserved = false;
+    adapter.prepare = function (sql) {
+      const statement = Reflect.apply(originalPrepare, this, [sql]);
+      if (beforeDeferral && /UPDATE\s+.*sporades_jobs.*attempts.*cancelRequestedAt/is.test(String(sql))) {
+        return { ...statement, async run(...args) {
+          if (!deferralObserved) {
+            deferralObserved = true;
+            await beforeDeferral();
+          }
+          return await statement.run(...args);
+        } };
+      }
+      return statement;
+    };
+    adapter.withTransaction = function (callback) {
+      return Reflect.apply(originalWithTransaction, this, [async (transactionAdapter) => {
+        const transactionPrepare = transactionAdapter.prepare;
+        transactionAdapter.prepare = function (sql) {
+          const statement = Reflect.apply(transactionPrepare, this, [sql]);
+          if (/UPDATE\s+.*sporades.*SET\s+.*value/i.test(String(sql))) {
+            return { ...statement, run(...args) {
+              if (remainingContentions > 0) {
+                remainingContentions -= 1;
+                const error = new Error("injected cross-runtime atomic fence contention");
+                error.code = "SQLITE_BUSY";
+                throw error;
+              }
+              return statement.run(...args);
+            } };
+          }
+          return statement;
+        };
+        try {
+          return await callback(transactionAdapter);
+        } finally {
+          transactionAdapter.prepare = transactionPrepare;
+        }
+      }]);
+    };
+    return {
+      restore() {
+        adapter.prepare = originalPrepare;
+        adapter.withTransaction = originalWithTransaction;
+      },
+      remainingContentions: () => remainingContentions,
+      deferralObserved: () => deferralObserved,
+    };
+  };
+
+  try {
+    runtimes = await openRuntimes(capsule, firstClock, secondClock);
+    const { firstDatabase, secondDatabase } = runtimes;
+    await firstDatabase.init();
+    await secondDatabase.init();
+
+    const deferredAdmission = await postStripe(firstDatabase, stripeEvent("evt_runtime_atomic_cross_runtime_defer_1"));
+    const deferredJobId = JSON.parse(deferredAdmission.response.body).jobId;
+    const deferredInjection = injectContention(firstDatabase);
+    try {
+      await firstClock.runDueTimers();
+    } finally {
+      deferredInjection.restore();
+    }
+    assert.equal(deferredInjection.remainingContentions(), 0);
+    let state = (await inspectRuntimeJobs(secondDatabase.adapter)).find((job) => job.id === deferredJobId);
+    assert.equal(state.status, "delayed");
+    assert.equal(state.attempts, 0, "cross-runtime fence waiting does not spend a delivery attempt");
+    assert.deepEqual(state.attemptHistory, []);
+
+    firstClock.advanceBy(26);
+    await firstClock.runDueTimers();
+    state = (await inspectRuntimeJobs(secondDatabase.adapter)).find((job) => job.id === deferredJobId);
+    assert.equal(state.status, "succeeded");
+    assert.equal(state.attempts, 1);
+
+    const cancelledAdmission = await postStripe(firstDatabase, stripeEvent("evt_runtime_atomic_cross_runtime_cancel_1"));
+    const cancelledJobId = JSON.parse(cancelledAdmission.response.body).jobId;
+    await firstDatabase.adapter.prepare(firstDatabase.adapter.dialect.sql(
+      "UPDATE [sporades_jobs] SET [retryJson]=? WHERE [id]=?",
+    )).run(JSON.stringify({ maxAttempts: 1, delayMs: 1_000 }), cancelledJobId);
+    let cancellationResult;
+    const cancellationInjection = injectContention(firstDatabase, async () => {
+      cancellationResult = await runMutation(secondDatabase, anonymousAuth, "cancelStripeEvent", [cancelledJobId]);
+    });
+    try {
+      await firstClock.runDueTimers();
+    } finally {
+      cancellationInjection.restore();
+    }
+    assert.equal(cancellationInjection.remainingContentions(), 0);
+    assert.equal(cancellationInjection.deferralObserved(), true);
+    assert.equal(cancellationResult?.ok, true);
+    state = (await inspectRuntimeJobs(secondDatabase.adapter)).find((job) => job.id === cancelledJobId);
+    assert.equal(state.status, "cancelled");
+    assert.equal(state.attempts, 1);
+    assert.equal(state.attemptHistory.at(-1).outcome, "cancelled");
+    assert.deepEqual((await runQuery(secondDatabase, anonymousAuth, "consequences")).data.map((row) => row.providerEventId), [
+      "evt_runtime_atomic_cross_runtime_defer_1",
+    ]);
+  } finally {
+    await Promise.all([runtimes?.firstDatabase?.close(), runtimes?.secondDatabase?.close()]);
+  }
+}
+
 async function proveAtomicStripeConsequenceSerialization(openRuntimes, leadingRuntime = "first") {
   const firstClock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
   const secondClock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
@@ -1406,6 +1532,35 @@ test("atomic cancellation rolls back and releases the fence across independent l
   }
 });
 
+test("atomic contention defers and remote cancellation wins across independent SQLite runtimes", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-stripe-atomic-contention-sqlite-"));
+  const databasePath = path.join(dir, "shared.db");
+  try {
+    await proveAtomicStripeContentionLifecycleAcrossRuntimes(async (capsule, firstClock, secondClock) => ({
+      firstDatabase: await openDevDatabase(databasePath, "", serverEnv, { name: "stripe-atomic-contention-sqlite", payments: { stripe } }, capsule, { createStripeCallbackEndpoint, clock: firstClock }),
+      secondDatabase: await openDevDatabase(databasePath, "", serverEnv, { name: "stripe-atomic-contention-sqlite", payments: { stripe } }, capsule, { createStripeCallbackEndpoint, clock: secondClock }),
+    }));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("atomic contention defers and remote cancellation wins across independent libSQL runtimes", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-stripe-atomic-contention-libsql-"));
+  try {
+    await withFakeLibsqlService(path.join(dir, "shared.db"), { isolateProcess: true }, async ({ url }) => {
+      const config = { name: "stripe-atomic-contention-libsql", payments: { stripe }, services: { database: { engine: "libsql" } } };
+      const serviceEnv = { ...serverEnv, SPORADES_SERVICE_DATABASE_ENGINE: "libsql", SPORADES_SERVICE_DATABASE_URL: url };
+      await proveAtomicStripeContentionLifecycleAcrossRuntimes(async (capsule, firstClock, secondClock) => ({
+        firstDatabase: await openDevDatabase(path.join(dir, "unused-first.db"), "", serviceEnv, config, capsule, { createStripeCallbackEndpoint, clock: firstClock, serviceEnv }),
+        secondDatabase: await openDevDatabase(path.join(dir, "unused-second.db"), "", serviceEnv, config, capsule, { createStripeCallbackEndpoint, clock: secondClock, serviceEnv }),
+      }));
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("atomic Team count sees predecessor committed membership across independent SQLite runtimes", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-stripe-atomic-team-count-sqlite-"));
   const databasePath = path.join(dir, "shared.db");
@@ -1472,6 +1627,27 @@ test("atomic Stripe consequences preserve predecessor visibility when the second
       firstDatabase: await openDevDatabase(path.join(dir, "unused-first.db"), "", serviceEnv, config, capsule, { createStripeCallbackEndpoint, clock: firstClock, serviceEnv }),
       secondDatabase: await openDevDatabase(path.join(dir, "unused-second.db"), "", serviceEnv, config, capsule, { createStripeCallbackEndpoint, clock: secondClock, serviceEnv }),
     }), "second");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("atomic contention defers and remote cancellation wins across two independent Postgres runtimes", {
+  skip: POSTGRES_SKIP_REASON,
+}, async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-stripe-atomic-contention-postgres-"));
+  const serviceEnv = {
+    ...serverEnv,
+    SPORADES_SERVICE_DATABASE_ENGINE: "postgres",
+    SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL,
+  };
+  const config = { name: "stripe-atomic-contention-postgres", payments: { stripe }, services: { database: { engine: "postgres" } } };
+  try {
+    await withPostgresAdapter(async () => {}, { appTableNames: ["stripeConsequences"] });
+    await proveAtomicStripeContentionLifecycleAcrossRuntimes(async (capsule, firstClock, secondClock) => ({
+      firstDatabase: await openDevDatabase(path.join(dir, "unused-first.db"), "", serviceEnv, config, capsule, { createStripeCallbackEndpoint, clock: firstClock, serviceEnv }),
+      secondDatabase: await openDevDatabase(path.join(dir, "unused-second.db"), "", serviceEnv, config, capsule, { createStripeCallbackEndpoint, clock: secondClock, serviceEnv }),
+    }));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

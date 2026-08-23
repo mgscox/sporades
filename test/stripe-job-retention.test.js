@@ -51,11 +51,11 @@ function withMalformedSettlementRepairRace(adapter, id, repairedCompletedAt) {
     dialect: adapter.dialect,
     prepare(statement) {
       const prepared = prepare(statement);
-      if (!/SET\s+[\[\"]?payloadRetentionUntil[\]\"]?\s*=\s*''/i.test(String(statement))) return prepared;
+      if (!/SET\s+[\[\"]?payloadRetentionUntil[\]\"]?\s*=/i.test(String(statement))) return prepared;
       return {
         ...prepared,
         async run(...args) {
-          if (!repaired && args[0] === id) {
+          if (!repaired && args[1] === id) {
             repaired = true;
             await prepare(adapter.dialect.sql(
               "UPDATE [sporades_jobs] SET [completedAt]=? WHERE [id]=? AND [payloadRetentionUntil] IS NULL",
@@ -120,6 +120,31 @@ test("reserved Stripe Event payload retention is a fixed finite runtime contract
 });
 
 for (const engine of DATABASE_ADAPTER_ENGINES) {
+  test(`${engine.name}: a canonical settlement beyond the deadline range stays explicitly unresolved`, { skip: engine.skip }, async () => {
+    await engine.withAdapter(async (adapter) => {
+      await ensureJobStorage(adapter);
+      await insertReservedJob(adapter, {
+        id: "deadline-outside-range",
+        status: "succeeded",
+        completedAt: "9999-12-15T00:00:00.000Z",
+      });
+      const clock = createControllableRuntimeClock("9999-12-31T23:59:59.999Z");
+
+      const classified = await cleanupExpiredStripeEventPayloads({ adapter, clock });
+      assert.equal(classified.classifiedCount, 1);
+      assert.equal(classified.redactedCount, 0);
+      const stored = await readStoredJob(adapter, "deadline-outside-range");
+      assert.match(stored.payload, /raw_private_deadline-outside-range/);
+      assert.notEqual(stored.payloadRetentionUntil, null);
+      assert.notEqual(stored.payloadRetentionUntil, "");
+      assert.deepEqual((await inspectRuntimeJobs(adapter)).find((job) => job.id === "deadline-outside-range").payloadRetention, {
+        state: "unresolved",
+        code: "RETENTION_DEADLINE_UNREPRESENTABLE",
+        deadline: null,
+      });
+    });
+  });
+
   test(`${engine.name}: cleanup is bounded, restart-safe, CAS-safe, and preserves unresolved Stripe work`, { skip: engine.skip }, async () => {
     await engine.withAdapter(async (initialAdapter, controls) => {
       let adapter = initialAdapter;
