@@ -6,7 +6,7 @@ import { test } from "node:test";
 
 import { openDevDatabase } from "../dist/server-runtime-source.js";
 import { String as Text, table } from "../dist/server.js";
-import { startTeamBillingCheckout, startTeamBillingPortal, TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_PORTAL_JOB } from "../dist/team-billing-runtime.js";
+import { performTeamBillingPortal, startTeamBillingCheckout, startTeamBillingPortal, TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_PORTAL_JOB } from "../dist/team-billing-runtime.js";
 import { createStripeCallbackEndpoint } from "../dist/stripe-webhook-runtime.js";
 import { withPostgresAdapter } from "./support/database-adapter-engines.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
@@ -131,6 +131,45 @@ for (const engine of engines) {
   });
 }
 
+test("Team Portal retries transient SQLite locks at both provider transaction boundaries", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-portal-locks-"));
+  const database = await open(path.join(dir, "data.db"), baseEnv, {}, () => ({
+    retrievePortalConfiguration: async () => ({ ok: true }),
+    createPortal: async () => ({ ok: true, sessionId: "bps_test_lock_retry", url: "https://billing.stripe.com/p/session/lock_retry_token" }),
+  }));
+  try {
+    const sql = database.adapter.dialect.sql;
+    const now = new Date().toISOString();
+    await seedTeam(database, sql, now);
+    await database.adapter.prepare(sql("INSERT INTO [sporades_team_billing_customers] ([teamId], [mode], [providerCustomerId], [createdAt], [updatedAt]) VALUES (?, 'sandbox', 'cus_lock_retry', ?, ?)")).run(teamId, now, now);
+    await database.adapter.prepare(sql("INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [observedAt], [updatedAt]) VALUES ('lock-subscription', ?, 'sandbox', 'sub_lock_retry', 'price_test_agency', 'agency', 1, 'active', 0, NULL, ?, ?)")).run(teamId, now, now);
+    const lockRequestId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    assert.equal((await startTeamBillingPortal(database, auth, teamId, lockRequestId)).state, "pending");
+    const operation = await database.adapter.prepare(sql("SELECT [id] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?")).get(teamId, lockRequestId);
+    const originalWithTransaction = database.adapter.withTransaction.bind(database.adapter);
+    const locked = () => { const error = new Error("database is locked"); error.code = "ERR_SQLITE_ERROR"; throw error; };
+
+    database.adapter.withTransaction = async () => locked();
+    await assert.rejects(performTeamBillingPortal(database, {}, { operationId: operation.id }, 1), (error) => error?.retryable === true);
+    database.adapter.withTransaction = originalWithTransaction;
+    assert.equal((await database.adapter.prepare(sql("SELECT [status] FROM [sporades_team_billing_operations] WHERE [id] = ?")).get(operation.id)).status, "queued");
+
+    let boundary = 0;
+    database.adapter.withTransaction = async (callback) => {
+      boundary += 1;
+      if (boundary === 2) return locked();
+      return originalWithTransaction(callback);
+    };
+    await assert.rejects(performTeamBillingPortal(database, {}, { operationId: operation.id }, 2), (error) => error?.retryable === true);
+    database.adapter.withTransaction = originalWithTransaction;
+    assert.equal((await database.adapter.prepare(sql("SELECT [status] FROM [sporades_team_billing_operations] WHERE [id] = ?")).get(operation.id)).status, "retrying");
+    assert.deepEqual(await performTeamBillingPortal(database, {}, { operationId: operation.id }, 3), { ready: true });
+  } finally {
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 async function seedTeam(database, sql, now) {
   await database.adapter.prepare(sql("INSERT INTO [sporades_auth_users] ([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider]) VALUES (?, ?, ?, ?, NULL, 1, 0, 'email')")).run(userId, now, auth.displayName, auth.email);
   await database.adapter.prepare(sql("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, 'Checkout Team', ?, ?)")).run(teamId, now, userId);
@@ -138,10 +177,10 @@ async function seedTeam(database, sql, now) {
   await database.adapter.prepare(sql("INSERT INTO [billingHolders] ([id], [createdAt], [updatedAt], [teamId], [userId]) VALUES ('holder', ?, ?, ?, ?)")).run(now, now, teamId, userId);
 }
 
-function open(databasePath, env, serviceConfig) {
+function open(databasePath, env, serviceConfig, providerFactory = () => ({ create: async () => { throw new Error("provider must not run before init"); } })) {
   return openDevDatabase(databasePath, "", env, { name: capsule.name, payments, ...serviceConfig }, capsule, {
     serviceEnv: env,
     createStripeCallbackEndpoint,
-    createStripeTeamBillingProvider: () => ({ create: async () => { throw new Error("provider must not run before init"); } }),
+    createStripeTeamBillingProvider: providerFactory,
   });
 }

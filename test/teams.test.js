@@ -2157,6 +2157,7 @@ test("headless Team Portal pins reviewed configuration and exposes only an autho
   const retrievalRelease = new Promise((resolve) => { releaseRetrieval = resolve; });
   let failNextPortalCreateOnce = false;
   let retryPortalOperationId = null;
+  let malformedNextAttestation = false;
   const runtime = await startRuntime(path.join(dir, "data.db"), billingCapsule, {
     serverEnv: { STRIPE_SECRET_KEY: "sk_test_team_portal", STRIPE_WEBHOOK_SECRET: "whsec_team_portal" },
     config: { payments: { stripe: {
@@ -2168,8 +2169,10 @@ test("headless Team Portal pins reviewed configuration and exposes only an autho
       createStripeCallbackEndpoint,
       createStripeTeamBillingProvider: () => ({
         async retrievePortalConfiguration(input) {
+          assert.deepEqual(Object.keys(input).sort(), ["configurationId", "expectedProducts", "mode"]);
           retrieved.push(input);
           if (blockNextRetrieval) { markRetrievalStarted(); await retrievalRelease; }
+          if (malformedNextAttestation) { malformedNextAttestation = false; return { ok: false }; }
           return { ok: true };
         },
         async createPortal(input) {
@@ -2216,7 +2219,6 @@ test("headless Team Portal pins reviewed configuration and exposes only an autho
     const ready = await waitForTeamPortal(owner, input, ownerSignup.data.sessionToken, "ready");
     assert.equal(ready.data.url, "https://billing.stripe.com/p/session/team_portal_token_1");
     assert.deepEqual(retrieved[0], {
-      operationId: retrieved[0].operationId,
       configurationId: "bpc_test_agency",
       mode: "sandbox",
       expectedProducts: [{ productId: "prod_test_agency", priceIds: ["price_test_agency", "price_test_agency_pro"] }],
@@ -2237,12 +2239,29 @@ test("headless Team Portal pins reviewed configuration and exposes only an autho
     assert.equal(former.error.code, "TEAM_BILLING_DENIED");
     const current = await send(nextHolder, { id: "portal-current", type: "teamBilling.openPortal", input, sessionToken: nextSignup.data.sessionToken });
     assert.equal(current.data.state, "ready");
+    await runtime.database.adapter.prepare("UPDATE [sporades_team_billing_customers] SET [providerCustomerId] = 'cus_team_portal_reassigned' WHERE [teamId] = ?").run(team.id);
+    const reassigned = await send(nextHolder, { id: "portal-reassigned-customer", type: "teamBilling.openPortal", input, sessionToken: nextSignup.data.sessionToken });
+    assert.equal(reassigned.data.state, "superseded", "ready exposure re-resolves the exact current Customer association");
+    await runtime.database.adapter.prepare("UPDATE [sporades_team_billing_customers] SET [providerCustomerId] = 'cus_team_portal' WHERE [teamId] = ?").run(team.id);
+
+    await runtime.database.adapter.prepare(
+      "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [observedAt], [updatedAt]) VALUES (?, ?, 'sandbox', 'sub_team_portal_ambiguous', 'price_test_agency', 'agency', 2, 'active', 0, ?, ?, ?)",
+    ).run("77777777-7777-4777-8777-777777777777", team.id, "2099-01-01T00:00:00.000Z", new Date().toISOString(), new Date().toISOString());
+    const ambiguousInput = { teamId: team.id, requestId: "77777777-7777-4777-8777-777777777776" };
+    const ambiguous = await send(nextHolder, { id: "portal-ambiguous", type: "teamBilling.openPortal", input: ambiguousInput, sessionToken: nextSignup.data.sessionToken });
+    assert.equal(ambiguous.error.code, "TEAM_BILLING_CHECKOUT_UNAVAILABLE", "multiple live licensed subscriptions fail closed before Portal admission");
+    await runtime.database.adapter.prepare("DELETE FROM [sporades_team_billing_subscriptions] WHERE [id] = ?").run("77777777-7777-4777-8777-777777777777");
+
+    const expiryInput = { teamId: team.id, requestId: "88888888-8888-4888-8888-888888888887" };
+    const expiryStarted = await send(nextHolder, { id: "portal-expiry-start", type: "teamBilling.openPortal", input: expiryInput, sessionToken: nextSignup.data.sessionToken });
+    assert.equal(expiryStarted.data.state, "pending");
+    await waitForTeamPortal(nextHolder, expiryInput, nextSignup.data.sessionToken, "ready");
     const portalOperation = await runtime.database.adapter.prepare(
       "SELECT [id] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?",
-    ).get(team.id, input.requestId);
+    ).get(team.id, expiryInput.requestId);
     await runtime.database.adapter.prepare("UPDATE [sporades_team_billing_operations] SET [continuationExpiresAt] = '2000-01-01T00:00:00.000Z' WHERE [id] = ?").run(portalOperation.id);
     await expireTeamBillingPortal(runtime.database, {}, { operationId: portalOperation.id });
-    const expired = await send(nextHolder, { id: "portal-expired", type: "teamBilling.openPortal", input, sessionToken: nextSignup.data.sessionToken });
+    const expired = await send(nextHolder, { id: "portal-expired", type: "teamBilling.openPortal", input: expiryInput, sessionToken: nextSignup.data.sessionToken });
     assert.equal(expired.data.state, "expired");
 
     failNextPortalCreateOnce = true;
@@ -2267,6 +2286,13 @@ test("headless Team Portal pins reviewed configuration and exposes only an autho
     assert.equal(crashRecovered.data.state, "failed", "final expired-lease recovery terminally reconciles the Portal operation");
     const cleared = await runtime.database.adapter.prepare("SELECT [continuationUrl], [continuationExpiresAt] FROM [sporades_team_billing_operations] WHERE [id] = ?").get(retryOperation.id);
     assert.deepEqual({ ...cleared }, { continuationUrl: null, continuationExpiresAt: null });
+
+    malformedNextAttestation = true;
+    const malformedInput = { teamId: team.id, requestId: "99999999-9999-4999-8999-999999999998" };
+    const malformedStarted = await send(nextHolder, { id: "portal-malformed-start", type: "teamBilling.openPortal", input: malformedInput, sessionToken: nextSignup.data.sessionToken });
+    assert.equal(malformedStarted.data.state, "pending");
+    const malformed = await waitForTeamPortal(nextHolder, malformedInput, nextSignup.data.sessionToken, "failed");
+    assert.equal(malformed.data.reason, "unavailable");
 
     const createdBeforeAuthorityTransfer = created.length;
     blockNextRetrieval = true;

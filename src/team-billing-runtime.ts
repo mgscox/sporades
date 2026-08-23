@@ -21,8 +21,8 @@ const CHECKOUT_CONTINUATION_TTL_DEFAULT_SECONDS = 10 * 60;
 const CHECKOUT_CONTINUATION_TTL_MAX_SECONDS = 30 * 60;
 const PRODUCT_KEY_PATTERN = /^[a-z][a-z0-9-]{0,47}$/;
 const PRICE_ID_PATTERN = /^price_[A-Za-z0-9_]{1,249}$/;
-const PRODUCT_ID_PATTERN = /^prod_[A-Za-z0-9_]{1,249}$/;
-const PORTAL_CONFIGURATION_ID_PATTERN = /^bpc_[A-Za-z0-9_]{1,249}$/;
+const PRODUCT_ID_PATTERN = /^prod_[A-Za-z0-9_]{1,240}$/;
+const PORTAL_CONFIGURATION_ID_PATTERN = /^bpc_[A-Za-z0-9_]{1,240}$/;
 const CANONICAL_TIMESTAMP_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d\.\d{3}Z$/;
 // Stripe Checkout accepts quantities through 999999; reject larger trusted
 // declarations up front so every admitted policy is executable end to end.
@@ -64,7 +64,7 @@ export function createTeamBillingTables(adapter: LooseRecord) {
       "[providerEventId] TEXT PRIMARY KEY, [payloadDigest] TEXT NOT NULL, [settledAt] TEXT NOT NULL, [retainedUntil] TEXT NOT NULL" +
       ")",
     )),
-    ...(["mode", "quantity", "continuationUrl", "continuationExpiresAt", "attemptedAt", "providerExpiresAt", "terminalObservedAt", "providerCustomerId", "configurationId"]
+    ...(["mode", "quantity", "continuationUrl", "continuationExpiresAt", "attemptedAt", "providerExpiresAt", "terminalObservedAt", "providerCustomerId", "configurationId", "returnPath"]
       .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", name, name === "quantity" || name === "providerExpiresAt" ? "INTEGER" : "TEXT"))),
   ]);
 }
@@ -240,7 +240,7 @@ export async function startTeamBillingPortal(database: LooseRecord, auth: LooseR
     await admitTeamBillingActor(database, transaction, auth, { operation: "portal", teamId });
     const sql = transaction.dialect.sql;
     const existing = await transaction.prepare(sql(
-      "SELECT [requestId], [kind], [status], [providerObjectId], [continuationUrl], [continuationExpiresAt], [safeFailureCode], [createdAt] " +
+      "SELECT [requestId], [kind], [productKey], [status], [mode], [quantity], [providerObjectId], [providerCustomerId], [configurationId], [returnPath], [continuationUrl], [continuationExpiresAt], [safeFailureCode], [createdAt] " +
       "FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?",
     )).get(teamId, requestId);
     if (existing) {
@@ -266,9 +266,9 @@ export async function startTeamBillingPortal(database: LooseRecord, auth: LooseR
     )).run(now, teamId);
     await transaction.prepare(sql(
       "INSERT INTO [sporades_team_billing_operations] " +
-      "([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [continuationUrl], [continuationExpiresAt], [attemptedAt], [providerExpiresAt], [providerCustomerId], [configurationId]) " +
-      "VALUES (?, ?, ?, ?, 'portal', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)",
-    )).run(operationId, requestId, teamId, auth.userId, desired.productKey, idempotencyKey, now, now, desired.mode, desired.quantity, desired.customerId, desired.configurationId);
+      "([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [continuationUrl], [continuationExpiresAt], [attemptedAt], [providerExpiresAt], [providerCustomerId], [configurationId], [returnPath]) " +
+      "VALUES (?, ?, ?, ?, 'portal', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?)",
+    )).run(operationId, requestId, teamId, auth.userId, desired.productKey, idempotencyKey, now, now, desired.mode, desired.quantity, desired.customerId, desired.configurationId, desired.returnPath);
     if (typeof database.enqueueTeamBillingPortalJob !== "function") throw checkoutUnavailable();
     await database.enqueueTeamBillingPortalJob(transaction, { operationId }, `team-billing-portal:${operationId}`);
     enqueued = true;
@@ -283,11 +283,14 @@ async function withTeamBillingAdmissionTransaction(database: LooseRecord, callba
     try {
       return await database.adapter.withTransaction(callback);
     } catch (error: any) {
-      const transientSqliteLock = error?.code === "ERR_SQLITE_ERROR" && /(?:locked|busy)/i.test(String(error?.message ?? ""));
-      if (!transientSqliteLock || attempt >= 5) throw error;
+      if (!transientSqliteLock(error) || attempt >= 5) throw error;
       await new Promise((resolve) => setTimeout(resolve, 5 * (2 ** attempt)));
     }
   }
+}
+
+function transientSqliteLock(error: any) {
+  return error?.code === "ERR_SQLITE_ERROR" && /(?:locked|busy)/i.test(String(error?.message ?? ""));
 }
 
 export async function performTeamBillingCheckout(database: LooseRecord, context: LooseRecord, payload: any, attempt = 1) {
@@ -427,9 +430,10 @@ export async function performTeamBillingPortal(database: LooseRecord, context: L
       await transaction.prepare(transaction.dialect.sql(
         "UPDATE [sporades_team_billing_operations] SET [status] = 'running', [attemptedAt] = COALESCE([attemptedAt], ?), [updatedAt] = ? WHERE [id] = ?",
       )).run(now, now, operationId);
-      return { operationId, configurationId: desired.configurationId, mode: desired.mode, expectedProducts: desired.expectedProducts };
+      return { configurationId: desired.configurationId, mode: desired.mode, expectedProducts: desired.expectedProducts };
     });
   } catch (error: any) {
+    if (transientSqliteLock(error)) { error.retryable = true; throw error; }
     await settleCheckoutFailure(database, operationId, error?.code === "TEAM_BILLING_DENIED" ? "AUTHORITY_CHANGED" : "CONFIGURATION_INVALID");
     const failure = checkoutUnavailable(); (failure as any).retryable = false; throw failure;
   }
@@ -440,7 +444,9 @@ export async function performTeamBillingPortal(database: LooseRecord, context: L
       enabled: true, config: database.paymentsConfig.stripe, env: database.serverEnv, signal: context?.signal,
       ...(database.stripeApiBaseUrl ? { apiBaseUrl: database.stripeApiBaseUrl } : {}),
     });
-    await provider.retrievePortalConfiguration(providerInput);
+    const attestation = await provider.retrievePortalConfiguration(providerInput);
+    if (!attestation || typeof attestation !== "object" || Array.isArray(attestation)
+      || Object.keys(attestation).join(",") !== "ok" || attestation.ok !== true) throw checkoutUnavailable();
     let createInput: LooseRecord | null = null;
     try {
       createInput = await database.adapter.withTransaction(async (transaction: LooseRecord) => {
@@ -454,11 +460,12 @@ export async function performTeamBillingPortal(database: LooseRecord, context: L
         return {
           customerId: desired.customerId,
           configurationId: desired.configurationId,
-          returnPath: database.teamBillingDefinition.portal.returnPath,
+          returnPath: desired.returnPath,
           idempotencyKey: operation.idempotencyKey,
         };
       });
     } catch (error: any) {
+      if (transientSqliteLock(error)) { error.retryable = true; throw error; }
       await settleCheckoutFailure(database, operationId, error?.code === "TEAM_BILLING_DENIED" ? "AUTHORITY_CHANGED" : "CONFIGURATION_INVALID");
       const failure = checkoutUnavailable(); (failure as any).retryable = false; throw failure;
     }
@@ -683,10 +690,11 @@ async function portalDesiredState(database: LooseRecord, transaction: LooseRecor
   const customer = await transaction.prepare(sql(
     "SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?",
   )).get(teamId);
-  const subscription = await transaction.prepare(sql(
+  const subscriptions = await transaction.prepare(sql(
     "SELECT [mode], [providerPriceId], [productKey], [quantity], [state] FROM [sporades_team_billing_subscriptions] " +
-    "WHERE [teamId] = ? ORDER BY [observedAt] DESC, [id] DESC LIMIT 1",
-  )).get(teamId);
+    "WHERE [teamId] = ? AND [state] IN ('active', 'cancelling', 'past-due') ORDER BY [observedAt] DESC, [id] DESC",
+  )).all(teamId);
+  const subscription = subscriptions.length === 1 ? subscriptions[0] : null;
   const product = database.teamBillingDefinition.catalogue[subscription?.productKey];
   const binding = product?.stripe?.[mode];
   const expectedQuantity = product?.quantity?.kind === "fixed"
@@ -712,13 +720,14 @@ async function portalDesiredState(database: LooseRecord, transaction: LooseRecor
     quantity: subscription.quantity,
     customerId: customer.providerCustomerId,
     configurationId: binding.portalConfigurationId,
+    returnPath: database.teamBillingDefinition.portal.returnPath,
     expectedProducts,
   };
 }
 
 async function readPortalOperation(transaction: LooseRecord, operationId: string) {
   return transaction.prepare(transaction.dialect.sql(
-    "SELECT [id], [teamId], [actorUserId], [productKey], [status], [mode], [quantity], [idempotencyKey], [providerCustomerId], [configurationId] " +
+    "SELECT [id], [teamId], [actorUserId], [productKey], [status], [mode], [quantity], [idempotencyKey], [providerCustomerId], [configurationId], [returnPath] " +
     "FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'portal'",
   )).get(operationId);
 }
@@ -736,7 +745,8 @@ async function reauthorizePortalOperation(database: LooseRecord, transaction: Lo
 
 function portalOperationMatches(operation: LooseRecord, desired: LooseRecord) {
   return operation.mode === desired.mode && operation.productKey === desired.productKey && operation.quantity === desired.quantity
-    && operation.providerCustomerId === desired.customerId && operation.configurationId === desired.configurationId;
+    && operation.providerCustomerId === desired.customerId && operation.configurationId === desired.configurationId
+    && operation.returnPath === desired.returnPath;
 }
 
 async function supersedeBillingOperation(database: LooseRecord, transaction: LooseRecord, operationId: string) {
@@ -816,6 +826,14 @@ async function portalOperationResult(database: LooseRecord, transaction: LooseRe
       : Object.freeze({ state: "failed" as const, ...common, reason: "unavailable" as const });
   }
   if (operation.status === "ready") {
+    let desired: LooseRecord | null = null;
+    try { desired = await portalDesiredState(database, transaction, teamId); } catch { desired = null; }
+    if (!desired || !portalOperationMatches(operation, desired)) {
+      await transaction.prepare(transaction.dialect.sql(
+        "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [safeFailureCode] = 'DESIRED_STATE_CHANGED', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [requestId] = ? AND [kind] = 'portal' AND [status] = 'ready'",
+      )).run(database.clock.now().toISOString(), teamId, requestId);
+      return Object.freeze({ state: "superseded" as const, ...common });
+    }
     const expiresAt = canonicalTimestamp(operation.continuationExpiresAt);
     if (expiresAt && expiresAt > database.clock.now().toISOString() && validPortalContinuation(operation.continuationUrl, operation.providerObjectId)) {
       return Object.freeze({ state: "ready" as const, ...common, url: operation.continuationUrl, expiresAt });

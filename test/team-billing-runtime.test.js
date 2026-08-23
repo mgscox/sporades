@@ -53,6 +53,14 @@ test("Team Billing declaration is dormant when omitted and validates an exact tw
       authorize,
     });
     assert.deepEqual(portalDefinition.portal, { returnPath: "/billing", continuationTtlSeconds: 600 });
+    const boundaryPortal = (suffixLength) => ({
+      catalogue: { studio: { quantity: { kind: "fixed", value: 1 }, stripe: {
+        sandbox: { productId: `prod_${"a".repeat(suffixLength)}`, priceId: "price_boundary_test", portalConfigurationId: `bpc_${"b".repeat(suffixLength)}` },
+        live: { productId: `prod_${"c".repeat(suffixLength)}`, priceId: "price_boundary_live", portalConfigurationId: `bpc_${"d".repeat(suffixLength)}` },
+      } } }, portal: { returnPath: "/billing" }, authorize,
+    });
+    assert.ok(normalizeTeamBillingDefinition(boundaryPortal(240)).portal);
+    assert.throws(() => normalizeTeamBillingDefinition(boundaryPortal(241)), (error) => error?.code === "INVALID_TEAM_BILLING_DECLARATION");
     assert.throws(() => normalizeTeamBillingDefinition({
       catalogue: {
         studio: { quantity: { kind: "fixed", value: 1 }, stripe: {
