@@ -513,6 +513,13 @@ export type TeamBillingDefinition<Schema extends SchemaDefinition = SchemaDefini
   catalogue: Record<string, TeamBillingProductDeclaration>;
   /** Rechecked inside every operation transaction after current Team-admin admission. */
   authorize(ctx: TeamBillingAuthorityContext<Schema>, input: TeamBillingAuthorityInput): MaybePromise<TeamBillingAuthorityDecision>;
+  /** Trusted same-origin Checkout returns. Omit to keep Checkout unavailable while retaining read-only billing state. */
+  checkout?: {
+    successPath: string;
+    cancelPath: string;
+    /** How long a validated Checkout URL may be returned to an authorized client; 60-1800 seconds, default 600. */
+    continuationTtlSeconds?: number;
+  };
 };
 export type CurrentUserTeamsApi = {
   list(): Promise<{ teams: TeamSummary[] }>;

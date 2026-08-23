@@ -96,9 +96,13 @@ The repository currently includes:
   Team, then rechecks Capsule policy on every operation without issuing a
   reusable capability. Runtime-owned tables retain private Customer,
   Subscription, operation, observation, and replay correlation across SQLite,
-  libSQL, and Postgres. The current browser surface is deliberately read-only:
-  `teamBilling.get(teamId)` returns a closed provider-free product-key
-  projection. Omission creates no Team Billing tables and preserves
+  libSQL, and Postgres. `teamBilling.get(teamId)` returns a closed provider-free
+  product-key projection. An optional trusted Checkout return declaration adds
+  durable `teamBilling.startCheckout(...)`: Sporades derives mode, Price,
+  Customer, exact quantity, correlation, and idempotency, then exposes only a
+  validated short-lived URL capability to current authority. Verified terminal
+  events win provider-response races; neither response nor browser return
+  applies entitlement. Omission creates no Team Billing tables and preserves
   existing Capsules. Sporades renders no billing UI; the Capsule owns every
   component, route, word, entitlement, and local business rule.
 - `sporades dev` for local Node execution with bundling, file watching,

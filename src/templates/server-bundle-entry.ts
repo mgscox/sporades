@@ -40,6 +40,7 @@ import { publicTreePathFromRequest } from "../public-tree-contract.js";
 import { publicAccessKeyManagementError } from "../access-keys-runtime.js";
 import { ACCESS_KEY_OPERATOR_ACTIONS, validateAccessKeyOperatorActionInput } from "../cli/access-key-operator-envelope.js";
 import { createStripeCallbackEndpoint } from "../stripe-webhook-runtime.js";
+import { createStripeTeamBillingProvider } from "../stripe-team-billing-provider.js";
 import {
   sporadesCapsuleModuleUrl,
   sporadesConfig,
@@ -130,6 +131,7 @@ if (sporadesAction) {
 const database: any = await openDevDatabase(databasePath, sporadesServerSource, runtimeServerEnv, runtimeConfig, sporadesCapsuleDefinition, {
   serviceEnv: runtimeServiceEnv,
   createStripeCallbackEndpoint,
+  createStripeTeamBillingProvider,
 });
 await database.init();
 database.log.emit({

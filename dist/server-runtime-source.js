@@ -20,7 +20,7 @@ import { signInWithEmail, signUpWithEmail } from "./auth-runtime.js";
 import { beginOAuthSignIn, resolvePasswordResetConfig } from "./auth-runtime.js";
 import { readCurrentUserPreferences, updateCurrentUserPreferences, } from "./user-preferences-runtime.js";
 import { countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createPrivilegedTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
-import { normalizeTeamBillingDefinition, readCurrentUserTeamBilling } from "./team-billing-runtime.js";
+import { TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, applyVerifiedTeamBillingCheckoutObservation, expireTeamBillingCheckout, normalizeTeamBillingDefinition, performTeamBillingCheckout, readCurrentUserTeamBilling, startTeamBillingCheckout, } from "./team-billing-runtime.js";
 // Batch 8. Eight names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
 // `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
@@ -565,9 +565,14 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     let database;
     const jobs = [...jobHandlersFromCapsuleDefinition(capsuleDefinition), ...runtimeOwnedJobHandlers({
             prepareEmailPasswordResetDelivery: (context, payload) => prepareEmailPasswordResetDelivery(database, payload, database.__runtimeJobAttempts.get(context) ?? 1),
-            dispatchStripeEvent: (context, event) => capsuleDefinition?.stripeEvents?.options?.consequence === "atomic"
-                ? runAtomicStripeConsequence(database, context, event, capsuleDefinition.stripeEvents)
-                : dispatchVerifiedStripeEvent(context, event, capsuleDefinition?.stripeEvents),
+            dispatchStripeEvent: async (context, event) => {
+                await applyVerifiedTeamBillingCheckoutObservation(database, event);
+                return capsuleDefinition?.stripeEvents?.options?.consequence === "atomic"
+                    ? runAtomicStripeConsequence(database, context, event, capsuleDefinition.stripeEvents)
+                    : dispatchVerifiedStripeEvent(context, event, capsuleDefinition?.stripeEvents);
+            },
+            performTeamBillingCheckout: (context, payload) => performTeamBillingCheckout(database, context, payload),
+            expireTeamBillingCheckout: (context, payload) => expireTeamBillingCheckout(database, context, payload),
         })];
     const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
     const clock = createRuntimeClock(options?.clock);
@@ -619,6 +624,11 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         rowCache,
         serverEnv,
         paymentsConfig,
+        createStripeTeamBillingProvider: options?.createStripeTeamBillingProvider,
+        stripeApiBaseUrl: options?.stripeApiBaseUrl,
+        enqueueTeamBillingCheckoutJob: (transaction, payload, idempotencyKey) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CHECKOUT_JOB, payload, idempotencyKey, { maxAttempts: 4, delayMs: 1_000 }, true),
+        enqueueTeamBillingCheckoutExpiryJob: (transaction, payload, idempotencyKey, availableAt) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, payload, idempotencyKey, undefined, true, availableAt),
+        scheduleTeamBillingJobDispatch: () => scheduleCurrentUserJobWorker(database),
         mail,
         authConfig: authStatus(config, serverEnv),
         passwordResetConfig: resolvePasswordResetConfig(config),
@@ -4386,6 +4396,33 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
             }
             return;
         }
+        if (message.type === "teamBilling.startCheckout") {
+            try {
+                const input = message.input;
+                const data = await startTeamBillingCheckout(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey);
+                sendJson(client, { id: message.id ?? null, type: "teamBilling.startCheckout.result", data, error: null });
+            }
+            catch (error) {
+                sendJson(client, {
+                    id: message.id ?? null,
+                    type: "error",
+                    data: null,
+                    error: {
+                        code: ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_CHECKOUT_ACTIVE", "TEAM_BILLING_CHECKOUT_UNAVAILABLE"].includes(error?.code)
+                            ? error.code : "TEAM_BILLING_DENIED",
+                        message: error?.code === "TEAM_BILLING_REQUEST_CONFLICT"
+                            ? "Team Checkout request conflicts with existing work."
+                            : error?.code === "TEAM_BILLING_CHECKOUT_ACTIVE" ? "A Team Checkout is already active." : "Team Checkout is unavailable.",
+                        hint: error?.code === "TEAM_BILLING_REQUEST_CONFLICT"
+                            ? "Use a new request identifier for a different product."
+                            : error?.code === "TEAM_BILLING_CHECKOUT_ACTIVE"
+                                ? "Finish, abandon, or allow the current Team Checkout to expire before starting another."
+                                : "Sign in as the current policy-approved billing administrator and retry.",
+                    },
+                });
+            }
+            return;
+        }
         if (message.type === "teams.create") {
             try {
                 const data = await createAdditionalTeam(database, client.session.auth, message.name);
@@ -4857,15 +4894,16 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
 // insert joins the handler transaction, while dispatch uses that transaction's
 // live context so the worker is not woken until commit. Outside a handler
 // transaction, runtime-owned Jobs retain ordinary immediate scheduling.
-async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey, retry = undefined) {
+async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey, retry = undefined, deferDispatch = false, availableAt = undefined) {
     const queueDatabase = database.__rootDatabase ?? database;
     const jobAdapter = database.adapter;
     const now = queueDatabase.clock.now().toISOString();
     const payloadJson = boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Job payload");
     await jobAdapter.prepare(jobAdapter.dialect.sql("INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], " +
         "[availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) " +
-        "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, '[]', NULL, NULL)")).run(randomUUID(), handlerName, PRIVILEGED_AUTH_USER_ID, PRIVILEGED_AUTH_USER_ID, "privileged", payloadJson, now, idempotencyKey, now, JSON.stringify(normalizeJobRetry(retry)));
-    deferOrScheduleJobDispatch(database, queueDatabase);
+        "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, '[]', NULL, NULL)")).run(randomUUID(), handlerName, PRIVILEGED_AUTH_USER_ID, PRIVILEGED_AUTH_USER_ID, "privileged", payloadJson, availableAt ?? now, idempotencyKey, now, JSON.stringify(normalizeJobRetry(retry)));
+    if (!deferDispatch)
+        deferOrScheduleJobDispatch(database, queueDatabase);
 }
 // Runtime-owned delivery may transiently fail after the request response has returned. Keep retries
 // bounded and private to this Job so Capsule Job defaults and API semantics remain unchanged.

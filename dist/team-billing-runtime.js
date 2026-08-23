@@ -1,11 +1,16 @@
 // Headless Team Billing control-plane foundation. Provider identifiers and
 // replay correlation stay in runtime-owned tables; Capsule code receives only
 // declared product keys and closed, provider-free projections.
+import { createHash, randomUUID } from "node:crypto";
 import { requireAuth } from "./auth-runtime.js";
 import { chainMaybePromise } from "./maybe-promise.js";
 import { commandError } from "./runtime-errors.js";
 import { lockTeamLifecycle } from "./teams-runtime.js";
 export const TEAM_BILLING_PRODUCT_MAX = 32;
+export const TEAM_BILLING_CHECKOUT_JOB = "_sporades.team-billing-checkout";
+export const TEAM_BILLING_CHECKOUT_EXPIRY_JOB = "_sporades.team-billing-checkout-expiry";
+const CHECKOUT_CONTINUATION_TTL_DEFAULT_SECONDS = 10 * 60;
+const CHECKOUT_CONTINUATION_TTL_MAX_SECONDS = 30 * 60;
 const PRODUCT_KEY_PATTERN = /^[a-z][a-z0-9-]{0,47}$/;
 const PRICE_ID_PATTERN = /^price_[A-Za-z0-9_]{1,249}$/;
 const CANONICAL_TIMESTAMP_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d\.\d{3}Z$/;
@@ -36,11 +41,13 @@ export function createTeamBillingTables(adapter) {
         () => adapter.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_team_billing_replay] (" +
             "[providerEventId] TEXT PRIMARY KEY, [payloadDigest] TEXT NOT NULL, [settledAt] TEXT NOT NULL, [retainedUntil] TEXT NOT NULL" +
             ")")),
+        ...(["mode", "quantity", "continuationUrl", "continuationExpiresAt", "attemptedAt", "providerExpiresAt", "terminalObservedAt"]
+            .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", name, name === "quantity" || name === "providerExpiresAt" ? "INTEGER" : "TEXT"))),
     ]);
 }
 export function normalizeTeamBillingDefinition(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)
-        || Object.keys(value).some((key) => !["catalogue", "authorize"].includes(key))
+        || Object.keys(value).some((key) => !["catalogue", "authorize", "checkout"].includes(key))
         || typeof value.authorize !== "function"
         || !value.catalogue || typeof value.catalogue !== "object" || Array.isArray(value.catalogue)) {
         throw invalidDeclaration();
@@ -70,7 +77,20 @@ export function normalizeTeamBillingDefinition(value) {
             stripe: Object.freeze({ sandbox, live }),
         });
     }
-    return Object.freeze({ catalogue: Object.freeze(catalogue), authorize: value.authorize });
+    const checkout = value.checkout === undefined ? null : normalizeCheckoutDefinition(value.checkout);
+    return Object.freeze({ catalogue: Object.freeze(catalogue), authorize: value.authorize, checkout });
+}
+function normalizeCheckoutDefinition(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)
+        || Object.keys(value).some((key) => !["successPath", "cancelPath", "continuationTtlSeconds"].includes(key)))
+        throw invalidDeclaration();
+    const successPath = canonicalReturnPath(value.successPath);
+    const cancelPath = canonicalReturnPath(value.cancelPath);
+    const continuationTtlSeconds = value.continuationTtlSeconds ?? CHECKOUT_CONTINUATION_TTL_DEFAULT_SECONDS;
+    if (!successPath || !cancelPath || !Number.isInteger(continuationTtlSeconds)
+        || continuationTtlSeconds < 60 || continuationTtlSeconds > CHECKOUT_CONTINUATION_TTL_MAX_SECONDS)
+        throw invalidDeclaration();
+    return Object.freeze({ successPath, cancelPath, continuationTtlSeconds });
 }
 function normalizeQuantity(value) {
     if (!value || typeof value !== "object" || Array.isArray(value))
@@ -99,6 +119,227 @@ export async function readCurrentUserTeamBilling(database, auth, teamId) {
     return database.adapter.withTransaction(async (transaction) => {
         await admitTeamBillingActor(database, transaction, auth, { operation: "read", teamId });
         return safeTeamBillingProjection(transaction, database.teamBillingDefinition, teamId);
+    });
+}
+export async function startTeamBillingCheckout(database, auth, teamId, requestId, productKey) {
+    requireAuth({ auth }, { linked: true });
+    const definition = database.teamBillingDefinition;
+    if (!definition?.checkout || !database.paymentsConfig?.stripe?.enabled
+        || !TEAM_ID_PATTERN.test(String(teamId ?? "")) || !TEAM_ID_PATTERN.test(String(requestId ?? ""))
+        || typeof productKey !== "string" || !definition.catalogue[productKey])
+        throw teamBillingDenied();
+    let enqueued = false;
+    const result = await withTeamBillingAdmissionTransaction(database, async (transaction) => {
+        await admitTeamBillingActor(database, transaction, auth, { operation: "checkout", teamId, productKey });
+        const sql = transaction.dialect.sql;
+        const existing = await transaction.prepare(sql("SELECT [requestId], [productKey], [status], [providerObjectId], [continuationUrl], [continuationExpiresAt], [safeFailureCode], [createdAt] " +
+            "FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?")).get(teamId, requestId);
+        if (existing) {
+            if (existing.productKey !== productKey)
+                throw checkoutConflict();
+            return checkoutOperationResult(database, transaction, teamId, requestId, existing);
+        }
+        const desired = await checkoutDesiredState(database, transaction, teamId, productKey);
+        const now = database.clock.now().toISOString();
+        const active = await transaction.prepare(sql("SELECT [id], [status], [continuationExpiresAt] FROM [sporades_team_billing_operations] " +
+            "WHERE [teamId] = ? AND [kind] = 'checkout' AND [status] IN ('running', 'retrying', 'ready') ORDER BY [createdAt] LIMIT 1")).get(teamId);
+        if (active?.status === "ready" && (!canonicalTimestamp(active.continuationExpiresAt) || active.continuationExpiresAt <= now)) {
+            await transaction.prepare(sql("UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] = 'ready'")).run(now, active.id);
+        }
+        else if (active) {
+            throw checkoutActive();
+        }
+        const operationId = randomUUID();
+        const idempotencyKey = checkoutIdempotencyKey(database.capsuleIdentity, teamId, requestId);
+        const providerExpiresAt = Math.floor((database.clock.now().getTime() + 23 * 60 * 60 * 1_000) / 1_000);
+        await transaction.prepare(sql("UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? " +
+            "WHERE [teamId] = ? AND [kind] = 'checkout' AND [status] = 'queued' AND [providerObjectId] IS NULL")).run(now, teamId);
+        await transaction.prepare(sql("INSERT INTO [sporades_team_billing_operations] " +
+            "([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [continuationUrl], [continuationExpiresAt], [attemptedAt], [providerExpiresAt]) " +
+            "VALUES (?, ?, ?, ?, 'checkout', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, NULL, NULL, NULL, ?)")).run(operationId, requestId, teamId, auth.userId, productKey, idempotencyKey, now, now, desired.mode, desired.quantity, providerExpiresAt);
+        if (typeof database.enqueueTeamBillingCheckoutJob !== "function")
+            throw checkoutUnavailable();
+        await database.enqueueTeamBillingCheckoutJob(transaction, { operationId }, `team-billing-checkout:${operationId}`);
+        enqueued = true;
+        return Object.freeze({ state: "pending", teamId, requestId, productKey, requestedAt: now });
+    });
+    if (enqueued)
+        database.scheduleTeamBillingJobDispatch?.();
+    return result;
+}
+async function withTeamBillingAdmissionTransaction(database, callback) {
+    for (let attempt = 0;; attempt += 1) {
+        try {
+            return await database.adapter.withTransaction(callback);
+        }
+        catch (error) {
+            const transientSqliteLock = error?.code === "ERR_SQLITE_ERROR" && /(?:locked|busy)/i.test(String(error?.message ?? ""));
+            if (!transientSqliteLock || attempt >= 5)
+                throw error;
+            await new Promise((resolve) => setTimeout(resolve, 5 * (2 ** attempt)));
+        }
+    }
+}
+export async function performTeamBillingCheckout(database, context, payload) {
+    const operationId = payload && typeof payload === "object" && !Array.isArray(payload)
+        && Object.keys(payload).join(",") === "operationId" && TEAM_ID_PATTERN.test(String(payload.operationId ?? ""))
+        ? payload.operationId : null;
+    if (!operationId)
+        throw checkoutUnavailable();
+    let providerInput = null;
+    try {
+        providerInput = await database.adapter.withTransaction(async (transaction) => {
+            const sql = transaction.dialect.sql;
+            const operation = await transaction.prepare(sql("SELECT [id], [teamId], [actorUserId], [productKey], [status], [mode], [quantity], [idempotencyKey], [providerExpiresAt] " +
+                "FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'")).get(operationId);
+            if (!operation || !["queued", "running", "retrying"].includes(operation.status))
+                return null;
+            const actor = await transaction.prepare(sql("SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider] FROM [sporades_auth_users] WHERE [id] = ?")).get(operation.actorUserId);
+            if (!actor)
+                throw teamBillingDenied();
+            const auth = {
+                userId: actor.id,
+                displayName: actor.displayName,
+                email: actor.email,
+                picture: actor.picture,
+                isAuthenticated: Boolean(actor.isAuthenticated),
+                isGuest: Boolean(actor.isGuest),
+                provider: actor.provider,
+            };
+            await admitTeamBillingActor(database, transaction, auth, { operation: "checkout", teamId: operation.teamId, productKey: operation.productKey });
+            const desired = await checkoutDesiredState(database, transaction, operation.teamId, operation.productKey);
+            if (operation.mode !== desired.mode || operation.quantity !== desired.quantity) {
+                await transaction.prepare(sql("UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [safeFailureCode] = 'DESIRED_STATE_CHANGED', [updatedAt] = ? WHERE [id] = ?")).run(database.clock.now().toISOString(), operationId);
+                return null;
+            }
+            if (!Number.isSafeInteger(operation.providerExpiresAt)
+                || operation.providerExpiresAt <= Math.floor(database.clock.now().getTime() / 1_000)) {
+                await transaction.prepare(sql("UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [updatedAt] = ? WHERE [id] = ?")).run(database.clock.now().toISOString(), operationId);
+                return null;
+            }
+            const customer = await transaction.prepare(sql("SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?")).get(operation.teamId);
+            if (customer && customer.mode !== desired.mode)
+                throw checkoutUnavailable();
+            const attemptedAt = database.clock.now().toISOString();
+            await transaction.prepare(sql("UPDATE [sporades_team_billing_operations] SET [status] = 'running', [attemptedAt] = COALESCE([attemptedAt], ?), [updatedAt] = ? WHERE [id] = ?")).run(attemptedAt, attemptedAt, operationId);
+            return {
+                operationId,
+                teamId: operation.teamId,
+                productKey: operation.productKey,
+                mode: "subscription",
+                priceId: desired.priceId,
+                quantity: desired.quantity,
+                successPath: database.teamBillingDefinition.checkout.successPath,
+                cancelPath: database.teamBillingDefinition.checkout.cancelPath,
+                idempotencyKey: operation.idempotencyKey,
+                businessReference: operationId,
+                providerExpiresAt: operation.providerExpiresAt,
+                ...(customer ? { customerId: customer.providerCustomerId } : {}),
+            };
+        });
+    }
+    catch (error) {
+        if (error?.code === "ERR_SQLITE_ERROR" && /(?:locked|busy)/i.test(String(error?.message ?? ""))) {
+            error.retryable = true;
+            throw error;
+        }
+        await settleCheckoutFailure(database, operationId, error?.code === "TEAM_BILLING_DENIED" ? "AUTHORITY_CHANGED" : "CONFIGURATION_INVALID");
+        const failure = checkoutUnavailable();
+        failure.retryable = false;
+        throw failure;
+    }
+    if (!providerInput)
+        return null;
+    try {
+        if (typeof database.createStripeTeamBillingProvider !== "function")
+            throw checkoutUnavailable();
+        const provider = database.createStripeTeamBillingProvider({
+            enabled: true,
+            config: database.paymentsConfig.stripe,
+            env: database.serverEnv,
+            signal: context?.signal,
+            ...(database.stripeApiBaseUrl ? { apiBaseUrl: database.stripeApiBaseUrl } : {}),
+        });
+        const result = await provider.create(providerInput);
+        if (!result?.ok || !validCheckoutContinuation(result.url, result.sessionId))
+            throw checkoutUnavailable();
+        const now = database.clock.now();
+        const expiresAt = new Date(now.getTime() + database.teamBillingDefinition.checkout.continuationTtlSeconds * 1_000).toISOString();
+        let expiryEnqueued = false;
+        const settled = await database.adapter.withTransaction(async (transaction) => {
+            const outcome = await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_operations] SET [status] = 'ready', [providerObjectId] = ?, [continuationUrl] = ?, [continuationExpiresAt] = ?, [safeFailureCode] = NULL, [updatedAt] = ? " +
+                "WHERE [id] = ? AND [status] IN ('running', 'retrying')")).run(result.sessionId, result.url, expiresAt, now.toISOString(), operationId);
+            if (Number(outcome?.changes ?? 0) === 1) {
+                if (typeof database.enqueueTeamBillingCheckoutExpiryJob !== "function")
+                    throw checkoutUnavailable();
+                await database.enqueueTeamBillingCheckoutExpiryJob(transaction, { operationId }, `team-billing-checkout-expiry:${operationId}`, expiresAt);
+                expiryEnqueued = true;
+            }
+            return outcome;
+        });
+        if (expiryEnqueued)
+            database.scheduleTeamBillingJobDispatch?.();
+        if (Number(settled?.changes ?? 0) !== 1) {
+            const terminal = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [status], [providerObjectId] FROM [sporades_team_billing_operations] WHERE [id] = ?")).get(operationId);
+            if (!["completed", "expired"].includes(terminal?.status) || terminal.providerObjectId !== result.sessionId)
+                throw checkoutUnavailable();
+            return { observed: true };
+        }
+        return { ready: true };
+    }
+    catch (error) {
+        const retryable = error?.retryable !== false;
+        await settleCheckoutFailure(database, operationId, retryable ? "PROVIDER_RETRY" : "PROVIDER_REJECTED", retryable ? "retrying" : "failed");
+        throw error;
+    }
+}
+/** Durably erases an abandoned Checkout continuation when its local exposure window closes. */
+export async function expireTeamBillingCheckout(database, _context, payload) {
+    const operationId = payload && typeof payload === "object" && !Array.isArray(payload)
+        && Object.keys(payload).join(",") === "operationId" && TEAM_ID_PATTERN.test(String(payload.operationId ?? ""))
+        ? payload.operationId : null;
+    if (!operationId)
+        throw checkoutUnavailable();
+    const now = database.clock.now().toISOString();
+    await database.adapter.prepare(database.adapter.dialect.sql("UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? " +
+        "WHERE [id] = ? AND [status] = 'ready' AND [continuationExpiresAt] <= ?")).run(now, operationId, now);
+    return null;
+}
+/** Applies only terminal, verified Checkout observations; Subscription truth is a later convergence concern. */
+export async function applyVerifiedTeamBillingCheckoutObservation(database, event) {
+    if (!database.teamBillingDefinition || event?.provider !== "stripe"
+        || !["checkout.session.completed", "checkout.session.expired"].includes(event?.type))
+        return { applied: false };
+    const object = event?.raw?.data?.object;
+    const operationId = object?.client_reference_id;
+    if (!object || typeof object !== "object" || Array.isArray(object)
+        || object.object !== "checkout.session" || object.mode !== "subscription"
+        || object.livemode !== event.livemode || event.objectId !== object.id
+        || event.raw?.id !== event.providerEventId || event.raw?.type !== event.type || event.raw?.livemode !== event.livemode
+        || !TEAM_ID_PATTERN.test(String(operationId ?? ""))
+        || object?.metadata?.sporades_team_billing_operation !== operationId
+        || !validCheckoutContinuation(`https://checkout.stripe.com/c/pay/${object.id}`, object.id)
+        || typeof event.providerEventId !== "string" || !/^evt_[A-Za-z0-9_]{1,240}$/.test(event.providerEventId)
+        || !canonicalTimestamp(event.occurredAt) || typeof event.livemode !== "boolean"
+        || event.livemode !== Boolean(database.paymentsConfig?.stripe?.livemode))
+        return { applied: false };
+    const status = event.type === "checkout.session.completed" ? "completed" : "expired";
+    return database.adapter.withTransaction(async (transaction) => {
+        const sql = transaction.dialect.sql;
+        const operation = await transaction.prepare(sql("SELECT [id], [teamId], [mode], [providerObjectId], [status], [terminalObservedAt] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'")).get(operationId);
+        const expectedMode = event.livemode ? "live" : "sandbox";
+        if (!operation || operation.mode !== expectedMode
+            || (operation.providerObjectId && operation.providerObjectId !== object.id))
+            return { applied: false };
+        const payloadDigest = createHash("sha256").update(JSON.stringify(event.raw)).digest("hex");
+        const inserted = await transaction.prepare(sql("INSERT INTO [sporades_team_billing_observations] ([id], [teamId], [mode], [providerEventId], [providerObjectId], [payloadDigest], [observedAt], [createdAt]) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT ([providerEventId]) DO NOTHING")).run(randomUUID(), operation.teamId, expectedMode, event.providerEventId, object.id, payloadDigest, event.occurredAt, database.clock.now().toISOString());
+        if (Number(inserted?.changes ?? 0) !== 1)
+            return { applied: false };
+        if (operation.terminalObservedAt && operation.terminalObservedAt > event.occurredAt)
+            return { applied: false };
+        await transaction.prepare(sql("UPDATE [sporades_team_billing_operations] SET [status] = ?, [providerObjectId] = ?, [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [terminalObservedAt] = ?, [updatedAt] = ? WHERE [id] = ?")).run(status, object.id, event.occurredAt, database.clock.now().toISOString(), operationId);
+        return { applied: true };
     });
 }
 /**
@@ -179,6 +420,85 @@ function canonicalTimestamp(value) {
         return null;
     const timestamp = Date.parse(value);
     return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value ? value : null;
+}
+function canonicalReturnPath(value) {
+    if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")
+        || value.includes("\\") || value.includes("?") || value.includes("#") || /\s/.test(value))
+        return null;
+    try {
+        const pathname = new URL(value, "https://sporades.invalid").pathname;
+        return pathname === value ? value : null;
+    }
+    catch {
+        return null;
+    }
+}
+async function checkoutDesiredState(database, transaction, teamId, productKey) {
+    const product = database.teamBillingDefinition.catalogue[productKey];
+    const mode = database.paymentsConfig.stripe.livemode ? "live" : "sandbox";
+    const quantity = product.quantity.kind === "fixed"
+        ? product.quantity.value
+        : Number((await transaction.prepare(transaction.dialect.sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(teamId))?.count ?? 0);
+    if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 99)
+        throw checkoutUnavailable();
+    return { mode, quantity, priceId: product.stripe[mode].priceId };
+}
+async function checkoutOperationResult(database, transaction, teamId, requestId, operation) {
+    const common = { teamId, requestId, productKey: operation.productKey };
+    if (["queued", "running", "retrying"].includes(operation.status)) {
+        const requestedAt = canonicalTimestamp(operation.createdAt);
+        return requestedAt
+            ? Object.freeze({ state: "pending", ...common, requestedAt })
+            : Object.freeze({ state: "failed", ...common, reason: "unavailable" });
+    }
+    if (operation.status === "ready") {
+        const expiresAt = canonicalTimestamp(operation.continuationExpiresAt);
+        if (expiresAt && expiresAt > database.clock.now().toISOString()
+            && validCheckoutContinuation(operation.continuationUrl, operation.providerObjectId)) {
+            return Object.freeze({ state: "ready", ...common, url: operation.continuationUrl, expiresAt });
+        }
+        await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [requestId] = ? AND [status] = 'ready'")).run(database.clock.now().toISOString(), teamId, requestId);
+        return Object.freeze({ state: "expired", ...common });
+    }
+    if (operation.status === "expired")
+        return Object.freeze({ state: "expired", ...common });
+    if (operation.status === "superseded")
+        return Object.freeze({ state: "superseded", ...common });
+    if (operation.status === "completed")
+        return Object.freeze({ state: "completed", ...common });
+    return Object.freeze({ state: "failed", ...common, reason: operation.safeFailureCode === "AUTHORITY_CHANGED" ? "authority-changed" : "unavailable" });
+}
+function checkoutIdempotencyKey(capsuleIdentity, teamId, requestId) {
+    const digest = createHash("sha256").update(`${String(capsuleIdentity)}\0${teamId}\0${requestId}`).digest("base64url");
+    return `sporades:team-checkout:${digest}`;
+}
+function validCheckoutContinuation(urlValue, sessionIdValue) {
+    if (typeof sessionIdValue !== "string" || !/^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/.test(sessionIdValue)
+        || typeof urlValue !== "string")
+        return false;
+    try {
+        const url = new URL(urlValue);
+        return url.protocol === "https:" && url.hostname === "checkout.stripe.com"
+            && (url.pathname === `/c/pay/${sessionIdValue}` || url.pathname === `/pay/${sessionIdValue}`)
+            && !url.username && !url.password && !url.port;
+    }
+    catch {
+        return false;
+    }
+}
+async function settleCheckoutFailure(database, operationId, safeFailureCode, status = "failed") {
+    await database.adapter.prepare(database.adapter.dialect.sql("UPDATE [sporades_team_billing_operations] SET [status] = ?, [safeFailureCode] = ?, [updatedAt] = ? WHERE [id] = ? AND [status] IN ('queued', 'running', 'retrying')")).run(status, safeFailureCode, database.clock.now().toISOString(), operationId);
+}
+function checkoutConflict() {
+    return commandError("Team Checkout request conflicts with existing work.", "Use a new request identifier for a different product.", "TEAM_BILLING_REQUEST_CONFLICT");
+}
+function checkoutActive() {
+    return commandError("A Team Checkout is already active.", "Finish, abandon, or allow the current Team Checkout to expire before starting another.", "TEAM_BILLING_CHECKOUT_ACTIVE");
+}
+function checkoutUnavailable() {
+    const error = commandError("Team Checkout is unavailable.", "Retry from the Team billing settings later.", "TEAM_BILLING_CHECKOUT_UNAVAILABLE");
+    error.retryable = false;
+    return error;
 }
 export function teamBillingDenied() {
     return commandError("Team Billing is unavailable.", "Sign in as the current policy-approved billing administrator for this Team and retry.", "TEAM_BILLING_DENIED");

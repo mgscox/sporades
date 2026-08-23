@@ -8,7 +8,8 @@ import { test } from "node:test";
 import { createWebSocketHub, handleFileHttpRoute, openDevDatabase, routeEndpoint, runMutation, runQuery } from "../dist/server-runtime-source.js";
 import { Number as NumberField, String as StringField, endpoint, job, mutation, query, table } from "../dist/server.js";
 import { createAdditionalTeam, joinCurrentUserTeam } from "../dist/teams-runtime.js";
-import { readCurrentUserTeamBilling } from "../dist/team-billing-runtime.js";
+import { applyVerifiedTeamBillingCheckoutObservation, expireTeamBillingCheckout, readCurrentUserTeamBilling } from "../dist/team-billing-runtime.js";
+import { createStripeCallbackEndpoint } from "../dist/stripe-webhook-runtime.js";
 import { withPostgresAdapter } from "./support/database-adapter-engines.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 
@@ -152,6 +153,7 @@ const billingCapsule = {
     }),
   },
   teamBilling: {
+    checkout: { successPath: "/settings/billing/success", cancelPath: "/settings/billing/cancelled", continuationTtlSeconds: 600 },
     catalogue: {
       studio: {
         quantity: { kind: "fixed", value: 1 },
@@ -1860,6 +1862,244 @@ test("headless Team Billing returns only policy-approved provider-free state and
   }
 });
 
+test("headless Team Checkout durably deduplicates work and exposes only an authorized short-lived continuation", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-headless-team-checkout-"));
+  const providerInputs = [];
+  let blockNextProvider = false;
+  let releaseBlockedProvider;
+  let markBlockedProviderStarted;
+  const blockedProviderStarted = new Promise((resolve) => { markBlockedProviderStarted = resolve; });
+  const blockedProviderRelease = new Promise((resolve) => { releaseBlockedProvider = resolve; });
+  let retryOnceOperationId = null;
+  let failNextOperationOnce = false;
+  let authorityRetryOperationId = null;
+  let failNextOperationForAuthority = false;
+  let markAuthorityFirstAttempt;
+  const authorityFirstAttempt = new Promise((resolve) => { markAuthorityFirstAttempt = resolve; });
+  let quantityRetryOperationId = null;
+  let failNextOperationForQuantity = false;
+  let markQuantityFirstAttempt;
+  const quantityFirstAttempt = new Promise((resolve) => { markQuantityFirstAttempt = resolve; });
+  const runtime = await startRuntime(path.join(dir, "data.db"), billingCapsule, {
+    serverEnv: { STRIPE_SECRET_KEY: "sk_test_team_checkout", STRIPE_WEBHOOK_SECRET: "whsec_team_checkout" },
+    config: {
+      payments: { stripe: {
+        enabled: true,
+        secretKeyEnv: "STRIPE_SECRET_KEY",
+        webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
+        publicOrigin: "https://checkout.example.test",
+        callbackPath: "/stripe/webhook",
+        apiVersion: "2026-07-29.dahlia",
+        livemode: false,
+        requestTimeoutMs: 10_000,
+      } },
+    },
+    runtimeOptions: {
+      createStripeCallbackEndpoint,
+      createStripeTeamBillingProvider: () => ({
+        async create(input) {
+          providerInputs.push(input);
+          const suffix = providerInputs.length;
+          if (blockNextProvider) {
+            markBlockedProviderStarted();
+            await blockedProviderRelease;
+          }
+          if (failNextOperationOnce && retryOnceOperationId === null) {
+            retryOnceOperationId = input.operationId;
+            const error = new Error("transient provider failure");
+            error.retryable = true;
+            throw error;
+          }
+          if (retryOnceOperationId === input.operationId) {
+            failNextOperationOnce = false;
+            retryOnceOperationId = null;
+          }
+          if (failNextOperationForAuthority && authorityRetryOperationId === null) {
+            authorityRetryOperationId = input.operationId;
+            markAuthorityFirstAttempt();
+            const error = new Error("transient provider failure before authority transfer");
+            error.retryable = true;
+            throw error;
+          }
+          if (failNextOperationForQuantity && quantityRetryOperationId === null) {
+            quantityRetryOperationId = input.operationId;
+            markQuantityFirstAttempt();
+            const error = new Error("transient provider failure before Team count change");
+            error.retryable = true;
+            throw error;
+          }
+          return { ok: true, sessionId: `cs_test_team_checkout_${suffix}`, url: `https://checkout.stripe.com/c/pay/cs_test_team_checkout_${suffix}#fixture` };
+        },
+      }),
+    },
+  });
+  let owner;
+  let nextHolder;
+  let quantityMember;
+  try {
+    await runtime.database.init();
+    owner = await runtime.open();
+    const signupResult = await signUp(owner, "checkout-owner-sign-up", "checkout-owner@example.com", "Checkout owner");
+    const team = (await send(owner, { id: "checkout-team", type: "teams.list", sessionToken: signupResult.data.sessionToken })).data.teams[0];
+    const holder = await send(owner, {
+      id: "checkout-holder",
+      type: "mutation.run",
+      mutation: "setBillingHolder",
+      args: [team.id, signupResult.data.auth.userId],
+      sessionToken: signupResult.data.sessionToken,
+    });
+    assert.equal(holder.error, null, JSON.stringify(holder.error));
+    const input = { teamId: team.id, requestId: "55555555-5555-4555-8555-555555555555", productKey: "agency" };
+    const started = await send(owner, { id: "checkout-start", type: "teamBilling.startCheckout", input, sessionToken: signupResult.data.sessionToken });
+    assert.equal(started.data.state, "pending", JSON.stringify(started));
+    const ready = await waitForTeamCheckout(owner, input, signupResult.data.sessionToken, "ready");
+    assert.deepEqual(ready.data, {
+      state: "ready",
+      ...input,
+      url: "https://checkout.stripe.com/c/pay/cs_test_team_checkout_1#fixture",
+      expiresAt: ready.data.expiresAt,
+    });
+    assert.match(ready.data.expiresAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(providerInputs.length, 1);
+    const expiryJob = await runtime.database.adapter.prepare(
+      "SELECT [handler], [payload], [status], [availableAt] FROM [sporades_jobs] WHERE [handler] = '_sporades.team-billing-checkout-expiry'",
+    ).get();
+    assert.equal(expiryJob.handler, "_sporades.team-billing-checkout-expiry");
+    assert.equal(expiryJob.status, "queued");
+    assert.deepEqual(JSON.parse(expiryJob.payload), { operationId: providerInputs[0].operationId });
+    assert.equal(expiryJob.availableAt, ready.data.expiresAt, "capability erasure is durably scheduled with its exposure deadline");
+    assert.deepEqual({
+      mode: providerInputs[0].mode,
+      priceId: providerInputs[0].priceId,
+      quantity: providerInputs[0].quantity,
+      successPath: providerInputs[0].successPath,
+      cancelPath: providerInputs[0].cancelPath,
+      businessReference: providerInputs[0].businessReference,
+    }, {
+      mode: "subscription",
+      priceId: "price_test_agency",
+      quantity: 1,
+      successPath: "/settings/billing/success",
+      cancelPath: "/settings/billing/cancelled",
+      businessReference: providerInputs[0].operationId,
+    });
+    assert.doesNotMatch(JSON.stringify(ready), /price_test_agency|idempotency|providerObject|sessionId/i, "the safe response contains only the approved URL capability, not provider correlation fields");
+    const repeated = await send(owner, { id: "checkout-repeat", type: "teamBilling.startCheckout", input, sessionToken: signupResult.data.sessionToken });
+    assert.equal(repeated.data.state, "ready");
+    assert.equal(providerInputs.length, 1, "duplicate requests do not enqueue or call the provider twice");
+    const conflict = await send(owner, { id: "checkout-conflict", type: "teamBilling.startCheckout", input: { ...input, productKey: "studio" }, sessionToken: signupResult.data.sessionToken });
+    assert.equal(conflict.error.code, "TEAM_BILLING_REQUEST_CONFLICT");
+    const billingTruth = await send(owner, { id: "checkout-no-entitlement", type: "teamBilling.get", teamId: team.id, sessionToken: signupResult.data.sessionToken });
+    assert.deepEqual(billingTruth.data, { state: "inactive", teamId: team.id }, "a Checkout response never applies entitlement truth");
+
+    const completedObservation = verifiedCheckoutObservation(providerInputs[0], "cs_test_team_checkout_1", "evt_team_checkout_completed_1", "checkout.session.completed");
+    assert.deepEqual(await applyVerifiedTeamBillingCheckoutObservation(runtime.database, completedObservation), { applied: true });
+    const completed = await send(owner, { id: "checkout-completed", type: "teamBilling.startCheckout", input, sessionToken: signupResult.data.sessionToken });
+    assert.equal(completed.data.state, "completed");
+    assert.equal("url" in completed.data, false);
+
+    blockNextProvider = true;
+    const eventFirstInput = { teamId: team.id, requestId: "66666666-6666-4666-8666-666666666666", productKey: "studio" };
+    const eventFirstStarted = await send(owner, { id: "checkout-event-first", type: "teamBilling.startCheckout", input: eventFirstInput, sessionToken: signupResult.data.sessionToken });
+    assert.equal(eventFirstStarted.data.state, "pending");
+    await waitForCheckoutSignal(blockedProviderStarted, "blocked provider start");
+    const overlapping = await send(owner, {
+      id: "checkout-overlapping",
+      type: "teamBilling.startCheckout",
+      input: { teamId: team.id, requestId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", productKey: "agency" },
+      sessionToken: signupResult.data.sessionToken,
+    });
+    assert.equal(overlapping.error.code, "TEAM_BILLING_CHECKOUT_ACTIVE");
+    assert.equal(providerInputs.length, 2, "one Team cannot start a second provider Checkout while one is active");
+    const eventFirstObservation = verifiedCheckoutObservation(providerInputs[1], "cs_test_team_checkout_2", "evt_team_checkout_completed_2", "checkout.session.completed");
+    assert.deepEqual(await applyVerifiedTeamBillingCheckoutObservation(runtime.database, {
+      ...eventFirstObservation,
+      objectId: "cs_test_different",
+    }), { applied: false }, "the normalized observation ID must match the verified Checkout object");
+    assert.deepEqual(await applyVerifiedTeamBillingCheckoutObservation(runtime.database, {
+      ...eventFirstObservation,
+      raw: { ...eventFirstObservation.raw, data: { object: { ...eventFirstObservation.raw.data.object, mode: "payment" } } },
+    }), { applied: false }, "only subscription Checkout observations belong to Team Billing");
+    assert.deepEqual(await applyVerifiedTeamBillingCheckoutObservation(runtime.database, eventFirstObservation), { applied: true });
+    releaseBlockedProvider();
+    const eventFirstCompleted = await waitForTeamCheckout(owner, eventFirstInput, signupResult.data.sessionToken, "completed");
+    assert.equal("url" in eventFirstCompleted.data, false, "event-before-response never re-exposes a continuation");
+    const stillNoEntitlement = await send(owner, { id: "checkout-still-no-entitlement", type: "teamBilling.get", teamId: team.id, sessionToken: signupResult.data.sessionToken });
+    assert.deepEqual(stillNoEntitlement.data, { state: "inactive", teamId: team.id });
+
+    blockNextProvider = false;
+    failNextOperationOnce = true;
+    const retryInput = { teamId: team.id, requestId: "77777777-7777-4777-8777-777777777777", productKey: "agency" };
+    const retryStarted = await send(owner, { id: "checkout-retry-start", type: "teamBilling.startCheckout", input: retryInput, sessionToken: signupResult.data.sessionToken });
+    assert.equal(retryStarted.data.state, "pending");
+    const retryReady = await waitForTeamCheckout(owner, retryInput, signupResult.data.sessionToken, "ready", 4_000);
+    assert.equal(retryReady.data.state, "ready");
+    const retryOperationInputs = providerInputs.slice(-2);
+    assert.equal(retryOperationInputs.length, 2);
+    assert.equal(retryOperationInputs[0].idempotencyKey, retryOperationInputs[1].idempotencyKey);
+    assert.deepEqual(
+      { ...retryOperationInputs[0], idempotencyKey: "stable" },
+      { ...retryOperationInputs[1], idempotencyKey: "stable" },
+      "provider retry reuses byte-equivalent trusted parameters",
+    );
+    await runtime.database.adapter.prepare(
+      "UPDATE [sporades_team_billing_operations] SET [continuationExpiresAt] = ? WHERE [teamId] = ? AND [requestId] = ?",
+    ).run("2000-01-01T00:00:00.000Z", team.id, retryInput.requestId);
+    await expireTeamBillingCheckout(runtime.database, {}, { operationId: retryOperationInputs[0].operationId });
+    const expired = await send(owner, { id: "checkout-expired", type: "teamBilling.startCheckout", input: retryInput, sessionToken: signupResult.data.sessionToken });
+    assert.equal(expired.data.state, "expired");
+    assert.equal("url" in expired.data, false);
+    const expiredPrivate = await runtime.database.adapter.prepare(
+      "SELECT [continuationUrl], [continuationExpiresAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?",
+    ).get(team.id, retryInput.requestId);
+    assert.deepEqual({ ...expiredPrivate }, { continuationUrl: null, continuationExpiresAt: null }, "expired capabilities are erased from runtime storage");
+    quantityMember = await runtime.open();
+    const quantityMemberSignup = await signUp(quantityMember, "checkout-quantity-member", "checkout-quantity@example.com", "Quantity member");
+    failNextOperationForQuantity = true;
+    const quantityInput = { teamId: team.id, requestId: "99999999-9999-4999-8999-999999999999", productKey: "agency" };
+    const quantityStarted = await send(owner, { id: "checkout-quantity-start", type: "teamBilling.startCheckout", input: quantityInput, sessionToken: signupResult.data.sessionToken });
+    assert.equal(quantityStarted.data.state, "pending");
+    await waitForCheckoutSignal(quantityFirstAttempt, "quantity retry first attempt");
+    await runtime.database.adapter.prepare(
+      "INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)",
+    ).run(team.id, quantityMemberSignup.data.auth.userId, new Date().toISOString());
+    const superseded = await waitForTeamCheckout(owner, quantityInput, signupResult.data.sessionToken, "superseded", 4_000);
+    assert.equal(superseded.data.state, "superseded");
+    assert.equal(providerInputs.filter((candidate) => candidate.operationId === quantityRetryOperationId).length, 1, "changed Team quantity supersedes before provider retry");
+    nextHolder = await runtime.open();
+    const nextHolderSignup = await signUp(nextHolder, "checkout-next-holder", "checkout-next@example.com", "Next checkout holder");
+    await runtime.database.adapter.prepare(
+      "INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)",
+    ).run(team.id, nextHolderSignup.data.auth.userId, new Date().toISOString());
+    failNextOperationForAuthority = true;
+    const transferInput = { teamId: team.id, requestId: "88888888-8888-4888-8888-888888888888", productKey: "studio" };
+    const transferStarted = await send(owner, { id: "checkout-transfer-start", type: "teamBilling.startCheckout", input: transferInput, sessionToken: signupResult.data.sessionToken });
+    assert.equal(transferStarted.data.state, "pending");
+    await waitForCheckoutSignal(authorityFirstAttempt, "authority retry first attempt");
+    const transferHolder = await send(owner, {
+      id: "checkout-transfer-holder",
+      type: "mutation.run",
+      mutation: "setBillingHolder",
+      args: [team.id, nextHolderSignup.data.auth.userId],
+      sessionToken: signupResult.data.sessionToken,
+    });
+    assert.equal(transferHolder.error, null, JSON.stringify(transferHolder.error));
+    const transferred = await waitForTeamCheckout(nextHolder, transferInput, nextHolderSignup.data.sessionToken, "failed", 4_000);
+    assert.equal(transferred.data.reason, "authority-changed");
+    const callsAfterTransfer = providerInputs.filter((candidate) => candidate.operationId === authorityRetryOperationId);
+    assert.equal(callsAfterTransfer.length, 1, "authority transfer prevents the provider retry");
+    const formerHolder = await send(owner, { id: "checkout-former-holder", type: "teamBilling.startCheckout", input: transferInput, sessionToken: signupResult.data.sessionToken });
+    assert.equal(formerHolder.error.code, "TEAM_BILLING_DENIED");
+  } finally {
+    releaseBlockedProvider?.();
+    owner?.close();
+    nextHolder?.close();
+    quantityMember?.close();
+    await runtime.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("libSQL Team Billing authority and projection use the same transaction-owned contract", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-billing-libsql-"));
   await withFakeLibsqlService(path.join(dir, "libsql.db"), async ({ url }) => {
@@ -1954,7 +2194,7 @@ async function startRuntime(databasePath, capsuleDefinition = capsule, options =
     name: "teams-test",
     auth: { providers: { anonymous: true, email: true } },
     ...(options.config ?? {}),
-  }, capsuleDefinition, { serviceEnv: options.serverEnv ?? {} });
+  }, capsuleDefinition, { serviceEnv: options.serverEnv ?? {}, ...(options.runtimeOptions ?? {}) });
   const hub = createWebSocketHub(() => database);
   const server = createServer();
   server.on("request", async (request, response) => {
@@ -1978,6 +2218,56 @@ async function startRuntime(databasePath, capsuleDefinition = capsule, options =
       hub.disconnectAll();
       await new Promise((resolve) => server.close(resolve));
       await database.close();
+    },
+  };
+}
+
+async function waitForTeamCheckout(socket, input, sessionToken, state, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  let attempt = 0;
+  do {
+    const result = await send(socket, { id: `checkout-poll-${attempt++}`, type: "teamBilling.startCheckout", input, sessionToken });
+    if (result.data?.state === state) return result;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  } while (Date.now() < deadline);
+  assert.fail(`Team Checkout did not reach ${state}`);
+}
+
+async function waitForCheckoutSignal(signal, description, timeoutMs = 2_000) {
+  let timeout;
+  try {
+    await Promise.race([
+      signal,
+      new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error(`Timed out waiting for ${description}`)), timeoutMs); }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function verifiedCheckoutObservation(providerInput, sessionId, providerEventId, type) {
+  const occurredAt = new Date().toISOString();
+  return {
+    provider: "stripe",
+    providerEventId,
+    type,
+    occurredAt,
+    livemode: false,
+    objectId: sessionId,
+    raw: {
+      id: providerEventId,
+      object: "event",
+      type,
+      livemode: false,
+      created: Math.floor(Date.parse(occurredAt) / 1_000),
+      data: { object: {
+        id: sessionId,
+        object: "checkout.session",
+        mode: "subscription",
+        livemode: false,
+        client_reference_id: providerInput.operationId,
+        metadata: { sporades_team_billing_operation: providerInput.operationId },
+      } },
     },
   };
 }

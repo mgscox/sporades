@@ -179,6 +179,11 @@ const app = capsule({
         stripe: { sandbox: { priceId: "price_test_agency" }, live: { priceId: "price_live_agency" } },
       },
     },
+    checkout: {
+      successPath: "/settings/billing/success",
+      cancelPath: "/settings/billing/cancelled",
+      continuationTtlSeconds: 600,
+    },
     authorize: async (ctx, input) => {
       const rows = await ctx.db.todos.where("ownerId", input.teamId).all();
       input.teamRole satisfies "admin";
@@ -658,6 +663,16 @@ teamBilling.get("00000000-0000-4000-8000-000000000000").then((result) => {
   if (result.data?.state === "active") result.data.productKey.toUpperCase();
   if (result.data?.state === "attention-required") result.data.reason.toUpperCase();
 });
+teamBilling.startCheckout({
+  teamId: "00000000-0000-4000-8000-000000000000",
+  requestId: "11111111-1111-4111-8111-111111111111",
+  productKey: "agency",
+}).then((result) => {
+  if (result.data?.state === "ready") result.data.url.toUpperCase();
+  if (result.data?.state === "failed") result.data.reason.toUpperCase();
+});
+// @ts-expect-error Checkout inputs never accept a browser-selected Stripe Price.
+teamBilling.startCheckout({ teamId: "00000000-0000-4000-8000-000000000000", requestId: "11111111-1111-4111-8111-111111111111", productKey: "agency", priceId: "price_browser_owned" });
 // @ts-expect-error Team Billing reads require an explicit Team id.
 teamBilling.get();
 // @ts-expect-error Team Billing never accepts provider identifiers from the browser.

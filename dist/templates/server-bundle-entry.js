@@ -23,6 +23,7 @@ import { publicTreePathFromRequest } from "../public-tree-contract.js";
 import { publicAccessKeyManagementError } from "../access-keys-runtime.js";
 import { ACCESS_KEY_OPERATOR_ACTIONS, validateAccessKeyOperatorActionInput } from "../cli/access-key-operator-envelope.js";
 import { createStripeCallbackEndpoint } from "../stripe-webhook-runtime.js";
+import { createStripeTeamBillingProvider } from "../stripe-team-billing-provider.js";
 import { sporadesCapsuleModuleUrl, sporadesConfig, sporadesSealedServerEnv, sporadesServerEnv, sporadesServerSource, } from "sporades:server-bundle-inputs";
 // The emitted-list bundle exposes these four as module exports. Kept so the two artifacts present
 // the same module interface, not because a deployed Capsule imports itself: `server.mjs` is
@@ -111,6 +112,7 @@ if (sporadesAction) {
 const database = await openDevDatabase(databasePath, sporadesServerSource, runtimeServerEnv, runtimeConfig, sporadesCapsuleDefinition, {
     serviceEnv: runtimeServiceEnv,
     createStripeCallbackEndpoint,
+    createStripeTeamBillingProvider,
 });
 await database.init();
 database.log.emit({

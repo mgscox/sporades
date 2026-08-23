@@ -63,8 +63,10 @@ sporades host push --restart
   binds stable product keys to exact sandbox/live Stripe Prices and a fixed or
   accepted-Team-member quantity policy. Sporades rechecks current Team-admin
   authority plus the Capsule's transaction-bound policy on every operation and
-  exposes only the closed, provider-free `teamBilling.get(teamId)` projection;
-  the Capsule owns every component, route, message, and entitlement decision.
+  exposes the closed, provider-free `teamBilling.get(teamId)` projection plus
+  durable `teamBilling.startCheckout(...)`. Only the latter may return one
+  validated, short-lived Checkout URL capability; the Capsule owns every
+  component, route, message, and entitlement decision.
 - **Realtime everything**: configuration free - automatic notifications, even for Postgress and AWS-S3
 
 ## Documentation

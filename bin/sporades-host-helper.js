@@ -177,6 +177,10 @@ var ACCESS_KEY_CLIENT_ADDRESS_HEADER = "x-sporades-client-address";
 // src/access-keys-runtime.ts
 var UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
 
+// src/team-billing-runtime.ts
+var CHECKOUT_CONTINUATION_TTL_DEFAULT_SECONDS = 10 * 60;
+var CHECKOUT_CONTINUATION_TTL_MAX_SECONDS = 30 * 60;
+
 // src/jobs-runtime.ts
 var nodeCryptoModule = process.getBuiltinModule("node:crypto");
 var STRIPE_EVENT_PAYLOAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1e3;

@@ -3,7 +3,7 @@
 
 // src/cli/sporades.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { createHash as createHash6, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes7, timingSafeEqual as timingSafeEqual4 } from "node:crypto";
+import { createHash as createHash7, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes7, timingSafeEqual as timingSafeEqual4 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
 import { appendFile, chmod as chmod2, cp, lstat as lstat7, mkdir as mkdir6, readdir as readdir2, readFile as readFile9, rename as rename5, rm as rm6, writeFile as writeFile7 } from "node:fs/promises";
@@ -174,6 +174,9 @@ export const teams = {
 export const teamBilling = {
   get(teamId) {
     return connect().teamBillingGet(teamId);
+  },
+  startCheckout(input) {
+    return connect().teamBillingStartCheckout(input);
   },
 };
 
@@ -1246,6 +1249,7 @@ function createConnection() {
     teamsLeave(teamId) { return request("teams.leave", { teamId }); },
     teamsDelete(teamId) { return request("teams.delete", { teamId }); },
     teamBillingGet(teamId) { return request("teamBilling.get", { teamId }); },
+    teamBillingStartCheckout(input) { return request("teamBilling.startCheckout", { input }); },
     journeyEnable(options = {}) {
       return request("journey.enable", { options }).then((result) => {
         if (!result.error) journeyConsentOptions = options;
@@ -4702,7 +4706,7 @@ function restartPolicyStatus(mode, overrides = {}) {
 }
 
 // src/server-runtime-source.ts
-import { createHash as createHash4, randomBytes as randomBytes5, randomUUID as randomUUID3 } from "node:crypto";
+import { createHash as createHash5, randomBytes as randomBytes5, randomUUID as randomUUID4 } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 
 // src/mail-config-validation.ts
@@ -6413,7 +6417,7 @@ function createPreferencesError(message, hint, code) {
 }
 
 // src/teams-runtime.ts
-import { createHash as createHash3, createHmac as createHmac2, randomBytes as randomBytes4, randomUUID, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+import { createHash as createHash4, createHmac as createHmac2, randomBytes as randomBytes4, randomUUID as randomUUID2, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 
 // src/maybe-promise.ts
 function isPromiseLike(value) {
@@ -7220,6 +7224,447 @@ function isPlainObject2(value) {
   return prototype === Object.prototype || prototype === null;
 }
 
+// src/team-billing-runtime.ts
+import { createHash as createHash3, randomUUID } from "node:crypto";
+var TEAM_BILLING_PRODUCT_MAX = 32;
+var TEAM_BILLING_CHECKOUT_JOB = "_sporades.team-billing-checkout";
+var TEAM_BILLING_CHECKOUT_EXPIRY_JOB = "_sporades.team-billing-checkout-expiry";
+var CHECKOUT_CONTINUATION_TTL_DEFAULT_SECONDS = 10 * 60;
+var CHECKOUT_CONTINUATION_TTL_MAX_SECONDS = 30 * 60;
+var PRODUCT_KEY_PATTERN = /^[a-z][a-z0-9-]{0,47}$/;
+var PRICE_ID_PATTERN = /^price_[A-Za-z0-9_]{1,249}$/;
+var CANONICAL_TIMESTAMP_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d\.\d{3}Z$/;
+var FIXED_QUANTITY_MAX = 1e6;
+var TEAM_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+function createTeamBillingTables(adapter) {
+  const sql = adapter.dialect.sql;
+  return chainMaybePromise([
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_customers] ([teamId] TEXT PRIMARY KEY, [mode] TEXT NOT NULL, [providerCustomerId] TEXT NOT NULL UNIQUE, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
+    )),
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_subscriptions] ([id] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [mode] TEXT NOT NULL, [providerSubscriptionId] TEXT NOT NULL UNIQUE, [providerPriceId] TEXT NOT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, [cancelAtPeriodEnd] INTEGER NOT NULL, [currentPeriodEnd] TEXT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
+    )),
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_operations] ([id] TEXT PRIMARY KEY, [requestId] TEXT NOT NULL, [teamId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [kind] TEXT NOT NULL, [productKey] TEXT NULL, [status] TEXT NOT NULL, [providerObjectId] TEXT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, UNIQUE ([teamId], [requestId]))"
+    )),
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_observations] ([id] TEXT PRIMARY KEY, [teamId] TEXT NULL, [mode] TEXT NOT NULL, [providerEventId] TEXT NOT NULL UNIQUE, [providerObjectId] TEXT NULL, [payloadDigest] TEXT NOT NULL, [observedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
+    )),
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_replay] ([providerEventId] TEXT PRIMARY KEY, [payloadDigest] TEXT NOT NULL, [settledAt] TEXT NOT NULL, [retainedUntil] TEXT NOT NULL)"
+    )),
+    ...["mode", "quantity", "continuationUrl", "continuationExpiresAt", "attemptedAt", "providerExpiresAt", "terminalObservedAt"].map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", name, name === "quantity" || name === "providerExpiresAt" ? "INTEGER" : "TEXT"))
+  ]);
+}
+function normalizeTeamBillingDefinition(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["catalogue", "authorize", "checkout"].includes(key)) || typeof value.authorize !== "function" || !value.catalogue || typeof value.catalogue !== "object" || Array.isArray(value.catalogue)) {
+    throw invalidDeclaration();
+  }
+  const entries = Object.entries(value.catalogue);
+  if (entries.length === 0 || entries.length > TEAM_BILLING_PRODUCT_MAX) throw invalidDeclaration();
+  const prices = /* @__PURE__ */ new Set();
+  const catalogue = {};
+  for (const [productKey, product] of entries.sort(([left], [right]) => left.localeCompare(right))) {
+    if (!PRODUCT_KEY_PATTERN.test(productKey) || !product || typeof product !== "object" || Array.isArray(product) || Object.keys(product).some((key) => !["quantity", "stripe"].includes(key))) throw invalidDeclaration();
+    const quantity = normalizeQuantity(product.quantity);
+    const stripe = product.stripe;
+    if (!stripe || typeof stripe !== "object" || Array.isArray(stripe) || Object.keys(stripe).sort().join(",") !== "live,sandbox") throw invalidDeclaration();
+    const sandbox = normalizeModeBinding(stripe.sandbox);
+    const live = normalizeModeBinding(stripe.live);
+    if (prices.has(sandbox.priceId) || prices.has(live.priceId) || sandbox.priceId === live.priceId) throw invalidDeclaration();
+    prices.add(sandbox.priceId);
+    prices.add(live.priceId);
+    catalogue[productKey] = Object.freeze({
+      quantity,
+      stripe: Object.freeze({ sandbox, live })
+    });
+  }
+  const checkout = value.checkout === void 0 ? null : normalizeCheckoutDefinition(value.checkout);
+  return Object.freeze({ catalogue: Object.freeze(catalogue), authorize: value.authorize, checkout });
+}
+function normalizeCheckoutDefinition(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["successPath", "cancelPath", "continuationTtlSeconds"].includes(key))) throw invalidDeclaration();
+  const successPath = canonicalReturnPath(value.successPath);
+  const cancelPath = canonicalReturnPath(value.cancelPath);
+  const continuationTtlSeconds = value.continuationTtlSeconds ?? CHECKOUT_CONTINUATION_TTL_DEFAULT_SECONDS;
+  if (!successPath || !cancelPath || !Number.isInteger(continuationTtlSeconds) || continuationTtlSeconds < 60 || continuationTtlSeconds > CHECKOUT_CONTINUATION_TTL_MAX_SECONDS) throw invalidDeclaration();
+  return Object.freeze({ successPath, cancelPath, continuationTtlSeconds });
+}
+function normalizeQuantity(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw invalidDeclaration();
+  if (value.kind === "team-members" && Object.keys(value).length === 1) return Object.freeze({ kind: "team-members" });
+  if (value.kind === "fixed" && Object.keys(value).sort().join(",") === "kind,value" && Number.isSafeInteger(value.value) && value.value >= 1 && value.value <= FIXED_QUANTITY_MAX) {
+    return Object.freeze({ kind: "fixed", value: value.value });
+  }
+  throw invalidDeclaration();
+}
+function normalizeModeBinding(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).join(",") !== "priceId" || typeof value.priceId !== "string" || !PRICE_ID_PATTERN.test(value.priceId)) throw invalidDeclaration();
+  return Object.freeze({ priceId: value.priceId });
+}
+function invalidDeclaration() {
+  return commandError(
+    "Invalid Team Billing declaration.",
+    "Declare 1-32 lowercase products with exact sandbox/live Stripe Price bindings, a fixed or Team-member quantity policy, and an authorize policy.",
+    "INVALID_TEAM_BILLING_DECLARATION"
+  );
+}
+async function readCurrentUserTeamBilling(database, auth, teamId) {
+  requireAuth({ auth }, { linked: true });
+  if (!database.teamBillingDefinition || !TEAM_ID_PATTERN.test(String(teamId ?? ""))) throw teamBillingDenied();
+  return database.adapter.withTransaction(async (transaction) => {
+    await admitTeamBillingActor(database, transaction, auth, { operation: "read", teamId });
+    return safeTeamBillingProjection(transaction, database.teamBillingDefinition, teamId);
+  });
+}
+async function startTeamBillingCheckout(database, auth, teamId, requestId, productKey) {
+  requireAuth({ auth }, { linked: true });
+  const definition = database.teamBillingDefinition;
+  if (!definition?.checkout || !database.paymentsConfig?.stripe?.enabled || !TEAM_ID_PATTERN.test(String(teamId ?? "")) || !TEAM_ID_PATTERN.test(String(requestId ?? "")) || typeof productKey !== "string" || !definition.catalogue[productKey]) throw teamBillingDenied();
+  let enqueued = false;
+  const result = await withTeamBillingAdmissionTransaction(database, async (transaction) => {
+    await admitTeamBillingActor(database, transaction, auth, { operation: "checkout", teamId, productKey });
+    const sql = transaction.dialect.sql;
+    const existing = await transaction.prepare(sql(
+      "SELECT [requestId], [productKey], [status], [providerObjectId], [continuationUrl], [continuationExpiresAt], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?"
+    )).get(teamId, requestId);
+    if (existing) {
+      if (existing.productKey !== productKey) throw checkoutConflict();
+      return checkoutOperationResult(database, transaction, teamId, requestId, existing);
+    }
+    const desired = await checkoutDesiredState(database, transaction, teamId, productKey);
+    const now = database.clock.now().toISOString();
+    const active = await transaction.prepare(sql(
+      "SELECT [id], [status], [continuationExpiresAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] = 'checkout' AND [status] IN ('running', 'retrying', 'ready') ORDER BY [createdAt] LIMIT 1"
+    )).get(teamId);
+    if (active?.status === "ready" && (!canonicalTimestamp(active.continuationExpiresAt) || active.continuationExpiresAt <= now)) {
+      await transaction.prepare(sql(
+        "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] = 'ready'"
+      )).run(now, active.id);
+    } else if (active) {
+      throw checkoutActive();
+    }
+    const operationId = randomUUID();
+    const idempotencyKey = checkoutIdempotencyKey(database.capsuleIdentity, teamId, requestId);
+    const providerExpiresAt = Math.floor((database.clock.now().getTime() + 23 * 60 * 60 * 1e3) / 1e3);
+    await transaction.prepare(sql(
+      "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [teamId] = ? AND [kind] = 'checkout' AND [status] = 'queued' AND [providerObjectId] IS NULL"
+    )).run(now, teamId);
+    await transaction.prepare(sql(
+      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [continuationUrl], [continuationExpiresAt], [attemptedAt], [providerExpiresAt]) VALUES (?, ?, ?, ?, 'checkout', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, NULL, NULL, NULL, ?)"
+    )).run(operationId, requestId, teamId, auth.userId, productKey, idempotencyKey, now, now, desired.mode, desired.quantity, providerExpiresAt);
+    if (typeof database.enqueueTeamBillingCheckoutJob !== "function") throw checkoutUnavailable();
+    await database.enqueueTeamBillingCheckoutJob(transaction, { operationId }, `team-billing-checkout:${operationId}`);
+    enqueued = true;
+    return Object.freeze({ state: "pending", teamId, requestId, productKey, requestedAt: now });
+  });
+  if (enqueued) database.scheduleTeamBillingJobDispatch?.();
+  return result;
+}
+async function withTeamBillingAdmissionTransaction(database, callback) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await database.adapter.withTransaction(callback);
+    } catch (error) {
+      const transientSqliteLock = error?.code === "ERR_SQLITE_ERROR" && /(?:locked|busy)/i.test(String(error?.message ?? ""));
+      if (!transientSqliteLock || attempt >= 5) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 5 * 2 ** attempt));
+    }
+  }
+}
+async function performTeamBillingCheckout(database, context, payload) {
+  const operationId = payload && typeof payload === "object" && !Array.isArray(payload) && Object.keys(payload).join(",") === "operationId" && TEAM_ID_PATTERN.test(String(payload.operationId ?? "")) ? payload.operationId : null;
+  if (!operationId) throw checkoutUnavailable();
+  let providerInput = null;
+  try {
+    providerInput = await database.adapter.withTransaction(async (transaction) => {
+      const sql = transaction.dialect.sql;
+      const operation = await transaction.prepare(sql(
+        "SELECT [id], [teamId], [actorUserId], [productKey], [status], [mode], [quantity], [idempotencyKey], [providerExpiresAt] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'"
+      )).get(operationId);
+      if (!operation || !["queued", "running", "retrying"].includes(operation.status)) return null;
+      const actor = await transaction.prepare(sql(
+        "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider] FROM [sporades_auth_users] WHERE [id] = ?"
+      )).get(operation.actorUserId);
+      if (!actor) throw teamBillingDenied();
+      const auth = {
+        userId: actor.id,
+        displayName: actor.displayName,
+        email: actor.email,
+        picture: actor.picture,
+        isAuthenticated: Boolean(actor.isAuthenticated),
+        isGuest: Boolean(actor.isGuest),
+        provider: actor.provider
+      };
+      await admitTeamBillingActor(database, transaction, auth, { operation: "checkout", teamId: operation.teamId, productKey: operation.productKey });
+      const desired = await checkoutDesiredState(database, transaction, operation.teamId, operation.productKey);
+      if (operation.mode !== desired.mode || operation.quantity !== desired.quantity) {
+        await transaction.prepare(sql(
+          "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [safeFailureCode] = 'DESIRED_STATE_CHANGED', [updatedAt] = ? WHERE [id] = ?"
+        )).run(database.clock.now().toISOString(), operationId);
+        return null;
+      }
+      if (!Number.isSafeInteger(operation.providerExpiresAt) || operation.providerExpiresAt <= Math.floor(database.clock.now().getTime() / 1e3)) {
+        await transaction.prepare(sql(
+          "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [updatedAt] = ? WHERE [id] = ?"
+        )).run(database.clock.now().toISOString(), operationId);
+        return null;
+      }
+      const customer = await transaction.prepare(sql(
+        "SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?"
+      )).get(operation.teamId);
+      if (customer && customer.mode !== desired.mode) throw checkoutUnavailable();
+      const attemptedAt = database.clock.now().toISOString();
+      await transaction.prepare(sql(
+        "UPDATE [sporades_team_billing_operations] SET [status] = 'running', [attemptedAt] = COALESCE([attemptedAt], ?), [updatedAt] = ? WHERE [id] = ?"
+      )).run(attemptedAt, attemptedAt, operationId);
+      return {
+        operationId,
+        teamId: operation.teamId,
+        productKey: operation.productKey,
+        mode: "subscription",
+        priceId: desired.priceId,
+        quantity: desired.quantity,
+        successPath: database.teamBillingDefinition.checkout.successPath,
+        cancelPath: database.teamBillingDefinition.checkout.cancelPath,
+        idempotencyKey: operation.idempotencyKey,
+        businessReference: operationId,
+        providerExpiresAt: operation.providerExpiresAt,
+        ...customer ? { customerId: customer.providerCustomerId } : {}
+      };
+    });
+  } catch (error) {
+    if (error?.code === "ERR_SQLITE_ERROR" && /(?:locked|busy)/i.test(String(error?.message ?? ""))) {
+      error.retryable = true;
+      throw error;
+    }
+    await settleCheckoutFailure(database, operationId, error?.code === "TEAM_BILLING_DENIED" ? "AUTHORITY_CHANGED" : "CONFIGURATION_INVALID");
+    const failure = checkoutUnavailable();
+    failure.retryable = false;
+    throw failure;
+  }
+  if (!providerInput) return null;
+  try {
+    if (typeof database.createStripeTeamBillingProvider !== "function") throw checkoutUnavailable();
+    const provider = database.createStripeTeamBillingProvider({
+      enabled: true,
+      config: database.paymentsConfig.stripe,
+      env: database.serverEnv,
+      signal: context?.signal,
+      ...database.stripeApiBaseUrl ? { apiBaseUrl: database.stripeApiBaseUrl } : {}
+    });
+    const result = await provider.create(providerInput);
+    if (!result?.ok || !validCheckoutContinuation(result.url, result.sessionId)) throw checkoutUnavailable();
+    const now = database.clock.now();
+    const expiresAt = new Date(now.getTime() + database.teamBillingDefinition.checkout.continuationTtlSeconds * 1e3).toISOString();
+    let expiryEnqueued = false;
+    const settled = await database.adapter.withTransaction(async (transaction) => {
+      const outcome = await transaction.prepare(transaction.dialect.sql(
+        "UPDATE [sporades_team_billing_operations] SET [status] = 'ready', [providerObjectId] = ?, [continuationUrl] = ?, [continuationExpiresAt] = ?, [safeFailureCode] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] IN ('running', 'retrying')"
+      )).run(result.sessionId, result.url, expiresAt, now.toISOString(), operationId);
+      if (Number(outcome?.changes ?? 0) === 1) {
+        if (typeof database.enqueueTeamBillingCheckoutExpiryJob !== "function") throw checkoutUnavailable();
+        await database.enqueueTeamBillingCheckoutExpiryJob(transaction, { operationId }, `team-billing-checkout-expiry:${operationId}`, expiresAt);
+        expiryEnqueued = true;
+      }
+      return outcome;
+    });
+    if (expiryEnqueued) database.scheduleTeamBillingJobDispatch?.();
+    if (Number(settled?.changes ?? 0) !== 1) {
+      const terminal = await database.adapter.prepare(database.adapter.dialect.sql(
+        "SELECT [status], [providerObjectId] FROM [sporades_team_billing_operations] WHERE [id] = ?"
+      )).get(operationId);
+      if (!["completed", "expired"].includes(terminal?.status) || terminal.providerObjectId !== result.sessionId) throw checkoutUnavailable();
+      return { observed: true };
+    }
+    return { ready: true };
+  } catch (error) {
+    const retryable = error?.retryable !== false;
+    await settleCheckoutFailure(database, operationId, retryable ? "PROVIDER_RETRY" : "PROVIDER_REJECTED", retryable ? "retrying" : "failed");
+    throw error;
+  }
+}
+async function expireTeamBillingCheckout(database, _context, payload) {
+  const operationId = payload && typeof payload === "object" && !Array.isArray(payload) && Object.keys(payload).join(",") === "operationId" && TEAM_ID_PATTERN.test(String(payload.operationId ?? "")) ? payload.operationId : null;
+  if (!operationId) throw checkoutUnavailable();
+  const now = database.clock.now().toISOString();
+  await database.adapter.prepare(database.adapter.dialect.sql(
+    "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] = 'ready' AND [continuationExpiresAt] <= ?"
+  )).run(now, operationId, now);
+  return null;
+}
+async function applyVerifiedTeamBillingCheckoutObservation(database, event) {
+  if (!database.teamBillingDefinition || event?.provider !== "stripe" || !["checkout.session.completed", "checkout.session.expired"].includes(event?.type)) return { applied: false };
+  const object = event?.raw?.data?.object;
+  const operationId = object?.client_reference_id;
+  if (!object || typeof object !== "object" || Array.isArray(object) || object.object !== "checkout.session" || object.mode !== "subscription" || object.livemode !== event.livemode || event.objectId !== object.id || event.raw?.id !== event.providerEventId || event.raw?.type !== event.type || event.raw?.livemode !== event.livemode || !TEAM_ID_PATTERN.test(String(operationId ?? "")) || object?.metadata?.sporades_team_billing_operation !== operationId || !validCheckoutContinuation(`https://checkout.stripe.com/c/pay/${object.id}`, object.id) || typeof event.providerEventId !== "string" || !/^evt_[A-Za-z0-9_]{1,240}$/.test(event.providerEventId) || !canonicalTimestamp(event.occurredAt) || typeof event.livemode !== "boolean" || event.livemode !== Boolean(database.paymentsConfig?.stripe?.livemode)) return { applied: false };
+  const status = event.type === "checkout.session.completed" ? "completed" : "expired";
+  return database.adapter.withTransaction(async (transaction) => {
+    const sql = transaction.dialect.sql;
+    const operation = await transaction.prepare(sql(
+      "SELECT [id], [teamId], [mode], [providerObjectId], [status], [terminalObservedAt] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'"
+    )).get(operationId);
+    const expectedMode = event.livemode ? "live" : "sandbox";
+    if (!operation || operation.mode !== expectedMode || operation.providerObjectId && operation.providerObjectId !== object.id) return { applied: false };
+    const payloadDigest = createHash3("sha256").update(JSON.stringify(event.raw)).digest("hex");
+    const inserted = await transaction.prepare(sql(
+      "INSERT INTO [sporades_team_billing_observations] ([id], [teamId], [mode], [providerEventId], [providerObjectId], [payloadDigest], [observedAt], [createdAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT ([providerEventId]) DO NOTHING"
+    )).run(randomUUID(), operation.teamId, expectedMode, event.providerEventId, object.id, payloadDigest, event.occurredAt, database.clock.now().toISOString());
+    if (Number(inserted?.changes ?? 0) !== 1) return { applied: false };
+    if (operation.terminalObservedAt && operation.terminalObservedAt > event.occurredAt) return { applied: false };
+    await transaction.prepare(sql(
+      "UPDATE [sporades_team_billing_operations] SET [status] = ?, [providerObjectId] = ?, [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [terminalObservedAt] = ?, [updatedAt] = ? WHERE [id] = ?"
+    )).run(status, object.id, event.occurredAt, database.clock.now().toISOString(), operationId);
+    return { applied: true };
+  });
+}
+async function admitTeamBillingActor(database, transaction, auth, input) {
+  requireAuth({ auth }, { linked: true });
+  await lockTeamLifecycle(transaction, input.teamId, teamBillingDenied);
+  const sql = transaction.dialect.sql;
+  const membership = await transaction.prepare(sql(
+    "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
+  )).get(input.teamId, auth.userId);
+  if (membership?.role !== "admin") throw teamBillingDenied();
+  const decision = await database.runTeamBillingAuthority?.(transaction, auth, Object.freeze({
+    operation: input.operation,
+    teamId: input.teamId,
+    teamRole: "admin",
+    ...input.productKey === void 0 ? {} : { productKey: input.productKey }
+  }));
+  if (!decision || typeof decision !== "object" || Array.isArray(decision) || Object.keys(decision).join(",") !== "allow" || decision.allow !== true) throw teamBillingDenied();
+  return Object.freeze({ admitted: true });
+}
+async function safeTeamBillingProjection(transaction, definition, teamId) {
+  const sql = transaction.dialect.sql;
+  const operation = await transaction.prepare(sql(
+    "SELECT [kind], [productKey], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [status] IN ('queued', 'running', 'retrying') ORDER BY [createdAt] DESC, [id] DESC LIMIT 1"
+  )).get(teamId);
+  if (operation) {
+    const requestedAt = canonicalTimestamp(operation.createdAt);
+    if (!requestedAt) {
+      return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
+    }
+    const kind = ["checkout", "plan-transition", "erasure"].includes(operation.kind) ? operation.kind : "reconciliation";
+    return Object.freeze({
+      state: "pending",
+      teamId,
+      operation: kind,
+      ...typeof operation.productKey === "string" && definition.catalogue[operation.productKey] ? { productKey: operation.productKey } : {},
+      requestedAt
+    });
+  }
+  const row = await transaction.prepare(sql(
+    "SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [observedAt] DESC, [id] DESC LIMIT 1"
+  )).get(teamId);
+  if (!row) return Object.freeze({ state: "inactive", teamId });
+  const product = definition.catalogue[row.productKey];
+  const binding = row.mode === "sandbox" || row.mode === "live" ? product?.stripe?.[row.mode] : null;
+  const quantity = typeof row.quantity === "number" && Number.isSafeInteger(row.quantity) && row.quantity >= 1 ? row.quantity : null;
+  if (!product || !binding || row.providerPriceId !== binding.priceId || quantity === null || product.quantity.kind === "fixed" && quantity !== product.quantity.value) {
+    return Object.freeze({ state: "attention-required", teamId, reason: "catalogue-mismatch" });
+  }
+  if (row.cancelAtPeriodEnd !== 0 && row.cancelAtPeriodEnd !== 1) {
+    return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
+  }
+  const common = { teamId, productKey: row.productKey, quantity };
+  if (row.state === "active") {
+    const currentPeriodEnd = canonicalTimestamp(row.currentPeriodEnd);
+    if (!currentPeriodEnd) {
+      return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
+    }
+    return Object.freeze(row.cancelAtPeriodEnd === 1 ? { state: "cancelling", ...common, endsAt: currentPeriodEnd } : { state: "active", ...common, renewsAt: currentPeriodEnd });
+  }
+  if (row.state === "past-due") return Object.freeze({ state: "past-due", ...common });
+  if (row.state === "cancelled") return Object.freeze({ state: "cancelled", ...common });
+  return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
+}
+function canonicalTimestamp(value) {
+  if (typeof value !== "string" || !CANONICAL_TIMESTAMP_PATTERN.test(value)) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value ? value : null;
+}
+function canonicalReturnPath(value) {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || value.includes("\\") || value.includes("?") || value.includes("#") || /\s/.test(value)) return null;
+  try {
+    const pathname = new URL(value, "https://sporades.invalid").pathname;
+    return pathname === value ? value : null;
+  } catch {
+    return null;
+  }
+}
+async function checkoutDesiredState(database, transaction, teamId, productKey) {
+  const product = database.teamBillingDefinition.catalogue[productKey];
+  const mode = database.paymentsConfig.stripe.livemode ? "live" : "sandbox";
+  const quantity = product.quantity.kind === "fixed" ? product.quantity.value : Number((await transaction.prepare(transaction.dialect.sql(
+    "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
+  )).get(teamId))?.count ?? 0);
+  if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 99) throw checkoutUnavailable();
+  return { mode, quantity, priceId: product.stripe[mode].priceId };
+}
+async function checkoutOperationResult(database, transaction, teamId, requestId, operation) {
+  const common = { teamId, requestId, productKey: operation.productKey };
+  if (["queued", "running", "retrying"].includes(operation.status)) {
+    const requestedAt = canonicalTimestamp(operation.createdAt);
+    return requestedAt ? Object.freeze({ state: "pending", ...common, requestedAt }) : Object.freeze({ state: "failed", ...common, reason: "unavailable" });
+  }
+  if (operation.status === "ready") {
+    const expiresAt = canonicalTimestamp(operation.continuationExpiresAt);
+    if (expiresAt && expiresAt > database.clock.now().toISOString() && validCheckoutContinuation(operation.continuationUrl, operation.providerObjectId)) {
+      return Object.freeze({ state: "ready", ...common, url: operation.continuationUrl, expiresAt });
+    }
+    await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [requestId] = ? AND [status] = 'ready'"
+    )).run(database.clock.now().toISOString(), teamId, requestId);
+    return Object.freeze({ state: "expired", ...common });
+  }
+  if (operation.status === "expired") return Object.freeze({ state: "expired", ...common });
+  if (operation.status === "superseded") return Object.freeze({ state: "superseded", ...common });
+  if (operation.status === "completed") return Object.freeze({ state: "completed", ...common });
+  return Object.freeze({ state: "failed", ...common, reason: operation.safeFailureCode === "AUTHORITY_CHANGED" ? "authority-changed" : "unavailable" });
+}
+function checkoutIdempotencyKey(capsuleIdentity, teamId, requestId) {
+  const digest = createHash3("sha256").update(`${String(capsuleIdentity)}\0${teamId}\0${requestId}`).digest("base64url");
+  return `sporades:team-checkout:${digest}`;
+}
+function validCheckoutContinuation(urlValue, sessionIdValue) {
+  if (typeof sessionIdValue !== "string" || !/^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/.test(sessionIdValue) || typeof urlValue !== "string") return false;
+  try {
+    const url = new URL(urlValue);
+    return url.protocol === "https:" && url.hostname === "checkout.stripe.com" && (url.pathname === `/c/pay/${sessionIdValue}` || url.pathname === `/pay/${sessionIdValue}`) && !url.username && !url.password && !url.port;
+  } catch {
+    return false;
+  }
+}
+async function settleCheckoutFailure(database, operationId, safeFailureCode, status = "failed") {
+  await database.adapter.prepare(database.adapter.dialect.sql(
+    "UPDATE [sporades_team_billing_operations] SET [status] = ?, [safeFailureCode] = ?, [updatedAt] = ? WHERE [id] = ? AND [status] IN ('queued', 'running', 'retrying')"
+  )).run(status, safeFailureCode, database.clock.now().toISOString(), operationId);
+}
+function checkoutConflict() {
+  return commandError("Team Checkout request conflicts with existing work.", "Use a new request identifier for a different product.", "TEAM_BILLING_REQUEST_CONFLICT");
+}
+function checkoutActive() {
+  return commandError(
+    "A Team Checkout is already active.",
+    "Finish, abandon, or allow the current Team Checkout to expire before starting another.",
+    "TEAM_BILLING_CHECKOUT_ACTIVE"
+  );
+}
+function checkoutUnavailable() {
+  const error = commandError("Team Checkout is unavailable.", "Retry from the Team billing settings later.", "TEAM_BILLING_CHECKOUT_UNAVAILABLE");
+  error.retryable = false;
+  return error;
+}
+function teamBillingDenied() {
+  return commandError(
+    "Team Billing is unavailable.",
+    "Sign in as the current policy-approved billing administrator for this Team and retry.",
+    "TEAM_BILLING_DENIED"
+  );
+}
+
 // src/jobs-runtime.ts
 var nodeCryptoModule = process.getBuiltinModule("node:crypto");
 var RESERVED_JOB_NAME_PREFIX = "_sporades";
@@ -7862,6 +8307,14 @@ function createRuntimeClock(clock) {
 }
 function runtimeOwnedJobHandlers(runtime) {
   return [
+    {
+      name: TEAM_BILLING_CHECKOUT_JOB,
+      handler: runtime.performTeamBillingCheckout
+    },
+    {
+      name: TEAM_BILLING_CHECKOUT_EXPIRY_JOB,
+      handler: runtime.expireTeamBillingCheckout
+    },
     {
       name: STRIPE_EVENT_JOB,
       handler: runtime.dispatchStripeEvent
@@ -10818,7 +11271,7 @@ async function createTeamJoinLink(database, auth, teamId, email, options = {}, e
       await claimTeamJoinLinkCreationSlot(tx, teamId, auth.userId, nowIso);
       await claimTeamJoinLinkCapacity(tx, teamId, nowIso);
       const secret = await teamJoinSigningSecret(tx, nowIso);
-      const id = randomUUID();
+      const id = randomUUID2();
       const selector = randomBytes4(16).toString("base64url");
       const verifier = randomBytes4(32).toString("base64url");
       const expiresAt = new Date(now.getTime() + ttlSeconds * 1e3).toISOString();
@@ -11145,7 +11598,7 @@ function parseTeamJoinCode(code) {
   return { selector, verifier, signature };
 }
 function hashTeamJoinVerifier(verifier) {
-  return createHash3("sha256").update(verifier).digest("base64url");
+  return createHash4("sha256").update(verifier).digest("base64url");
 }
 function teamJoinSignature(secret, id, selector, verifier, expiresAt) {
   return createHmac2("sha256", secret).update(`v1.${id}.${selector}.${verifier}.${expiresAt}`).digest("base64url");
@@ -11284,7 +11737,7 @@ async function createAdditionalTeam(database, auth, name, eventContext) {
         "TEAM_LIMIT_REACHED"
       );
     }
-    const id = randomUUID();
+    const id = randomUUID2();
     const now = (/* @__PURE__ */ new Date()).toISOString();
     await tx.prepare(tx.dialect.sql(
       "INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)"
@@ -11599,7 +12052,7 @@ async function bootstrapInitialTeamForLinkedUser(tx, userId) {
 }
 async function ensureInitialTeamOnAdapter(tx, userId) {
   const sql = tx.dialect.sql;
-  const id = randomUUID();
+  const id = randomUUID2();
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const claim = await tx.prepare(sql(
     "INSERT INTO [sporades_team_bootstrap] ([userId], [teamId], [createdAt]) VALUES (?, ?, ?) ON CONFLICT ([userId]) DO NOTHING"
@@ -14531,159 +14984,6 @@ function ensureSessionProvenanceColumn(sqlite) {
   ]);
 }
 
-// src/team-billing-runtime.ts
-var TEAM_BILLING_PRODUCT_MAX = 32;
-var PRODUCT_KEY_PATTERN = /^[a-z][a-z0-9-]{0,47}$/;
-var PRICE_ID_PATTERN = /^price_[A-Za-z0-9_]{1,249}$/;
-var CANONICAL_TIMESTAMP_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d\.\d{3}Z$/;
-var FIXED_QUANTITY_MAX = 1e6;
-var TEAM_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-function createTeamBillingTables(adapter) {
-  const sql = adapter.dialect.sql;
-  return chainMaybePromise([
-    () => adapter.exec(sql(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_customers] ([teamId] TEXT PRIMARY KEY, [mode] TEXT NOT NULL, [providerCustomerId] TEXT NOT NULL UNIQUE, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
-    )),
-    () => adapter.exec(sql(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_subscriptions] ([id] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [mode] TEXT NOT NULL, [providerSubscriptionId] TEXT NOT NULL UNIQUE, [providerPriceId] TEXT NOT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, [cancelAtPeriodEnd] INTEGER NOT NULL, [currentPeriodEnd] TEXT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
-    )),
-    () => adapter.exec(sql(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_operations] ([id] TEXT PRIMARY KEY, [requestId] TEXT NOT NULL, [teamId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [kind] TEXT NOT NULL, [productKey] TEXT NULL, [status] TEXT NOT NULL, [providerObjectId] TEXT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, UNIQUE ([teamId], [requestId]))"
-    )),
-    () => adapter.exec(sql(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_observations] ([id] TEXT PRIMARY KEY, [teamId] TEXT NULL, [mode] TEXT NOT NULL, [providerEventId] TEXT NOT NULL UNIQUE, [providerObjectId] TEXT NULL, [payloadDigest] TEXT NOT NULL, [observedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
-    )),
-    () => adapter.exec(sql(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_replay] ([providerEventId] TEXT PRIMARY KEY, [payloadDigest] TEXT NOT NULL, [settledAt] TEXT NOT NULL, [retainedUntil] TEXT NOT NULL)"
-    ))
-  ]);
-}
-function normalizeTeamBillingDefinition(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["catalogue", "authorize"].includes(key)) || typeof value.authorize !== "function" || !value.catalogue || typeof value.catalogue !== "object" || Array.isArray(value.catalogue)) {
-    throw invalidDeclaration();
-  }
-  const entries = Object.entries(value.catalogue);
-  if (entries.length === 0 || entries.length > TEAM_BILLING_PRODUCT_MAX) throw invalidDeclaration();
-  const prices = /* @__PURE__ */ new Set();
-  const catalogue = {};
-  for (const [productKey, product] of entries.sort(([left], [right]) => left.localeCompare(right))) {
-    if (!PRODUCT_KEY_PATTERN.test(productKey) || !product || typeof product !== "object" || Array.isArray(product) || Object.keys(product).some((key) => !["quantity", "stripe"].includes(key))) throw invalidDeclaration();
-    const quantity = normalizeQuantity(product.quantity);
-    const stripe = product.stripe;
-    if (!stripe || typeof stripe !== "object" || Array.isArray(stripe) || Object.keys(stripe).sort().join(",") !== "live,sandbox") throw invalidDeclaration();
-    const sandbox = normalizeModeBinding(stripe.sandbox);
-    const live = normalizeModeBinding(stripe.live);
-    if (prices.has(sandbox.priceId) || prices.has(live.priceId) || sandbox.priceId === live.priceId) throw invalidDeclaration();
-    prices.add(sandbox.priceId);
-    prices.add(live.priceId);
-    catalogue[productKey] = Object.freeze({
-      quantity,
-      stripe: Object.freeze({ sandbox, live })
-    });
-  }
-  return Object.freeze({ catalogue: Object.freeze(catalogue), authorize: value.authorize });
-}
-function normalizeQuantity(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw invalidDeclaration();
-  if (value.kind === "team-members" && Object.keys(value).length === 1) return Object.freeze({ kind: "team-members" });
-  if (value.kind === "fixed" && Object.keys(value).sort().join(",") === "kind,value" && Number.isSafeInteger(value.value) && value.value >= 1 && value.value <= FIXED_QUANTITY_MAX) {
-    return Object.freeze({ kind: "fixed", value: value.value });
-  }
-  throw invalidDeclaration();
-}
-function normalizeModeBinding(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).join(",") !== "priceId" || typeof value.priceId !== "string" || !PRICE_ID_PATTERN.test(value.priceId)) throw invalidDeclaration();
-  return Object.freeze({ priceId: value.priceId });
-}
-function invalidDeclaration() {
-  return commandError(
-    "Invalid Team Billing declaration.",
-    "Declare 1-32 lowercase products with exact sandbox/live Stripe Price bindings, a fixed or Team-member quantity policy, and an authorize policy.",
-    "INVALID_TEAM_BILLING_DECLARATION"
-  );
-}
-async function readCurrentUserTeamBilling(database, auth, teamId) {
-  requireAuth({ auth }, { linked: true });
-  if (!database.teamBillingDefinition || !TEAM_ID_PATTERN.test(String(teamId ?? ""))) throw teamBillingDenied();
-  return database.adapter.withTransaction(async (transaction) => {
-    await admitTeamBillingActor(database, transaction, auth, { operation: "read", teamId });
-    return safeTeamBillingProjection(transaction, database.teamBillingDefinition, teamId);
-  });
-}
-async function admitTeamBillingActor(database, transaction, auth, input) {
-  requireAuth({ auth }, { linked: true });
-  await lockTeamLifecycle(transaction, input.teamId, teamBillingDenied);
-  const sql = transaction.dialect.sql;
-  const membership = await transaction.prepare(sql(
-    "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
-  )).get(input.teamId, auth.userId);
-  if (membership?.role !== "admin") throw teamBillingDenied();
-  const decision = await database.runTeamBillingAuthority?.(transaction, auth, Object.freeze({
-    operation: input.operation,
-    teamId: input.teamId,
-    teamRole: "admin",
-    ...input.productKey === void 0 ? {} : { productKey: input.productKey }
-  }));
-  if (!decision || typeof decision !== "object" || Array.isArray(decision) || Object.keys(decision).join(",") !== "allow" || decision.allow !== true) throw teamBillingDenied();
-  return Object.freeze({ admitted: true });
-}
-async function safeTeamBillingProjection(transaction, definition, teamId) {
-  const sql = transaction.dialect.sql;
-  const operation = await transaction.prepare(sql(
-    "SELECT [kind], [productKey], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [status] IN ('queued', 'running', 'retrying') ORDER BY [createdAt] DESC, [id] DESC LIMIT 1"
-  )).get(teamId);
-  if (operation) {
-    const requestedAt = canonicalTimestamp(operation.createdAt);
-    if (!requestedAt) {
-      return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
-    }
-    const kind = ["checkout", "plan-transition", "erasure"].includes(operation.kind) ? operation.kind : "reconciliation";
-    return Object.freeze({
-      state: "pending",
-      teamId,
-      operation: kind,
-      ...typeof operation.productKey === "string" && definition.catalogue[operation.productKey] ? { productKey: operation.productKey } : {},
-      requestedAt
-    });
-  }
-  const row = await transaction.prepare(sql(
-    "SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [observedAt] DESC, [id] DESC LIMIT 1"
-  )).get(teamId);
-  if (!row) return Object.freeze({ state: "inactive", teamId });
-  const product = definition.catalogue[row.productKey];
-  const binding = row.mode === "sandbox" || row.mode === "live" ? product?.stripe?.[row.mode] : null;
-  const quantity = typeof row.quantity === "number" && Number.isSafeInteger(row.quantity) && row.quantity >= 1 ? row.quantity : null;
-  if (!product || !binding || row.providerPriceId !== binding.priceId || quantity === null || product.quantity.kind === "fixed" && quantity !== product.quantity.value) {
-    return Object.freeze({ state: "attention-required", teamId, reason: "catalogue-mismatch" });
-  }
-  if (row.cancelAtPeriodEnd !== 0 && row.cancelAtPeriodEnd !== 1) {
-    return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
-  }
-  const common = { teamId, productKey: row.productKey, quantity };
-  if (row.state === "active") {
-    const currentPeriodEnd = canonicalTimestamp(row.currentPeriodEnd);
-    if (!currentPeriodEnd) {
-      return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
-    }
-    return Object.freeze(row.cancelAtPeriodEnd === 1 ? { state: "cancelling", ...common, endsAt: currentPeriodEnd } : { state: "active", ...common, renewsAt: currentPeriodEnd });
-  }
-  if (row.state === "past-due") return Object.freeze({ state: "past-due", ...common });
-  if (row.state === "cancelled") return Object.freeze({ state: "cancelled", ...common });
-  return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
-}
-function canonicalTimestamp(value) {
-  if (typeof value !== "string" || !CANONICAL_TIMESTAMP_PATTERN.test(value)) return null;
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value ? value : null;
-}
-function teamBillingDenied() {
-  return commandError(
-    "Team Billing is unavailable.",
-    "Sign in as the current policy-approved billing administrator for this Team and retry.",
-    "TEAM_BILLING_DENIED"
-  );
-}
-
 // src/cli/access-key-operator-envelope.ts
 import { createInterface } from "node:readline/promises";
 var ACCESS_KEY_OPERATOR_ACTIONS = [
@@ -14858,7 +15158,7 @@ function sanitizeAccessKeyOperatorEnvelope(value, action, input, invalid) {
 }
 
 // src/database-runtime.ts
-import { randomUUID as randomUUID2 } from "node:crypto";
+import { randomUUID as randomUUID3 } from "node:crypto";
 
 // src/inspection-sql.ts
 function validateReadOnlyInspectionSql(sql) {
@@ -17555,7 +17855,7 @@ function migrateExistingAppTableInTransaction(sqlite, existingTable, nextTable) 
     const occupiedNames = new Set(tableNames);
     let tempTableName;
     do {
-      tempTableName = `__sporades_migrating_${randomUUID2().replaceAll("-", "")}`;
+      tempTableName = `__sporades_migrating_${randomUUID3().replaceAll("-", "")}`;
     } while (occupiedNames.has(tempTableName));
     return chainMaybePromise([
       ...addedFieldsForTable(existingTable, nextTable).filter((field) => field.kind === "Reference" && field.defaultValue !== void 0 && field.defaultValue !== null).map(
@@ -17963,7 +18263,12 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   let database;
   const jobs = [...jobHandlersFromCapsuleDefinition(capsuleDefinition), ...runtimeOwnedJobHandlers({
     prepareEmailPasswordResetDelivery: (context, payload) => prepareEmailPasswordResetDelivery(database, payload, database.__runtimeJobAttempts.get(context) ?? 1),
-    dispatchStripeEvent: (context, event) => capsuleDefinition?.stripeEvents?.options?.consequence === "atomic" ? runAtomicStripeConsequence(database, context, event, capsuleDefinition.stripeEvents) : dispatchVerifiedStripeEvent(context, event, capsuleDefinition?.stripeEvents)
+    dispatchStripeEvent: async (context, event) => {
+      await applyVerifiedTeamBillingCheckoutObservation(database, event);
+      return capsuleDefinition?.stripeEvents?.options?.consequence === "atomic" ? runAtomicStripeConsequence(database, context, event, capsuleDefinition.stripeEvents) : dispatchVerifiedStripeEvent(context, event, capsuleDefinition?.stripeEvents);
+    },
+    performTeamBillingCheckout: (context, payload) => performTeamBillingCheckout(database, context, payload),
+    expireTeamBillingCheckout: (context, payload) => expireTeamBillingCheckout(database, context, payload)
   })];
   const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
   const clock = createRuntimeClock(options?.clock);
@@ -18014,6 +18319,11 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     rowCache,
     serverEnv,
     paymentsConfig,
+    createStripeTeamBillingProvider: options?.createStripeTeamBillingProvider,
+    stripeApiBaseUrl: options?.stripeApiBaseUrl,
+    enqueueTeamBillingCheckoutJob: (transaction, payload, idempotencyKey) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CHECKOUT_JOB, payload, idempotencyKey, { maxAttempts: 4, delayMs: 1e3 }, true),
+    enqueueTeamBillingCheckoutExpiryJob: (transaction, payload, idempotencyKey, availableAt) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, payload, idempotencyKey, void 0, true, availableAt),
+    scheduleTeamBillingJobDispatch: () => scheduleCurrentUserJobWorker(database),
     mail,
     authConfig: authStatus2(config, serverEnv),
     passwordResetConfig: resolvePasswordResetConfig(config),
@@ -18344,7 +18654,7 @@ async function reconcileSchedules(database) {
               }
             }
           }
-          plans.push({ definition, row, nextOccurrence, exhausted, recoveredOccurrence, generationToken: randomUUID3() });
+          plans.push({ definition, row, nextOccurrence, exhausted, recoveredOccurrence, generationToken: randomUUID4() });
         }
         for (const row of persisted) {
           if (!declaredNames.has(String(row.name))) {
@@ -18561,7 +18871,7 @@ async function recordScheduledOccurrence(database, definition, occurrence) {
 async function claimScheduledOccurrence(database, definition, occurrence) {
   const scheduledFor = occurrence.toISOString();
   const id = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
-  const token = randomUUID3();
+  const token = randomUUID4();
   const now = database.clock.now();
   const nowIso = now.toISOString();
   const fullLeaseExpiresAt = jobTimestampAfter(now, RUNTIME_CLAIM_LEASE_MS);
@@ -19252,7 +19562,7 @@ function createLogEnvelope(input) {
     },
     release: input.release ?? config.release ?? null,
     request: input.request ? {
-      id: input.request.id ?? randomUUID3(),
+      id: input.request.id ?? randomUUID4(),
       method: input.request.method ?? null,
       path: input.request.path ?? null
     } : null,
@@ -20612,7 +20922,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
     insert(values) {
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const row = {
-        id: randomUUID3(),
+        id: randomUUID4(),
         createdAt: now,
         updatedAt: now
       };
@@ -20649,7 +20959,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       }
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const row = {
-        id: randomUUID3(),
+        id: randomUUID4(),
         createdAt: now,
         updatedAt: now
       };
@@ -21515,6 +21825,25 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       }
       return;
     }
+    if (message.type === "teamBilling.startCheckout") {
+      try {
+        const input = message.input;
+        const data = await startTeamBillingCheckout(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey);
+        sendJson(client, { id: message.id ?? null, type: "teamBilling.startCheckout.result", data, error: null });
+      } catch (error) {
+        sendJson(client, {
+          id: message.id ?? null,
+          type: "error",
+          data: null,
+          error: {
+            code: ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_CHECKOUT_ACTIVE", "TEAM_BILLING_CHECKOUT_UNAVAILABLE"].includes(error?.code) ? error.code : "TEAM_BILLING_DENIED",
+            message: error?.code === "TEAM_BILLING_REQUEST_CONFLICT" ? "Team Checkout request conflicts with existing work." : error?.code === "TEAM_BILLING_CHECKOUT_ACTIVE" ? "A Team Checkout is already active." : "Team Checkout is unavailable.",
+            hint: error?.code === "TEAM_BILLING_REQUEST_CONFLICT" ? "Use a new request identifier for a different product." : error?.code === "TEAM_BILLING_CHECKOUT_ACTIVE" ? "Finish, abandon, or allow the current Team Checkout to expire before starting another." : "Sign in as the current policy-approved billing administrator and retry."
+          }
+        });
+      }
+      return;
+    }
     if (message.type === "teams.create") {
       try {
         const data = await createAdditionalTeam(database, client.session.auth, message.name);
@@ -21951,7 +22280,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     }
   }
 }
-async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey, retry = void 0) {
+async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey, retry = void 0, deferDispatch = false, availableAt = void 0) {
   const queueDatabase = database.__rootDatabase ?? database;
   const jobAdapter = database.adapter;
   const now = queueDatabase.clock.now().toISOString();
@@ -21961,18 +22290,18 @@ async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey,
       "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, '[]', NULL, NULL)"
     )
   ).run(
-    randomUUID3(),
+    randomUUID4(),
     handlerName,
     PRIVILEGED_AUTH_USER_ID,
     PRIVILEGED_AUTH_USER_ID,
     "privileged",
     payloadJson,
-    now,
+    availableAt ?? now,
     idempotencyKey,
     now,
     JSON.stringify(normalizeJobRetry(retry))
   );
-  deferOrScheduleJobDispatch(database, queueDatabase);
+  if (!deferDispatch) deferOrScheduleJobDispatch(database, queueDatabase);
 }
 var PASSWORD_RESET_REQUEST_RETRY = { maxAttempts: 3, delayMs: 1e3 };
 async function sendEmailPasswordResetLink(database, session, email, options = {}) {
@@ -21999,7 +22328,7 @@ async function sendEmailPasswordResetLink(database, session, email, options = {}
   return { ok: true };
 }
 function createWebSocketAccept(key) {
-  return createHash4("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+  return createHash5("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
 }
 function drainWebSocketFrames(client, onMessage) {
   while (client.buffer.length >= 2) {
@@ -22843,7 +23172,7 @@ async function runCurrentUserJobWorker(database) {
         await failInvalidQueuedJob(database, row, { code: "JOB_AVAILABLE_AT_INVALID", message: "The Job cannot acquire a canonical claim lease." });
         continue;
       }
-      const claimToken = randomUUID3();
+      const claimToken = randomUUID4();
       const claimed = await database.adapter.prepare(sql(
         "UPDATE [sporades_jobs] SET [status] = 'running', [attempts] = [attempts] + 1, [startedAt] = ?, [leaseExpiresAt] = ?, [claimToken] = ? WHERE [id] = ? AND [status] = 'queued' AND [availableAt] = ? AND COALESCE([retryJson], '') = COALESCE(?, '')"
       )).run(startedAt, leaseExpiresAt, claimToken, row.id, row.availableAt, row.retryJson);
@@ -22993,7 +23322,7 @@ async function runInsertMutation(database, context, mutationName, args) {
   }
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const values = {
-    id: randomUUID3(),
+    id: randomUUID4(),
     createdAt: now,
     updatedAt: now
   };
@@ -27268,7 +27597,7 @@ function writeResult(result, failed = false) {
 }
 
 // src/cli/project-config.ts
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash6 } from "node:crypto";
 import { chmod, mkdir as mkdir5, readFile as readFile7, writeFile as writeFile6 } from "node:fs/promises";
 import path9 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
@@ -27557,7 +27886,7 @@ async function resolveAuthorizedKeyLines(ssh, projectDir) {
 function authorizedKeyFingerprint(line) {
   const parts = line.split(/\s+/);
   const keyTypeIndex = parts.findIndex((part) => isOpenSshPublicKeyType(part));
-  const digest = createHash5("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
+  const digest = createHash6("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
   return `SHA256:${digest}`;
 }
 function withRuntimeSecuritySession(config, session) {
@@ -32115,7 +32444,7 @@ async function ensureHostProfileEnvKey(config, alias) {
   const hostKey = {
     publicKey,
     privateKey,
-    publicKeyFingerprint: createHash6("sha256").update(publicKey).digest("hex").slice(0, 16)
+    publicKeyFingerprint: createHash7("sha256").update(publicKey).digest("hex").slice(0, 16)
   };
   config.profiles[alias].sealedServerEnv = hostKey;
   return hostKey;

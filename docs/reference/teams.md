@@ -139,6 +139,10 @@ capsule({
   name: "example",
   schema,
   teamBilling: {
+    checkout: {
+      successPath: "/settings/billing/success",
+      cancelPath: "/settings/billing/cancelled",
+    },
     catalogue: {
       studio: {
         quantity: { kind: "fixed", value: 1 },
@@ -175,13 +179,26 @@ Captured policy tables expire when the callback settles. Removing membership or
 changing the app's billing-holder record therefore denies the next request even
 when the browser retains the same Session.
 
-The client currently exposes only the safe observation seam:
+The client exposes a safe observation seam and one operation-specific Checkout
+command. Apps create the button, progress, retry, and navigation UI:
 
 ```ts
 import { teamBilling } from "sporades/client";
 
 const result = await teamBilling.get(teamId);
+
+const checkout = await teamBilling.startCheckout({
+  teamId,
+  requestId: crypto.randomUUID(),
+  productKey: "agency",
+});
 ```
+
+`teamBilling.startCheckout` supplies only the safe state needed by the app.
+Apps create the button and render every pending, ready, completed, expired,
+superseded, or failed state themselves. Sporades permits only one active
+Checkout per Team; the app should continue polling its original request until
+that Checkout finishes or expires before it offers another.
 
 The result is a closed `inactive`, `pending`, `active`, `cancelling`,
 `past-due`, `cancelled`, or `attention-required` projection containing Team ID,
@@ -191,11 +208,28 @@ operation identifiers, raw provider errors, Job state, idempotency keys, or an
 unvalidated URL. Cross-Team, former-holder, anonymous, non-admin, and stale
 Session requests receive the same generic `TEAM_BILLING_DENIED` result.
 
+Checkout admission and its reserved Job are committed together. Repeating the
+same Team/request/product reads the same `pending`, `ready`, `completed`,
+`expired`, `superseded`, or safe `failed` operation without another provider
+call; reusing the request for another product is a safe conflict. Immediately
+before every provider attempt Sporades locks the Team lifecycle, rechecks the
+original actor and Capsule policy, recounts accepted Team membership, and
+derives mode, exact Price, optional existing Customer, return paths, business
+correlation, and idempotency from trusted state. It holds no database
+transaction across provider I/O. Retries reuse identical provider parameters.
+
+Only `ready` contains a strictly validated `checkout.stripe.com` URL and a
+bounded local expiry. A durable runtime Job erases the retained capability at
+expiry even if the app is abandoned and never polls again. Verified
+`checkout.session.completed` or `checkout.session.expired` observation is
+terminal even when it arrives before the provider response; a later response
+cannot revive the URL. Checkout response, browser return, and completion alone
+do not create Subscription state or entitlement.
+
 Customer, Subscription, operation, observation, and replay correlation lives
-in runtime-owned storage on SQLite, libSQL, and Postgres. Checkout, Portal,
-managed Plan-transition, convergence, and erasure commands are not part of this
-read-only foundation; they are added as operation-specific surfaces rather than
-a generic Stripe proxy.
+in runtime-owned storage on SQLite, libSQL, and Postgres. Portal, managed
+Plan-transition, subscription convergence, and erasure remain later
+operation-specific surfaces rather than a generic Stripe proxy.
 
 ## Security, storage, and audit boundaries
 

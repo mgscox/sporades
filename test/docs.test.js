@@ -227,11 +227,13 @@ test("headless Team Billing docs preserve the platform-mechanics and app-renderi
   assert.match(reference, /current linked Team administrator[\s\S]*transaction-bound read-only app tables/i);
   assert.match(reference, /Customer, Subscription, operation, observation, and replay correlation[\s\S]*runtime-owned storage/i);
   assert.match(reference, /does not render[\s\S]*product\s+copy/i);
-  assert.match(reference, /currently exposes only[\s\S]*teamBilling\.get\(teamId\)/i);
-  assert.match(reference, /Checkout, Portal,[\s\S]*not part of this\s+read-only foundation/i);
+  assert.match(reference, /teamBilling\.startCheckout[\s\S]*Apps create the button/i);
+  assert.match(reference, /Retries reuse identical provider parameters/i);
+  assert.match(reference, /Verified[\s\S]*terminal[\s\S]*cannot revive the URL/i);
   assert.match(guide, /Declare headless Team Billing/);
   assert.match(serverTypes, /teamBilling\?: TeamBillingDefinition<Schema>/);
   assert.match(clientTypes, /get\(teamId: string\): Promise<SporadesResult<TeamBillingProjection>>/);
+  assert.match(clientTypes, /startCheckout\(input: TeamBillingCheckoutRequest\): Promise<SporadesResult<TeamBillingCheckoutResult>>/);
   assert.doesNotMatch(clientTypes, /providerCustomerId|providerSubscriptionId|providerPriceId|providerEventId|idempotencyKey/);
 });
 

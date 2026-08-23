@@ -47,7 +47,16 @@ import {
   createUserPreferencesTables, readCurrentUserPreferences, updateCurrentUserPreferences,
 } from "./user-preferences-runtime.js";
 import { countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createPrivilegedTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
-import { normalizeTeamBillingDefinition, readCurrentUserTeamBilling } from "./team-billing-runtime.js";
+import {
+  TEAM_BILLING_CHECKOUT_JOB,
+  TEAM_BILLING_CHECKOUT_EXPIRY_JOB,
+  applyVerifiedTeamBillingCheckoutObservation,
+  expireTeamBillingCheckout,
+  normalizeTeamBillingDefinition,
+  performTeamBillingCheckout,
+  readCurrentUserTeamBilling,
+  startTeamBillingCheckout,
+} from "./team-billing-runtime.js";
 // Batch 8. Eight names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
 // `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
@@ -663,10 +672,16 @@ export async function openDevDatabase(
   const jobs = [...jobHandlersFromCapsuleDefinition(capsuleDefinition), ...runtimeOwnedJobHandlers({
     prepareEmailPasswordResetDelivery: (context: LooseRecord, payload: LooseRecord) =>
       prepareEmailPasswordResetDelivery(database, payload, database.__runtimeJobAttempts.get(context) ?? 1),
-    dispatchStripeEvent: (context: LooseRecord, event: LooseRecord) =>
-      capsuleDefinition?.stripeEvents?.options?.consequence === "atomic"
+    dispatchStripeEvent: async (context: LooseRecord, event: LooseRecord) => {
+      await applyVerifiedTeamBillingCheckoutObservation(database, event);
+      return capsuleDefinition?.stripeEvents?.options?.consequence === "atomic"
         ? runAtomicStripeConsequence(database, context, event, capsuleDefinition.stripeEvents)
-        : dispatchVerifiedStripeEvent(context, event, capsuleDefinition?.stripeEvents),
+        : dispatchVerifiedStripeEvent(context, event, capsuleDefinition?.stripeEvents);
+    },
+    performTeamBillingCheckout: (context: LooseRecord, payload: LooseRecord) =>
+      performTeamBillingCheckout(database, context, payload),
+    expireTeamBillingCheckout: (context: LooseRecord, payload: LooseRecord) =>
+      expireTeamBillingCheckout(database, context, payload),
   })];
   const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
   const clock = createRuntimeClock(options?.clock);
@@ -718,6 +733,13 @@ export async function openDevDatabase(
     rowCache,
     serverEnv,
     paymentsConfig,
+    createStripeTeamBillingProvider: options?.createStripeTeamBillingProvider,
+    stripeApiBaseUrl: options?.stripeApiBaseUrl,
+    enqueueTeamBillingCheckoutJob: (transaction: LooseRecord, payload: LooseRecord, idempotencyKey: string) =>
+      enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CHECKOUT_JOB, payload, idempotencyKey, { maxAttempts: 4, delayMs: 1_000 }, true),
+    enqueueTeamBillingCheckoutExpiryJob: (transaction: LooseRecord, payload: LooseRecord, idempotencyKey: string, availableAt: string) =>
+      enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, payload, idempotencyKey, undefined, true, availableAt),
+    scheduleTeamBillingJobDispatch: () => scheduleCurrentUserJobWorker(database),
     mail,
     authConfig: authStatus(config, serverEnv),
     passwordResetConfig: resolvePasswordResetConfig(config),
@@ -4749,6 +4771,33 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
       return;
     }
 
+    if (message.type === "teamBilling.startCheckout") {
+      try {
+        const input = message.input;
+        const data = await startTeamBillingCheckout(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey);
+        sendJson(client, { id: message.id ?? null, type: "teamBilling.startCheckout.result", data, error: null });
+      } catch (error: any) {
+        sendJson(client, {
+          id: message.id ?? null,
+          type: "error",
+          data: null,
+          error: {
+            code: ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_CHECKOUT_ACTIVE", "TEAM_BILLING_CHECKOUT_UNAVAILABLE"].includes(error?.code)
+              ? error.code : "TEAM_BILLING_DENIED",
+            message: error?.code === "TEAM_BILLING_REQUEST_CONFLICT"
+              ? "Team Checkout request conflicts with existing work."
+              : error?.code === "TEAM_BILLING_CHECKOUT_ACTIVE" ? "A Team Checkout is already active." : "Team Checkout is unavailable.",
+            hint: error?.code === "TEAM_BILLING_REQUEST_CONFLICT"
+              ? "Use a new request identifier for a different product."
+              : error?.code === "TEAM_BILLING_CHECKOUT_ACTIVE"
+                ? "Finish, abandon, or allow the current Team Checkout to expire before starting another."
+                : "Sign in as the current policy-approved billing administrator and retry.",
+          },
+        });
+      }
+      return;
+    }
+
     if (message.type === "teams.create") {
       try {
         const data = await createAdditionalTeam(database, client.session.auth, message.name);
@@ -5218,6 +5267,8 @@ async function enqueueRuntimeJob(
   payload: LooseRecord,
   idempotencyKey: string,
   retry: LooseRecord | undefined = undefined,
+  deferDispatch = false,
+  availableAt: string | undefined = undefined,
 ) {
   const queueDatabase = database.__rootDatabase ?? database;
   const jobAdapter = database.adapter;
@@ -5236,12 +5287,12 @@ async function enqueueRuntimeJob(
     PRIVILEGED_AUTH_USER_ID,
     "privileged",
     payloadJson,
-    now,
+    availableAt ?? now,
     idempotencyKey,
     now,
     JSON.stringify(normalizeJobRetry(retry)),
   );
-  deferOrScheduleJobDispatch(database, queueDatabase);
+  if (!deferDispatch) deferOrScheduleJobDispatch(database, queueDatabase);
 }
 
 // Runtime-owned delivery may transiently fail after the request response has returned. Keep retries

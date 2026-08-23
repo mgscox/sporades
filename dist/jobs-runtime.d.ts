@@ -69,6 +69,8 @@ export declare function createControllableRuntimeClock(initialInstant: string | 
 export declare function runtimeOwnedJobHandlers(runtime: {
     prepareEmailPasswordResetDelivery: (context: LooseRecord, payload: LooseRecord) => Promise<LooseRecord | null>;
     dispatchStripeEvent: (context: LooseRecord, event: LooseRecord) => Promise<LooseRecord>;
+    performTeamBillingCheckout: (context: LooseRecord, payload: LooseRecord) => Promise<LooseRecord | null>;
+    expireTeamBillingCheckout: (context: LooseRecord, payload: LooseRecord) => Promise<null>;
 }): {
     name: string;
     handler: (ctx: LooseRecord, payload: LooseRecord) => Promise<any>;

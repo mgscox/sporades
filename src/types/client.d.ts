@@ -337,9 +337,17 @@ export type TeamBillingProjection =
   | { state: "past-due" | "cancelled"; teamId: string; productKey: string; quantity: number }
   | { state: "attention-required"; teamId: string; reason: "catalogue-mismatch" | "provider-state-ambiguous" };
 
+export type TeamBillingCheckoutRequest = { teamId: string; requestId: string; productKey: string };
+export type TeamBillingCheckoutResult =
+  | { state: "pending"; teamId: string; requestId: string; productKey: string; requestedAt: string }
+  | { state: "ready"; teamId: string; requestId: string; productKey: string; url: string; expiresAt: string }
+  | { state: "completed" | "expired" | "superseded"; teamId: string; requestId: string; productKey: string }
+  | { state: "failed"; teamId: string; requestId: string; productKey: string; reason: "authority-changed" | "unavailable" };
+
 /** Headless Team Billing transport. Apps own every rendered element and all copy. */
 export type TeamBillingApi = {
   get(teamId: string): Promise<SporadesResult<TeamBillingProjection>>;
+  startCheckout(input: TeamBillingCheckoutRequest): Promise<SporadesResult<TeamBillingCheckoutResult>>;
 };
 
 /** Hook state returned by `useQuery()`. */
