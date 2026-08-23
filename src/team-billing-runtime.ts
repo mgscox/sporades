@@ -338,6 +338,21 @@ export async function expireTeamBillingCheckout(database: LooseRecord, _context:
   return null;
 }
 
+/** Reconciles a runtime-owned Checkout operation when its final claimed Job lease expires after a process crash. */
+export async function settleExhaustedTeamBillingCheckoutJob(transaction: LooseRecord, handler: any, payloadJson: any, now: string) {
+  if (handler !== TEAM_BILLING_CHECKOUT_JOB || typeof payloadJson !== "string") return;
+  let payload: any;
+  try { payload = JSON.parse(payloadJson); } catch { return; }
+  const operationId = payload && typeof payload === "object" && !Array.isArray(payload)
+    && Object.keys(payload).join(",") === "operationId" && TEAM_ID_PATTERN.test(String(payload.operationId ?? ""))
+    ? payload.operationId : null;
+  if (!operationId) return;
+  await transaction.prepare(transaction.dialect.sql(
+    "UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = 'PROVIDER_REJECTED', [updatedAt] = ? " +
+    "WHERE [id] = ? AND [kind] = 'checkout' AND [status] IN ('queued', 'running', 'retrying')",
+  )).run(now, operationId);
+}
+
 /** Applies only terminal, verified Checkout observations; Subscription truth is a later convergence concern. */
 export async function applyVerifiedTeamBillingCheckoutObservation(database: LooseRecord, event: any) {
   if (!database.teamBillingDefinition || event?.provider !== "stripe"

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { createWebSocketHub, handleFileHttpRoute, openDevDatabase, routeEndpoint, runMutation, runQuery } from "../dist/server-runtime-source.js";
+import { createWebSocketHub, handleFileHttpRoute, openDevDatabase, recoverExpiredJobLeases, routeEndpoint, runMutation, runQuery } from "../dist/server-runtime-source.js";
 import { Number as NumberField, String as StringField, endpoint, job, mutation, query, table } from "../dist/server.js";
 import { createAdditionalTeam, joinCurrentUserTeam } from "../dist/teams-runtime.js";
 import { applyVerifiedTeamBillingCheckoutObservation, expireTeamBillingCheckout, readCurrentUserTeamBilling } from "../dist/team-billing-runtime.js";
@@ -2093,6 +2093,19 @@ test("headless Team Checkout durably deduplicates work and exposes only an autho
     const exhausted = await waitForTeamCheckout(owner, exhaustedInput, signupResult.data.sessionToken, "failed", 6_000);
     assert.equal(exhausted.data.reason, "unavailable");
     assert.equal(providerInputs.filter((candidate) => candidate.operationId === exhaustRetryOperationId).length, 4, "retry exhaustion terminally fails the operation after the reserved Job budget");
+    const exhaustedJob = await runtime.database.adapter.prepare(
+      "SELECT [id] FROM [sporades_jobs] WHERE [handler] = '_sporades.team-billing-checkout' AND [payload] = ?",
+    ).get(JSON.stringify({ operationId: exhaustRetryOperationId }));
+    const expiredLeaseAt = new Date(Date.now() - 1_000).toISOString();
+    await runtime.database.adapter.prepare(
+      "UPDATE [sporades_jobs] SET [status] = 'running', [attempts] = 4, [leaseExpiresAt] = ?, [claimToken] = 'crashed-final-claim', [failure] = NULL, [failedAt] = NULL WHERE [id] = ?",
+    ).run(expiredLeaseAt, exhaustedJob.id);
+    await runtime.database.adapter.prepare(
+      "UPDATE [sporades_team_billing_operations] SET [status] = 'running', [safeFailureCode] = NULL WHERE [id] = ?",
+    ).run(exhaustRetryOperationId);
+    await recoverExpiredJobLeases(runtime.database);
+    const crashRecovered = await send(owner, { id: "checkout-crash-recovered", type: "teamBilling.startCheckout", input: exhaustedInput, sessionToken: signupResult.data.sessionToken });
+    assert.equal(crashRecovered.data.state, "failed", "an expired final Job lease terminally reconciles its Checkout operation after restart");
     failNextOperationToExhaust = false;
     nextHolder = await runtime.open();
     const nextHolderSignup = await signUp(nextHolder, "checkout-next-holder", "checkout-next@example.com", "Next checkout holder");

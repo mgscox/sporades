@@ -56,6 +56,7 @@ import {
   normalizeTeamBillingDefinition,
   performTeamBillingCheckout,
   readCurrentUserTeamBilling,
+  settleExhaustedTeamBillingCheckoutJob,
   startTeamBillingCheckout,
 } from "./team-billing-runtime.js";
 // Batch 8. Eight names, which is what the one function of that domain still in this file
@@ -1716,10 +1717,15 @@ export async function recoverExpiredJobLeases(database: LooseRecord) {
       const failure = storedFailure ?? (retry === null || retryEligible
         ? invalidJobRetryPolicyFailure()
         : { code: "JOB_LEASE_EXPIRED", message: "Job lease expired." });
-      await database.adapter.prepare(sql(
-        "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
-        "WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] = ? AND " + ownership.predicate,
-      )).run(JSON.stringify(failure), recoveredIso, JSON.stringify(history), row.id, row.leaseExpiresAt, ...ownership.params);
+      await database.adapter.withTransaction(async (transaction: LooseRecord) => {
+        const settled = await transaction.prepare(transaction.dialect.sql(
+          "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
+          "WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] = ? AND " + ownership.predicate,
+        )).run(JSON.stringify(failure), recoveredIso, JSON.stringify(history), row.id, row.leaseExpiresAt, ...ownership.params);
+        if (Number(settled?.changes ?? 0) === 1) {
+          await settleExhaustedTeamBillingCheckoutJob(transaction, row.handler, row.payload, recoveredIso);
+        }
+      });
     }
   }
   return earliestFutureLeaseAt;

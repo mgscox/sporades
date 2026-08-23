@@ -24,6 +24,8 @@ export declare function performTeamBillingCheckout(database: LooseRecord, contex
 } | null>;
 /** Durably erases an abandoned Checkout continuation when its local exposure window closes. */
 export declare function expireTeamBillingCheckout(database: LooseRecord, _context: LooseRecord, payload: any): Promise<null>;
+/** Reconciles a runtime-owned Checkout operation when its final claimed Job lease expires after a process crash. */
+export declare function settleExhaustedTeamBillingCheckoutJob(transaction: LooseRecord, handler: any, payloadJson: any, now: string): Promise<void>;
 /** Applies only terminal, verified Checkout observations; Subscription truth is a later convergence concern. */
 export declare function applyVerifiedTeamBillingCheckoutObservation(database: LooseRecord, event: any): Promise<any>;
 /**

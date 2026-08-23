@@ -20,7 +20,7 @@ import { signInWithEmail, signUpWithEmail } from "./auth-runtime.js";
 import { beginOAuthSignIn, resolvePasswordResetConfig } from "./auth-runtime.js";
 import { readCurrentUserPreferences, updateCurrentUserPreferences, } from "./user-preferences-runtime.js";
 import { countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createPrivilegedTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
-import { TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, applyVerifiedTeamBillingCheckoutObservation, expireTeamBillingCheckout, normalizeTeamBillingDefinition, performTeamBillingCheckout, readCurrentUserTeamBilling, startTeamBillingCheckout, } from "./team-billing-runtime.js";
+import { TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, applyVerifiedTeamBillingCheckoutObservation, expireTeamBillingCheckout, normalizeTeamBillingDefinition, performTeamBillingCheckout, readCurrentUserTeamBilling, settleExhaustedTeamBillingCheckoutJob, startTeamBillingCheckout, } from "./team-billing-runtime.js";
 // Batch 8. Eight names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
 // `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
@@ -1595,8 +1595,13 @@ export async function recoverExpiredJobLeases(database) {
             const failure = storedFailure ?? (retry === null || retryEligible
                 ? invalidJobRetryPolicyFailure()
                 : { code: "JOB_LEASE_EXPIRED", message: "Job lease expired." });
-            await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
-                "WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] = ? AND " + ownership.predicate)).run(JSON.stringify(failure), recoveredIso, JSON.stringify(history), row.id, row.leaseExpiresAt, ...ownership.params);
+            await database.adapter.withTransaction(async (transaction) => {
+                const settled = await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
+                    "WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] = ? AND " + ownership.predicate)).run(JSON.stringify(failure), recoveredIso, JSON.stringify(history), row.id, row.leaseExpiresAt, ...ownership.params);
+                if (Number(settled?.changes ?? 0) === 1) {
+                    await settleExhaustedTeamBillingCheckoutJob(transaction, row.handler, row.payload, recoveredIso);
+                }
+            });
         }
     }
     return earliestFutureLeaseAt;
