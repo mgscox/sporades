@@ -167,17 +167,22 @@ async function safeTeamBillingProjection(transaction: LooseRecord, definition: L
   if (!row) return Object.freeze({ state: "inactive" as const, teamId });
   const product = definition.catalogue[row.productKey];
   const binding = (row.mode === "sandbox" || row.mode === "live") ? product?.stripe?.[row.mode] : null;
+  const quantity = typeof row.quantity === "number" && Number.isSafeInteger(row.quantity) && row.quantity >= 1
+    ? row.quantity : null;
   if (!product || !binding || row.providerPriceId !== binding.priceId
-    || !Number.isSafeInteger(Number(row.quantity)) || Number(row.quantity) < 1) {
+    || quantity === null || (product.quantity.kind === "fixed" && quantity !== product.quantity.value)) {
     return Object.freeze({ state: "attention-required" as const, teamId, reason: "catalogue-mismatch" as const });
   }
-  const common = { teamId, productKey: row.productKey, quantity: Number(row.quantity) };
+  if (row.cancelAtPeriodEnd !== 0 && row.cancelAtPeriodEnd !== 1) {
+    return Object.freeze({ state: "attention-required" as const, teamId, reason: "provider-state-ambiguous" as const });
+  }
+  const common = { teamId, productKey: row.productKey, quantity };
   if (row.state === "active") {
     const currentPeriodEnd = canonicalTimestamp(row.currentPeriodEnd);
     if (!currentPeriodEnd) {
       return Object.freeze({ state: "attention-required" as const, teamId, reason: "provider-state-ambiguous" as const });
     }
-    return Object.freeze(Number(row.cancelAtPeriodEnd) === 1
+    return Object.freeze(row.cancelAtPeriodEnd === 1
       ? { state: "cancelling" as const, ...common, endsAt: currentPeriodEnd }
       : { state: "active" as const, ...common, renewsAt: currentPeriodEnd });
   }

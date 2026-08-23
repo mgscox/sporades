@@ -255,6 +255,10 @@ const MIGRATED_RUNTIME_MODULES = [
   // bootstrap writer is the atomic history/membership foundation, so retaining
   // it in the census prevents a generated Capsule from carrying only the API shell.
   { file: "teams-runtime.js", atLeast: 3, sentinel: "ensureInitialTeamOnAdapter" },
+  // Headless Team Billing owns provider-correlation DDL and the fail-closed
+  // projection boundary. The private timestamp validator is the final gate
+  // before runtime-owned text can cross into browser state.
+  { file: "team-billing-runtime.js", atLeast: 7, sentinel: "canonicalTimestamp" },
   // Batch 6: file and object storage, 51 declarations of which 27 are private. The sentinel is
   // private for the sixth time running. `resolveLiveFileReference` is the one every ownership-scoped
   // File lookup passes through — `createPendingFileUpload`, `getPrivateFileUrl`, `createPublicFileUrl`,
@@ -434,6 +438,9 @@ test("the census covers every module the deployed Capsule bundle carries", () =>
     // Runtime-owned validation for the five bounded operator action envelopes. It is carried by
     // the boot program but owns no database statement, SQL walker, dialect, or normalization.
     "cli/access-key-operator-envelope.js",
+    // Shared immutable Access-key bounds and header names; constants only, with
+    // no SQL walker, dialect, emitted statement, or normalization function.
+    "access-key-contract.js",
   ]);
 
   const carried = runtimeGraphModules();

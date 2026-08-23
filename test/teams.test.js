@@ -1782,6 +1782,7 @@ test("headless Team Billing returns only policy-approved provider-free state and
       ["providerPriceId", "price_private_drift"],
       ["mode", "live"],
       ["currentPeriodEnd", "sub_private_timestamp_leak"],
+      ["cancelAtPeriodEnd", 2],
     ]) {
       await runtime.database.adapter.prepare(
         `UPDATE [sporades_team_billing_subscriptions] SET [${column}] = ? WHERE [id] = ?`,
@@ -1790,14 +1791,27 @@ test("headless Team Billing returns only policy-approved provider-free state and
       assert.deepEqual(drifted.data, {
         state: "attention-required",
         teamId: team.id,
-        reason: column === "currentPeriodEnd" ? "provider-state-ambiguous" : "catalogue-mismatch",
+        reason: ["currentPeriodEnd", "cancelAtPeriodEnd"].includes(column) ? "provider-state-ambiguous" : "catalogue-mismatch",
       });
-      assert.doesNotMatch(JSON.stringify(drifted), new RegExp(privateValue, "i"));
-      const restored = column === "providerPriceId" ? "price_test_agency" : column === "mode" ? "sandbox" : "2026-09-23T00:00:00.000Z";
+      if (typeof privateValue === "string") {
+        assert.doesNotMatch(JSON.stringify(drifted), new RegExp(privateValue, "i"));
+      }
+      const restored = column === "providerPriceId" ? "price_test_agency"
+        : column === "mode" ? "sandbox"
+          : column === "currentPeriodEnd" ? "2026-09-23T00:00:00.000Z" : 0;
       await runtime.database.adapter.prepare(
         `UPDATE [sporades_team_billing_subscriptions] SET [${column}] = ? WHERE [id] = ?`,
       ).run(restored, "sub-local-1");
     }
+
+    await runtime.database.adapter.prepare(
+      "UPDATE [sporades_team_billing_subscriptions] SET [productKey] = 'studio', [providerPriceId] = 'price_test_studio', [quantity] = 7 WHERE [id] = ?",
+    ).run("sub-local-1");
+    const fixedQuantityDrift = await send(owner, { id: "billing-fixed-quantity-drift", type: "teamBilling.get", teamId: team.id, sessionToken: ownerSignUp.data.sessionToken });
+    assert.deepEqual(fixedQuantityDrift.data, { state: "attention-required", teamId: team.id, reason: "catalogue-mismatch" });
+    await runtime.database.adapter.prepare(
+      "UPDATE [sporades_team_billing_subscriptions] SET [productKey] = 'agency', [providerPriceId] = 'price_test_agency', [quantity] = 7 WHERE [id] = ?",
+    ).run("sub-local-1");
 
     await runtime.database.adapter.prepare(
       "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, 'checkout', 'agency', 'queued', NULL, ?, NULL, ?, ?)",
