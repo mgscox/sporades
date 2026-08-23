@@ -51,6 +51,10 @@ test("Team Billing declaration is dormant when omitted and validates an exact tw
       { catalogue: { Studio: { quantity: { kind: "fixed", value: 1 }, stripe: { sandbox: { priceId: "price_a" }, live: { priceId: "price_b" } } } }, authorize },
       { catalogue: { studio: { quantity: { kind: "fixed", value: 0 }, stripe: { sandbox: { priceId: "price_a" }, live: { priceId: "price_b" } } } }, authorize },
       { catalogue: { studio: { quantity: { kind: "fixed", value: 1 }, stripe: { sandbox: { priceId: "price_same" }, live: { priceId: "price_same" } } } }, authorize },
+      { catalogue: {
+        studio: { quantity: { kind: "fixed", value: 1 }, stripe: { sandbox: { priceId: "price_shared" }, live: { priceId: "price_studio_live" } } },
+        agency: { quantity: { kind: "fixed", value: 1 }, stripe: { sandbox: { priceId: "price_agency_test" }, live: { priceId: "price_shared" } } },
+      }, authorize },
       { catalogue: { studio: { quantity: { kind: "team-members" }, stripe: { sandbox: { priceId: "not-a-price" }, live: { priceId: "price_b" } } } }, authorize },
       { catalogue: { studio: { quantity: { kind: "team-members" }, stripe: { sandbox: { priceId: "price_a" }, live: { priceId: "price_b" } } } }, authorize: true },
     ]) {

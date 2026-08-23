@@ -1778,6 +1778,39 @@ test("headless Team Billing returns only policy-approved provider-free state and
     });
     assert.doesNotMatch(JSON.stringify(active), /cus_private|sub_private|price_test_agency|provider/i);
 
+    for (const [column, privateValue] of [
+      ["providerPriceId", "price_private_drift"],
+      ["mode", "live"],
+      ["currentPeriodEnd", "sub_private_timestamp_leak"],
+    ]) {
+      await runtime.database.adapter.prepare(
+        `UPDATE [sporades_team_billing_subscriptions] SET [${column}] = ? WHERE [id] = ?`,
+      ).run(privateValue, "sub-local-1");
+      const drifted = await send(owner, { id: `billing-drift-${column}`, type: "teamBilling.get", teamId: team.id, sessionToken: ownerSignUp.data.sessionToken });
+      assert.deepEqual(drifted.data, {
+        state: "attention-required",
+        teamId: team.id,
+        reason: column === "currentPeriodEnd" ? "provider-state-ambiguous" : "catalogue-mismatch",
+      });
+      assert.doesNotMatch(JSON.stringify(drifted), new RegExp(privateValue, "i"));
+      const restored = column === "providerPriceId" ? "price_test_agency" : column === "mode" ? "sandbox" : "2026-09-23T00:00:00.000Z";
+      await runtime.database.adapter.prepare(
+        `UPDATE [sporades_team_billing_subscriptions] SET [${column}] = ? WHERE [id] = ?`,
+      ).run(restored, "sub-local-1");
+    }
+
+    await runtime.database.adapter.prepare(
+      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, 'checkout', 'agency', 'queued', NULL, ?, NULL, ?, ?)",
+    ).run("op-local-1", "request-local-1", team.id, ownerSignUp.data.auth.userId, "idem-local-1", "cus_private_timestamp_leak", now);
+    const malformedPending = await send(owner, { id: "billing-malformed-pending", type: "teamBilling.get", teamId: team.id, sessionToken: ownerSignUp.data.sessionToken });
+    assert.deepEqual(malformedPending.data, {
+      state: "attention-required",
+      teamId: team.id,
+      reason: "provider-state-ambiguous",
+    });
+    assert.doesNotMatch(JSON.stringify(malformedPending), /cus_private_timestamp_leak/i);
+    await runtime.database.adapter.prepare("DELETE FROM [sporades_team_billing_operations] WHERE [id] = ?").run("op-local-1");
+
     for (const [name, socket, sessionToken] of [
       ["anonymous", anonymous, null],
       ["cross-team", outsider, outsiderSignUp.data.sessionToken],

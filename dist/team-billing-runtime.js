@@ -6,7 +6,8 @@ import { chainMaybePromise } from "./maybe-promise.js";
 import { commandError } from "./runtime-errors.js";
 export const TEAM_BILLING_PRODUCT_MAX = 32;
 const PRODUCT_KEY_PATTERN = /^[a-z][a-z0-9-]{0,47}$/;
-const PRICE_ID_PATTERN = /^price_[A-Za-z0-9_]+$/;
+const PRICE_ID_PATTERN = /^price_[A-Za-z0-9_]{1,249}$/;
+const CANONICAL_TIMESTAMP_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d\.\d{3}Z$/;
 const FIXED_QUANTITY_MAX = 1_000_000;
 const TEAM_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export function createTeamBillingTables(adapter) {
@@ -46,8 +47,7 @@ export function normalizeTeamBillingDefinition(value) {
     const entries = Object.entries(value.catalogue);
     if (entries.length === 0 || entries.length > TEAM_BILLING_PRODUCT_MAX)
         throw invalidDeclaration();
-    const sandboxPrices = new Set();
-    const livePrices = new Set();
+    const prices = new Set();
     const catalogue = {};
     for (const [productKey, product] of entries.sort(([left], [right]) => left.localeCompare(right))) {
         if (!PRODUCT_KEY_PATTERN.test(productKey) || !product || typeof product !== "object" || Array.isArray(product)
@@ -60,10 +60,10 @@ export function normalizeTeamBillingDefinition(value) {
             throw invalidDeclaration();
         const sandbox = normalizeModeBinding(stripe.sandbox);
         const live = normalizeModeBinding(stripe.live);
-        if (sandbox.priceId === live.priceId || sandboxPrices.has(sandbox.priceId) || livePrices.has(live.priceId))
+        if (prices.has(sandbox.priceId) || prices.has(live.priceId) || sandbox.priceId === live.priceId)
             throw invalidDeclaration();
-        sandboxPrices.add(sandbox.priceId);
-        livePrices.add(live.priceId);
+        prices.add(sandbox.priceId);
+        prices.add(live.priceId);
         catalogue[productKey] = Object.freeze({
             quantity,
             stripe: Object.freeze({ sandbox, live }),
@@ -127,6 +127,10 @@ async function safeTeamBillingProjection(transaction, definition, teamId) {
     const operation = await transaction.prepare(sql("SELECT [kind], [productKey], [createdAt] FROM [sporades_team_billing_operations] " +
         "WHERE [teamId] = ? AND [status] IN ('queued', 'running', 'retrying') ORDER BY [createdAt] DESC, [id] DESC LIMIT 1")).get(teamId);
     if (operation) {
+        const requestedAt = canonicalTimestamp(operation.createdAt);
+        if (!requestedAt) {
+            return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
+        }
         const kind = ["checkout", "plan-transition", "erasure"].includes(operation.kind) ? operation.kind : "reconciliation";
         return Object.freeze({
             state: "pending",
@@ -134,27 +138,40 @@ async function safeTeamBillingProjection(transaction, definition, teamId) {
             operation: kind,
             ...(typeof operation.productKey === "string" && definition.catalogue[operation.productKey]
                 ? { productKey: operation.productKey } : {}),
-            requestedAt: operation.createdAt,
+            requestedAt,
         });
     }
-    const row = await transaction.prepare(sql("SELECT [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd] " +
+    const row = await transaction.prepare(sql("SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd] " +
         "FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [observedAt] DESC, [id] DESC LIMIT 1")).get(teamId);
     if (!row)
         return Object.freeze({ state: "inactive", teamId });
-    if (!definition.catalogue[row.productKey] || !Number.isSafeInteger(Number(row.quantity)) || Number(row.quantity) < 1) {
+    const product = definition.catalogue[row.productKey];
+    const binding = (row.mode === "sandbox" || row.mode === "live") ? product?.stripe?.[row.mode] : null;
+    if (!product || !binding || row.providerPriceId !== binding.priceId
+        || !Number.isSafeInteger(Number(row.quantity)) || Number(row.quantity) < 1) {
         return Object.freeze({ state: "attention-required", teamId, reason: "catalogue-mismatch" });
     }
     const common = { teamId, productKey: row.productKey, quantity: Number(row.quantity) };
-    if (row.state === "active" && typeof row.currentPeriodEnd === "string") {
+    if (row.state === "active") {
+        const currentPeriodEnd = canonicalTimestamp(row.currentPeriodEnd);
+        if (!currentPeriodEnd) {
+            return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
+        }
         return Object.freeze(Number(row.cancelAtPeriodEnd) === 1
-            ? { state: "cancelling", ...common, endsAt: row.currentPeriodEnd }
-            : { state: "active", ...common, renewsAt: row.currentPeriodEnd });
+            ? { state: "cancelling", ...common, endsAt: currentPeriodEnd }
+            : { state: "active", ...common, renewsAt: currentPeriodEnd });
     }
     if (row.state === "past-due")
         return Object.freeze({ state: "past-due", ...common });
     if (row.state === "cancelled")
         return Object.freeze({ state: "cancelled", ...common });
     return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
+}
+function canonicalTimestamp(value) {
+    if (typeof value !== "string" || !CANONICAL_TIMESTAMP_PATTERN.test(value))
+        return null;
+    const timestamp = Date.parse(value);
+    return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value ? value : null;
 }
 export function teamBillingDenied() {
     return commandError("Team Billing is unavailable.", "Sign in as the current policy-approved billing administrator for this Team and retry.", "TEAM_BILLING_DENIED");
