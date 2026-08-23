@@ -64,8 +64,9 @@ sporades host push --restart
   accepted-Team-member quantity policy. Sporades rechecks current Team-admin
   authority plus the Capsule's transaction-bound policy on every operation and
   exposes the closed, provider-free `teamBilling.get(teamId)` projection plus
-  durable `teamBilling.startCheckout(...)`. Only the latter may return one
-  validated, short-lived Checkout URL capability; the Capsule owns every
+  durable `teamBilling.startCheckout(...)` and `teamBilling.openPortal(...)`.
+  Those commands may return only validated, short-lived Stripe-hosted URL
+  capabilities; the Capsule owns every
   component, route, message, and entitlement decision.
 - **Realtime everything**: configuration free - automatic notifications, even for Postgress and AWS-S3
 

@@ -172,11 +172,11 @@ const app = capsule({
     catalogue: {
       studio: {
         quantity: { kind: "fixed", value: 1 },
-        stripe: { sandbox: { priceId: "price_test_studio" }, live: { priceId: "price_live_studio" } },
+        stripe: { sandbox: { productId: "prod_test_studio", priceId: "price_test_studio", portalConfigurationId: "bpc_test_studio" }, live: { productId: "prod_live_studio", priceId: "price_live_studio", portalConfigurationId: "bpc_live_studio" } },
       },
       agency: {
         quantity: { kind: "team-members" },
-        stripe: { sandbox: { priceId: "price_test_agency" }, live: { priceId: "price_live_agency" } },
+        stripe: { sandbox: { productId: "prod_test_agency", priceId: "price_test_agency", portalConfigurationId: "bpc_test_agency" }, live: { productId: "prod_live_agency", priceId: "price_live_agency", portalConfigurationId: "bpc_live_agency" } },
       },
     },
     checkout: {
@@ -184,6 +184,7 @@ const app = capsule({
       cancelPath: "/settings/billing/cancelled",
       continuationTtlSeconds: 600,
     },
+    portal: { returnPath: "/settings/billing", continuationTtlSeconds: 600 },
     authorize: async (ctx, input) => {
       const rows = await ctx.db.todos.where("ownerId", input.teamId).all();
       input.teamRole satisfies "admin";
@@ -671,6 +672,15 @@ teamBilling.startCheckout({
   if (result.data?.state === "ready") result.data.url.toUpperCase();
   if (result.data?.state === "failed") result.data.reason.toUpperCase();
 });
+teamBilling.openPortal({
+  teamId: "00000000-0000-4000-8000-000000000000",
+  requestId: "22222222-2222-4222-8222-222222222222",
+}).then((result) => {
+  if (result.data?.state === "ready") result.data.url.toUpperCase();
+  if (result.data?.state === "failed") result.data.reason.toUpperCase();
+});
+// @ts-expect-error Portal inputs never accept Customer or configuration identifiers.
+teamBilling.openPortal({ teamId: "00000000-0000-4000-8000-000000000000", requestId: "22222222-2222-4222-8222-222222222222", customerId: "cus_browser_owned" });
 // @ts-expect-error Checkout inputs never accept a browser-selected Stripe Price.
 teamBilling.startCheckout({ teamId: "00000000-0000-4000-8000-000000000000", requestId: "11111111-1111-4111-8111-111111111111", productKey: "agency", priceId: "price_browser_owned" });
 // @ts-expect-error Team Billing reads require an explicit Team id.

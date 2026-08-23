@@ -38,6 +38,33 @@ test("Team Billing declaration is dormant when omitted and validates an exact tw
     assert.equal(definition.authorize, authorize);
     assert.ok(Object.isFrozen(definition));
     assert.ok(Object.isFrozen(definition.catalogue.agency.stripe));
+    const portalDefinition = normalizeTeamBillingDefinition({
+      catalogue: {
+        studio: { quantity: { kind: "fixed", value: 1 }, stripe: {
+          sandbox: { productId: "prod_test_studio", priceId: "price_test_studio", portalConfigurationId: "bpc_test_studio" },
+          live: { productId: "prod_live_studio", priceId: "price_live_studio", portalConfigurationId: "bpc_live_studio" },
+        } },
+        agency: { quantity: { kind: "team-members" }, stripe: {
+          sandbox: { productId: "prod_test_agency", priceId: "price_test_agency", portalConfigurationId: "bpc_test_agency" },
+          live: { productId: "prod_live_agency", priceId: "price_live_agency", portalConfigurationId: "bpc_live_agency" },
+        } },
+      },
+      portal: { returnPath: "/billing" },
+      authorize,
+    });
+    assert.deepEqual(portalDefinition.portal, { returnPath: "/billing", continuationTtlSeconds: 600 });
+    assert.throws(() => normalizeTeamBillingDefinition({
+      catalogue: {
+        studio: { quantity: { kind: "fixed", value: 1 }, stripe: {
+          sandbox: { productId: "prod_test_studio", priceId: "price_test_studio", portalConfigurationId: "bpc_test_shared" },
+          live: { productId: "prod_live_studio", priceId: "price_live_studio", portalConfigurationId: "bpc_live_studio" },
+        } },
+        agency: { quantity: { kind: "team-members" }, stripe: {
+          sandbox: { productId: "prod_test_agency", priceId: "price_test_agency", portalConfigurationId: "bpc_test_shared" },
+          live: { productId: "prod_live_agency", priceId: "price_live_agency", portalConfigurationId: "bpc_live_agency" },
+        } },
+      }, portal: { returnPath: "/billing" }, authorize,
+    }), (error) => error?.code === "INVALID_TEAM_BILLING_DECLARATION");
 
     const declared = await openDevDatabase(databasePath, "", {}, { name: "declared" }, {
       name: "declared",

@@ -44,7 +44,142 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
         || (input.customerId && session.customer !== input.customerId)) throw providerFailure(false);
       return Object.freeze({ ok: true, sessionId: session.id, url: session.url });
     },
+    async retrievePortalConfiguration(input: LooseRecord) {
+      validatePortalConfigurationInput(input);
+      throwIfAborted(options.signal);
+      let portalConfiguration: LooseRecord;
+      try {
+        portalConfiguration = await stripe.billingPortal.configurations.retrieve(input.configurationId);
+      } catch (error: any) {
+        throwProviderOperationFailure(error);
+      }
+      throwIfAborted(options.signal);
+      attestPortalConfiguration(portalConfiguration, input, config.livemode);
+      return Object.freeze({ ok: true });
+    },
+    async createPortal(input: LooseRecord) {
+      validatePortalInput(input);
+      throwIfAborted(options.signal);
+      const returnUrl = new URL(input.returnPath, config.publicOrigin).toString();
+      let session: LooseRecord;
+      try {
+        session = await stripe.billingPortal.sessions.create({
+          customer: input.customerId,
+          configuration: input.configurationId,
+          return_url: returnUrl,
+        }, { idempotencyKey: input.idempotencyKey });
+      } catch (error: any) {
+        throwProviderOperationFailure(error);
+      }
+      throwIfAborted(options.signal);
+      if (session.object !== "billing_portal.session" || session.customer !== input.customerId
+        || session.configuration !== input.configurationId || session.livemode !== config.livemode
+        || session.return_url !== returnUrl || !validPortalSessionId(session.id) || !validPortalUrl(session.url)) {
+        throw providerFailure(false);
+      }
+      return Object.freeze({ ok: true, sessionId: session.id, url: session.url });
+    },
   });
+}
+
+function validatePortalConfigurationInput(input: LooseRecord) {
+  if (!input || typeof input !== "object" || Array.isArray(input)
+    || Object.keys(input).sort().join("\0") !== ["configurationId", "expectedProducts", "mode"].join("\0")
+    || !validPortalConfigurationId(input.configurationId) || !["sandbox", "live"].includes(input.mode)
+    || !Array.isArray(input.expectedProducts) || input.expectedProducts.length < 1) throw providerFailure(false);
+
+  let previousProductId = "";
+  const seenPrices = new Set<string>();
+  for (const product of input.expectedProducts) {
+    if (!product || typeof product !== "object" || Array.isArray(product)
+      || Object.keys(product).sort().join("\0") !== "priceIds\0productId"
+      || typeof product.productId !== "string" || !/^prod_[A-Za-z0-9_]{1,240}$/.test(product.productId)
+      || product.productId <= previousProductId || !Array.isArray(product.priceIds) || product.priceIds.length < 1) throw providerFailure(false);
+    previousProductId = product.productId;
+    let previousPriceId = "";
+    for (const priceId of product.priceIds) {
+      if (typeof priceId !== "string" || !/^price_[A-Za-z0-9_]{1,249}$/.test(priceId)
+        || priceId <= previousPriceId || seenPrices.has(priceId)) throw providerFailure(false);
+      previousPriceId = priceId;
+      seenPrices.add(priceId);
+    }
+  }
+}
+
+function validatePortalInput(input: LooseRecord) {
+  if (!input || typeof input !== "object" || Array.isArray(input)
+    || Object.keys(input).sort().join("\0") !== ["configurationId", "customerId", "idempotencyKey", "returnPath"].join("\0")
+    || !validPortalConfigurationId(input.configurationId)
+    || typeof input.customerId !== "string" || !/^cus_[A-Za-z0-9_]{1,120}$/.test(input.customerId)
+    || !validReturnPath(input.returnPath)
+    || typeof input.idempotencyKey !== "string" || input.idempotencyKey.length < 8 || input.idempotencyKey.length > 255
+    || /[\r\n\0]/.test(input.idempotencyKey)) throw providerFailure(false);
+}
+
+function attestPortalConfiguration(portalConfiguration: LooseRecord, input: LooseRecord, livemode: boolean) {
+  const subscriptionUpdate = portalConfiguration?.features?.subscription_update;
+  if (portalConfiguration?.object !== "billing_portal.configuration"
+    || portalConfiguration.id !== input.configurationId || portalConfiguration.active !== true
+    || portalConfiguration.livemode !== livemode || (input.mode === "live") !== livemode
+    || portalConfiguration.features?.payment_method_update?.enabled !== true
+    || portalConfiguration.features?.invoice_history?.enabled !== true
+    || portalConfiguration.features?.subscription_cancel?.enabled !== true
+    || portalConfiguration.features?.subscription_cancel?.mode !== "at_period_end"
+    || subscriptionUpdate?.enabled !== true
+    || !sameExactStringList(subscriptionUpdate.default_allowed_updates, ["price"])
+    || !sameExactPortalProducts(subscriptionUpdate.products, input.expectedProducts)) throw providerFailure(false);
+}
+
+function sameExactPortalProducts(actual: any, expected: any[]) {
+  if (!Array.isArray(actual) || actual.length !== expected.length) return false;
+  const normalized: Array<{ productId: string; priceIds: string[] }> = [];
+  const seenProducts = new Set<string>();
+  const seenPrices = new Set<string>();
+  for (const product of actual) {
+    if (!product || typeof product !== "object" || Array.isArray(product)
+      || typeof product.product !== "string" || seenProducts.has(product.product)
+      || product.adjustable_quantity?.enabled !== false || !Array.isArray(product.prices) || product.prices.length < 1) return false;
+    seenProducts.add(product.product);
+    const priceIds: string[] = [];
+    for (const priceId of product.prices) {
+      if (typeof priceId !== "string" || seenPrices.has(priceId) || priceIds.includes(priceId)) return false;
+      priceIds.push(priceId);
+      seenPrices.add(priceId);
+    }
+    priceIds.sort();
+    normalized.push({ productId: product.product, priceIds });
+  }
+  normalized.sort((left, right) => left.productId < right.productId ? -1 : left.productId > right.productId ? 1 : 0);
+  return JSON.stringify(normalized) === JSON.stringify(expected);
+}
+
+function sameExactStringList(actual: any, expected: string[]) {
+  return Array.isArray(actual) && actual.length === expected.length
+    && actual.every((value, index) => value === expected[index]);
+}
+
+function validPortalConfigurationId(value: any) {
+  return typeof value === "string" && /^bpc_[A-Za-z0-9_]{1,240}$/.test(value);
+}
+
+function validPortalSessionId(value: any) {
+  return typeof value === "string" && /^bps_[A-Za-z0-9_]{1,240}$/.test(value);
+}
+
+function validPortalUrl(value: any) {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "billing.stripe.com"
+      && /^\/p\/session\/[A-Za-z0-9_-]{8,1024}$/.test(url.pathname)
+      && !url.username && !url.password && !url.port;
+  } catch { return false; }
+}
+
+function throwProviderOperationFailure(error: any): never {
+  if (error?.name === "AbortError" || error?.code === "ABORT_ERR") throw error;
+  const status = Number(error?.statusCode);
+  throw providerFailure(!Number.isInteger(status) || status >= 500 || [408, 409, 429].includes(status));
 }
 
 function validateInput(input: LooseRecord) {

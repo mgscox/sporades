@@ -20,7 +20,7 @@ import { signInWithEmail, signUpWithEmail } from "./auth-runtime.js";
 import { beginOAuthSignIn, resolvePasswordResetConfig } from "./auth-runtime.js";
 import { readCurrentUserPreferences, updateCurrentUserPreferences, } from "./user-preferences-runtime.js";
 import { countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createPrivilegedTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
-import { TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, applyVerifiedTeamBillingCheckoutObservation, expireTeamBillingCheckout, normalizeTeamBillingDefinition, performTeamBillingCheckout, readCurrentUserTeamBilling, settleExhaustedTeamBillingCheckoutJob, startTeamBillingCheckout, } from "./team-billing-runtime.js";
+import { TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, TEAM_BILLING_PORTAL_EXPIRY_JOB, TEAM_BILLING_PORTAL_JOB, TEAM_BILLING_PORTAL_MAX_ATTEMPTS, applyVerifiedTeamBillingCheckoutObservation, expireTeamBillingCheckout, expireTeamBillingPortal, normalizeTeamBillingDefinition, performTeamBillingCheckout, performTeamBillingPortal, readCurrentUserTeamBilling, settleExhaustedTeamBillingCheckoutJob, startTeamBillingCheckout, startTeamBillingPortal, } from "./team-billing-runtime.js";
 // Batch 8. Eight names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
 // `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
@@ -573,6 +573,8 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             },
             performTeamBillingCheckout: (context, payload) => performTeamBillingCheckout(database, context, payload, database.__runtimeJobAttempts.get(context) ?? 1),
             expireTeamBillingCheckout: (context, payload) => expireTeamBillingCheckout(database, context, payload),
+            performTeamBillingPortal: (context, payload) => performTeamBillingPortal(database, context, payload, database.__runtimeJobAttempts.get(context) ?? 1),
+            expireTeamBillingPortal: (context, payload) => expireTeamBillingPortal(database, context, payload),
         })];
     const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
     const clock = createRuntimeClock(options?.clock);
@@ -628,6 +630,8 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         stripeApiBaseUrl: options?.stripeApiBaseUrl,
         enqueueTeamBillingCheckoutJob: (transaction, payload, idempotencyKey) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CHECKOUT_JOB, payload, idempotencyKey, { maxAttempts: TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, delayMs: 1_000 }, true),
         enqueueTeamBillingCheckoutExpiryJob: (transaction, payload, idempotencyKey, availableAt) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, payload, idempotencyKey, undefined, true, availableAt),
+        enqueueTeamBillingPortalJob: (transaction, payload, idempotencyKey) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_PORTAL_JOB, payload, idempotencyKey, { maxAttempts: TEAM_BILLING_PORTAL_MAX_ATTEMPTS, delayMs: 1_000 }, true),
+        enqueueTeamBillingPortalExpiryJob: (transaction, payload, idempotencyKey, availableAt) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_PORTAL_EXPIRY_JOB, payload, idempotencyKey, undefined, true, availableAt),
         scheduleTeamBillingJobDispatch: () => scheduleCurrentUserJobWorker(database),
         mail,
         authConfig: authStatus(config, serverEnv),
@@ -4422,6 +4426,30 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
                             ? "Use a new request identifier for a different product."
                             : error?.code === "TEAM_BILLING_CHECKOUT_ACTIVE"
                                 ? "Finish, abandon, or allow the current Team Checkout to expire before starting another."
+                                : "Sign in as the current policy-approved billing administrator and retry.",
+                    },
+                });
+            }
+            return;
+        }
+        if (message.type === "teamBilling.openPortal") {
+            try {
+                const input = message.input;
+                const data = await startTeamBillingPortal(database, client.session.auth, input?.teamId, input?.requestId);
+                sendJson(client, { id: message.id ?? null, type: "teamBilling.openPortal.result", data, error: null });
+            }
+            catch (error) {
+                sendJson(client, {
+                    id: message.id ?? null,
+                    type: "error",
+                    data: null,
+                    error: {
+                        code: ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_CHECKOUT_ACTIVE", "TEAM_BILLING_CHECKOUT_UNAVAILABLE"].includes(error?.code)
+                            ? error.code : "TEAM_BILLING_DENIED",
+                        message: error?.code === "TEAM_BILLING_REQUEST_CONFLICT" ? "Team billing request conflicts with existing work."
+                            : error?.code === "TEAM_BILLING_CHECKOUT_ACTIVE" ? "A Team billing session is already active." : "Team Customer Portal is unavailable.",
+                        hint: error?.code === "TEAM_BILLING_REQUEST_CONFLICT" ? "Use a new request identifier."
+                            : error?.code === "TEAM_BILLING_CHECKOUT_ACTIVE" ? "Finish or allow the current session to expire before starting another."
                                 : "Sign in as the current policy-approved billing administrator and retry.",
                     },
                 });

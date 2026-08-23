@@ -6,7 +6,7 @@ import { test } from "node:test";
 
 import { openDevDatabase } from "../dist/server-runtime-source.js";
 import { String as Text, table } from "../dist/server.js";
-import { startTeamBillingCheckout, TEAM_BILLING_CHECKOUT_JOB } from "../dist/team-billing-runtime.js";
+import { startTeamBillingCheckout, startTeamBillingPortal, TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_PORTAL_JOB } from "../dist/team-billing-runtime.js";
 import { createStripeCallbackEndpoint } from "../dist/stripe-webhook-runtime.js";
 import { withPostgresAdapter } from "./support/database-adapter-engines.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
@@ -31,8 +31,12 @@ const capsule = {
   schema: { billingHolders: table({ teamId: Text(), userId: Text() }).unique("teamId") },
   teamBilling: {
     checkout: { successPath: "/billing/success", cancelPath: "/billing/cancelled" },
+    portal: { returnPath: "/billing" },
     catalogue: {
-      agency: { quantity: { kind: "team-members" }, stripe: { sandbox: { priceId: "price_test_agency" }, live: { priceId: "price_live_agency" } } },
+      agency: { quantity: { kind: "team-members" }, stripe: {
+        sandbox: { productId: "prod_test_agency", priceId: "price_test_agency", portalConfigurationId: "bpc_test_agency" },
+        live: { productId: "prod_live_agency", priceId: "price_live_agency", portalConfigurationId: "bpc_live_agency" },
+      } },
     },
     authorize: async (ctx, input) => (await ctx.db.billingHolders.where("teamId", input.teamId).get())?.userId === ctx.auth.userId
       ? { allow: true } : { allow: false },
@@ -101,6 +105,37 @@ for (const engine of engines) {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  test(`${engine.name} serializes duplicate Team Portal admission across runtimes`, { skip: engine.skip }, async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), `sporades-team-portal-${engine.name.toLowerCase()}-`));
+    try {
+      await engine.run(dir, async (first, second) => {
+        const sql = first.adapter.dialect.sql;
+        const now = new Date().toISOString();
+        await seedTeam(first, sql, now);
+        await first.adapter.prepare(sql("INSERT INTO [sporades_team_billing_customers] ([teamId], [mode], [providerCustomerId], [createdAt], [updatedAt]) VALUES (?, 'sandbox', 'cus_concurrent_portal', ?, ?)")).run(teamId, now, now);
+        await first.adapter.prepare(sql("INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [observedAt], [updatedAt]) VALUES ('portal-subscription', ?, 'sandbox', 'sub_concurrent_portal', 'price_test_agency', 'agency', 1, 'active', 0, NULL, ?, ?)")).run(teamId, now, now);
+        const portalRequestId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        const [left, right] = await Promise.all([
+          startTeamBillingPortal(first, auth, teamId, portalRequestId),
+          startTeamBillingPortal(second, auth, teamId, portalRequestId),
+        ]);
+        assert.equal(left.state, "pending");
+        assert.equal(right.state, "pending");
+        assert.equal((await first.adapter.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?")).get(teamId, portalRequestId)).count, 1);
+        assert.equal((await first.adapter.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_jobs] WHERE [handler] = ?")).get(TEAM_BILLING_PORTAL_JOB)).count, 1);
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+async function seedTeam(database, sql, now) {
+  await database.adapter.prepare(sql("INSERT INTO [sporades_auth_users] ([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider]) VALUES (?, ?, ?, ?, NULL, 1, 0, 'email')")).run(userId, now, auth.displayName, auth.email);
+  await database.adapter.prepare(sql("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, 'Checkout Team', ?, ?)")).run(teamId, now, userId);
+  await database.adapter.prepare(sql("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)")).run(teamId, userId, now);
+  await database.adapter.prepare(sql("INSERT INTO [billingHolders] ([id], [createdAt], [updatedAt], [teamId], [userId]) VALUES ('holder', ?, ?, ?, ?)")).run(now, now, teamId, userId);
 }
 
 function open(databasePath, env, serviceConfig) {

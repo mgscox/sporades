@@ -155,6 +155,9 @@ export const teamBilling = {
   startCheckout(input) {
     return connect().teamBillingStartCheckout(input);
   },
+  openPortal(input) {
+    return connect().teamBillingOpenPortal(input);
+  },
 };
 
 export const journey = {
@@ -1227,6 +1230,7 @@ function createConnection() {
     teamsDelete(teamId) { return request("teams.delete", { teamId }); },
     teamBillingGet(teamId) { return request("teamBilling.get", { teamId }); },
     teamBillingStartCheckout(input) { return request("teamBilling.startCheckout", { input }); },
+    teamBillingOpenPortal(input) { return request("teamBilling.openPortal", { input }); },
     journeyEnable(options = {}) {
       return request("journey.enable", { options }).then((result) => {
         if (!result.error) journeyConsentOptions = options;

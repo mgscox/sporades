@@ -6,6 +6,9 @@ Changes since v0.8.7.
 
 ### 🚀 Features
 
+- Add durable headless Team Customer Portal sessions pinned to explicitly
+  attested sandbox/live configurations, compatible Plan-switch catalogues,
+  period-end cancellation, disabled quantity editing, and app-owned rendering.
 - Add durable headless Team Checkout with atomic duplicate admission, trusted
   Price and Team-count derivation, bounded retries, verified terminal-event
   ordering, and short-lived validated continuation URLs while apps own all UI.

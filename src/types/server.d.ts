@@ -492,8 +492,8 @@ export type TeamBillingQuantityPolicy =
 export type TeamBillingProductDeclaration = {
   quantity: TeamBillingQuantityPolicy;
   stripe: {
-    sandbox: { priceId: string };
-    live: { priceId: string };
+    sandbox: { priceId: string; productId?: string; portalConfigurationId?: string };
+    live: { priceId: string; productId?: string; portalConfigurationId?: string };
   };
 };
 export type TeamBillingOperation = "read" | "checkout" | "portal" | "plan-transition" | "erasure";
@@ -518,6 +518,12 @@ export type TeamBillingDefinition<Schema extends SchemaDefinition = SchemaDefini
     successPath: string;
     cancelPath: string;
     /** How long a validated Checkout URL may be returned to an authorized client; 60-1800 seconds, default 600. */
+    continuationTtlSeconds?: number;
+  };
+  /** Trusted Customer Portal return. Every catalogue binding must also declare Product and explicit Portal configuration IDs. */
+  portal?: {
+    returnPath: string;
+    /** How long a validated Portal URL may be returned to an authorized client; 60-1800 seconds, default 600. */
     continuationTtlSeconds?: number;
   };
 };

@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { createWebSocketHub, handleFileHttpRoute, openDevDatabase, recoverExpiredJobLeases, routeEndpoint, runMutation, runQuery } from "../dist/server-runtime-source.js";
 import { Number as NumberField, String as StringField, endpoint, job, mutation, query, table } from "../dist/server.js";
 import { createAdditionalTeam, joinCurrentUserTeam } from "../dist/teams-runtime.js";
-import { applyVerifiedTeamBillingCheckoutObservation, expireTeamBillingCheckout, readCurrentUserTeamBilling } from "../dist/team-billing-runtime.js";
+import { applyVerifiedTeamBillingCheckoutObservation, expireTeamBillingCheckout, expireTeamBillingPortal, readCurrentUserTeamBilling } from "../dist/team-billing-runtime.js";
 import { createStripeCallbackEndpoint } from "../dist/stripe-webhook-runtime.js";
 import { withPostgresAdapter } from "./support/database-adapter-engines.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
@@ -154,14 +154,19 @@ const billingCapsule = {
   },
   teamBilling: {
     checkout: { successPath: "/settings/billing/success", cancelPath: "/settings/billing/cancelled", continuationTtlSeconds: 600 },
+    portal: { returnPath: "/settings/billing", continuationTtlSeconds: 600 },
     catalogue: {
       studio: {
         quantity: { kind: "fixed", value: 1 },
-        stripe: { sandbox: { priceId: "price_test_studio" }, live: { priceId: "price_live_studio" } },
+        stripe: { sandbox: { productId: "prod_test_studio", priceId: "price_test_studio", portalConfigurationId: "bpc_test_studio" }, live: { productId: "prod_live_studio", priceId: "price_live_studio", portalConfigurationId: "bpc_live_studio" } },
       },
       agency: {
         quantity: { kind: "team-members" },
-        stripe: { sandbox: { priceId: "price_test_agency" }, live: { priceId: "price_live_agency" } },
+        stripe: { sandbox: { productId: "prod_test_agency", priceId: "price_test_agency", portalConfigurationId: "bpc_test_agency" }, live: { productId: "prod_live_agency", priceId: "price_live_agency", portalConfigurationId: "bpc_live_agency" } },
+      },
+      "agency-pro": {
+        quantity: { kind: "team-members" },
+        stripe: { sandbox: { productId: "prod_test_agency", priceId: "price_test_agency_pro", portalConfigurationId: "bpc_test_agency" }, live: { productId: "prod_live_agency", priceId: "price_live_agency_pro", portalConfigurationId: "bpc_live_agency" } },
       },
     },
     async authorize(ctx, input) {
@@ -2141,6 +2146,148 @@ test("headless Team Checkout durably deduplicates work and exposes only an autho
   }
 });
 
+test("headless Team Portal pins reviewed configuration and exposes only an authorized short-lived continuation", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-headless-team-portal-"));
+  const retrieved = [];
+  const created = [];
+  let blockNextRetrieval = false;
+  let releaseRetrieval;
+  let markRetrievalStarted;
+  const retrievalStarted = new Promise((resolve) => { markRetrievalStarted = resolve; });
+  const retrievalRelease = new Promise((resolve) => { releaseRetrieval = resolve; });
+  let failNextPortalCreateOnce = false;
+  let retryPortalOperationId = null;
+  const runtime = await startRuntime(path.join(dir, "data.db"), billingCapsule, {
+    serverEnv: { STRIPE_SECRET_KEY: "sk_test_team_portal", STRIPE_WEBHOOK_SECRET: "whsec_team_portal" },
+    config: { payments: { stripe: {
+      enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
+      publicOrigin: "https://checkout.example.test", callbackPath: "/stripe/webhook",
+      apiVersion: "2026-07-29.dahlia", livemode: false, requestTimeoutMs: 10_000,
+    } } },
+    runtimeOptions: {
+      createStripeCallbackEndpoint,
+      createStripeTeamBillingProvider: () => ({
+        async retrievePortalConfiguration(input) {
+          retrieved.push(input);
+          if (blockNextRetrieval) { markRetrievalStarted(); await retrievalRelease; }
+          return { ok: true };
+        },
+        async createPortal(input) {
+          created.push(input);
+          if (failNextPortalCreateOnce && retryPortalOperationId === null) {
+            retryPortalOperationId = retrieved.at(-1).operationId;
+            const error = new Error("transient Portal response loss");
+            error.retryable = true;
+            throw error;
+          }
+          if (retryPortalOperationId === retrieved.at(-1).operationId) failNextPortalCreateOnce = false;
+          const suffix = created.length;
+          return { ok: true, sessionId: `bps_test_team_portal_${suffix}`, url: `https://billing.stripe.com/p/session/team_portal_token_${suffix}` };
+        },
+      }),
+    },
+  });
+  let owner; let nextHolder; let outsider;
+  try {
+    await runtime.database.init();
+    owner = await runtime.open();
+    nextHolder = await runtime.open();
+    outsider = await runtime.open();
+    const ownerSignup = await signUp(owner, "portal-owner", "portal-owner@example.com", "Portal owner");
+    const nextSignup = await signUp(nextHolder, "portal-next", "portal-next@example.com", "Portal next");
+    const outsiderSignup = await signUp(outsider, "portal-outsider", "portal-outsider@example.com", "Portal outsider");
+    const team = (await send(owner, { id: "portal-team", type: "teams.list", sessionToken: ownerSignup.data.sessionToken })).data.teams[0];
+    await runtime.database.adapter.prepare(
+      "INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)",
+    ).run(team.id, nextSignup.data.auth.userId, new Date().toISOString());
+    const holder = await send(owner, { id: "portal-holder", type: "mutation.run", mutation: "setBillingHolder", args: [team.id, ownerSignup.data.auth.userId], sessionToken: ownerSignup.data.sessionToken });
+    assert.equal(holder.error, null, JSON.stringify(holder.error));
+    const now = new Date().toISOString();
+    await runtime.database.adapter.prepare(
+      "INSERT INTO [sporades_team_billing_customers] ([teamId], [mode], [providerCustomerId], [createdAt], [updatedAt]) VALUES (?, 'sandbox', 'cus_team_portal', ?, ?)",
+    ).run(team.id, now, now);
+    await runtime.database.adapter.prepare(
+      "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [observedAt], [updatedAt]) VALUES (?, ?, 'sandbox', 'sub_team_portal', 'price_test_agency', 'agency', 2, 'active', 0, ?, ?, ?)",
+    ).run("44444444-4444-4444-8444-444444444444", team.id, "2099-01-01T00:00:00.000Z", now, now);
+
+    const input = { teamId: team.id, requestId: "33333333-3333-4333-8333-333333333333" };
+    const started = await send(owner, { id: "portal-start", type: "teamBilling.openPortal", input, sessionToken: ownerSignup.data.sessionToken });
+    assert.equal(started.data.state, "pending", JSON.stringify(started));
+    const ready = await waitForTeamPortal(owner, input, ownerSignup.data.sessionToken, "ready");
+    assert.equal(ready.data.url, "https://billing.stripe.com/p/session/team_portal_token_1");
+    assert.deepEqual(retrieved[0], {
+      operationId: retrieved[0].operationId,
+      configurationId: "bpc_test_agency",
+      mode: "sandbox",
+      expectedProducts: [{ productId: "prod_test_agency", priceIds: ["price_test_agency", "price_test_agency_pro"] }],
+    });
+    assert.deepEqual(created[0], {
+      customerId: "cus_team_portal", configurationId: "bpc_test_agency", returnPath: "/settings/billing",
+      idempotencyKey: created[0].idempotencyKey,
+    });
+    assert.doesNotMatch(JSON.stringify(ready), /cus_team_portal|bpc_test|price_test|idempotency|sessionId/i);
+    const repeated = await send(owner, { id: "portal-repeat", type: "teamBilling.openPortal", input, sessionToken: ownerSignup.data.sessionToken });
+    assert.equal(repeated.data.state, "ready");
+    assert.equal(created.length, 1);
+    const denied = await send(outsider, { id: "portal-cross-team", type: "teamBilling.openPortal", input, sessionToken: outsiderSignup.data.sessionToken });
+    assert.equal(denied.error.code, "TEAM_BILLING_DENIED");
+    const transfer = await send(owner, { id: "portal-transfer", type: "mutation.run", mutation: "setBillingHolder", args: [team.id, nextSignup.data.auth.userId], sessionToken: ownerSignup.data.sessionToken });
+    assert.equal(transfer.error, null);
+    const former = await send(owner, { id: "portal-former", type: "teamBilling.openPortal", input, sessionToken: ownerSignup.data.sessionToken });
+    assert.equal(former.error.code, "TEAM_BILLING_DENIED");
+    const current = await send(nextHolder, { id: "portal-current", type: "teamBilling.openPortal", input, sessionToken: nextSignup.data.sessionToken });
+    assert.equal(current.data.state, "ready");
+    const portalOperation = await runtime.database.adapter.prepare(
+      "SELECT [id] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?",
+    ).get(team.id, input.requestId);
+    await runtime.database.adapter.prepare("UPDATE [sporades_team_billing_operations] SET [continuationExpiresAt] = '2000-01-01T00:00:00.000Z' WHERE [id] = ?").run(portalOperation.id);
+    await expireTeamBillingPortal(runtime.database, {}, { operationId: portalOperation.id });
+    const expired = await send(nextHolder, { id: "portal-expired", type: "teamBilling.openPortal", input, sessionToken: nextSignup.data.sessionToken });
+    assert.equal(expired.data.state, "expired");
+
+    failNextPortalCreateOnce = true;
+    const retryInput = { teamId: team.id, requestId: "66666666-6666-4666-8666-666666666665" };
+    const retryStarted = await send(nextHolder, { id: "portal-retry-start", type: "teamBilling.openPortal", input: retryInput, sessionToken: nextSignup.data.sessionToken });
+    assert.equal(retryStarted.data.state, "pending");
+    const retryReady = await waitForTeamPortal(nextHolder, retryInput, nextSignup.data.sessionToken, "ready", 4_000);
+    assert.equal(retryReady.data.state, "ready");
+    assert.deepEqual(created.slice(-2)[0], created.slice(-2)[1], "a lost Portal response retries byte-equivalent creation authority and idempotency");
+    const retryOperation = await runtime.database.adapter.prepare(
+      "SELECT [id] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?",
+    ).get(team.id, retryInput.requestId);
+    const retryJob = await runtime.database.adapter.prepare(
+      "SELECT [id] FROM [sporades_jobs] WHERE [handler] = '_sporades.team-billing-portal' AND [payload] = ?",
+    ).get(JSON.stringify({ operationId: retryOperation.id }));
+    await runtime.database.adapter.prepare(
+      "UPDATE [sporades_jobs] SET [status] = 'running', [attempts] = 4, [leaseExpiresAt] = ?, [claimToken] = 'portal-crashed-final-claim', [failure] = NULL, [failedAt] = NULL WHERE [id] = ?",
+    ).run(new Date(Date.now() - 1_000).toISOString(), retryJob.id);
+    await runtime.database.adapter.prepare("UPDATE [sporades_team_billing_operations] SET [status] = 'running' WHERE [id] = ?").run(retryOperation.id);
+    await recoverExpiredJobLeases(runtime.database);
+    const crashRecovered = await send(nextHolder, { id: "portal-crash-recovered", type: "teamBilling.openPortal", input: retryInput, sessionToken: nextSignup.data.sessionToken });
+    assert.equal(crashRecovered.data.state, "failed", "final expired-lease recovery terminally reconciles the Portal operation");
+    const cleared = await runtime.database.adapter.prepare("SELECT [continuationUrl], [continuationExpiresAt] FROM [sporades_team_billing_operations] WHERE [id] = ?").get(retryOperation.id);
+    assert.deepEqual({ ...cleared }, { continuationUrl: null, continuationExpiresAt: null });
+
+    const createdBeforeAuthorityTransfer = created.length;
+    blockNextRetrieval = true;
+    const transferInput = { teamId: team.id, requestId: "55555555-5555-4555-8555-555555555554" };
+    const transferStarted = await send(nextHolder, { id: "portal-transfer-start", type: "teamBilling.openPortal", input: transferInput, sessionToken: nextSignup.data.sessionToken });
+    assert.equal(transferStarted.data.state, "pending");
+    await waitForCheckoutSignal(retrievalStarted, "Portal configuration retrieval");
+    const transferBack = await send(nextHolder, { id: "portal-transfer-back", type: "mutation.run", mutation: "setBillingHolder", args: [team.id, ownerSignup.data.auth.userId], sessionToken: nextSignup.data.sessionToken });
+    assert.equal(transferBack.error, null);
+    releaseRetrieval();
+    const authorityChanged = await waitForTeamPortal(owner, transferInput, ownerSignup.data.sessionToken, "failed", 4_000);
+    assert.equal(authorityChanged.data.reason, "authority-changed");
+    assert.equal(created.length, createdBeforeAuthorityTransfer, "authority is rechecked after configuration attestation and before session creation");
+  } finally {
+    releaseRetrieval?.();
+    owner?.close(); nextHolder?.close(); outsider?.close();
+    await runtime.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("libSQL Team Billing authority and projection use the same transaction-owned contract", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-billing-libsql-"));
   await withFakeLibsqlService(path.join(dir, "libsql.db"), async ({ url }) => {
@@ -2272,6 +2419,19 @@ async function waitForTeamCheckout(socket, input, sessionToken, state, timeoutMs
     await new Promise((resolve) => setTimeout(resolve, 10));
   } while (Date.now() < deadline);
   assert.fail(`Team Checkout did not reach ${state}`);
+}
+
+async function waitForTeamPortal(socket, input, sessionToken, state, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  let attempt = 0;
+  let lastResult = null;
+  do {
+    const result = await send(socket, { id: `portal-poll-${attempt++}`, type: "teamBilling.openPortal", input, sessionToken });
+    lastResult = result;
+    if (result.data?.state === state) return result;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  } while (Date.now() < deadline);
+  assert.fail(`Team Portal did not reach ${state}: ${JSON.stringify(lastResult)}`);
 }
 
 async function waitForCheckoutSignal(signal, description, timeoutMs = 2_000) {

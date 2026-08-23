@@ -143,19 +143,20 @@ capsule({
       successPath: "/settings/billing/success",
       cancelPath: "/settings/billing/cancelled",
     },
+    portal: { returnPath: "/settings/billing" },
     catalogue: {
       studio: {
         quantity: { kind: "fixed", value: 1 },
         stripe: {
-          sandbox: { priceId: "price_test_studio" },
-          live: { priceId: "price_live_studio" },
+          sandbox: { productId: "prod_test_studio", priceId: "price_test_studio", portalConfigurationId: "bpc_test_studio" },
+          live: { productId: "prod_live_studio", priceId: "price_live_studio", portalConfigurationId: "bpc_live_studio" },
         },
       },
       agency: {
         quantity: { kind: "team-members" },
         stripe: {
-          sandbox: { priceId: "price_test_agency" },
-          live: { priceId: "price_live_agency" },
+          sandbox: { productId: "prod_test_agency", priceId: "price_test_agency", portalConfigurationId: "bpc_test_agency" },
+          live: { productId: "prod_live_agency", priceId: "price_live_agency", portalConfigurationId: "bpc_live_agency" },
         },
       },
     },
@@ -192,6 +193,11 @@ const checkout = await teamBilling.startCheckout({
   requestId: crypto.randomUUID(),
   productKey: "agency",
 });
+
+const portal = await teamBilling.openPortal({
+  teamId,
+  requestId: crypto.randomUUID(),
+});
 ```
 
 `teamBilling.startCheckout` supplies only the safe state needed by the app.
@@ -226,8 +232,27 @@ terminal even when it arrives before the provider response; a later response
 cannot revive the URL. Checkout response, browser return, and completion alone
 do not create Subscription state or entitlement.
 
+Portal admission resolves the exact current Team Customer and Subscription,
+then retrieves the declared `bpc_…` configuration before creating a session.
+Sporades requires the configuration to be active in the exact sandbox/live
+mode, with payment-method updates and invoice history enabled, cancellation at
+period end, quantity editing disabled, and an exact Product-to-Price allow-list.
+Products sharing a configuration must share the same quantity policy: fixed
+quantities match only the same fixed value, while Team-member quantities match
+only Team-member quantities. The session always names the reviewed
+configuration explicitly, so changing Stripe's mutable Dashboard default has
+no effect. Configuration drift fails closed.
+
+`teamBilling.openPortal` is durable and idempotent by Team and request. It
+rechecks the original actor, Capsule policy, Customer, Subscription, mode,
+configuration, and return path immediately before session creation. Only a
+strictly validated `billing.stripe.com` URL is exposed, and a runtime Job erases
+it at local expiry even when the app is abandoned. The app renders every
+button, progress state, error, retry, and navigation action; Portal return and
+provider acknowledgement never update billing truth.
+
 Customer, Subscription, operation, observation, and replay correlation lives
-in runtime-owned storage on SQLite, libSQL, and Postgres. Portal, managed
+in runtime-owned storage on SQLite, libSQL, and Postgres. Managed
 Plan-transition, subscription convergence, and erasure remain later
 operation-specific surfaces rather than a generic Stripe proxy.
 

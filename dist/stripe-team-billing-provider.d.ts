@@ -6,6 +6,14 @@ export declare function createStripeTeamBillingProvider(options: LooseRecord): R
         sessionId: any;
         url: any;
     }>>;
+    retrievePortalConfiguration(input: LooseRecord): Promise<Readonly<{
+        ok: true;
+    }>>;
+    createPortal(input: LooseRecord): Promise<Readonly<{
+        ok: true;
+        sessionId: any;
+        url: any;
+    }>>;
 }>;
 export {};
 //# sourceMappingURL=stripe-team-billing-provider.d.ts.map

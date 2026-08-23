@@ -71,6 +71,8 @@ export declare function runtimeOwnedJobHandlers(runtime: {
     dispatchStripeEvent: (context: LooseRecord, event: LooseRecord) => Promise<LooseRecord>;
     performTeamBillingCheckout: (context: LooseRecord, payload: LooseRecord) => Promise<LooseRecord | null>;
     expireTeamBillingCheckout: (context: LooseRecord, payload: LooseRecord) => Promise<null>;
+    performTeamBillingPortal: (context: LooseRecord, payload: LooseRecord) => Promise<LooseRecord | null>;
+    expireTeamBillingPortal: (context: LooseRecord, payload: LooseRecord) => Promise<null>;
 }): {
     name: string;
     handler: (ctx: LooseRecord, payload: LooseRecord) => Promise<any>;

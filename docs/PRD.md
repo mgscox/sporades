@@ -102,7 +102,12 @@ The repository currently includes:
   Customer, exact quantity, correlation, and idempotency, then exposes only a
   validated short-lived URL capability to current authority. Verified terminal
   events win provider-response races; neither response nor browser return
-  applies entitlement. Omission creates no Team Billing tables and preserves
+  applies entitlement. An optional trusted Portal return plus per-binding
+  Stripe Product and explicit Portal configuration IDs adds durable
+  `teamBilling.openPortal(...)`. Sporades retrieves and attests the exact active
+  mode configuration on every attempt, permits only Price switches within one
+  compatible quantity-policy configuration, requires period-end cancellation,
+  and rejects quantity editing or mutable Dashboard defaults. Omission creates no Team Billing tables and preserves
   existing Capsules. Sporades renders no billing UI; the Capsule owns every
   component, route, word, entitlement, and local business rule.
 - `sporades dev` for local Node execution with bundling, file watching,

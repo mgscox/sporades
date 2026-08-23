@@ -331,7 +331,7 @@ export type TeamsApi = {
 /** Closed, provider-identifier-free Team Billing state for app-owned rendering. */
 export type TeamBillingProjection =
   | { state: "inactive"; teamId: string }
-  | { state: "pending"; teamId: string; operation: "checkout" | "plan-transition" | "erasure" | "reconciliation"; productKey?: string; requestedAt: string }
+  | { state: "pending"; teamId: string; operation: "checkout" | "portal" | "plan-transition" | "erasure" | "reconciliation"; productKey?: string; requestedAt: string }
   | { state: "active"; teamId: string; productKey: string; quantity: number; renewsAt: string }
   | { state: "cancelling"; teamId: string; productKey: string; quantity: number; endsAt: string }
   | { state: "past-due" | "cancelled"; teamId: string; productKey: string; quantity: number }
@@ -344,10 +344,18 @@ export type TeamBillingCheckoutResult =
   | { state: "completed" | "expired" | "superseded"; teamId: string; requestId: string; productKey: string }
   | { state: "failed"; teamId: string; requestId: string; productKey: string; reason: "authority-changed" | "unavailable" };
 
+export type TeamBillingPortalRequest = { teamId: string; requestId: string };
+export type TeamBillingPortalResult =
+  | { state: "pending"; teamId: string; requestId: string; requestedAt: string }
+  | { state: "ready"; teamId: string; requestId: string; url: string; expiresAt: string }
+  | { state: "expired" | "superseded"; teamId: string; requestId: string }
+  | { state: "failed"; teamId: string; requestId: string; reason: "authority-changed" | "unavailable" };
+
 /** Headless Team Billing transport. Apps own every rendered element and all copy. */
 export type TeamBillingApi = {
   get(teamId: string): Promise<SporadesResult<TeamBillingProjection>>;
   startCheckout(input: TeamBillingCheckoutRequest): Promise<SporadesResult<TeamBillingCheckoutResult>>;
+  openPortal(input: TeamBillingPortalRequest): Promise<SporadesResult<TeamBillingPortalResult>>;
 };
 
 /** Hook state returned by `useQuery()`. */
