@@ -827,7 +827,11 @@ async function portalOperationResult(database: LooseRecord, transaction: LooseRe
   }
   if (operation.status === "ready") {
     let desired: LooseRecord | null = null;
-    try { desired = await portalDesiredState(database, transaction, teamId); } catch { desired = null; }
+    try {
+      desired = await portalDesiredState(database, transaction, teamId);
+    } catch (error: any) {
+      if (error?.code !== "TEAM_BILLING_CHECKOUT_UNAVAILABLE") throw error;
+    }
     if (!desired || !portalOperationMatches(operation, desired)) {
       await transaction.prepare(transaction.dialect.sql(
         "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [safeFailureCode] = 'DESIRED_STATE_CHANGED', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [requestId] = ? AND [kind] = 'portal' AND [status] = 'ready'",

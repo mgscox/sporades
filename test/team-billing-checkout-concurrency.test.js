@@ -164,6 +164,27 @@ test("Team Portal retries transient SQLite locks at both provider transaction bo
     database.adapter.withTransaction = originalWithTransaction;
     assert.equal((await database.adapter.prepare(sql("SELECT [status] FROM [sporades_team_billing_operations] WHERE [id] = ?")).get(operation.id)).status, "retrying");
     assert.deepEqual(await performTeamBillingPortal(database, {}, { operationId: operation.id }, 3), { ready: true });
+
+    let failReadyRead = true;
+    database.adapter.withTransaction = async (callback) => originalWithTransaction(async (transaction) => {
+      const originalPrepare = transaction.prepare.bind(transaction);
+      transaction.prepare = (statement) => {
+          if (failReadyRead && String(statement).includes("sporades_team_billing_customers")) {
+            failReadyRead = false;
+            return locked();
+          }
+          return originalPrepare(statement);
+      };
+      return callback(transaction);
+    });
+    const readyAfterTransientRead = await startTeamBillingPortal(database, auth, teamId, lockRequestId);
+    database.adapter.withTransaction = originalWithTransaction;
+    assert.equal(readyAfterTransientRead.state, "ready", "a transient ready-state read retries instead of burning the continuation");
+    const persistedReady = await database.adapter.prepare(sql(
+      "SELECT [status], [continuationUrl] FROM [sporades_team_billing_operations] WHERE [id] = ?",
+    )).get(operation.id);
+    assert.equal(persistedReady.status, "ready");
+    assert.equal(persistedReady.continuationUrl, "https://billing.stripe.com/p/session/lock_retry_token");
   } finally {
     await database.close();
     await rm(dir, { recursive: true, force: true });

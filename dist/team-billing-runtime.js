@@ -805,8 +805,9 @@ async function portalOperationResult(database, transaction, teamId, requestId, o
         try {
             desired = await portalDesiredState(database, transaction, teamId);
         }
-        catch {
-            desired = null;
+        catch (error) {
+            if (error?.code !== "TEAM_BILLING_CHECKOUT_UNAVAILABLE")
+                throw error;
         }
         if (!desired || !portalOperationMatches(operation, desired)) {
             await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [safeFailureCode] = 'DESIRED_STATE_CHANGED', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [requestId] = ? AND [kind] = 'portal' AND [status] = 'ready'")).run(database.clock.now().toISOString(), teamId, requestId);

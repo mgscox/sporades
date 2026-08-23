@@ -7926,8 +7926,8 @@ async function portalOperationResult(database, transaction, teamId, requestId, o
     let desired = null;
     try {
       desired = await portalDesiredState(database, transaction, teamId);
-    } catch {
-      desired = null;
+    } catch (error) {
+      if (error?.code !== "TEAM_BILLING_CHECKOUT_UNAVAILABLE") throw error;
     }
     if (!desired || !portalOperationMatches(operation, desired)) {
       await transaction.prepare(transaction.dialect.sql(
