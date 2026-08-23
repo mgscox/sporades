@@ -3237,6 +3237,10 @@ function createAtomicStripeConsequenceContext(database: LooseRecord, parent: Loo
   context.jobs = Object.freeze({
     enqueue: privilegedJobs.enqueue.bind(privilegedJobs),
   });
+  const privilegedTeams = createPrivilegedTeamsApi(database, () => holder.current);
+  context.teams = Object.freeze({
+    countMembers: privilegedTeams.countMembers.bind(privilegedTeams),
+  });
   return context;
 }
 

@@ -2968,6 +2968,10 @@ function createAtomicStripeConsequenceContext(database, parent) {
     context.jobs = Object.freeze({
         enqueue: privilegedJobs.enqueue.bind(privilegedJobs),
     });
+    const privilegedTeams = createPrivilegedTeamsApi(database, () => holder.current);
+    context.teams = Object.freeze({
+        countMembers: privilegedTeams.countMembers.bind(privilegedTeams),
+    });
     return context;
 }
 async function settleAtomicStripeEventHandler(database, context, signal, dispatch) {

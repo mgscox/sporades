@@ -774,6 +774,8 @@ export type AtomicStripeConsequenceContext<Schema extends SchemaDefinition = Sch
 > & {
   /** Jobs persist with the consequence and are dispatched only after commit. */
   jobs: Pick<JobApi, "enqueue">;
+  /** Exact read-only Team membership count inside the consequence transaction. */
+  teams: Pick<PrivilegedTeamsApi, "countMembers">;
 };
 
 /** Handler for one runtime-serialized, transaction-owned Stripe consequence. */

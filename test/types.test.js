@@ -204,9 +204,11 @@ const app = capsule({
     ctx.signal.throwIfAborted();
     await ctx.db.todos.insert({ title: "atomic observation", ownerId: "system" });
     await ctx.jobs.enqueue("summarise", { text: verified.providerEventId });
+    const memberCount: { totalCount: number } = await ctx.teams.countMembers("123e4567-e89b-42d3-a456-426614174000");
+    memberCount.totalCount.toFixed();
     // @ts-expect-error Atomic Stripe event handlers receive no HTTP request.
     ctx.request.body;
-    // @ts-expect-error Atomic Stripe consequences exclude Team authority.
+    // @ts-expect-error Atomic Stripe consequences expose no broader Team authority.
     ctx.teams.list();
     // @ts-expect-error Provider payment operations cannot run inside the app transaction.
     ctx.payments.stripe.enabled;
