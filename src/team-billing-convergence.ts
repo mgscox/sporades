@@ -254,7 +254,6 @@ async function applyInvoiceFailure(database: LooseRecord, event: LooseRecord, mo
     "FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = ?",
   )).get(subscriptionId);
   if (!subscription || subscription.mode !== mode) throw new Quarantine("provider-state-ambiguous", subscription?.teamId ?? null, 40, boundedObjectId(object.id));
-  if (subscription.terminalLatch === 1) return { teamId: subscription.teamId, objectId: object.id, rank: RANK["past-due"], outcome: "ignored" };
   await assertCustomerAssociation(tx, subscription.teamId, mode, customerId);
   const lines = object.lines?.data;
   if (!isRecord(object.lines) || object.lines.object !== "list" || object.lines.has_more !== false
@@ -264,7 +263,8 @@ async function applyInvoiceFailure(database: LooseRecord, event: LooseRecord, mo
   const pricing = line?.pricing?.price_details;
   const binding = database.teamBillingDefinition.catalogue[subscription.productKey]?.stripe?.[mode];
   const pricingProductId = typeof pricing?.product === "string" ? pricing.product : pricing?.product?.id;
-  if (!isRecord(line) || line.object !== "line_item" || !INVOICE_LINE_ID.test(String(line.id ?? ""))
+  if (!binding || binding.priceId !== subscription.providerPriceId
+    || !isRecord(line) || line.object !== "line_item" || !INVOICE_LINE_ID.test(String(line.id ?? ""))
     || line.invoice !== object.id || line.livemode !== event.livemode || line.parent?.type !== "subscription_item_details"
     || details?.proration !== false || details?.subscription !== subscriptionId
     || details?.subscription_item !== subscription.providerSubscriptionItemId
@@ -272,6 +272,7 @@ async function applyInvoiceFailure(database: LooseRecord, event: LooseRecord, mo
     || !PRODUCT_ID.test(String(pricingProductId ?? "")) || (binding?.productId && pricingProductId !== binding.productId)
     || line.quantity !== subscription.quantity || unixTimestamp(line.period?.start) !== subscription.currentPeriodStart
     || unixTimestamp(line.period?.end) !== subscription.currentPeriodEnd) throw new Quarantine("provider-state-ambiguous", subscription.teamId, 40, object.id);
+  if (subscription.terminalLatch === 1) return { teamId: subscription.teamId, objectId: object.id, rank: RANK["past-due"], outcome: "ignored" };
   let outcome = "ignored";
   if (winsRatchet(subscription.currentPeriodStart, event.occurredAt, RANK["past-due"], subscription.currentPeriodStart,
     subscription.lastEventOccurredAt, Number(subscription.lastEventRank ?? 0))) {

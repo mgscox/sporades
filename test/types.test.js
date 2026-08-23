@@ -431,6 +431,11 @@ const app = capsule({
         privilegedLinks.links[0]?.email.toUpperCase();
         const privilegedLink = await privilegedCtx.teams.inspectJoinLink("opaque-join-code");
         privilegedLink.usable.valueOf();
+        const quarantines = await privilegedCtx.teamBilling.listQuarantines({ limit: 25 });
+        quarantines.quarantines[0]?.reason.toUpperCase();
+        quarantines.quarantines[0]?.teamId?.toUpperCase();
+        // @ts-expect-error Quarantine inspection never exposes provider Event IDs.
+        quarantines.quarantines[0]?.providerEventId.toUpperCase();
         // @ts-expect-error Privileged work cannot infer a current user's Team list.
         privilegedCtx.teams.list();
         // @ts-expect-error Privileged work cannot validate an email-bound Join link.

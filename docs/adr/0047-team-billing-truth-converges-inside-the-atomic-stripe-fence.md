@@ -20,9 +20,8 @@ converges independently of fence acquisition order.
 Supported evidence that is malformed, unknown to the declared catalogue, or
 ambiguous is quarantined without provider JSON or raw errors. Team-linked
 quarantine dominates the safe client projection when it is at least as current
-as accepted truth; unassociated quarantine remains available only to bounded
-operator inspection once that later operations surface is implemented. Until
-then it remains private retained state. Multiple current licensed
+as accepted truth; unassociated quarantine is available only through bounded,
+provider-free `privilegedCtx.teamBilling.listQuarantines()` inspection. Multiple current licensed
 Subscriptions fail closed.
 
 An opt-in atomic Capsule Stripe handler runs in the same transaction as the

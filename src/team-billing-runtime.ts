@@ -650,6 +650,61 @@ export async function safeTeamBillingProjection(transaction: LooseRecord, defini
   return Object.freeze({ state: "attention-required" as const, teamId, reason: "provider-state-ambiguous" as const });
 }
 
+/** Bounded provider-free quarantine inspection for an active Privileged callback. */
+export function createPrivilegedTeamBillingApi(database: LooseRecord, contextGetter: () => LooseRecord) {
+  return Object.freeze({
+    async listQuarantines(options: LooseRecord = {}) {
+      const assertActive = () => assertActivePrivilegedTeamBillingAccess(contextGetter);
+      assertActive();
+      if (!isRecord(options) || Object.keys(options).some((key) => key !== "limit")) throw invalidTeamBillingInspection();
+      const limit = options.limit ?? 50;
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw invalidTeamBillingInspection();
+      if (!database.teamBillingDefinition) return Object.freeze({ quarantines: Object.freeze([]) });
+      let rows: LooseRecord[];
+      try {
+        rows = await database.adapter.prepare(database.adapter.dialect.sql(
+          "SELECT [teamId], [mode], [eventType], [observedAt], [safeReason] FROM [sporades_team_billing_observations] " +
+          "WHERE [outcome] = 'quarantined' ORDER BY [observedAt] DESC, [id] DESC LIMIT ?",
+        )).all(limit);
+      } catch (error) {
+        assertActive();
+        throw error;
+      }
+      assertActive();
+      return Object.freeze({ quarantines: Object.freeze(rows.map((row) => Object.freeze({
+        teamId: typeof row.teamId === "string" ? row.teamId : null,
+        associatedTeam: typeof row.teamId === "string",
+        mode: row.mode === "live" ? "live" : "sandbox",
+        eventType: typeof row.eventType === "string" ? row.eventType : "unknown",
+        occurredAt: canonicalTimestamp(row.observedAt),
+        reason: row.safeReason === "catalogue-mismatch" ? "catalogue-mismatch" : "provider-state-ambiguous",
+      }))) });
+    },
+  });
+}
+
+function assertActivePrivilegedTeamBillingAccess(contextGetter: () => LooseRecord) {
+  const context = contextGetter?.();
+  if (context?.__privilegedRunActive && !context.signal?.aborted) return;
+  throw commandError(
+    "Privileged Team Billing access is no longer active.",
+    "Start a new ctx.privileged.run callback before inspecting Team Billing quarantine.",
+    "PRIVILEGED_TEAM_BILLING_ACCESS_INACTIVE",
+  );
+}
+
+function invalidTeamBillingInspection() {
+  return commandError(
+    "Invalid Team Billing inspection options.",
+    "Pass only an integer limit from 1 through 100.",
+    "INVALID_TEAM_BILLING_INSPECTION",
+  );
+}
+
+function isRecord(value: any): value is LooseRecord {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 function canonicalTimestamp(value: any) {
   if (typeof value !== "string" || !CANONICAL_TIMESTAMP_PATTERN.test(value)) return null;
   const timestamp = Date.parse(value);

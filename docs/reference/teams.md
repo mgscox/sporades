@@ -274,8 +274,8 @@ conflicting associations, and multiple current Subscriptions are retained only
 as bounded digest and private correlation with a safe reason. Raw Stripe JSON
 and errors never enter Team Billing tables or the client projection. Team-linked
 ambiguity produces provider-free `attention-required` state; evidence that
-cannot be associated safely remains private retained state reserved for a
-later bounded operator-inspection surface. An app's opt-in atomic
+cannot be associated safely is visible only through bounded provider-free
+`privilegedCtx.teamBilling.listQuarantines({ limit })` inspection. An app's opt-in atomic
 Stripe consequence shares the same transaction. A legacy `stripeEvent(handler)`
 runs after the platform commit and keeps its existing independent retry model.
 
@@ -287,7 +287,7 @@ proxy.
 
 Team state is runtime-owned and persists outside the Capsule schema through the configured Database adapter. Team creation, bootstrap, Join redemption, membership changes, role reconciliation, and last-admin checks use transaction boundaries so concurrency cannot create duplicate memberships or an adminless Team. Team state survives runtime restart and has adapter conformance coverage.
 
-Team administrative outcomes are ordinary redacted security events, not Privileged audit events. Logs, public errors, inspection output, and recoverable runtime state exclude Join codes, complete Join URLs, target emails outside the admin-only link-management result, Session tokens, provider subjects, credentials, and raw payloads.
+Team administrative outcomes are ordinary redacted security events, not Privileged audit events. Logs, public errors, inspection output, and recoverable runtime state exclude Join codes, complete Join URLs, target emails outside the admin-only link-management result, Session tokens, provider subjects, credentials, provider object and Event IDs, digests, and raw payloads. Team Billing quarantine inspection exposes only association status, optional Team ID, mode, supported event type, occurrence time, and safe reason; it is capped at 100 newest observations and is revoked with its audited Privileged callback.
 
 Team admin authority manages membership. Membership application roles express Capsule-declared responsibilities. Capsule ACL authority is the explicit policy the Capsule writes with `ctx.acl.teams`. The Privileged server role is separate userless server authority: it is not a Team admin, member, application role, or browser credential. Inside an active audited `ctx.privileged.run(...)` callback, `privilegedCtx.teams` offers only exact-Team read-only inspection: `countMembers`, `listMembers`, `listJoinLinks`, and `inspectJoinLink`. The first three require an existing explicit Team ID and otherwise fail with `TEAM_NOT_FOUND`; `inspectJoinLink` keeps its safe invalid-capability result. This projection never lists a current user's Teams, validates email-bound links, or changes Team state, and it exposes no raw rows, target emails, or recoverable Join capabilities. Detached or aborted in-flight inspection fails closed before it can return a result.
 

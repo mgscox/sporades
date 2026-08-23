@@ -7493,7 +7493,6 @@ async function applyInvoiceFailure(database, event, mode) {
     "SELECT [teamId], [mode], [providerSubscriptionId], [providerSubscriptionItemId], [providerPriceId], [productKey], [quantity], [currentPeriodStart], [currentPeriodEnd], [terminalLatch], [lastEventOccurredAt], [lastEventRank] FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = ?"
   )).get(subscriptionId);
   if (!subscription || subscription.mode !== mode) throw new Quarantine("provider-state-ambiguous", subscription?.teamId ?? null, 40, boundedObjectId(object.id));
-  if (subscription.terminalLatch === 1) return { teamId: subscription.teamId, objectId: object.id, rank: RANK["past-due"], outcome: "ignored" };
   await assertCustomerAssociation(tx, subscription.teamId, mode, customerId);
   const lines = object.lines?.data;
   if (!isRecord3(object.lines) || object.lines.object !== "list" || object.lines.has_more !== false || !Array.isArray(lines) || lines.length !== 1) throw new Quarantine("provider-state-ambiguous", subscription.teamId, 40, object.id);
@@ -7502,7 +7501,8 @@ async function applyInvoiceFailure(database, event, mode) {
   const pricing = line?.pricing?.price_details;
   const binding = database.teamBillingDefinition.catalogue[subscription.productKey]?.stripe?.[mode];
   const pricingProductId = typeof pricing?.product === "string" ? pricing.product : pricing?.product?.id;
-  if (!isRecord3(line) || line.object !== "line_item" || !INVOICE_LINE_ID.test(String(line.id ?? "")) || line.invoice !== object.id || line.livemode !== event.livemode || line.parent?.type !== "subscription_item_details" || details?.proration !== false || details?.subscription !== subscriptionId || details?.subscription_item !== subscription.providerSubscriptionItemId || line.pricing?.type !== "price_details" || pricing?.price !== subscription.providerPriceId || !PRODUCT_ID.test(String(pricingProductId ?? "")) || binding?.productId && pricingProductId !== binding.productId || line.quantity !== subscription.quantity || unixTimestamp(line.period?.start) !== subscription.currentPeriodStart || unixTimestamp(line.period?.end) !== subscription.currentPeriodEnd) throw new Quarantine("provider-state-ambiguous", subscription.teamId, 40, object.id);
+  if (!binding || binding.priceId !== subscription.providerPriceId || !isRecord3(line) || line.object !== "line_item" || !INVOICE_LINE_ID.test(String(line.id ?? "")) || line.invoice !== object.id || line.livemode !== event.livemode || line.parent?.type !== "subscription_item_details" || details?.proration !== false || details?.subscription !== subscriptionId || details?.subscription_item !== subscription.providerSubscriptionItemId || line.pricing?.type !== "price_details" || pricing?.price !== subscription.providerPriceId || !PRODUCT_ID.test(String(pricingProductId ?? "")) || binding?.productId && pricingProductId !== binding.productId || line.quantity !== subscription.quantity || unixTimestamp(line.period?.start) !== subscription.currentPeriodStart || unixTimestamp(line.period?.end) !== subscription.currentPeriodEnd) throw new Quarantine("provider-state-ambiguous", subscription.teamId, 40, object.id);
+  if (subscription.terminalLatch === 1) return { teamId: subscription.teamId, objectId: object.id, rank: RANK["past-due"], outcome: "ignored" };
   let outcome = "ignored";
   if (winsRatchet(
     subscription.currentPeriodStart,
@@ -8139,6 +8139,55 @@ async function safeTeamBillingProjection(transaction, definition, teamId) {
   if (row.state === "past-due") return Object.freeze({ state: "past-due", ...common });
   if (row.state === "cancelled") return Object.freeze({ state: "cancelled", ...common });
   return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
+}
+function createPrivilegedTeamBillingApi(database, contextGetter) {
+  return Object.freeze({
+    async listQuarantines(options = {}) {
+      const assertActive = () => assertActivePrivilegedTeamBillingAccess(contextGetter);
+      assertActive();
+      if (!isRecord4(options) || Object.keys(options).some((key) => key !== "limit")) throw invalidTeamBillingInspection();
+      const limit = options.limit ?? 50;
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw invalidTeamBillingInspection();
+      if (!database.teamBillingDefinition) return Object.freeze({ quarantines: Object.freeze([]) });
+      let rows;
+      try {
+        rows = await database.adapter.prepare(database.adapter.dialect.sql(
+          "SELECT [teamId], [mode], [eventType], [observedAt], [safeReason] FROM [sporades_team_billing_observations] WHERE [outcome] = 'quarantined' ORDER BY [observedAt] DESC, [id] DESC LIMIT ?"
+        )).all(limit);
+      } catch (error) {
+        assertActive();
+        throw error;
+      }
+      assertActive();
+      return Object.freeze({ quarantines: Object.freeze(rows.map((row) => Object.freeze({
+        teamId: typeof row.teamId === "string" ? row.teamId : null,
+        associatedTeam: typeof row.teamId === "string",
+        mode: row.mode === "live" ? "live" : "sandbox",
+        eventType: typeof row.eventType === "string" ? row.eventType : "unknown",
+        occurredAt: canonicalTimestamp2(row.observedAt),
+        reason: row.safeReason === "catalogue-mismatch" ? "catalogue-mismatch" : "provider-state-ambiguous"
+      }))) });
+    }
+  });
+}
+function assertActivePrivilegedTeamBillingAccess(contextGetter) {
+  const context = contextGetter?.();
+  if (context?.__privilegedRunActive && !context.signal?.aborted) return;
+  throw commandError(
+    "Privileged Team Billing access is no longer active.",
+    "Start a new ctx.privileged.run callback before inspecting Team Billing quarantine.",
+    "PRIVILEGED_TEAM_BILLING_ACCESS_INACTIVE"
+  );
+}
+function invalidTeamBillingInspection() {
+  return commandError(
+    "Invalid Team Billing inspection options.",
+    "Pass only an integer limit from 1 through 100.",
+    "INVALID_TEAM_BILLING_INSPECTION"
+  );
+}
+function isRecord4(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 function canonicalTimestamp2(value) {
   if (typeof value !== "string" || !CANONICAL_TIMESTAMP_PATTERN.test(value)) return null;
@@ -20223,6 +20272,7 @@ function createPrivilegedHandlerContext(database, context, signal) {
   privilegedContext.jobs = createPrivilegedJobApi(database, () => holder.current);
   privilegedContext.schedules = createPrivilegedScheduleApi(database, () => holder.current);
   privilegedContext.teams = createPrivilegedTeamsApi(database, () => holder.current);
+  privilegedContext.teamBilling = createPrivilegedTeamBillingApi(database, () => holder.current);
   grantPrivilegedAccessKeyAccess(privilegedContext);
   privilegedContext.accessKeys = createPrivilegedAccessKeysApi(
     database,
@@ -27373,7 +27423,7 @@ function validateCapsuleServicesConfig(services) {
   if (services === void 0) {
     return null;
   }
-  if (!isRecord4(services)) {
+  if (!isRecord5(services)) {
     throw commandError3("Invalid Capsule services declaration.", "Set `services` in sporades.json to an object.");
   }
   for (const key of Object.keys(services)) {
@@ -27419,7 +27469,7 @@ async function loadOrCreateCapsuleServiceCredentials(projectDir) {
   let existing = {};
   try {
     const parsed = JSON.parse(await readFile6(credentialsPath, "utf8"));
-    if (isRecord4(parsed)) {
+    if (isRecord5(parsed)) {
       existing = parsed;
     }
   } catch {
@@ -27533,7 +27583,7 @@ function capsuleServicesComposeModel(config, projectDir = process.cwd(), options
   return model;
 }
 function validateDatabaseServiceConfig(database) {
-  if (!isRecord4(database)) {
+  if (!isRecord5(database)) {
     throw commandError3(
       "Invalid database Capsule service declaration.",
       'Set `services.database` to `{ "kind": "database", "engine": "libsql" }` or `{ "kind": "database", "engine": "postgres" }`.'
@@ -27553,7 +27603,7 @@ function validateDatabaseServiceConfig(database) {
   }
 }
 function validateStorageServiceConfig(storage) {
-  if (!isRecord4(storage)) {
+  if (!isRecord5(storage)) {
     throw commandError3(
       "Invalid storage Capsule service declaration.",
       'Set `services.storage` to `{ "kind": "storage", "engine": "minio" }`.'
@@ -27654,7 +27704,7 @@ function serviceLabels(labels, kind, engine) {
     "com.sporades.capsule-service.engine": engine
   };
 }
-function isRecord4(value) {
+function isRecord5(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 function commandError3(message, hint) {

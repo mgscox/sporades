@@ -239,12 +239,14 @@ test("headless Team Billing docs preserve the platform-mechanics and app-renderi
   assert.match(reference, /cancellation outranks failed payment[\s\S]*provider Event identifiers are not[\s\S]*business ordering/i);
   assert.match(reference, /Deletion permanently latches[\s\S]*no delayed update can resurrect/i);
   assert.match(reference, /Malformed supported evidence[\s\S]*Raw Stripe JSON[\s\S]*never enter Team Billing tables/i);
+  assert.match(reference, /privilegedCtx\.teamBilling\.listQuarantines[\s\S]*provider object and Event IDs[\s\S]*capped at 100/i);
   assert.match(reference, /opt-in atomic[\s\S]*same transaction[\s\S]*legacy `stripeEvent\(handler\)`[\s\S]*after the platform commit/i);
   assert.match(convergenceAdr, /Verified delivery is evidence, not billing truth/i);
   assert.match(convergenceAdr, /deleted Subscription ID is permanently terminal/i);
   assert.match(convergenceAdr, /Provider Event identifiers are replay identities, not a business\s+ordering rule/i);
   assert.match(guide, /Declare headless Team Billing/);
   assert.match(serverTypes, /teamBilling\?: TeamBillingDefinition<Schema>/);
+  assert.match(serverTypes, /PrivilegedTeamBillingApi[\s\S]*listQuarantines\(options\?: \{ limit\?: number \}\)/);
   assert.match(clientTypes, /get\(teamId: string\): Promise<SporadesResult<TeamBillingProjection>>/);
   assert.match(clientTypes, /startCheckout\(input: TeamBillingCheckoutRequest\): Promise<SporadesResult<TeamBillingCheckoutResult>>/);
   assert.match(clientTypes, /openPortal\(input: TeamBillingPortalRequest\): Promise<SporadesResult<TeamBillingPortalResult>>/);

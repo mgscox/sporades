@@ -580,6 +580,20 @@ export type PrivilegedTeamsApi = {
   inspectJoinLink(code: string): Promise<TeamJoinLinkInspection>;
 };
 
+export type PrivilegedTeamBillingQuarantine = Readonly<{
+  teamId: string | null;
+  associatedTeam: boolean;
+  mode: "sandbox" | "live";
+  eventType: string;
+  occurredAt: string | null;
+  reason: "catalogue-mismatch" | "provider-state-ambiguous";
+}>;
+
+export type PrivilegedTeamBillingApi = {
+  /** Lists at most 100 provider-free quarantined observations, newest first. */
+  listQuarantines(options?: { limit?: number }): Promise<{ quarantines: readonly PrivilegedTeamBillingQuarantine[] }>;
+};
+
 /** Copy overrides for the built-in password reset message. */
 export type PasswordResetMailOptions = {
   subject?: string;
@@ -691,13 +705,15 @@ export type PrivilegedAuthContext = AuthContext & {
  * admin, Sporades user, session, team member, service account, or browser
  * credential.
  */
-export type PrivilegedContext<Schema extends SchemaDefinition = SchemaDefinition> = Omit<CapsuleContext<Schema>, "auth" | "credential" | "privileged" | "teams" | "accessKeys"> & {
+export type PrivilegedContext<Schema extends SchemaDefinition = SchemaDefinition> = Omit<CapsuleContext<Schema>, "auth" | "credential" | "privileged" | "teams" | "accessKeys" | "teamBilling"> & {
   auth: PrivilegedAuthContext;
   signal: AbortSignal;
   files: PrivilegedFileApi;
   jobs: JobApi;
   schedules: ScheduleInspectionApi;
   teams: PrivilegedTeamsApi;
+  /** Bounded, read-only, provider-free inspection of Team Billing quarantine. */
+  teamBilling: PrivilegedTeamBillingApi;
   /** Operator-only Access-key metadata and retirement. Never exposes issuance, rotation, or bearer secrets. */
   accessKeys: PrivilegedAccessKeysApi;
 };

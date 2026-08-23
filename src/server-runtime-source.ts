@@ -54,6 +54,7 @@ import {
   TEAM_BILLING_PORTAL_EXPIRY_JOB,
   TEAM_BILLING_PORTAL_JOB,
   TEAM_BILLING_PORTAL_MAX_ATTEMPTS,
+  createPrivilegedTeamBillingApi,
   expireTeamBillingCheckout,
   expireTeamBillingPortal,
   normalizeTeamBillingDefinition,
@@ -2174,6 +2175,7 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
   privilegedContext.jobs = createPrivilegedJobApi(database, () => holder.current);
   privilegedContext.schedules = createPrivilegedScheduleApi(database, () => holder.current);
   privilegedContext.teams = createPrivilegedTeamsApi(database, () => holder.current);
+  privilegedContext.teamBilling = createPrivilegedTeamBillingApi(database, () => holder.current);
   grantPrivilegedAccessKeyAccess(privilegedContext);
   privilegedContext.accessKeys = createPrivilegedAccessKeysApi(
     database,

@@ -86,6 +86,19 @@ export declare function safeTeamBillingProjection(transaction: LooseRecord, defi
     quantity: any;
     state: "cancelled";
 }>>;
+/** Bounded provider-free quarantine inspection for an active Privileged callback. */
+export declare function createPrivilegedTeamBillingApi(database: LooseRecord, contextGetter: () => LooseRecord): Readonly<{
+    listQuarantines(options?: LooseRecord): Promise<Readonly<{
+        quarantines: readonly Readonly<{
+            teamId: string | null;
+            associatedTeam: boolean;
+            mode: "live" | "sandbox";
+            eventType: string;
+            occurredAt: string | null;
+            reason: "catalogue-mismatch" | "provider-state-ambiguous";
+        }>[];
+    }>>;
+}>;
 export declare function teamBillingDenied(): import("./runtime-errors.js").HelperError;
 export {};
 //# sourceMappingURL=team-billing-runtime.d.ts.map

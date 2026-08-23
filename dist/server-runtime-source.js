@@ -20,7 +20,7 @@ import { signInWithEmail, signUpWithEmail } from "./auth-runtime.js";
 import { beginOAuthSignIn, resolvePasswordResetConfig } from "./auth-runtime.js";
 import { readCurrentUserPreferences, updateCurrentUserPreferences, } from "./user-preferences-runtime.js";
 import { countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createPrivilegedTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
-import { TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, TEAM_BILLING_PORTAL_EXPIRY_JOB, TEAM_BILLING_PORTAL_JOB, TEAM_BILLING_PORTAL_MAX_ATTEMPTS, expireTeamBillingCheckout, expireTeamBillingPortal, normalizeTeamBillingDefinition, performTeamBillingCheckout, performTeamBillingPortal, readCurrentUserTeamBilling, settleExhaustedTeamBillingCheckoutJob, startTeamBillingCheckout, startTeamBillingPortal, } from "./team-billing-runtime.js";
+import { TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, TEAM_BILLING_PORTAL_EXPIRY_JOB, TEAM_BILLING_PORTAL_JOB, TEAM_BILLING_PORTAL_MAX_ATTEMPTS, createPrivilegedTeamBillingApi, expireTeamBillingCheckout, expireTeamBillingPortal, normalizeTeamBillingDefinition, performTeamBillingCheckout, performTeamBillingPortal, readCurrentUserTeamBilling, settleExhaustedTeamBillingCheckoutJob, startTeamBillingCheckout, startTeamBillingPortal, } from "./team-billing-runtime.js";
 import { applyVerifiedTeamBillingObservation } from "./team-billing-convergence.js";
 // Batch 8. Eight names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
@@ -2044,6 +2044,7 @@ function createPrivilegedHandlerContext(database, context, signal) {
     privilegedContext.jobs = createPrivilegedJobApi(database, () => holder.current);
     privilegedContext.schedules = createPrivilegedScheduleApi(database, () => holder.current);
     privilegedContext.teams = createPrivilegedTeamsApi(database, () => holder.current);
+    privilegedContext.teamBilling = createPrivilegedTeamBillingApi(database, () => holder.current);
     grantPrivilegedAccessKeyAccess(privilegedContext);
     privilegedContext.accessKeys = createPrivilegedAccessKeysApi(database, () => holder.current, (transactionAdapter) => createTransactionDatabase(database, transactionAdapter));
     privilegedContext.mail = database.mail;

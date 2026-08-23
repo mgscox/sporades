@@ -142,6 +142,51 @@ test("multiple current licensed subscriptions and newest team quarantine fail th
   }
 });
 
+test("Privileged quarantine inspection is bounded, provider-free, and callback-scoped", { skip: sourceMode }, async () => {
+  const fixture = await openFixture();
+  try {
+    fixture.adapter.prepare(
+      "INSERT INTO [sporades_team_billing_observations] ([id], [teamId], [mode], [providerEventId], [providerObjectId], [payloadDigest], [observedAt], [createdAt], [eventType], [eventRank], [outcome], [safeReason]) " +
+      "VALUES ('private-observation', NULL, 'sandbox', 'evt_private_operator', 'sub_private_operator', ?, ?, ?, 'invoice.payment_failed', 40, 'quarantined', 'provider-state-ambiguous')",
+    ).run("a".repeat(64), new Date(periodStart * 1000).toISOString(), new Date(periodStart * 1000).toISOString());
+    const context = { __privilegedRunActive: true, signal: new AbortController().signal };
+    const api = runtime.createPrivilegedTeamBillingApi(fixture.database, () => context);
+    const result = await api.listQuarantines({ limit: 1 });
+    assert.deepEqual(result, { quarantines: [{
+      teamId: null, associatedTeam: false, mode: "sandbox", eventType: "invoice.payment_failed",
+      occurredAt: new Date(periodStart * 1000).toISOString(), reason: "provider-state-ambiguous",
+    }] });
+    assert.doesNotMatch(JSON.stringify(result), /evt_|sub_|price_|prod_|si_|[a-f0-9]{64}/);
+    await assert.rejects(api.listQuarantines({ limit: 101 }), (error) => error?.code === "INVALID_TEAM_BILLING_INSPECTION");
+    context.__privilegedRunActive = false;
+    await assert.rejects(api.listQuarantines(), (error) => error?.code === "PRIVILEGED_TEAM_BILLING_ACCESS_INACTIVE");
+  } finally {
+    fixture.close();
+  }
+});
+
+test("invoice failure requires the current catalogue and validates fully before a terminal latch ignores mutation", async () => {
+  const fixture = await openFixture();
+  try {
+    await applyVerifiedTeamBillingObservation(fixture.database,
+      subscriptionEvent("evt_converge_catalogue_seed", "customer.subscription.created", { operationId }));
+    fixture.definition.catalogue.agency.stripe.sandbox.priceId = "price_replaced";
+    assert.deepEqual(await applyVerifiedTeamBillingObservation(fixture.database,
+      invoiceEvent("evt_converge_stale_catalogue", periodStart + 20)), { applied: false, quarantined: true });
+    assert.equal(fixture.getSubscription().state, "active", "historical Price correlation cannot replace the current catalogue");
+    fixture.definition.catalogue.agency.stripe.sandbox.priceId = "price_converge";
+    await applyVerifiedTeamBillingObservation(fixture.database,
+      subscriptionEvent("evt_converge_terminal_seed", "customer.subscription.deleted", { status: "canceled", occurred: periodStart + 30 }));
+    const malformedAfterDeletion = invoiceEvent("evt_converge_terminal_malformed", periodStart + 40);
+    malformedAfterDeletion.raw.data.object.lines.has_more = true;
+    assert.deepEqual(await applyVerifiedTeamBillingObservation(fixture.database, malformedAfterDeletion), { applied: false, quarantined: true },
+      "the latch suppresses only mutation after the complete supported observation is validated");
+    assert.equal(fixture.getSubscription().state, "cancelled");
+  } finally {
+    fixture.close();
+  }
+});
+
 test("Checkout terminal ordering and unexpected database failures are deterministic", async () => {
   const fixture = await openFixture();
   try {
