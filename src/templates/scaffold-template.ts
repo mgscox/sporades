@@ -1332,7 +1332,7 @@ function blankPaymentSupportFiles(capsuleName: string) {
   return {
     "server/payments.ts": `import { job, mutation, Number as Numeric, query, requireAuth, String as Text, stripeEvent, table } from "sporades/server";
 import { createStripePaymentIntegration } from "sporades/server/stripe";
-import type { CapsuleContext } from "sporades/server";
+import type { CapsuleContext, JobHandlerContext } from "sporades/server";
 import type { StripeCheckoutSessionInput, StripeCheckoutSessionResult, StripeCustomerPortalSessionResult, StripePaymentsDisabledResult } from "sporades/server/stripe";
 import type { PaymentJobState } from "../shared/payments.js";
 
@@ -1387,7 +1387,7 @@ export const paymentStripeEvents = stripeEvent((_ctx, event) => {
   }
 });
 
-function stripeForContext(ctx: CapsuleContext) {
+function stripeForContext(ctx: Pick<CapsuleContext, "payments" | "env" | "signal">) {
   const config = ctx.payments?.stripe;
   return config?.enabled
     ? createStripePaymentIntegration({ enabled: true, config, env: ctx.env, signal: ctx.signal })
@@ -1397,6 +1397,7 @@ function stripeForContext(ctx: CapsuleContext) {
 export const paymentJobs = {
   stripeCheckout: job<StripeCheckoutSessionInput, StripeCheckoutSessionResult | StripePaymentsDisabledResult>((ctx, input) => stripeForContext(ctx).createCheckoutSession(input)),
   stripeCustomerPortal: job<PortalJobInput, StripeCustomerPortalSessionResult | StripePaymentsDisabledResult>(async (ctx, input) => {
+    if (!isCapsuleContext(ctx)) throw portalUnavailable();
     requireAuth(ctx, { linked: true });
     const policyInput = { intentId: input.intentId, billingHolderKey: input.billingHolderKey };
     validatePortalInput(policyInput);
@@ -1406,6 +1407,10 @@ export const paymentJobs = {
     return stripeForContext(ctx).createCustomerPortalSession({ customerId, returnPath: input.returnPath, idempotencyKey: input.idempotencyKey });
   }),
 };
+
+function isCapsuleContext(ctx: JobHandlerContext): ctx is CapsuleContext {
+  return "auth" in ctx && "credential" in ctx;
+}
 
 export const paymentMutations = {
   startStripeCheckout: mutation(async (ctx, input: CheckoutInput) => {

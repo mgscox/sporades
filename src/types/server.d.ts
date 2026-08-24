@@ -1052,7 +1052,7 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   accessKeys?: { scopes: readonly string[] };
   schema?: Schema;
   queries?: Record<string, QueryDefinition<QueryHandler<Schema, any> | AuthGuardedHandler<(...args: any[]) => any>>>;
-  mutations?: Record<string, MutationDefinition<MutationHandler | AuthGuardedHandler<(...args: any[]) => any>>>;
+  mutations?: Record<string, MutationDefinition<MutationHandler<Schema, any[]> | AuthGuardedHandler<(...args: any[]) => any>>>;
   endpoints?: Record<string, EndpointDefinition<EndpointHandler<Schema> | AuthGuardedHandler<(...args: any[]) => any>>>;
   emailEvents?: EmailEventDefinition<EmailEventHandler<Schema>>;
   stripeEvents?: StripeEventDefinition<StripeEventHandler<Schema>> | AtomicStripeEventDefinition<AtomicStripeEventHandler<Schema>>;
