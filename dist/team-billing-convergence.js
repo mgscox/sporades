@@ -3,6 +3,7 @@
 // consequence runner supplies the already-serialized adapter as `database.adapter`.
 import { createHash, randomUUID } from "node:crypto";
 import { settleVerifiedTeamBillingTarget } from "./team-billing-management.js";
+import { teamBillingSubscriptionSemantics } from "./team-billing-subscription-semantics.js";
 const SUPPORTED = new Set([
     "checkout.session.completed",
     "checkout.session.expired",
@@ -161,7 +162,7 @@ async function applySubscription(database, event, mode) {
     await assertCustomerAssociation(tx, teamId, mode, customerId);
     const deleted = event.type === "customer.subscription.deleted";
     const desiredTeamQuantity = existing ? null : Number((await tx.prepare(tx.dialect.sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(teamId))?.count ?? 0);
-    const normalized = normalizeSubscription(database.teamBillingDefinition, object, existing ? null : operation, mode, deleted, teamId, desiredTeamQuantity);
+    const normalized = normalizeSubscription(database.teamBillingDefinition, object, existing ? null : operation, mode, event.type, teamId, desiredTeamQuantity);
     if (existing?.terminalLatch === 1) {
         return { teamId, objectId: subscriptionId, rank: normalized.rank, outcome: "ignored" };
     }
@@ -183,7 +184,7 @@ async function applySubscription(database, event, mode) {
     await settleVerifiedTeamBillingTarget({ ...database, adapter: tx, __transactionActive: true, __rootDatabase: database.__rootDatabase ?? database }, { teamId, productKey: normalized.productKey, quantity: normalized.quantity, subscriptionId, occurredAt: event.occurredAt });
     return { teamId, objectId: subscriptionId, rank: normalized.rank };
 }
-function normalizeSubscription(definition, object, operation, mode, deleted, teamId, desiredTeamQuantity) {
+function normalizeSubscription(definition, object, operation, mode, eventType, teamId, desiredTeamQuantity) {
     const items = object.items?.data;
     if (!isRecord(object.items) || object.items.object !== "list" || object.items.has_more !== false
         || !Array.isArray(items) || items.length !== 1 || !isRecord(items[0]))
@@ -217,26 +218,26 @@ function normalizeSubscription(definition, object, operation, mode, deleted, tea
     const cancel = object.cancel_at_period_end;
     if (typeof cancel !== "boolean")
         throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
+    const deleted = eventType === "customer.subscription.deleted";
     let state;
-    let kind;
     if (deleted) {
         if (object.status !== "canceled")
             throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
         state = "cancelled";
-        kind = "cancelled";
     }
     else if (object.status === "active") {
         state = "active";
-        kind = cancel ? "cancelling" : "active";
     }
     else if (object.status === "past_due" || object.status === "unpaid") {
         state = "past-due";
-        kind = "past-due";
     }
     else
         throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
+    const semantics = teamBillingSubscriptionSemantics(eventType, state, cancel);
+    if (!semantics)
+        throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
     return { productKey, priceId, itemId: item.id, quantity: item.quantity, periodStart, periodEnd, state,
-        cancelAtPeriodEnd: cancel ? 1 : 0, kind, rank: RANK[kind] };
+        cancelAtPeriodEnd: cancel ? 1 : 0, kind: semantics.kind, rank: semantics.rank };
 }
 async function applyInvoiceFailure(database, event, mode) {
     const tx = database.adapter;

@@ -71,8 +71,10 @@
       "src/stripe-webhook-runtime.ts",
       "src/team-billing-convergence.ts",
       "src/team-billing-erasure.ts",
+      "src/team-billing-import.ts",
       "src/team-billing-management.ts",
       "src/team-billing-runtime.ts",
+      "src/team-billing-subscription-semantics.ts",
       "src/teams-runtime.ts",
       "src/templates/client-runtime-template.ts",
       "src/templates/scaffold-template.ts",
@@ -82,11 +84,12 @@
       "src/types/client.d.ts",
       "src/types/server.d.ts",
       "src/types/stripe.d.ts",
+      "src/types/team-billing-import.d.ts",
       "src/user-preferences-runtime.ts",
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "61758dd041749c2f2bb3165798d16f7bf4fc867aa97b1b81c0dc32532bb7e273"
+    "digest": "710120a755f45fb3ed8e358c475c8cb5c97f327196c6393ff91350bdcb093b0f"
   },
   "outputs": {
     "files": [
@@ -344,6 +347,10 @@
       "dist/team-billing-erasure.d.ts.map",
       "dist/team-billing-erasure.js",
       "dist/team-billing-erasure.js.map",
+      "dist/team-billing-import.d.ts",
+      "dist/team-billing-import.d.ts.map",
+      "dist/team-billing-import.js",
+      "dist/team-billing-import.js.map",
       "dist/team-billing-management.d.ts",
       "dist/team-billing-management.d.ts.map",
       "dist/team-billing-management.js",
@@ -352,6 +359,10 @@
       "dist/team-billing-runtime.d.ts.map",
       "dist/team-billing-runtime.js",
       "dist/team-billing-runtime.js.map",
+      "dist/team-billing-subscription-semantics.d.ts",
+      "dist/team-billing-subscription-semantics.d.ts.map",
+      "dist/team-billing-subscription-semantics.js",
+      "dist/team-billing-subscription-semantics.js.map",
       "dist/teams-runtime.d.ts",
       "dist/teams-runtime.d.ts.map",
       "dist/teams-runtime.js",
@@ -377,6 +388,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "545c7280236f7862af636c34201788c84d59d6bcf55125062878ad9aea27cc9e"
+    "digest": "ae6aea2475ec3b2a8d0dffa0d30589db2c6191b0e262bcafa2c4f9cef7994173"
   }
 }

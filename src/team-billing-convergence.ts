@@ -3,6 +3,7 @@
 // consequence runner supplies the already-serialized adapter as `database.adapter`.
 import { createHash, randomUUID } from "node:crypto";
 import { settleVerifiedTeamBillingTarget } from "./team-billing-management.js";
+import { teamBillingSubscriptionSemantics } from "./team-billing-subscription-semantics.js";
 
 type LooseRecord = Record<string, any>;
 
@@ -173,7 +174,7 @@ async function applySubscription(database: LooseRecord, event: LooseRecord, mode
   const desiredTeamQuantity = existing ? null : Number((await tx.prepare(tx.dialect.sql(
     "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?",
   )).get(teamId))?.count ?? 0);
-  const normalized = normalizeSubscription(database.teamBillingDefinition, object, existing ? null : operation, mode, deleted, teamId, desiredTeamQuantity);
+  const normalized = normalizeSubscription(database.teamBillingDefinition, object, existing ? null : operation, mode, event.type, teamId, desiredTeamQuantity);
   if (existing?.terminalLatch === 1) {
     return { teamId, objectId: subscriptionId, rank: normalized.rank, outcome: "ignored" };
   }
@@ -209,7 +210,7 @@ async function applySubscription(database: LooseRecord, event: LooseRecord, mode
   return { teamId, objectId: subscriptionId, rank: normalized.rank };
 }
 
-function normalizeSubscription(definition: LooseRecord, object: LooseRecord, operation: LooseRecord | null, mode: string, deleted: boolean, teamId: string, desiredTeamQuantity: number | null) {
+function normalizeSubscription(definition: LooseRecord, object: LooseRecord, operation: LooseRecord | null, mode: string, eventType: string, teamId: string, desiredTeamQuantity: number | null) {
   const items = object.items?.data;
   if (!isRecord(object.items) || object.items.object !== "list" || object.items.has_more !== false
     || !Array.isArray(items) || items.length !== 1 || !isRecord(items[0])) throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
@@ -236,18 +237,20 @@ function normalizeSubscription(definition: LooseRecord, object: LooseRecord, ope
   if (!periodStart || !periodEnd || periodEnd <= periodStart) throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
   const cancel = object.cancel_at_period_end;
   if (typeof cancel !== "boolean") throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
-  let state: string;
-  let kind: keyof typeof RANK;
+  const deleted = eventType === "customer.subscription.deleted";
+  let state: "active" | "past-due" | "cancelled";
   if (deleted) {
     if (object.status !== "canceled") throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
-    state = "cancelled"; kind = "cancelled";
+    state = "cancelled";
   } else if (object.status === "active") {
-    state = "active"; kind = cancel ? "cancelling" : "active";
+    state = "active";
   } else if (object.status === "past_due" || object.status === "unpaid") {
-    state = "past-due"; kind = "past-due";
+    state = "past-due";
   } else throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
+  const semantics = teamBillingSubscriptionSemantics(eventType as any, state, cancel);
+  if (!semantics) throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
   return { productKey, priceId, itemId: item.id, quantity: item.quantity, periodStart, periodEnd, state,
-    cancelAtPeriodEnd: cancel ? 1 : 0, kind, rank: RANK[kind] };
+    cancelAtPeriodEnd: cancel ? 1 : 0, kind: semantics.kind, rank: semantics.rank };
 }
 
 async function applyInvoiceFailure(database: LooseRecord, event: LooseRecord, mode: string) {

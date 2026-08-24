@@ -25,6 +25,10 @@
       "types": "./src/types/stripe.d.ts",
       "default": "./dist/stripe-payment-integration.js"
     },
+    "./server/team-billing-import": {
+      "types": "./src/types/team-billing-import.d.ts",
+      "default": "./dist/team-billing-import.js"
+    },
     "./client": {
       "types": "./src/types/client.d.ts",
       "default": "./dist/client.js"

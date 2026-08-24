@@ -1,5 +1,12 @@
 # Changes
 
+- Add an offline `sporades/server/team-billing-import` seam for exact,
+  provider-free import of verified legacy Subscription snapshots and replay
+  guards. Incomplete or conflicting evidence fails closed, including drift in
+  durable Event ordering, terminal-latch safety fields, and contradictory
+  Subscription Event/state tuples. The public adapter type now declares the
+  complete named-dialect, execution, prepared-statement, and transaction seam.
+
 ## Unreleased - 2026-08-21
 
 Changes since v0.8.7.

@@ -70,7 +70,32 @@ test("sporades api bindings compile representative strict TypeScript app code", 
       `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, requireUserAuth, schedule, stripeEvent, table, type TableApi, type TableDefinition } from "sporades/server";
 import * as publicServerApi from "sporades/server";
 import { createStripePaymentIntegration, type StripeCheckoutSessionResult, type StripeCustomerPortalSessionResult, type StripePaymentsDisabledResult, type VerifiedStripeEvent } from "sporades/server/stripe";
+import { importLegacyTeamBillingEvidence, type LegacyTeamBillingEvidence, type TeamBillingImportAdapter } from "sporades/server/team-billing-import";
 import { accessKeys, auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teamBilling, teams, type AccessKeyErrorCode, type JourneyRecord } from "sporades/client";
+
+const importAdapter: TeamBillingImportAdapter = {
+  dialect: { name: "sqlite", sql: (statement) => statement },
+  exec: async () => {},
+  prepare: () => ({ all: async () => [], get: async () => null, run: async () => ({}) }),
+  withTransaction: async (run) => await run(importAdapter),
+};
+const legacyImportEvidence: LegacyTeamBillingEvidence = {
+  sourceKey: "type-contract", teamId: "11111111-1111-4111-8111-111111111111", mode: "sandbox",
+  providerCustomerId: "cus_typeContract", providerSubscriptionId: "sub_typeContract",
+  providerSubscriptionItemId: "si_typeContract", providerPriceId: "price_typeContract",
+  productKey: "agency", quantity: 3, state: "active", cancelAtPeriodEnd: false,
+  currentPeriodStart: null, currentPeriodEnd: null, providerEventId: "evt_typeContract",
+  providerEventType: "customer.subscription.updated", providerEventDigest: "sha256:v1:type-contract",
+  providerObservedAt: "2026-08-24T10:00:00.000Z", retainedUntil: "2027-09-28T10:00:00.000Z",
+};
+importLegacyTeamBillingEvidence(importAdapter, legacyImportEvidence);
+const incompleteImportAdapter = {
+  dialect: { sql: (statement: string) => statement },
+  prepare: importAdapter.prepare,
+  withTransaction: importAdapter.withTransaction,
+};
+// @ts-expect-error import adapters require executable DDL and an explicit engine name.
+importLegacyTeamBillingEvidence(incompleteImportAdapter, legacyImportEvidence);
 
 const dormantStripe = createStripePaymentIntegration({ enabled: false });
 // @ts-expect-error Lease recovery is an internal runtime/test seam, not Capsule API.

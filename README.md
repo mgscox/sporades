@@ -79,6 +79,10 @@ sporades host push --restart
   malformed or ambiguous evidence fails closed without exposing provider
   identifiers. The Capsule owns every component, route, message, and
   entitlement decision.
+  Offline migration tools can import complete verified legacy snapshots and
+  provider-free replay guards through `sporades/server/team-billing-import`;
+  the seam performs no provider I/O and rejects incomplete or changed tuples,
+  including corrupted durable Event ordering or terminal-latch state.
 - **Realtime everything**: configuration free - automatic notifications, even for Postgress and AWS-S3
 
 ## Documentation
