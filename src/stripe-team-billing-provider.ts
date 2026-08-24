@@ -49,7 +49,9 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
       throwIfAborted(options.signal);
       let portalConfiguration: LooseRecord;
       try {
-        portalConfiguration = await stripe.billingPortal.configurations.retrieve(input.configurationId);
+        portalConfiguration = await stripe.billingPortal.configurations.retrieve(input.configurationId, {
+          expand: ["features.subscription_update.products"],
+        });
       } catch (error: any) {
         throwProviderOperationFailure(error);
       }
@@ -416,9 +418,14 @@ function validPortalUrl(value: any) {
   if (typeof value !== "string") return false;
   try {
     const url = new URL(value);
-    return url.protocol === "https:" && url.hostname === "billing.stripe.com"
-      && /^\/p\/session\/[A-Za-z0-9_-]{8,1024}$/.test(url.pathname)
-      && !url.username && !url.password && !url.port;
+    if (url.protocol !== "https:" || url.hostname !== "billing.stripe.com"
+      || url.username || url.password || url.port) return false;
+    if (/^\/p\/session\/[A-Za-z0-9_-]{8,1024}$/.test(url.pathname)) {
+      return !url.search && (!url.hash || /^#[A-Za-z0-9_-]{1,1024}$/.test(url.hash));
+    }
+    const query = [...url.searchParams];
+    return url.pathname === "/p/session" && !url.hash && query.length === 1
+      && query[0][0] === "secret" && /^[A-Za-z0-9_-]{32,1024}$/.test(query[0][1]);
   } catch { return false; }
 }
 

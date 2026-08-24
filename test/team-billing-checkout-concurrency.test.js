@@ -133,9 +133,10 @@ for (const engine of engines) {
 
 test("Team Portal retries transient SQLite locks at both provider transaction boundaries", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-portal-locks-"));
+  const portalUrl = `https://billing.stripe.com/p/session?secret=${"a".repeat(89)}`;
   const database = await open(path.join(dir, "data.db"), baseEnv, {}, () => ({
     retrievePortalConfiguration: async () => ({ ok: true }),
-    createPortal: async () => ({ ok: true, sessionId: "bps_test_lock_retry", url: "https://billing.stripe.com/p/session/lock_retry_token" }),
+    createPortal: async () => ({ ok: true, sessionId: "bps_test_lock_retry", url: portalUrl }),
   }));
   try {
     const sql = database.adapter.dialect.sql;
@@ -184,7 +185,7 @@ test("Team Portal retries transient SQLite locks at both provider transaction bo
       "SELECT [status], [continuationUrl] FROM [sporades_team_billing_operations] WHERE [id] = ?",
     )).get(operation.id);
     assert.equal(persistedReady.status, "ready");
-    assert.equal(persistedReady.continuationUrl, "https://billing.stripe.com/p/session/lock_retry_token");
+    assert.equal(persistedReady.continuationUrl, portalUrl);
   } finally {
     await database.close();
     await rm(dir, { recursive: true, force: true });

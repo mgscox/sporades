@@ -261,7 +261,7 @@ test("the internal Team Billing provider attests one explicit Portal configurati
     const body = await readBody(request);
     observed.push({ url: request.url, headers: request.headers, params: new URLSearchParams(body) });
     response.writeHead(200, { "content-type": "application/json" });
-    if (request.url === `/v1/billing_portal/configurations/${portalConfigurationInput.configurationId}`) {
+    if (request.url?.startsWith(`/v1/billing_portal/configurations/${portalConfigurationInput.configurationId}`)) {
       response.end(JSON.stringify(validPortalConfiguration()));
       return;
     }
@@ -272,7 +272,7 @@ test("the internal Team Billing provider attests one explicit Portal configurati
       customer: portalInput.customerId,
       livemode: false,
       return_url: "https://billing.example.test/settings/billing",
-      url: "https://billing.stripe.com/p/session/bps_test_team_portal_1#fixture",
+      url: `https://billing.stripe.com/p/session?secret=${"a".repeat(89)}`,
     }));
   }, async (apiBaseUrl) => {
     const provider = createStripeTeamBillingProvider({
@@ -284,11 +284,13 @@ test("the internal Team Billing provider attests one explicit Portal configurati
     assert.deepEqual(await provider.createPortal(portalInput), {
       ok: true,
       sessionId: "bps_test_team_portal_1",
-      url: "https://billing.stripe.com/p/session/bps_test_team_portal_1#fixture",
+      url: `https://billing.stripe.com/p/session?secret=${"a".repeat(89)}`,
     });
   });
 
-  assert.equal(observed[0].url, `/v1/billing_portal/configurations/${portalConfigurationInput.configurationId}`);
+  const configurationUrl = new URL(observed[0].url, "https://provider.invalid");
+  assert.equal(configurationUrl.pathname, `/v1/billing_portal/configurations/${portalConfigurationInput.configurationId}`);
+  assert.deepEqual([...configurationUrl.searchParams], [["expand[0]", "features.subscription_update.products"]]);
   assert.equal(observed[1].url, "/v1/billing_portal/sessions");
   assert.equal(observed[1].headers["idempotency-key"], portalInput.idempotencyKey);
   assert.equal(observed[1].params.get("customer"), portalInput.customerId);
@@ -329,6 +331,10 @@ test("Portal session creation rejects mismatched provider correlation and unsafe
     { return_url: "https://elsewhere.example/settings/billing" },
     { id: "portal_invalid" },
     { url: "https://example.test/p/session/bps_test_team_portal_1" },
+    { url: `https://billing.stripe.com/p/session?secret=${"a".repeat(89)}&next=unsafe` },
+    { url: "https://billing.stripe.com/p/session?secret=short" },
+    { url: `https://billing.stripe.com/p/session?secret=${"a".repeat(89)}#unsafe` },
+    { url: `https://billing.stripe.com/p/session?secret=${"a".repeat(89)}&secret=${"b".repeat(89)}` },
   ]) {
     await withProvider((_request, response) => {
       response.writeHead(200, { "content-type": "application/json" });
@@ -339,7 +345,7 @@ test("Portal session creation rejects mismatched provider correlation and unsafe
         customer: portalInput.customerId,
         livemode: false,
         return_url: "https://billing.example.test/settings/billing",
-        url: "https://billing.stripe.com/p/session/bps_test_team_portal_1#fixture",
+        url: `https://billing.stripe.com/p/session?secret=${"a".repeat(89)}`,
         ...override,
       }));
     }, async (apiBaseUrl) => {

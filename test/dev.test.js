@@ -178,6 +178,16 @@ function runCli(args, options = {}) {
   return runCliFrom(cliPath, args, options);
 }
 
+test("Dev runtime wires the Stripe Team Billing provider on initial start and hot restart", async () => {
+  const source = await readFile(path.join(repoRoot, "src", "cli", "sporades.ts"), "utf8");
+  const runtimeSource = source.slice(source.indexOf("async function createDevRuntime"), source.indexOf("function createDevInspectionToken"));
+  assert.equal(
+    [...runtimeSource.matchAll(/createStripeTeamBillingProvider:\s*await stripeTeamBillingProviderFactory\(/g)].length,
+    2,
+    "both initial and replacement Dev databases must receive the built-in Team Billing provider factory",
+  );
+});
+
 function runCommand(command, args, options = {}) {
   return new Promise((resolve) => {
     const child = spawn(command, args, {

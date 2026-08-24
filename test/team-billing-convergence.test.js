@@ -206,6 +206,26 @@ test("invoice failure requires the current catalogue and validates fully before 
   }
 });
 
+test("a current Stripe Portal period-end cancellation uses the exact cancel_at item-period boundary", async () => {
+  const fixture = await openFixture();
+  try {
+    await applyVerifiedTeamBillingObservation(fixture.database,
+      subscriptionEvent("evt_converge_cancel_at_seed", "customer.subscription.created", { operationId, cancelAt: null }));
+    assert.equal(fixture.getSubscription().cancelAtPeriodEnd, 0);
+    assert.deepEqual(await applyVerifiedTeamBillingObservation(fixture.database,
+      subscriptionEvent("evt_converge_cancel_at_period_end", "customer.subscription.updated", {
+        cancelAtPeriodEnd: false, cancelAt: periodEnd, occurred: periodStart + 20,
+      })), { applied: true });
+    assert.equal(fixture.getSubscription().cancelAtPeriodEnd, 1);
+    assert.deepEqual(await applyVerifiedTeamBillingObservation(fixture.database,
+      subscriptionEvent("evt_converge_unsupported_custom_cancel_at", "customer.subscription.updated", {
+        cancelAtPeriodEnd: false, cancelAt: periodEnd - 60, occurred: periodStart + 30,
+      })), { applied: false, quarantined: true });
+  } finally {
+    fixture.close();
+  }
+});
+
 test("Checkout terminal ordering and unexpected database failures are deterministic", async () => {
   const fixture = await openFixture();
   try {
@@ -375,6 +395,7 @@ function subscriptionEvent(providerEventId, type, options = {}) {
       price: { id: options.priceId ?? "price_converge", product: options.productId ?? "prod_converge", recurring: { usage_type: options.usageType ?? "licensed" },
     } }] },
   };
+  if (Object.hasOwn(options, "cancelAt")) object.cancel_at = options.cancelAt;
   if (options.multiItem) object.items.data.push({ ...object.items.data[0], id: "si_extra" });
   return verifiedEvent(providerEventId, type, occurred, object);
 }

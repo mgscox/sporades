@@ -25,6 +25,7 @@ const {
 
 const teamId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const requestId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const retryRequestId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const auth = { userId: "erasure-admin", isAuthenticated: true, isGuest: false, provider: "test" };
 
 test("provider-quiesced erasure returns only local deletion authorization and leaves a provider-free tombstone", async () => {
@@ -34,6 +35,10 @@ test("provider-quiesced erasure returns only local deletion authorization and le
     assert.deepEqual(pending, { state: "pending", teamId, requestId, requestedAt: "2026-08-24T10:00:00.000Z" });
     assert.equal(fixture.providerCalls.length, 0, "admission never performs provider I/O");
     assert.equal(fixture.enqueued.length, 1);
+    assert.deepEqual(await prepareTeamBillingErasure(fixture.database, auth, teamId, retryRequestId), {
+      state: "pending", teamId, requestId: retryRequestId, requestedAt: "2026-08-24T10:00:00.000Z",
+    }, "a refreshed client can safely observe the same provider intent with a fresh command identity");
+    assert.equal(fixture.enqueued.length, 1, "retry observation does not enqueue duplicate provider work");
 
     assert.deepEqual(await performTeamBillingErasure(fixture.database, {}, fixture.enqueued[0].payload), { providerQuiesced: true });
     assert.deepEqual(fixture.providerCalls[0], {

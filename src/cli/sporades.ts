@@ -2657,6 +2657,7 @@ function reportDevPublicCleanupDegradation(
 }
 
 let stripeCallbackFactoryPromise: Promise<any> | undefined;
+let stripeTeamBillingProviderFactoryPromise: Promise<any> | undefined;
 
 async function stripeCallbackFactory(config: LooseRecord) {
   if (!config.payments?.stripe?.enabled) return undefined;
@@ -2666,6 +2667,14 @@ async function stripeCallbackFactory(config: LooseRecord) {
   return await stripeCallbackFactoryPromise;
 }
 
+async function stripeTeamBillingProviderFactory(config: LooseRecord) {
+  if (!config.payments?.stripe?.enabled) return undefined;
+  stripeTeamBillingProviderFactoryPromise ??= import(pathToFileURL(
+    path.join(resolveSporadesPackageRoot(), "dist", "stripe-team-billing-provider.js"),
+  ).href).then((module) => module.createStripeTeamBillingProvider);
+  return await stripeTeamBillingProviderFactoryPromise;
+}
+
 async function createDevRuntime(options: LooseRecord): Promise<any> {
   let database: any = await openDevDatabase(
     options.databasePath,
@@ -2673,7 +2682,11 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
     options.serverEnv,
     options.config,
     await importCapsuleDefinition(options.capsuleModuleSource),
-    { serviceEnv: options.serviceEnv, createStripeCallbackEndpoint: await stripeCallbackFactory(options.config) },
+    {
+      serviceEnv: options.serviceEnv,
+      createStripeCallbackEndpoint: await stripeCallbackFactory(options.config),
+      createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(options.config),
+    },
   );
   await database.init();
 
@@ -2688,7 +2701,11 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
         serverEnv,
         config,
         await importCapsuleDefinition(capsuleModuleSource),
-        { serviceEnv, createStripeCallbackEndpoint: await stripeCallbackFactory(config) },
+        {
+          serviceEnv,
+          createStripeCallbackEndpoint: await stripeCallbackFactory(config),
+          createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(config),
+        },
       );
       database = await replaceRuntimeDatabase(database, nextDatabase);
     },

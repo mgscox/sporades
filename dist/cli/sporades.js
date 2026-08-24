@@ -2281,21 +2281,36 @@ function reportDevPublicCleanupDegradation(options, runtime, url, port, config, 
     });
 }
 let stripeCallbackFactoryPromise;
+let stripeTeamBillingProviderFactoryPromise;
 async function stripeCallbackFactory(config) {
     if (!config.payments?.stripe?.enabled)
         return undefined;
     stripeCallbackFactoryPromise ??= import(pathToFileURL(path.join(resolveSporadesPackageRoot(), "dist", "stripe-webhook-runtime.js")).href).then((module) => module.createStripeCallbackEndpoint);
     return await stripeCallbackFactoryPromise;
 }
+async function stripeTeamBillingProviderFactory(config) {
+    if (!config.payments?.stripe?.enabled)
+        return undefined;
+    stripeTeamBillingProviderFactoryPromise ??= import(pathToFileURL(path.join(resolveSporadesPackageRoot(), "dist", "stripe-team-billing-provider.js")).href).then((module) => module.createStripeTeamBillingProvider);
+    return await stripeTeamBillingProviderFactoryPromise;
+}
 async function createDevRuntime(options) {
-    let database = await openDevDatabase(options.databasePath, options.serverSource, options.serverEnv, options.config, await importCapsuleDefinition(options.capsuleModuleSource), { serviceEnv: options.serviceEnv, createStripeCallbackEndpoint: await stripeCallbackFactory(options.config) });
+    let database = await openDevDatabase(options.databasePath, options.serverSource, options.serverEnv, options.config, await importCapsuleDefinition(options.capsuleModuleSource), {
+        serviceEnv: options.serviceEnv,
+        createStripeCallbackEndpoint: await stripeCallbackFactory(options.config),
+        createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(options.config),
+    });
     await database.init();
     return {
         get database() {
             return database;
         },
         async restart(serverSource, serverEnv, serviceEnv, capsuleModuleSource, config) {
-            const nextDatabase = await openDevDatabase(options.databasePath, serverSource, serverEnv, config, await importCapsuleDefinition(capsuleModuleSource), { serviceEnv, createStripeCallbackEndpoint: await stripeCallbackFactory(config) });
+            const nextDatabase = await openDevDatabase(options.databasePath, serverSource, serverEnv, config, await importCapsuleDefinition(capsuleModuleSource), {
+                serviceEnv,
+                createStripeCallbackEndpoint: await stripeCallbackFactory(config),
+                createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(config),
+            });
             database = await replaceRuntimeDatabase(database, nextDatabase);
         },
         async shutdown() {

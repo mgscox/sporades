@@ -8061,8 +8061,12 @@ function normalizeSubscription(definition, object, operation, mode, eventType, t
   const periodStart = unixTimestamp(item.current_period_start);
   const periodEnd = unixTimestamp(item.current_period_end);
   if (!periodStart || !periodEnd || periodEnd <= periodStart) throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
-  const cancel = object.cancel_at_period_end;
-  if (typeof cancel !== "boolean") throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
+  const cancelAtPeriodEnd = object.cancel_at_period_end;
+  const cancelAt = object.cancel_at;
+  if (typeof cancelAtPeriodEnd !== "boolean" || cancelAt !== void 0 && cancelAt !== null && (!Number.isSafeInteger(cancelAt) || cancelAt < 1 || cancelAt !== item.current_period_end)) {
+    throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
+  }
+  const cancel = cancelAtPeriodEnd || cancelAt === item.current_period_end;
   const deleted = eventType === "customer.subscription.deleted";
   let state;
   if (deleted) {
@@ -9027,7 +9031,12 @@ function validPortalContinuation(urlValue, sessionIdValue) {
   if (typeof sessionIdValue !== "string" || !/^bps_[A-Za-z0-9_]{1,240}$/.test(sessionIdValue) || typeof urlValue !== "string") return false;
   try {
     const url = new URL(urlValue);
-    return url.protocol === "https:" && url.hostname === "billing.stripe.com" && /^\/p\/session\/[A-Za-z0-9_\-]{8,512}$/.test(url.pathname) && !url.username && !url.password && !url.port && !url.search;
+    if (url.protocol !== "https:" || url.hostname !== "billing.stripe.com" || url.username || url.password || url.port) return false;
+    if (/^\/p\/session\/[A-Za-z0-9_-]{8,1024}$/.test(url.pathname)) {
+      return !url.search && (!url.hash || /^#[A-Za-z0-9_-]{1,1024}$/.test(url.hash));
+    }
+    const query = [...url.searchParams];
+    return url.pathname === "/p/session" && !url.hash && query.length === 1 && query[0][0] === "secret" && /^[A-Za-z0-9_-]{32,1024}$/.test(query[0][1]);
   } catch {
     return false;
   }
@@ -9117,7 +9126,6 @@ async function prepareTeamBillingErasure(database, auth, teamId, requestId) {
       "SELECT [e].[operationId], [e].[status], [o].[requestId], [o].[createdAt] FROM [sporades_team_billing_erasure_state] [e] JOIN [sporades_team_billing_operations] [o] ON [o].[id] = [e].[operationId] WHERE [e].[teamId] = ?"
     )).get(teamId);
     if (existing) {
-      if (existing.requestId !== requestId) throw conflict2();
       return Object.freeze({ state: "pending", teamId, requestId, requestedAt: existing.createdAt });
     }
     const operationId = randomUUID4();
@@ -9408,11 +9416,6 @@ function retryable2(code) {
   const error = unavailable();
   error.code = code;
   error.retryable = true;
-  return error;
-}
-function conflict2() {
-  const error = unavailable();
-  error.code = "TEAM_BILLING_REQUEST_CONFLICT";
   return error;
 }
 function inactiveContext() {
@@ -33891,12 +33894,20 @@ function reportDevPublicCleanupDegradation(options, runtime, url, port, config, 
   );
 }
 var stripeCallbackFactoryPromise;
+var stripeTeamBillingProviderFactoryPromise;
 async function stripeCallbackFactory(config) {
   if (!config.payments?.stripe?.enabled) return void 0;
   stripeCallbackFactoryPromise ??= import(pathToFileURL2(
     path11.join(resolveSporadesPackageRoot(), "dist", "stripe-webhook-runtime.js")
   ).href).then((module) => module.createStripeCallbackEndpoint);
   return await stripeCallbackFactoryPromise;
+}
+async function stripeTeamBillingProviderFactory(config) {
+  if (!config.payments?.stripe?.enabled) return void 0;
+  stripeTeamBillingProviderFactoryPromise ??= import(pathToFileURL2(
+    path11.join(resolveSporadesPackageRoot(), "dist", "stripe-team-billing-provider.js")
+  ).href).then((module) => module.createStripeTeamBillingProvider);
+  return await stripeTeamBillingProviderFactoryPromise;
 }
 async function createDevRuntime(options) {
   let database = await openDevDatabase(
@@ -33905,7 +33916,11 @@ async function createDevRuntime(options) {
     options.serverEnv,
     options.config,
     await importCapsuleDefinition(options.capsuleModuleSource),
-    { serviceEnv: options.serviceEnv, createStripeCallbackEndpoint: await stripeCallbackFactory(options.config) }
+    {
+      serviceEnv: options.serviceEnv,
+      createStripeCallbackEndpoint: await stripeCallbackFactory(options.config),
+      createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(options.config)
+    }
   );
   await database.init();
   return {
@@ -33919,7 +33934,11 @@ async function createDevRuntime(options) {
         serverEnv,
         config,
         await importCapsuleDefinition(capsuleModuleSource),
-        { serviceEnv, createStripeCallbackEndpoint: await stripeCallbackFactory(config) }
+        {
+          serviceEnv,
+          createStripeCallbackEndpoint: await stripeCallbackFactory(config),
+          createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(config)
+        }
       );
       database = await replaceRuntimeDatabase(database, nextDatabase);
     },

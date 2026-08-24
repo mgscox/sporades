@@ -21,8 +21,9 @@ export async function prepareTeamBillingErasure(database, auth, teamId, requestI
         const existing = await transaction.prepare(transaction.dialect.sql("SELECT [e].[operationId], [e].[status], [o].[requestId], [o].[createdAt] " +
             "FROM [sporades_team_billing_erasure_state] [e] JOIN [sporades_team_billing_operations] [o] ON [o].[id] = [e].[operationId] WHERE [e].[teamId] = ?")).get(teamId);
         if (existing) {
-            if (existing.requestId !== requestId)
-                throw conflict();
+            // The durable provider intent is Team-scoped. A refreshed client cannot
+            // recover its previous public request UUID, so a fresh command identity
+            // is allowed to observe (but never replace or duplicate) that work.
             return Object.freeze({ state: "pending", teamId, requestId, requestedAt: existing.createdAt });
         }
         const operationId = randomUUID();

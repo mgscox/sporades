@@ -215,9 +215,14 @@ function normalizeSubscription(definition, object, operation, mode, eventType, t
     const periodEnd = unixTimestamp(item.current_period_end);
     if (!periodStart || !periodEnd || periodEnd <= periodStart)
         throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
-    const cancel = object.cancel_at_period_end;
-    if (typeof cancel !== "boolean")
+    const cancelAtPeriodEnd = object.cancel_at_period_end;
+    const cancelAt = object.cancel_at;
+    if (typeof cancelAtPeriodEnd !== "boolean"
+        || (cancelAt !== undefined && cancelAt !== null
+            && (!Number.isSafeInteger(cancelAt) || cancelAt < 1 || cancelAt !== item.current_period_end))) {
         throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
+    }
+    const cancel = cancelAtPeriodEnd || cancelAt === item.current_period_end;
     const deleted = eventType === "customer.subscription.deleted";
     let state;
     if (deleted) {
