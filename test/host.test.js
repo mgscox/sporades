@@ -8546,6 +8546,58 @@ test("sporades host helper verifies a pushed Hosted Capsule release after restar
   });
 });
 
+test("sporades host helper waits for a newly started Capsule route to serve its public tree", async () => {
+  await withTempDir(async (dir) => {
+    let publicAttempts = 0;
+    await withHttpServer((request, response) => {
+      if (request.url === "/") {
+        publicAttempts += 1;
+        if (publicAttempts === 1) {
+          response.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+          response.end("upstream is still starting");
+          return;
+        }
+        response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        response.end('<script type="module" src="/assets/app-a1b2.js"></script>');
+        return;
+      }
+      assert.equal(request.url, "/__sporades/health/runtime");
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        ok: true,
+        data: { runtime: { ready: true }, checks: { sqlite: { ok: true }, fileStorage: { ok: true } } },
+        error: null,
+      }));
+    }, async (port) => {
+      const fixture = await writeHostedCapsuleInstallFixture(dir, {
+        rootName: "verify-delayed-public-tree",
+        domain: `localhost:${port}`,
+        scheme: "http",
+      });
+      const docker = await installFakeDocker(path.join(dir, "verify-delayed-public-tree-docker"));
+
+      const install = await runHostHelper(
+        {
+          action: "capsule.release.install",
+          host: { alias: "personal", domain: fixture.domain, scheme: "http", remoteRoot: fixture.remoteRoot },
+          capsule: { subname: fixture.subname },
+          release: fixture.release,
+          lifecycle: fixture.lifecycle,
+          verification: { enabled: true, healthTimeoutMs: 1000 },
+        },
+        { cwd: dir, env: docker.env },
+      );
+
+      assert.equal(install.code, 0, install.stderr);
+      const output = JSON.parse(install.stdout);
+      assert.equal(output.ok, true);
+      assert.equal(output.data.verification.state, "verified");
+      assert.equal(output.data.verification.health.public.statusCode, 200);
+      assert.equal(publicAttempts, 2);
+    });
+  });
+});
+
 test("sporades host helper marks verified push failed when the Capsule route does not become healthy", async () => {
   await withTempDir(async (dir) => {
     const port = await reserveUnusedPort();

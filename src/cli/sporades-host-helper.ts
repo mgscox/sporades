@@ -822,27 +822,50 @@ async function verifyInstalledRelease(request: HostHelperRequest, release: HostH
   };
 }
 
-async function verifyInstalledPublicTree(request: HostHelperRequest, timeoutMs: number) {
+async function verifyInstalledPublicTree(request: HostHelperRequest, timeoutMs: number): Promise<
+  | { ok: true; data: { url: string; path: string; responding: true; statusCode: number; html: true } }
+  | { ok: false; data: { url: string; path: string; responding: boolean; statusCode: number | null; html: false }; error: { message: string } }
+> {
   const url = new URL("/", `${request.host.scheme ?? "https"}://${request.capsule.subname}.${request.host.domain}`).toString();
-  try {
-    const response = await fetch(url, { headers: { accept: "text/html" }, signal: AbortSignal.timeout(timeoutMs) });
-    const contentType = response.headers.get("content-type") ?? "";
-    if (!response.ok || !contentType.toLowerCase().startsWith("text/html")) {
-      return {
+  const deadline = Date.now() + timeoutMs;
+  let lastFailure: { ok: false; data: { url: string; path: string; responding: boolean; statusCode: number | null; html: false }; error: { message: string } } = {
+    ok: false,
+    data: { url, path: "/", responding: false, statusCode: null as number | null, html: false },
+    error: { message: "Hosted Capsule installed public tree did not respond." },
+  };
+
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url, {
+        headers: { accept: "text/html" },
+        signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+      });
+      const contentType = response.headers.get("content-type") ?? "";
+      if (response.ok && contentType.toLowerCase().startsWith("text/html")) {
+        await response.body?.cancel();
+        return { ok: true, data: { url, path: "/", responding: true, statusCode: response.status, html: true } };
+      }
+      await response.body?.cancel();
+      lastFailure = {
         ok: false,
         data: { url, path: "/", responding: response.ok, statusCode: response.status, html: false },
         error: { message: "Hosted Capsule installed public tree did not serve its HTML entry." },
       };
+    } catch {
+      lastFailure = {
+        ok: false,
+        data: { url, path: "/", responding: false, statusCode: null, html: false },
+        error: { message: "Hosted Capsule installed public tree did not respond." },
+      };
     }
-    await response.body?.cancel();
-    return { ok: true, data: { url, path: "/", responding: true, statusCode: response.status, html: true } };
-  } catch {
-    return {
-      ok: false,
-      data: { url, path: "/", responding: false, statusCode: null, html: false },
-      error: { message: "Hosted Capsule installed public tree did not respond." },
-    };
+
+    const remainingMs = deadline - Date.now();
+    if (remainingMs > 0) {
+      await delay(Math.min(100, remainingMs));
+    }
   }
+
+  return lastFailure;
 }
 
 function readVerificationHealthTimeoutMs(request: HostHelperRequest) {
