@@ -82,6 +82,9 @@ export async function withSqliteAdapter(fn, options = {}) {
     let adapter = await createSqliteDatabaseAdapter(filePath);
     try {
       return await fn(adapter, {
+        async connect() {
+          return createSqliteDatabaseAdapter(filePath);
+        },
         async restart() {
           adapter.close();
           adapter = await createSqliteDatabaseAdapter(filePath);
@@ -105,6 +108,9 @@ export async function withLibsqlAdapter(fn, options = {}) {
         return await fn(adapter, {
           ...service,
           service,
+          async connect() {
+            return createLibsqlDatabaseAdapter({ url: service.url });
+          },
           async restart() {
             await adapter.close();
             adapter = await createLibsqlDatabaseAdapter({ url: service.url });
@@ -129,6 +135,9 @@ export async function withPostgresAdapter(fn, options = {}) {
   try {
     await resetPostgresSchema(adapter, options.appTableNames ?? []);
     return await fn(adapter, {
+      async connect() {
+        return createPostgresDatabaseAdapter({ url });
+      },
       async restart() {
         await adapter.close();
         adapter = await createPostgresDatabaseAdapter({ url });

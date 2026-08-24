@@ -3,7 +3,7 @@
 // deletion transaction.
 import { createHash, randomUUID } from "node:crypto";
 
-import { admitTeamBillingActor, teamBillingErasureKey, teamBillingErasureObjectKey } from "./team-billing-runtime.js";
+import { admitTeamBillingActor, readCapsuleTeamBillingProjection, teamBillingErasureKey, teamBillingErasureObjectKey } from "./team-billing-runtime.js";
 
 type LooseRecord = Record<string, any>;
 
@@ -277,14 +277,28 @@ export function createCurrentUserTeamBillingErasureApi(
   contextGetter: () => LooseRecord | null = () => null,
   isCurrentContext: (context: LooseRecord) => boolean = () => false,
 ) {
-  const requireContext = () => {
+  const requireActiveContext = () => {
     const context = contextGetter();
-    if (!database.__transactionActive || !context || !isCurrentContext(context) || context.signal?.aborted) {
+    if (!context || !isCurrentContext(context) || context.signal?.aborted) {
       throw inactiveContext();
     }
     return context;
   };
+  const requireContext = () => {
+    const context = requireActiveContext();
+    if (!database.__transactionActive) throw inactiveContext();
+    return context;
+  };
   return Object.freeze({
+    async get(teamId: any) {
+      requireActiveContext();
+      const result = database.__transactionActive
+        ? await readCapsuleTeamBillingProjection(database, database.adapter, auth, teamId)
+        : await database.adapter.withTransaction((transaction: LooseRecord) =>
+          readCapsuleTeamBillingProjection(database, transaction, auth, teamId));
+      requireActiveContext();
+      return result;
+    },
     async admitLocalErasure(teamId: any) {
       requireContext();
       if (!TEAM_ID.test(String(teamId ?? ""))) throw unavailable();

@@ -7,4 +7,6 @@ export type TeamBillingSubscriptionSemantics = Readonly<{
 }>;
 /** One semantic map shared by normal convergence and provider-free legacy import. */
 export declare function teamBillingSubscriptionSemantics(eventType: TeamBillingSubscriptionEventType, state: TeamBillingSubscriptionState, cancelAtPeriodEnd: boolean): TeamBillingSubscriptionSemantics | null;
+/** Canonical persisted ratchet implied by verified Subscription state. */
+export declare function teamBillingStoredSubscriptionSemantics(state: TeamBillingSubscriptionState, cancelAtPeriodEnd: boolean): TeamBillingSubscriptionSemantics | null;
 //# sourceMappingURL=team-billing-subscription-semantics.d.ts.map

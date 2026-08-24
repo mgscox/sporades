@@ -2,7 +2,7 @@
 // browser mutations only stage durable intent; provider I/O runs later in a
 // serialized lane and verified Stripe observations are the only settlement.
 import { createHash, randomUUID } from "node:crypto";
-import { countAcceptedTeamMembers } from "./teams-runtime.js";
+import { countAcceptedTeamMembers, lockTeamLifecycle } from "./teams-runtime.js";
 import { assertTeamBillingErasureInactive } from "./team-billing-runtime.js";
 export const TEAM_BILLING_PLAN_TRANSITION_JOB = "_sporades.team-billing-plan-transition";
 export const TEAM_BILLING_SEAT_CONVERGENCE_JOB = "_sporades.team-billing-seat-convergence";
@@ -394,6 +394,11 @@ async function admitPlanTransition(database, transaction, auth, teamId, productK
 async function tryAdmitPlanTransition(database, transaction, auth, teamId, productKey) {
     if (!auth?.userId || auth.isAuthenticated !== true || auth.isGuest === true)
         return false;
+    // Membership changes, Billing Holder transfer, and app downgrade reads all
+    // share this Team lifecycle lane. Claim it before the first authority read;
+    // countAcceptedTeamMembers may re-enter the same row lock later from the
+    // authorized callback, which is safe within this exact transaction.
+    await lockTeamLifecycle(transaction, teamId, denied);
     const membership = await transaction.prepare(transaction.dialect.sql("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, auth.userId);
     if (membership?.role !== "admin")
         return false;

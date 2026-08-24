@@ -2,7 +2,7 @@
 // returns only deletion authorization; the Capsule owns its separate local
 // deletion transaction.
 import { createHash, randomUUID } from "node:crypto";
-import { admitTeamBillingActor, teamBillingErasureKey, teamBillingErasureObjectKey } from "./team-billing-runtime.js";
+import { admitTeamBillingActor, readCapsuleTeamBillingProjection, teamBillingErasureKey, teamBillingErasureObjectKey } from "./team-billing-runtime.js";
 export const TEAM_BILLING_ERASURE_JOB = "_sporades.team-billing-erasure";
 const TEAM_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CHECKOUT_ID = /^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/;
@@ -213,14 +213,28 @@ export async function settleExhaustedTeamBillingErasureJob(database, payload, sa
 }
 /** Transaction-bound admission for the Capsule's separate local deletion mutation. */
 export function createCurrentUserTeamBillingErasureApi(database, auth, contextGetter = () => null, isCurrentContext = () => false) {
-    const requireContext = () => {
+    const requireActiveContext = () => {
         const context = contextGetter();
-        if (!database.__transactionActive || !context || !isCurrentContext(context) || context.signal?.aborted) {
+        if (!context || !isCurrentContext(context) || context.signal?.aborted) {
             throw inactiveContext();
         }
         return context;
     };
+    const requireContext = () => {
+        const context = requireActiveContext();
+        if (!database.__transactionActive)
+            throw inactiveContext();
+        return context;
+    };
     return Object.freeze({
+        async get(teamId) {
+            requireActiveContext();
+            const result = database.__transactionActive
+                ? await readCapsuleTeamBillingProjection(database, database.adapter, auth, teamId)
+                : await database.adapter.withTransaction((transaction) => readCapsuleTeamBillingProjection(database, transaction, auth, teamId));
+            requireActiveContext();
+            return result;
+        },
         async admitLocalErasure(teamId) {
             requireContext();
             if (!TEAM_ID.test(String(teamId ?? "")))

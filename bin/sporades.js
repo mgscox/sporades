@@ -7239,6 +7239,21 @@ function isPlainObject2(value) {
 // src/team-billing-runtime.ts
 import { createHash as createHash5, randomUUID as randomUUID3 } from "node:crypto";
 
+// src/team-billing-subscription-semantics.ts
+function teamBillingSubscriptionSemantics(eventType, state, cancelAtPeriodEnd) {
+  if (eventType === "customer.subscription.deleted") {
+    return state === "cancelled" ? Object.freeze({ kind: "cancelled", rank: 50, terminalLatch: 1 }) : null;
+  }
+  if (state === "cancelled") return null;
+  return teamBillingStoredSubscriptionSemantics(state, cancelAtPeriodEnd);
+}
+function teamBillingStoredSubscriptionSemantics(state, cancelAtPeriodEnd) {
+  if (state === "cancelled") return Object.freeze({ kind: "cancelled", rank: 50, terminalLatch: 1 });
+  if (state === "past-due") return Object.freeze({ kind: "past-due", rank: 40, terminalLatch: 0 });
+  if (state !== "active") return null;
+  return cancelAtPeriodEnd ? Object.freeze({ kind: "cancelling", rank: 30, terminalLatch: 0 }) : Object.freeze({ kind: "active", rank: 20, terminalLatch: 0 });
+}
+
 // src/team-billing-convergence.ts
 import { createHash as createHash4, randomUUID as randomUUID2 } from "node:crypto";
 
@@ -7649,6 +7664,7 @@ async function admitPlanTransition(database, transaction, auth, teamId, productK
 }
 async function tryAdmitPlanTransition(database, transaction, auth, teamId, productKey) {
   if (!auth?.userId || auth.isAuthenticated !== true || auth.isGuest === true) return false;
+  await lockTeamLifecycle(transaction, teamId, denied);
   const membership = await transaction.prepare(transaction.dialect.sql(
     "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
   )).get(teamId, auth.userId);
@@ -7810,16 +7826,6 @@ function attentionRequired() {
 }
 function retryable(code) {
   return coded("Team Billing provider work should be retried.", code, true);
-}
-
-// src/team-billing-subscription-semantics.ts
-function teamBillingSubscriptionSemantics(eventType, state, cancelAtPeriodEnd) {
-  if (eventType === "customer.subscription.deleted") {
-    return state === "cancelled" ? Object.freeze({ kind: "cancelled", rank: 50, terminalLatch: 1 }) : null;
-  }
-  if (state === "cancelled") return null;
-  if (state === "past-due") return Object.freeze({ kind: "past-due", rank: 40, terminalLatch: 0 });
-  return cancelAtPeriodEnd ? Object.freeze({ kind: "cancelling", rank: 30, terminalLatch: 0 }) : Object.freeze({ kind: "active", rank: 20, terminalLatch: 0 });
 }
 
 // src/team-billing-convergence.ts
@@ -8333,9 +8339,31 @@ async function readCurrentUserTeamBilling(database, auth, teamId) {
   requireAuth({ auth }, { linked: true });
   if (!database.teamBillingDefinition || !TEAM_ID_PATTERN2.test(String(teamId ?? ""))) throw teamBillingDenied();
   return database.adapter.withTransaction(async (transaction) => {
-    await admitTeamBillingActor(database, transaction, auth, { operation: "read", teamId });
+    await admitTeamBillingReader(database, transaction, auth, teamId);
     return safeTeamBillingProjection(transaction, database.teamBillingDefinition, teamId);
   });
+}
+async function admitTeamBillingReader(database, transaction, auth, teamId) {
+  await lockTeamLifecycle(transaction, teamId, teamBillingDenied);
+  const membership = await transaction.prepare(transaction.dialect.sql(
+    "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
+  )).get(teamId, auth.userId);
+  if (!membership || !["admin", "member"].includes(membership.role)) throw teamBillingDenied();
+  const decision = await database.runTeamBillingAuthority?.(transaction, auth, Object.freeze({
+    operation: "read",
+    teamId,
+    teamRole: membership.role
+  }));
+  if (!decision || typeof decision !== "object" || Array.isArray(decision) || Object.keys(decision).join(",") !== "allow" || decision.allow !== true) throw teamBillingDenied();
+}
+async function readCapsuleTeamBillingProjection(database, transaction, auth, teamId) {
+  requireAuth({ auth }, { linked: true });
+  if (!database.teamBillingDefinition || !TEAM_ID_PATTERN2.test(String(teamId ?? ""))) throw teamBillingDenied();
+  const membership = await transaction.prepare(transaction.dialect.sql(
+    "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
+  )).get(teamId, auth.userId);
+  if (!membership || !["admin", "member"].includes(membership.role)) throw teamBillingDenied();
+  return safeTeamBillingProjection(transaction, database.teamBillingDefinition, teamId);
 }
 async function startTeamBillingCheckout(database, auth, teamId, requestId, productKey) {
   requireAuth({ auth }, { linked: true });
@@ -8772,13 +8800,13 @@ async function safeTeamBillingProjection(transaction, definition, teamId) {
     });
   }
   const currentRows = await transaction.prepare(sql(
-    "SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventRank] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('active', 'past-due') ORDER BY [lastEventOccurredAt] DESC, [id] DESC"
+    "SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('active', 'past-due') ORDER BY [lastEventOccurredAt] DESC, [id] DESC"
   )).all(teamId);
   if (currentRows.length > 1) {
     return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
   }
   const row = currentRows[0] ?? await transaction.prepare(sql(
-    "SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventRank] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [lastEventOccurredAt] DESC, [observedAt] DESC, [id] DESC LIMIT 1"
+    "SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [lastEventOccurredAt] DESC, [observedAt] DESC, [id] DESC LIMIT 1"
   )).get(teamId);
   const quarantine = await transaction.prepare(sql(
     "SELECT [observedAt], [eventRank], [safeReason] FROM [sporades_team_billing_observations] WHERE [teamId] = ? AND [outcome] = 'quarantined' ORDER BY [observedAt] DESC, [eventRank] DESC, [id] DESC LIMIT 1"
@@ -8800,6 +8828,11 @@ async function safeTeamBillingProjection(transaction, definition, teamId) {
   if (row.cancelAtPeriodEnd !== 0 && row.cancelAtPeriodEnd !== 1) {
     return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
   }
+  const occurredAt = canonicalTimestamp2(row.lastEventOccurredAt);
+  const semantics = teamBillingStoredSubscriptionSemantics(row.state, row.cancelAtPeriodEnd === 1);
+  if (!occurredAt || !semantics || row.lastEventKind !== semantics.kind || Number(row.lastEventRank) !== semantics.rank || Number(row.terminalLatch) !== semantics.terminalLatch) {
+    return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
+  }
   const common = { teamId, productKey: row.productKey, quantity };
   if (row.state === "active") {
     const currentPeriodEnd = canonicalTimestamp2(row.currentPeriodEnd);
@@ -8808,7 +8841,10 @@ async function safeTeamBillingProjection(transaction, definition, teamId) {
     }
     return Object.freeze(row.cancelAtPeriodEnd === 1 ? { state: "cancelling", ...common, endsAt: currentPeriodEnd } : { state: "active", ...common, renewsAt: currentPeriodEnd });
   }
-  if (row.state === "past-due") return Object.freeze({ state: "past-due", ...common });
+  if (row.state === "past-due") {
+    const currentPeriodEnd = canonicalTimestamp2(row.currentPeriodEnd);
+    return Object.freeze(currentPeriodEnd ? { state: "past-due", ...common, currentPeriodEnd } : { state: "attention-required", teamId, reason: "provider-state-ambiguous" });
+  }
   if (row.state === "cancelled") return Object.freeze({ state: "cancelled", ...common });
   return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
 }
@@ -9293,14 +9329,25 @@ async function settleExhaustedTeamBillingErasureJob(database, payload, safeFailu
   return result;
 }
 function createCurrentUserTeamBillingErasureApi(database, auth, contextGetter = () => null, isCurrentContext = () => false) {
-  const requireContext = () => {
+  const requireActiveContext = () => {
     const context = contextGetter();
-    if (!database.__transactionActive || !context || !isCurrentContext(context) || context.signal?.aborted) {
+    if (!context || !isCurrentContext(context) || context.signal?.aborted) {
       throw inactiveContext();
     }
     return context;
   };
+  const requireContext = () => {
+    const context = requireActiveContext();
+    if (!database.__transactionActive) throw inactiveContext();
+    return context;
+  };
   return Object.freeze({
+    async get(teamId) {
+      requireActiveContext();
+      const result = database.__transactionActive ? await readCapsuleTeamBillingProjection(database, database.adapter, auth, teamId) : await database.adapter.withTransaction((transaction) => readCapsuleTeamBillingProjection(database, transaction, auth, teamId));
+      requireActiveContext();
+      return result;
+    },
     async admitLocalErasure(teamId) {
       requireContext();
       if (!TEAM_ID.test(String(teamId ?? ""))) throw unavailable();
@@ -20180,8 +20227,8 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
           purpose: "teams.join-admission",
           subject: { teamId: input.teamId, userId: input.userId },
           signal
-        }, (trustedDb) => capsuleDefinition.teams.admitJoin(
-          createTeamJoinAdmissionContext(admissionDatabase, auth, trustedDb),
+        }, (trustedDb, assertActive) => capsuleDefinition.teams.admitJoin(
+          createTeamJoinAdmissionContext(admissionDatabase, auth, trustedDb, input.teamId, assertActive),
           input
         ));
       } finally {
@@ -20197,8 +20244,8 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
           transaction: trustedTransaction,
           purpose: "team-billing.authority",
           subject: { teamId: input.teamId, userId: auth.userId, operation: input.operation }
-        }, (trustedDb) => teamBillingDefinition.authorize(
-          createTeamBillingAuthorityContext(policyDatabase, auth, trustedDb),
+        }, (trustedDb, assertActive) => teamBillingDefinition.authorize(
+          createTeamBillingAuthorityContext(policyDatabase, auth, trustedDb, input.teamId, assertActive),
           input
         ));
       } finally {
@@ -22794,7 +22841,7 @@ async function withTrustedRead(database, options, callback) {
   const db = createEndpointReadOnlyDatabaseApi(transactionDatabase, () => holder.current, assertActive);
   try {
     try {
-      const result = await callback(db);
+      const result = await callback(db, assertActive);
       assertActive();
       return result;
     } catch {
@@ -24455,6 +24502,9 @@ async function runCustomQuery(database, context, queryName, args, resolvedHandle
         hint: error?.hint ?? "Check the Capsule query handler and retry the query."
       }
     };
+  } finally {
+    const holder = context?.__sporadesContextHolder;
+    if (holder?.current === context) holder.current = null;
   }
 }
 var QUERY_ARGUMENT_LIMIT_BYTES = 65536;
@@ -24758,7 +24808,7 @@ function createMutationContext(database, auth, options = {}) {
     database,
     auth,
     () => holder.current,
-    (candidate) => handlerContextByDatabase.get(database)?.() === candidate
+    (candidate) => database.__transactionActive ? handlerContextByDatabase.get(database)?.() === candidate : holder.current === candidate
   );
   context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
   context.serverAuth = {
@@ -24787,21 +24837,51 @@ function createMutationContext(database, auth, options = {}) {
   };
   return context;
 }
-function createTeamJoinAdmissionContext(database, auth, trustedDb) {
+function createTeamJoinAdmissionContext(database, auth, trustedDb, teamId, assertActive) {
   const context = {
     auth: Object.freeze({ ...auth }),
     env: database.serverEnv,
     log: createEndpointLogger(database),
-    db: trustedDb
+    db: trustedDb,
+    teamBilling: Object.freeze({
+      async get(requestedTeamId) {
+        assertActive();
+        if (requestedTeamId !== teamId) throw commandError(
+          "Team Billing operation denied.",
+          "Use verified Team Billing state only for the Team whose Join is being admitted.",
+          "TEAM_BILLING_DENIED"
+        );
+        const projection = database.teamBillingDefinition ? await safeTeamBillingProjection(database.adapter, database.teamBillingDefinition, teamId) : Object.freeze({ state: "inactive", teamId });
+        assertActive();
+        return projection;
+      }
+    })
   };
   return context;
 }
-function createTeamBillingAuthorityContext(database, auth, trustedDb) {
+function createTeamBillingAuthorityContext(database, auth, trustedDb, teamId, assertActive) {
   return {
     auth: Object.freeze({ ...auth }),
     env: database.serverEnv,
     log: createEndpointLogger(database),
-    db: trustedDb
+    db: trustedDb,
+    teams: Object.freeze({
+      async countMembers(requestedTeamId) {
+        assertActive();
+        if (requestedTeamId !== teamId) throw commandError(
+          "Team Billing operation denied.",
+          "Count accepted members only for the Team whose billing authority is being evaluated.",
+          "TEAM_BILLING_DENIED"
+        );
+        const totalCount = await countAcceptedTeamMembers(database.adapter, teamId, () => commandError(
+          "Team Billing operation denied.",
+          "Retry against the current Team state.",
+          "TEAM_BILLING_DENIED"
+        ));
+        assertActive();
+        return Object.freeze({ totalCount });
+      }
+    })
   };
 }
 function deferOrScheduleJobDispatch(database, queueDatabase, context = void 0) {

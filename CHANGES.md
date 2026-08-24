@@ -1,5 +1,9 @@
 # Changes
 
+- Expose the verified provider-free Team Billing projection to active Capsule
+  query and mutation contexts and to exact-Team Join admission. Current members
+  may be authorized for safe reads while all customer-directed commands remain
+  current-Team-admin operations; retained context handles are revoked.
 - Add an offline `sporades/server/team-billing-import` seam for exact,
   provider-free import of verified legacy Subscription snapshots and replay
   guards. Incomplete or conflicting evidence fails closed, including drift in

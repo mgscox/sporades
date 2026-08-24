@@ -21,6 +21,50 @@ export declare function normalizeTeamBillingDefinition(value: any): Readonly<{
     }> | null;
 }>;
 export declare function readCurrentUserTeamBilling(database: LooseRecord, auth: LooseRecord, teamId: any): Promise<any>;
+/**
+ * Provider-free Team Billing truth for Capsule server policy. Unlike a
+ * customer-directed billing command, this admits any current linked Team
+ * member and never invokes the app's Billing Holder authorization callback.
+ * The surrounding Capsule context owns and revokes the transaction.
+ */
+export declare function readCapsuleTeamBillingProjection(database: LooseRecord, transaction: LooseRecord, auth: LooseRecord, teamId: any): Promise<Readonly<{
+    state: "attention-required";
+    teamId: string;
+    reason: "provider-state-ambiguous" | "catalogue-mismatch";
+}> | Readonly<{
+    requestedAt: string;
+    productKey?: any;
+    state: "pending";
+    teamId: string;
+    operation: any;
+}> | Readonly<{
+    state: "inactive";
+    teamId: string;
+}> | Readonly<{
+    endsAt: string;
+    teamId: string;
+    productKey: any;
+    quantity: any;
+    state: "cancelling";
+}> | Readonly<{
+    renewsAt: string;
+    teamId: string;
+    productKey: any;
+    quantity: any;
+    state: "active";
+}> | Readonly<{
+    currentPeriodEnd: string;
+    teamId: string;
+    productKey: any;
+    quantity: any;
+    state: "past-due";
+    reason?: undefined;
+}> | Readonly<{
+    teamId: string;
+    productKey: any;
+    quantity: any;
+    state: "cancelled";
+}>>;
 export declare function startTeamBillingCheckout(database: LooseRecord, auth: LooseRecord, teamId: any, requestId: any, productKey: any): Promise<any>;
 export declare function startTeamBillingPortal(database: LooseRecord, auth: LooseRecord, teamId: any, requestId: any): Promise<any>;
 export declare function performTeamBillingCheckout(database: LooseRecord, context: LooseRecord, payload: any, attempt?: number): Promise<{
@@ -72,17 +116,19 @@ export declare function safeTeamBillingProjection(transaction: LooseRecord, defi
     productKey: any;
     quantity: any;
     state: "cancelling";
-} | {
+}> | Readonly<{
     renewsAt: string;
     teamId: string;
     productKey: any;
     quantity: any;
     state: "active";
 }> | Readonly<{
+    currentPeriodEnd: string;
     teamId: string;
     productKey: any;
     quantity: any;
     state: "past-due";
+    reason?: undefined;
 }> | Readonly<{
     teamId: string;
     productKey: any;

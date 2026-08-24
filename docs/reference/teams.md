@@ -78,16 +78,16 @@ Inspection before authentication exposes only safe Team presentation and usabili
 
 ### Trusted Join admission
 
-A Capsule may declare `teams.admitJoin` in trusted server code to decide whether a validated Join link may create a new membership. The policy receives the target `teamId`, joining `userId`, and exact `currentMemberCount`, plus a transaction-bound context containing read-only `ctx.db`, `ctx.auth`, `ctx.env`, and `ctx.log`. Its app-table reads bypass the joining user's ordinary row ACLs so the policy can inspect state, such as a subscription row, that is correctly hidden until membership exists. The database projection exposes no runtime-owned tables, mutation methods, raw adapter, schema, or nested transaction.
+A Capsule may declare `teams.admitJoin` in trusted server code to decide whether a validated Join link may create a new membership. The policy receives the target `teamId`, joining `userId`, and exact `currentMemberCount`, plus a transaction-bound context containing read-only `ctx.db`, exact-Team `ctx.teamBilling`, `ctx.auth`, `ctx.env`, and `ctx.log`. Its app-table reads bypass the joining user's ordinary row ACLs; its billing read contains only the verified provider-free projection. Neither surface exposes provider identifiers, runtime-owned tables, mutation methods, raw adapter, schema, or nested transaction.
 
 ```ts
 export default capsule({
   name: "team-notes",
-  schema: { subscriptions: table({ teamId: String(), seats: Number() }) },
   teams: {
     async admitJoin(ctx, { teamId, currentMemberCount }) {
-      const subscription = (await ctx.db.subscriptions.where("teamId", teamId).all())[0];
-      return { allow: Boolean(subscription && currentMemberCount < subscription.seats) };
+      const billing = await ctx.teamBilling.get(teamId);
+      const cap = billing.state === "active" && billing.productKey === "agency" ? 20 : 3;
+      return { allow: currentMemberCount < cap };
     },
   },
 });
@@ -162,7 +162,9 @@ capsule({
     },
     async authorize(ctx, input) {
       const holder = await ctx.db.billingHolders.where("teamId", input.teamId).get();
-      return { allow: holder?.userId === ctx.auth.userId };
+      const members = input.operation === "plan-transition"
+        ? await ctx.teams.countMembers(input.teamId) : null;
+      return { allow: holder?.userId === ctx.auth.userId && (!members || members.totalCount <= 3) };
     },
   },
 });
@@ -173,12 +175,30 @@ one exact sandbox Price and one different live Price and declares either a
 positive fixed quantity or `team-members`. The declaration is server-only; the
 browser cannot select a mode or Price.
 
-Every operation re-reads the exact Team membership inside its transaction. Only
-a current linked Team administrator reaches `authorize`; the policy then makes
-the Capsule-specific decision from transaction-bound read-only app tables.
+Every operation re-reads the exact Team membership inside its transaction. A
+current linked Team administrator reaches the Capsule policy for every
+customer-directed command, which makes the Capsule-specific decision from
+transaction-bound read-only app tables. The same callback has only the
+transaction-bound `ctx.teams.countMembers(input.teamId)` inspection, allowing a
+downgrade policy to recheck exact accepted seats immediately before provider
+I/O. It cannot inspect another Team, enumerate members, or retain the count
+surface after callback settlement. Safe `read` authorization may
+additionally admit a current member, so the Capsule can render one Team-visible
+status without exposing provider identifiers.
 Captured policy tables expire when the callback settles. Removing membership or
 changing the app's billing-holder record therefore denies the next request even
 when the browser retains the same Session.
+
+`teams.admitJoin` receives `ctx.teamBilling.get(input.teamId)` alongside its
+read-only app database. This projection is provider-free, is bound to the exact
+Team whose Join is in progress, and is revoked when the admission callback
+settles. Apps can therefore enforce a paid seat policy atomically without
+trusting a legacy application subscription row or performing provider I/O.
+
+The provider-free projection validates the persisted Subscription's complete
+convergence ratchet: canonical event time plus state, cancellation flag, event
+kind, rank, and terminal latch must agree. Missing or contradictory evidence
+returns `attention-required`; it never grants paid entitlement.
 
 The client exposes a safe observation seam and one operation-specific Checkout
 command. Apps create the button, progress, retry, and navigation UI:
@@ -223,6 +243,11 @@ original actor and Capsule policy, recounts accepted Team membership, and
 derives mode, exact Price, optional existing Customer, return paths, business
 correlation, and idempotency from trusted state. It holds no database
 transaction across provider I/O. Retries reuse identical provider parameters.
+For managed Plan transitions, the lifecycle lock precedes the administrator
+membership read and every Billing Holder, app-usage, and exact-seat policy
+read. A demotion or holder transfer already holding that lock commits first;
+the waiting transition then observes the new authority and records
+`AUTHORITY_CHANGED` without calling the provider.
 
 Only `ready` contains a strictly validated `checkout.stripe.com` URL and a
 bounded local expiry. A durable runtime Job erases the retained capability at

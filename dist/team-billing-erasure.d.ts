@@ -20,6 +20,7 @@ export declare function repairTeamBillingErasureStateAtStartup(database: LooseRe
 export declare function settleExhaustedTeamBillingErasureJob(database: LooseRecord, payload: any, safeFailureCode?: string): Promise<any>;
 /** Transaction-bound admission for the Capsule's separate local deletion mutation. */
 export declare function createCurrentUserTeamBillingErasureApi(database: LooseRecord, auth: LooseRecord, contextGetter?: () => LooseRecord | null, isCurrentContext?: (context: LooseRecord) => boolean): Readonly<{
+    get(teamId: any): Promise<any>;
     admitLocalErasure(teamId: any): Promise<Readonly<{
         allowed: true;
     }>>;

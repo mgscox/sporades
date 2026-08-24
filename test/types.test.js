@@ -185,6 +185,8 @@ const app = capsule({
       const rowPromise: Promise<unknown> = ctx.db.todos.where("ownerId", input.teamId).get();
       const rows = await rowsPromise;
       await rowPromise;
+      const billing = await ctx.teamBilling.get(input.teamId);
+      void billing.state;
       // @ts-expect-error admission policy data access is transaction-bound and read-only.
       ctx.db.todos.insert({ title: "not allowed", ownerId: input.teamId });
       ctx.log.info("team admission", input.currentMemberCount, input.userId);
@@ -212,7 +214,7 @@ const app = capsule({
     portal: { returnPath: "/settings/billing", continuationTtlSeconds: 600 },
     authorize: async (ctx, input) => {
       const rows = await ctx.db.todos.where("ownerId", input.teamId).all();
-      input.teamRole satisfies "admin";
+      input.teamRole satisfies "admin" | "member";
       input.operation satisfies "read" | "checkout" | "portal" | "plan-transition" | "erasure";
       input.productKey?.toUpperCase();
       // @ts-expect-error Team Billing authority reads are transaction-bound and read-only.
@@ -500,6 +502,7 @@ const app = capsule({
       me.userId.toUpperCase();
       requireUserAuth(ctx).userId.toUpperCase();
       (await ctx.teamBilling.admitLocalErasure("00000000-0000-4000-8000-000000000000")).allowed.valueOf();
+      (await ctx.teamBilling.get("00000000-0000-4000-8000-000000000000")).state.toUpperCase();
       const linkedUser = requireAuth(ctx, { linked: true });
       linkedUser.isGuest.valueOf();
       // @ts-expect-error requireAuth options accept a boolean linked flag only.

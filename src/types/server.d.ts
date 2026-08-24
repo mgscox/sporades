@@ -485,6 +485,8 @@ export type TeamJoinAdmissionDecision = { allow: boolean };
 export type TeamJoinAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Pick<CapsuleContext<Schema>, "auth" | "env" | "log"> & {
   /** Transaction-bound app-table reads that bypass the joining user's ordinary row ACLs. Runtime tables and mutations are unavailable. */
   db: ReadOnlyDatabaseFromSchema<Schema>;
+  /** Provider-free verified billing state for the exact Team whose Join is being admitted. */
+  teamBilling: Pick<CurrentUserTeamBillingApi, "get">;
 };
 export type TeamBillingQuantityPolicy =
   | { kind: "fixed"; value: number }
@@ -499,18 +501,31 @@ export type TeamBillingProductDeclaration = {
 export type TeamBillingOperation = "read" | "checkout" | "portal" | "plan-transition" | "erasure";
 export type TeamBillingAuthorityInput = {
   teamId: string;
-  teamRole: "admin";
+  teamRole: "admin" | "member";
   operation: TeamBillingOperation;
   productKey?: string;
 };
 export type TeamBillingAuthorityDecision = { allow: boolean };
+/** Closed provider-identifier-free Team Billing truth available to Capsule policy. */
+export type TeamBillingProjection =
+  | { state: "inactive"; teamId: string }
+  | { state: "pending"; teamId: string; operation: "checkout" | "portal" | "plan-transition" | "erasure" | "reconciliation"; productKey?: string; requestedAt: string }
+  | { state: "active"; teamId: string; productKey: string; quantity: number; renewsAt: string }
+  | { state: "cancelling"; teamId: string; productKey: string; quantity: number; endsAt: string }
+  | { state: "past-due"; teamId: string; productKey: string; quantity: number; currentPeriodEnd: string }
+  | { state: "cancelled"; teamId: string; productKey: string; quantity: number }
+  | { state: "attention-required"; teamId: string; reason: "catalogue-mismatch" | "provider-state-ambiguous" };
 export type CurrentUserTeamBillingApi = {
+  /** Provider-free verified billing truth for app policy; requires current linked Team membership. */
+  get(teamId: string): Promise<TeamBillingProjection>;
   /** Admits only the app's separate local deletion transaction after provider quiescence is durably proven. */
   admitLocalErasure(teamId: string): Promise<{ allowed: true }>;
 };
 export type TeamBillingAuthorityContext<Schema extends SchemaDefinition = SchemaDefinition> = Pick<CapsuleContext<Schema>, "auth" | "env" | "log"> & {
   /** Transaction-bound app-table reads. Runtime billing tables and mutations are unavailable. */
   db: ReadOnlyDatabaseFromSchema<Schema>;
+  /** Transaction-bound exact accepted-member count for the Team under authority evaluation. */
+  teams: Pick<PrivilegedTeamsApi, "countMembers">;
 };
 export type TeamBillingDefinition<Schema extends SchemaDefinition = SchemaDefinition> = {
   /** Exact allow-list of product keys and distinct Stripe sandbox/live Price bindings. */

@@ -20,7 +20,17 @@ export function teamBillingSubscriptionSemantics(
     return state === "cancelled" ? Object.freeze({ kind: "cancelled", rank: 50, terminalLatch: 1 }) : null;
   }
   if (state === "cancelled") return null;
+  return teamBillingStoredSubscriptionSemantics(state, cancelAtPeriodEnd);
+}
+
+/** Canonical persisted ratchet implied by verified Subscription state. */
+export function teamBillingStoredSubscriptionSemantics(
+  state: TeamBillingSubscriptionState,
+  cancelAtPeriodEnd: boolean,
+): TeamBillingSubscriptionSemantics | null {
+  if (state === "cancelled") return Object.freeze({ kind: "cancelled", rank: 50, terminalLatch: 1 });
   if (state === "past-due") return Object.freeze({ kind: "past-due", rank: 40, terminalLatch: 0 });
+  if (state !== "active") return null;
   return cancelAtPeriodEnd
     ? Object.freeze({ kind: "cancelling", rank: 30, terminalLatch: 0 })
     : Object.freeze({ kind: "active", rank: 20, terminalLatch: 0 });

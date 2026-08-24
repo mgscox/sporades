@@ -89,6 +89,7 @@ let admissionFailureMessage = null;
 let leakedAdmissionTable = null;
 let admissionAuthMutationTarget = null;
 let admissionAuthMutationRejected = false;
+let leakedAdmissionTeamBilling = null;
 const admissionCapsule = {
   ...capsule,
   name: "teams-admission-test",
@@ -104,17 +105,20 @@ const admissionCapsule = {
   teams: {
     async admitJoin(ctx, input) {
       const policies = await ctx.db.seatPolicies.where("teamId", input.teamId).all();
+      const billing = await ctx.teamBilling.get(input.teamId);
       ctx.log.info("Team join admission checked", {
         teamId: input.teamId,
         userId: input.userId,
         currentMemberCount: input.currentMemberCount,
       });
       leakedAdmissionTable = ctx.db.seatPolicies;
+      leakedAdmissionTeamBilling = ctx.teamBilling;
       observedJoinAdmissions.push({
         ...input,
         actorUserId: ctx.auth.userId,
         contextKeys: Object.keys(ctx).sort(),
         tableKeys: Object.keys(ctx.db.seatPolicies).sort(),
+        billingState: billing.state,
       });
       if (admissionAuthMutationTarget) {
         try {
@@ -137,6 +141,7 @@ const admissionCapsule = {
 };
 
 let capturedBillingPolicyTable = null;
+let capturedBillingPolicyCountMembers = null;
 const billingPolicyChecks = [];
 const billingCapsule = {
   ...capsule,
@@ -172,10 +177,14 @@ const billingCapsule = {
     },
     async authorize(ctx, input) {
       const holder = await ctx.db.billingHolders.where("teamId", input.teamId).get();
+      const memberCount = input.operation === "plan-transition"
+        ? await ctx.teams.countMembers(input.teamId) : null;
       capturedBillingPolicyTable = ctx.db.billingHolders;
+      capturedBillingPolicyCountMembers = ctx.teams.countMembers;
       billingPolicyChecks.push({
         input,
         actorUserId: ctx.auth.userId,
+        memberCount,
         contextKeys: Object.keys(ctx).sort(),
         tableKeys: Object.keys(ctx.db.billingHolders).sort(),
       });
@@ -758,9 +767,11 @@ test("Capsule Team admission is transaction-bound and serializes concurrent join
       "only the admitted Join commits its transaction-scoped application log",
     );
     assert.ok(observedJoinAdmissions.every((entry) => entry.teamId === team.id && entry.userId === entry.actorUserId));
-    assert.ok(observedJoinAdmissions.every((entry) => JSON.stringify(entry.contextKeys) === JSON.stringify(["auth", "db", "env", "log"])));
+    assert.ok(observedJoinAdmissions.every((entry) => JSON.stringify(entry.contextKeys) === JSON.stringify(["auth", "db", "env", "log", "teamBilling"])));
+    assert.ok(observedJoinAdmissions.every((entry) => entry.billingState === "inactive"));
     assert.ok(observedJoinAdmissions.every((entry) => JSON.stringify(entry.tableKeys) === JSON.stringify(["all", "get", "limit", "orderBy", "where"])));
     assert.throws(() => leakedAdmissionTable.all(), (error) => error.code === "TRUSTED_READ_ACCESS_INACTIVE");
+    await assert.rejects(() => leakedAdmissionTeamBilling.get(observedJoinAdmissions.at(-1).teamId), (error) => error.code === "TRUSTED_READ_ACCESS_INACTIVE");
 
     const admittedIndex = attempts.findIndex((attempt) => attempt.status === "fulfilled");
     const admissionsBeforeRetry = observedJoinAdmissions.length;
@@ -1757,7 +1768,7 @@ test("headless Team Billing returns only policy-approved provider-free state and
     assert.equal(inactive.error, null, JSON.stringify(inactive.error));
     assert.deepEqual(inactive.data, { state: "inactive", teamId: team.id });
     assert.deepEqual(billingPolicyChecks.at(-1).input, { operation: "read", teamId: team.id, teamRole: "admin" });
-    assert.deepEqual(billingPolicyChecks.at(-1).contextKeys, ["auth", "db", "env", "log"]);
+    assert.deepEqual(billingPolicyChecks.at(-1).contextKeys, ["auth", "db", "env", "log", "teams"]);
     assert.deepEqual(billingPolicyChecks.at(-1).tableKeys, ["all", "get", "limit", "orderBy", "where"]);
     assert.throws(() => capturedBillingPolicyTable.all(), (error) => error.code === "TRUSTED_READ_ACCESS_INACTIVE");
     const reservedNamespace = await send(owner, {
@@ -1774,8 +1785,8 @@ test("headless Team Billing returns only policy-approved provider-free state and
       "INSERT INTO [sporades_team_billing_customers] ([teamId], [mode], [providerCustomerId], [createdAt], [updatedAt]) VALUES (?, 'sandbox', ?, ?, ?)",
     ).run(team.id, "cus_private_123", now, now);
     await runtime.database.adapter.prepare(
-      "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [observedAt], [updatedAt]) VALUES (?, ?, 'sandbox', ?, ?, 'agency', 7, 'active', 0, ?, ?, ?)",
-    ).run("sub-local-1", team.id, "sub_private_123", "price_test_agency", "2026-09-23T00:00:00.000Z", now, now);
+      "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [observedAt], [updatedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch]) VALUES (?, ?, 'sandbox', ?, ?, 'agency', 7, 'active', 0, ?, ?, ?, ?, 'active', 20, 0)",
+    ).run("sub-local-1", team.id, "sub_private_123", "price_test_agency", "2026-09-23T00:00:00.000Z", now, now, now);
     const active = await send(owner, { id: "billing-active", type: "teamBilling.get", teamId: team.id, sessionToken: ownerSignUp.data.sessionToken });
     assert.deepEqual(active.data, {
       state: "active",
@@ -2206,6 +2217,8 @@ test("headless managed Plan transition stays pending through provider acknowledg
     assert.deepEqual(await runtime.database.adapter.withTransaction((transaction) => runtime.database.runTeamBillingAuthority(transaction, reconstructed, {
       operation: "plan-transition", teamId: team.id, teamRole: "admin", productKey: "agency",
     })), { allow: true });
+    assert.deepEqual(billingPolicyChecks.at(-1).memberCount, { totalCount: 2 });
+    await assert.rejects(() => capturedBillingPolicyCountMembers(team.id), (error) => error.code === "TRUSTED_READ_ACCESS_INACTIVE");
     const awaiting = await waitForTeamPlanOperation(runtime.database, team.id, input.requestId, "awaiting-observation");
     assert.equal(providerInputs.length, 1);
     assert.deepEqual(providerInputs[0], {
@@ -2493,7 +2506,8 @@ async function proveTeamBillingAuthorityOnAdapter(database, teamId, userId, opti
     }
     await demotion;
     const outcome = await billingRead;
-    assert.equal(outcome.error?.code, "TEAM_BILLING_DENIED", "billing admission rechecks authority after the demotion commits");
+    assert.deepEqual(outcome.value, { state: "inactive", teamId }, "a committed demotion reauthorizes the safe read as a current member");
+    assert.equal(billingPolicyChecks.at(-1).input.teamRole, "member");
     return;
   }
   await database.adapter.prepare(sql("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, userId);

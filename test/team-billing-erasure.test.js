@@ -5,8 +5,8 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
-import { createControllableRuntimeClock, createPostgresDatabaseAdapter, openDevDatabase, recoverExpiredJobLeases, runMutation } from "../dist/server-runtime-source.js";
-import { mutation } from "../dist/server.js";
+import { createControllableRuntimeClock, createPostgresDatabaseAdapter, openDevDatabase, recoverExpiredJobLeases, runMutation, runQuery } from "../dist/server-runtime-source.js";
+import { mutation, query } from "../dist/server.js";
 import { createStripeCallbackEndpoint } from "../dist/stripe-webhook-runtime.js";
 import { teamBillingErasureKey } from "../dist/team-billing-runtime.js";
 import { POSTGRES_SKIP_REASON, postgresTestUrl, withPostgresAdapter } from "./support/database-adapter-engines.js";
@@ -198,6 +198,59 @@ test("the real mutation transaction owns and revokes local erasure admission", a
   } finally {
     await database?.close();
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Capsule mutation policy reads only the provider-free projection for a current Team member", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-billing-member-read-"));
+  const memberAuth = { userId: "billing-member", isAuthenticated: true, isGuest: false, provider: "test" };
+  const capsule = {
+    name: "team-billing-member-read",
+    schema: {},
+    teamBilling: testTeamBillingDefinition(),
+    mutations: { billing: mutation(async (ctx, exactTeamId) => await ctx.teamBilling.get(exactTeamId)) },
+  };
+  let database;
+  try {
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      name: capsule.name, auth: { providers: { anonymous: true } },
+    }, capsule);
+    const createdAt = "2026-08-24T10:00:00.000Z";
+    await database.adapter.prepare("INSERT INTO [sporades_auth_users] ([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider]) VALUES ('billing-member', ?, 'Member', NULL, NULL, 1, 0, 'test')").run(createdAt);
+    await database.adapter.prepare("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, 'Billing read', ?, 'billing-member')").run(teamId, createdAt);
+    await database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, 'billing-member', 'member', ?)").run(teamId, createdAt);
+
+    assert.deepEqual(await runMutation(database, memberAuth, "billing", [teamId]), {
+      ok: true, data: { state: "inactive", teamId }, error: null,
+    });
+    assert.equal((await runMutation(database, memberAuth, "billing", [requestId])).error.code, "TEAM_BILLING_DENIED");
+  } finally {
+    await database?.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Capsule query projection access is revoked when the query settles", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-billing-query-read-"));
+  let retainedApi;
+  const capsule = {
+    name: "team-billing-query-read",
+    schema: {}, teamBilling: testTeamBillingDefinition(),
+    queries: { billing: query(async (ctx, exactTeamId) => {
+      retainedApi = ctx.teamBilling;
+      return await ctx.teamBilling.get(exactTeamId);
+    }) },
+  };
+  let database;
+  try {
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: capsule.name }, capsule);
+    const now = "2026-08-24T10:00:00.000Z";
+    await database.adapter.prepare("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, 'Query read', ?, 'erasure-admin')").run(teamId, now);
+    await database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, 'erasure-admin', 'admin', ?)").run(teamId, now);
+    assert.deepEqual(await runQuery(database, auth, "billing", [teamId]), { data: { state: "inactive", teamId }, error: null });
+    await assert.rejects(retainedApi.get(teamId), inactiveErasureAdmission);
+  } finally {
+    await database?.close(); await rm(dir, { recursive: true, force: true });
   }
 });
 

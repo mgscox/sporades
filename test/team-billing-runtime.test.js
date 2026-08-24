@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { openDevDatabase } from "../dist/server-runtime-source.js";
-import { createTeamBillingTables, normalizeTeamBillingDefinition, startTeamBillingCheckout } from "../dist/team-billing-runtime.js";
+import { createTeamBillingTables, normalizeTeamBillingDefinition, readCurrentUserTeamBilling, startTeamBillingCheckout } from "../dist/team-billing-runtime.js";
 
 test("Team Checkout is an operation-specific runtime command", () => {
   assert.equal(typeof startTeamBillingCheckout, "function");
@@ -130,4 +130,40 @@ test("Team Billing provider correlation tables are platform-owned and created in
   assert.match(calls[7], /sporades_team_billing_erasure_state/);
   assert.match(calls[8], /sporades_team_billing_erasure_tombstones/);
   assert.match(calls[9], /sporades_team_billing_erasure_object_tombstones/);
+});
+
+test("provider-free Team Billing status is app-authorized for every current Team member", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-billing-member-status-"));
+  const teamId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const checks = [];
+  const capsule = {
+    name: "member-visible-billing",
+    schema: {},
+    teamBilling: {
+      catalogue: { studio: { quantity: { kind: "fixed", value: 1 }, stripe: {
+        sandbox: { priceId: "price_test_studio" }, live: { priceId: "price_live_studio" },
+      } } },
+      authorize: (_ctx, input) => { checks.push(input); return { allow: input.operation === "read" }; },
+    },
+  };
+  let database;
+  try {
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: capsule.name }, capsule);
+    const now = "2026-08-24T10:00:00.000Z";
+    await database.adapter.prepare("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, 'Member status', ?, 'member-user')").run(teamId, now);
+    await database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, 'member-user', 'member', ?)").run(teamId, now);
+    assert.deepEqual(await readCurrentUserTeamBilling(database, {
+      userId: "member-user", isAuthenticated: true, isGuest: false, provider: "test",
+    }, teamId), { state: "inactive", teamId });
+    assert.deepEqual(checks, [{ operation: "read", teamId, teamRole: "member" }]);
+    await database.adapter.prepare(
+      "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [observedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [updatedAt], [terminalLatch]) VALUES ('past-due-row', ?, 'sandbox', 'sub_past_due', 'price_test_studio', 'studio', 1, 'past-due', 0, '2026-09-24T00:00:00.000Z', ?, ?, 'past-due', 40, ?, 0)",
+    ).run(teamId, now, now, now);
+    assert.deepEqual(await readCurrentUserTeamBilling(database, {
+      userId: "member-user", isAuthenticated: true, isGuest: false, provider: "test",
+    }, teamId), { state: "past-due", teamId, productKey: "studio", quantity: 1, currentPeriodEnd: "2026-09-24T00:00:00.000Z" });
+  } finally {
+    await database?.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });

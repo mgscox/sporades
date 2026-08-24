@@ -8,6 +8,17 @@ between fixed and accepted-Team-member quantity. The Capsule keeps the
 authorization and downgrade decision; Sporades owns the provider mechanics and
 returns only provider-free operation state for app-owned rendering.
 
+The authority callback may use transaction-bound read-only app-table queries
+and exact-Team `ctx.teams.countMembers(teamId)`. The latter is deliberately the
+only privileged Team inspection exposed there: it lets the app revalidate a
+seat-sensitive downgrade against the same provider-call-time transaction while
+remaining unable to enumerate identities or inspect another Team.
+Sporades acquires the exact Team lifecycle lock before it reads the actor's
+current administrator role or invokes that callback. Billing Holder, app
+usage, and accepted-seat reads therefore follow any concurrent lifecycle
+writer's commit. The callback's exact-member count reuses the transaction-owned
+lock, so it neither opens a second authority window nor deadlocks.
+
 A managed request atomically records its public operation, one latest-wins
 desired tuple, and a reserved Job. The tuple fixes target product, exact target
 quantity, effective time, and provider idempotency. Each attempt reauthorizes

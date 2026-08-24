@@ -334,7 +334,8 @@ export type TeamBillingProjection =
   | { state: "pending"; teamId: string; operation: "checkout" | "portal" | "plan-transition" | "erasure" | "reconciliation"; productKey?: string; requestedAt: string }
   | { state: "active"; teamId: string; productKey: string; quantity: number; renewsAt: string }
   | { state: "cancelling"; teamId: string; productKey: string; quantity: number; endsAt: string }
-  | { state: "past-due" | "cancelled"; teamId: string; productKey: string; quantity: number }
+  | { state: "past-due"; teamId: string; productKey: string; quantity: number; currentPeriodEnd: string }
+  | { state: "cancelled"; teamId: string; productKey: string; quantity: number }
   | { state: "attention-required"; teamId: string; reason: "catalogue-mismatch" | "provider-state-ambiguous" };
 
 export type TeamBillingCheckoutRequest = { teamId: string; requestId: string; productKey: string };

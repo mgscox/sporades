@@ -2,6 +2,7 @@
 // replay correlation stay in runtime-owned tables; Capsule code receives only
 // declared product keys and closed, provider-free projections.
 import { createHash, randomUUID } from "node:crypto";
+import { teamBillingStoredSubscriptionSemantics } from "./team-billing-subscription-semantics.js";
 import { requireAuth } from "./auth-runtime.js";
 import { chainMaybePromise } from "./maybe-promise.js";
 import { commandError } from "./runtime-errors.js";
@@ -191,9 +192,36 @@ export async function readCurrentUserTeamBilling(database, auth, teamId) {
     if (!database.teamBillingDefinition || !TEAM_ID_PATTERN.test(String(teamId ?? "")))
         throw teamBillingDenied();
     return database.adapter.withTransaction(async (transaction) => {
-        await admitTeamBillingActor(database, transaction, auth, { operation: "read", teamId });
+        await admitTeamBillingReader(database, transaction, auth, teamId);
         return safeTeamBillingProjection(transaction, database.teamBillingDefinition, teamId);
     });
+}
+async function admitTeamBillingReader(database, transaction, auth, teamId) {
+    await lockTeamLifecycle(transaction, teamId, teamBillingDenied);
+    const membership = await transaction.prepare(transaction.dialect.sql("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, auth.userId);
+    if (!membership || !["admin", "member"].includes(membership.role))
+        throw teamBillingDenied();
+    const decision = await database.runTeamBillingAuthority?.(transaction, auth, Object.freeze({
+        operation: "read", teamId, teamRole: membership.role,
+    }));
+    if (!decision || typeof decision !== "object" || Array.isArray(decision)
+        || Object.keys(decision).join(",") !== "allow" || decision.allow !== true)
+        throw teamBillingDenied();
+}
+/**
+ * Provider-free Team Billing truth for Capsule server policy. Unlike a
+ * customer-directed billing command, this admits any current linked Team
+ * member and never invokes the app's Billing Holder authorization callback.
+ * The surrounding Capsule context owns and revokes the transaction.
+ */
+export async function readCapsuleTeamBillingProjection(database, transaction, auth, teamId) {
+    requireAuth({ auth }, { linked: true });
+    if (!database.teamBillingDefinition || !TEAM_ID_PATTERN.test(String(teamId ?? "")))
+        throw teamBillingDenied();
+    const membership = await transaction.prepare(transaction.dialect.sql("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, auth.userId);
+    if (!membership || !["admin", "member"].includes(membership.role))
+        throw teamBillingDenied();
+    return safeTeamBillingProjection(transaction, database.teamBillingDefinition, teamId);
 }
 export async function startTeamBillingCheckout(database, auth, teamId, requestId, productKey) {
     requireAuth({ auth }, { linked: true });
@@ -661,12 +689,12 @@ export async function safeTeamBillingProjection(transaction, definition, teamId)
             requestedAt,
         });
     }
-    const currentRows = await transaction.prepare(sql("SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventRank] " +
+    const currentRows = await transaction.prepare(sql("SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] " +
         "FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('active', 'past-due') ORDER BY [lastEventOccurredAt] DESC, [id] DESC")).all(teamId);
     if (currentRows.length > 1) {
         return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
     }
-    const row = currentRows[0] ?? await transaction.prepare(sql("SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventRank] " +
+    const row = currentRows[0] ?? await transaction.prepare(sql("SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] " +
         "FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [lastEventOccurredAt] DESC, [observedAt] DESC, [id] DESC LIMIT 1")).get(teamId);
     const quarantine = await transaction.prepare(sql("SELECT [observedAt], [eventRank], [safeReason] FROM [sporades_team_billing_observations] " +
         "WHERE [teamId] = ? AND [outcome] = 'quarantined' ORDER BY [observedAt] DESC, [eventRank] DESC, [id] DESC LIMIT 1")).get(teamId);
@@ -688,6 +716,12 @@ export async function safeTeamBillingProjection(transaction, definition, teamId)
     if (row.cancelAtPeriodEnd !== 0 && row.cancelAtPeriodEnd !== 1) {
         return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
     }
+    const occurredAt = canonicalTimestamp(row.lastEventOccurredAt);
+    const semantics = teamBillingStoredSubscriptionSemantics(row.state, row.cancelAtPeriodEnd === 1);
+    if (!occurredAt || !semantics || row.lastEventKind !== semantics.kind
+        || Number(row.lastEventRank) !== semantics.rank || Number(row.terminalLatch) !== semantics.terminalLatch) {
+        return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
+    }
     const common = { teamId, productKey: row.productKey, quantity };
     if (row.state === "active") {
         const currentPeriodEnd = canonicalTimestamp(row.currentPeriodEnd);
@@ -698,8 +732,12 @@ export async function safeTeamBillingProjection(transaction, definition, teamId)
             ? { state: "cancelling", ...common, endsAt: currentPeriodEnd }
             : { state: "active", ...common, renewsAt: currentPeriodEnd });
     }
-    if (row.state === "past-due")
-        return Object.freeze({ state: "past-due", ...common });
+    if (row.state === "past-due") {
+        const currentPeriodEnd = canonicalTimestamp(row.currentPeriodEnd);
+        return Object.freeze(currentPeriodEnd
+            ? { state: "past-due", ...common, currentPeriodEnd }
+            : { state: "attention-required", teamId, reason: "provider-state-ambiguous" });
+    }
     if (row.state === "cancelled")
         return Object.freeze({ state: "cancelled", ...common });
     return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });

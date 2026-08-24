@@ -19,8 +19,8 @@ import { signInWithEmail, signUpWithEmail } from "./auth-runtime.js";
 // `auth-runtime.ts` in that batch, once the HTTP layer stopped holding them.
 import { beginOAuthSignIn, resolvePasswordResetConfig } from "./auth-runtime.js";
 import { readCurrentUserPreferences, updateCurrentUserPreferences, } from "./user-preferences-runtime.js";
-import { countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createPrivilegedTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
-import { TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, TEAM_BILLING_PORTAL_EXPIRY_JOB, TEAM_BILLING_PORTAL_JOB, TEAM_BILLING_PORTAL_MAX_ATTEMPTS, createPrivilegedTeamBillingApi, expireTeamBillingCheckout, expireTeamBillingPortal, normalizeTeamBillingDefinition, performTeamBillingCheckout, performTeamBillingPortal, readCurrentUserTeamBilling, settleExhaustedTeamBillingCheckoutJob, startTeamBillingCheckout, startTeamBillingPortal, teamBillingErasureObjectKey, } from "./team-billing-runtime.js";
+import { countAcceptedTeamMembers, countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createPrivilegedTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
+import { TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, TEAM_BILLING_PORTAL_EXPIRY_JOB, TEAM_BILLING_PORTAL_JOB, TEAM_BILLING_PORTAL_MAX_ATTEMPTS, createPrivilegedTeamBillingApi, expireTeamBillingCheckout, expireTeamBillingPortal, normalizeTeamBillingDefinition, performTeamBillingCheckout, performTeamBillingPortal, readCurrentUserTeamBilling, safeTeamBillingProjection, settleExhaustedTeamBillingCheckoutJob, startTeamBillingCheckout, startTeamBillingPortal, teamBillingErasureObjectKey, } from "./team-billing-runtime.js";
 import { applyVerifiedTeamBillingObservation } from "./team-billing-convergence.js";
 import { TEAM_BILLING_PLAN_TRANSITION_JOB, TEAM_BILLING_SEAT_CONVERGENCE_JOB, performTeamBillingPlanTransition, performTeamBillingSeatConvergence, repairTeamBillingDesiredStateAtStartup, requestTeamBillingPlanTransition, settleExhaustedTeamBillingManagementJob, stageTeamBillingMembershipChange, } from "./team-billing-management.js";
 import { TEAM_BILLING_ERASURE_JOB, createCurrentUserTeamBillingErasureApi, performTeamBillingErasure, prepareTeamBillingErasure, repairTeamBillingErasureStateAtStartup, settleExhaustedTeamBillingErasureJob, } from "./team-billing-erasure.js";
@@ -741,7 +741,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                         purpose: "teams.join-admission",
                         subject: { teamId: input.teamId, userId: input.userId },
                         signal,
-                    }, (trustedDb) => capsuleDefinition.teams.admitJoin(createTeamJoinAdmissionContext(admissionDatabase, auth, trustedDb), input));
+                    }, (trustedDb, assertActive) => capsuleDefinition.teams.admitJoin(createTeamJoinAdmissionContext(admissionDatabase, auth, trustedDb, input.teamId, assertActive), input));
                 }
                 finally {
                     await drainPendingLogWrites(admissionDatabase);
@@ -758,7 +758,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                         transaction: trustedTransaction,
                         purpose: "team-billing.authority",
                         subject: { teamId: input.teamId, userId: auth.userId, operation: input.operation },
-                    }, (trustedDb) => teamBillingDefinition.authorize(createTeamBillingAuthorityContext(policyDatabase, auth, trustedDb), input));
+                    }, (trustedDb, assertActive) => teamBillingDefinition.authorize(createTeamBillingAuthorityContext(policyDatabase, auth, trustedDb, input.teamId, assertActive), input));
                 }
                 finally {
                     await drainPendingLogWrites(policyDatabase);
@@ -3569,7 +3569,7 @@ export async function withTrustedRead(database, options, callback) {
     const db = createEndpointReadOnlyDatabaseApi(transactionDatabase, () => holder.current, assertActive);
     try {
         try {
-            const result = await callback(db);
+            const result = await callback(db, assertActive);
             assertActive();
             return result;
         }
@@ -5337,6 +5337,11 @@ async function runCustomQuery(database, context, queryName, args, resolvedHandle
             },
         };
     }
+    finally {
+        const holder = context?.__sporadesContextHolder;
+        if (holder?.current === context)
+            holder.current = null;
+    }
 }
 const QUERY_ARGUMENT_LIMIT_BYTES = 65536;
 function invalidQueryArgumentsError() {
@@ -5651,7 +5656,9 @@ function createMutationContext(database, auth, options = {}) {
         },
     };
     context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
-    context.teamBilling = createCurrentUserTeamBillingErasureApi(database, auth, () => holder.current, (candidate) => handlerContextByDatabase.get(database)?.() === candidate);
+    context.teamBilling = createCurrentUserTeamBillingErasureApi(database, auth, () => holder.current, (candidate) => database.__transactionActive
+        ? handlerContextByDatabase.get(database)?.() === candidate
+        : holder.current === candidate);
     context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
     context.serverAuth = {
         async setEmailPassword(email, newPassword) {
@@ -5684,21 +5691,43 @@ function createMutationContext(database, auth, options = {}) {
     };
     return context;
 }
-function createTeamJoinAdmissionContext(database, auth, trustedDb) {
+function createTeamJoinAdmissionContext(database, auth, trustedDb, teamId, assertActive) {
     const context = {
         auth: Object.freeze({ ...auth }),
         env: database.serverEnv,
         log: createEndpointLogger(database),
         db: trustedDb,
+        teamBilling: Object.freeze({
+            async get(requestedTeamId) {
+                assertActive();
+                if (requestedTeamId !== teamId)
+                    throw commandError("Team Billing operation denied.", "Use verified Team Billing state only for the Team whose Join is being admitted.", "TEAM_BILLING_DENIED");
+                const projection = database.teamBillingDefinition
+                    ? await safeTeamBillingProjection(database.adapter, database.teamBillingDefinition, teamId)
+                    : Object.freeze({ state: "inactive", teamId });
+                assertActive();
+                return projection;
+            },
+        }),
     };
     return context;
 }
-function createTeamBillingAuthorityContext(database, auth, trustedDb) {
+function createTeamBillingAuthorityContext(database, auth, trustedDb, teamId, assertActive) {
     return {
         auth: Object.freeze({ ...auth }),
         env: database.serverEnv,
         log: createEndpointLogger(database),
         db: trustedDb,
+        teams: Object.freeze({
+            async countMembers(requestedTeamId) {
+                assertActive();
+                if (requestedTeamId !== teamId)
+                    throw commandError("Team Billing operation denied.", "Count accepted members only for the Team whose billing authority is being evaluated.", "TEAM_BILLING_DENIED");
+                const totalCount = await countAcceptedTeamMembers(database.adapter, teamId, () => commandError("Team Billing operation denied.", "Retry against the current Team state.", "TEAM_BILLING_DENIED"));
+                assertActive();
+                return Object.freeze({ totalCount });
+            },
+        }),
     };
 }
 function deferOrScheduleJobDispatch(database, queueDatabase, context = undefined) {

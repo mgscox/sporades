@@ -13,6 +13,9 @@ import {
   prepareTeamBillingErasure,
   repairTeamBillingErasureStateAtStartup,
 } from "../../../dist/team-billing-erasure.js";
+import { importLegacyTeamBillingEvidence } from "../../../dist/team-billing-import.js";
+import { safeTeamBillingProjection } from "../../../dist/team-billing-runtime.js";
+import { countAcceptedTeamMembers, lockTeamLifecycle } from "../../../dist/teams-runtime.js";
 
 const NOW = "2026-08-14T12:00:00.000Z";
 
@@ -21,11 +24,25 @@ async function count(adapter, statement, ...values) {
   return Number(row?.count ?? 0);
 }
 
+async function clearTeamBillingStorage(adapter) {
+  const sql = adapter.dialect.sql;
+  for (const table of [
+    "sporades_team_billing_desired_state", "sporades_team_billing_provider_lanes",
+    "sporades_team_billing_erasure_state", "sporades_team_billing_erasure_tombstones",
+    "sporades_team_billing_erasure_object_tombstones", "sporades_team_billing_replay",
+    "sporades_team_billing_observations", "sporades_team_billing_operations",
+    "sporades_team_billing_subscriptions", "sporades_team_billing_customers",
+  ]) await adapter.prepare(sql(`DELETE FROM [${table}]`)).run();
+}
+
 export const CONFORMANCE_SURFACE = {
   title: "Database adapter conformance (runtime Team storage)",
-  appTableNames: [],
+  appTableNames: ["team_billing_test_holders"],
   async prepareStorage(adapter) {
     await adapter.ensureTeamsStorage();
+    await adapter.exec(adapter.dialect.sql(
+      "CREATE TABLE [team_billing_test_holders] ([teamId] TEXT PRIMARY KEY, [userId] TEXT NOT NULL)",
+    ));
   },
   cases: [
     {
@@ -70,6 +87,44 @@ export const CONFORMANCE_SURFACE = {
         for (const table of ["erasure_state", "erasure_tombstones", "erasure_object_tombstones"]) {
           assert.equal(await count(adapter, `SELECT COUNT(*) AS [count] FROM [sporades_team_billing_${table}]`), 0, table);
         }
+        await clearTeamBillingStorage(adapter);
+      },
+    },
+    {
+      name: "provider-free Team Billing projection validates the complete convergence ratchet on every adapter",
+      async run(adapter) {
+        const sql = adapter.dialect.sql;
+        const teamId = "91919191-9191-4191-8191-919191919191";
+        const definition = { catalogue: { agency: { quantity: { kind: "team-members" }, stripe: {
+          sandbox: { priceId: "price_projection_agency" }, live: { priceId: "price_live_projection_agency" },
+        } } } };
+        await importLegacyTeamBillingEvidence(adapter, {
+          sourceKey: "projection-ratchet", teamId, mode: "sandbox",
+          providerCustomerId: "cus_projection_agency", providerSubscriptionId: "sub_projection_agency",
+          providerSubscriptionItemId: "si_projection_agency", providerPriceId: "price_projection_agency",
+          productKey: "agency", quantity: 3, state: "active", cancelAtPeriodEnd: false,
+          currentPeriodStart: "2026-08-01T00:00:00.000Z", currentPeriodEnd: "2026-09-01T00:00:00.000Z",
+          providerEventId: "evt_projection_agency", providerEventType: "customer.subscription.updated",
+          providerEventDigest: "sha256:v1:projection-ratchet-evidence", providerObservedAt: NOW,
+          retainedUntil: "2026-09-14T12:00:00.000Z",
+        });
+        assert.equal((await safeTeamBillingProjection(adapter, definition, teamId)).state, "active");
+        for (const [column, corrupt, restore] of [
+          ["lastEventOccurredAt", "not-a-canonical-time", NOW],
+          ["lastEventKind", "created", "active"],
+          ["lastEventRank", 10, 20],
+          ["terminalLatch", 1, 0],
+          ["state", "past-due", "active"],
+          ["cancelAtPeriodEnd", 1, 0],
+        ]) {
+          await adapter.prepare(sql(`UPDATE [sporades_team_billing_subscriptions] SET [${column}] = ? WHERE [teamId] = ?`)).run(corrupt, teamId);
+          assert.deepEqual(await safeTeamBillingProjection(adapter, definition, teamId), {
+            state: "attention-required", teamId, reason: "provider-state-ambiguous",
+          }, `${column} contradiction must fail closed`);
+          await adapter.prepare(sql(`UPDATE [sporades_team_billing_subscriptions] SET [${column}] = ? WHERE [teamId] = ?`)).run(restore, teamId);
+          assert.equal((await safeTeamBillingProjection(adapter, definition, teamId)).state, "active");
+        }
+        await clearTeamBillingStorage(adapter);
       },
     },
     {
@@ -120,6 +175,7 @@ export const CONFORMANCE_SURFACE = {
         assert.equal(JSON.stringify(tombstone).includes("sub_erasure_adapter"), false);
         await adapter.prepare(sql("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ?")).run(teamId);
         await adapter.prepare(sql("DELETE FROM [sporades_teams] WHERE [id] = ?")).run(teamId);
+        await clearTeamBillingStorage(adapter);
       },
     },
     {
@@ -223,6 +279,7 @@ export const CONFORMANCE_SURFACE = {
         assert.ok(enqueued.length >= 2);
         await adapter.prepare(sql("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ?")).run(teamId);
         await adapter.prepare(sql("DELETE FROM [sporades_teams] WHERE [id] = ?")).run(teamId);
+        await clearTeamBillingStorage(adapter);
       },
     },
     {
@@ -252,7 +309,9 @@ export const CONFORMANCE_SURFACE = {
               live: { priceId: "price_live_policy_studio", productId: "prod_live_policy_studio" },
             } },
           } },
-          runTeamBillingAuthority: async () => ({ allow: authority }),
+          runTeamBillingAuthority: async (transaction) => ({
+            allow: authority && await countAcceptedTeamMembers(transaction, teamId) <= 3,
+          }),
           readTeamBillingActorAuth: async () => linkedActor,
           enqueueTeamBillingPlanTransitionJob: async (_transaction, payload, key) => enqueued.push({ payload, key }),
           scheduleTeamBillingJobDispatch() {},
@@ -264,13 +323,14 @@ export const CONFORMANCE_SURFACE = {
         await requestTeamBillingPlanTransition(database, linkedActor, teamId, requestId, "policy-studio");
         const desired = await adapter.prepare(sql("SELECT * FROM [sporades_team_billing_desired_state] WHERE [teamId] = ?")).get(teamId);
         assert.equal(desired.targetQuantity, 1);
-        authority = false;
+        await adapter.prepare(sql("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, 'policy-last-moment-member', 'member', ?)")).run(teamId, NOW);
         await assert.rejects(
           performTeamBillingPlanTransition(database, {}, desiredPayload(desired)),
           (error) => error?.code === "TEAM_BILLING_DENIED",
         );
         assert.equal(providerCalls.length, 0);
         assert.equal((await adapter.prepare(sql("SELECT [safeFailureCode] FROM [sporades_team_billing_desired_state] WHERE [teamId] = ?")).get(teamId)).safeFailureCode, "AUTHORITY_CHANGED");
+        await adapter.prepare(sql("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = 'policy-last-moment-member'")).run(teamId);
         authority = true;
         await repairTeamBillingDesiredState(database);
         const repairedDesired = await adapter.prepare(sql("SELECT * FROM [sporades_team_billing_desired_state] WHERE [teamId] = ?")).get(teamId);
@@ -287,6 +347,135 @@ export const CONFORMANCE_SURFACE = {
         assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_team_billing_desired_state] WHERE [teamId] = ?", teamId), 0);
         await adapter.prepare(sql("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ?")).run(teamId);
         await adapter.prepare(sql("DELETE FROM [sporades_teams] WHERE [id] = ?")).run(teamId);
+        await clearTeamBillingStorage(adapter);
+      },
+    },
+    {
+      name: "managed Plan transitions linearize demotion and Billing Holder changes before authority reads",
+      async run(adapter, engineContext) {
+        // The adapter-method coverage replay intentionally supplies only its
+        // recording adapter. Real engine runs provide a second connection so
+        // this case can hold a genuinely concurrent lifecycle transaction.
+        if (typeof engineContext?.connect !== "function") return;
+        const sql = adapter.dialect.sql;
+        const teamId = "d1d1d1d1-d1d1-41d1-81d1-d1d1d1d1d1d1";
+        const requestId = "d2d2d2d2-d2d2-42d2-82d2-d2d2d2d2d2d2";
+        await adapter.prepare(sql("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, 'Authority race', ?, 'race-admin')")).run(teamId, NOW);
+        await adapter.prepare(sql("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, 'race-admin', 'admin', ?), (?, 'race-member-1', 'member', ?), (?, 'race-member-2', 'member', ?)")).run(teamId, NOW, teamId, NOW, teamId, NOW);
+        await adapter.prepare(sql("INSERT INTO [team_billing_test_holders] ([teamId], [userId]) VALUES (?, 'race-admin')")).run(teamId);
+        await adapter.prepare(sql("INSERT INTO [sporades_team_billing_customers] ([teamId], [mode], [providerCustomerId], [createdAt], [updatedAt]) VALUES (?, 'sandbox', 'cus_authority_race', ?, ?)")).run(teamId, NOW, NOW);
+        await adapter.prepare(sql("INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [observedAt], [updatedAt], [terminalLatch]) VALUES ('authority-race-subscription', ?, 'sandbox', 'sub_authority_race', 'price_race_agency', 'si_authority_race', 'race-agency', 3, 'active', 0, ?, ?, 0)")).run(teamId, NOW, NOW);
+        const providerCalls = [];
+        const enqueued = [];
+        let authorityEntered = null;
+        const linkedActor = { userId: "race-admin", isAuthenticated: true, isGuest: false, provider: "test" };
+        const database = {
+          adapter, capsuleIdentity: "adapter-authority-race", clock: { now: () => new Date(NOW) },
+          paymentsConfig: { stripe: { livemode: false } },
+          teamBillingDefinition: { catalogue: {
+            "race-agency": { quantity: { kind: "team-members" }, stripe: {
+              sandbox: { priceId: "price_race_agency", productId: "prod_race_agency" },
+              live: { priceId: "price_live_race_agency", productId: "prod_live_race_agency" },
+            } },
+            "race-studio": { quantity: { kind: "fixed", value: 1 }, stripe: {
+              sandbox: { priceId: "price_race_studio", productId: "prod_race_studio" },
+              live: { priceId: "price_live_race_studio", productId: "prod_live_race_studio" },
+            } },
+          } },
+          runTeamBillingAuthority: async (transaction, auth) => {
+            authorityEntered?.();
+            const holder = await transaction.prepare(transaction.dialect.sql(
+              "SELECT [userId] FROM [team_billing_test_holders] WHERE [teamId] = ?",
+            )).get(teamId);
+            const seats = await countAcceptedTeamMembers(transaction, teamId);
+            return { allow: holder?.userId === auth.userId && seats <= 3 };
+          },
+          readTeamBillingActorAuth: async () => linkedActor,
+          enqueueTeamBillingPlanTransitionJob: async (_transaction, payload, key) => enqueued.push({ payload, key }),
+          scheduleTeamBillingJobDispatch() {},
+          updateTeamBillingSubscription: async (_context, input) => {
+            providerCalls.push(input);
+            return { ok: true, outcome: "acknowledged" };
+          },
+        };
+        await requestTeamBillingPlanTransition(database, linkedActor, teamId, requestId, "race-studio");
+        const second = await engineContext.connect();
+        try {
+          const race = async (mutate) => {
+            let releaseMutation;
+            let mutationStarted;
+            const mutationStartedPromise = new Promise((resolve) => { mutationStarted = resolve; });
+            const releaseMutationPromise = new Promise((resolve) => { releaseMutation = resolve; });
+            const mutation = second.withTransaction(async (transaction) => {
+              await lockTeamLifecycle(transaction, teamId);
+              await mutate(transaction);
+              mutationStarted();
+              await releaseMutationPromise;
+            });
+            await mutationStartedPromise;
+            let entered;
+            const enteredPromise = new Promise((resolve) => { entered = resolve; });
+            authorityEntered = entered;
+            let current = await adapter.prepare(sql(
+              "SELECT [intentId], [activeJobGenerationId] FROM [sporades_team_billing_desired_state] WHERE [teamId] = ?",
+            )).get(teamId);
+            const worker = performTeamBillingPlanTransition(database, {}, desiredPayload(current))
+              .then((value) => ({ value }), (error) => ({ error }));
+            const enteredBeforeRelease = await Promise.race([
+              enteredPromise.then(() => true),
+              new Promise((resolve) => setTimeout(() => resolve(false), 75)),
+            ]);
+            releaseMutation();
+            await mutation;
+            let outcome = await worker;
+            if (outcome.error && outcome.error?.code !== "TEAM_BILLING_DENIED") {
+              current = await adapter.prepare(sql(
+                "SELECT [intentId], [activeJobGenerationId] FROM [sporades_team_billing_desired_state] WHERE [teamId] = ?",
+              )).get(teamId);
+              outcome = await performTeamBillingPlanTransition(database, {}, desiredPayload(current))
+                .then((value) => ({ value }), (error) => ({ error }));
+            }
+            authorityEntered = null;
+            assert.equal(outcome.error?.code, "TEAM_BILLING_DENIED");
+            assert.equal(enteredBeforeRelease, false, "authority callback must not begin while a lifecycle writer owns the Team lock");
+            assert.equal(providerCalls.length, 0);
+            assert.equal((await adapter.prepare(sql(
+              "SELECT [safeFailureCode] FROM [sporades_team_billing_desired_state] WHERE [teamId] = ?",
+            )).get(teamId)).safeFailureCode, "AUTHORITY_CHANGED");
+          };
+
+          await race((transaction) => transaction.prepare(transaction.dialect.sql(
+            "UPDATE [sporades_team_memberships] SET [role] = 'member' WHERE [teamId] = ? AND [userId] = 'race-admin'",
+          )).run(teamId));
+          await second.withTransaction(async (transaction) => {
+            await lockTeamLifecycle(transaction, teamId);
+            await transaction.prepare(transaction.dialect.sql(
+              "UPDATE [sporades_team_memberships] SET [role] = 'admin' WHERE [teamId] = ? AND [userId] = 'race-admin'",
+            )).run(teamId);
+          });
+          await repairTeamBillingDesiredState(database);
+
+          await race((transaction) => transaction.prepare(transaction.dialect.sql(
+            "UPDATE [team_billing_test_holders] SET [userId] = 'race-successor' WHERE [teamId] = ?",
+          )).run(teamId));
+          await second.withTransaction(async (transaction) => {
+            await lockTeamLifecycle(transaction, teamId);
+            await transaction.prepare(transaction.dialect.sql(
+              "UPDATE [team_billing_test_holders] SET [userId] = 'race-admin' WHERE [teamId] = ?",
+            )).run(teamId);
+          });
+          await repairTeamBillingDesiredState(database);
+          const repaired = await adapter.prepare(sql("SELECT * FROM [sporades_team_billing_desired_state] WHERE [teamId] = ?")).get(teamId);
+          await performTeamBillingPlanTransition(database, {}, desiredPayload(repaired));
+          assert.equal(providerCalls.length, 1, "restored Admin and Billing Holder converge through a fresh repair generation");
+          assert.equal(new Set(enqueued.map((entry) => entry.key)).size, enqueued.length);
+        } finally {
+          await second.close();
+        }
+        await adapter.prepare(sql("DELETE FROM [team_billing_test_holders] WHERE [teamId] = ?")).run(teamId);
+        await adapter.prepare(sql("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ?")).run(teamId);
+        await adapter.prepare(sql("DELETE FROM [sporades_teams] WHERE [id] = ?")).run(teamId);
+        await clearTeamBillingStorage(adapter);
       },
     },
     {

@@ -58,7 +58,8 @@ sporades host push --restart
   email-bound Join links, membership application roles, and explicit Team ACL
   decisions—without a hidden current Team or automatic data partitioning.
   Trusted `teams.admitJoin` policies may make atomic seat decisions from
-  read-only app state hidden by the joining user's ordinary row ACLs.
+  read-only app state hidden by the joining user's ordinary row ACLs and the
+  exact Team's provider-free verified billing projection.
 - **Headless Team Billing, app-rendered**: an optional `teamBilling` declaration
   binds stable product keys to exact sandbox/live Stripe Prices and a fixed or
   accepted-Team-member quantity policy. Sporades rechecks current Team-admin

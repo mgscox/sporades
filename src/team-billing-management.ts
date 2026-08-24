@@ -3,7 +3,7 @@
 // serialized lane and verified Stripe observations are the only settlement.
 import { createHash, randomUUID } from "node:crypto";
 
-import { countAcceptedTeamMembers } from "./teams-runtime.js";
+import { countAcceptedTeamMembers, lockTeamLifecycle } from "./teams-runtime.js";
 import { assertTeamBillingErasureInactive } from "./team-billing-runtime.js";
 
 type LooseRecord = Record<string, any>;
@@ -416,6 +416,11 @@ async function admitPlanTransition(database: LooseRecord, transaction: LooseReco
 
 async function tryAdmitPlanTransition(database: LooseRecord, transaction: LooseRecord, auth: LooseRecord, teamId: string, productKey: string) {
   if (!auth?.userId || auth.isAuthenticated !== true || auth.isGuest === true) return false;
+  // Membership changes, Billing Holder transfer, and app downgrade reads all
+  // share this Team lifecycle lane. Claim it before the first authority read;
+  // countAcceptedTeamMembers may re-enter the same row lock later from the
+  // authorized callback, which is safe within this exact transaction.
+  await lockTeamLifecycle(transaction, teamId, denied);
   const membership = await transaction.prepare(transaction.dialect.sql(
     "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?",
   )).get(teamId, auth.userId);

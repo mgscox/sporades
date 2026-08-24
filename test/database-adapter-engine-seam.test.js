@@ -447,6 +447,9 @@ test("the census covers every module the deployed Capsule bundle carries", () =>
     // Shared immutable Access-key bounds and header names; constants only, with
     // no SQL walker, dialect, emitted statement, or normalization function.
     "access-key-contract.js",
+    // Pure Team Billing event/state ratchet semantics. Runtime modules share
+    // these bounded mappings, but the module owns no SQL or adapter behavior.
+    "team-billing-subscription-semantics.js",
   ]);
 
   const carried = runtimeGraphModules();

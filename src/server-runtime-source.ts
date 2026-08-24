@@ -46,7 +46,7 @@ import { createAnonymousAuthTables } from "./auth-runtime.js";
 import {
   createUserPreferencesTables, readCurrentUserPreferences, updateCurrentUserPreferences,
 } from "./user-preferences-runtime.js";
-import { countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createPrivilegedTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
+import { countAcceptedTeamMembers, countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createPrivilegedTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
 import {
   TEAM_BILLING_CHECKOUT_JOB,
   TEAM_BILLING_CHECKOUT_EXPIRY_JOB,
@@ -61,6 +61,7 @@ import {
   performTeamBillingCheckout,
   performTeamBillingPortal,
   readCurrentUserTeamBilling,
+  safeTeamBillingProjection,
   settleExhaustedTeamBillingCheckoutJob,
   startTeamBillingCheckout,
   startTeamBillingPortal,
@@ -881,8 +882,8 @@ export async function openDevDatabase(
             purpose: "teams.join-admission",
             subject: { teamId: input.teamId, userId: input.userId },
             signal,
-          }, (trustedDb) => capsuleDefinition.teams.admitJoin(
-            createTeamJoinAdmissionContext(admissionDatabase, auth, trustedDb),
+          }, (trustedDb, assertActive) => capsuleDefinition.teams.admitJoin(
+            createTeamJoinAdmissionContext(admissionDatabase, auth, trustedDb, input.teamId, assertActive),
             input,
           ));
         } finally {
@@ -900,8 +901,8 @@ export async function openDevDatabase(
             transaction: trustedTransaction,
             purpose: "team-billing.authority",
             subject: { teamId: input.teamId, userId: auth.userId, operation: input.operation },
-          }, (trustedDb) => teamBillingDefinition.authorize(
-            createTeamBillingAuthorityContext(policyDatabase, auth, trustedDb),
+          }, (trustedDb, assertActive) => teamBillingDefinition.authorize(
+            createTeamBillingAuthorityContext(policyDatabase, auth, trustedDb, input.teamId, assertActive),
             input,
           ));
         } finally {
@@ -3882,7 +3883,7 @@ function trustedReadResult(value: any, assertActive: () => void) {
   });
 }
 
-export async function withTrustedRead(database: LooseRecord, options: LooseRecord, callback: (db: LooseRecord) => any) {
+export async function withTrustedRead(database: LooseRecord, options: LooseRecord, callback: (db: LooseRecord, assertActive: () => void) => any) {
   if (!isActiveTransactionScopedAdapter(options?.transaction, database?.adapter)) {
     throw commandError(
       "Trusted app-database reads require an active transaction.",
@@ -3926,7 +3927,7 @@ export async function withTrustedRead(database: LooseRecord, options: LooseRecor
   const db = createEndpointReadOnlyDatabaseApi(transactionDatabase, () => holder.current, assertActive);
   try {
     try {
-      const result = await callback(db);
+      const result = await callback(db, assertActive);
       assertActive();
       return result;
     } catch {
@@ -5771,6 +5772,9 @@ async function runCustomQuery(database: LooseRecord, context: any, queryName: an
         hint: error?.hint ?? "Check the Capsule query handler and retry the query.",
       },
     };
+  } finally {
+    const holder = context?.__sporadesContextHolder;
+    if (holder?.current === context) holder.current = null;
   }
 }
 
@@ -6101,7 +6105,9 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
     database,
     auth,
     () => holder.current,
-    (candidate) => handlerContextByDatabase.get(database)?.() === candidate,
+    (candidate) => database.__transactionActive
+      ? handlerContextByDatabase.get(database)?.() === candidate
+      : holder.current === candidate,
   );
   context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
   context.serverAuth = {
@@ -6131,22 +6137,54 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
   return context;
 }
 
-function createTeamJoinAdmissionContext(database: LooseRecord, auth: LooseRecord, trustedDb: LooseRecord) {
+function createTeamJoinAdmissionContext(database: LooseRecord, auth: LooseRecord, trustedDb: LooseRecord, teamId: string, assertActive: () => void) {
   const context: LooseRecord = {
     auth: Object.freeze({ ...auth }),
     env: database.serverEnv,
     log: createEndpointLogger(database),
     db: trustedDb,
+    teamBilling: Object.freeze({
+      async get(requestedTeamId: unknown) {
+        assertActive();
+        if (requestedTeamId !== teamId) throw commandError(
+          "Team Billing operation denied.",
+          "Use verified Team Billing state only for the Team whose Join is being admitted.",
+          "TEAM_BILLING_DENIED",
+        );
+        const projection = database.teamBillingDefinition
+          ? await safeTeamBillingProjection(database.adapter, database.teamBillingDefinition, teamId)
+          : Object.freeze({ state: "inactive" as const, teamId });
+        assertActive();
+        return projection;
+      },
+    }),
   };
   return context;
 }
 
-function createTeamBillingAuthorityContext(database: LooseRecord, auth: LooseRecord, trustedDb: LooseRecord) {
+function createTeamBillingAuthorityContext(database: LooseRecord, auth: LooseRecord, trustedDb: LooseRecord, teamId: string, assertActive: () => void) {
   return {
     auth: Object.freeze({ ...auth }),
     env: database.serverEnv,
     log: createEndpointLogger(database),
     db: trustedDb,
+    teams: Object.freeze({
+      async countMembers(requestedTeamId: unknown) {
+        assertActive();
+        if (requestedTeamId !== teamId) throw commandError(
+          "Team Billing operation denied.",
+          "Count accepted members only for the Team whose billing authority is being evaluated.",
+          "TEAM_BILLING_DENIED",
+        );
+        const totalCount = await countAcceptedTeamMembers(database.adapter, teamId, () => commandError(
+          "Team Billing operation denied.",
+          "Retry against the current Team state.",
+          "TEAM_BILLING_DENIED",
+        ));
+        assertActive();
+        return Object.freeze({ totalCount });
+      },
+    }),
   };
 }
 
