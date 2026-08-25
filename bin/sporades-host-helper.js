@@ -2333,6 +2333,16 @@ async function evaluateCapsuleHealth(request, options = {}) {
       `Restart the Hosted Capsule with \`sporades host restart ${request.capsule.subname} --host ${request.host.alias}\`, then retry health.`
     );
   }
+  const routeRefresh = await refreshLoopbackRunningRoute(request, record, health.container.name);
+  if (!routeRefresh.ok) {
+    return healthFailure(
+      request,
+      health,
+      "route-failure",
+      "Docker did not report the Hosted Capsule's current loopback published port.",
+      `Restart the Hosted Capsule with \`sporades host restart ${request.capsule.subname} --host ${request.host.alias}\`, then retry health.`
+    );
+  }
   let response;
   try {
     response = await fetch(health.runtimeHealthUrl, {
@@ -4258,6 +4268,35 @@ function loopbackRunningRoute(route, publishedPort) {
     upstream: `${publishedPort.hostIp}:${publishedPort.hostPort}`,
     publishedPort
   };
+}
+async function refreshLoopbackRunningRoute(request, registryRecord, containerName) {
+  const lifecycle = normaliseLifecycle(request, registryRecord);
+  const routeFile = lifecycle.routes.running.routeFile;
+  let currentRoute;
+  try {
+    currentRoute = await readFile2(routeFile, "utf8");
+  } catch (error) {
+    if (errorDetails(error).code === "ENOENT") {
+      return { ok: true, refreshed: false };
+    }
+    throw error;
+  }
+  const loopbackUpstream = /(reverse_proxy\s+)127\.0\.0\.1:[1-9][0-9]*(\s+\{)/g;
+  if (!loopbackUpstream.test(currentRoute)) {
+    return { ok: true, refreshed: false };
+  }
+  loopbackUpstream.lastIndex = 0;
+  const publishedPort = inspectLoopbackPublishedPort(containerName, lifecycle.routes.running.port ?? 4e3);
+  if (!publishedPort) {
+    return { ok: false, refreshed: false };
+  }
+  const currentUpstream = `${publishedPort.hostIp}:${publishedPort.hostPort}`;
+  const refreshedRoute = currentRoute.replace(loopbackUpstream, `$1${currentUpstream}$2`);
+  if (refreshedRoute === currentRoute) {
+    return { ok: true, refreshed: false, publishedPort };
+  }
+  await applyManagedRoute(lifecycle, routeFile, refreshedRoute);
+  return { ok: true, refreshed: true, publishedPort };
 }
 async function writeRunningRoute(lifecycle, route = lifecycle.routes.running) {
   await provisionRouteLogFile(route);

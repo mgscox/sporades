@@ -5427,6 +5427,107 @@ test("sporades host helper checks Hosted Capsule runtime health with a Host-owne
   });
 });
 
+test("sporades host helper refreshes a stale loopback route after Docker restarts on a new published port", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const docker = await installFakeDocker(dir, {
+      env: {
+        FAKE_DOCKER_PUBLISHED_PORT: "127.0.0.1:49154",
+        FAKE_DOCKER_INSPECT_JSON: `${JSON.stringify({ State: { Running: true }, RestartCount: 1 })}\n`,
+      },
+    });
+
+    await withHttpServer((request, response) => {
+      assert.equal(request.url, "/__sporades/health/runtime");
+      assert.equal(request.headers["x-sporades-host-probe"], "probe-secret");
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        ok: true,
+        data: {
+          runtime: { ready: true },
+          checks: { sqlite: { ok: true }, fileStorage: { ok: true } },
+        },
+        error: null,
+      }));
+    }, async (port) => {
+      const domain = `localhost:${port}`;
+      const hostedUrl = `http://team-notes.localhost:${port}`;
+      const registryRecordPath = path.join(remoteRoot, "hosts", domain, "registry", "capsules", "team-notes.json");
+      const routeFile = path.join(remoteRoot, "caddy", "hosts", domain, "team-notes.caddy");
+      await mkdir(path.dirname(registryRecordPath), { recursive: true });
+      await mkdir(path.dirname(routeFile), { recursive: true });
+      await writeFile(path.join(remoteRoot, "caddy", "Caddyfile"), "import ./hosts/*.caddy\n");
+      await writeFile(
+        routeFile,
+        [
+          `team-notes.${domain} {`,
+          "  @sporadesRuntimeProbe {",
+          "    path /__sporades/health/runtime",
+          "    header x-sporades-host-probe probe-secret",
+          "  }",
+          "  handle @sporadesRuntimeProbe {",
+          "    reverse_proxy 127.0.0.1:49153 {",
+          "      header_up x-sporades-client-address {http.request.remote.host}",
+          "    }",
+          "  }",
+          "  reverse_proxy 127.0.0.1:49153 {",
+          "    header_up x-sporades-client-address {http.request.remote.host}",
+          "  }",
+          "}",
+          "",
+        ].join("\n"),
+      );
+      await writeFile(
+        registryRecordPath,
+        `${JSON.stringify({
+          subname: "team-notes",
+          domain,
+          remoteCapsuleId: `${domain}/team-notes`,
+          hostedUrl,
+          status: "running",
+          currentRelease: { id: "20260630T221500Z-feedface" },
+          runtimeProbe: { header: "x-sporades-host-probe", token: "probe-secret" },
+        })}\n`,
+      );
+
+      const health = await runHostHelper(
+        {
+          action: "capsule.health",
+          host: { alias: "personal", domain, scheme: "http", remoteRoot },
+          capsule: { subname: "team-notes" },
+        },
+        { cwd: dir, env: docker.env },
+      );
+
+      assert.equal(health.code, 0, health.stderr);
+      assert.equal(JSON.parse(health.stdout).ok, true);
+      const route = await readFile(routeFile, "utf8");
+      assert.equal((route.match(/reverse_proxy 127\.0\.0\.1:49154/g) ?? []).length, 2);
+      assert.doesNotMatch(route, /127\.0\.0\.1:49153/);
+      assert.match(route, /header x-sporades-host-probe probe-secret/);
+      assert.deepEqual(
+        (await docker.caddyCalls()).map((call) => call.args),
+        [
+          ["validate", "--config", `${routeFile}.tmp`, "--adapter", "caddyfile"],
+          ["reload", "--config", path.join(remoteRoot, "caddy", "Caddyfile"), "--adapter", "caddyfile"],
+        ],
+      );
+
+      const repeatedHealth = await runHostHelper(
+        {
+          action: "capsule.health",
+          host: { alias: "personal", domain, scheme: "http", remoteRoot },
+          capsule: { subname: "team-notes" },
+        },
+        { cwd: dir, env: docker.env },
+      );
+      assert.equal(repeatedHealth.code, 0, repeatedHealth.stderr);
+      assert.equal(JSON.parse(repeatedHealth.stdout).ok, true);
+      assert.equal((await docker.caddyCalls()).length, 2, "a current route must not reload Caddy on every health check");
+    });
+  });
+});
+
 test("sporades host helper does not send the runtime probe credential to caller-supplied URLs", async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
