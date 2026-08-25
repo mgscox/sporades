@@ -1191,6 +1191,7 @@ function deletionRequiresUnregisterError(request: HostHelperRequest) {
 async function installRelease(request: HostHelperRequest) {
   validateInstallRequest(request);
   const previousRecord = await verifyRegisteredCapsule(request);
+  normaliseLifecycle(request, previousRecord);
   const paths = canonicalReleasePaths(request);
   if (!paths.release) {
     throw helperError("Invalid release install request.", "Update the Sporades CLI and retry `sporades host push`.");
@@ -1207,6 +1208,12 @@ async function installRelease(request: HostHelperRequest) {
 async function installClaimedRelease(request: HostHelperRequest, previousRecord: any, paths: ReleasePaths & { release: string }, claimedArchive: { path: string; sha256: string }) {
   const release = request.release;
   const previousCurrentRelease = previousRecord.currentRelease?.id ? { id: previousRecord.currentRelease.id } : null;
+  const previousRegistryContents = await readFile(registryPath(request), "utf8");
+  const previousCurrentTarget = await readlink(paths.currentLink).catch((error) => {
+    if (errorDetails(error).code === "ENOENT") return null;
+    throw error;
+  });
+  const previousRoute = await captureReleaseInstallRoute(request, previousRecord);
   const validatedArchive = validateReleaseArchive(request, claimedArchive.path);
   await maybeSwapUnclaimedArchiveForTest(release);
   if (await releaseArchiveSha256(claimedArchive.path) !== claimedArchive.sha256) {
@@ -1259,41 +1266,52 @@ async function installClaimedRelease(request: HostHelperRequest, previousRecord:
     throw error;
   }
 
-  let privateKeyRuntime: CapsuleRuntimeSettlement | null = null;
   if (releaseIncludesSealedServerEnvPrivateKey(release)) {
-    privateKeyRuntime = captureCapsuleRuntimeSettlement(request, previousRecord);
-    quiesceCapsuleRuntime(privateKeyRuntime);
     try {
-      await installSealedServerEnvPrivateKey(release, paths.data);
-      if (!release.restart) await settleCapsuleRuntime(request, privateKeyRuntime);
+      await installSealedServerEnvPrivateKey(release, paths);
     } catch (error) {
-      let settlementError: unknown = null;
-      try {
-        await settleCapsuleRuntime(request, privateKeyRuntime, error);
-      } catch (failure) {
-        settlementError = failure;
-      }
       await rm(paths.release, { recursive: true, force: true });
-      throw settlementError ?? error;
+      throw error;
     }
   }
 
-  await symlink(paths.release, tempCurrentLink);
-  await rename(tempCurrentLink, paths.currentLink);
-  await recordReleaseUploaded(request, release, installedInventory);
+  try {
+    await symlink(paths.release, tempCurrentLink);
+    await rename(tempCurrentLink, paths.currentLink);
+    await recordReleaseUploaded(request, release, installedInventory);
+  } catch (error) {
+    await restoreCurrentReleasePointerTarget(paths.currentLink, previousCurrentTarget);
+    await removeInstalledReleasePrivateKey(release, paths);
+    await rm(paths.release, { recursive: true, force: true });
+    throw error;
+  }
 
   let restartResult = null;
   let restartError = null;
+  let installRolledBack = false;
+  const priorRuntime = release.restart ? captureCapsuleRuntimeSettlement(request, previousRecord) : null;
   if (release.restart) {
     try {
-      restartResult = await restartCapsule(request, { write: false, containerQuiesced: privateKeyRuntime?.wasRunning === true });
+      restartResult = await restartCapsule(request, {
+        write: false,
+        dataPrepared: priorRuntime?.wasRunning === true,
+      });
     } catch (error) {
       restartError = error;
     }
-    if (!restartResult && privateKeyRuntime?.wasRunning) {
-      await restorePreviousCurrentReleasePointer(paths, previousCurrentRelease?.id ?? null);
+    if (!restartResult) {
       try {
-        await settleCapsuleRuntime(request, privateKeyRuntime, restartError ?? new Error("restart failed"));
+        await restoreFailedReleaseInstall(
+          request,
+          paths,
+          previousRecord,
+          previousRegistryContents,
+          previousCurrentTarget,
+          previousRoute,
+          priorRuntime,
+          release,
+        );
+        installRolledBack = true;
       } catch (error) {
         restartError = error;
       }
@@ -1301,7 +1319,7 @@ async function installClaimedRelease(request: HostHelperRequest, previousRecord:
   }
 
   const data: LooseRecord = {
-    installed: true,
+    installed: !installRolledBack,
     restartRequested: Boolean(release.restart),
     restarted: Boolean(restartResult?.restarted),
     capsule: {
@@ -1320,6 +1338,9 @@ async function installClaimedRelease(request: HostHelperRequest, previousRecord:
   };
   if (restartResult) {
     data.lifecycle = restartResult;
+  }
+  if (installRolledBack) {
+    data.rollback = { applied: true, previousCurrentRelease };
   }
   if (isVerificationRequested(request)) {
     const verificationResult = await verifyInstalledRelease(request, release, data, previousCurrentRelease, restartResult, restartError);
@@ -1734,7 +1755,7 @@ async function startCapsule(request: HostHelperRequest, options: LooseRecord = {
   const releaseId = await currentReleaseId(paths.currentLink, request);
   const lifecycle = normaliseLifecycle(request, registryRecord);
   if (options.containerQuiesced !== true) stopAndRemoveContainer(lifecycle.container.name);
-  await prepareWritableDataPath(paths.data);
+  if (options.dataPrepared !== true) await prepareWritableDataPath(paths.data);
   await recordReleaseStartAttempt(request, releaseId);
 
   ensureHostedBaseImage(lifecycle);
@@ -1856,20 +1877,133 @@ function releaseIncludesSealedServerEnvPrivateKey(release: HostHelperRelease) {
   return Boolean(release.sealedServerEnvIncluded && privateKey && privateKeyPath);
 }
 
-async function installSealedServerEnvPrivateKey(release: HostHelperRelease, dataDirectory: string) {
+function releasePrivateKeyPath(paths: ReleasePaths, releaseId: string) {
+  return path.join(paths.data, "sealed-server-env", "releases", `${releaseId}.private.pem`);
+}
+
+async function installSealedServerEnvPrivateKey(release: HostHelperRelease, paths: ReleasePaths) {
   if (!releaseIncludesSealedServerEnvPrivateKey(release)) return;
   const privateKey = release.sealedServerEnv!.privateKey!;
-  const privateKeyPath = release.sealedServerEnv!.privateKeyPath!;
-  const dataHandle = await openCanonicalRuntimeDataDirectory(dataDirectory, true);
+  const privateKeyPath = releasePrivateKeyPath(paths, release.id);
+  const dataHandle = await openCanonicalRuntimeDataDirectory(paths.data, true);
   try {
-    const rootHandle = await openOrCreateRuntimeDirectory(dataHandle, path.dirname(privateKeyPath));
+    const rootHandle = await openOrCreateRuntimeDirectory(dataHandle, path.join(paths.data, "sealed-server-env"));
     try {
-      await publishRuntimeFile(rootHandle, privateKeyPath, privateKey, 0o600, "release-private-key-publish");
+      const releasesHandle = await openOrCreateRuntimeDirectory(rootHandle, path.dirname(privateKeyPath));
+      try {
+        await publishRuntimeFile(releasesHandle, privateKeyPath, privateKey, 0o600, "release-private-key-publish");
+      } finally {
+        await releasesHandle.close();
+      }
     } finally {
       await rootHandle.close();
     }
   } finally {
     await dataHandle.close();
+  }
+}
+
+async function removeInstalledReleasePrivateKey(release: HostHelperRelease, paths: ReleasePaths) {
+  if (!releaseIncludesSealedServerEnvPrivateKey(release)) return;
+  const privateKeyPath = releasePrivateKeyPath(paths, release.id);
+  const dataHandle = await openCanonicalRuntimeDataDirectory(paths.data, false);
+  try {
+    const rootHandle = await openOrCreateRuntimeDirectory(dataHandle, path.join(paths.data, "sealed-server-env"));
+    try {
+      const releasesHandle = await openOrCreateRuntimeDirectory(rootHandle, path.dirname(privateKeyPath));
+      try {
+        const descriptorPath = descriptorChildPath(releasesHandle.fd, path.basename(privateKeyPath), privateKeyPath);
+        const retained = await open(descriptorPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+          .catch((error) => {
+            if (errorDetails(error).code === "ENOENT") return null;
+            throw runtimeDataTrustError(privateKeyPath);
+          });
+        if (!retained) return;
+        try {
+          const identity = await retained.stat();
+          if (!identity.isFile()) throw runtimeDataTrustError(privateKeyPath);
+          await assertRuntimeDataPathIdentity(privateKeyPath, { dev: identity.dev, ino: identity.ino }, false);
+          await rm(descriptorPath, { force: true });
+        } finally {
+          await retained.close();
+        }
+      } finally {
+        await releasesHandle.close();
+      }
+    } finally {
+      await rootHandle.close();
+    }
+  } finally {
+    await dataHandle.close();
+  }
+}
+
+type ReleaseInstallRouteSnapshot = {
+  lifecycle: HostedCapsuleLifecycle;
+  routeFile: string;
+  contents: string | null;
+};
+
+async function captureReleaseInstallRoute(request: HostHelperRequest, previousRecord: any): Promise<ReleaseInstallRouteSnapshot> {
+  const lifecycle = normaliseLifecycle(request, previousRecord);
+  const routeFile = lifecycle.routes.running.routeFile;
+  const contents = await readFile(routeFile, "utf8").catch((error) => {
+    if (errorDetails(error).code === "ENOENT") return null;
+    throw error;
+  });
+  return { lifecycle, routeFile, contents };
+}
+
+async function restoreCurrentReleasePointerTarget(currentLink: string, previousTarget: string | null) {
+  const temporary = `${currentLink}.restore-${process.pid}-${randomBytes(8).toString("hex")}`;
+  await rm(temporary, { force: true });
+  if (!previousTarget) {
+    await rm(currentLink, { force: true });
+    return;
+  }
+  await symlink(previousTarget, temporary);
+  await rename(temporary, currentLink);
+}
+
+async function restoreReleaseInstallRoute(snapshot: ReleaseInstallRouteSnapshot) {
+  if (snapshot.contents !== null) {
+    await applyManagedRoute(snapshot.lifecycle, snapshot.routeFile, snapshot.contents);
+    return;
+  }
+  await withManagedRouteLock(snapshot.routeFile, async () => {
+    const removed = await removeManagedRouteLocked(snapshot.lifecycle, snapshot.routeFile);
+    await finalizeRemovedRouteLocked(removed);
+  });
+}
+
+async function restoreFailedReleaseInstall(
+  request: HostHelperRequest,
+  paths: ReleasePaths & { release: string },
+  previousRecord: any,
+  previousRegistryContents: string,
+  previousCurrentTarget: string | null,
+  previousRoute: ReleaseInstallRouteSnapshot,
+  priorRuntime: CapsuleRuntimeSettlement | null,
+  release: HostHelperRelease,
+) {
+  try {
+    await restoreCurrentReleasePointerTarget(paths.currentLink, previousCurrentTarget);
+    await writeRegistryRecordAtomic(registryPath(request), previousRecord);
+    if (priorRuntime?.wasRunning) {
+      const restored = await restartCapsule(request, { write: false, containerQuiesced: true, dataPrepared: true });
+      if (!restored) throw new Error("previous runtime did not restart");
+    } else if (priorRuntime) {
+      stopAndRemoveContainer(priorRuntime.containerName);
+    }
+    await restoreReleaseInstallRoute(previousRoute);
+    await writeRegistryContentsAtomic(registryPath(request), previousRegistryContents);
+    await removeInstalledReleasePrivateKey(release, paths);
+    await rm(paths.release, { recursive: true, force: true });
+  } catch {
+    throw helperError(
+      "Hosted Capsule runtime restoration failed.",
+      "The new release failed and the previous runtime could not be restored exactly; inspect the Capsule registry, route, and runtime before retrying.",
+    );
   }
 }
 
@@ -1886,19 +2020,31 @@ async function restorePreviousCurrentReleasePointer(paths: ReleasePaths, previou
 
 function validateSealedServerEnvPrivateKeyPath(release: HostHelperRelease, paths: ReleasePaths) {
   if (!release.sealedServerEnvIncluded) {
-    return;
+    return null;
   }
   if (!release.sealedServerEnv?.privateKey && !release.sealedServerEnv?.privateKeyPath) {
-    return;
+    return null;
   }
   const privateKeyPath = release.sealedServerEnv?.privateKeyPath;
-  const expectedPrivateKeyPath = path.join(paths.data, "sealed-server-env", "server-env.private.pem");
-  if (typeof privateKeyPath !== "string" || path.resolve(privateKeyPath) !== path.resolve(expectedPrivateKeyPath)) {
+  const fingerprint = release.sealedServerEnv?.publicKeyFingerprint;
+  if (fingerprint !== undefined && (typeof fingerprint !== "string" || !/^[a-f0-9]{16}$/.test(fingerprint))) {
+    throw helperError(
+      "Invalid Sealed Server env public key fingerprint.",
+      "Update the Sporades CLI and retry `sporades host push`.",
+    );
+  }
+  const compatiblePrivateKeyPaths = new Set([
+    path.resolve(releasePrivateKeyPath(paths, release.id)),
+    path.resolve(path.join(paths.data, "sealed-server-env", "server-env.private.pem")),
+    ...(fingerprint ? [path.resolve(path.join(paths.data, "sealed-server-env", "keys", `${fingerprint}.private.pem`))] : []),
+  ]);
+  if (typeof privateKeyPath !== "string" || !compatiblePrivateKeyPaths.has(path.resolve(privateKeyPath))) {
     throw helperError(
       "Invalid Sealed Server env private key path.",
       "Update the Sporades CLI and retry `sporades host push`.",
     );
   }
+  return releasePrivateKeyPath(paths, release.id);
 }
 
 async function healthCapsule(request: HostHelperRequest) {
@@ -2115,7 +2261,11 @@ async function restartCapsule(request: HostHelperRequest, options: LooseRecord =
   validateLifecycleRequest(request);
   const lifecycle = normaliseLifecycle(request);
   if (options.containerQuiesced !== true) stopAndRemoveContainer(lifecycle.container.name);
-  const startResult = await startCapsule(request, { write: false, containerQuiesced: true });
+  const startResult = await startCapsule(request, {
+    write: false,
+    containerQuiesced: true,
+    dataPrepared: options.dataPrepared === true,
+  });
   if (!startResult) {
     if (options.write !== false) {
       writeEnvelope({
@@ -2575,12 +2725,12 @@ function normaliseLifecycle(request: HostHelperRequest, registryRecord: any = nu
   const remoteCapsuleId = registryRecord?.remoteCapsuleId ?? request.release?.remoteCapsuleId ?? `${domain}/${subname}`;
   const containerName = createHostedContainerName(domain, subname);
   const routeFile = canonicalManagedRouteFile(request);
-  assertCanonicalLifecycleRoutePaths(provided, routeFile);
   const currentLink = paths.currentLink;
   const accessLog = canonicalCapsuleHttpLogPath(request);
+  const routeTls = canonicalLifecycleRouteTls(request, registryRecord, provided);
   const sealedServerEnvPrivateKey = releaseSealedServerEnvPrivateKeyMount(registryRecord, paths);
   const sshAuthorizedKeysMount = releaseSshAuthorizedKeysMount(registryRecord, paths);
-  const authoritativeBaseImage = request.release?.baseImage ?? registryRecord?.baseImage ?? null;
+  const authoritativeBaseImage = registryRecord?.baseImage ?? request.release?.baseImage ?? null;
   const updatePolicyMode = normaliseBaseImageUpdatePolicy(authoritativeBaseImage?.updatePolicy);
   const baseImage = {
     ...baseImageMetadata(updatePolicyMode),
@@ -2633,13 +2783,36 @@ function normaliseLifecycle(request: HostHelperRequest, registryRecord: any = nu
       ...baseImageLabels(updatePolicyMode),
     },
   };
+  const canonicalRoutes = {
+    running: {
+      hostname: `${subname}.${domain}`,
+      target: "container",
+      containerName,
+      port: 4000,
+      routeFile,
+      tls: routeTls,
+      log: { file: accessLog },
+    },
+    unavailable: {
+      hostname: `${subname}.${domain}`,
+      target: "hosted-capsule-unavailable",
+      statusCode: 503,
+      routeFile,
+      tls: routeTls,
+      log: { file: accessLog },
+    },
+  };
   assertCanonicalLifecycleAuthority(provided, {
+    subname,
+    domain,
+    remoteRoot: request.host.remoteRoot,
     hostedUrl,
     remoteCapsuleId,
     currentLink,
     paths,
     defaultMounts,
     container: canonicalContainer,
+    routes: canonicalRoutes,
   });
   return {
     subname,
@@ -2659,46 +2832,45 @@ function normaliseLifecycle(request: HostHelperRequest, registryRecord: any = nu
       data: defaultMounts.data,
     },
     container: canonicalContainer,
-    routes: {
-      running: withRouteAccessLog(
-        provided.routes?.running ? {
-          ...provided.routes.running,
-          routeFile,
-        } : {
-          hostname: `${subname}.${domain}`,
-          target: "container",
-          containerName,
-          port: 4000,
-          routeFile,
-        },
-        accessLog,
-      ),
-      unavailable: withRouteAccessLog(
-        provided.routes?.unavailable ? {
-          ...provided.routes.unavailable,
-          routeFile,
-        } : {
-          hostname: `${subname}.${domain}`,
-          target: "hosted-capsule-unavailable",
-          statusCode: 503,
-          routeFile,
-        },
-        accessLog,
-      ),
-    },
+    routes: canonicalRoutes,
   };
 }
 
-function assertCanonicalLifecycleAuthority(provided: HostedCapsuleLifecycle, canonical: any) {
-  const reject = () => {
-    throw helperError(
-      "Invalid Hosted Capsule lifecycle authority.",
-      "Upgrade the local Sporades CLI and Host helper together, then retry the lifecycle command.",
-    );
+function canonicalLifecycleRouteTls(request: HostHelperRequest, registryRecord: any, provided: HostedCapsuleLifecycle) {
+  const suppliedModes = [(provided.routes?.running?.tls as any)?.mode, (provided.routes?.unavailable?.tls as any)?.mode]
+    .filter((value): value is string => typeof value === "string");
+  const retainedMode = registryRecord?.route?.tls?.mode;
+  const mode = retainedMode ?? suppliedModes[0] ?? "automatic";
+  if (!new Set(["automatic", "cloudflare-origin"]).has(mode)
+    || suppliedModes.some((value) => value !== mode)) {
+    throw invalidLifecycleAuthorityError();
+  }
+  const directory = path.join(request.host.remoteRoot, "hosts", request.host.domain, "tls");
+  return {
+    mode,
+    directory,
+    certificate: mode === "cloudflare-origin" ? path.join(directory, "origin.crt") : null,
+    key: mode === "cloudflare-origin" ? path.join(directory, "origin.key") : null,
   };
+}
+
+function invalidLifecycleAuthorityError() {
+  return helperError(
+    "Invalid Hosted Capsule lifecycle authority.",
+    "Upgrade the local Sporades CLI and Host helper together, then retry the lifecycle command.",
+  );
+}
+
+function assertCanonicalLifecycleAuthority(provided: HostedCapsuleLifecycle, canonical: any) {
+  const reject = () => { throw invalidLifecycleAuthorityError(); };
   const exactWhenSupplied = (supplied: any, expected: any) => {
     if (supplied !== undefined && !isDeepStrictEqual(supplied, expected)) reject();
   };
+  const allowedLifecycleKeys = new Set(["subname", "domain", "hostedUrl", "remoteCapsuleId", "currentLink", "directories", "remoteRoot", "mounts", "container", "routes"]);
+  if (Object.keys(provided).some((key) => !allowedLifecycleKeys.has(key))) reject();
+  exactWhenSupplied(provided.subname, canonical.subname);
+  exactWhenSupplied(provided.domain, canonical.domain);
+  exactWhenSupplied(provided.remoteRoot, canonical.remoteRoot);
   exactWhenSupplied(provided.hostedUrl, canonical.hostedUrl);
   exactWhenSupplied(provided.remoteCapsuleId, canonical.remoteCapsuleId);
   exactWhenSupplied(provided.currentLink, canonical.currentLink);
@@ -2751,33 +2923,23 @@ function assertCanonicalLifecycleAuthority(provided: HostedCapsuleLifecycle, can
       if (!isDeepStrictEqual(value, canonical.container[key])) reject();
     }
   }
-  const expectedRunning = {
-    hostname: `${canonical.paths.capsule.split(path.sep).at(-1)}.${canonical.paths.capsule.split(path.sep).at(-3)}`,
-    target: "container",
-    containerName: canonical.container.name,
-    port: 4000,
-  };
-  const expectedUnavailable = {
-    hostname: expectedRunning.hostname,
-    target: "hosted-capsule-unavailable",
-  };
-  for (const [route, expected] of [[provided.routes?.running, expectedRunning], [provided.routes?.unavailable, expectedUnavailable]] as const) {
+  if (provided.routes && Object.keys(provided.routes).some((key) => !["running", "unavailable"].includes(key))) reject();
+  for (const [route, expected] of [[provided.routes?.running, canonical.routes.running], [provided.routes?.unavailable, canonical.routes.unavailable]] as const) {
     if (!route) continue;
-    for (const [key, value] of Object.entries(expected)) exactWhenSupplied((route as any)[key], value);
-  }
-  const unavailableStatus = provided.routes?.unavailable?.statusCode;
-  if (unavailableStatus !== undefined
-    && (!Number.isInteger(unavailableStatus) || Number(unavailableStatus) < 500 || Number(unavailableStatus) > 599)) reject();
-}
-
-function assertCanonicalLifecycleRoutePaths(provided: HostedCapsuleLifecycle, canonicalRouteFile: string) {
-  const supplied = [provided.routes?.running?.routeFile, provided.routes?.unavailable?.routeFile]
-    .filter((value): value is string => typeof value === "string");
-  if (supplied.some((value) => path.resolve(value) !== canonicalRouteFile)) {
-    throw helperError(
-      "Hosted Capsule lifecycle route did not match its canonical route path.",
-      "Upgrade the local Sporades CLI and Host helper together, then retry the lifecycle command.",
-    );
+    if (Object.keys(route).some((key) => !(key in expected))) reject();
+    for (const [key, value] of Object.entries(route)) {
+      if (key === "tls" && value && typeof value === "object") {
+        if (Object.keys(value).some((field) => !["mode", "directory", "certificate", "key"].includes(field))) reject();
+        for (const [field, fieldValue] of Object.entries(value)) exactWhenSupplied(fieldValue, expected.tls[field]);
+        continue;
+      }
+      if (key === "log" && value && typeof value === "object") {
+        if (Object.keys(value).some((field) => field !== "file")) reject();
+        exactWhenSupplied((value as any).file, expected.log.file);
+        continue;
+      }
+      exactWhenSupplied(value, expected[key]);
+    }
   }
 }
 
@@ -3360,6 +3522,7 @@ function createRegistrationRecord(registration: any, sealedServerEnv: any = null
     updatedAt: now,
     currentRelease: null,
     baseImage: registration.baseImage,
+    route: { tls: registration.route.tls },
     ...(sealedServerEnv ? { sealedServerEnv: { currentKeyFingerprint: sealedServerEnv.publicKeyFingerprint } } : {}),
   };
 }
@@ -5156,8 +5319,13 @@ async function recordReleaseUploaded(request: HostHelperRequest, release: HostHe
         serverEnvIncluded: Boolean(release.serverEnvIncluded),
         sealedServerEnvIncluded: Boolean(release.sealedServerEnvIncluded),
         sealedServerEnv: release.sealedServerEnv?.publicKeyFingerprint
-          ? { publicKeyFingerprint: release.sealedServerEnv.publicKeyFingerprint }
-          : undefined,
+          ? {
+            publicKeyFingerprint: release.sealedServerEnv.publicKeyFingerprint,
+            ...(releaseIncludesSealedServerEnvPrivateKey(release) ? { suppliedPrivateKey: true } : {}),
+          }
+          : releaseIncludesSealedServerEnvPrivateKey(release)
+            ? { suppliedPrivateKey: true }
+            : undefined,
         ssh: release.ssh?.enabled
           ? {
             enabled: true,
@@ -5434,6 +5602,12 @@ function normaliseReleaseSource(source: any) {
 function releaseSealedServerEnvPrivateKeyMount(registryRecord: any, paths: any) {
   const releaseId = registryRecord?.currentRelease?.id ?? null;
   const release = normaliseReleaseHistory(registryRecord).find((entry: any) => entry.id === releaseId);
+  if (releaseId && release?.source?.sealedServerEnv?.suppliedPrivateKey === true) {
+    return {
+      host: releasePrivateKeyPath(paths, releaseId),
+      fingerprint: release?.source?.sealedServerEnv?.publicKeyFingerprint ?? null,
+    };
+  }
   const fingerprint = release?.source?.sealedServerEnv?.publicKeyFingerprint;
   if (typeof fingerprint === "string" && /^[a-f0-9]{16}$/.test(fingerprint)) {
     return {
@@ -5628,9 +5802,13 @@ async function mutateRegistryRecord(request: HostHelperRequest, mutate: any) {
 }
 
 async function writeRegistryRecordAtomic(registryRecordPath: any, record: any) {
+  return writeRegistryContentsAtomic(registryRecordPath, `${JSON.stringify(record, null, 2)}\n`);
+}
+
+async function writeRegistryContentsAtomic(registryRecordPath: any, contents: string) {
   const tempPath = `${registryRecordPath}.tmp-${process.pid}-${Date.now()}`;
   try {
-    await writeFile(tempPath, `${JSON.stringify(record, null, 2)}\n`);
+    await writeFile(tempPath, contents);
     if (process.env.SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE === "1") {
       throw helperError(
         "Failed to write Hosted Capsule registry record.",

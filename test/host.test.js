@@ -520,6 +520,14 @@ const args = process.argv.slice(2);
 appendFileSync(process.env.FAKE_DOCKER_LOG, JSON.stringify({ args, cwd: process.cwd() }) + "\\n");
 if (args[0] === "run") {
   process.stdout.write(process.env.FAKE_DOCKER_CONTAINER_ID || "hosted-container-1");
+  if (process.env.FAKE_DOCKER_RUN_STATUSES) {
+    const { existsSync, readFileSync, writeFileSync } = require("node:fs");
+    const statePath = process.env.FAKE_DOCKER_RUN_STATE;
+    const count = statePath && existsSync(statePath) ? Number(readFileSync(statePath, "utf8")) : 0;
+    const statuses = process.env.FAKE_DOCKER_RUN_STATUSES.split(",");
+    if (statePath) writeFileSync(statePath, String(count + 1));
+    process.exit(Number(statuses[Math.min(count, statuses.length - 1)]));
+  }
   process.exit(Number(process.env.FAKE_DOCKER_RUN_STATUS || "0"));
 }
 if (args[0] === "inspect" && args.includes("{{.State.Running}}")) {
@@ -599,6 +607,7 @@ process.exit(Number(status || "0"));
       FAKE_DOCKER_LOG: logPath,
       FAKE_DOCKER_CADDY_LOG: caddyLogPath,
       FAKE_DOCKER_CADDY_STATE: path.join(dir, "caddy-state.txt"),
+      FAKE_DOCKER_RUN_STATE: path.join(dir, "docker-run-state.txt"),
       SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1",
       ...options.env,
     },
@@ -1302,6 +1311,50 @@ async function writeHostedCapsuleInstallFixture(dir, options = {}) {
       },
     },
   };
+}
+
+async function writeLegacySealedInstallFixture(dir, options = {}) {
+  const fixture = await writeHostedCapsuleInstallFixture(dir, { rootName: options.rootName ?? "legacy-sealed-install" });
+  const sealedEnvelope = ".sporades/sealed-server-env/server-env.sealed.json";
+  const nextKeyFingerprint = "fedcba9876543210";
+  const expanded = path.join(dir, `${options.rootName ?? "legacy-sealed-install"}-expanded`);
+  await mkdir(expanded);
+  const extract = spawnSync("tar", ["-xzf", fixture.archivePath, "-C", expanded], { encoding: "utf8" });
+  assert.equal(extract.status, 0, extract.stderr);
+  await mkdir(path.dirname(path.join(expanded, sealedEnvelope)), { recursive: true });
+  await writeFile(path.join(expanded, sealedEnvelope), `${JSON.stringify({ version: 1, valueAlgorithm: "aes-256-gcm", publicKeyFingerprint: nextKeyFingerprint, entries: {} })}\n`);
+  fixture.release.files.push(sealedEnvelope);
+  await rm(fixture.archivePath);
+  await createTarGz(fixture.archivePath, expanded, fixture.release.files);
+
+  const previousRelease = path.join(fixture.capsuleDir, "releases", fixture.previousReleaseId);
+  await mkdir(path.join(previousRelease, "public"), { recursive: true });
+  await writeFile(path.join(previousRelease, "server.mjs"), "previous server\n");
+  await writeFile(path.join(previousRelease, "sporades.json"), '{"name":"previous"}\n');
+  await writeFile(path.join(previousRelease, "public", "index.html"), "previous public\n");
+  await symlink(previousRelease, path.join(fixture.capsuleDir, "current"));
+  const privateKeyPath = path.join(fixture.capsuleDir, "data", "sealed-server-env", "server-env.private.pem");
+  await mkdir(path.dirname(privateKeyPath), { recursive: true });
+  await writeFile(privateKeyPath, "previous private key bytes\n", { mode: 0o640 });
+  const routeFile = path.join(fixture.remoteRoot, "caddy", "hosts", fixture.domain, `${fixture.subname}.caddy`);
+  await mkdir(path.dirname(routeFile), { recursive: true });
+  await writeFile(path.join(fixture.remoteRoot, "caddy", "Caddyfile"), "import hosts/*.caddy\n");
+  await writeFile(routeFile, "previous exact route bytes\n");
+  const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+  record.status = "running";
+  record.baseImage = { name: "previous-image", image: "registry.example/previous:1", version: "1", updatePolicy: { mode: "pinned" } };
+  record.releases[0].source = { files: ["server.mjs", "sporades.json", "public/index.html"], sealedServerEnvIncluded: true };
+  await writeFile(fixture.registryRecordPath, `${JSON.stringify(record, null, 2)}\n`);
+  fixture.release.restart = options.restart ?? false;
+  fixture.release.baseImage = { name: "next-image", image: "registry.example/next:2", version: "2", updatePolicy: { mode: "pinned" } };
+  fixture.release.sealedServerEnvIncluded = true;
+  const nextPrivateKeyPath = path.join(fixture.capsuleDir, "data", "sealed-server-env", "releases", `${fixture.releaseId}.private.pem`);
+  fixture.release.sealedServerEnv = {
+    publicKeyFingerprint: nextKeyFingerprint,
+    privateKey: "next private key bytes\n",
+    privateKeyPath,
+  };
+  return { ...fixture, privateKeyPath, nextPrivateKeyPath, nextKeyFingerprint, routeFile };
 }
 
 async function installFakeReact(projectDir) {
@@ -5548,6 +5601,43 @@ test("sporades host helper rejects non-canonical Sealed Server env private key p
   });
 });
 
+test("sporades host helper rejects invalid lifecycle authority before a sealed-key release changes state", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleInstallFixture(dir, { rootName: "sealed-lifecycle-authority" });
+    const previousRelease = path.join(fixture.capsuleDir, "releases", fixture.previousReleaseId);
+    await mkdir(previousRelease, { recursive: true });
+    await writeFile(path.join(previousRelease, "server.mjs"), "previous server\n");
+    await symlink(previousRelease, path.join(fixture.capsuleDir, "current"));
+    const privateKeyPath = path.join(fixture.capsuleDir, "data", "sealed-server-env", "server-env.private.pem");
+    await mkdir(path.dirname(privateKeyPath), { recursive: true });
+    await writeFile(privateKeyPath, "previous private key\n", { mode: 0o600 });
+    fixture.release.restart = false;
+    fixture.release.sealedServerEnvIncluded = true;
+    fixture.release.sealedServerEnv = { privateKey: "replacement private key\n", privateKeyPath };
+    fixture.release.files.push(".sporades/sealed-server-env/server-env.sealed.json");
+    const docker = await installFakeDocker(path.join(dir, "docker"));
+    const registryBefore = await readFile(fixture.registryRecordPath);
+    const keyBefore = await readFile(privateKeyPath);
+    const pointerBefore = await readlink(path.join(fixture.capsuleDir, "current"));
+
+    const result = await runHostHelper({
+      action: "capsule.release.install",
+      host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+      release: fixture.release,
+      lifecycle: { routes: { running: { upstream: "attacker.invalid:443" } } },
+    }, { cwd: dir, env: docker.env });
+
+    assert.equal(JSON.parse(result.stdout).error.message, "Invalid Hosted Capsule lifecycle authority.", result.stdout);
+    await assert.rejects(readFile(docker.logPath), { code: "ENOENT" });
+    await assert.rejects(readFile(docker.caddyLogPath), { code: "ENOENT" });
+    assert.deepEqual(await readFile(fixture.registryRecordPath), registryBefore);
+    assert.deepEqual(await readFile(privateKeyPath), keyBefore);
+    assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), pointerBefore);
+    await assert.rejects(stat(path.join(fixture.capsuleDir, "releases", fixture.releaseId)), { code: "ENOENT" });
+  });
+});
+
 test("sporades host helper descriptor-fences release-supplied Sealed Server env private keys", async () => {
   for (const replacement of ["final", "ancestor"]) {
     await withTempDir(async (dir) => {
@@ -5556,6 +5646,7 @@ test("sporades host helper descriptor-fences release-supplied Sealed Server env 
       record.status = "stopped";
       await writeFile(fixture.registryRecordPath, `${JSON.stringify(record)}\n`);
       const privateKeyPath = path.join(fixture.capsuleDir, "data", "sealed-server-env", "server-env.private.pem");
+      const stagedPrivateKeyPath = path.join(fixture.capsuleDir, "data", "sealed-server-env", "releases", `${fixture.releaseId}.private.pem`);
       fixture.release.restart = false;
       fixture.release.sealedServerEnvIncluded = true;
       fixture.release.sealedServerEnv = {
@@ -5583,7 +5674,7 @@ test("sporades host helper descriptor-fences release-supplied Sealed Server env 
       let action;
       if (replacement === "ancestor") {
         await mkdir(path.join(fixture.capsuleDir, "data"), { recursive: true });
-        await symlink(outsideDirectory, path.dirname(privateKeyPath));
+        await symlink(outsideDirectory, path.join(fixture.capsuleDir, "data", "sealed-server-env"));
         action = { result: runHostHelper({
           action: "capsule.release.install",
           host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
@@ -5607,7 +5698,7 @@ test("sporades host helper descriptor-fences release-supplied Sealed Server env 
           },
         });
         await waitForPath(marker);
-        await symlink(outside, privateKeyPath);
+        await symlink(outside, stagedPrivateKeyPath);
       }
 
       const result = await action.result;
@@ -5615,10 +5706,141 @@ test("sporades host helper descriptor-fences release-supplied Sealed Server env 
       const after = await lstat(outside);
       assert.equal(createHash("sha256").update(await readFile(outside)).digest("hex"), beforeHash);
       assert.deepEqual([after.mode & 0o777, after.uid, after.gid], [before.mode & 0o777, before.uid, before.gid]);
-      assert.deepEqual((await docker.calls()).map((call) => call.args[0]), ["inspect"]);
+      await assert.rejects(readFile(docker.logPath), { code: "ENOENT" });
       await assert.rejects(stat(path.join(fixture.capsuleDir, "releases", fixture.releaseId)), { code: "ENOENT" });
     });
   }
+});
+
+test("sporades host helper leaves the legacy key and running release exact on a no-restart sealed install", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "sealed-no-restart", restart: false });
+    const docker = await installFakeDocker(path.join(dir, "docker"));
+    const keyBefore = await readFile(fixture.privateKeyPath);
+    const keyStatBefore = await lstat(fixture.privateKeyPath);
+
+    const result = await runHostHelper({
+      action: "capsule.release.install",
+      host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+      release: fixture.release,
+    }, { cwd: dir, env: docker.env });
+
+    assert.equal(JSON.parse(result.stdout).ok, true, result.stdout);
+    assert.deepEqual(await readFile(fixture.privateKeyPath), keyBefore);
+    const keyStatAfter = await lstat(fixture.privateKeyPath);
+    assert.deepEqual([keyStatAfter.dev, keyStatAfter.ino, keyStatAfter.mode, keyStatAfter.uid, keyStatAfter.gid], [keyStatBefore.dev, keyStatBefore.ino, keyStatBefore.mode, keyStatBefore.uid, keyStatBefore.gid]);
+    assert.equal(await readFile(fixture.nextPrivateKeyPath, "utf8"), "next private key bytes\n");
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    assert.deepEqual(record.releases.find((release) => release.id === fixture.releaseId).source.sealedServerEnv, {
+      publicKeyFingerprint: fixture.nextKeyFingerprint,
+      suppliedPrivateKey: true,
+    });
+    await assert.rejects(readFile(docker.logPath), { code: "ENOENT" });
+  });
+});
+
+test("sporades host helper restores the exact previous sealed runtime after a new release start fails", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "sealed-start-failure", restart: true });
+    const docker = await installFakeDocker(path.join(dir, "docker"), { env: { FAKE_DOCKER_RUN_STATUSES: "1,0" } });
+    const registryBefore = await readFile(fixture.registryRecordPath);
+    const routeBefore = await readFile(fixture.routeFile);
+    const keyBefore = await readFile(fixture.privateKeyPath);
+    const keyStatBefore = await lstat(fixture.privateKeyPath);
+    const pointerBefore = await readlink(path.join(fixture.capsuleDir, "current"));
+
+    const result = await runHostHelper({
+      action: "capsule.release.install",
+      host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+      release: fixture.release,
+    }, { cwd: dir, env: docker.env });
+
+    assert.equal(JSON.parse(result.stdout).ok, false, result.stdout);
+    assert.deepEqual(await readFile(fixture.registryRecordPath), registryBefore);
+    assert.deepEqual(await readFile(fixture.routeFile), routeBefore);
+    assert.deepEqual(await readFile(fixture.privateKeyPath), keyBefore);
+    const keyStatAfter = await lstat(fixture.privateKeyPath);
+    assert.deepEqual([keyStatAfter.mode, keyStatAfter.uid, keyStatAfter.gid], [keyStatBefore.mode, keyStatBefore.uid, keyStatBefore.gid]);
+    assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), pointerBefore);
+    const runs = (await docker.calls()).filter((call) => call.args[0] === "run");
+    assert.equal(runs.length, 2, JSON.stringify(await docker.calls()));
+    assert(runs[0].args.includes("registry.example/next:2"));
+    assert(runs[1].args.includes("registry.example/previous:1"));
+    await assert.rejects(lstat(fixture.nextPrivateKeyPath), { code: "ENOENT" });
+    await assert.rejects(lstat(path.join(fixture.capsuleDir, "releases", fixture.releaseId)), { code: "ENOENT" });
+  });
+});
+
+test("sporades host helper rolls back a sealed install when release registry settlement fails", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "sealed-registry-failure", restart: false });
+    const docker = await installFakeDocker(path.join(dir, "docker"), { env: { SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE: "1" } });
+    const registryBefore = await readFile(fixture.registryRecordPath);
+    const routeBefore = await readFile(fixture.routeFile);
+    const keyBefore = await readFile(fixture.privateKeyPath);
+    const keyStatBefore = await lstat(fixture.privateKeyPath);
+    const pointerBefore = await readlink(path.join(fixture.capsuleDir, "current"));
+
+    const result = await runHostHelper({
+      action: "capsule.release.install",
+      host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+      release: fixture.release,
+    }, { cwd: dir, env: docker.env });
+
+    assert.equal(JSON.parse(result.stdout).error.message, "Failed to write Hosted Capsule registry record.", result.stdout);
+    assert.deepEqual(await readFile(fixture.registryRecordPath), registryBefore);
+    assert.deepEqual(await readFile(fixture.routeFile), routeBefore);
+    assert.deepEqual(await readFile(fixture.privateKeyPath), keyBefore);
+    const keyStatAfter = await lstat(fixture.privateKeyPath);
+    assert.deepEqual([keyStatAfter.dev, keyStatAfter.ino, keyStatAfter.mode, keyStatAfter.uid, keyStatAfter.gid], [keyStatBefore.dev, keyStatBefore.ino, keyStatBefore.mode, keyStatBefore.uid, keyStatBefore.gid]);
+    assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), pointerBefore);
+    await assert.rejects(readFile(docker.logPath), { code: "ENOENT" });
+    await assert.rejects(lstat(fixture.nextPrivateKeyPath), { code: "ENOENT" });
+    await assert.rejects(lstat(path.join(fixture.capsuleDir, "releases", fixture.releaseId)), { code: "ENOENT" });
+  });
+});
+
+test("sporades host helper starts a no-restart release later with its staged private key and release image", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "sealed-later-start", restart: false });
+    const docker = await installFakeDocker(path.join(dir, "docker"));
+    const target = {
+      host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+    };
+
+    const install = await runHostHelper({ action: "capsule.release.install", ...target, release: fixture.release }, { cwd: dir, env: docker.env });
+    assert.equal(JSON.parse(install.stdout).ok, true, install.stdout);
+    await assert.rejects(readFile(docker.logPath), { code: "ENOENT" });
+
+    const start = await runHostHelper({ action: "capsule.start", ...target }, { cwd: dir, env: docker.env });
+    assert.equal(JSON.parse(start.stdout).ok, true, start.stdout);
+    const [run] = (await docker.calls()).filter((call) => call.args[0] === "run");
+    assert(run.args.includes("registry.example/next:2"));
+    assert(run.args.includes(`${fixture.nextPrivateKeyPath}:/app/.sporades/sealed-server-env/server-env.private.pem:ro`));
+    assert.equal(await readFile(fixture.privateKeyPath, "utf8"), "previous private key bytes\n");
+  });
+});
+
+test("sporades host helper keeps the fixed private-key mount for a markerless legacy release", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "sealed-legacy-mount", restart: false });
+    const docker = await installFakeDocker(path.join(dir, "docker"));
+
+    const start = await runHostHelper({
+      action: "capsule.start",
+      host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+    }, { cwd: dir, env: docker.env });
+
+    assert.equal(JSON.parse(start.stdout).ok, true, start.stdout);
+    const [run] = (await docker.calls()).filter((call) => call.args[0] === "run");
+    assert(run.args.includes("registry.example/previous:1"));
+    assert(run.args.includes(`${fixture.privateKeyPath}:/app/.sporades/sealed-server-env/server-env.private.pem:ro`));
+  });
 });
 
 test("sporades host helper rejects nested macOS archive metadata entries", async () => {
@@ -5669,29 +5891,6 @@ test("sporades host helper rejects nested macOS archive metadata entries", async
         action: "capsule.release.install",
         host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
         capsule: { subname: "team-notes" },
-        lifecycle: {
-          mounts: {
-            files: [
-              { host: path.join(capsuleDir, "current", "server.mjs"), container: "/app/server.mjs", mode: "ro" },
-              { host: path.join(capsuleDir, "current", "client.js"), container: "/app/client.js", mode: "ro" },
-              { host: path.join(capsuleDir, "current", "index.html"), container: "/app/index.html", mode: "ro" },
-              { host: path.join(capsuleDir, "current", "sporades.json"), container: "/app/sporades.json", mode: "ro" },
-              {
-                host: path.join(capsuleDir, "current", ".sporades", "sealed-server-env", "server-env.sealed.json"),
-                container: "/app/.sporades/sealed-server-env/server-env.sealed.json",
-                mode: "ro",
-                optional: true,
-              },
-              {
-                host: path.join(capsuleDir, "data", "sealed-server-env", "server-env.private.pem"),
-                container: "/app/.sporades/sealed-server-env/server-env.private.pem",
-                mode: "ro",
-                optional: true,
-              },
-            ],
-            data: { host: path.join(capsuleDir, "data"), container: "/app/data", mode: "rw" },
-          },
-        },
         release: {
           id: "20260630T221500Z-feedface",
           hostedUrl: "https://team-notes.capsules.example.dev",
@@ -6749,11 +6948,10 @@ test("sporades host helper cannot continue route mutation after its lock-holding
       env: { SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "600" },
     });
     const staleRequest = structuredClone(fixture.request);
-    staleRequest.lifecycle.routes.unavailable.statusCode = 503;
     const winnerRequest = structuredClone(fixture.request);
-    winnerRequest.lifecycle.routes.unavailable.statusCode = 502;
     const stale = startHostHelper(staleRequest, { cwd: dir, env: fixture.docker.env });
     await waitForPath(fixture.lockDir);
+    await new Promise((resolve) => setTimeout(resolve, 100));
 
     const lockHolderPid = await waitForChildPid(stale.child.pid);
     process.kill(lockHolderPid, "SIGKILL");
@@ -6764,8 +6962,7 @@ test("sporades host helper cannot continue route mutation after its lock-holding
     assert.equal(JSON.parse(winner.stdout).ok, true, winner.stdout);
     assert.equal(JSON.parse(staleResult.stdout).ok, false, staleResult.stdout);
     const route = await readFile(fixture.routeFile, "utf8");
-    assert.match(route, /respond "Hosted Capsule unavailable" 502/);
-    assert.doesNotMatch(route, /respond "Hosted Capsule unavailable" 503/);
+    assert.match(route, /respond "Hosted Capsule unavailable" 503/);
   });
 });
 
@@ -6883,7 +7080,7 @@ test("sporades host helper rejects a lifecycle route that does not match the can
     const result = await runHostHelper(mismatched, { cwd: dir, env: fixture.docker.env });
     const output = JSON.parse(result.stdout);
     assert.equal(output.ok, false, result.stdout);
-    assert.equal(output.error.message, "Hosted Capsule lifecycle route did not match its canonical route path.");
+    assert.equal(output.error.message, "Invalid Hosted Capsule lifecycle authority.");
     assert.equal(await readFile(foreignRoute, "utf8"), "other-capsule.capsules.example.dev {\n  respond 418\n}\n");
     assert.match(await readFile(canonicalRoute, "utf8"), /reverse_proxy 127\.0\.0\.1:49153/);
   });
@@ -9102,16 +9299,24 @@ test("sporades host helper reports no release and failed starts with unavailable
 });
 
 test("sporades host helper rejects caller-controlled Docker lifecycle authority before invoking Docker", async () => {
-  for (const [label, lifecycle] of [
-    ["current-link", { currentLink: "/" }],
-    ["file-mount", { mounts: { files: [{ host: "/etc/passwd", container: "/app/server.mjs", mode: "ro" }] } }],
-    ["data-mount", { mounts: { data: { host: "/", container: "/app/data", mode: "rw" } } }],
-    ["root-user", { container: { user: "0:0" } }],
-    ["attacker-image", { container: { image: "attacker.invalid/root:latest" } }],
+  for (const [label, createLifecycle] of [
+    ["current-link", () => ({ currentLink: "/" })],
+    ["file-mount", () => ({ mounts: { files: [{ host: "/etc/passwd", container: "/app/server.mjs", mode: "ro" }] } })],
+    ["data-mount", () => ({ mounts: { data: { host: "/", container: "/app/data", mode: "rw" } } })],
+    ["root-user", () => ({ container: { user: "0:0" } })],
+    ["attacker-image", () => ({ container: { image: "attacker.invalid/root:latest" } })],
+    ["running-upstream", () => ({ routes: { running: { upstream: "127.0.0.1:4000" } } })],
+    ["runtime-probe", () => ({ routes: { running: { runtimeProbe: { header: "x-sporades-host-probe", token: "caddy-injection" } } } })],
+    ["tls-certificate", (fixture) => ({ routes: { running: { tls: { mode: "cloudflare-origin", certificate: "/tmp/outside.crt", key: "/tmp/outside.key" } } } })],
+    ["unknown-route-field", () => ({ routes: { unavailable: { caddyDirective: "respond 200" } } })],
   ]) {
     await withTempDir(async (dir) => {
       const fixture = await writeHostedCapsuleRollbackFixture(dir, { releaseIds: ["20260630T221500Z-feedface"] });
       const docker = await installFakeDocker(path.join(dir, "docker"));
+      const lifecycle = createLifecycle(fixture);
+      const routeFile = path.join(fixture.remoteRoot, "caddy", "hosts", "capsules.example.dev", "team-notes.caddy");
+      const routeBefore = await readFile(routeFile).catch((error) => error.code === "ENOENT" ? null : Promise.reject(error));
+      const registryBefore = await readFile(fixture.registryRecordPath);
       const result = await runHostHelper({
         action: "capsule.start",
         host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot: fixture.remoteRoot },
@@ -9123,6 +9328,9 @@ test("sporades host helper rejects caller-controlled Docker lifecycle authority 
       assert.equal(output.ok, false, `${label}: ${result.stdout}`);
       assert.equal(output.error.message, "Invalid Hosted Capsule lifecycle authority.", `${label}: ${result.stdout}`);
       await assert.rejects(readFile(docker.logPath, "utf8"), { code: "ENOENT" });
+      await assert.rejects(readFile(docker.caddyLogPath, "utf8"), { code: "ENOENT" });
+      assert.deepEqual(await readFile(routeFile).catch((error) => error.code === "ENOENT" ? null : Promise.reject(error)), routeBefore);
+      assert.deepEqual(await readFile(fixture.registryRecordPath), registryBefore);
     });
   }
 });
@@ -10305,7 +10513,7 @@ test("sporades host helper restarts the current release after install when reque
     assert.equal(output.data.lifecycle.release.id, "20260630T221500Z-feedface");
     assert.deepEqual(
       (await docker.calls()).map((call) => call.args[0]),
-      ["stop", "rm", "image", "run", "inspect", "inspect"],
+      ["inspect", "stop", "rm", "image", "run", "inspect", "inspect"],
     );
     const runCall = (await docker.calls()).find((call) => call.args[0] === "run");
     assert.equal(runCall.args[runCall.args.indexOf("--publish") + 1], "127.0.0.1::4000");
@@ -10856,6 +11064,7 @@ test("sporades host helper reports push restart failure after installing the rel
     const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
     await mkdir(path.dirname(registryRecordPath), { recursive: true });
     await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
+    const registryBefore = await readFile(registryRecordPath);
     const docker = await installFakeDocker(dir, { env: { FAKE_DOCKER_RUNNING: "false" } });
 
     const install = await runHostHelper(
@@ -10887,7 +11096,7 @@ test("sporades host helper reports push restart failure after installing the rel
     assert.deepEqual(JSON.parse(install.stdout), {
       ok: false,
       data: {
-        installed: true,
+        installed: false,
         restartRequested: true,
         restarted: false,
         capsule: {
@@ -10902,13 +11111,16 @@ test("sporades host helper reports push restart failure after installing the rel
           files: ["server.mjs", "public/client.js", "public/index.html", "sporades.json"],
           serverEnvIncluded: false,
         },
+        rollback: { applied: true, previousCurrentRelease: null },
       },
       error: {
         message: "Hosted Capsule restart failed.",
         hint: "Check Docker logs for sporades-capsules-example-dev-team-notes; the route has been returned to the Hosted Capsule unavailable response.",
       },
     });
-    assert.equal(await readlink(path.join(capsuleDir, "current")), path.join(capsuleDir, "releases", "20260630T221500Z-feedface"));
+    await assert.rejects(readlink(path.join(capsuleDir, "current")), { code: "ENOENT" });
+    assert.deepEqual(await readFile(registryRecordPath), registryBefore);
+    await assert.rejects(lstat(path.join(capsuleDir, "releases", "20260630T221500Z-feedface")), { code: "ENOENT" });
   });
 });
 
@@ -10927,6 +11139,7 @@ test("sporades host helper preserves install metadata when push restart route re
     const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
     await mkdir(path.dirname(registryRecordPath), { recursive: true });
     await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
+    const registryBefore = await readFile(registryRecordPath);
     const docker = await installFakeDocker(dir, { env: { FAKE_DOCKER_RUNNING: "false", FAKE_DOCKER_CADDY_RELOAD_STATUSES: "1,0" } });
 
     const install = await runHostHelper(
@@ -10957,21 +11170,15 @@ test("sporades host helper preserves install metadata when push restart route re
     assert.equal(install.code, 0, install.stderr);
     const output = JSON.parse(install.stdout);
     assert.equal(output.ok, false);
-    assert.equal(output.data.installed, true);
+    assert.equal(output.data.installed, false);
     assert.equal(output.data.restartRequested, true);
     assert.equal(output.data.restarted, false);
     assert.equal(output.data.release.id, "20260630T221500Z-feedface");
+    assert.deepEqual(output.data.rollback, { applied: true, previousCurrentRelease: null });
     assert.equal(output.error.message, "Failed to apply Hosted Capsule route.");
-    assert.equal(await readlink(path.join(capsuleDir, "current")), path.join(capsuleDir, "releases", "20260630T221500Z-feedface"));
-    const record = JSON.parse(await readFile(registryRecordPath, "utf8"));
-    assert.equal(record.status, "failed");
-    assert.equal(record.releases.length, 1);
-    assert.equal(record.releases[0].id, "20260630T221500Z-feedface");
-    assert.equal(record.releases[0].state, "failed");
-    assert.equal(record.releases[0].current, true);
-    assert.equal(record.releases[0].startAttempts.length, 1);
-    assert.equal(record.releases[0].failure.message, "Failed to apply Hosted Capsule route.");
-    assert.match(record.releases[0].failure.failedAt, /^\d{4}-\d{2}-\d{2}T/);
+    await assert.rejects(readlink(path.join(capsuleDir, "current")), { code: "ENOENT" });
+    assert.deepEqual(await readFile(registryRecordPath), registryBefore);
+    await assert.rejects(lstat(path.join(capsuleDir, "releases", "20260630T221500Z-feedface")), { code: "ENOENT" });
   });
 });
 
