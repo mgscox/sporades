@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -282,17 +282,6 @@ async function waitForPath(filePath, timeoutMs = 2000) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.fail(`Timed out waiting for ${filePath}`);
-}
-
-async function waitForDirectoryEntry(dir, predicate, timeoutMs = 2000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const entries = await readdir(dir);
-    const entry = entries.find(predicate);
-    if (entry) return path.join(dir, entry);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  assert.fail(`Timed out waiting for a protocol artifact in ${dir}`);
 }
 
 function hostEnv(configDir) {
@@ -5619,6 +5608,16 @@ test("sporades host helper serializes two stale health route repairs across help
           createdAt: Date.now() - 60_000,
         })}\n`,
       );
+      const deadReclaimGuard = `${routeFile}.lock.reclaim-${"a".repeat(32)}`;
+      await writeFile(
+        deadReclaimGuard,
+        `${JSON.stringify({
+          token: "a".repeat(32),
+          pid: 999999,
+          processIdentity: "dead-reclaim-guard",
+          createdAt: Date.now() - 60_000,
+        })}\n`,
+      );
 
       const results = await Promise.all([
         runHostHelper(request, { cwd: dir, env: docker.env }),
@@ -5640,7 +5639,7 @@ test("sporades host helper serializes two stale health route repairs across help
         ],
         "the second helper must re-read the winner and avoid another Caddy reload",
       );
-      const debris = (await readdir(path.dirname(routeFile))).filter((entry) => entry !== path.basename(routeFile));
+      const debris = (await readdir(path.dirname(routeFile))).filter((entry) => entry !== path.basename(routeFile) && entry !== `${path.basename(routeFile)}.lock`);
       assert.deepEqual(debris, []);
     });
   });
@@ -5713,7 +5712,7 @@ test("sporades host helper serializes stale health repair against route removal"
       assert.equal(JSON.parse(unregister.stdout).ok, true, unregister.stdout);
       await assert.rejects(readFile(routeFile, "utf8"), { code: "ENOENT" });
       assert.equal(JSON.parse(await readFile(registryRecordPath, "utf8")).status, "unregistered");
-      const debris = (await readdir(path.dirname(routeFile))).filter((entry) => entry !== path.basename(routeFile));
+      const debris = (await readdir(path.dirname(routeFile))).filter((entry) => entry !== path.basename(routeFile) && entry !== `${path.basename(routeFile)}.lock`);
       assert.deepEqual(debris, []);
       const reloadsBeforeRepeat = (await docker.caddyCalls()).filter((call) => call.args[0] === "reload").length;
       const repeatedHealth = await runHostHelper(healthRequest, { cwd: dir, env: docker.env });
@@ -5794,7 +5793,7 @@ test("sporades host helper serializes stale health repair against a concurrent s
       const route = await readFile(routeFile, "utf8");
       assert.match(route, /reverse_proxy 127\.0\.0\.1:49154/);
       assert.doesNotMatch(route, /127\.0\.0\.1:49153/);
-      const debris = (await readdir(path.dirname(routeFile))).filter((entry) => entry !== path.basename(routeFile));
+      const debris = (await readdir(path.dirname(routeFile))).filter((entry) => entry !== path.basename(routeFile) && entry !== `${path.basename(routeFile)}.lock`);
       assert.deepEqual(debris, []);
       const reloadsBeforeRepeat = (await docker.caddyCalls()).filter((call) => call.args[0] === "reload").length;
       const repeatedHealth = await runHostHelper({ ...baseRequest, action: "capsule.health" }, { cwd: dir, env: docker.env });
@@ -5840,15 +5839,15 @@ async function prepareRouteLockFixture(dir, dockerOptions = {}) {
   return { docker, request, routeFile, lockDir: `${routeFile}.lock` };
 }
 
-test("sporades host helper reclaims a route claim after its owner is killed", async () => {
+test("sporades host helper automatically releases the OS route lock after its owner is killed", async () => {
   await withTempDir(async (dir) => {
     const fixture = await prepareRouteLockFixture(dir, {
-      env: { FAKE_DOCKER_CADDY_DELAY_MS: "10000" },
+      env: { SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "10000" },
     });
     const holder = startHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
     await waitForPath(fixture.lockDir);
-    assert.equal((await stat(fixture.lockDir)).isFile(), true, "the atomic claim must never be an empty lock directory");
-    assert.match(JSON.parse(await readFile(fixture.lockDir, "utf8")).token, /^[a-f0-9]{32}$/);
+    assert.equal((await stat(fixture.lockDir)).isFile(), true);
+    await new Promise((resolve) => setTimeout(resolve, 100));
     holder.child.kill("SIGKILL");
     await holder.result;
 
@@ -5859,11 +5858,11 @@ test("sporades host helper reclaims a route claim after its owner is killed", as
     });
     assert.equal(recovered.code, 0, recovered.stderr);
     assert.equal(JSON.parse(recovered.stdout).ok, true, recovered.stdout);
-    await assert.rejects(stat(fixture.lockDir), { code: "ENOENT" });
+    assert.equal((await stat(fixture.lockDir)).isFile(), true, "the inert lock file may persist while its OS lock is released");
   });
 });
 
-test("sporades host helper reclaims a stale process-identity route claim without trusting a reused PID", async () => {
+test("sporades host helper ignores stale lock-file contents because ownership is kernel-scoped", async () => {
   await withTempDir(async (dir) => {
     const fixture = await prepareRouteLockFixture(dir);
     await writeFile(
@@ -5882,17 +5881,18 @@ test("sporades host helper reclaims a stale process-identity route claim without
     });
     assert.equal(recovered.code, 0, recovered.stderr);
     assert.equal(JSON.parse(recovered.stdout).ok, true, recovered.stdout);
-    await assert.rejects(stat(fixture.lockDir), { code: "ENOENT" });
+    assert.equal((await stat(fixture.lockDir)).isFile(), true);
   });
 });
 
 test("sporades host helper does not steal a live route owner and rejects malformed lock bounds", async () => {
   await withTempDir(async (dir) => {
     const fixture = await prepareRouteLockFixture(dir, {
-      env: { FAKE_DOCKER_CADDY_DELAY_MS: "10000" },
+      env: { SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "10000" },
     });
     const holder = startHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
     await waitForPath(fixture.lockDir);
+    await new Promise((resolve) => setTimeout(resolve, 100));
 
     const contenderDocker = await installFakeDocker(path.join(dir, "contender"));
     const startedAt = Date.now();
@@ -5915,28 +5915,20 @@ test("sporades host helper does not steal a live route owner and rejects malform
   });
 });
 
-test("sporades host helper release cannot delete a successor route claim", async () => {
+test("sporades host helper releases the OS route lock to one waiting successor", async () => {
   await withTempDir(async (dir) => {
     const fixture = await prepareRouteLockFixture(dir, {
-      env: { FAKE_DOCKER_CADDY_DELAY_MS: "300" },
+      env: { SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "300" },
     });
     const predecessor = startHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
     await waitForPath(fixture.lockDir);
-    const predecessorDir = `${fixture.lockDir}.predecessor`;
-    await rename(fixture.lockDir, predecessorDir);
-    const successorOwner = {
-      token: "a".repeat(32),
-      pid: process.pid,
-      processIdentity: "successor-test-owner",
-      createdAt: Date.now(),
-    };
-    await writeFile(fixture.lockDir, `${JSON.stringify(successorOwner)}\n`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const successor = runHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
 
-    const result = await predecessor.result;
-    assert.equal(JSON.parse(result.stdout).ok, true, result.stdout);
-    assert.deepEqual(JSON.parse(await readFile(fixture.lockDir, "utf8")), successorOwner);
-    await rm(predecessorDir, { recursive: true, force: true });
-    await rm(fixture.lockDir, { recursive: true, force: true });
+    const [predecessorResult, successorResult] = await Promise.all([predecessor.result, successor]);
+    assert.equal(JSON.parse(predecessorResult.stdout).ok, true, predecessorResult.stdout);
+    assert.equal(JSON.parse(successorResult.stdout).ok, true, successorResult.stdout);
+    assert.equal((await stat(fixture.lockDir)).isFile(), true);
   });
 });
 
@@ -5945,20 +5937,22 @@ test("sporades host helper scavenges a dead pre-publication claim after SIGKILL"
     const fixture = await prepareRouteLockFixture(dir);
     const unrelatedFile = `${fixture.lockDir}.claim-not-a-protocol-token`;
     await writeFile(unrelatedFile, "unrelated\n");
+    const orphanClaim = `${fixture.lockDir}.claim-${"e".repeat(32)}`;
+    await writeFile(orphanClaim, `${JSON.stringify({ token: "e".repeat(32), pid: 999999, processIdentity: "dead", createdAt: 1 })}\n`);
     const holder = startHostHelper(fixture.request, {
       cwd: dir,
-      env: { ...fixture.docker.env, SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_CLAIM_MS: "10000" },
+      env: { ...fixture.docker.env, SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "10000" },
     });
     const routeDir = path.dirname(fixture.routeFile);
-    const claimPrefix = `${path.basename(fixture.lockDir)}.claim-`;
-    await waitForDirectoryEntry(routeDir, (entry) => entry.startsWith(claimPrefix));
+    await waitForPath(fixture.lockDir);
+    await new Promise((resolve) => setTimeout(resolve, 100));
     holder.child.kill("SIGKILL");
     await holder.result;
 
     const recovered = await runHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
     assert.equal(JSON.parse(recovered.stdout).ok, true, recovered.stdout);
     assert.deepEqual(
-      (await readdir(routeDir)).filter((entry) => new RegExp(`^${path.basename(fixture.lockDir)}\\.(?:claim|stale)-[a-f0-9]{32}$`).test(entry)),
+      (await readdir(routeDir)).filter((entry) => new RegExp(`^${path.basename(fixture.lockDir)}\\.(?:claim|stale|reclaim)-[a-f0-9]{32}$`).test(entry)),
       [],
     );
     assert.equal(await readFile(unrelatedFile, "utf8"), "unrelated\n");
@@ -5968,8 +5962,9 @@ test("sporades host helper scavenges a dead pre-publication claim after SIGKILL"
 test("sporades host helper scavenges a dead stale-lock quarantine after SIGKILL", async () => {
   await withTempDir(async (dir) => {
     const fixture = await prepareRouteLockFixture(dir);
+    const orphanStale = `${fixture.lockDir}.stale-${"f".repeat(32)}`;
     await writeFile(
-      fixture.lockDir,
+      orphanStale,
       `${JSON.stringify({
         token: "c".repeat(32),
         pid: 999999,
@@ -5979,18 +5974,18 @@ test("sporades host helper scavenges a dead stale-lock quarantine after SIGKILL"
     );
     const holder = startHostHelper(fixture.request, {
       cwd: dir,
-      env: { ...fixture.docker.env, SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_STALE_RENAME_MS: "10000" },
+      env: { ...fixture.docker.env, SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "10000" },
     });
     const routeDir = path.dirname(fixture.routeFile);
-    const stalePrefix = `${path.basename(fixture.lockDir)}.stale-`;
-    await waitForDirectoryEntry(routeDir, (entry) => entry.startsWith(stalePrefix));
+    await waitForPath(fixture.lockDir);
+    await new Promise((resolve) => setTimeout(resolve, 100));
     holder.child.kill("SIGKILL");
     await holder.result;
 
     const recovered = await runHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
     assert.equal(JSON.parse(recovered.stdout).ok, true, recovered.stdout);
     assert.deepEqual(
-      (await readdir(routeDir)).filter((entry) => entry.startsWith(`${path.basename(fixture.lockDir)}.`)),
+      (await readdir(routeDir)).filter((entry) => new RegExp(`^${path.basename(fixture.lockDir)}\\.(?:claim|stale|reclaim)-[a-f0-9]{32}$`).test(entry)),
       [],
     );
   });

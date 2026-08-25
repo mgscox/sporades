@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { constants as fsConstants, createReadStream, statSync } from "node:fs";
-import { access, chmod, chown, link, lstat, mkdir, readdir, readFile, readlink, rename, rm, statfs, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, chown, lstat, mkdir, readdir, readFile, readlink, rename, rm, statfs, symlink, writeFile } from "node:fs/promises";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { freemem, loadavg, totalmem } from "node:os";
 import path from "node:path";
@@ -3003,47 +3003,16 @@ async function restoreRemovedRouteLocked(lifecycle, route) {
 }
 async function withManagedRouteLock(routeFile, fn) {
     await mkdir(path.dirname(routeFile), { recursive: true });
-    const lockDir = `${routeFile}.lock`;
+    const lockFile = `${routeFile}.lock`;
     const timeoutMs = managedRouteLockTimeoutMs();
-    const owner = {
-        token: randomBytes(16).toString("hex"),
-        pid: process.pid,
-        processIdentity: routeLockProcessIdentity(process.pid),
-        createdAt: Date.now(),
-    };
-    const claimFile = `${lockDir}.claim-${owner.token}`;
-    await writeFile(claimFile, `${JSON.stringify(owner)}\n`, { flag: "wx" });
-    await cleanupManagedRouteProtocolArtifacts(lockDir);
-    await fakeManagedRouteLockPause("SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_CLAIM_MS");
-    const startedAt = Date.now();
+    const lock = await acquireManagedRouteOsLock(lockFile, timeoutMs);
     try {
-        while (true) {
-            try {
-                await link(claimFile, lockDir);
-                break;
-            }
-            catch (error) {
-                if (errorDetails(error).code !== "EEXIST") {
-                    throw error;
-                }
-                if (await reclaimStaleManagedRouteLock(lockDir, owner, claimFile)) {
-                    continue;
-                }
-                if (Date.now() - startedAt >= timeoutMs) {
-                    throw helperError("Hosted Capsule route is locked.", "Wait for the other Host server operation to finish, then retry the lifecycle command.");
-                }
-                await delay(25);
-            }
-        }
-    }
-    finally {
-        await rm(claimFile, { force: true });
-    }
-    try {
+        await cleanupManagedRouteProtocolArtifacts(lockFile);
+        await fakeManagedRouteLockPause("SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS");
         return await fn();
     }
     finally {
-        await releaseManagedRouteLock(lockDir, owner.token);
+        await lock.release();
     }
 }
 function managedRouteLockTimeoutMs() {
@@ -3060,18 +3029,84 @@ function managedRouteLockTimeoutMs() {
     }
     return value;
 }
-function routeLockProcessIdentity(pid) {
-    const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" });
-    if (result.status !== 0) {
-        return null;
-    }
-    const identity = result.stdout.trim();
-    return identity || null;
+const MANAGED_ROUTE_LOCK_SCRIPT = [
+    "import fcntl, os, sys, time",
+    "path = sys.argv[1]",
+    "timeout = int(sys.argv[2]) / 1000",
+    "fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)",
+    "deadline = time.monotonic() + timeout",
+    "while True:",
+    "  try:",
+    "    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)",
+    "    break",
+    "  except BlockingIOError:",
+    "    if time.monotonic() >= deadline:",
+    "      sys.exit(75)",
+    "    time.sleep(0.025)",
+    "sys.stdout.write('LOCKED\\n')",
+    "sys.stdout.flush()",
+    "sys.stdin.buffer.read()",
+].join("\n");
+async function acquireManagedRouteOsLock(lockFile, timeoutMs) {
+    const child = spawn("python3", ["-c", MANAGED_ROUTE_LOCK_SCRIPT, lockFile, String(timeoutMs)], {
+        stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let closeResult;
+    closeResult = new Promise((resolve) => {
+        child.once("close", (code, signal) => resolve({ code, signal }));
+    });
+    child.stdout.on("data", (chunk) => {
+        stdout = `${stdout}${chunk}`.slice(-256);
+    });
+    child.stderr.on("data", (chunk) => {
+        stderr = `${stderr}${chunk}`.slice(-1024);
+    });
+    await new Promise((resolve, reject) => {
+        const fail = (error) => {
+            if (settled)
+                return;
+            settled = true;
+            reject(error);
+        };
+        child.once("error", () => fail(helperError("Hosted Capsule route locking is unavailable.", "Install Python 3 with POSIX fcntl support on the Host server, then retry the lifecycle command.")));
+        child.stdout.on("data", () => {
+            if (!settled && stdout.includes("LOCKED\n")) {
+                settled = true;
+                resolve();
+            }
+        });
+        child.once("close", (code) => {
+            if (settled)
+                return;
+            settled = true;
+            if (code === 75) {
+                reject(helperError("Hosted Capsule route is locked.", "Wait for the other Host server operation to finish, then retry the lifecycle command."));
+                return;
+            }
+            reject(helperError("Hosted Capsule route locking is unavailable.", "Install Python 3 with POSIX fcntl support on the Host server, then retry the lifecycle command."));
+        });
+    });
+    let released = false;
+    return {
+        release: async () => {
+            if (released)
+                return;
+            released = true;
+            child.stdin.end();
+            const closed = await closeResult;
+            if (closed.code !== 0 || closed.signal !== null) {
+                throw helperError("Hosted Capsule route lock did not release cleanly.", "Check the Host server Python runtime, then retry the lifecycle command.");
+            }
+        },
+    };
 }
-async function readManagedRouteLockOwner(lockDir) {
+async function readManagedRouteProtocolOwner(protocolFile) {
     let parsed;
     try {
-        parsed = JSON.parse(await readFile(lockDir, "utf8"));
+        parsed = JSON.parse(await readFile(protocolFile, "utf8"));
     }
     catch (error) {
         if (errorDetails(error).code === "ENOENT") {
@@ -3094,7 +3129,7 @@ async function readManagedRouteLockOwner(lockDir) {
     }
     return { state: "owner", owner: parsed };
 }
-function managedRouteLockOwnerIsLive(owner) {
+function managedRouteProtocolOwnerIsLive(owner) {
     try {
         process.kill(owner.pid, 0);
     }
@@ -3104,95 +3139,19 @@ function managedRouteLockOwnerIsLive(owner) {
     if (owner.processIdentity === null) {
         return true;
     }
-    const currentIdentity = routeLockProcessIdentity(owner.pid);
+    const result = spawnSync("ps", ["-o", "lstart=", "-p", String(owner.pid)], { encoding: "utf8" });
+    const currentIdentity = result.status === 0 ? result.stdout.trim() || null : null;
     return currentIdentity === null || currentIdentity === owner.processIdentity;
-}
-async function reclaimStaleManagedRouteLock(lockDir, claimantOwner, claimFile) {
-    const claim = await readManagedRouteLockOwner(lockDir);
-    if (claim.state === "absent") {
-        return true;
-    }
-    if (claim.state === "owner" && managedRouteLockOwnerIsLive(claim.owner)) {
-        return false;
-    }
-    if (claim.state === "malformed") {
-        return false;
-    }
-    const observedToken = claim.owner.token;
-    const reclaimGuard = `${lockDir}.reclaim-${observedToken}`;
-    if (!(await acquireManagedRouteReclaimGuard(reclaimGuard, claimantOwner, claimFile))) {
-        return false;
-    }
-    const staleLockDir = `${lockDir}.stale-${claimantOwner.token}`;
-    try {
-        const current = await readManagedRouteLockOwner(lockDir);
-        if (current.state === "absent") {
-            return true;
-        }
-        if (current.state !== "owner" || current.owner.token !== observedToken || managedRouteLockOwnerIsLive(current.owner)) {
-            return false;
-        }
-        try {
-            await rename(lockDir, staleLockDir);
-        }
-        catch (error) {
-            if (errorDetails(error).code === "ENOENT") {
-                return true;
-            }
-            throw error;
-        }
-        await fakeManagedRouteLockPause("SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_STALE_RENAME_MS");
-        await rm(staleLockDir, { recursive: true, force: true });
-        return true;
-    }
-    finally {
-        await releaseManagedRouteLock(reclaimGuard, claimantOwner.token);
-    }
-}
-async function acquireManagedRouteReclaimGuard(reclaimGuard, claimantOwner, claimFile) {
-    try {
-        await link(claimFile, reclaimGuard);
-        return true;
-    }
-    catch (error) {
-        if (errorDetails(error).code !== "EEXIST") {
-            throw error;
-        }
-    }
-    const existing = await readManagedRouteLockOwner(reclaimGuard);
-    if (existing.state !== "owner" || managedRouteLockOwnerIsLive(existing.owner)) {
-        return false;
-    }
-    const staleGuard = `${reclaimGuard}.stale-${claimantOwner.token}`;
-    try {
-        await rename(reclaimGuard, staleGuard);
-    }
-    catch (error) {
-        return errorDetails(error).code === "ENOENT"
-            ? acquireManagedRouteReclaimGuard(reclaimGuard, claimantOwner, claimFile)
-            : false;
-    }
-    await rm(staleGuard, { force: true });
-    try {
-        await link(claimFile, reclaimGuard);
-        return true;
-    }
-    catch (error) {
-        if (errorDetails(error).code === "EEXIST") {
-            return false;
-        }
-        throw error;
-    }
 }
 async function cleanupManagedRouteProtocolArtifacts(lockFile) {
     const directory = path.dirname(lockFile);
     const base = path.basename(lockFile);
-    const artifact = new RegExp(`^${escapeRegExp(base)}\\.(?:claim|stale|reclaim)-[a-f0-9]{32}(?:\\.stale-[a-f0-9]{32})?$`);
+    const artifact = new RegExp(`^${escapeRegExp(base)}\\.(?:claim|stale|reclaim)-[a-f0-9]{32}$`);
     const entries = (await readdir(directory)).filter((entry) => artifact.test(entry)).sort().slice(0, 100);
     for (const entry of entries) {
         const artifactPath = path.join(directory, entry);
-        const owner = await readManagedRouteLockOwner(artifactPath);
-        if (owner.state === "owner" && !managedRouteLockOwnerIsLive(owner.owner)) {
+        const owner = await readManagedRouteProtocolOwner(artifactPath);
+        if (owner.state === "owner" && !managedRouteProtocolOwnerIsLive(owner.owner)) {
             await rm(artifactPath, { force: true });
         }
     }
@@ -3202,13 +3161,6 @@ async function fakeManagedRouteLockPause(name) {
     if (raw && /^[1-9][0-9]*$/.test(raw)) {
         await delay(Math.min(Number(raw), 60_000));
     }
-}
-async function releaseManagedRouteLock(lockDir, ownerToken) {
-    const claim = await readManagedRouteLockOwner(lockDir);
-    if (claim.state !== "owner" || claim.owner.token !== ownerToken) {
-        return;
-    }
-    await rm(lockDir, { force: true });
 }
 async function removePathIfPresent(targetPath, options = {}) {
     const existed = await pathExists(targetPath);
