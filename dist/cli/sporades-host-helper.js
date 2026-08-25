@@ -1206,6 +1206,30 @@ async function installClaimedRelease(request, previousRecord, paths, claimedArch
     if (installRolledBack) {
         data.rollback = { applied: true, previousCurrentRelease };
     }
+    if (installRolledBack && isVerificationRequested(request)) {
+        writeEnvelope({
+            ok: false,
+            data: {
+                ...data,
+                previousCurrentRelease,
+                currentAttemptedRelease: { id: release.id },
+                verified: false,
+                verification: { state: "failed", health: null },
+                fallback: { applied: false, reason: "install-rolled-back" },
+                rollbackGuidance: null,
+            },
+            error: {
+                message: "Hosted Capsule release restart failed.",
+                hint: "The previous Hosted Capsule release and runtime were restored; inspect the failed release start before retrying.",
+                details: {
+                    releaseId: release.id,
+                    cause: errorDetails(restartError).message ?? "Hosted Capsule restart failed.",
+                    fallback: { applied: false, reason: "install-rolled-back" },
+                },
+            },
+        }, true);
+        return;
+    }
     if (isVerificationRequested(request)) {
         const verificationResult = await verifyInstalledRelease(request, release, data, previousCurrentRelease, restartResult, restartError);
         writeEnvelope(verificationResult, !verificationResult.ok);
@@ -2535,6 +2559,13 @@ function assertCanonicalLifecycleAuthority(provided, canonical) {
         exactWhenSupplied(provided.mounts.data, canonical.defaultMounts.data);
         if (provided.mounts.files) {
             const allowedByContainer = new Map(canonical.defaultMounts.files.map((mount) => [mount.container, mount]));
+            const privateKeyContainerPath = "/app/.sporades/sealed-server-env/server-env.private.pem";
+            const legacySealedServerEnvPrivateKeyMount = {
+                host: path.join(canonical.paths.data, "sealed-server-env", "server-env.private.pem"),
+                container: privateKeyContainerPath,
+                mode: "ro",
+                optional: true,
+            };
             const legacyAllowed = [
                 { host: path.join(canonical.currentLink, "client.js"), container: "/app/client.js", mode: "ro" },
                 { host: path.join(canonical.currentLink, "index.html"), container: "/app/index.html", mode: "ro" },
@@ -2547,7 +2578,9 @@ function assertCanonicalLifecycleAuthority(provided, canonical) {
                     reject();
                 seen.add(mount.container);
                 const expected = allowedByContainer.get(mount.container);
-                if (!expected || !isDeepStrictEqual(mount, expected))
+                const exactLegacyPrivateKeyMount = mount.container === privateKeyContainerPath
+                    && isDeepStrictEqual(mount, legacySealedServerEnvPrivateKeyMount);
+                if (!expected || (!isDeepStrictEqual(mount, expected) && !exactLegacyPrivateKeyMount))
                     reject();
             }
         }
