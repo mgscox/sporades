@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readdir, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -242,14 +242,14 @@ function runCli(args, options = {}) {
   });
 }
 
-function runHostHelper(input, options = {}) {
-  return new Promise((resolve) => {
-    const child = spawn(process.execPath, [hostHelperPath], {
-      cwd: options.cwd,
-      env: { ...process.env, SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1", ...options.env },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+function startHostHelper(input, options = {}) {
+  const child = spawn(process.execPath, [hostHelperPath], {
+    cwd: options.cwd,
+    env: { ...process.env, SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1", ...options.env },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
 
+  const result = new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => {
@@ -261,8 +261,38 @@ function runHostHelper(input, options = {}) {
     child.on("close", (code) => {
       resolve({ code, stdout, stderr });
     });
-    child.stdin.end(`${JSON.stringify(input)}\n`);
   });
+  child.stdin.end(`${JSON.stringify(input)}\n`);
+  return { child, result };
+}
+
+function runHostHelper(input, options = {}) {
+  return startHostHelper(input, options).result;
+}
+
+async function waitForPath(filePath, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await stat(filePath);
+      return;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(`Timed out waiting for ${filePath}`);
+}
+
+async function waitForDirectoryEntry(dir, predicate, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const entries = await readdir(dir);
+    const entry = entries.find(predicate);
+    if (entry) return path.join(dir, entry);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(`Timed out waiting for a protocol artifact in ${dir}`);
 }
 
 function hostEnv(configDir) {
@@ -495,6 +525,8 @@ const { appendFileSync } = require("node:fs");
 const { existsSync, readFileSync, writeFileSync } = require("node:fs");
 const args = process.argv.slice(2);
 appendFileSync(process.env.FAKE_DOCKER_CADDY_LOG, JSON.stringify({ args, cwd: process.cwd() }) + "\\n");
+const delayMs = Number(process.env.FAKE_DOCKER_CADDY_DELAY_MS || "0");
+if (delayMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
 let status = args[0] === "validate"
   ? process.env.FAKE_DOCKER_CADDY_VALIDATE_STATUS
   : (process.env.FAKE_DOCKER_CADDY_RELOAD_STATUS || process.env.FAKE_DOCKER_CADDY_STATUS);
@@ -5525,6 +5557,442 @@ test("sporades host helper refreshes a stale loopback route after Docker restart
       assert.equal(JSON.parse(repeatedHealth.stdout).ok, true);
       assert.equal((await docker.caddyCalls()).length, 2, "a current route must not reload Caddy on every health check");
     });
+  });
+});
+
+test("sporades host helper serializes two stale health route repairs across helper processes", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const docker = await installFakeDocker(dir, {
+      env: {
+        FAKE_DOCKER_PUBLISHED_PORT: "127.0.0.1:49154",
+        FAKE_DOCKER_INSPECT_JSON: `${JSON.stringify({ State: { Running: true }, RestartCount: 1 })}\n`,
+        FAKE_DOCKER_CADDY_DELAY_MS: "100",
+      },
+    });
+
+    await withHttpServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        ok: true,
+        data: {
+          runtime: { ready: true },
+          checks: { sqlite: { ok: true }, fileStorage: { ok: true } },
+        },
+        error: null,
+      }));
+    }, async (port) => {
+      const domain = `localhost:${port}`;
+      const hostedUrl = `http://team-notes.localhost:${port}`;
+      const registryRecordPath = path.join(remoteRoot, "hosts", domain, "registry", "capsules", "team-notes.json");
+      const routeFile = path.join(remoteRoot, "caddy", "hosts", domain, "team-notes.caddy");
+      await mkdir(path.dirname(registryRecordPath), { recursive: true });
+      await mkdir(path.dirname(routeFile), { recursive: true });
+      await writeFile(path.join(remoteRoot, "caddy", "Caddyfile"), "import ./hosts/*.caddy\n");
+      await writeFile(
+        routeFile,
+        `team-notes.${domain} {\n  reverse_proxy 127.0.0.1:49153 {\n  }\n}\n`,
+      );
+      await writeFile(
+        registryRecordPath,
+        `${JSON.stringify({
+          subname: "team-notes",
+          domain,
+          remoteCapsuleId: `${domain}/team-notes`,
+          hostedUrl,
+          status: "running",
+          currentRelease: { id: "20260630T221500Z-feedface" },
+          runtimeProbe: { header: "x-sporades-host-probe", token: "probe-secret" },
+        })}\n`,
+      );
+      const request = {
+        action: "capsule.health",
+        host: { alias: "personal", domain, scheme: "http", remoteRoot },
+        capsule: { subname: "team-notes" },
+      };
+      await writeFile(
+        `${routeFile}.lock`,
+        `${JSON.stringify({
+          token: "d".repeat(32),
+          pid: 999999,
+          processIdentity: "dead-route-owner",
+          createdAt: Date.now() - 60_000,
+        })}\n`,
+      );
+
+      const results = await Promise.all([
+        runHostHelper(request, { cwd: dir, env: docker.env }),
+        runHostHelper(request, { cwd: dir, env: docker.env }),
+      ]);
+
+      for (const result of results) {
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(JSON.parse(result.stdout).ok, true, result.stdout);
+      }
+      const route = await readFile(routeFile, "utf8");
+      assert.equal((route.match(/reverse_proxy 127\.0\.0\.1:49154/g) ?? []).length, 1);
+      assert.doesNotMatch(route, /127\.0\.0\.1:49153/);
+      assert.deepEqual(
+        (await docker.caddyCalls()).map((call) => call.args),
+        [
+          ["validate", "--config", `${routeFile}.tmp`, "--adapter", "caddyfile"],
+          ["reload", "--config", path.join(remoteRoot, "caddy", "Caddyfile"), "--adapter", "caddyfile"],
+        ],
+        "the second helper must re-read the winner and avoid another Caddy reload",
+      );
+      const debris = (await readdir(path.dirname(routeFile))).filter((entry) => entry !== path.basename(routeFile));
+      assert.deepEqual(debris, []);
+    });
+  });
+});
+
+test("sporades host helper serializes stale health repair against route removal", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const docker = await installFakeDocker(dir, {
+      env: {
+        FAKE_DOCKER_PUBLISHED_PORT: "127.0.0.1:49154",
+        FAKE_DOCKER_INSPECT_JSON: `${JSON.stringify({ State: { Running: true }, RestartCount: 1 })}\n`,
+        FAKE_DOCKER_CADDY_DELAY_MS: "100",
+      },
+    });
+
+    await withHttpServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        ok: true,
+        data: {
+          runtime: { ready: true },
+          checks: { sqlite: { ok: true }, fileStorage: { ok: true } },
+        },
+        error: null,
+      }));
+    }, async (port) => {
+      const domain = `localhost:${port}`;
+      const capsuleDir = path.join(remoteRoot, "hosts", domain, "capsules", "team-notes");
+      const registryRecordPath = path.join(remoteRoot, "hosts", domain, "registry", "capsules", "team-notes.json");
+      const routeFile = path.join(remoteRoot, "caddy", "hosts", domain, "team-notes.caddy");
+      await mkdir(path.join(capsuleDir, "releases", "20260630T221500Z-feedface"), { recursive: true });
+      await mkdir(path.join(capsuleDir, "data"), { recursive: true });
+      await mkdir(path.dirname(registryRecordPath), { recursive: true });
+      await mkdir(path.dirname(routeFile), { recursive: true });
+      await writeFile(path.join(remoteRoot, "caddy", "Caddyfile"), "import ./hosts/*.caddy\n");
+      await writeFile(routeFile, `team-notes.${domain} {\n  reverse_proxy 127.0.0.1:49153 {\n  }\n}\n`);
+      await writeFile(
+        registryRecordPath,
+        `${JSON.stringify({
+          subname: "team-notes",
+          domain,
+          remoteCapsuleId: `${domain}/team-notes`,
+          hostedUrl: `http://team-notes.${domain}`,
+          status: "running",
+          currentRelease: { id: "20260630T221500Z-feedface" },
+          runtimeProbe: { header: "x-sporades-host-probe", token: "probe-secret" },
+        })}\n`,
+      );
+      const healthRequest = {
+        action: "capsule.health",
+        host: { alias: "personal", domain, scheme: "http", remoteRoot },
+        capsule: { subname: "team-notes" },
+      };
+      const healthPromise = runHostHelper(healthRequest, { cwd: dir, env: docker.env });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const unregisterPromise = runHostHelper(
+        {
+          action: "capsule.unregister",
+          host: { alias: "personal", domain, scheme: "https", remoteRoot },
+          capsule: { subname: "team-notes" },
+        },
+        { cwd: dir, env: docker.env },
+      );
+
+      const [health, unregister] = await Promise.all([healthPromise, unregisterPromise]);
+      assert.equal(health.code, 0, health.stderr);
+      assert.equal(unregister.code, 0, unregister.stderr);
+      assert.equal(JSON.parse(health.stdout).ok, true, health.stdout);
+      assert.equal(JSON.parse(unregister.stdout).ok, true, unregister.stdout);
+      await assert.rejects(readFile(routeFile, "utf8"), { code: "ENOENT" });
+      assert.equal(JSON.parse(await readFile(registryRecordPath, "utf8")).status, "unregistered");
+      const debris = (await readdir(path.dirname(routeFile))).filter((entry) => entry !== path.basename(routeFile));
+      assert.deepEqual(debris, []);
+      const reloadsBeforeRepeat = (await docker.caddyCalls()).filter((call) => call.args[0] === "reload").length;
+      const repeatedHealth = await runHostHelper(healthRequest, { cwd: dir, env: docker.env });
+      assert.equal(JSON.parse(repeatedHealth.stdout).ok, false);
+      assert.equal(
+        (await docker.caddyCalls()).filter((call) => call.args[0] === "reload").length,
+        reloadsBeforeRepeat,
+        "an unregistered route must not enter a health-triggered reload loop",
+      );
+    });
+  });
+});
+
+test("sporades host helper serializes stale health repair against a concurrent start", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const docker = await installFakeDocker(dir, {
+      env: {
+        FAKE_DOCKER_PUBLISHED_PORT: "127.0.0.1:49154",
+        FAKE_DOCKER_INSPECT_JSON: `${JSON.stringify({ State: { Running: true }, RestartCount: 1 })}\n`,
+        FAKE_DOCKER_CADDY_DELAY_MS: "100",
+      },
+    });
+
+    await withHttpServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        ok: true,
+        data: {
+          runtime: { ready: true },
+          checks: { sqlite: { ok: true }, fileStorage: { ok: true } },
+        },
+        error: null,
+      }));
+    }, async (port) => {
+      const domain = `localhost:${port}`;
+      const capsuleDir = path.join(remoteRoot, "hosts", domain, "capsules", "team-notes");
+      const releaseDir = path.join(capsuleDir, "releases", "20260630T221500Z-feedface");
+      const registryRecordPath = path.join(remoteRoot, "hosts", domain, "registry", "capsules", "team-notes.json");
+      const routeFile = path.join(remoteRoot, "caddy", "hosts", domain, "team-notes.caddy");
+      await mkdir(releaseDir, { recursive: true });
+      await mkdir(path.join(capsuleDir, "data"), { recursive: true });
+      await mkdir(path.dirname(registryRecordPath), { recursive: true });
+      await mkdir(path.dirname(routeFile), { recursive: true });
+      await writeFile(path.join(releaseDir, "server.mjs"), "export default 'server';\n");
+      await writeFile(path.join(releaseDir, "client.js"), "console.log('client');\n");
+      await writeFile(path.join(releaseDir, "index.html"), "<div></div>\n");
+      await writeFile(path.join(releaseDir, "sporades.json"), "{}\n");
+      await symlink(releaseDir, path.join(capsuleDir, "current"));
+      await writeFile(path.join(remoteRoot, "caddy", "Caddyfile"), "import ./hosts/*.caddy\n");
+      await writeFile(routeFile, `team-notes.${domain} {\n  reverse_proxy 127.0.0.1:49153 {\n  }\n}\n`);
+      await writeFile(
+        registryRecordPath,
+        `${JSON.stringify({
+          subname: "team-notes",
+          domain,
+          remoteCapsuleId: `${domain}/team-notes`,
+          hostedUrl: `http://team-notes.${domain}`,
+          status: "running",
+          currentRelease: { id: "20260630T221500Z-feedface" },
+          releases: [{ id: "20260630T221500Z-feedface", state: "started", current: true, startAttempts: [] }],
+          runtimeProbe: { header: "x-sporades-host-probe", token: "probe-secret" },
+        })}\n`,
+      );
+      const baseRequest = {
+        host: { alias: "personal", domain, scheme: "http", remoteRoot },
+        capsule: { subname: "team-notes" },
+      };
+      const healthPromise = runHostHelper({ ...baseRequest, action: "capsule.health" }, { cwd: dir, env: docker.env });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const startPromise = runHostHelper({ ...baseRequest, action: "capsule.start" }, { cwd: dir, env: docker.env });
+
+      const [health, start] = await Promise.all([healthPromise, startPromise]);
+      assert.equal(health.code, 0, health.stderr);
+      assert.equal(start.code, 0, start.stderr);
+      assert.equal(JSON.parse(health.stdout).ok, true, health.stdout);
+      assert.equal(JSON.parse(start.stdout).ok, true, start.stdout);
+      const route = await readFile(routeFile, "utf8");
+      assert.match(route, /reverse_proxy 127\.0\.0\.1:49154/);
+      assert.doesNotMatch(route, /127\.0\.0\.1:49153/);
+      const debris = (await readdir(path.dirname(routeFile))).filter((entry) => entry !== path.basename(routeFile));
+      assert.deepEqual(debris, []);
+      const reloadsBeforeRepeat = (await docker.caddyCalls()).filter((call) => call.args[0] === "reload").length;
+      const repeatedHealth = await runHostHelper({ ...baseRequest, action: "capsule.health" }, { cwd: dir, env: docker.env });
+      assert.equal(JSON.parse(repeatedHealth.stdout).ok, true, repeatedHealth.stdout);
+      assert.equal(
+        (await docker.caddyCalls()).filter((call) => call.args[0] === "reload").length,
+        reloadsBeforeRepeat,
+        "the current start route must not enter a health-triggered reload loop",
+      );
+    });
+  });
+});
+
+async function prepareRouteLockFixture(dir, dockerOptions = {}) {
+  const remoteRoot = path.join(dir, "remote-root");
+  const domain = "capsules.example.dev";
+  const registryRecordPath = path.join(remoteRoot, "hosts", domain, "registry", "capsules", "team-notes.json");
+  const routeFile = path.join(remoteRoot, "caddy", "hosts", domain, "team-notes.caddy");
+  await mkdir(path.dirname(registryRecordPath), { recursive: true });
+  await mkdir(path.dirname(routeFile), { recursive: true });
+  await writeFile(path.join(remoteRoot, "caddy", "Caddyfile"), "import ./hosts/*.caddy\n");
+  await writeFile(routeFile, `team-notes.${domain} {\n  reverse_proxy 127.0.0.1:49153 {\n  }\n}\n`);
+  await writeFile(
+    registryRecordPath,
+    `${JSON.stringify({ subname: "team-notes", domain, status: "running" })}\n`,
+  );
+  const docker = await installFakeDocker(dir, dockerOptions);
+  const request = {
+    action: "capsule.stop",
+    host: { alias: "personal", domain, scheme: "https", remoteRoot },
+    capsule: { subname: "team-notes" },
+    lifecycle: {
+      routes: {
+        unavailable: {
+          hostname: `team-notes.${domain}`,
+          target: "hosted-capsule-unavailable",
+          statusCode: 503,
+          routeFile,
+        },
+      },
+    },
+  };
+  return { docker, request, routeFile, lockDir: `${routeFile}.lock` };
+}
+
+test("sporades host helper reclaims a route claim after its owner is killed", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await prepareRouteLockFixture(dir, {
+      env: { FAKE_DOCKER_CADDY_DELAY_MS: "10000" },
+    });
+    const holder = startHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
+    await waitForPath(fixture.lockDir);
+    assert.equal((await stat(fixture.lockDir)).isFile(), true, "the atomic claim must never be an empty lock directory");
+    assert.match(JSON.parse(await readFile(fixture.lockDir, "utf8")).token, /^[a-f0-9]{32}$/);
+    holder.child.kill("SIGKILL");
+    await holder.result;
+
+    const recoveredDocker = await installFakeDocker(path.join(dir, "recovered"));
+    const recovered = await runHostHelper(fixture.request, {
+      cwd: dir,
+      env: { ...recoveredDocker.env, SPORADES_ROUTE_LOCK_TIMEOUT_MS: "500" },
+    });
+    assert.equal(recovered.code, 0, recovered.stderr);
+    assert.equal(JSON.parse(recovered.stdout).ok, true, recovered.stdout);
+    await assert.rejects(stat(fixture.lockDir), { code: "ENOENT" });
+  });
+});
+
+test("sporades host helper reclaims a stale process-identity route claim without trusting a reused PID", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await prepareRouteLockFixture(dir);
+    await writeFile(
+      fixture.lockDir,
+      `${JSON.stringify({
+        token: "b".repeat(32),
+        pid: process.pid,
+        processIdentity: "stale-process-from-an-earlier-boot",
+        createdAt: Date.now() - 60_000,
+      })}\n`,
+    );
+
+    const recovered = await runHostHelper(fixture.request, {
+      cwd: dir,
+      env: { ...fixture.docker.env, SPORADES_ROUTE_LOCK_TIMEOUT_MS: "500" },
+    });
+    assert.equal(recovered.code, 0, recovered.stderr);
+    assert.equal(JSON.parse(recovered.stdout).ok, true, recovered.stdout);
+    await assert.rejects(stat(fixture.lockDir), { code: "ENOENT" });
+  });
+});
+
+test("sporades host helper does not steal a live route owner and rejects malformed lock bounds", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await prepareRouteLockFixture(dir, {
+      env: { FAKE_DOCKER_CADDY_DELAY_MS: "10000" },
+    });
+    const holder = startHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
+    await waitForPath(fixture.lockDir);
+
+    const contenderDocker = await installFakeDocker(path.join(dir, "contender"));
+    const startedAt = Date.now();
+    const contender = await runHostHelper(fixture.request, {
+      cwd: dir,
+      env: { ...contenderDocker.env, SPORADES_ROUTE_LOCK_TIMEOUT_MS: "100" },
+    });
+    assert.equal(JSON.parse(contender.stdout).error.message, "Hosted Capsule route is locked.");
+    assert.ok(Date.now() - startedAt < 1000, "a live-owner timeout must remain bounded");
+
+    for (const invalidTimeout of ["NaN", "Infinity", "0", "-1", "1.5", "60001"]) {
+      const invalid = await runHostHelper(fixture.request, {
+        cwd: dir,
+        env: { ...contenderDocker.env, SPORADES_ROUTE_LOCK_TIMEOUT_MS: invalidTimeout },
+      });
+      assert.equal(JSON.parse(invalid.stdout).error.message, "Invalid Hosted Capsule route lock timeout.");
+    }
+    holder.child.kill("SIGKILL");
+    await holder.result;
+  });
+});
+
+test("sporades host helper release cannot delete a successor route claim", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await prepareRouteLockFixture(dir, {
+      env: { FAKE_DOCKER_CADDY_DELAY_MS: "300" },
+    });
+    const predecessor = startHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
+    await waitForPath(fixture.lockDir);
+    const predecessorDir = `${fixture.lockDir}.predecessor`;
+    await rename(fixture.lockDir, predecessorDir);
+    const successorOwner = {
+      token: "a".repeat(32),
+      pid: process.pid,
+      processIdentity: "successor-test-owner",
+      createdAt: Date.now(),
+    };
+    await writeFile(fixture.lockDir, `${JSON.stringify(successorOwner)}\n`);
+
+    const result = await predecessor.result;
+    assert.equal(JSON.parse(result.stdout).ok, true, result.stdout);
+    assert.deepEqual(JSON.parse(await readFile(fixture.lockDir, "utf8")), successorOwner);
+    await rm(predecessorDir, { recursive: true, force: true });
+    await rm(fixture.lockDir, { recursive: true, force: true });
+  });
+});
+
+test("sporades host helper scavenges a dead pre-publication claim after SIGKILL", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await prepareRouteLockFixture(dir);
+    const unrelatedFile = `${fixture.lockDir}.claim-not-a-protocol-token`;
+    await writeFile(unrelatedFile, "unrelated\n");
+    const holder = startHostHelper(fixture.request, {
+      cwd: dir,
+      env: { ...fixture.docker.env, SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_CLAIM_MS: "10000" },
+    });
+    const routeDir = path.dirname(fixture.routeFile);
+    const claimPrefix = `${path.basename(fixture.lockDir)}.claim-`;
+    await waitForDirectoryEntry(routeDir, (entry) => entry.startsWith(claimPrefix));
+    holder.child.kill("SIGKILL");
+    await holder.result;
+
+    const recovered = await runHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
+    assert.equal(JSON.parse(recovered.stdout).ok, true, recovered.stdout);
+    assert.deepEqual(
+      (await readdir(routeDir)).filter((entry) => new RegExp(`^${path.basename(fixture.lockDir)}\\.(?:claim|stale)-[a-f0-9]{32}$`).test(entry)),
+      [],
+    );
+    assert.equal(await readFile(unrelatedFile, "utf8"), "unrelated\n");
+  });
+});
+
+test("sporades host helper scavenges a dead stale-lock quarantine after SIGKILL", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await prepareRouteLockFixture(dir);
+    await writeFile(
+      fixture.lockDir,
+      `${JSON.stringify({
+        token: "c".repeat(32),
+        pid: 999999,
+        processIdentity: "dead-route-owner",
+        createdAt: Date.now() - 60_000,
+      })}\n`,
+    );
+    const holder = startHostHelper(fixture.request, {
+      cwd: dir,
+      env: { ...fixture.docker.env, SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_STALE_RENAME_MS: "10000" },
+    });
+    const routeDir = path.dirname(fixture.routeFile);
+    const stalePrefix = `${path.basename(fixture.lockDir)}.stale-`;
+    await waitForDirectoryEntry(routeDir, (entry) => entry.startsWith(stalePrefix));
+    holder.child.kill("SIGKILL");
+    await holder.result;
+
+    const recovered = await runHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
+    assert.equal(JSON.parse(recovered.stdout).ok, true, recovered.stdout);
+    assert.deepEqual(
+      (await readdir(routeDir)).filter((entry) => entry.startsWith(`${path.basename(fixture.lockDir)}.`)),
+      [],
+    );
   });
 });
 

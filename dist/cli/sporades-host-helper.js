@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { constants as fsConstants, createReadStream, statSync } from "node:fs";
-import { access, chmod, chown, lstat, mkdir, readdir, readFile, readlink, rename, rm, statfs, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, chown, link, lstat, mkdir, readdir, readFile, readlink, rename, rm, statfs, symlink, writeFile } from "node:fs/promises";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { freemem, loadavg, totalmem } from "node:os";
 import path from "node:path";
@@ -337,26 +337,28 @@ async function unregisterCapsule(request) {
             return;
         }
         stopAndRemoveContainer(unregister.container.name);
-        const route = await removeManagedRoute(unregister.lifecycle, unregister.route.routeFile);
-        const now = new Date();
-        const deleteAfter = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000).toISOString();
-        const nextRecord = {
-            ...record,
-            status: "unregistered",
-            unregistered: true,
-            unregisteredAt: now.toISOString(),
-            deleteAfter,
-            updatedAt: now.toISOString(),
-        };
-        try {
-            await writeRegistryRecordAtomic(unregister.registryRecord, nextRecord);
-        }
-        catch (error) {
-            await restoreRemovedRoute(unregister.lifecycle, route);
-            throw error;
-        }
-        await finalizeRemovedRoute(route);
-        data = createUnregisterResult(request, unregister, nextRecord, false, route);
+        await withManagedRouteLock(unregister.route.routeFile, async () => {
+            const route = await removeManagedRouteLocked(unregister.lifecycle, unregister.route.routeFile);
+            const now = new Date();
+            const deleteAfter = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000).toISOString();
+            const nextRecord = {
+                ...record,
+                status: "unregistered",
+                unregistered: true,
+                unregisteredAt: now.toISOString(),
+                deleteAfter,
+                updatedAt: now.toISOString(),
+            };
+            try {
+                await writeRegistryRecordAtomic(unregister.registryRecord, nextRecord);
+            }
+            catch (error) {
+                await restoreRemovedRouteLocked(unregister.lifecycle, route);
+                throw error;
+            }
+            await finalizeRemovedRouteLocked(route);
+            data = createUnregisterResult(request, unregister, nextRecord, false, route);
+        });
     });
     writeEnvelope({ ok: true, data, error: null });
 }
@@ -376,17 +378,17 @@ async function deleteCapsule(request) {
         else if ((await pathExists(deletion.route.routeFile)) || (await pathExists(deletion.directories.capsule))) {
             throw deletionRequiresUnregisterError(request);
         }
-        const route = await removePathIfPresent(deletion.route.routeFile);
-        if (route.removed) {
-            reloadCaddy(deletion.lifecycle);
-        }
-        const capsuleDirectory = await removePathIfPresent(deletion.directories.capsule, { recursive: true });
-        const registryRecord = await removePathIfPresent(deletion.registryRecord);
-        data = createDeleteResult(request, deletion, {
-            route,
-            capsuleDirectory,
-            registryRecord,
-            idempotent: !record && !route.removed && !capsuleDirectory.removed && !registryRecord.removed,
+        await withManagedRouteLock(deletion.route.routeFile, async () => {
+            const route = await removeManagedRouteLocked(deletion.lifecycle, deletion.route.routeFile);
+            const capsuleDirectory = await removePathIfPresent(deletion.directories.capsule, { recursive: true });
+            const registryRecord = await removePathIfPresent(deletion.registryRecord);
+            await finalizeRemovedRouteLocked(route);
+            data = createDeleteResult(request, deletion, {
+                route,
+                capsuleDirectory,
+                registryRecord,
+                idempotent: !record && !route.removed && !capsuleDirectory.removed && !registryRecord.removed,
+            });
         });
     });
     writeEnvelope({ ok: true, data, error: null });
@@ -2822,32 +2824,34 @@ function loopbackRunningRoute(route, publishedPort) {
 async function refreshLoopbackRunningRoute(request, registryRecord, containerName) {
     const lifecycle = normaliseLifecycle(request, registryRecord);
     const routeFile = lifecycle.routes.running.routeFile;
-    let currentRoute;
-    try {
-        currentRoute = await readFile(routeFile, "utf8");
-    }
-    catch (error) {
-        if (errorDetails(error).code === "ENOENT") {
+    return withManagedRouteLock(routeFile, async () => {
+        let currentRoute;
+        try {
+            currentRoute = await readFile(routeFile, "utf8");
+        }
+        catch (error) {
+            if (errorDetails(error).code === "ENOENT") {
+                return { ok: true, refreshed: false };
+            }
+            throw error;
+        }
+        const loopbackUpstream = /(reverse_proxy\s+)127\.0\.0\.1:[1-9][0-9]*(\s+\{)/g;
+        if (!loopbackUpstream.test(currentRoute)) {
             return { ok: true, refreshed: false };
         }
-        throw error;
-    }
-    const loopbackUpstream = /(reverse_proxy\s+)127\.0\.0\.1:[1-9][0-9]*(\s+\{)/g;
-    if (!loopbackUpstream.test(currentRoute)) {
-        return { ok: true, refreshed: false };
-    }
-    loopbackUpstream.lastIndex = 0;
-    const publishedPort = inspectLoopbackPublishedPort(containerName, lifecycle.routes.running.port ?? 4000);
-    if (!publishedPort) {
-        return { ok: false, refreshed: false };
-    }
-    const currentUpstream = `${publishedPort.hostIp}:${publishedPort.hostPort}`;
-    const refreshedRoute = currentRoute.replace(loopbackUpstream, `$1${currentUpstream}$2`);
-    if (refreshedRoute === currentRoute) {
-        return { ok: true, refreshed: false, publishedPort };
-    }
-    await applyManagedRoute(lifecycle, routeFile, refreshedRoute);
-    return { ok: true, refreshed: true, publishedPort };
+        loopbackUpstream.lastIndex = 0;
+        const publishedPort = inspectLoopbackPublishedPort(containerName, lifecycle.routes.running.port ?? 4000);
+        if (!publishedPort) {
+            return { ok: false, refreshed: false };
+        }
+        const currentUpstream = `${publishedPort.hostIp}:${publishedPort.hostPort}`;
+        const refreshedRoute = currentRoute.replace(loopbackUpstream, `$1${currentUpstream}$2`);
+        if (refreshedRoute === currentRoute) {
+            return { ok: true, refreshed: false, publishedPort };
+        }
+        await applyManagedRouteLocked(lifecycle, routeFile, refreshedRoute);
+        return { ok: true, refreshed: true, publishedPort };
+    });
 }
 async function writeRunningRoute(lifecycle, route = lifecycle.routes.running) {
     await provisionRouteLogFile(route);
@@ -2917,6 +2921,9 @@ function renderRouteLogBlock(log) {
     return `  log {\n    output file ${log.file} {\n      roll_size 10MiB\n      roll_keep 5\n      roll_keep_for 720h\n    }\n  }\n`;
 }
 async function applyManagedRoute(lifecycle, routeFile, contents) {
+    return withManagedRouteLock(routeFile, () => applyManagedRouteLocked(lifecycle, routeFile, contents));
+}
+async function applyManagedRouteLocked(lifecycle, routeFile, contents) {
     await mkdir(path.dirname(routeFile), { recursive: true });
     const tempRouteFile = `${routeFile}.tmp`;
     const previousRouteFile = `${routeFile}.previous-${process.pid}`;
@@ -2931,29 +2938,34 @@ async function applyManagedRoute(lifecycle, routeFile, contents) {
         throw error;
     }
     const hadPreviousRoute = await pathExists(routeFile);
-    if (hadPreviousRoute) {
-        await rename(routeFile, previousRouteFile);
-    }
+    let previousRouteMoved = false;
     try {
+        if (hadPreviousRoute) {
+            await rename(routeFile, previousRouteFile);
+            previousRouteMoved = true;
+        }
         await rename(tempRouteFile, routeFile);
         reloadCaddy(lifecycle);
     }
     catch (error) {
+        await rm(tempRouteFile, { force: true });
         await rm(routeFile, { force: true });
-        if (hadPreviousRoute) {
+        if (previousRouteMoved) {
             await rename(previousRouteFile, routeFile);
         }
-        try {
-            reloadCaddy(lifecycle);
-        }
-        catch (rollbackError) {
-            throw helperError("Failed to apply Hosted Capsule route and failed to reload the restored Caddy config.", "The previous route file was restored, but Caddy could not reload it. Check the Host server Caddy service and configuration, then retry the lifecycle command.");
+        if (previousRouteMoved) {
+            try {
+                reloadCaddy(lifecycle);
+            }
+            catch (rollbackError) {
+                throw helperError("Failed to apply Hosted Capsule route and failed to reload the restored Caddy config.", "The previous route file was restored, but Caddy could not reload it. Check the Host server Caddy service and configuration, then retry the lifecycle command.");
+            }
         }
         throw error;
     }
     await rm(previousRouteFile, { force: true });
 }
-async function removeManagedRoute(lifecycle, routeFile) {
+async function removeManagedRouteLocked(lifecycle, routeFile) {
     const previousRouteFile = `${routeFile}.previous-${process.pid}`;
     await rm(previousRouteFile, { force: true });
     const hadRoute = await pathExists(routeFile);
@@ -2976,18 +2988,227 @@ async function removeManagedRoute(lifecycle, routeFile) {
     }
     return { routeFile, removed: true, previousRouteFile };
 }
-async function finalizeRemovedRoute(route) {
+async function finalizeRemovedRouteLocked(route) {
     if (route?.previousRouteFile) {
         await rm(route.previousRouteFile, { force: true });
     }
 }
-async function restoreRemovedRoute(lifecycle, route) {
+async function restoreRemovedRouteLocked(lifecycle, route) {
     if (!route?.previousRouteFile) {
         return;
     }
     await rm(route.routeFile, { force: true });
     await rename(route.previousRouteFile, route.routeFile);
     reloadCaddy(lifecycle);
+}
+async function withManagedRouteLock(routeFile, fn) {
+    await mkdir(path.dirname(routeFile), { recursive: true });
+    const lockDir = `${routeFile}.lock`;
+    const timeoutMs = managedRouteLockTimeoutMs();
+    const owner = {
+        token: randomBytes(16).toString("hex"),
+        pid: process.pid,
+        processIdentity: routeLockProcessIdentity(process.pid),
+        createdAt: Date.now(),
+    };
+    const claimFile = `${lockDir}.claim-${owner.token}`;
+    await writeFile(claimFile, `${JSON.stringify(owner)}\n`, { flag: "wx" });
+    await cleanupManagedRouteProtocolArtifacts(lockDir);
+    await fakeManagedRouteLockPause("SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_CLAIM_MS");
+    const startedAt = Date.now();
+    try {
+        while (true) {
+            try {
+                await link(claimFile, lockDir);
+                break;
+            }
+            catch (error) {
+                if (errorDetails(error).code !== "EEXIST") {
+                    throw error;
+                }
+                if (await reclaimStaleManagedRouteLock(lockDir, owner, claimFile)) {
+                    continue;
+                }
+                if (Date.now() - startedAt >= timeoutMs) {
+                    throw helperError("Hosted Capsule route is locked.", "Wait for the other Host server operation to finish, then retry the lifecycle command.");
+                }
+                await delay(25);
+            }
+        }
+    }
+    finally {
+        await rm(claimFile, { force: true });
+    }
+    try {
+        return await fn();
+    }
+    finally {
+        await releaseManagedRouteLock(lockDir, owner.token);
+    }
+}
+function managedRouteLockTimeoutMs() {
+    const raw = process.env.SPORADES_ROUTE_LOCK_TIMEOUT_MS;
+    if (raw === undefined) {
+        return 5000;
+    }
+    if (!/^[1-9][0-9]*$/.test(raw)) {
+        throw helperError("Invalid Hosted Capsule route lock timeout.", "Set SPORADES_ROUTE_LOCK_TIMEOUT_MS to a whole number from 1 through 60000.");
+    }
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || value > 60_000) {
+        throw helperError("Invalid Hosted Capsule route lock timeout.", "Set SPORADES_ROUTE_LOCK_TIMEOUT_MS to a whole number from 1 through 60000.");
+    }
+    return value;
+}
+function routeLockProcessIdentity(pid) {
+    const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" });
+    if (result.status !== 0) {
+        return null;
+    }
+    const identity = result.stdout.trim();
+    return identity || null;
+}
+async function readManagedRouteLockOwner(lockDir) {
+    let parsed;
+    try {
+        parsed = JSON.parse(await readFile(lockDir, "utf8"));
+    }
+    catch (error) {
+        if (errorDetails(error).code === "ENOENT") {
+            return { state: "absent", owner: null };
+        }
+        if (errorDetails(error).code === "EISDIR" || error instanceof SyntaxError) {
+            return { state: "malformed", owner: null };
+        }
+        throw error;
+    }
+    if (!parsed ||
+        typeof parsed !== "object" ||
+        !/^[a-f0-9]{32}$/.test(parsed.token) ||
+        !Number.isSafeInteger(parsed.pid) ||
+        parsed.pid < 1 ||
+        (parsed.processIdentity !== null && typeof parsed.processIdentity !== "string") ||
+        !Number.isSafeInteger(parsed.createdAt) ||
+        parsed.createdAt < 0) {
+        return { state: "malformed", owner: null };
+    }
+    return { state: "owner", owner: parsed };
+}
+function managedRouteLockOwnerIsLive(owner) {
+    try {
+        process.kill(owner.pid, 0);
+    }
+    catch (error) {
+        return errorDetails(error).code === "EPERM";
+    }
+    if (owner.processIdentity === null) {
+        return true;
+    }
+    const currentIdentity = routeLockProcessIdentity(owner.pid);
+    return currentIdentity === null || currentIdentity === owner.processIdentity;
+}
+async function reclaimStaleManagedRouteLock(lockDir, claimantOwner, claimFile) {
+    const claim = await readManagedRouteLockOwner(lockDir);
+    if (claim.state === "absent") {
+        return true;
+    }
+    if (claim.state === "owner" && managedRouteLockOwnerIsLive(claim.owner)) {
+        return false;
+    }
+    if (claim.state === "malformed") {
+        return false;
+    }
+    const observedToken = claim.owner.token;
+    const reclaimGuard = `${lockDir}.reclaim-${observedToken}`;
+    if (!(await acquireManagedRouteReclaimGuard(reclaimGuard, claimantOwner, claimFile))) {
+        return false;
+    }
+    const staleLockDir = `${lockDir}.stale-${claimantOwner.token}`;
+    try {
+        const current = await readManagedRouteLockOwner(lockDir);
+        if (current.state === "absent") {
+            return true;
+        }
+        if (current.state !== "owner" || current.owner.token !== observedToken || managedRouteLockOwnerIsLive(current.owner)) {
+            return false;
+        }
+        try {
+            await rename(lockDir, staleLockDir);
+        }
+        catch (error) {
+            if (errorDetails(error).code === "ENOENT") {
+                return true;
+            }
+            throw error;
+        }
+        await fakeManagedRouteLockPause("SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_STALE_RENAME_MS");
+        await rm(staleLockDir, { recursive: true, force: true });
+        return true;
+    }
+    finally {
+        await releaseManagedRouteLock(reclaimGuard, claimantOwner.token);
+    }
+}
+async function acquireManagedRouteReclaimGuard(reclaimGuard, claimantOwner, claimFile) {
+    try {
+        await link(claimFile, reclaimGuard);
+        return true;
+    }
+    catch (error) {
+        if (errorDetails(error).code !== "EEXIST") {
+            throw error;
+        }
+    }
+    const existing = await readManagedRouteLockOwner(reclaimGuard);
+    if (existing.state !== "owner" || managedRouteLockOwnerIsLive(existing.owner)) {
+        return false;
+    }
+    const staleGuard = `${reclaimGuard}.stale-${claimantOwner.token}`;
+    try {
+        await rename(reclaimGuard, staleGuard);
+    }
+    catch (error) {
+        return errorDetails(error).code === "ENOENT"
+            ? acquireManagedRouteReclaimGuard(reclaimGuard, claimantOwner, claimFile)
+            : false;
+    }
+    await rm(staleGuard, { force: true });
+    try {
+        await link(claimFile, reclaimGuard);
+        return true;
+    }
+    catch (error) {
+        if (errorDetails(error).code === "EEXIST") {
+            return false;
+        }
+        throw error;
+    }
+}
+async function cleanupManagedRouteProtocolArtifacts(lockFile) {
+    const directory = path.dirname(lockFile);
+    const base = path.basename(lockFile);
+    const artifact = new RegExp(`^${escapeRegExp(base)}\\.(?:claim|stale|reclaim)-[a-f0-9]{32}(?:\\.stale-[a-f0-9]{32})?$`);
+    const entries = (await readdir(directory)).filter((entry) => artifact.test(entry)).sort().slice(0, 100);
+    for (const entry of entries) {
+        const artifactPath = path.join(directory, entry);
+        const owner = await readManagedRouteLockOwner(artifactPath);
+        if (owner.state === "owner" && !managedRouteLockOwnerIsLive(owner.owner)) {
+            await rm(artifactPath, { force: true });
+        }
+    }
+}
+async function fakeManagedRouteLockPause(name) {
+    const raw = process.env[name];
+    if (raw && /^[1-9][0-9]*$/.test(raw)) {
+        await delay(Math.min(Number(raw), 60_000));
+    }
+}
+async function releaseManagedRouteLock(lockDir, ownerToken) {
+    const claim = await readManagedRouteLockOwner(lockDir);
+    if (claim.state !== "owner" || claim.owner.token !== ownerToken) {
+        return;
+    }
+    await rm(lockDir, { force: true });
 }
 async function removePathIfPresent(targetPath, options = {}) {
     const existed = await pathExists(targetPath);
