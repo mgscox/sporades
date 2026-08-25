@@ -9503,6 +9503,121 @@ test("sporades host helper rejects caller-controlled Docker lifecycle authority 
   }
 });
 
+test("sporades host helper starts a retained old-image release from the current builder lifecycle DTO", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleRollbackFixture(dir, {
+      releaseIds: ["20260630T221500Z-feedface"],
+      status: "stopped",
+    });
+    const previousImage = "registry.example/sporades-base:previous";
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    record.baseImage = { name: "sporades-base", image: previousImage, version: "previous", updatePolicy: { mode: "manual" } };
+    await writeFile(fixture.registryRecordPath, `${JSON.stringify(record, null, 2)}\n`);
+    const lifecycle = createHostLifecycleRequest(
+      "personal",
+      { domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot, tls: "automatic" },
+      fixture.subname,
+    );
+    const docker = await installFakeDocker(path.join(dir, "docker"), {
+      env: { FAKE_DOCKER_RUNNING: "true", FAKE_DOCKER_PUBLISHED_PORT: "127.0.0.1:49161" },
+    });
+
+    const result = await runHostHelper({
+      action: "capsule.start",
+      host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+      lifecycle,
+    }, { cwd: dir, env: docker.env });
+
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, true, result.stdout);
+    assert.equal(output.data.container.image, previousImage);
+    assert.equal(output.data.route.hostname, `${fixture.subname}.${fixture.domain}`);
+    const runs = (await docker.calls()).filter((call) => call.args[0] === "run");
+    assert.equal(runs.length, 1, JSON.stringify(await docker.calls()));
+    assert(runs[0].args.includes(previousImage));
+    assert(!runs[0].args.includes(lifecycle.container.image));
+    const route = await readFile(lifecycle.routes.running.routeFile, "utf8");
+    assert.match(route, /127\.0\.0\.1:49161/);
+    assert.equal(JSON.parse(await readFile(fixture.registryRecordPath, "utf8")).status, "running");
+  });
+});
+
+test("sporades host helper validates a current builder restart before stopping and runs the retained old image", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleRollbackFixture(dir, { releaseIds: ["20260630T221500Z-feedface"] });
+    const previousImage = "registry.example/sporades-base:previous";
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    record.baseImage = { name: "sporades-base", image: previousImage, version: "previous", updatePolicy: { mode: "manual" } };
+    await writeFile(fixture.registryRecordPath, `${JSON.stringify(record, null, 2)}\n`);
+    const lifecycle = createHostLifecycleRequest(
+      "personal",
+      { domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot, tls: "automatic" },
+      fixture.subname,
+    );
+    await mkdir(path.dirname(lifecycle.routes.running.routeFile), { recursive: true });
+    await writeFile(lifecycle.routes.running.routeFile, `${fixture.subname}.${fixture.domain} {\n  reverse_proxy 127.0.0.1:49160\n}\n`);
+    const docker = await installFakeDocker(path.join(dir, "docker"), {
+      env: { FAKE_DOCKER_RUNNING: "true", FAKE_DOCKER_PUBLISHED_PORT: "127.0.0.1:49162" },
+    });
+
+    const result = await runHostHelper({
+      action: "capsule.restart",
+      host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+      lifecycle,
+    }, { cwd: dir, env: docker.env });
+
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, true, result.stdout);
+    assert.equal(output.data.container.image, previousImage);
+    assert.equal(output.data.route.hostname, `${fixture.subname}.${fixture.domain}`);
+    const calls = await docker.calls();
+    const runs = calls.filter((call) => call.args[0] === "run");
+    assert.equal(runs.length, 1, JSON.stringify(calls));
+    assert(runs[0].args.includes(previousImage));
+    assert(!runs[0].args.includes(lifecycle.container.image));
+    assert.deepEqual(calls.slice(0, 2).map((call) => call.args[0]), ["stop", "rm"]);
+    const route = await readFile(lifecycle.routes.running.routeFile, "utf8");
+    assert.match(route, /127\.0\.0\.1:49162/);
+    assert.doesNotMatch(route, /127\.0\.0\.1:49160/);
+  });
+});
+
+test("sporades host helper rejects an unknown restart image before Docker Caddy or state mutation", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleRollbackFixture(dir, { releaseIds: ["20260630T221500Z-feedface"] });
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    record.baseImage = { name: "sporades-base", image: "registry.example/sporades-base:previous", version: "previous", updatePolicy: { mode: "manual" } };
+    await writeFile(fixture.registryRecordPath, `${JSON.stringify(record, null, 2)}\n`);
+    const lifecycle = createHostLifecycleRequest(
+      "personal",
+      { domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot, tls: "automatic" },
+      fixture.subname,
+    );
+    lifecycle.container.image = "attacker.invalid/root:latest";
+    const routeFile = lifecycle.routes.running.routeFile;
+    await mkdir(path.dirname(routeFile), { recursive: true });
+    await writeFile(routeFile, "previous exact route bytes\n");
+    const registryBefore = await readFile(fixture.registryRecordPath);
+    const routeBefore = await readFile(routeFile);
+    const docker = await installFakeDocker(path.join(dir, "docker"));
+
+    const result = await runHostHelper({
+      action: "capsule.restart",
+      host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+      lifecycle,
+    }, { cwd: dir, env: docker.env });
+
+    assert.equal(JSON.parse(result.stdout).error.message, "Invalid Hosted Capsule lifecycle authority.", result.stdout);
+    await assert.rejects(readFile(docker.logPath), { code: "ENOENT" });
+    await assert.rejects(readFile(docker.caddyLogPath), { code: "ENOENT" });
+    assert.deepEqual(await readFile(fixture.registryRecordPath), registryBefore);
+    assert.deepEqual(await readFile(routeFile), routeBefore);
+  });
+});
+
 test("sporades host helper quiesces Docker before descriptor-fenced runtime-data preparation", async () => {
   await withTempDir(async (dir) => {
     const fixture = await writeHostedCapsuleRollbackFixture(dir, { releaseIds: ["20260630T221500Z-feedface"] });

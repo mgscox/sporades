@@ -2010,9 +2010,7 @@ async function stopCapsule(request, options = {}) {
 }
 async function restartCapsule(request, options = {}) {
     validateLifecycleRequest(request);
-    const registryRecord = options.trustedRegistryLifecycle === true
-        ? await verifyRegisteredCapsule(request, "lifecycle")
-        : null;
+    const registryRecord = await verifyRegisteredCapsule(request, "lifecycle");
     const lifecycle = normaliseLifecycle(request, registryRecord, options.trustedRegistryLifecycle === true ? { ignoreProvidedLifecycle: true } : {});
     if (options.containerQuiesced !== true)
         stopAndRemoveContainer(lifecycle.container.name);
@@ -2020,7 +2018,7 @@ async function restartCapsule(request, options = {}) {
         write: false,
         containerQuiesced: true,
         dataPrepared: options.dataPrepared === true,
-        trustedRegistryLifecycle: options.trustedRegistryLifecycle === true,
+        trustedRegistryLifecycle: true,
     });
     if (!startResult) {
         if (options.write !== false) {
@@ -2474,6 +2472,20 @@ function normaliseLifecycle(request, registryRecord = null, options = {}) {
             ...baseImageLabels(updatePolicyMode),
         },
     };
+    const helperPackageBaseImage = baseImageMetadata();
+    const helperPackageContainer = {
+        name: containerName,
+        image: helperPackageBaseImage.image,
+        user: baseImageRuntimeUser(),
+        baseImage: helperPackageBaseImage,
+        labels: {
+            "com.sporades.managed": "true",
+            "com.sporades.hosted-domain": domain,
+            "com.sporades.capsule-subname": subname,
+            "com.sporades.capsule-id": remoteCapsuleId,
+            ...baseImageLabels(helperPackageBaseImage.updatePolicy.mode),
+        },
+    };
     const canonicalRoutes = {
         running: {
             hostname: `${subname}.${domain}`,
@@ -2503,6 +2515,7 @@ function normaliseLifecycle(request, registryRecord = null, options = {}) {
         paths,
         defaultMounts,
         container: canonicalContainer,
+        helperPackageContainer,
         routes: canonicalRoutes,
     });
     return {
@@ -2607,25 +2620,27 @@ function assertCanonicalLifecycleAuthority(provided, canonical) {
         }
     }
     if (provided.container) {
-        for (const [key, value] of Object.entries(provided.container)) {
-            if (!(key in canonical.container))
-                reject();
-            if (key === "labels" && value && typeof value === "object") {
-                for (const [label, labelValue] of Object.entries(value)) {
-                    if (!isDeepStrictEqual(labelValue, canonical.container.labels[label]))
-                        reject();
+        if (!isDeepStrictEqual(provided.container, canonical.helperPackageContainer)) {
+            for (const [key, value] of Object.entries(provided.container)) {
+                if (!(key in canonical.container))
+                    reject();
+                if (key === "labels" && value && typeof value === "object") {
+                    for (const [label, labelValue] of Object.entries(value)) {
+                        if (!isDeepStrictEqual(labelValue, canonical.container.labels[label]))
+                            reject();
+                    }
+                    continue;
                 }
-                continue;
-            }
-            if (key === "baseImage" && value && typeof value === "object") {
-                for (const [field, fieldValue] of Object.entries(value)) {
-                    if (!isDeepStrictEqual(fieldValue, canonical.container.baseImage[field]))
-                        reject();
+                if (key === "baseImage" && value && typeof value === "object") {
+                    for (const [field, fieldValue] of Object.entries(value)) {
+                        if (!isDeepStrictEqual(fieldValue, canonical.container.baseImage[field]))
+                            reject();
+                    }
+                    continue;
                 }
-                continue;
+                if (!isDeepStrictEqual(value, canonical.container[key]))
+                    reject();
             }
-            if (!isDeepStrictEqual(value, canonical.container[key]))
-                reject();
         }
     }
     if (provided.routes && Object.keys(provided.routes).some((key) => !["running", "unavailable"].includes(key)))
