@@ -2018,6 +2018,7 @@ async function restoreFailedReleaseInstall(
     await restoreCurrentReleasePointerTarget(paths.currentLink, previousCurrentTarget);
     await writeRegistryRecordAtomic(registryPath(request), previousRecord);
     let runningRouteRestored = false;
+    let missingRunningRuntimeSettled = false;
     if (priorRuntime?.wasRunning) {
       const restored = await restartCapsule(request, {
         write: false,
@@ -2029,9 +2030,14 @@ async function restoreFailedReleaseInstall(
       runningRouteRestored = true;
     } else if (priorRuntime) {
       stopAndRemoveContainer(priorRuntime.containerName);
+      if (priorRuntime.registryWasRunning) {
+        await writeUnavailableRoute(previousRoute.lifecycle);
+        await updateRegistryStatus(request, "stopped");
+        missingRunningRuntimeSettled = true;
+      }
     }
-    if (!runningRouteRestored) await restoreReleaseInstallRoute(previousRoute);
-    await writeRegistryContentsAtomic(registryPath(request), previousRegistryContents);
+    if (!runningRouteRestored && !missingRunningRuntimeSettled) await restoreReleaseInstallRoute(previousRoute);
+    if (!missingRunningRuntimeSettled) await writeRegistryContentsAtomic(registryPath(request), previousRegistryContents);
     await removeInstalledReleasePrivateKey(release, paths);
     await rm(paths.release, { recursive: true, force: true });
   } catch {

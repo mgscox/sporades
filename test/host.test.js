@@ -5847,6 +5847,53 @@ test("sporades host helper restores an absent route when a stopped prior runtime
   });
 });
 
+test("sporades host helper settles a missing previously-running runtime to stopped after install rollback", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "missing-running-install-rollback", restart: true });
+    const staleRoute = [
+      `team-notes.${fixture.domain} {`,
+      "  reverse_proxy 127.0.0.1:49153",
+      `  log { output file ${path.join(fixture.capsuleDir, "logs", "http.log")} }`,
+      "}",
+      "",
+    ].join("\n");
+    await writeFile(fixture.routeFile, staleRoute);
+    const previousRecord = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    const pointerBefore = await readlink(path.join(fixture.capsuleDir, "current"));
+    const keyBefore = await readFile(fixture.privateKeyPath);
+    const docker = await installFakeDocker(path.join(dir, "docker"), {
+      env: { FAKE_DOCKER_RUNNING: "false", FAKE_DOCKER_RUN_STATUS: "1" },
+    });
+
+    const result = await runHostHelper({
+      action: "capsule.release.install",
+      host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+      release: fixture.release,
+      lifecycle: fixture.lifecycle,
+    }, { cwd: dir, env: docker.env });
+
+    assert.equal(JSON.parse(result.stdout).ok, false, result.stdout);
+    const runs = (await docker.calls()).filter((call) => call.args[0] === "run");
+    assert.equal(runs.length, 1, JSON.stringify(await docker.calls()));
+    assert(runs[0].args.includes("registry.example/next:2"));
+    assert(!runs[0].args.includes("registry.example/previous:1"));
+    assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), pointerBefore);
+    assert.deepEqual(await readFile(fixture.privateKeyPath), keyBefore);
+    await assert.rejects(lstat(fixture.nextPrivateKeyPath), { code: "ENOENT" });
+    await assert.rejects(lstat(path.join(fixture.capsuleDir, "releases", fixture.releaseId)), { code: "ENOENT" });
+
+    const settledRecord = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    assert.equal(settledRecord.status, "stopped");
+    assert.deepEqual(settledRecord.baseImage, previousRecord.baseImage);
+    assert.deepEqual(settledRecord.currentRelease, previousRecord.currentRelease);
+    assert.deepEqual(settledRecord.releases, previousRecord.releases);
+    const settledRoute = await readFile(fixture.routeFile, "utf8");
+    assert.match(settledRoute, /respond "Hosted Capsule unavailable" 503/);
+    assert.doesNotMatch(settledRoute, /127\.0\.0\.1:49153/);
+  });
+});
+
 test("sporades host helper validates the built upgrade image then restores the registry image after failure", async () => {
   await withTempDir(async (dir) => {
     const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "built-image-phase-restore", restart: true });
