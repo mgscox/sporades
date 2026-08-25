@@ -13,11 +13,26 @@
 
 ## Unreleased - 2026-08-25
 
-Changes since v0.9.2.
+Changes since v0.9.3.
 
 ### 🐛 Bug Fixes
 
-- Wait for hosted capsule readiness (81c23604).
+- Serialize managed route mutations (625538a3).
+- Refresh hosted routes after container restart (1cccdffd).
+
+### 🧪 Tests
+
+- Preserve registry image authority on Host restart (1ee77740).
+- Settle absent Host runtime rollback (0c5e6b8a).
+- Separate Host install and restore authority (4b18b496).
+- Harden Host runtime key mutation settlement (5ebe90be).
+- Harden Host route locks and helper upgrades (b895981b).
+- Serialize Host route mutations with OS locks (2cc492e8).
+
+### 📦 Packaging
+
+- Align Host release lifecycle settlement (28c23bcf).
+- Harden Host release rollback authority (98479008).
 
 ## 0.8.5 - 2026-08-15
 
@@ -54,5 +69,6 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
+
 
 
