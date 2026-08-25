@@ -3465,7 +3465,15 @@ test("sporades host helper registers Hosted Capsules with registry state and una
       ],
     );
 
-    const duplicate = await runHostHelper(request, { cwd: dir, env: caddy.env });
+    const duplicateDocker = await installFakeDocker(path.join(dir, "duplicate-docker"));
+    const duplicate = await runHostHelper(request, {
+      cwd: dir,
+      env: {
+        ...caddy.env,
+        ...duplicateDocker.env,
+        PATH: `${duplicateDocker.fakeBinDir}${path.delimiter}${caddy.fakeBinDir}${path.delimiter}${process.env.PATH}`,
+      },
+    });
     assert.equal(duplicate.code, 0, duplicate.stderr);
     assert.equal(await readFile(privateKeyPath, "utf8"), originalPrivateKey);
     assert.equal(JSON.parse(await readFile(request.registration.registryRecord, "utf8")).sealedServerEnv.currentKeyFingerprint, output.data.sealedServerEnv.publicKeyFingerprint);
@@ -3477,6 +3485,7 @@ test("sporades host helper registers Hosted Capsules with registry state and una
         hint: "Choose a different Capsule subname for capsules.example.dev.",
       },
     });
+    await assert.rejects(readFile(duplicateDocker.logPath, "utf8"), { code: "ENOENT" });
 
     const otherDomainRoot = path.join(dir, "other-domain-root");
     await mkdir(path.join(otherDomainRoot, "caddy", "hosts"), { recursive: true });
@@ -3600,6 +3609,29 @@ test("sporades host helper rotates a Hosted Capsule sealed-env key and cleans on
   });
 });
 
+test("sporades host helper restores the exact pre-rotation running state", async () => {
+  for (const [label, running] of [["running", true], ["stopped", false]]) {
+    await withTempDir(async (dir) => {
+      const fixture = await writeHostedCapsuleRollbackFixture(dir, { releaseIds: ["20260630T221500Z-feedface"] });
+      const docker = await installFakeDocker(path.join(dir, "docker"), { env: { FAKE_DOCKER_RUNNING: String(running) } });
+      const result = await runHostHelper({
+        action: "capsule.sealed-env.rotate-key",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot: fixture.remoteRoot },
+        capsule: { subname: "team-notes" },
+      }, { cwd: dir, env: docker.env });
+      assert.equal(JSON.parse(result.stdout).ok, true, `${label}: ${result.stdout}\n${result.stderr}\n${JSON.stringify(await docker.calls())}`);
+      const calls = (await docker.calls()).map((call) => call.args[0]);
+      if (running) {
+        assert.deepEqual(calls, ["inspect", "stop", "rm", "image", "run", "inspect", "inspect"], label);
+        assert.equal(JSON.parse(await readFile(fixture.registryRecordPath, "utf8")).status, "running");
+      } else {
+        assert.deepEqual(calls, ["inspect"], label);
+        assert.notEqual(JSON.parse(await readFile(fixture.registryRecordPath, "utf8")).status, "running");
+      }
+    });
+  }
+});
+
 test("sporades host helper descriptor-fences sealed-env key creation after quiescing Docker", async () => {
   await withTempDir(async (dir) => {
     const fixture = await writeHostedCapsuleRollbackFixture(dir, { releaseIds: ["20260630T221500Z-feedface"] });
@@ -3625,12 +3657,13 @@ test("sporades host helper descriptor-fences sealed-env key creation after quies
       },
     });
     const keyPath = (await waitForFileText(marker, (contents) => contents.endsWith(".private.pem\n"))).trim();
-    assert.deepEqual((await docker.calls()).map((call) => call.args[0]), ["stop", "rm"]);
+    assert.deepEqual((await docker.calls()).map((call) => call.args[0]), ["inspect", "stop", "rm"]);
     const retained = `${keyPath}.retained`;
     await rename(keyPath, retained);
     await symlink(outside, keyPath);
     const result = await action.result;
-    assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule data path failed its no-follow trust check.", result.stdout);
+    assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule runtime restoration failed.", result.stdout);
+    assert.equal(JSON.parse(await readFile(fixture.registryRecordPath, "utf8")).status, "stopped");
     const outsideAfter = await lstat(outside);
     assert.equal(createHash("sha256").update(await readFile(outside)).digest("hex"), outsideHash);
     assert.deepEqual([outsideAfter.mode & 0o777, outsideAfter.uid, outsideAfter.gid], [outsideBefore.mode & 0o777, outsideBefore.uid, outsideBefore.gid]);
@@ -3644,9 +3677,57 @@ test("sporades host helper descriptor-fences sealed-env key creation after quies
     const sentinelHash = createHash("sha256").update(await readFile(sentinel)).digest("hex");
     await symlink(outsideDirectory, path.join(fixture.dataDir, "sealed-server-env"));
     const ancestor = await runHostHelper(request, { cwd: dir, env: docker.env });
-    assert.equal(JSON.parse(ancestor.stdout).error.message, "Hosted Capsule data path failed its no-follow trust check.", ancestor.stdout);
+    assert.equal(JSON.parse(ancestor.stdout).error.message, "Hosted Capsule runtime restoration failed.", ancestor.stdout);
     assert.equal(createHash("sha256").update(await readFile(sentinel)).digest("hex"), sentinelHash);
     assert.deepEqual(await readdir(outsideDirectory), ["sentinel.bin"]);
+  });
+});
+
+test("sporades host helper fences sealed-key cleanup to the retained keys directory", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleRollbackFixture(dir, { releaseIds: ["20260630T221500Z-feedface"] });
+    const keys = path.join(fixture.dataDir, "sealed-server-env", "keys");
+    const stale = "9999999999999999";
+    await mkdir(keys, { recursive: true });
+    await writeFile(path.join(keys, `${stale}.private.pem`), "stale private\n", { mode: 0o600 });
+    await writeFile(path.join(keys, `${stale}.public.pem`), "stale public\n", { mode: 0o644 });
+    const docker = await installFakeDocker(path.join(dir, "docker"), { env: { FAKE_DOCKER_RUNNING: "false" } });
+    const marker = path.join(dir, "cleanup.marker");
+    const request = {
+      action: "capsule.sealed-env.rotate-key",
+      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: "team-notes" },
+    };
+    const action = startHostHelper(request, {
+      cwd: dir,
+      env: {
+        ...docker.env,
+        SPORADES_TEST_RUNTIME_TREE_PUBLICATION_BOUNDARY: "sealed-key-cleanup",
+        SPORADES_TEST_RUNTIME_TREE_PUBLICATION_MARKER: marker,
+        SPORADES_FAKE_RUNTIME_TREE_PUBLICATION_PAUSE_MS: "700",
+      },
+    });
+    await waitForPath(marker);
+    const retained = `${keys}.retained`;
+    const outside = path.join(dir, "outside-cleanup");
+    await mkdir(outside, { mode: 0o711 });
+    for (const suffix of ["private", "public"]) await writeFile(path.join(outside, `${stale}.${suffix}.pem`), `outside ${suffix}\n`, { mode: suffix === "private" ? 0o604 : 0o644 });
+    const before = await Promise.all((await readdir(outside)).map(async (name) => {
+      const file = path.join(outside, name);
+      const details = await lstat(file);
+      return [name, createHash("sha256").update(await readFile(file)).digest("hex"), details.mode & 0o777, details.uid, details.gid];
+    }));
+    await rename(keys, retained);
+    await symlink(outside, keys);
+    const result = await action.result;
+    assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule data path failed its no-follow trust check.", result.stdout);
+    const after = await Promise.all((await readdir(outside)).map(async (name) => {
+      const file = path.join(outside, name);
+      const details = await lstat(file);
+      return [name, createHash("sha256").update(await readFile(file)).digest("hex"), details.mode & 0o777, details.uid, details.gid];
+    }));
+    assert.deepEqual(after, before);
+    assert.equal(JSON.parse(await readFile(fixture.registryRecordPath, "utf8")).sealedServerEnv, undefined);
   });
 });
 
@@ -5308,7 +5389,8 @@ test("sporades host helper installs a release atomically and updates the current
       },
     };
 
-    const install = await runHostHelper(request, { cwd: dir });
+    const runningDocker = await installFakeDocker(path.join(dir, "running-docker"));
+    const install = await runHostHelper(request, { cwd: dir, env: runningDocker.env });
     assert.equal(install.code, 0, install.stderr);
     assert.deepEqual(JSON.parse(install.stdout), {
       ok: true,
@@ -5349,6 +5431,7 @@ test("sporades host helper installs a release atomically and updates the current
     assert.equal(record.releases[0].current, true);
     assert.equal(record.releases[0].source.hostedUrl, "https://team-notes.capsules.example.dev");
     assert.equal(record.releases[0].source.serverEnvIncluded, true);
+    await assert.rejects(readFile(runningDocker.logPath, "utf8"), { code: "ENOENT" });
     assert.deepEqual(record.releases[0].source.files, ["server.mjs", "public/client.js", "public/index.html", "sporades.json", ".env.sporades.server"]);
     assert.match(record.releases[0].createdAt, /^\d{4}-\d{2}-\d{2}T/);
     assert.equal(record.releases[0].uploadedAt, record.releases[0].createdAt);
@@ -5463,6 +5546,79 @@ test("sporades host helper rejects non-canonical Sealed Server env private key p
     await assert.rejects(readFile(escapedPrivateKeyPath, "utf8"), { code: "ENOENT" });
     await assert.rejects(readFile(path.join(capsuleDir, "current"), "utf8"), { code: "ENOENT" });
   });
+});
+
+test("sporades host helper descriptor-fences release-supplied Sealed Server env private keys", async () => {
+  for (const replacement of ["final", "ancestor"]) {
+    await withTempDir(async (dir) => {
+      const fixture = await writeHostedCapsuleInstallFixture(dir, { rootName: `release-private-key-${replacement}` });
+      const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+      record.status = "stopped";
+      await writeFile(fixture.registryRecordPath, `${JSON.stringify(record)}\n`);
+      const privateKeyPath = path.join(fixture.capsuleDir, "data", "sealed-server-env", "server-env.private.pem");
+      fixture.release.restart = false;
+      fixture.release.sealedServerEnvIncluded = true;
+      fixture.release.sealedServerEnv = {
+        privateKey: "-----BEGIN PRIVATE KEY-----\nrelease-owned fixture\n-----END PRIVATE KEY-----\n",
+        privateKeyPath,
+      };
+      const sealedEnvelope = ".sporades/sealed-server-env/server-env.sealed.json";
+      const expanded = path.join(dir, `expanded-${replacement}`);
+      await mkdir(expanded);
+      const extract = spawnSync("tar", ["-xzf", fixture.archivePath, "-C", expanded], { encoding: "utf8" });
+      assert.equal(extract.status, 0, extract.stderr);
+      await mkdir(path.dirname(path.join(expanded, sealedEnvelope)), { recursive: true });
+      await writeFile(path.join(expanded, sealedEnvelope), '{"version":1,"valueAlgorithm":"aes-256-gcm","entries":{}}\n');
+      fixture.release.files.push(sealedEnvelope);
+      await rm(fixture.archivePath);
+      await createTarGz(fixture.archivePath, expanded, fixture.release.files);
+      const outsideDirectory = path.join(dir, "outside-release-private-key");
+      const outside = path.join(outsideDirectory, "sentinel.bin");
+      await mkdir(outsideDirectory, { mode: 0o711 });
+      await writeFile(outside, Buffer.from([2, 7, 1, 8]), { mode: 0o604 });
+      const before = await lstat(outside);
+      const beforeHash = createHash("sha256").update(await readFile(outside)).digest("hex");
+      const docker = await installFakeDocker(path.join(dir, "docker"), { env: { FAKE_DOCKER_RUNNING: "false" } });
+
+      let action;
+      if (replacement === "ancestor") {
+        await mkdir(path.join(fixture.capsuleDir, "data"), { recursive: true });
+        await symlink(outsideDirectory, path.dirname(privateKeyPath));
+        action = { result: runHostHelper({
+          action: "capsule.release.install",
+          host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+          capsule: { subname: fixture.subname },
+          release: fixture.release,
+        }, { cwd: dir, env: docker.env }) };
+      } else {
+        const marker = path.join(dir, "release-private-key.marker");
+        action = startHostHelper({
+          action: "capsule.release.install",
+          host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+          capsule: { subname: fixture.subname },
+          release: fixture.release,
+        }, {
+          cwd: dir,
+          env: {
+            ...docker.env,
+            SPORADES_TEST_RUNTIME_TREE_PUBLICATION_BOUNDARY: "release-private-key-publish",
+            SPORADES_TEST_RUNTIME_TREE_PUBLICATION_MARKER: marker,
+            SPORADES_FAKE_RUNTIME_TREE_PUBLICATION_PAUSE_MS: "700",
+          },
+        });
+        await waitForPath(marker);
+        await symlink(outside, privateKeyPath);
+      }
+
+      const result = await action.result;
+      assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule data path failed its no-follow trust check.", `${replacement}: ${result.stdout}`);
+      const after = await lstat(outside);
+      assert.equal(createHash("sha256").update(await readFile(outside)).digest("hex"), beforeHash);
+      assert.deepEqual([after.mode & 0o777, after.uid, after.gid], [before.mode & 0o777, before.uid, before.gid]);
+      assert.deepEqual((await docker.calls()).map((call) => call.args[0]), ["inspect"]);
+      await assert.rejects(stat(path.join(fixture.capsuleDir, "releases", fixture.releaseId)), { code: "ENOENT" });
+    });
+  }
 });
 
 test("sporades host helper rejects nested macOS archive metadata entries", async () => {
@@ -5794,7 +5950,7 @@ test("sporades host helper reports remediation when data ownership cannot be pre
           id: "20260630T221500Z-feedface",
           hostedUrl: "https://team-notes.capsules.example.dev",
           remoteArchive: archivePath,
-          restart: false,
+          restart: true,
           serverEnvIncluded: false,
           files: ["server.mjs", "public/client.js", "public/index.html", "sporades.json"],
           directories: {
@@ -9355,6 +9511,7 @@ test("sporades host helper unregisters a Hosted Capsule without deleting release
     assert.equal(duplicateOutput.data.idempotent, true);
     assert.equal(duplicateOutput.data.deleteAfter, output.data.deleteAfter);
 
+    const stoppedDocker = await installFakeDocker(path.join(dir, "reactivate-docker"), { env: { FAKE_DOCKER_RUNNING: "false" } });
     const reactivate = await runHostHelper(
       {
         action: "capsule.register",
@@ -9368,7 +9525,7 @@ test("sporades host helper unregisters a Hosted Capsule without deleting release
           subname: "team-notes",
         },
       },
-      { cwd: dir, env: docker.env },
+      { cwd: dir, env: stoppedDocker.env },
     );
     assert.equal(reactivate.code, 0, reactivate.stderr);
     const reactivateOutput = JSON.parse(reactivate.stdout);

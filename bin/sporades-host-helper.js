@@ -1724,7 +1724,7 @@ function managedRouteMutationLockIdentity(request) {
   };
 }
 function actionCanProvisionCapsuleHttpLog(action) {
-  return action === "capsule.register" || action === "capsule.release.install" || action === "capsule.release.rollback" || action === "capsule.start" || action === "capsule.stop" || action === "capsule.restart" || action === "capsule.health";
+  return action === "capsule.register" || action === "capsule.release.install" || action === "capsule.release.rollback" || action === "capsule.start" || action === "capsule.stop" || action === "capsule.restart" || action === "capsule.sealed-env.rotate-key" || action === "capsule.health";
 }
 function validateCanonicalHostRouteRoot(request) {
   const remoteRoot = request.host.remoteRoot;
@@ -2092,35 +2092,44 @@ async function registerCapsule(request) {
   validateRegisterRequest(request);
   const registration = normaliseRegistration(request);
   await ensureHostedDomainBootstrapped(request, registration);
-  stopAndRemoveContainer(createHostedContainerName(request.host.domain, request.capsule.subname));
   let reactivated = false;
   let sealedServerEnv = null;
-  await mkdir(path3.dirname(registryLockPath(request)), { recursive: true });
-  await withRegistryLock(request, async () => {
-    if (await pathExists(registration.registryRecord)) {
-      const existing = await readRegistryRecordForCapsule(request, "register");
-      assertRegistryRecordMatchesRequest(request, existing);
-      if (existing.status === "unregistered") {
-        await mkdir(path3.dirname(registration.registryRecord), { recursive: true });
-        await mkdir(registration.directories.releases, { recursive: true });
-        await writeUnavailableRoute(registration.lifecycle);
-        sealedServerEnv = await ensureHostSealedEnvKeyPair(registration, existing);
-        await writeRegistryRecordAtomic(registration.registryRecord, reactivateRegistrationRecord(existing, sealedServerEnv));
-        reactivated = true;
-        return;
+  let priorRuntime = null;
+  let admissionError = null;
+  try {
+    await mkdir(path3.dirname(registryLockPath(request)), { recursive: true });
+    await withRegistryLock(request, async () => {
+      if (await pathExists(registration.registryRecord)) {
+        const existing = await readRegistryRecordForCapsule(request, "register");
+        assertRegistryRecordMatchesRequest(request, existing);
+        if (existing.status === "unregistered") {
+          priorRuntime = captureCapsuleRuntimeSettlement(request, existing);
+          quiesceCapsuleRuntime(priorRuntime);
+          await mkdir(path3.dirname(registration.registryRecord), { recursive: true });
+          await mkdir(registration.directories.releases, { recursive: true });
+          await writeUnavailableRoute(registration.lifecycle);
+          sealedServerEnv = await ensureHostSealedEnvKeyPair(registration, existing);
+          await writeRegistryRecordAtomic(registration.registryRecord, reactivateRegistrationRecord(existing, sealedServerEnv));
+          reactivated = true;
+          return;
+        }
+        throw helperError(
+          "Hosted Capsule subname is already registered for this Hosted domain.",
+          `Choose a different Capsule subname for ${request.host.domain}.`
+        );
       }
-      throw helperError(
-        "Hosted Capsule subname is already registered for this Hosted domain.",
-        `Choose a different Capsule subname for ${request.host.domain}.`
-      );
-    }
-    await mkdir(path3.dirname(registration.registryRecord), { recursive: true });
-    await mkdir(registration.directories.releases, { recursive: true });
-    await mkdir(registration.directories.logs, { recursive: true });
-    await writeUnavailableRoute(registration.lifecycle);
-    sealedServerEnv = await ensureHostSealedEnvKeyPair(registration);
-    await writeRegistryRecordAtomic(registration.registryRecord, createRegistrationRecord(registration, sealedServerEnv));
-  });
+      await mkdir(path3.dirname(registration.registryRecord), { recursive: true });
+      await mkdir(registration.directories.releases, { recursive: true });
+      await mkdir(registration.directories.logs, { recursive: true });
+      await writeUnavailableRoute(registration.lifecycle);
+      sealedServerEnv = await ensureHostSealedEnvKeyPair(registration);
+      await writeRegistryRecordAtomic(registration.registryRecord, createRegistrationRecord(registration, sealedServerEnv));
+    });
+  } catch (error) {
+    admissionError = error;
+  }
+  await settleCapsuleRuntime(request, priorRuntime, admissionError);
+  if (admissionError) throw admissionError;
   writeEnvelope({
     ok: true,
     data: {
@@ -2145,46 +2154,59 @@ async function rotateCapsuleSealedEnvKey(request) {
   validateSealedEnvRotationRequest(request);
   await mkdir(path3.dirname(registryLockPath(request)), { recursive: true });
   let data;
-  await withRegistryLock(request, async () => {
-    const record = await readRegistryRecordForCapsule(request, "rotate-key");
-    assertRegistryRecordMatchesRequest(request, record);
-    if (record.status === "unregistered") {
-      throw helperError(
-        "Hosted Capsule is unregistered.",
-        `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before rotating the sealed-env key.`
-      );
-    }
-    stopAndRemoveContainer(createHostedContainerName(request.host.domain, request.capsule.subname));
-    const dataDirectory = path3.join(request.host.remoteRoot, "hosts", request.host.domain, "capsules", request.capsule.subname, "data");
-    const previousPublicKeyFingerprint = record.sealedServerEnv?.currentKeyFingerprint ?? null;
-    const sealedServerEnv = await generateHostSealedEnvKeyPair(dataDirectory);
-    const now = (/* @__PURE__ */ new Date()).toISOString();
-    const nextRecord = {
-      ...record,
-      sealedServerEnv: { ...record.sealedServerEnv ?? {}, currentKeyFingerprint: sealedServerEnv.publicKeyFingerprint },
-      updatedAt: now
-    };
-    await writeRegistryRecordAtomic(registryPath(request), nextRecord);
-    const referenced = referencedSealedEnvKeyFingerprints(nextRecord);
-    referenced.add(sealedServerEnv.publicKeyFingerprint);
-    const cleanup = await cleanupUnreferencedHostSealedEnvKeys(dataDirectory, referenced);
-    data = {
-      rotated: true,
-      capsule: {
-        subname: request.capsule.subname,
-        domain: request.host.domain,
-        hostedUrl: record.hostedUrl ?? `${request.host.scheme ?? "https"}://${request.capsule.subname}.${request.host.domain}`,
-        remoteCapsuleId: record.remoteCapsuleId ?? `${request.host.domain}/${request.capsule.subname}`
-      },
-      sealedServerEnv: {
-        previousPublicKeyFingerprint,
-        publicKey: sealedServerEnv.publicKey,
-        publicKeyFingerprint: sealedServerEnv.publicKeyFingerprint,
-        publicKeyPath: sealedServerEnv.publicKeyPath
-      },
-      cleanup
-    };
-  });
+  let priorRuntime = null;
+  let rotationError = null;
+  try {
+    await withRegistryLock(request, async () => {
+      const record = await readRegistryRecordForCapsule(request, "rotate-key");
+      assertRegistryRecordMatchesRequest(request, record);
+      if (record.status === "unregistered") {
+        throw helperError(
+          "Hosted Capsule is unregistered.",
+          `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before rotating the sealed-env key.`
+        );
+      }
+      priorRuntime = captureCapsuleRuntimeSettlement(request, record);
+      quiesceCapsuleRuntime(priorRuntime);
+      const dataDirectory = path3.join(request.host.remoteRoot, "hosts", request.host.domain, "capsules", request.capsule.subname, "data");
+      const previousPublicKeyFingerprint = record.sealedServerEnv?.currentKeyFingerprint ?? null;
+      const sealedServerEnv = await generateHostSealedEnvKeyPair(dataDirectory);
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const nextRecord = {
+        ...record,
+        sealedServerEnv: { ...record.sealedServerEnv ?? {}, currentKeyFingerprint: sealedServerEnv.publicKeyFingerprint },
+        updatedAt: now
+      };
+      const referenced = /* @__PURE__ */ new Set([
+        ...referencedSealedEnvKeyFingerprints(record),
+        ...referencedSealedEnvKeyFingerprints(nextRecord)
+      ]);
+      if (record.sealedServerEnv?.currentKeyFingerprint) referenced.add(record.sealedServerEnv.currentKeyFingerprint);
+      referenced.add(sealedServerEnv.publicKeyFingerprint);
+      const cleanup = await cleanupUnreferencedHostSealedEnvKeys(dataDirectory, referenced);
+      await writeRegistryRecordAtomic(registryPath(request), nextRecord);
+      data = {
+        rotated: true,
+        capsule: {
+          subname: request.capsule.subname,
+          domain: request.host.domain,
+          hostedUrl: record.hostedUrl ?? `${request.host.scheme ?? "https"}://${request.capsule.subname}.${request.host.domain}`,
+          remoteCapsuleId: record.remoteCapsuleId ?? `${request.host.domain}/${request.capsule.subname}`
+        },
+        sealedServerEnv: {
+          previousPublicKeyFingerprint,
+          publicKey: sealedServerEnv.publicKey,
+          publicKeyFingerprint: sealedServerEnv.publicKeyFingerprint,
+          publicKeyPath: sealedServerEnv.publicKeyPath
+        },
+        cleanup
+      };
+    });
+  } catch (error) {
+    rotationError = error;
+  }
+  await settleCapsuleRuntime(request, priorRuntime, rotationError);
+  if (rotationError) throw rotationError;
   writeEnvelope({ ok: true, data, error: null });
 }
 async function unregisterCapsule(request) {
@@ -2284,10 +2306,9 @@ async function installClaimedRelease(request, previousRecord, paths, claimedArch
     throw helperError("Hosted Capsule release archive ownership changed.", "Upload the release again so the Host helper can claim immutable archive bytes.");
   }
   validateSealedServerEnvPrivateKeyPath(release, paths);
-  const lifecycle = normaliseLifecycle(request, previousRecord);
-  stopAndRemoveContainer(lifecycle.container.name);
   await mkdir(paths.releases, { recursive: true });
-  await prepareWritableDataPath(paths.data);
+  const dataRoot = await openCanonicalRuntimeDataDirectory(paths.data, true);
+  await dataRoot.close();
   await mkdir(paths.logs, { recursive: true });
   const tempReleaseDirectory = `${paths.release}.tmp-${process.pid}`;
   const tempCurrentLink = `${paths.currentLink}.tmp-${process.pid}`;
@@ -2327,17 +2348,42 @@ async function installClaimedRelease(request, previousRecord, paths, claimedArch
     }
     throw error;
   }
+  let privateKeyRuntime = null;
+  if (releaseIncludesSealedServerEnvPrivateKey(release)) {
+    privateKeyRuntime = captureCapsuleRuntimeSettlement(request, previousRecord);
+    quiesceCapsuleRuntime(privateKeyRuntime);
+    try {
+      await installSealedServerEnvPrivateKey(release, paths.data);
+      if (!release.restart) await settleCapsuleRuntime(request, privateKeyRuntime);
+    } catch (error) {
+      let settlementError = null;
+      try {
+        await settleCapsuleRuntime(request, privateKeyRuntime, error);
+      } catch (failure) {
+        settlementError = failure;
+      }
+      await rm(paths.release, { recursive: true, force: true });
+      throw settlementError ?? error;
+    }
+  }
   await symlink(paths.release, tempCurrentLink);
   await rename(tempCurrentLink, paths.currentLink);
-  await installSealedServerEnvPrivateKey(release);
   await recordReleaseUploaded(request, release, installedInventory);
   let restartResult = null;
   let restartError = null;
   if (release.restart) {
     try {
-      restartResult = await restartCapsule(request, { write: false, containerQuiesced: true });
+      restartResult = await restartCapsule(request, { write: false, containerQuiesced: privateKeyRuntime?.wasRunning === true });
     } catch (error) {
       restartError = error;
+    }
+    if (!restartResult && privateKeyRuntime?.wasRunning) {
+      await restorePreviousCurrentReleasePointer(paths, previousCurrentRelease?.id ?? null);
+      try {
+        await settleCapsuleRuntime(request, privateKeyRuntime, restartError ?? new Error("restart failed"));
+      } catch (error) {
+        restartError = error;
+      }
     }
   }
   const data = {
@@ -2843,14 +2889,36 @@ async function startCapsule(request, options = {}) {
   }
   return data;
 }
-async function installSealedServerEnvPrivateKey(release) {
+function releaseIncludesSealedServerEnvPrivateKey(release) {
   const privateKey = release.sealedServerEnv?.privateKey;
   const privateKeyPath = release.sealedServerEnv?.privateKeyPath;
-  if (!release.sealedServerEnvIncluded || !privateKey || !privateKeyPath) {
+  return Boolean(release.sealedServerEnvIncluded && privateKey && privateKeyPath);
+}
+async function installSealedServerEnvPrivateKey(release, dataDirectory) {
+  if (!releaseIncludesSealedServerEnvPrivateKey(release)) return;
+  const privateKey = release.sealedServerEnv.privateKey;
+  const privateKeyPath = release.sealedServerEnv.privateKeyPath;
+  const dataHandle = await openCanonicalRuntimeDataDirectory(dataDirectory, true);
+  try {
+    const rootHandle = await openOrCreateRuntimeDirectory(dataHandle, path3.dirname(privateKeyPath));
+    try {
+      await publishRuntimeFile(rootHandle, privateKeyPath, privateKey, 384, "release-private-key-publish");
+    } finally {
+      await rootHandle.close();
+    }
+  } finally {
+    await dataHandle.close();
+  }
+}
+async function restorePreviousCurrentReleasePointer(paths, previousReleaseId) {
+  const temporary = `${paths.currentLink}.restore-${process.pid}-${randomBytes2(8).toString("hex")}`;
+  await rm(temporary, { force: true });
+  if (!previousReleaseId) {
+    await rm(paths.currentLink, { force: true });
     return;
   }
-  await mkdir(path3.dirname(privateKeyPath), { recursive: true });
-  await writeFile(privateKeyPath, privateKey, { mode: 384 });
+  await symlink(path3.join(paths.releases, previousReleaseId), temporary);
+  await rename(temporary, paths.currentLink);
 }
 function validateSealedServerEnvPrivateKeyPath(release, paths) {
   if (!release.sealedServerEnvIncluded) {
@@ -4305,32 +4373,87 @@ async function writeExclusiveRuntimeFile(parentHandle, targetPath, contents, mod
     await handle.close();
   }
 }
+async function publishRuntimeFile(parentHandle, targetPath, contents, mode, boundary) {
+  const temporaryPath = path3.join(path3.dirname(targetPath), `.${path3.basename(targetPath)}.tmp-${process.pid}-${randomBytes2(8).toString("hex")}`);
+  await writeExclusiveRuntimeFile(parentHandle, temporaryPath, contents, mode);
+  const temporaryDescriptor = descriptorChildPath(parentHandle.fd, path3.basename(temporaryPath), temporaryPath);
+  const targetDescriptor = descriptorChildPath(parentHandle.fd, path3.basename(targetPath), targetPath);
+  try {
+    await pauseRuntimeTreePublication(boundary, targetPath);
+    const parentIdentity = await parentHandle.stat();
+    await assertRuntimeDataPathIdentity(path3.dirname(targetPath), { dev: parentIdentity.dev, ino: parentIdentity.ino }, true);
+    try {
+      const existing = await lstat(targetPath);
+      if (!existing.isFile() || existing.isSymbolicLink()) throw runtimeDataTrustError(targetPath);
+    } catch (error) {
+      if (errorDetails(error).code !== "ENOENT") throw error;
+    }
+    await rename(temporaryDescriptor, targetDescriptor).catch(() => {
+      throw runtimeDataTrustError(targetPath);
+    });
+    const installed = await open(targetDescriptor, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).catch(() => {
+      throw runtimeDataTrustError(targetPath);
+    });
+    try {
+      const details = await installed.stat();
+      if (!details.isFile()) throw runtimeDataTrustError(targetPath);
+      await assertRuntimeDataPathIdentity(targetPath, { dev: details.dev, ino: details.ino }, false);
+    } finally {
+      await installed.close();
+    }
+  } finally {
+    await rm(temporaryDescriptor, { force: true }).catch(() => {
+    });
+  }
+}
+async function pauseRuntimeTreePublication(boundary, targetPath) {
+  if (process.env.SPORADES_TEST_RUNTIME_TREE_PUBLICATION_BOUNDARY !== boundary) return;
+  const marker = process.env.SPORADES_TEST_RUNTIME_TREE_PUBLICATION_MARKER;
+  if (marker) await writeFile(marker, `${targetPath}
+`, { flag: "wx", mode: 384 });
+  await fakeManagedRouteLockPause("SPORADES_FAKE_RUNTIME_TREE_PUBLICATION_PAUSE_MS");
+}
 async function cleanupUnreferencedHostSealedEnvKeys(dataDirectory, referencedFingerprints) {
   const paths = hostSealedEnvKeyPaths(dataDirectory, "placeholder");
-  let entries;
-  try {
-    entries = await readdir(paths.keys);
-  } catch (error) {
-    if (errorDetails(error).code === "ENOENT") {
-      return {
-        deletedKeyFingerprints: [],
-        retainedKeyFingerprints: [...referencedFingerprints].sort()
-      };
-    }
-    throw error;
-  }
+  const dataHandle = await openCanonicalRuntimeDataDirectory(dataDirectory, false);
   const deleted = /* @__PURE__ */ new Set();
-  for (const entry of entries) {
-    const match = /^([a-f0-9]{16})\.(private|public)\.pem$/.exec(entry);
-    if (!match) {
-      continue;
+  try {
+    const rootHandle = await openOrCreateRuntimeDirectory(dataHandle, paths.root);
+    try {
+      const keysHandle = await openOrCreateRuntimeDirectory(rootHandle, paths.keys);
+      try {
+        const keysIdentity = await keysHandle.stat();
+        const descriptorDirectory = process.platform === "linux" ? `/proc/self/fd/${keysHandle.fd}` : paths.keys;
+        const entries = await readdir(descriptorDirectory);
+        for (const entry of entries) {
+          const match = /^([a-f0-9]{16})\.(private|public)\.pem$/.exec(entry);
+          if (!match || referencedFingerprints.has(match[1])) continue;
+          const targetPath = path3.join(paths.keys, entry);
+          const descriptorPath = descriptorChildPath(keysHandle.fd, entry, targetPath);
+          const retained = await open(descriptorPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).catch(() => {
+            throw runtimeDataTrustError(targetPath);
+          });
+          try {
+            const details = await retained.stat();
+            if (!details.isFile()) throw runtimeDataTrustError(targetPath);
+            await pauseRuntimeTreePublication("sealed-key-cleanup", targetPath);
+            await assertRuntimeDataPathIdentity(paths.keys, { dev: keysIdentity.dev, ino: keysIdentity.ino }, true);
+            await assertRuntimeDataPathIdentity(targetPath, { dev: details.dev, ino: details.ino }, false);
+            await rm(descriptorPath, { force: true });
+          } finally {
+            await retained.close();
+          }
+          deleted.add(match[1]);
+        }
+        await assertRuntimeDataPathIdentity(paths.keys, { dev: keysIdentity.dev, ino: keysIdentity.ino }, true);
+      } finally {
+        await keysHandle.close();
+      }
+    } finally {
+      await rootHandle.close();
     }
-    const fingerprint = match[1];
-    if (referencedFingerprints.has(fingerprint)) {
-      continue;
-    }
-    await rm(path3.join(paths.keys, entry), { force: true });
-    deleted.add(fingerprint);
+  } finally {
+    await dataHandle.close();
   }
   return {
     deletedKeyFingerprints: [...deleted].sort(),
@@ -5070,6 +5193,39 @@ function missingHostSealedServerEnvPrivateKeyError(lifecycle, mount) {
 function stopAndRemoveContainer(containerName) {
   runDocker(["stop", containerName], { ignoreFailure: true });
   runDocker(["rm", containerName], { ignoreFailure: true });
+}
+function captureCapsuleRuntimeSettlement(request, record = null) {
+  const containerName = createHostedContainerName(request.host.domain, request.capsule.subname);
+  return { containerName, wasRunning: checkContainerRunning(containerName), registryWasRunning: record?.status === "running" };
+}
+function quiesceCapsuleRuntime(settlement) {
+  if (settlement?.wasRunning) stopAndRemoveContainer(settlement.containerName);
+}
+async function settleCapsuleRuntime(request, settlement, actionError = null) {
+  if (!settlement) return;
+  if (!settlement.wasRunning) {
+    if (settlement.registryWasRunning) {
+      const record = await readRegistryRecordForCapsule(request, "lifecycle");
+      await writeUnavailableRoute(normaliseLifecycle(request, record));
+      await updateRegistryStatus(request, "stopped");
+    }
+    return;
+  }
+  try {
+    const restored = await startCapsule(request, { write: false, containerQuiesced: true });
+    if (!restored) throw helperError("Hosted Capsule runtime restoration failed.", "Check the stopped Capsule and retry the Host operation.");
+  } catch (error) {
+    try {
+      const record = await readRegistryRecordForCapsule(request, "lifecycle");
+      await writeUnavailableRoute(normaliseLifecycle(request, record));
+      await updateRegistryStatus(request, "stopped");
+    } catch {
+    }
+    throw helperError(
+      "Hosted Capsule runtime restoration failed.",
+      actionError ? "The Host operation failed and the previous runtime could not be restored; repair the Capsule data path and start it explicitly." : "The Host operation settled its provider-free state but could not restore the previous runtime; start the Capsule explicitly."
+    );
+  }
 }
 function ensureHostedBaseImage(lifecycle) {
   const image = lifecycle.container.image;
