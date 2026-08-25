@@ -5631,17 +5631,20 @@ function upgradeHostHelper(options: LooseRecord) {
   const localHelper = localHostHelperPath();
   const remoteHelper = remoteHostHelperPath(options.profile);
   const remoteBin = path.posix.dirname(remoteHelper);
+  let helperChecksum: string;
 
   try {
     if (!statSync(localHelper).isFile()) {
       throw new Error("not a file");
     }
+    helperChecksum = createHash("sha256").update(readFileSync(localHelper)).digest("hex");
   } catch {
     throw commandError(
       "Local Host helper file was not found.",
       "Run `npm run build` or reinstall Sporades, then retry `sporades host upgrade --host <alias>`.",
     );
   }
+  const stagedHelper = `${remoteBin}/.sporades-host-helper-stage-${helperChecksum}.mjs`;
 
   const prepare = spawnSync("ssh", [options.profile.server, `mkdir -p ${quoteRemoteShell(remoteBin)}`], {
     cwd: options.projectDir,
@@ -5654,7 +5657,7 @@ function upgradeHostHelper(options: LooseRecord) {
     );
   }
 
-  const upload = spawnSync("scp", [localHelper, `${options.profile.server}:${remoteHelper}`], {
+  const upload = spawnSync("scp", [localHelper, `${options.profile.server}:${stagedHelper}`], {
     cwd: options.projectDir,
     encoding: "utf8",
   });
@@ -5665,13 +5668,17 @@ function upgradeHostHelper(options: LooseRecord) {
     );
   }
 
-  const chmod = spawnSync("ssh", [options.profile.server, `chmod 0755 ${quoteRemoteShell(remoteHelper)}`], {
+  const activateCommand = [
+    `chmod 0755 ${quoteRemoteShell(stagedHelper)}`,
+    `${quoteRemoteShell(stagedHelper)} --install-host-helper ${quoteRemoteShell(remoteHelper)} ${quoteRemoteShell(helperChecksum)}`,
+  ].join(" && ");
+  const chmod = spawnSync("ssh", [options.profile.server, activateCommand], {
     cwd: options.projectDir,
     encoding: "utf8",
   });
   if (chmod.error || chmod.status !== 0) {
     throw commandError(
-      "Failed to mark the Host helper executable.",
+      "Failed to activate the Host helper upgrade.",
       "Check the Host profile SSH target, SSH key access, and remote root permissions.",
     );
   }

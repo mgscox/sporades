@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readdir, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, chown, copyFile, lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { connect } from "node:net";
@@ -26,7 +26,7 @@ const TEST_PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDI9R+ElI6awrzqT1DD
 const TEST_WEBSOCKET_TIMEOUT_MS = 10000;
 
 async function withTempDir(fn) {
-  const dir = await mkdtemp(path.join(tmpdir(), "sporades-host-"));
+  const dir = await mkdtemp(path.join(await realpath(tmpdir()), "sporades-host-"));
   try {
     return await fn(dir);
   } finally {
@@ -245,7 +245,12 @@ function runCli(args, options = {}) {
 function startHostHelper(input, options = {}) {
   const child = spawn(process.execPath, [hostHelperPath], {
     cwd: options.cwd,
-    env: { ...process.env, SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1", ...options.env },
+    env: {
+      ...process.env,
+      SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1",
+      SPORADES_TEST_FLOCK_PATH: path.join(repoRoot, "test", "support", "exec-flock.py"),
+      ...options.env,
+    },
     stdio: ["pipe", "pipe", "pipe"],
   });
 
@@ -270,6 +275,46 @@ function runHostHelper(input, options = {}) {
   return startHostHelper(input, options).result;
 }
 
+function startExecutable(executable, args = [], options = {}) {
+  const child = spawn(executable, args, {
+    cwd: options.cwd,
+    env: { ...process.env, ...options.env },
+    detached: options.detached === true,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const result = new Promise((resolve) => {
+    child.on("close", (code, signal) => resolve({ code, signal, stdout, stderr }));
+  });
+  if (options.input !== undefined) child.stdin.end(options.input);
+  else child.stdin.end();
+  return { child, result, output: () => ({ stdout, stderr }) };
+}
+
+async function writeFakeProcEntry(procRoot, pid, target, environment = []) {
+  const processDir = path.join(procRoot, String(pid));
+  await mkdir(processDir, { recursive: true });
+  await writeFile(path.join(processDir, "cmdline"), Buffer.from(`${process.execPath}\0${target}\0`, "utf8"));
+  await writeFile(path.join(processDir, "environ"), Buffer.from(`${environment.join("\0")}\0`, "utf8"));
+}
+
+async function waitForFileText(filePath, predicate, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const contents = await readFile(filePath, "utf8");
+      if (predicate(contents)) return contents;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(`Timed out waiting for expected contents in ${filePath}`);
+}
+
 async function waitForPath(filePath, timeoutMs = 2000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -282,6 +327,20 @@ async function waitForPath(filePath, timeoutMs = 2000) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.fail(`Timed out waiting for ${filePath}`);
+}
+
+async function waitForChildPid(parentPid, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const children = spawnSync("ps", ["-axo", "pid=,ppid=,command="], { encoding: "utf8" });
+    const childLine = children.status === 0
+      ? children.stdout.split("\n").find((line) => Number(line.trim().split(/\s+/)[1]) === parentPid)
+      : null;
+    const candidate = childLine ? Number(childLine.trim().split(/\s+/)[0]) : NaN;
+    if (Number.isSafeInteger(candidate) && candidate > 0) return candidate;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(`Timed out waiting for child of ${parentPid}`);
 }
 
 function hostEnv(configDir) {
@@ -645,14 +704,19 @@ process.exit(1);
   await writeFile(
     chownPath,
     `#!/usr/bin/env node
-const { appendFileSync } = require("node:fs");
+const { appendFileSync, chownSync } = require("node:fs");
 const args = process.argv.slice(2);
 appendFileSync(process.env.FAKE_CADDY_USER_CHOWN_LOG, JSON.stringify({ args, cwd: process.cwd() }) + "\\n");
+if (process.env.FAKE_CADDY_APPLY_CHOWN === "1") {
+  const [uid, gid] = args[0].split(":").map(Number);
+  for (const target of args.slice(1)) chownSync(target, uid, gid);
+}
 process.exit(Number(process.env.FAKE_CADDY_CHOWN_STATUS || "0"));
 `,
   );
   await chmod(idPath, 0o755);
   await chmod(chownPath, 0o755);
+  await writeFile(chownLogPath, "", { mode: 0o600 });
 
   return {
     fakeBinDir,
@@ -662,10 +726,53 @@ process.exit(Number(process.env.FAKE_CADDY_CHOWN_STATUS || "0"));
       PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH}`,
       FAKE_CADDY_USER_ID_LOG: idLogPath,
       FAKE_CADDY_USER_CHOWN_LOG: chownLogPath,
+      FAKE_CADDY_UID: String(process.getuid?.() ?? 123),
+      FAKE_CADDY_GID: String(process.getgid?.() ?? 456),
       ...options.env,
     },
     idCalls: () => readJsonl(idLogPath),
     chownCalls: () => readJsonl(chownLogPath),
+  };
+}
+
+async function setupRootCapsuleHttpLogFixture(dir, routeKind) {
+  const domain = "capsules.example.dev";
+  const subname = "team-notes";
+  let remoteRoot;
+  if (routeKind === "running") {
+    ({ remoteRoot } = await writeHostedCapsuleRollbackFixture(dir, { releaseIds: ["20260630T221500Z-feedface"] }));
+  } else {
+    remoteRoot = path.join(dir, "remote-root");
+  }
+  await mkdir(path.join(remoteRoot, "caddy", "hosts"), { recursive: true });
+  await writeFile(path.join(remoteRoot, "caddy", "Caddyfile"), "import ./sporades-hosted-domains.caddy\n");
+  await writeFile(path.join(remoteRoot, "caddy", "hosts", `${domain}.caddy`), `import ./${domain}/*.caddy\n`);
+  const docker = await installFakeDocker(path.join(dir, "docker"));
+  const caddyUser = await installFakeCaddyUserCommands(path.join(dir, "caddy-user"), {
+    env: { FAKE_CADDY_UID: "12345", FAKE_CADDY_GID: "12346", FAKE_CADDY_APPLY_CHOWN: "1" },
+  });
+  const env = {
+    ...docker.env,
+    ...caddyUser.env,
+    PATH: `${caddyUser.fakeBinDir}${path.delimiter}${docker.fakeBinDir}${path.delimiter}${process.env.PATH}`,
+  };
+  const host = { alias: "personal", domain, scheme: "https", remoteRoot };
+  const capsule = { subname };
+  let request;
+  let first;
+  if (routeKind === "running") {
+    request = { action: "capsule.start", host, capsule };
+    first = await runHostHelper(request, { cwd: dir, env });
+  } else {
+    first = await runHostHelper({ action: "capsule.register", host, capsule }, { cwd: dir, env });
+    request = { action: "capsule.stop", host, capsule };
+  }
+  assert.equal(JSON.parse(first.stdout).ok, true, `${routeKind} first: ${first.stdout}\n${first.stderr}`);
+  return {
+    request,
+    env,
+    caddyUser,
+    logFile: path.join(remoteRoot, "hosts", domain, "capsules", subname, "logs", "http.log"),
   };
 }
 
@@ -1497,14 +1604,245 @@ test("sporades host upgrade copies the running CLI sibling Host helper to the se
     });
 
     const sshCalls = (await readFile(fakeSsh.logPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-    assert.deepEqual(sshCalls.map((call) => call.args), [
-      ["root@example.test", "mkdir -p '/opt/sporades/bin'"],
-      ["root@example.test", "chmod 0755 '/opt/sporades/bin/sporades-host-helper'"],
-    ]);
-
     const [scpCall] = (await readFile(fakeScp.logPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    const helperChecksum = createHash("sha256").update(await readFile(hostHelperPath)).digest("hex");
+    const stagedHelper = `/opt/sporades/bin/.sporades-host-helper-stage-${helperChecksum}.mjs`;
     assert.equal(scpCall.source, path.join(repoRoot, "bin", "sporades-host-helper.js"));
-    assert.equal(scpCall.target, "root@example.test:/opt/sporades/bin/sporades-host-helper");
+    assert.equal(scpCall.target, `root@example.test:${stagedHelper}`);
+    assert.deepEqual(sshCalls[0].args, ["root@example.test", "mkdir -p '/opt/sporades/bin'"]);
+    assert.equal(sshCalls.length, 2);
+    assert.equal(sshCalls[1].args[0], "root@example.test");
+    assert.match(sshCalls[1].args[1], new RegExp(`^chmod 0755 '${stagedHelper}' && '${stagedHelper}' --install-host-helper '/opt/sporades/bin/sporades-host-helper' '${helperChecksum}'$`));
+  });
+});
+
+test("first Host helper upgrade drains legacy actions and blocks new commands behind an atomic dispatcher", async () => {
+  await withTempDir(async (dir) => {
+    const remoteBin = path.join(dir, "remote", "bin");
+    const target = path.join(remoteBin, "sporades-host-helper");
+    const procRoot = path.join(dir, "proc");
+    await mkdir(remoteBin, { recursive: true });
+    await mkdir(procRoot, { recursive: true });
+    await writeFile(target, "#!/bin/sh\nprintf '%s\\n' legacy-helper\n", { mode: 0o755 });
+    await chmod(target, 0o755);
+    const helperBytes = await readFile(hostHelperPath);
+    const checksum = createHash("sha256").update(helperBytes).digest("hex");
+    const stage = path.join(remoteBin, `.sporades-host-helper-stage-${checksum}.mjs`);
+    await copyFile(hostHelperPath, stage);
+    await chmod(stage, 0o755);
+    await writeFakeProcEntry(procRoot, 41001, target);
+    const installerLookalike = path.join(procRoot, "41000");
+    await mkdir(installerLookalike, { recursive: true });
+    await writeFile(path.join(installerLookalike, "cmdline"), Buffer.from(`${process.execPath}\0${stage}\0--install-host-helper\0${target}\0`, "utf8"));
+    await writeFile(path.join(installerLookalike, "environ"), Buffer.from("\0", "utf8"));
+    const env = {
+      SPORADES_TEST_FLOCK_PATH: path.join(repoRoot, "test", "support", "exec-flock.py"),
+      SPORADES_TEST_SHA256_PATH: path.join(repoRoot, "test", "support", "sha256sum.mjs"),
+      SPORADES_TEST_PROC_ROOT: procRoot,
+      SPORADES_HOST_UPGRADE_DRAIN_TIMEOUT_MS: "2000",
+      SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1",
+    };
+    const upgrade = startExecutable(stage, ["--install-host-helper", target, checksum], { cwd: dir, env });
+    await Promise.race([
+      waitForFileText(target, (contents) => contents.includes("SPORADES_HOST_HELPER_DISPATCHER_V1")),
+      upgrade.result.then((result) => assert.fail(`upgrade exited before dispatcher publication: ${JSON.stringify(result)}`)),
+    ]);
+    await writeFakeProcEntry(procRoot, 41002, target, [], "start-during-replacement window");
+
+    const request = `${JSON.stringify({
+      action: "host.version",
+      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot: path.join(dir, "remote") },
+    })}\n`;
+    const command = startExecutable(target, [], { cwd: dir, env, input: request });
+    let commandSettled = false;
+    command.result.then(() => { commandSettled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(commandSettled, false, "a new command must wait behind the exclusive upgrade barrier");
+
+    await rm(path.join(procRoot, "41001"), { recursive: true, force: true });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(commandSettled, false, "a legacy action starting during replacement must also drain");
+    await rm(path.join(procRoot, "41002"), { recursive: true, force: true });
+
+    const upgraded = await upgrade.result;
+    assert.equal(upgraded.code, 0, upgraded.stderr || upgraded.stdout);
+    const commandResult = await command.result;
+    assert.equal(commandResult.code, 0, commandResult.stderr);
+    assert.equal(JSON.parse(commandResult.stdout).data.version, rootPackageJson.version, commandResult.stdout);
+    const payloadName = (await readFile(path.join(remoteBin, ".sporades-host-helper.active"), "utf8")).trim();
+    assert.equal(payloadName, `.sporades-host-helper-payload-${checksum}.mjs`);
+    assert.equal(createHash("sha256").update(await readFile(path.join(remoteBin, payloadName))).digest("hex"), checksum);
+    await assert.rejects(stat(path.join(remoteBin, ".sporades-host-helper.upgrade-blocked")), { code: "ENOENT" });
+    await assert.rejects(stat(path.join(remoteBin, ".sporades-host-helper.needs-drain")), { code: "ENOENT" });
+    assert.deepEqual((await readdir(remoteBin)).filter((entry) => entry.includes(".tmp-")), []);
+
+    await writeFile(path.join(remoteBin, payloadName), Buffer.concat([await readFile(path.join(remoteBin, payloadName)), Buffer.from("\ncorrupt\n")]));
+    const corrupted = await startExecutable(target, [], { cwd: dir, env, input: request }).result;
+    assert.equal(JSON.parse(corrupted.stdout).error.message, "Host helper payload integrity check failed.");
+    await writeFile(path.join(remoteBin, ".sporades-host-helper.active"), "../../attacker\n");
+    const hostilePointer = await startExecutable(target, [], { cwd: dir, env, input: request }).result;
+    assert.equal(JSON.parse(hostilePointer.stdout).error.message, "Host helper dispatcher state is invalid.");
+  });
+});
+
+test("Host helper upgrade times out fail closed and retries without exposing old and new actions together", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote");
+    const remoteBin = path.join(remoteRoot, "bin");
+    const target = path.join(remoteBin, "sporades-host-helper");
+    const procRoot = path.join(dir, "proc");
+    await mkdir(remoteBin, { recursive: true });
+    await mkdir(procRoot, { recursive: true });
+    await writeFile(target, "#!/bin/sh\nprintf '%s\\n' legacy-helper-must-not-run\n", { mode: 0o755 });
+    await chmod(target, 0o755);
+    const helperBytes = await readFile(hostHelperPath);
+    const checksum = createHash("sha256").update(helperBytes).digest("hex");
+    const stage = path.join(remoteBin, `.sporades-host-helper-stage-${checksum}.mjs`);
+    await copyFile(hostHelperPath, stage);
+    await chmod(stage, 0o755);
+    await writeFakeProcEntry(procRoot, 42001, target);
+    const env = {
+      SPORADES_TEST_FLOCK_PATH: path.join(repoRoot, "test", "support", "exec-flock.py"),
+      SPORADES_TEST_SHA256_PATH: path.join(repoRoot, "test", "support", "sha256sum.mjs"),
+      SPORADES_TEST_PROC_ROOT: procRoot,
+      SPORADES_HOST_UPGRADE_DRAIN_TIMEOUT_MS: "100",
+      SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1",
+    };
+
+    const malformedTimeout = await startExecutable(stage, ["--install-host-helper", target, checksum], {
+      cwd: dir,
+      env: { ...env, SPORADES_HOST_UPGRADE_LOCK_TIMEOUT_MS: "NaN" },
+    }).result;
+    assert.equal(malformedTimeout.code, 1);
+    assert.equal(await readFile(target, "utf8"), "#!/bin/sh\nprintf '%s\\n' legacy-helper-must-not-run\n");
+
+    const failed = await startExecutable(stage, ["--install-host-helper", target, checksum], { cwd: dir, env }).result;
+    assert.equal(failed.code, 1);
+    assert.match(await readFile(target, "utf8"), /SPORADES_HOST_HELPER_DISPATCHER_V1/);
+    assert.equal(await readFile(path.join(remoteBin, ".sporades-host-helper.upgrade-blocked"), "utf8"), "upgrade-recovery-required\n");
+    assert.equal(await readFile(path.join(remoteBin, ".sporades-host-helper.needs-drain"), "utf8"), "legacy-helper-drain-required\n");
+    const request = `${JSON.stringify({
+      action: "host.version",
+      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+    })}\n`;
+    const blocked = await startExecutable(target, [], { cwd: dir, env, input: request }).result;
+    assert.equal(blocked.code, 0, blocked.stderr);
+    assert.equal(JSON.parse(blocked.stdout).error.message, "Host helper upgrade requires recovery.");
+    assert.doesNotMatch(blocked.stdout, /legacy-helper-must-not-run/);
+
+    await rm(path.join(procRoot, "42001"), { recursive: true, force: true });
+    const recovered = await startExecutable(stage, ["--install-host-helper", target, checksum], {
+      cwd: dir,
+      env: { ...env, SPORADES_HOST_UPGRADE_DRAIN_TIMEOUT_MS: "1000" },
+    }).result;
+    assert.equal(recovered.code, 0, recovered.stderr || recovered.stdout);
+    const current = await startExecutable(target, [], { cwd: dir, env, input: request }).result;
+    assert.equal(JSON.parse(current.stdout).data.version, rootPackageJson.version, current.stdout);
+    await assert.rejects(stat(path.join(remoteBin, ".sporades-host-helper.upgrade-blocked")), { code: "ENOENT" });
+    await assert.rejects(stat(path.join(remoteBin, ".sporades-host-helper.needs-drain")), { code: "ENOENT" });
+  });
+});
+
+test("first Host helper upgrade requires stable quiescence when a legacy action becomes identifiable after an empty proc scan", async () => {
+  await withTempDir(async (dir) => {
+    const remoteBin = path.join(dir, "remote", "bin");
+    const target = path.join(remoteBin, "sporades-host-helper");
+    const procRoot = path.join(dir, "proc");
+    await mkdir(remoteBin, { recursive: true });
+    await mkdir(procRoot, { recursive: true });
+    await writeFile(target, "#!/bin/sh\nprintf '%s\\n' legacy-helper\n", { mode: 0o755 });
+    const helperBytes = await readFile(hostHelperPath);
+    const checksum = createHash("sha256").update(helperBytes).digest("hex");
+    const stage = path.join(remoteBin, `.sporades-host-helper-stage-${checksum}.mjs`);
+    await copyFile(hostHelperPath, stage);
+    await chmod(stage, 0o755);
+    const env = {
+      SPORADES_TEST_FLOCK_PATH: path.join(repoRoot, "test", "support", "exec-flock.py"),
+      SPORADES_TEST_SHA256_PATH: path.join(repoRoot, "test", "support", "sha256sum.mjs"),
+      SPORADES_TEST_PROC_ROOT: procRoot,
+      SPORADES_HOST_UPGRADE_DRAIN_TIMEOUT_MS: "2000",
+      SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1",
+    };
+    const upgrade = startExecutable(stage, ["--install-host-helper", target, checksum], { cwd: dir, env });
+    await waitForFileText(target, (contents) => contents.includes("SPORADES_HOST_HELPER_DISPATCHER_V1"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await writeFakeProcEntry(procRoot, 43001, target);
+    let settled = false;
+    upgrade.result.then(() => { settled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    assert.equal(settled, false, "one empty proc snapshot must not finish legacy drain");
+    await rm(path.join(procRoot, "43001"), { recursive: true, force: true });
+    const result = await upgrade.result;
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+  });
+});
+
+test("Host helper legacy drain uses a monotonic bounded deadline despite wall-clock rollback", async () => {
+  await withTempDir(async (dir) => {
+    const remoteBin = path.join(dir, "remote", "bin");
+    const target = path.join(remoteBin, "sporades-host-helper");
+    const procRoot = path.join(dir, "proc");
+    await mkdir(remoteBin, { recursive: true });
+    await mkdir(procRoot, { recursive: true });
+    await writeFile(target, "#!/bin/sh\nprintf '%s\\n' legacy-helper\n", { mode: 0o755 });
+    const helperBytes = await readFile(hostHelperPath);
+    const checksum = createHash("sha256").update(helperBytes).digest("hex");
+    const stage = path.join(remoteBin, `.sporades-host-helper-stage-${checksum}.mjs`);
+    await copyFile(hostHelperPath, stage);
+    await chmod(stage, 0o755);
+    await writeFakeProcEntry(procRoot, 43002, target);
+    const clockRollback = path.join(dir, "clock-rollback.cjs");
+    await writeFile(clockRollback, "Date.now = () => 0;\n");
+    const upgrade = startExecutable(stage, ["--install-host-helper", target, checksum], {
+      cwd: dir,
+      detached: true,
+      env: {
+        NODE_OPTIONS: `--require=${clockRollback}`,
+        SPORADES_TEST_FLOCK_PATH: path.join(repoRoot, "test", "support", "exec-flock.py"),
+        SPORADES_TEST_PROC_ROOT: procRoot,
+        SPORADES_HOST_UPGRADE_DRAIN_TIMEOUT_MS: "100",
+        SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1",
+      },
+    });
+    const forcedKill = setTimeout(() => {
+      try { process.kill(-upgrade.child.pid, "SIGKILL"); } catch {}
+    }, 500);
+    const result = await upgrade.result;
+    clearTimeout(forcedKill);
+    assert.equal(result.code, 1);
+    assert.match(result.stdout, /Existing Host helper actions did not drain before the upgrade timeout/);
+  });
+});
+
+test("Host helper legacy drain rejects an oversized process table within its work bound", async () => {
+  await withTempDir(async (dir) => {
+    const remoteBin = path.join(dir, "remote", "bin");
+    const target = path.join(remoteBin, "sporades-host-helper");
+    const procRoot = path.join(dir, "proc");
+    await mkdir(remoteBin, { recursive: true });
+    await mkdir(procRoot, { recursive: true });
+    await writeFile(target, "#!/bin/sh\nprintf '%s\\n' legacy-helper\n", { mode: 0o755 });
+    const helperBytes = await readFile(hostHelperPath);
+    const checksum = createHash("sha256").update(helperBytes).digest("hex");
+    const stage = path.join(remoteBin, `.sporades-host-helper-stage-${checksum}.mjs`);
+    await copyFile(hostHelperPath, stage);
+    await chmod(stage, 0o755);
+    await Promise.all(Array.from({ length: 80 }, (_, index) => mkdir(path.join(procRoot, String(44000 + index)))));
+    const startedAt = process.hrtime.bigint();
+    const result = await startExecutable(stage, ["--install-host-helper", target, checksum], {
+      cwd: dir,
+      env: {
+        SPORADES_TEST_FLOCK_PATH: path.join(repoRoot, "test", "support", "exec-flock.py"),
+        SPORADES_TEST_PROC_ROOT: procRoot,
+        SPORADES_HOST_UPGRADE_DRAIN_TIMEOUT_MS: "1000",
+        SPORADES_HOST_UPGRADE_PROC_MAX_ENTRIES: "64",
+        SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1",
+      },
+    }).result;
+    const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+    assert.equal(result.code, 1);
+    assert.match(result.stdout, /Host process inspection exceeded its safe work bound/);
+    assert.ok(elapsedMs < 1000, `process inspection must be bounded, took ${elapsedMs}ms`);
   });
 });
 
@@ -2527,7 +2865,7 @@ test("sporades host helper bootstraps a Hosted domain idempotently without delet
     );
     assert.deepEqual(
       (await caddyUser.chownCalls()).map((call) => call.args),
-      [["123:456", path.join(remoteRoot, "caddy", "logs"), path.join(remoteRoot, "caddy", "logs", "access.log")]],
+      [],
     );
     assert.deepEqual(
       (await docker.caddyCalls()).map((call) => call.args),
@@ -2805,6 +3143,195 @@ test("sporades host helper reports Docker and Caddy bootstrap substrate failures
   });
 });
 
+test("sporades host bootstrap rejects path overrides and final-entry symlinks without touching outside bytes", async () => {
+  await withTempDir(async (dir) => {
+    const outside = path.join(dir, "outside.txt");
+    await writeFile(outside, "outside-byte-identity\n", { mode: 0o600 });
+    const overrideRoot = path.join(dir, "override-root");
+    const override = await runHostHelper({
+      action: "host.bootstrap",
+      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot: overrideRoot },
+      capsule: null,
+      bootstrap: { caddy: { accessLog: outside }, tls: { mode: "automatic" } },
+    }, { cwd: dir });
+    assert.equal(JSON.parse(override.stdout).error.message, "Invalid Host bootstrap path.", override.stdout);
+    assert.equal(await readFile(outside, "utf8"), "outside-byte-identity\n");
+
+    const finalEntries = [
+      ["caddyfile", (root) => path.join(root, "caddy", "Caddyfile")],
+      ["managed", (root) => path.join(root, "caddy", "sporades-hosted-domains.caddy")],
+      ["domain", (root) => path.join(root, "caddy", "hosts", "capsules.example.dev.caddy")],
+      ["health", (root) => path.join(root, "caddy", "hosts", "capsules.example.dev", "host.caddy")],
+      ["placeholder", (root) => path.join(root, "caddy", "hosts", "capsules.example.dev", ".sporades-placeholder.caddy")],
+      ["access-log", (root) => path.join(root, "caddy", "logs", "access.log")],
+    ];
+    for (const [name, resolveFinal] of finalEntries) {
+      const remoteRoot = path.join(dir, `symlink-${name}`);
+      const finalPath = resolveFinal(remoteRoot);
+      await mkdir(path.dirname(finalPath), { recursive: true, mode: 0o755 });
+      await symlink(outside, finalPath);
+      const result = await runHostHelper({
+        action: "host.bootstrap",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: null,
+        bootstrap: { tls: { mode: "automatic" } },
+      }, { cwd: dir });
+      assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule route trust validation failed.", `${name}: ${result.stdout}`);
+      assert.equal(await readFile(outside, "utf8"), "outside-byte-identity\n", name);
+    }
+  });
+});
+
+test("sporades host bootstrap revalidates the trusted chain immediately before atomic publication", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const marker = path.join(dir, "bootstrap-boundary.marker");
+    const outside = path.join(dir, "outside");
+    const domainDirectory = path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev");
+    const preservedDirectory = `${domainDirectory}.preserved`;
+    await mkdir(outside, { mode: 0o700 });
+    const sentinel = path.join(outside, "sentinel.bin");
+    await writeFile(sentinel, Buffer.from([9, 8, 7, 6, 5, 4]));
+    const before = createHash("sha256").update(await readFile(sentinel)).digest("hex");
+    const docker = await installFakeDocker(path.join(dir, "docker"));
+    const caddyUser = await installFakeCaddyUserCommands(path.join(dir, "caddy-user"));
+    const action = startHostHelper({
+      action: "host.bootstrap",
+      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+      capsule: null,
+      bootstrap: { tls: { mode: "automatic" } },
+    }, {
+      cwd: dir,
+      env: {
+        ...docker.env,
+        ...caddyUser.env,
+        PATH: `${caddyUser.fakeBinDir}${path.delimiter}${docker.fakeBinDir}${path.delimiter}${process.env.PATH}`,
+        SPORADES_TEST_ROUTE_MUTATION_BOUNDARY: "bootstrap-health-route-publish",
+        SPORADES_TEST_ROUTE_MUTATION_MARKER: marker,
+        SPORADES_FAKE_ROUTE_MUTATION_PAUSE_MS: "700",
+      },
+    });
+    await waitForPath(marker);
+    await rename(domainDirectory, preservedDirectory);
+    await symlink(outside, domainDirectory, "dir");
+    const result = await action.result;
+    assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule route trust validation failed.", result.stdout);
+    assert.equal(createHash("sha256").update(await readFile(sentinel)).digest("hex"), before);
+    assert.deepEqual(await readdir(outside), ["sentinel.bin"]);
+  });
+});
+
+test("sporades host bootstrap retains exact Caddy access-log ownership across idempotent root runs", async (t) => {
+  if (process.getuid?.() !== 0) {
+    t.skip("requires the isolated root ownership-changing fixture");
+    return;
+  }
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const docker = await installFakeDocker(path.join(dir, "docker"));
+    const caddyUser = await installFakeCaddyUserCommands(path.join(dir, "caddy-user"), {
+      env: { FAKE_CADDY_UID: "12345", FAKE_CADDY_GID: "12346", FAKE_CADDY_APPLY_CHOWN: "1" },
+    });
+    const env = {
+      ...docker.env,
+      ...caddyUser.env,
+      PATH: `${caddyUser.fakeBinDir}${path.delimiter}${docker.fakeBinDir}${path.delimiter}${process.env.PATH}`,
+    };
+    const request = {
+      action: "host.bootstrap",
+      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+      capsule: null,
+      bootstrap: { tls: { mode: "automatic" } },
+    };
+    const first = await runHostHelper(request, { cwd: dir, env });
+    assert.equal(JSON.parse(first.stdout).ok, true, `first: ${first.stdout}`);
+    const repeatMutationMarker = path.join(dir, "repeat-mutation.marker");
+    const repeat = await runHostHelper(request, {
+      cwd: dir,
+      env: {
+        ...env,
+        SPORADES_TEST_ROUTE_MUTATION_BOUNDARY: "bootstrap-access-log-descriptor-mutate",
+        SPORADES_TEST_ROUTE_MUTATION_MARKER: repeatMutationMarker,
+      },
+    });
+    assert.equal(JSON.parse(repeat.stdout).ok, true, `repeat: ${repeat.stdout}`);
+    await assert.rejects(readFile(repeatMutationMarker, "utf8"), { code: "ENOENT" });
+    assert.deepEqual(await caddyUser.chownCalls(), [], "bootstrap must never delegate privileged ownership changes to pathname-based chown");
+    const logDirectory = path.join(remoteRoot, "caddy", "logs");
+    const logFile = path.join(logDirectory, "access.log");
+    assert.deepEqual([Number((await lstat(logDirectory)).uid), Number((await lstat(logDirectory)).gid)], [12345, 12346]);
+    assert.deepEqual([Number((await lstat(logFile)).uid), Number((await lstat(logFile)).gid)], [12345, 12346]);
+
+    await chown(logFile, 22345, 22346);
+    const foreign = await runHostHelper(request, { cwd: dir, env });
+    assert.equal(JSON.parse(foreign.stdout).error.message, "Hosted Capsule route trust validation failed.", foreign.stdout);
+    assert.deepEqual([Number((await lstat(logFile)).uid), Number((await lstat(logFile)).gid)], [22345, 22346]);
+
+    await chown(logFile, 12345, 12346);
+    await chown(logDirectory, 22345, 22346);
+    const foreignDirectory = await runHostHelper(request, { cwd: dir, env });
+    assert.equal(JSON.parse(foreignDirectory.stdout).error.message, "Hosted Capsule route trust validation failed.", foreignDirectory.stdout);
+    assert.deepEqual([Number((await lstat(logDirectory)).uid), Number((await lstat(logDirectory)).gid)], [22345, 22346]);
+  });
+});
+
+test("sporades host bootstrap keeps privileged access-log repair on retained inodes when Caddy replaces the pathname", async (t) => {
+  if (process.getuid?.() !== 0) {
+    t.skip("requires the isolated root ownership-changing fixture");
+    return;
+  }
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const docker = await installFakeDocker(path.join(dir, "docker"));
+    const caddyUser = await installFakeCaddyUserCommands(path.join(dir, "caddy-user"), {
+      env: { FAKE_CADDY_UID: "12345", FAKE_CADDY_GID: "12346", FAKE_CADDY_APPLY_CHOWN: "1" },
+    });
+    const env = {
+      ...docker.env,
+      ...caddyUser.env,
+      PATH: `${caddyUser.fakeBinDir}${path.delimiter}${docker.fakeBinDir}${path.delimiter}${process.env.PATH}`,
+    };
+    const request = {
+      action: "host.bootstrap",
+      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+      capsule: null,
+      bootstrap: { tls: { mode: "automatic" } },
+    };
+    const initial = await runHostHelper(request, { cwd: dir, env });
+    assert.equal(JSON.parse(initial.stdout).ok, true, initial.stdout);
+
+    const logFile = path.join(remoteRoot, "caddy", "logs", "access.log");
+    const retainedLogFile = `${logFile}.retained`;
+    await chmod(logFile, 0o600);
+    const outside = path.join(dir, "outside.bin");
+    await writeFile(outside, Buffer.from([4, 8, 15, 16, 23, 42]), { mode: 0o604 });
+    const outsideBefore = await lstat(outside);
+    const outsideHash = createHash("sha256").update(await readFile(outside)).digest("hex");
+    const marker = path.join(dir, "descriptor-boundary.marker");
+    const action = startHostHelper(request, {
+      cwd: dir,
+      env: {
+        ...env,
+        SPORADES_TEST_ROUTE_MUTATION_BOUNDARY: "bootstrap-access-log-descriptor-mutate",
+        SPORADES_TEST_ROUTE_MUTATION_MARKER: marker,
+        SPORADES_FAKE_ROUTE_MUTATION_PAUSE_MS: "700",
+      },
+    });
+    await waitForPath(marker);
+    await rename(logFile, retainedLogFile);
+    await symlink(outside, logFile);
+    const result = await action.result;
+    assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule route trust validation failed.", result.stdout);
+
+    const outsideAfter = await lstat(outside);
+    assert.equal(createHash("sha256").update(await readFile(outside)).digest("hex"), outsideHash);
+    assert.equal(Number(outsideAfter.mode) & 0o777, Number(outsideBefore.mode) & 0o777);
+    assert.deepEqual([Number(outsideAfter.uid), Number(outsideAfter.gid)], [Number(outsideBefore.uid), Number(outsideBefore.gid)]);
+    assert.equal(Number((await lstat(retainedLogFile)).mode) & 0o777, 0o640, "repair stayed on the retained file descriptor");
+    assert.deepEqual(await caddyUser.chownCalls(), []);
+  });
+});
+
 test("sporades host helper registers Hosted Capsules with registry state and unavailable routes", async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
@@ -3070,6 +3597,175 @@ test("sporades host helper rotates a Hosted Capsule sealed-env key and cleans on
     );
     assert.deepEqual(output.data.cleanup.deletedKeyFingerprints, [staleFingerprint]);
     assert.deepEqual(output.data.cleanup.retainedKeyFingerprints.sort(), [oldFingerprint, output.data.sealedServerEnv.publicKeyFingerprint].sort());
+  });
+});
+
+test("sporades host helper descriptor-fences sealed-env key creation after quiescing Docker", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleRollbackFixture(dir, { releaseIds: ["20260630T221500Z-feedface"] });
+    const docker = await installFakeDocker(path.join(dir, "docker"));
+    const outside = path.join(dir, "outside-key.bin");
+    await writeFile(outside, Buffer.from([4, 2, 4, 2]), { mode: 0o604 });
+    const outsideBefore = await lstat(outside);
+    const outsideHash = createHash("sha256").update(await readFile(outside)).digest("hex");
+    const marker = path.join(dir, "sealed-key.marker");
+    const request = {
+      action: "capsule.sealed-env.rotate-key",
+      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: "team-notes" },
+    };
+    const action = startHostHelper(request, {
+      cwd: dir,
+      env: {
+        ...docker.env,
+        SPORADES_TEST_RUNTIME_DATA_MUTATION_BOUNDARY: "runtime-data-descriptor-mutate",
+        SPORADES_TEST_RUNTIME_DATA_MUTATION_MARKER: marker,
+        SPORADES_TEST_RUNTIME_DATA_MUTATION_TARGET_SUFFIX: ".private.pem",
+        SPORADES_FAKE_RUNTIME_DATA_MUTATION_PAUSE_MS: "700",
+      },
+    });
+    const keyPath = (await waitForFileText(marker, (contents) => contents.endsWith(".private.pem\n"))).trim();
+    assert.deepEqual((await docker.calls()).map((call) => call.args[0]), ["stop", "rm"]);
+    const retained = `${keyPath}.retained`;
+    await rename(keyPath, retained);
+    await symlink(outside, keyPath);
+    const result = await action.result;
+    assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule data path failed its no-follow trust check.", result.stdout);
+    const outsideAfter = await lstat(outside);
+    assert.equal(createHash("sha256").update(await readFile(outside)).digest("hex"), outsideHash);
+    assert.deepEqual([outsideAfter.mode & 0o777, outsideAfter.uid, outsideAfter.gid], [outsideBefore.mode & 0o777, outsideBefore.uid, outsideBefore.gid]);
+    assert.match(await readFile(retained, "utf8"), /PRIVATE KEY/);
+
+    await rm(path.join(fixture.dataDir, "sealed-server-env"), { recursive: true, force: true });
+    const outsideDirectory = path.join(dir, "outside-key-directory");
+    const sentinel = path.join(outsideDirectory, "sentinel.bin");
+    await mkdir(outsideDirectory);
+    await writeFile(sentinel, Buffer.from([1, 6, 1, 8]), { mode: 0o604 });
+    const sentinelHash = createHash("sha256").update(await readFile(sentinel)).digest("hex");
+    await symlink(outsideDirectory, path.join(fixture.dataDir, "sealed-server-env"));
+    const ancestor = await runHostHelper(request, { cwd: dir, env: docker.env });
+    assert.equal(JSON.parse(ancestor.stdout).error.message, "Hosted Capsule data path failed its no-follow trust check.", ancestor.stdout);
+    assert.equal(createHash("sha256").update(await readFile(sentinel)).digest("hex"), sentinelHash);
+    assert.deepEqual(await readdir(outsideDirectory), ["sentinel.bin"]);
+  });
+});
+
+test("sporades host helper rejects non-canonical per-Capsule HTTP log paths before filesystem mutation", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const outsideDirectory = path.join(dir, "outside");
+    await mkdir(outsideDirectory, { mode: 0o700 });
+    const sentinel = path.join(outsideDirectory, "sentinel.bin");
+    await writeFile(sentinel, Buffer.from([1, 3, 3, 7]), { mode: 0o600 });
+    const before = createHash("sha256").update(await readFile(sentinel)).digest("hex");
+    const caddy = await installFakeCaddy(dir);
+    await mkdir(path.join(remoteRoot, "caddy", "hosts"), { recursive: true });
+    await writeFile(path.join(remoteRoot, "caddy", "Caddyfile"), "import ./sporades-hosted-domains.caddy\n");
+    await writeFile(path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev.caddy"), "import ./capsules.example.dev/*.caddy\n");
+    const result = await runHostHelper({
+      action: "capsule.register",
+      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+      capsule: { subname: "team-notes" },
+      registration: {
+        route: { log: { file: path.join(outsideDirectory, "http.log") } },
+      },
+    }, { cwd: dir, env: caddy.env });
+
+    assert.equal(JSON.parse(result.stdout).error.message, "Invalid Hosted Capsule HTTP log path.", result.stdout);
+    assert.equal(createHash("sha256").update(await readFile(sentinel)).digest("hex"), before);
+    assert.deepEqual(await readdir(outsideDirectory), ["sentinel.bin"]);
+
+    for (const [label, lifecycle] of [
+      ["legacy", { accessLog: path.join(outsideDirectory, "legacy.log") }],
+      ["shared", { routes: { accessLog: path.join(outsideDirectory, "shared.log") } }],
+      ["running", { routes: { running: { log: { file: path.join(outsideDirectory, "running.log") } } } }],
+      ["unavailable", { routes: { unavailable: { log: { file: path.join(outsideDirectory, "unavailable.log") } } } }],
+    ]) {
+      const lifecycleResult = await runHostHelper({
+        action: "capsule.start",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+        lifecycle,
+      }, { cwd: dir, env: caddy.env });
+      assert.equal(JSON.parse(lifecycleResult.stdout).error.message, "Invalid Hosted Capsule HTTP log path.", `${label}: ${lifecycleResult.stdout}`);
+      assert.equal(createHash("sha256").update(await readFile(sentinel)).digest("hex"), before, label);
+      assert.deepEqual(await readdir(outsideDirectory), ["sentinel.bin"], label);
+    }
+  });
+});
+
+test("sporades host helper provisions running and unavailable Capsule HTTP logs once by retained descriptor", async (t) => {
+  if (process.getuid?.() !== 0) {
+    t.skip("requires the isolated root ownership-changing fixture");
+    return;
+  }
+  await withTempDir(async (dir) => {
+    for (const routeKind of ["running", "unavailable"]) {
+      const fixture = await setupRootCapsuleHttpLogFixture(path.join(dir, routeKind), routeKind);
+      const details = await lstat(fixture.logFile);
+      const directoryDetails = await lstat(path.dirname(fixture.logFile));
+      assert.deepEqual([Number(details.uid), Number(details.gid), Number(details.mode) & 0o777], [12345, 12346, 0o640], routeKind);
+      assert.deepEqual([Number(directoryDetails.uid), Number(directoryDetails.gid), Number(directoryDetails.mode) & 0o777], [12345, 12346, 0o750], routeKind);
+
+      const marker = path.join(dir, `${routeKind}-repeat-mutation.marker`);
+      const repeat = await runHostHelper(fixture.request, {
+        cwd: path.join(dir, routeKind),
+        env: {
+          ...fixture.env,
+          SPORADES_TEST_ROUTE_MUTATION_BOUNDARY: `capsule-${routeKind}-http-log-descriptor-mutate`,
+          SPORADES_TEST_ROUTE_MUTATION_MARKER: marker,
+        },
+      });
+      assert.equal(JSON.parse(repeat.stdout).ok, true, `${routeKind} repeat: ${repeat.stdout}\n${repeat.stderr}`);
+      await assert.rejects(readFile(marker, "utf8"), { code: "ENOENT" });
+      assert.deepEqual(await fixture.caddyUser.chownCalls(), [], routeKind);
+
+      await chown(fixture.logFile, 22345, 22346);
+      const foreign = await runHostHelper(fixture.request, { cwd: path.join(dir, routeKind), env: fixture.env });
+      assert.equal(JSON.parse(foreign.stdout).error.message, "Hosted Capsule route trust validation failed.", `${routeKind} foreign owner: ${foreign.stdout}`);
+      assert.deepEqual([Number((await lstat(fixture.logFile)).uid), Number((await lstat(fixture.logFile)).gid)], [22345, 22346], routeKind);
+    }
+  });
+});
+
+test("sporades host helper fences running and unavailable Capsule HTTP log replacement after descriptor open", async (t) => {
+  if (process.getuid?.() !== 0) {
+    t.skip("requires the isolated root ownership-changing fixture");
+    return;
+  }
+  await withTempDir(async (dir) => {
+    for (const routeKind of ["running", "unavailable"]) {
+      const fixtureDir = path.join(dir, routeKind);
+      const fixture = await setupRootCapsuleHttpLogFixture(fixtureDir, routeKind);
+      await chmod(fixture.logFile, 0o600);
+      const retainedLogFile = `${fixture.logFile}.retained`;
+      const outside = path.join(fixtureDir, "outside.bin");
+      await writeFile(outside, Buffer.from([2, 7, 1, 8, 2, 8]), { mode: 0o604 });
+      const outsideBefore = await lstat(outside);
+      const outsideHash = createHash("sha256").update(await readFile(outside)).digest("hex");
+      const marker = path.join(fixtureDir, "descriptor-mutation.marker");
+      const action = startHostHelper(fixture.request, {
+        cwd: fixtureDir,
+        env: {
+          ...fixture.env,
+          SPORADES_TEST_ROUTE_MUTATION_BOUNDARY: `capsule-${routeKind}-http-log-descriptor-mutate`,
+          SPORADES_TEST_ROUTE_MUTATION_MARKER: marker,
+          SPORADES_FAKE_ROUTE_MUTATION_PAUSE_MS: "700",
+        },
+      });
+      await waitForPath(marker);
+      await rename(fixture.logFile, retainedLogFile);
+      await symlink(outside, fixture.logFile);
+      const result = await action.result;
+      assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule route trust validation failed.", `${routeKind}: ${result.stdout}`);
+
+      const outsideAfter = await lstat(outside);
+      assert.equal(createHash("sha256").update(await readFile(outside)).digest("hex"), outsideHash, routeKind);
+      assert.equal(Number(outsideAfter.mode) & 0o777, Number(outsideBefore.mode) & 0o777, routeKind);
+      assert.deepEqual([Number(outsideAfter.uid), Number(outsideAfter.gid)], [Number(outsideBefore.uid), Number(outsideBefore.gid)], routeKind);
+      assert.equal(Number((await lstat(retainedLogFile)).mode) & 0o777, 0o640, `${routeKind} repair stayed on the retained file descriptor`);
+      assert.deepEqual(await fixture.caddyUser.chownCalls(), [], routeKind);
+    }
   });
 });
 
@@ -5252,7 +5948,7 @@ test("sporades host helper starts the current release in Docker and routes throu
               "com.sporades.hosted-domain": "capsules.example.dev",
               "com.sporades.capsule-subname": "team-notes",
               "com.sporades.capsule-id": "capsules.example.dev/team-notes",
-              "com.sporades.base-image.update-policy": "host-managed",
+              "com.sporades.base-image.update-policy": "manual",
             },
           },
           routes: {
@@ -5276,7 +5972,7 @@ test("sporades host helper starts the current release in Docker and routes throu
     );
     assert.equal(start.code, 0, start.stderr);
     const output = JSON.parse(start.stdout);
-    assert.equal(output.ok, true);
+    assert.equal(output.ok, true, start.stdout);
     assert.equal(output.data.started, true);
     assert.equal(output.data.release.id, "20260630T221500Z-feedface");
     assert.equal(output.data.container.publishedPort.hostIp, "127.0.0.1");
@@ -5839,6 +6535,35 @@ async function prepareRouteLockFixture(dir, dockerOptions = {}) {
   return { docker, request, routeFile, lockDir: `${routeFile}.lock` };
 }
 
+async function prepareUnregisterRouteFixture(dir, dockerOptions = {}) {
+  const remoteRoot = path.join(dir, "remote-root");
+  const domain = "capsules.example.dev";
+  const registryRecordPath = path.join(remoteRoot, "hosts", domain, "registry", "capsules", "team-notes.json");
+  const routeFile = path.join(remoteRoot, "caddy", "hosts", domain, "team-notes.caddy");
+  await mkdir(path.dirname(registryRecordPath), { recursive: true });
+  await mkdir(path.dirname(routeFile), { recursive: true });
+  await writeFile(path.join(remoteRoot, "caddy", "Caddyfile"), "import ./hosts/*.caddy\n");
+  await writeFile(routeFile, `team-notes.${domain} {\n  reverse_proxy 127.0.0.1:49153\n}\n`);
+  await writeFile(registryRecordPath, `${JSON.stringify({
+    subname: "team-notes",
+    domain,
+    remoteCapsuleId: `${domain}/team-notes`,
+    hostedUrl: `https://team-notes.${domain}`,
+    status: "running",
+    currentRelease: { id: "20260630T221500Z-feedface" },
+  })}\n`);
+  const docker = await installFakeDocker(dir, dockerOptions);
+  return {
+    docker,
+    routeFile,
+    request: {
+      action: "capsule.unregister",
+      host: { alias: "personal", domain, scheme: "https", remoteRoot },
+      capsule: { subname: "team-notes" },
+    },
+  };
+}
+
 test("sporades host helper automatically releases the OS route lock after its owner is killed", async () => {
   await withTempDir(async (dir) => {
     const fixture = await prepareRouteLockFixture(dir, {
@@ -5848,7 +6573,7 @@ test("sporades host helper automatically releases the OS route lock after its ow
     await waitForPath(fixture.lockDir);
     assert.equal((await stat(fixture.lockDir)).isFile(), true);
     await new Promise((resolve) => setTimeout(resolve, 100));
-    holder.child.kill("SIGKILL");
+    process.kill(await waitForChildPid(holder.child.pid), "SIGKILL");
     await holder.result;
 
     const recoveredDocker = await installFakeDocker(path.join(dir, "recovered"));
@@ -5859,6 +6584,32 @@ test("sporades host helper automatically releases the OS route lock after its ow
     assert.equal(recovered.code, 0, recovered.stderr);
     assert.equal(JSON.parse(recovered.stdout).ok, true, recovered.stdout);
     assert.equal((await stat(fixture.lockDir)).isFile(), true, "the inert lock file may persist while its OS lock is released");
+  });
+});
+
+test("sporades host helper cannot continue route mutation after its lock-holding action process is killed", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await prepareRouteLockFixture(dir, {
+      env: { SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "600" },
+    });
+    const staleRequest = structuredClone(fixture.request);
+    staleRequest.lifecycle.routes.unavailable.statusCode = 503;
+    const winnerRequest = structuredClone(fixture.request);
+    winnerRequest.lifecycle.routes.unavailable.statusCode = 502;
+    const stale = startHostHelper(staleRequest, { cwd: dir, env: fixture.docker.env });
+    await waitForPath(fixture.lockDir);
+
+    const lockHolderPid = await waitForChildPid(stale.child.pid);
+    process.kill(lockHolderPid, "SIGKILL");
+
+    const winnerDocker = await installFakeDocker(path.join(dir, "winner"));
+    const winner = await runHostHelper(winnerRequest, { cwd: dir, env: winnerDocker.env });
+    const staleResult = await stale.result;
+    assert.equal(JSON.parse(winner.stdout).ok, true, winner.stdout);
+    assert.equal(JSON.parse(staleResult.stdout).ok, false, staleResult.stdout);
+    const route = await readFile(fixture.routeFile, "utf8");
+    assert.match(route, /respond "Hosted Capsule unavailable" 502/);
+    assert.doesNotMatch(route, /respond "Hosted Capsule unavailable" 503/);
   });
 });
 
@@ -5910,7 +6661,7 @@ test("sporades host helper does not steal a live route owner and rejects malform
       });
       assert.equal(JSON.parse(invalid.stdout).error.message, "Invalid Hosted Capsule route lock timeout.");
     }
-    holder.child.kill("SIGKILL");
+    process.kill(await waitForChildPid(holder.child.pid), "SIGKILL");
     await holder.result;
   });
 });
@@ -5932,6 +6683,435 @@ test("sporades host helper releases the OS route lock to one waiting successor",
   });
 });
 
+test("sporades host helper keeps read-only Capsule inspection available during a route mutation", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await prepareRouteLockFixture(dir, {
+      env: { SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "800" },
+    });
+    const mutation = startHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
+    await waitForPath(fixture.lockDir);
+    const read = startHostHelper({
+      action: "capsule.release.list",
+      host: fixture.request.host,
+      capsule: fixture.request.capsule,
+    }, { cwd: dir, env: { ...fixture.docker.env, SPORADES_ROUTE_LOCK_TIMEOUT_MS: "2000" } });
+    const readResult = await Promise.race([
+      read.result,
+      new Promise((resolve) => setTimeout(() => resolve(null), 300)),
+    ]);
+    assert.notEqual(readResult, null, "read-only inspection must not wait behind route mutation");
+    assert.doesNotMatch(JSON.parse(readResult.stdout).error?.message ?? "", /route is locked/i);
+    assert.equal((await Promise.race([mutation.result.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 10))])), false);
+    assert.equal(JSON.parse((await mutation.result).stdout).ok, true);
+  });
+});
+
+test("sporades host helper preserves malformed-action validation without entering a route lock", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runHostHelper({ action: "unsupported.review-proof" }, { cwd: dir });
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, false);
+    assert.equal(output.error.message, "Unsupported Host helper action.");
+    assert.doesNotMatch(output.error.message, /lock/i);
+  });
+});
+
+test("sporades host helper rejects a lifecycle route that does not match the canonical Capsule lock identity", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await prepareRouteLockFixture(dir);
+    const canonicalRoute = fixture.routeFile;
+    const foreignRoute = path.join(path.dirname(canonicalRoute), "other-capsule.caddy");
+    await writeFile(foreignRoute, "other-capsule.capsules.example.dev {\n  respond 418\n}\n");
+    const mismatched = structuredClone(fixture.request);
+    mismatched.lifecycle.routes.unavailable.routeFile = foreignRoute;
+    const result = await runHostHelper(mismatched, { cwd: dir, env: fixture.docker.env });
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, false, result.stdout);
+    assert.equal(output.error.message, "Hosted Capsule lifecycle route did not match its canonical route path.");
+    assert.equal(await readFile(foreignRoute, "utf8"), "other-capsule.capsules.example.dev {\n  respond 418\n}\n");
+    assert.match(await readFile(canonicalRoute, "utf8"), /reverse_proxy 127\.0\.0\.1:49153/);
+  });
+});
+
+test("sporades host helper rejects a forged canonical route-lock marker without the retained OS lock descriptor", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await prepareRouteLockFixture(dir);
+    const result = await runHostHelper(fixture.request, {
+      cwd: dir,
+      env: {
+        ...fixture.docker.env,
+        SPORADES_HOST_ROUTE_LOCK_FILE: `${fixture.routeFile}.lock`,
+      },
+    });
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, false, result.stdout);
+    assert.equal(output.error.message, "Hosted Capsule route lock identity was not retained by the action process.");
+    assert.match(await readFile(fixture.routeFile, "utf8"), /reverse_proxy 127\.0\.0\.1:49153/);
+  });
+});
+
+test("sporades host helper rejects an unlocked matching descriptor forged for the canonical route lock", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await prepareRouteLockFixture(dir);
+    const lockFile = `${fixture.routeFile}.lock`;
+    const attacker = await startExecutable(
+      path.join(repoRoot, "test", "support", "exec-flock.py"),
+      ["--exclusive", "--timeout", "1", "--conflict-exit-code", "75", "--no-fork", lockFile, process.execPath, hostHelperPath],
+      {
+        cwd: dir,
+        input: `${JSON.stringify(fixture.request)}\n`,
+        env: {
+          ...fixture.docker.env,
+          SPORADES_TEST_FLOCK_PATH: path.join(repoRoot, "test", "support", "exec-flock.py"),
+          SPORADES_TEST_OPEN_WITHOUT_FLOCK: "1",
+          SPORADES_HOST_ROUTE_LOCK_FILE: lockFile,
+        },
+      },
+    ).result;
+    const output = JSON.parse(attacker.stdout);
+    assert.equal(output.ok, false, attacker.stdout);
+    assert.equal(output.error.message, "Hosted Capsule route lock identity was not retained by the action process.");
+    assert.match(await readFile(fixture.routeFile, "utf8"), /reverse_proxy 127\.0\.0\.1:49153/);
+  });
+});
+
+test("sporades host helper rejects traversal and Caddy-injection route identities before filesystem mutation", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await prepareRouteLockFixture(dir);
+    const cases = [
+      { field: "remoteRoot", value: "relative/root" },
+      { field: "remoteRoot", value: `${fixture.request.host.remoteRoot}/../escaped-root` },
+      { field: "domain", value: "../escaped.example" },
+      { field: "domain", value: "capsules.example.dev\nmalicious.example { respond 200 }" },
+      { field: "domain", value: "capsules.example.dev:0" },
+      { field: "domain", value: "capsules.example.dev:65536" },
+      { field: "subname", value: "../other-capsule" },
+      { field: "subname", value: "team-notes\nrespond 200" },
+    ];
+    for (const attack of cases) {
+      const request = structuredClone(fixture.request);
+      request.lifecycle = {};
+      if (attack.field === "subname") request.capsule.subname = attack.value;
+      else request.host[attack.field] = attack.value;
+      const result = await runHostHelper(request, { cwd: dir, env: fixture.docker.env });
+      const output = JSON.parse(result.stdout);
+      assert.equal(output.ok, false, `${attack.field}=${JSON.stringify(attack.value)}: ${result.stdout}`);
+      assert.equal(output.error.message, "Invalid Hosted Capsule route identity.");
+    }
+    assert.deepEqual((await readdir(path.dirname(fixture.routeFile))).sort(), ["team-notes.caddy"]);
+  });
+});
+
+test("sporades host helper rejects symlinks throughout the trusted route ancestor chain", async () => {
+  await withTempDir(async (dir) => {
+    const attacks = ["remoteRoot", "caddy", "hosts", "domain"];
+    for (const attack of attacks) {
+      const caseRoot = path.join(dir, attack);
+      const realRoot = path.join(caseRoot, "real-root");
+      const remoteRoot = path.join(caseRoot, "remote-root");
+      const outside = path.join(caseRoot, "outside");
+      await mkdir(realRoot, { recursive: true, mode: 0o700 });
+      await mkdir(outside, { recursive: true, mode: 0o700 });
+      if (attack === "remoteRoot") {
+        await symlink(realRoot, remoteRoot, "dir");
+      } else {
+        await mkdir(remoteRoot, { recursive: true, mode: 0o700 });
+        const caddy = path.join(remoteRoot, "caddy");
+        if (attack === "caddy") await symlink(outside, caddy, "dir");
+        else {
+          await mkdir(caddy, { mode: 0o755 });
+          const hosts = path.join(caddy, "hosts");
+          if (attack === "hosts") await symlink(outside, hosts, "dir");
+          else {
+            await mkdir(hosts, { mode: 0o755 });
+            await symlink(outside, path.join(hosts, "capsules.example.dev"), "dir");
+          }
+        }
+      }
+      const result = await runHostHelper({
+        action: "capsule.stop",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+        lifecycle: {},
+      }, { cwd: dir });
+      assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule route trust validation failed.", `${attack}: ${result.stdout}`);
+      assert.deepEqual(await readdir(outside), [], attack);
+    }
+  });
+});
+
+test("sporades host helper authenticates the complete route chain from the filesystem anchor", async () => {
+  await withTempDir(async (dir) => {
+    const unsafeParent = path.join(dir, "unsafe-parent");
+    const unsafeRoot = path.join(unsafeParent, "remote-root");
+    await mkdir(unsafeParent, { mode: 0o777 });
+    await chmod(unsafeParent, 0o777);
+    const unsafe = await runHostHelper({
+      action: "capsule.stop",
+      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot: unsafeRoot },
+      capsule: { subname: "team-notes" },
+      lifecycle: {},
+    }, { cwd: dir });
+    assert.equal(JSON.parse(unsafe.stdout).error.message, "Hosted Capsule route trust validation failed.", unsafe.stdout);
+    await assert.rejects(stat(unsafeRoot), { code: "ENOENT" });
+
+    const stickyRoot = path.join(dir, "sticky-ancestor-accepted", "remote-root");
+    const sticky = await runHostHelper({
+      action: "capsule.stop",
+      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot: stickyRoot },
+      capsule: { subname: "team-notes" },
+      lifecycle: {},
+    }, { cwd: dir });
+    assert.equal(JSON.parse(sticky.stdout).error.message, "Hosted Capsule is not registered.", sticky.stdout);
+    assert.equal((await lstat(stickyRoot)).isDirectory(), true, "the root-owned sticky system temp ancestor is admitted");
+  });
+});
+
+test("sporades host helper rejects a symlink above remoteRoot without resolving away its lexical parent", async () => {
+  await withTempDir(async (dir) => {
+    const attackerParent = path.join(dir, "attacker-parent");
+    const trustedTarget = path.join(dir, "trusted-target");
+    const outside = path.join(trustedTarget, "outside.bin");
+    await mkdir(attackerParent, { mode: 0o700 });
+    await mkdir(trustedTarget, { mode: 0o700 });
+    await writeFile(outside, Buffer.from([3, 1, 4, 1, 5, 9]));
+    const before = createHash("sha256").update(await readFile(outside)).digest("hex");
+    await symlink(trustedTarget, path.join(attackerParent, "link"), "dir");
+    const remoteRoot = path.join(attackerParent, "link", "sporades");
+    const result = await runHostHelper({
+      action: "capsule.stop",
+      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+      capsule: { subname: "team-notes" },
+      lifecycle: {},
+    }, { cwd: dir });
+    assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule route trust validation failed.", result.stdout);
+    assert.equal(createHash("sha256").update(await readFile(outside)).digest("hex"), before);
+    await assert.rejects(lstat(path.join(trustedTarget, "sporades")), { code: "ENOENT" });
+  });
+});
+
+test("sporades host helper fences an ancestor swap after route lock acquisition", async () => {
+  await withTempDir(async (dir) => {
+    const proofMarker = path.join(dir, "route-lock-proof.marker");
+    const fixture = await prepareRouteLockFixture(dir, {
+      env: {
+        SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "700",
+        SPORADES_TEST_ROUTE_LOCK_PROOF_MARKER: proofMarker,
+      },
+    });
+    const domainDirectory = path.dirname(fixture.routeFile);
+    const preservedDirectory = `${domainDirectory}.preserved`;
+    const outside = path.join(dir, "outside-route-target");
+    await mkdir(outside, { mode: 0o700 });
+    const action = startHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
+    await waitForPath(proofMarker);
+    await rename(domainDirectory, preservedDirectory);
+    await symlink(outside, domainDirectory, "dir");
+    const result = await action.result;
+    assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule route trust validation failed.", result.stdout);
+    assert.deepEqual(await readdir(outside), []);
+    assert.match(await readFile(path.join(preservedDirectory, "team-notes.caddy"), "utf8"), /reverse_proxy 127\.0\.0\.1:49153/);
+  });
+});
+
+test("sporades host helper revalidates trust immediately before apply and rollback route mutations", async () => {
+  await withTempDir(async (dir) => {
+    const cases = [
+      { boundary: "apply-remove-temp", dockerEnv: {} },
+      { boundary: "apply-remove-previous", dockerEnv: {} },
+      { boundary: "apply-write-temp", dockerEnv: {} },
+      { boundary: "apply-validation-cleanup", dockerEnv: { FAKE_DOCKER_CADDY_VALIDATE_STATUS: "1" } },
+      { boundary: "apply-move-current", dockerEnv: {} },
+      { boundary: "apply-publish-temp", dockerEnv: {} },
+      { boundary: "apply-rollback-remove-temp", dockerEnv: { FAKE_DOCKER_CADDY_RELOAD_STATUS: "1" } },
+      { boundary: "apply-rollback-remove-current", dockerEnv: { FAKE_DOCKER_CADDY_RELOAD_STATUS: "1" } },
+      { boundary: "apply-rollback-restore", dockerEnv: { FAKE_DOCKER_CADDY_RELOAD_STATUS: "1" } },
+      { boundary: "apply-finalize-previous", dockerEnv: {} },
+    ];
+    for (const scenario of cases) {
+      const boundary = scenario.boundary;
+      const caseRoot = path.join(dir, boundary);
+      await mkdir(caseRoot, { recursive: true });
+      const marker = path.join(caseRoot, "boundary.marker");
+      const fixture = await prepareRouteLockFixture(caseRoot, { env: scenario.dockerEnv });
+      const domainDirectory = path.dirname(fixture.routeFile);
+      const preservedDirectory = `${domainDirectory}.preserved`;
+      const outside = path.join(caseRoot, "outside");
+      await mkdir(outside, { mode: 0o700 });
+      const sentinel = path.join(outside, "sentinel.bin");
+      await writeFile(sentinel, Buffer.from([0, 1, 2, 253, 254, 255]));
+      const before = createHash("sha256").update(await readFile(sentinel)).digest("hex");
+      const action = startHostHelper(fixture.request, {
+        cwd: caseRoot,
+        env: {
+          ...fixture.docker.env,
+          SPORADES_TEST_ROUTE_MUTATION_BOUNDARY: boundary,
+          SPORADES_TEST_ROUTE_MUTATION_MARKER: marker,
+          SPORADES_FAKE_ROUTE_MUTATION_PAUSE_MS: "700",
+        },
+      });
+      await waitForPath(marker);
+      await rename(domainDirectory, preservedDirectory);
+      await symlink(outside, domainDirectory, "dir");
+      const result = await action.result;
+      assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule route trust validation failed.", `${boundary}: ${result.stdout}`);
+      assert.equal(createHash("sha256").update(await readFile(sentinel)).digest("hex"), before, boundary);
+      assert.deepEqual(await readdir(outside), ["sentinel.bin"], boundary);
+      const preservedEntries = await readdir(preservedDirectory);
+      const originalEntry = preservedEntries.find((entry) => entry.startsWith("team-notes.caddy.previous-"))
+        ?? preservedEntries.find((entry) => entry === "team-notes.caddy");
+      assert.ok(originalEntry, `${boundary}: original route bytes must remain in the fenced directory`);
+      assert.match(await readFile(path.join(preservedDirectory, originalEntry), "utf8"), /127\.0\.0\.1:49153/, boundary);
+    }
+  });
+});
+
+test("sporades host helper revalidates trust immediately before remove and restore route mutations", async () => {
+  await withTempDir(async (dir) => {
+    const cases = [
+      { boundary: "remove-remove-previous", dockerEnv: {} },
+      { boundary: "remove-move-current", dockerEnv: {} },
+      { boundary: "remove-rollback-restore", dockerEnv: { FAKE_DOCKER_CADDY_RELOAD_STATUS: "1" } },
+      { boundary: "remove-finalize-previous", dockerEnv: {} },
+      { boundary: "restore-remove-current", dockerEnv: { SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE: "1" } },
+      { boundary: "restore-publish-previous", dockerEnv: { SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE: "1" } },
+    ];
+    for (const scenario of cases) {
+      const caseRoot = path.join(dir, scenario.boundary);
+      await mkdir(caseRoot, { recursive: true });
+      const marker = path.join(caseRoot, "boundary.marker");
+      const fixture = await prepareUnregisterRouteFixture(caseRoot, { env: scenario.dockerEnv });
+      const domainDirectory = path.dirname(fixture.routeFile);
+      const preservedDirectory = `${domainDirectory}.preserved`;
+      const outside = path.join(caseRoot, "outside");
+      await mkdir(outside, { mode: 0o700 });
+      const sentinel = path.join(outside, "sentinel.bin");
+      await writeFile(sentinel, Buffer.from([4, 8, 15, 16, 23, 42]));
+      const before = createHash("sha256").update(await readFile(sentinel)).digest("hex");
+      const action = startHostHelper(fixture.request, {
+        cwd: caseRoot,
+        env: {
+          ...fixture.docker.env,
+          SPORADES_TEST_ROUTE_MUTATION_BOUNDARY: scenario.boundary,
+          SPORADES_TEST_ROUTE_MUTATION_MARKER: marker,
+          SPORADES_FAKE_ROUTE_MUTATION_PAUSE_MS: "700",
+        },
+      });
+      await waitForPath(marker);
+      await rename(domainDirectory, preservedDirectory);
+      await symlink(outside, domainDirectory, "dir");
+      const result = await action.result;
+      assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule route trust validation failed.", `${scenario.boundary}: ${result.stdout}`);
+      assert.equal(createHash("sha256").update(await readFile(sentinel)).digest("hex"), before, scenario.boundary);
+      assert.deepEqual(await readdir(outside), ["sentinel.bin"], scenario.boundary);
+      const preservedEntries = await readdir(preservedDirectory);
+      const originalEntry = preservedEntries.find((entry) => entry.startsWith("team-notes.caddy.previous-"))
+        ?? preservedEntries.find((entry) => entry === "team-notes.caddy");
+      assert.ok(originalEntry, `${scenario.boundary}: original route bytes must remain in the fenced directory`);
+      assert.match(await readFile(path.join(preservedDirectory, originalEntry), "utf8"), /127\.0\.0\.1:49153/, scenario.boundary);
+    }
+  });
+});
+
+test("sporades host helper rejects symlink route entries and unsafe writable route ancestry", async () => {
+  await withTempDir(async (dir) => {
+    for (const finalEntry of ["route", "lock"]) {
+      const caseRoot = path.join(dir, finalEntry);
+      const remoteRoot = path.join(caseRoot, "remote-root");
+      const domainDirectory = path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev");
+      const routeFile = path.join(domainDirectory, "team-notes.caddy");
+      const outside = path.join(caseRoot, "outside.txt");
+      await mkdir(domainDirectory, { recursive: true, mode: 0o755 });
+      await writeFile(outside, "outside-preserved\n", { mode: 0o600 });
+      await symlink(outside, finalEntry === "route" ? routeFile : `${routeFile}.lock`);
+      const result = await runHostHelper({
+        action: "capsule.stop",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+        lifecycle: {},
+      }, { cwd: caseRoot });
+      assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule route trust validation failed.", result.stdout);
+      assert.equal(await readFile(outside, "utf8"), "outside-preserved\n");
+    }
+
+    const unsafeRoot = path.join(dir, "unsafe", "remote-root");
+    const unsafeCaddy = path.join(unsafeRoot, "caddy");
+    await mkdir(unsafeCaddy, { recursive: true, mode: 0o755 });
+    await chmod(unsafeCaddy, 0o777);
+    const unsafe = await runHostHelper({
+      action: "capsule.stop",
+      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot: unsafeRoot },
+      capsule: { subname: "team-notes" },
+      lifecycle: {},
+    }, { cwd: dir });
+    assert.equal(JSON.parse(unsafe.stdout).error.message, "Hosted Capsule route trust validation failed.", unsafe.stdout);
+
+    const createdRoot = path.join(dir, "created", "remote-root");
+    await mkdir(createdRoot, { recursive: true, mode: 0o700 });
+    const created = await runHostHelper({
+      action: "capsule.stop",
+      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot: createdRoot },
+      capsule: { subname: "team-notes" },
+      lifecycle: {},
+    }, { cwd: dir });
+    assert.equal(JSON.parse(created.stdout).error.message, "Hosted Capsule is not registered.", created.stdout);
+    for (const createdDirectory of [
+      path.join(createdRoot, "bin"),
+      path.join(createdRoot, "caddy"),
+      path.join(createdRoot, "caddy", "hosts"),
+      path.join(createdRoot, "caddy", "hosts", "capsules.example.dev"),
+    ]) {
+      assert.equal((await stat(createdDirectory)).mode & 0o022, 0, createdDirectory);
+    }
+  });
+});
+
+test("Host bootstrap and Capsule route mutations share a global lock without deadlock", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await prepareRouteLockFixture(dir, {
+      env: { SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "1000" },
+    });
+    const caddyUser = await installFakeCaddyUserCommands(path.join(dir, "caddy-user"));
+    const env = {
+      ...fixture.docker.env,
+      ...caddyUser.env,
+      PATH: `${caddyUser.fakeBinDir}${path.delimiter}${fixture.docker.fakeBinDir}${path.delimiter}${process.env.PATH}`,
+    };
+    const mutation = startHostHelper(fixture.request, { cwd: dir, env });
+    await waitForPath(fixture.lockDir);
+    const bootstrap = startHostHelper({
+      action: "host.bootstrap",
+      host: fixture.request.host,
+      capsule: null,
+      bootstrap: { tls: { mode: "automatic" } },
+    }, { cwd: dir, env });
+    let bootstrapSettled = false;
+    bootstrap.result.then(() => { bootstrapSettled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    assert.equal(bootstrapSettled, false, "global bootstrap must wait for an active Capsule route mutation");
+    assert.equal(JSON.parse((await mutation.result).stdout).ok, true);
+    assert.equal(JSON.parse((await bootstrap.result).stdout).ok, true);
+
+    const exclusiveBootstrap = startHostHelper({
+      action: "host.bootstrap",
+      host: fixture.request.host,
+      capsule: null,
+      bootstrap: { tls: { mode: "automatic" } },
+    }, { cwd: dir, env: { ...env, SPORADES_FAKE_HOST_GLOBAL_ROUTE_LOCK_PAUSE_MS: "700" } });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const laterMutation = startHostHelper(fixture.request, {
+      cwd: dir,
+      env: { ...env, SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "0" },
+    });
+    let mutationSettled = false;
+    laterMutation.result.then(() => { mutationSettled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.equal(mutationSettled, false, "Capsule mutation must wait for exclusive global bootstrap");
+    assert.equal(JSON.parse((await exclusiveBootstrap.result).stdout).ok, true);
+    assert.equal(JSON.parse((await laterMutation.result).stdout).ok, true);
+  });
+});
+
 test("sporades host helper scavenges a dead pre-publication claim after SIGKILL", async () => {
   await withTempDir(async (dir) => {
     const fixture = await prepareRouteLockFixture(dir);
@@ -5946,7 +7126,7 @@ test("sporades host helper scavenges a dead pre-publication claim after SIGKILL"
     const routeDir = path.dirname(fixture.routeFile);
     await waitForPath(fixture.lockDir);
     await new Promise((resolve) => setTimeout(resolve, 100));
-    holder.child.kill("SIGKILL");
+    process.kill(await waitForChildPid(holder.child.pid), "SIGKILL");
     await holder.result;
 
     const recovered = await runHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
@@ -5979,7 +7159,7 @@ test("sporades host helper scavenges a dead stale-lock quarantine after SIGKILL"
     const routeDir = path.dirname(fixture.routeFile);
     await waitForPath(fixture.lockDir);
     await new Promise((resolve) => setTimeout(resolve, 100));
-    holder.child.kill("SIGKILL");
+    process.kill(await waitForChildPid(holder.child.pid), "SIGKILL");
     await holder.result;
 
     const recovered = await runHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
@@ -7765,6 +8945,75 @@ test("sporades host helper reports no release and failed starts with unavailable
   });
 });
 
+test("sporades host helper rejects caller-controlled Docker lifecycle authority before invoking Docker", async () => {
+  for (const [label, lifecycle] of [
+    ["current-link", { currentLink: "/" }],
+    ["file-mount", { mounts: { files: [{ host: "/etc/passwd", container: "/app/server.mjs", mode: "ro" }] } }],
+    ["data-mount", { mounts: { data: { host: "/", container: "/app/data", mode: "rw" } } }],
+    ["root-user", { container: { user: "0:0" } }],
+    ["attacker-image", { container: { image: "attacker.invalid/root:latest" } }],
+  ]) {
+    await withTempDir(async (dir) => {
+      const fixture = await writeHostedCapsuleRollbackFixture(dir, { releaseIds: ["20260630T221500Z-feedface"] });
+      const docker = await installFakeDocker(path.join(dir, "docker"));
+      const result = await runHostHelper({
+        action: "capsule.start",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot: fixture.remoteRoot },
+        capsule: { subname: "team-notes" },
+        lifecycle,
+      }, { cwd: dir, env: docker.env });
+
+      const output = JSON.parse(result.stdout);
+      assert.equal(output.ok, false, `${label}: ${result.stdout}`);
+      assert.equal(output.error.message, "Invalid Hosted Capsule lifecycle authority.", `${label}: ${result.stdout}`);
+      await assert.rejects(readFile(docker.logPath, "utf8"), { code: "ENOENT" });
+    });
+  }
+});
+
+test("sporades host helper quiesces Docker before descriptor-fenced runtime-data preparation", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleRollbackFixture(dir, { releaseIds: ["20260630T221500Z-feedface"] });
+    const docker = await installFakeDocker(path.join(dir, "docker"));
+    const outside = path.join(dir, "outside-runtime-data");
+    const sentinel = path.join(outside, "sentinel.bin");
+    await mkdir(outside, { mode: 0o711 });
+    await writeFile(sentinel, Buffer.from([9, 2, 6, 5]), { mode: 0o604 });
+    const outsideBefore = await lstat(outside);
+    const sentinelBefore = await lstat(sentinel);
+    const sentinelHash = createHash("sha256").update(await readFile(sentinel)).digest("hex");
+    const marker = path.join(dir, "runtime-data.marker");
+    const retainedData = `${fixture.dataDir}.retained`;
+    const action = startHostHelper({
+      action: "capsule.start",
+      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: "team-notes" },
+      lifecycle: {},
+    }, {
+      cwd: dir,
+      env: {
+        ...docker.env,
+        SPORADES_TEST_RUNTIME_DATA_MUTATION_BOUNDARY: "runtime-data-descriptor-mutate",
+        SPORADES_TEST_RUNTIME_DATA_MUTATION_MARKER: marker,
+        SPORADES_TEST_RUNTIME_DATA_MUTATION_TARGET_SUFFIX: "/data",
+        SPORADES_FAKE_RUNTIME_DATA_MUTATION_PAUSE_MS: "700",
+      },
+    });
+    await waitForPath(marker);
+    assert.deepEqual((await docker.calls()).map((call) => call.args[0]), ["stop", "rm"]);
+    await rename(fixture.dataDir, retainedData);
+    await symlink(outside, fixture.dataDir);
+    const result = await action.result;
+    assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule data path failed its no-follow trust check.", result.stdout);
+    assert.deepEqual((await docker.calls()).map((call) => call.args[0]), ["stop", "rm"]);
+    const outsideAfter = await lstat(outside);
+    const sentinelAfter = await lstat(sentinel);
+    assert.equal(createHash("sha256").update(await readFile(sentinel)).digest("hex"), sentinelHash);
+    assert.deepEqual([outsideAfter.mode & 0o777, outsideAfter.uid, outsideAfter.gid], [outsideBefore.mode & 0o777, outsideBefore.uid, outsideBefore.gid]);
+    assert.deepEqual([sentinelAfter.mode & 0o777, sentinelAfter.uid, sentinelAfter.gid], [sentinelBefore.mode & 0o777, sentinelBefore.uid, sentinelBefore.gid]);
+  });
+});
+
 test("sporades host helper builds the base image when registry pull is unavailable", async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
@@ -8899,7 +10148,7 @@ test("sporades host helper restarts the current release after install when reque
     assert.equal(output.data.lifecycle.release.id, "20260630T221500Z-feedface");
     assert.deepEqual(
       (await docker.calls()).map((call) => call.args[0]),
-      ["stop", "rm", "stop", "rm", "image", "run", "inspect", "inspect"],
+      ["stop", "rm", "image", "run", "inspect", "inspect"],
     );
     const runCall = (await docker.calls()).find((call) => call.args[0] === "run");
     assert.equal(runCall.args[runCall.args.indexOf("--publish") + 1], "127.0.0.1::4000");

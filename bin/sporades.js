@@ -36637,16 +36637,19 @@ function upgradeHostHelper(options) {
   const localHelper = localHostHelperPath();
   const remoteHelper = remoteHostHelperPath(options.profile);
   const remoteBin = path11.posix.dirname(remoteHelper);
+  let helperChecksum;
   try {
     if (!statSync(localHelper).isFile()) {
       throw new Error("not a file");
     }
+    helperChecksum = createHash10("sha256").update(readFileSync2(localHelper)).digest("hex");
   } catch {
     throw commandError4(
       "Local Host helper file was not found.",
       "Run `npm run build` or reinstall Sporades, then retry `sporades host upgrade --host <alias>`."
     );
   }
+  const stagedHelper = `${remoteBin}/.sporades-host-helper-stage-${helperChecksum}.mjs`;
   const prepare = spawnSync2("ssh", [options.profile.server, `mkdir -p ${quoteRemoteShell(remoteBin)}`], {
     cwd: options.projectDir,
     encoding: "utf8"
@@ -36657,7 +36660,7 @@ function upgradeHostHelper(options) {
       "Check the Host profile SSH target, network connectivity, SSH key access, and remote root permissions."
     );
   }
-  const upload = spawnSync2("scp", [localHelper, `${options.profile.server}:${remoteHelper}`], {
+  const upload = spawnSync2("scp", [localHelper, `${options.profile.server}:${stagedHelper}`], {
     cwd: options.projectDir,
     encoding: "utf8"
   });
@@ -36667,13 +36670,17 @@ function upgradeHostHelper(options) {
       "Check the Host profile SSH target, network connectivity, SSH key access, and remote root permissions."
     );
   }
-  const chmod3 = spawnSync2("ssh", [options.profile.server, `chmod 0755 ${quoteRemoteShell(remoteHelper)}`], {
+  const activateCommand = [
+    `chmod 0755 ${quoteRemoteShell(stagedHelper)}`,
+    `${quoteRemoteShell(stagedHelper)} --install-host-helper ${quoteRemoteShell(remoteHelper)} ${quoteRemoteShell(helperChecksum)}`
+  ].join(" && ");
+  const chmod3 = spawnSync2("ssh", [options.profile.server, activateCommand], {
     cwd: options.projectDir,
     encoding: "utf8"
   });
   if (chmod3.error || chmod3.status !== 0) {
     throw commandError4(
-      "Failed to mark the Host helper executable.",
+      "Failed to activate the Host helper upgrade.",
       "Check the Host profile SSH target, SSH key access, and remote root permissions."
     );
   }
