@@ -5734,7 +5734,8 @@ test("sporades host helper descriptor-fences release-supplied Sealed Server env 
 test("sporades host helper leaves the legacy key and running release exact on a no-restart sealed install", async () => {
   await withTempDir(async (dir) => {
     const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "sealed-no-restart", restart: false });
-    const lifecycle = await alignSealedFixtureWithBuiltLifecycle(fixture);
+    const lifecycle = buildHostLifecycle(fixture.remoteRoot, fixture.domain, fixture.subname);
+    fixture.release.baseImage = lifecycle.container.baseImage;
     const docker = await installFakeDocker(path.join(dir, "docker"));
     const keyBefore = await readFile(fixture.privateKeyPath);
     const keyStatBefore = await lstat(fixture.privateKeyPath);
@@ -5764,10 +5765,19 @@ test("sporades host helper leaves the legacy key and running release exact on a 
 test("sporades host helper restores the exact previous sealed runtime after a new release start fails", async () => {
   await withTempDir(async (dir) => {
     const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "sealed-start-failure", restart: true });
-    const lifecycle = await alignSealedFixtureWithBuiltLifecycle(fixture);
-    const docker = await installFakeDocker(path.join(dir, "docker"), { env: { FAKE_DOCKER_RUN_STATUSES: "1,0" } });
+    const lifecycle = fixture.lifecycle;
+    const oldRoute = [
+      `team-notes.${fixture.domain} {`,
+      "  reverse_proxy 127.0.0.1:49153",
+      `  log { output file ${path.join(fixture.capsuleDir, "logs", "http.log")} }`,
+      "}",
+      "",
+    ].join("\n");
+    await writeFile(fixture.routeFile, oldRoute);
+    const docker = await installFakeDocker(path.join(dir, "docker"), {
+      env: { FAKE_DOCKER_RUN_STATUSES: "1,0", FAKE_DOCKER_PUBLISHED_PORT: "127.0.0.1:49154" },
+    });
     const registryBefore = await readFile(fixture.registryRecordPath);
-    const routeBefore = await readFile(fixture.routeFile);
     const keyBefore = await readFile(fixture.privateKeyPath);
     const keyStatBefore = await lstat(fixture.privateKeyPath);
     const pointerBefore = await readlink(path.join(fixture.capsuleDir, "current"));
@@ -5790,15 +5800,78 @@ test("sporades host helper restores the exact previous sealed runtime after a ne
     assert.equal(output.data.fallback.applied, false);
     assert.equal(output.data.fallback.reason, "install-rolled-back");
     assert.deepEqual(await readFile(fixture.registryRecordPath), registryBefore);
-    assert.deepEqual(await readFile(fixture.routeFile), routeBefore);
+    const restoredRoute = await readFile(fixture.routeFile, "utf8");
+    assert.match(restoredRoute, /127\.0\.0\.1:49154/);
+    assert.doesNotMatch(restoredRoute, /127\.0\.0\.1:49153/);
+    assert.match(restoredRoute, /header_up x-sporades-client-address/);
+    assert.match(restoredRoute, new RegExp(escapeRegExp(path.join(fixture.capsuleDir, "logs", "http.log"))));
     assert.deepEqual(await readFile(fixture.privateKeyPath), keyBefore);
     const keyStatAfter = await lstat(fixture.privateKeyPath);
     assert.deepEqual([keyStatAfter.mode, keyStatAfter.uid, keyStatAfter.gid], [keyStatBefore.mode, keyStatBefore.uid, keyStatBefore.gid]);
     assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), pointerBefore);
     const runs = (await docker.calls()).filter((call) => call.args[0] === "run");
     assert.equal(runs.length, 2, JSON.stringify(await docker.calls()));
+    assert(runs[0].args.includes("registry.example/next:2"));
+    assert(runs[1].args.includes("registry.example/previous:1"));
+    await assert.rejects(lstat(fixture.nextPrivateKeyPath), { code: "ENOENT" });
+    await assert.rejects(lstat(path.join(fixture.capsuleDir, "releases", fixture.releaseId)), { code: "ENOENT" });
+  });
+});
+
+test("sporades host helper restores an absent route when a stopped prior runtime remains stopped", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "stopped-install-rollback", restart: true });
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    record.status = "stopped";
+    await writeFile(fixture.registryRecordPath, `${JSON.stringify(record, null, 2)}\n`);
+    await rm(fixture.routeFile);
+    const registryBefore = await readFile(fixture.registryRecordPath);
+    const docker = await installFakeDocker(path.join(dir, "docker"), {
+      env: { FAKE_DOCKER_RUNNING: "false", FAKE_DOCKER_RUN_STATUS: "1" },
+    });
+
+    const result = await runHostHelper({
+      action: "capsule.release.install",
+      host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+      release: fixture.release,
+      lifecycle: fixture.lifecycle,
+    }, { cwd: dir, env: docker.env });
+
+    assert.equal(JSON.parse(result.stdout).ok, false, result.stdout);
+    assert.deepEqual(await readFile(fixture.registryRecordPath), registryBefore);
+    await assert.rejects(lstat(fixture.routeFile), { code: "ENOENT" });
+    assert.equal((await docker.calls()).filter((call) => call.args[0] === "run").length, 1);
+    await assert.rejects(lstat(fixture.nextPrivateKeyPath), { code: "ENOENT" });
+    await assert.rejects(lstat(path.join(fixture.capsuleDir, "releases", fixture.releaseId)), { code: "ENOENT" });
+  });
+});
+
+test("sporades host helper validates the built upgrade image then restores the registry image after failure", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "built-image-phase-restore", restart: true });
+    const lifecycle = buildHostLifecycle(fixture.remoteRoot, fixture.domain, fixture.subname);
+    fixture.release.baseImage = lifecycle.container.baseImage;
+    const docker = await installFakeDocker(path.join(dir, "docker"), { env: { FAKE_DOCKER_RUN_STATUSES: "1,0" } });
+    const registryBefore = await readFile(fixture.registryRecordPath);
+    const pointerBefore = await readlink(path.join(fixture.capsuleDir, "current"));
+
+    const result = await runHostHelper({
+      action: "capsule.release.install",
+      host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+      release: fixture.release,
+      lifecycle,
+    }, { cwd: dir, env: docker.env });
+
+    assert.equal(JSON.parse(result.stdout).ok, false, result.stdout);
+    const runs = (await docker.calls()).filter((call) => call.args[0] === "run");
+    assert.equal(runs.length, 2, JSON.stringify(await docker.calls()));
     assert(runs[0].args.includes(lifecycle.container.image));
-    assert(runs[1].args.includes(lifecycle.container.image));
+    assert(runs[1].args.includes("registry.example/previous:1"));
+    assert(!runs[1].args.includes(lifecycle.container.image));
+    assert.deepEqual(await readFile(fixture.registryRecordPath), registryBefore);
+    assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), pointerBefore);
     await assert.rejects(lstat(fixture.nextPrivateKeyPath), { code: "ENOENT" });
     await assert.rejects(lstat(path.join(fixture.capsuleDir, "releases", fixture.releaseId)), { code: "ENOENT" });
   });
@@ -5837,7 +5910,8 @@ test("sporades host helper rolls back a sealed install when release registry set
 test("sporades host helper starts a no-restart release later with its staged private key and release image", async () => {
   await withTempDir(async (dir) => {
     const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "sealed-later-start", restart: false });
-    const lifecycle = await alignSealedFixtureWithBuiltLifecycle(fixture);
+    const lifecycle = buildHostLifecycle(fixture.remoteRoot, fixture.domain, fixture.subname);
+    fixture.release.baseImage = lifecycle.container.baseImage;
     const docker = await installFakeDocker(path.join(dir, "docker"));
     const target = {
       host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
@@ -5853,6 +5927,7 @@ test("sporades host helper starts a no-restart release later with its staged pri
     assert.equal(JSON.parse(start.stdout).ok, true, start.stdout);
     const [run] = (await docker.calls()).filter((call) => call.args[0] === "run");
     assert(run.args.includes(lifecycle.container.image));
+    assert(!run.args.includes("registry.example/previous:1"));
     assert(run.args.includes(`${fixture.nextPrivateKeyPath}:/app/.sporades/sealed-server-env/server-env.private.pem:ro`));
     assert.equal(await readFile(fixture.privateKeyPath, "utf8"), "previous private key bytes\n");
   });

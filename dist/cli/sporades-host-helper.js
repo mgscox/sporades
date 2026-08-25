@@ -1070,7 +1070,7 @@ function deletionRequiresUnregisterError(request) {
 async function installRelease(request) {
     validateInstallRequest(request);
     const previousRecord = await verifyRegisteredCapsule(request);
-    normaliseLifecycle(request, previousRecord);
+    normaliseLifecycle(request, previousRecord, { imageAuthority: "incoming-release" });
     const paths = canonicalReleasePaths(request);
     if (!paths.release) {
         throw helperError("Invalid release install request.", "Update the Sporades CLI and retry `sporades host push`.");
@@ -1592,7 +1592,7 @@ async function startCapsule(request, options = {}) {
     const registryRecord = await verifyRegisteredCapsule(request, "lifecycle");
     const paths = canonicalReleasePaths(request);
     const releaseId = await currentReleaseId(paths.currentLink, request);
-    const lifecycle = normaliseLifecycle(request, registryRecord);
+    const lifecycle = normaliseLifecycle(request, registryRecord, options.trustedRegistryLifecycle === true ? { ignoreProvidedLifecycle: true } : {});
     if (options.containerQuiesced !== true)
         stopAndRemoveContainer(lifecycle.container.name);
     if (options.dataPrepared !== true)
@@ -1784,7 +1784,7 @@ async function removeInstalledReleasePrivateKey(release, paths) {
     }
 }
 async function captureReleaseInstallRoute(request, previousRecord) {
-    const lifecycle = normaliseLifecycle(request, previousRecord);
+    const lifecycle = normaliseLifecycle(request, previousRecord, { ignoreProvidedLifecycle: true });
     const routeFile = lifecycle.routes.running.routeFile;
     const contents = await readFile(routeFile, "utf8").catch((error) => {
         if (errorDetails(error).code === "ENOENT")
@@ -1817,15 +1817,23 @@ async function restoreFailedReleaseInstall(request, paths, previousRecord, previ
     try {
         await restoreCurrentReleasePointerTarget(paths.currentLink, previousCurrentTarget);
         await writeRegistryRecordAtomic(registryPath(request), previousRecord);
+        let runningRouteRestored = false;
         if (priorRuntime?.wasRunning) {
-            const restored = await restartCapsule(request, { write: false, containerQuiesced: true, dataPrepared: true });
+            const restored = await restartCapsule(request, {
+                write: false,
+                containerQuiesced: true,
+                dataPrepared: true,
+                trustedRegistryLifecycle: true,
+            });
             if (!restored)
                 throw new Error("previous runtime did not restart");
+            runningRouteRestored = true;
         }
         else if (priorRuntime) {
             stopAndRemoveContainer(priorRuntime.containerName);
         }
-        await restoreReleaseInstallRoute(previousRoute);
+        if (!runningRouteRestored)
+            await restoreReleaseInstallRoute(previousRoute);
         await writeRegistryContentsAtomic(registryPath(request), previousRegistryContents);
         await removeInstalledReleasePrivateKey(release, paths);
         await rm(paths.release, { recursive: true, force: true });
@@ -1995,13 +2003,17 @@ async function stopCapsule(request, options = {}) {
 }
 async function restartCapsule(request, options = {}) {
     validateLifecycleRequest(request);
-    const lifecycle = normaliseLifecycle(request);
+    const registryRecord = options.trustedRegistryLifecycle === true
+        ? await verifyRegisteredCapsule(request, "lifecycle")
+        : null;
+    const lifecycle = normaliseLifecycle(request, registryRecord, options.trustedRegistryLifecycle === true ? { ignoreProvidedLifecycle: true } : {});
     if (options.containerQuiesced !== true)
         stopAndRemoveContainer(lifecycle.container.name);
     const startResult = await startCapsule(request, {
         write: false,
         containerQuiesced: true,
         dataPrepared: options.dataPrepared === true,
+        trustedRegistryLifecycle: options.trustedRegistryLifecycle === true,
     });
     if (!startResult) {
         if (options.write !== false) {
@@ -2392,8 +2404,8 @@ function canonicalRollbackPaths(request, releaseId) {
         release: path.join(paths.releases, releaseId),
     };
 }
-function normaliseLifecycle(request, registryRecord = null) {
-    const provided = (request.lifecycle ?? {});
+function normaliseLifecycle(request, registryRecord = null, options = {}) {
+    const provided = (options.ignoreProvidedLifecycle === true ? {} : request.lifecycle ?? {});
     const paths = canonicalReleasePaths(request);
     const subname = request.capsule.subname;
     const domain = request.host.domain;
@@ -2406,7 +2418,9 @@ function normaliseLifecycle(request, registryRecord = null) {
     const routeTls = canonicalLifecycleRouteTls(request, registryRecord, provided);
     const sealedServerEnvPrivateKey = releaseSealedServerEnvPrivateKeyMount(registryRecord, paths);
     const sshAuthorizedKeysMount = releaseSshAuthorizedKeysMount(registryRecord, paths);
-    const authoritativeBaseImage = registryRecord?.baseImage ?? request.release?.baseImage ?? null;
+    const authoritativeBaseImage = options.imageAuthority === "incoming-release"
+        ? request.release?.baseImage ?? registryRecord?.baseImage ?? null
+        : registryRecord?.baseImage ?? request.release?.baseImage ?? null;
     const updatePolicyMode = normaliseBaseImageUpdatePolicy(authoritativeBaseImage?.updatePolicy);
     const baseImage = {
         ...baseImageMetadata(updatePolicyMode),
