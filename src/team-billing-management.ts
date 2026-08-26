@@ -562,10 +562,6 @@ function nowSeconds(database: LooseRecord) {
 }
 
 function scheduleAfterOwnedTransaction(database: LooseRecord) {
-  if (database.__transactionActive) {
-    (database.__rootDatabase ?? database).__teamBillingDispatchPending = true;
-    return;
-  }
   database.scheduleTeamBillingJobDispatch?.();
 }
 

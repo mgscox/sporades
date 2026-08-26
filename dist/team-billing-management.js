@@ -506,10 +506,6 @@ function nowSeconds(database) {
     return Math.floor(database.clock.now().getTime() / 1_000);
 }
 function scheduleAfterOwnedTransaction(database) {
-    if (database.__transactionActive) {
-        (database.__rootDatabase ?? database).__teamBillingDispatchPending = true;
-        return;
-    }
     database.scheduleTeamBillingJobDispatch?.();
 }
 function safeCode(value) {

@@ -3376,6 +3376,10 @@ function createTransactionDatabase(database: LooseRecord, transactionAdapter: an
   };
   transactionDatabase.stageTeamBillingMembershipChange = (teamId: string) =>
     stageTeamBillingMembershipChange(transactionDatabase, teamId);
+  transactionDatabase.scheduleTeamBillingJobDispatch = () => deferOrScheduleJobDispatch(
+    transactionDatabase,
+    transactionDatabase.__rootDatabase,
+  );
   if (typeof database.log?.withDatabase === "function") {
     transactionDatabase.log = database.log.withDatabase(adapter);
     transactionDatabase.audit = createPrivilegedAuditEmitter(transactionDatabase.log);
@@ -3532,16 +3536,11 @@ export async function runAtomicStripeConsequence(
       });
       commitPendingJobCancellationAborts(context);
       await dispatchPendingJobs(context);
-      if (database.__teamBillingDispatchPending) {
-        database.__teamBillingDispatchPending = false;
-        scheduleCurrentUserJobWorker(database);
-      }
       database.rowCache.clear();
       return result;
     } catch (error: any) {
       dropPendingJobCancellationAborts(context);
       dropPendingJobDispatch(context);
-      database.__teamBillingDispatchPending = false;
       database.rowCache.clear();
       await reindexPrivilegedAuditEventsAfterRollback(database, context);
       if (error?.code !== "STRIPE_CONSEQUENCE_FENCE_BUSY" || fenceAttempt === 200 || parentContext.signal?.aborted) throw error;

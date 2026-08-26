@@ -7786,10 +7786,6 @@ function nowSeconds(database) {
   return Math.floor(database.clock.now().getTime() / 1e3);
 }
 function scheduleAfterOwnedTransaction(database) {
-  if (database.__transactionActive) {
-    (database.__rootDatabase ?? database).__teamBillingDispatchPending = true;
-    return;
-  }
   database.scheduleTeamBillingJobDispatch?.();
 }
 function safeCode(value) {
@@ -22337,6 +22333,10 @@ function createTransactionDatabase(database, transactionAdapter, writeState) {
     __pendingLogWrites: pendingLogWrites
   };
   transactionDatabase.stageTeamBillingMembershipChange = (teamId) => stageTeamBillingMembershipChange(transactionDatabase, teamId);
+  transactionDatabase.scheduleTeamBillingJobDispatch = () => deferOrScheduleJobDispatch(
+    transactionDatabase,
+    transactionDatabase.__rootDatabase
+  );
   if (typeof database.log?.withDatabase === "function") {
     transactionDatabase.log = database.log.withDatabase(adapter);
     transactionDatabase.audit = createPrivilegedAuditEmitter(transactionDatabase.log);
@@ -22475,16 +22475,11 @@ async function runAtomicStripeConsequence(database, parentContext, event, subscr
       });
       commitPendingJobCancellationAborts(context);
       await dispatchPendingJobs(context);
-      if (database.__teamBillingDispatchPending) {
-        database.__teamBillingDispatchPending = false;
-        scheduleCurrentUserJobWorker(database);
-      }
       database.rowCache.clear();
       return result;
     } catch (error) {
       dropPendingJobCancellationAborts(context);
       dropPendingJobDispatch(context);
-      database.__teamBillingDispatchPending = false;
       database.rowCache.clear();
       await reindexPrivilegedAuditEventsAfterRollback(database, context);
       if (error?.code !== "STRIPE_CONSEQUENCE_FENCE_BUSY" || fenceAttempt === 200 || parentContext.signal?.aborted) throw error;

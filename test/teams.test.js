@@ -158,6 +158,10 @@ const billingCapsule = {
         : ctx.db.billingHolders.insert({ teamId, userId });
     }),
     removeBillingTeamMember: mutation((ctx, teamId, userId) => ctx.teams.removeMember(teamId, userId)),
+    removeBillingTeamMemberThenFail: mutation(async (ctx, teamId, userId) => {
+      await ctx.teams.removeMember(teamId, userId);
+      throw new Error("rollback Team member removal");
+    }),
   },
   teamBilling: {
     checkout: { successPath: "/settings/billing/success", cancelPath: "/settings/billing/cancelled", continuationTtlSeconds: 600 },
@@ -256,6 +260,35 @@ test("a Team member removal stages Agency seat convergence through the owning ap
     });
     assert.equal(holder.error, null, JSON.stringify(holder.error));
     await runtime.database.init();
+
+    const startupIdleDeadline = Date.now() + 2_000;
+    while (
+      (runtime.database.__jobWorkerScheduled || runtime.database.__jobWorkerRunning || runtime.database.__jobWorkerPromise)
+      && Date.now() < startupIdleDeadline
+    ) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(runtime.database.__jobWorkerScheduled, false, "startup worker is idle before the membership mutation");
+    assert.equal(runtime.database.__jobWorkerRunning, false, "no startup scan can discover the later convergence Job");
+    assert.equal(runtime.database.__jobWorkerPromise, null);
+
+    const rolledBack = await send(owner, {
+      id: "billing-removal-rollback",
+      type: "mutation.run",
+      mutation: "removeBillingTeamMemberThenFail",
+      args: [team.id, memberSignUp.data.auth.userId],
+      sessionToken: ownerSignUp.data.sessionToken,
+    });
+    assert.equal(rolledBack.error.message, "rollback Team member removal");
+    assert.equal((await runtime.database.adapter.prepare(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?",
+    ).get(team.id)).count, 2, "rollback restores the membership");
+    assert.equal((await runtime.database.adapter.prepare(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_billing_desired_state] WHERE [teamId] = ?",
+    ).get(team.id)).count, 0, "rollback leaves no Team Billing desired state");
+    assert.equal((await runtime.database.adapter.prepare(
+      "SELECT COUNT(*) AS [count] FROM [sporades_jobs] WHERE [handler] = ?",
+    ).get("_sporades.team-billing-seat-convergence")).count, 0, "rollback leaves no convergence Job");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(providerCalls.length, 0, "rollback cannot publish a provider wake");
 
     const removed = await send(owner, {
       id: "billing-removal-mutation",
