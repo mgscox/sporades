@@ -157,6 +157,7 @@ const billingCapsule = {
         ? ctx.db.billingHolders.update(existing.id, { userId })
         : ctx.db.billingHolders.insert({ teamId, userId });
     }),
+    removeBillingTeamMember: mutation((ctx, teamId, userId) => ctx.teams.removeMember(teamId, userId)),
   },
   teamBilling: {
     checkout: { successPath: "/settings/billing/success", cancelPath: "/settings/billing/cancelled", continuationTtlSeconds: 600 },
@@ -192,6 +193,107 @@ const billingCapsule = {
     },
   },
 };
+
+test("a Team member removal stages Agency seat convergence through the owning app mutation", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-billing-member-removal-"));
+  const providerCalls = [];
+  const serverEnv = {
+    STRIPE_SECRET_KEY: "sk_test_team_member_removal",
+    STRIPE_WEBHOOK_SECRET: "whsec_team_member_removal",
+  };
+  const runtime = await startRuntime(path.join(dir, "data.db"), billingCapsule, {
+    serverEnv,
+    config: {
+      payments: { stripe: {
+        enabled: true,
+        secretKeyEnv: "STRIPE_SECRET_KEY",
+        webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
+        publicOrigin: "https://member-removal.example.test",
+        callbackPath: "/stripe/webhook",
+        apiVersion: "2026-07-29.dahlia",
+        livemode: false,
+        requestTimeoutMs: 10_000,
+      } },
+    },
+    runtimeOptions: {
+      createStripeCallbackEndpoint,
+      createStripeTeamBillingProvider: () => ({
+        async updateManagedSubscription(input) {
+          providerCalls.push(input);
+          return { ok: true, outcome: "acknowledged" };
+        },
+      }),
+    },
+  });
+  let owner;
+  let member;
+  try {
+    owner = await runtime.open();
+    member = await runtime.open();
+    const ownerSignUp = await signUp(owner, "billing-removal-owner", "billing-removal-owner@example.com", "Billing owner");
+    const memberSignUp = await signUp(member, "billing-removal-member", "billing-removal-member@example.com", "Billing member");
+    const team = (await send(owner, {
+      id: "billing-removal-team",
+      type: "teams.list",
+      sessionToken: ownerSignUp.data.sessionToken,
+    })).data.teams[0];
+    const now = new Date().toISOString();
+    await runtime.database.adapter.prepare(
+      "INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)",
+    ).run(team.id, memberSignUp.data.auth.userId, now);
+    await runtime.database.adapter.prepare(
+      "INSERT INTO [sporades_team_billing_customers] ([teamId], [mode], [providerCustomerId], [createdAt], [updatedAt]) VALUES (?, 'sandbox', ?, ?, ?)",
+    ).run(team.id, "cus_removal", now, now);
+    await runtime.database.adapter.prepare(
+      "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [observedAt], [updatedAt], [terminalLatch]) VALUES (?, ?, 'sandbox', ?, ?, ?, 'agency', 2, 'active', 0, ?, ?, 0)",
+    ).run("billing-removal-subscription", team.id, "sub_removal", "price_test_agency", "si_removal", now, now);
+    const holder = await send(owner, {
+      id: "billing-removal-holder",
+      type: "mutation.run",
+      mutation: "setBillingHolder",
+      args: [team.id, ownerSignUp.data.auth.userId],
+      sessionToken: ownerSignUp.data.sessionToken,
+    });
+    assert.equal(holder.error, null, JSON.stringify(holder.error));
+    await runtime.database.init();
+
+    const removed = await send(owner, {
+      id: "billing-removal-mutation",
+      type: "mutation.run",
+      mutation: "removeBillingTeamMember",
+      args: [team.id, memberSignUp.data.auth.userId],
+      sessionToken: ownerSignUp.data.sessionToken,
+    });
+    assert.deepEqual(removed.data, { removed: true });
+
+    const teams = await send(owner, {
+      id: "billing-removal-teams-after",
+      type: "teams.list",
+      sessionToken: ownerSignUp.data.sessionToken,
+    });
+    assert.equal(teams.data.teams.find((candidate) => candidate.id === team.id).memberCount, 1);
+    const billing = await send(owner, {
+      id: "billing-removal-pending",
+      type: "teamBilling.get",
+      teamId: team.id,
+      sessionToken: ownerSignUp.data.sessionToken,
+    });
+    assert.equal(billing.data.state, "pending");
+    assert.equal(billing.data.operation, "reconciliation");
+    assert.equal(billing.data.teamId, team.id);
+    const providerDeadline = Date.now() + 10_000;
+    while (providerCalls.length === 0 && Date.now() < providerDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(providerCalls.length, 1, "the committed membership mutation dispatches its durable convergence Job");
+    assert.equal(providerCalls[0].targetQuantity, 1);
+  } finally {
+    owner?.close();
+    member?.close();
+    await runtime.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 const fileAclCapsule = {
   ...rolesCapsule,

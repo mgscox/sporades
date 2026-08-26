@@ -3374,6 +3374,8 @@ function createTransactionDatabase(database: LooseRecord, transactionAdapter: an
     __rootDatabase: database.__rootDatabase ?? database,
     __pendingLogWrites: pendingLogWrites,
   };
+  transactionDatabase.stageTeamBillingMembershipChange = (teamId: string) =>
+    stageTeamBillingMembershipChange(transactionDatabase, teamId);
   if (typeof database.log?.withDatabase === "function") {
     transactionDatabase.log = database.log.withDatabase(adapter);
     transactionDatabase.audit = createPrivilegedAuditEmitter(transactionDatabase.log);

@@ -22336,6 +22336,7 @@ function createTransactionDatabase(database, transactionAdapter, writeState) {
     __rootDatabase: database.__rootDatabase ?? database,
     __pendingLogWrites: pendingLogWrites
   };
+  transactionDatabase.stageTeamBillingMembershipChange = (teamId) => stageTeamBillingMembershipChange(transactionDatabase, teamId);
   if (typeof database.log?.withDatabase === "function") {
     transactionDatabase.log = database.log.withDatabase(adapter);
     transactionDatabase.audit = createPrivilegedAuditEmitter(transactionDatabase.log);
