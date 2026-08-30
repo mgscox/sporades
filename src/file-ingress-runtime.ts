@@ -19,7 +19,7 @@ function publicLease(row: RecordLike) { return Object.freeze({ leaseId: row.leas
 
 // Keeps only one completed part (never the aggregate request) in memory. The storage adapter
 // currently accepts complete bounded bytes; this is deliberately the narrowest streaming seam.
-async function* multipartParts(request: AsyncIterable<Uint8Array>, boundaryText: string, maxWireBytes: number, maxPartBytes: number) {
+export async function* multipartParts(request: AsyncIterable<Uint8Array>, boundaryText: string, maxWireBytes: number, maxPartBytes: number) {
   const boundary = Buffer.from(`--${boundaryText}`); const marker = Buffer.from(`\r\n--${boundaryText}`);
   let pending = Buffer.alloc(0); let wire = 0; let state: "preamble" | "headers" | "body" | "separator" = "preamble";
   let rawHeaders = ""; let pieces: Buffer[] = []; let size = 0;

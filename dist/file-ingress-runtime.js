@@ -14,7 +14,7 @@ function keyFor(endpoint, requestKey, partKey, actor) { return `${endpoint.optio
 function publicLease(row) { return Object.freeze({ leaseId: row.leaseId, partId: row.partId, fieldName: row.fieldName, name: row.name, type: row.type, declaredSize: null, size: row.size, expiresAt: row.expiresAt }); }
 // Keeps only one completed part (never the aggregate request) in memory. The storage adapter
 // currently accepts complete bounded bytes; this is deliberately the narrowest streaming seam.
-async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes) {
+export async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes) {
     const boundary = Buffer.from(`--${boundaryText}`);
     const marker = Buffer.from(`\r\n--${boundaryText}`);
     let pending = Buffer.alloc(0);

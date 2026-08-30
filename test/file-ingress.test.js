@@ -7,6 +7,27 @@ import { test } from "node:test";
 
 import { capsule, endpoint, requireAuth } from "../dist/server.js";
 import { openDevDatabase, routeEndpoint } from "../dist/server-runtime-source.js";
+import { multipartParts } from "../dist/file-ingress-runtime.js";
+
+function multipart(boundary, headers = 'Content-Disposition: form-data; name="file"; filename="a.txt"\r\nContent-Type: text/plain', bytes = "hello") {
+  return Buffer.from(`--${boundary}\r\n${headers}\r\n\r\n${bytes}\r\n--${boundary}--`);
+}
+async function* splitEvery(bytes, size) { for (let index = 0; index < bytes.length; index += size) yield bytes.subarray(index, index + size); }
+
+test("multipart framing survives every one-byte boundary/header split and keeps boundary-like payload bytes", async () => {
+  const boundary = "split-boundary"; const payload = "one\r\n--not-the-boundary\r\ntwo"; const source = multipart(boundary, undefined, payload);
+  for (let split = 1; split <= source.length; split += 1) {
+    const parts = []; for await (const part of multipartParts(splitEvery(source, split), boundary, 10000, 10000)) parts.push(part);
+    assert.equal(parts.length, 1, `split ${split}`); assert.equal(parts[0].body.toString(), payload, `split ${split}`);
+  }
+});
+
+test("multipart framing rejects malformed terminators and bounded headers/parts", async () => {
+  const boundary = "limits";
+  await assert.rejects(async () => { for await (const _ of multipartParts(splitEvery(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="x"\r\n\r\na\r\n--${boundary}X`), 1), boundary, 1000, 1000)) {} }, { code: "INVALID_MULTIPART" });
+  await assert.rejects(async () => { for await (const _ of multipartParts(splitEvery(multipart(boundary, `X: ${"a".repeat(17000)}`), 17), boundary, 20000, 20000)) {} }, { code: "MULTIPART_LIMIT_EXCEEDED" });
+  await assert.rejects(async () => { for await (const _ of multipartParts(splitEvery(multipart(boundary, undefined, "x".repeat(20)), 1), boundary, 1000, 10)) {} }, { code: "MULTIPART_LIMIT_EXCEEDED" });
+});
 
 test("trusted multipart ingress leases bytes before the handler and claim atomically creates an ordinary private File", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-")); let server;
