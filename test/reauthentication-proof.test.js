@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { capsule, mutation, requireAuth, String as Text, table } from "../dist/server.js";
-import { openDevDatabase, runMutation } from "../dist/server-runtime-source.js";
+import { hashEmailPassword, openDevDatabase, runMutation } from "../dist/server-runtime-source.js";
+import { withPostgresAdapter } from "./support/database-adapter-engines.js";
 
 const auth = { userId: "human-1", displayName: "Human", email: "human@example.test", picture: null, isAuthenticated: true, isGuest: false, provider: "email" };
 const definition = capsule({ name: "reauth-proof", auth: { reauthentication: { purposes: { "administrator-authority": { maxAgeSeconds: 900 } } } }, schema: { effects: table({ value: Text() }) }, mutations: {
@@ -38,4 +40,38 @@ test("runtime-owned proof consumption commits atomically, preserves rejected pro
     await database.adapter.replaceReauthenticationProof({ id: "proof-startup-expired", userId: auth.userId, sessionToken: "session-1", purpose: "application-lifecycle", createdAt: new Date(now.getTime() - 2000).toISOString(), expiresAt: new Date(now.getTime() - 1000).toISOString() });
     await database.close(); database = await openDevDatabase(file, "", {}, { name: definition.name }, definition); assert.equal(database.adapter.prepare("SELECT id FROM sporades_auth_reauthentication_proofs WHERE id = ?").get("proof-startup-expired"), undefined, "restart sweeps abandoned expired proofs");
   } finally { await database.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("persisted email reauthentication reservations share one limit across separate runtimes", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "sporades-reauth-throttle-")); const file = path.join(dir, "data.db");
+  const first = await openDevDatabase(file, "", {}, { name: definition.name }, definition); const second = await openDevDatabase(file, "", {}, { name: definition.name }, definition);
+  try {
+    const now = new Date(); const input = { keys: ["email:shared", "session:shared"], now: now.toISOString(), resetAt: new Date(now.getTime() + 900000).toISOString(), limit: 5, maxEntries: 256 };
+    const results = []; for (let index = 0; index < 8; index += 1) results.push(await (index % 2 ? first : second).adapter.withTransaction((tx) => tx.reserveEmailReauthenticationAttempt(input)));
+    assert.equal(results.filter(Boolean).length, 5); assert.equal(results.filter((value) => !value).length, 3);
+    await first.close(); const restarted = await openDevDatabase(file, "", {}, { name: definition.name }, definition);
+    try { assert.equal(await restarted.adapter.withTransaction((tx) => tx.reserveEmailReauthenticationAttempt(input)), false, "limit survives restart"); }
+    finally { await restarted.close(); }
+  } finally { await second.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("PostgreSQL serializes throttle reservations and rejects a stale credential CAS after rotation", { skip: !process.env.SPORADES_POSTGRES_TEST_URL && "Set SPORADES_POSTGRES_TEST_URL to run the PostgreSQL reauthentication races." }, async () => {
+  const suffix = randomUUID(); const serviceEnv = { SPORADES_SERVICE_DATABASE_ENGINE: "postgres", SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL }; const config = { name: `reauth-proof-pg-${suffix}`, services: { database: { engine: "postgres" } } };
+  await withPostgresAdapter(async () => {}, { appTableNames: ["effects"] });
+  const first = await openDevDatabase("", "", serviceEnv, config, definition); const second = await openDevDatabase("", "", serviceEnv, config, definition);
+  try {
+    const now = new Date(); const throttle = { keys: [`email:${suffix}`, `session:${suffix}`], now: now.toISOString(), resetAt: new Date(now.getTime() + 900000).toISOString(), limit: 5, maxEntries: 256 };
+    const reservations = await Promise.all(Array.from({ length: 8 }, (_, index) => (index % 2 ? first : second).adapter.withTransaction((tx) => tx.reserveEmailReauthenticationAttempt(throttle)))); assert.equal(reservations.filter(Boolean).length, 5);
+    const userId = `reauth-${suffix}`, email = `${suffix}@example.test`; const oldPassword = hashEmailPassword("old-password"), nextPassword = hashEmailPassword("next-password");
+    await first.adapter.insertAuthUser({ id: userId, createdAt: now.toISOString(), displayName: "Race", email, picture: null, isAuthenticated: 1, isGuest: 0, provider: "email" }); await first.adapter.insertEmailCredential({ email, userId, passwordHash: oldPassword.hash, passwordSalt: oldPassword.salt, createdAt: now.toISOString() });
+    let readResolve; const read = new Promise((resolve) => { readResolve = resolve; }); let releaseResolve; const release = new Promise((resolve) => { releaseResolve = resolve; });
+    const staleIssuance = first.adapter.withTransaction(async (tx) => { const credential = await tx.findEmailCredentialWithUser(email); readResolve(); await release; const claimed = await tx.claimEmailCredentialVersion(email, credential.passwordHash, credential.passwordSalt); if (claimed) await tx.replaceReauthenticationProof({ id: randomUUID(), userId, sessionToken: `session-${suffix}`, purpose: "administrator-authority", createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + 900000).toISOString() }); return claimed; });
+    await read; await second.adapter.updateEmailCredentialPassword(email, nextPassword.hash, nextPassword.salt); releaseResolve(); assert.equal(await staleIssuance, false, "rotation winning before CAS prevents stale proof issuance");
+    const proofCount = await first.adapter.prepare('SELECT COUNT(*) AS count FROM sporades_auth_reauthentication_proofs WHERE "userId" = ?').get(userId); assert.equal(Number(proofCount.count), 0);
+  } finally {
+    await first.adapter.prepare("DELETE FROM sporades_auth_reauthentication_throttle WHERE key IN (?, ?)").run(`email:${suffix}`, `session:${suffix}`);
+    await first.adapter.prepare("DELETE FROM sporades_auth_email_credentials WHERE email = ?").run(`${suffix}@example.test`);
+    await first.adapter.prepare("DELETE FROM sporades_auth_users WHERE id = ?").run(`reauth-${suffix}`);
+    await first.close(); await second.close();
+  }
 });

@@ -190,9 +190,15 @@ rejects Capsule startup when a query, endpoint, or app-message guard declares
 it, because those read/request surfaces do not provide an atomic consume-and-
 commit boundary. Email step-up also requires the Email provider to remain
 enabled. Its password checks use a dedicated bounded attempt throttle, separate
-from ordinary sign-in, password-change, and reset buckets, and read the current
+from ordinary sign-in, password-change, and reset buckets. Those opaque hashed
+email and Session buckets are stored in the Capsule database, serialized by a
+runtime-owned fence, expire after the bounded window, and are never evicted to
+make room for attacker-created live buckets; therefore limits survive restart
+and are shared by separate runtime processes. Email reauthentication reads the current
 credential in the same database transaction as Session/User authorization and
-proof insertion so a concurrent password rotation cannot mint from stale data.
+proof insertion. After the password KDF it claims the exact hash-and-salt row
+with a portable compare-and-swap update before inserting the proof, so a
+concurrent password rotation and stale-password proof cannot both commit.
 
 OAuth reauthentication is explicitly marked as step-up authentication when the
 runtime invokes Google, Microsoft, Apple or Facebook. Their authorization

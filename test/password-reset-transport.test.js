@@ -70,21 +70,26 @@ test("requesting a reset link over the transport cannot distinguish a registered
 
 test("email reauthentication uses an isolated bounded attempt bucket", async () => {
   await withTempDir(async (dir) => {
-    const { child, url } = await startResetCapsule(dir);
+    let runtime = await startResetCapsule(dir);
     let socket;
     try {
-      socket = await openSocket(url);
-      await signUp(socket, "reauth-signup", "reauth@example.com", "password-123");
+      socket = await openSocket(runtime.url);
+      const signedUp = await signUp(socket, "reauth-signup", "reauth@example.com", "password-123");
       const attempt = (id, password) => sendAndWait(socket, { id, type: "auth.reauthenticate", provider: "email", credentials: { email: "reauth@example.com", password }, purpose: "credential-check" });
       assert.equal((await attempt("wrong-before-success", "wrong-password")).error.code, "REAUTHENTICATION_FAILED");
       assert.equal((await attempt("success-resets", "password-123")).error, null, "a successful proof resets only the reauthentication bucket");
       for (let index = 0; index < 5; index += 1) assert.equal((await attempt(`wrong-${index}`, "wrong-password")).error.code, "REAUTHENTICATION_FAILED");
       assert.equal((await attempt("throttled-correct", "password-123")).error.code, "REAUTHENTICATION_FAILED", "the bounded bucket rejects before another password verification");
+      socket.close(); socket = null; await stopDevSession(runtime.child);
+      const projectDir = path.join(dir, "reset-capsule"); const child = startCli(["dev", "--json"], { cwd: projectDir }); const started = await waitForJsonLine(child); runtime = { child, url: started.data.url };
+      socket = await openSocket(runtime.url, signedUp.data.sessionToken);
+      const afterRestart = await sendAndWait(socket, { id: "throttled-after-restart", type: "auth.reauthenticate", provider: "email", credentials: { email: "reauth@example.com", password: "password-123" }, purpose: "credential-check" });
+      assert.equal(afterRestart.error.code, "REAUTHENTICATION_FAILED", "the dedicated bucket persists across runtime restart");
       await sendAndWait(socket, { id: "reauth-signout", type: "auth.signOut" });
       assert.equal(await canSignIn(socket, "ordinary-signin-unaffected", "reauth@example.com", "password-123"), true, "reauth throttling must not collide with ordinary sign-in");
     } finally {
       socket?.close();
-      await stopDevSession(child);
+      await stopDevSession(runtime.child);
     }
   });
 });

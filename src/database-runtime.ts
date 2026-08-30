@@ -1364,6 +1364,27 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
         () => this.prepare(sql("INSERT INTO [sporades_auth_reauthentication_proofs] ([id], [userId], [sessionToken], [purpose], [createdAt], [expiresAt]) VALUES (?, ?, ?, ?, ?, ?)")).run(row.id, row.userId, row.sessionToken, row.purpose, row.createdAt, row.expiresAt),
       ]);
     },
+    async reserveEmailReauthenticationAttempt(input: LooseRecord) {
+      await this.prepare(sql("UPDATE [sporades_auth_reauthentication_throttle_fence] SET [version] = [version] + 1 WHERE [id] = 'email'")).run();
+      await this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_throttle] WHERE [resetAt] <= ?")).run(input.now);
+      const rows = await Promise.all(input.keys.map((key: string) => this.prepare(sql("SELECT [count], [resetAt] FROM [sporades_auth_reauthentication_throttle] WHERE [key] = ?")).get(key)));
+      if (rows.some((row: LooseRecord | null) => row && row.count >= input.limit)) return false;
+      const active = await this.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_auth_reauthentication_throttle]")).get();
+      const missing = rows.filter((row: LooseRecord | null) => !row).length;
+      if (Number(active?.count ?? 0) + missing > input.maxEntries) return false;
+      for (let index = 0; index < input.keys.length; index += 1) {
+        const key = input.keys[index]; const row = rows[index];
+        if (row) await this.prepare(sql("UPDATE [sporades_auth_reauthentication_throttle] SET [count] = [count] + 1 WHERE [key] = ?")).run(key);
+        else await this.prepare(sql("INSERT INTO [sporades_auth_reauthentication_throttle] ([key], [count], [resetAt]) VALUES (?, 1, ?)")).run(key, input.resetAt);
+      }
+      return true;
+    },
+    async clearEmailReauthenticationAttempts(keys: string[]) {
+      for (const key of keys) await this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_throttle] WHERE [key] = ?")).run(key);
+    },
+    claimEmailCredentialVersion(email: string, passwordHash: string, passwordSalt: string) {
+      return thenIfPromise(this.prepare(sql("UPDATE [sporades_auth_email_credentials] SET [passwordHash] = [passwordHash] WHERE [email] = ? AND [passwordHash] = ? AND [passwordSalt] = ?")).run(email, passwordHash, passwordSalt), (result: LooseRecord) => result.changes === 1);
+    },
     deleteExpiredReauthenticationProofs(now: any) {
       return this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [expiresAt] <= ?")).run(now);
     },

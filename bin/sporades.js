@@ -12384,7 +12384,6 @@ var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
 var EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
 var EMAIL_SIGN_IN_THROTTLE_FIELD = "__emailSignInThrottle";
 var PASSWORD_CHANGE_THROTTLE_FIELD = "__emailPasswordChangeThrottle";
-var EMAIL_REAUTHENTICATION_THROTTLE_FIELD = "__emailReauthenticationThrottle";
 var PASSWORD_RESET_THROTTLE_FIELD = "__emailPasswordResetThrottle";
 var PASSWORD_RESET_DEFAULT_PATH = "/reset-password";
 var PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1e3;
@@ -15321,6 +15320,9 @@ function createAnonymousAuthTables(sqlite, _authConfig = null) {
     () => sqlite.exec(sql(
       "CREATE TABLE IF NOT EXISTS [sporades_auth_reauthentication_proofs] ([id] TEXT PRIMARY KEY, [userId] TEXT NOT NULL, [sessionToken] TEXT NOT NULL, [purpose] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL, UNIQUE ([sessionToken], [purpose]))"
     )),
+    () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_auth_reauthentication_throttle_fence] ([id] TEXT PRIMARY KEY, [version] INTEGER NOT NULL)")),
+    () => sqlite.prepare(sql("INSERT INTO [sporades_auth_reauthentication_throttle_fence] ([id], [version]) VALUES ('email', 0) ON CONFLICT ([id]) DO NOTHING")).run(),
+    () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_auth_reauthentication_throttle] ([key] TEXT PRIMARY KEY, [count] INTEGER NOT NULL, [resetAt] TEXT NOT NULL)")),
     () => sqlite.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [expiresAt] <= ? OR NOT EXISTS (SELECT 1 FROM [sporades_auth_sessions] [s] WHERE [s].[token] = [sporades_auth_reauthentication_proofs].[sessionToken])")).run((/* @__PURE__ */ new Date()).toISOString()),
     () => createProviderIdentityTables(sqlite),
     () => sqlite.exec(
@@ -18816,6 +18818,28 @@ function createSharedDatabaseAdapterMethods(dialect) {
         () => this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ? AND [purpose] = ?")).run(row.sessionToken, row.purpose),
         () => this.prepare(sql("INSERT INTO [sporades_auth_reauthentication_proofs] ([id], [userId], [sessionToken], [purpose], [createdAt], [expiresAt]) VALUES (?, ?, ?, ?, ?, ?)")).run(row.id, row.userId, row.sessionToken, row.purpose, row.createdAt, row.expiresAt)
       ]);
+    },
+    async reserveEmailReauthenticationAttempt(input) {
+      await this.prepare(sql("UPDATE [sporades_auth_reauthentication_throttle_fence] SET [version] = [version] + 1 WHERE [id] = 'email'")).run();
+      await this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_throttle] WHERE [resetAt] <= ?")).run(input.now);
+      const rows = await Promise.all(input.keys.map((key) => this.prepare(sql("SELECT [count], [resetAt] FROM [sporades_auth_reauthentication_throttle] WHERE [key] = ?")).get(key)));
+      if (rows.some((row) => row && row.count >= input.limit)) return false;
+      const active = await this.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_auth_reauthentication_throttle]")).get();
+      const missing = rows.filter((row) => !row).length;
+      if (Number(active?.count ?? 0) + missing > input.maxEntries) return false;
+      for (let index = 0; index < input.keys.length; index += 1) {
+        const key = input.keys[index];
+        const row = rows[index];
+        if (row) await this.prepare(sql("UPDATE [sporades_auth_reauthentication_throttle] SET [count] = [count] + 1 WHERE [key] = ?")).run(key);
+        else await this.prepare(sql("INSERT INTO [sporades_auth_reauthentication_throttle] ([key], [count], [resetAt]) VALUES (?, 1, ?)")).run(key, input.resetAt);
+      }
+      return true;
+    },
+    async clearEmailReauthenticationAttempts(keys) {
+      for (const key of keys) await this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_throttle] WHERE [key] = ?")).run(key);
+    },
+    claimEmailCredentialVersion(email, passwordHash, passwordSalt) {
+      return thenIfPromise(this.prepare(sql("UPDATE [sporades_auth_email_credentials] SET [passwordHash] = [passwordHash] WHERE [email] = ? AND [passwordHash] = ? AND [passwordSalt] = ?")).run(email, passwordHash, passwordSalt), (result) => result.changes === 1);
     },
     deleteExpiredReauthenticationProofs(now2) {
       return this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [expiresAt] <= ?")).run(now2);
@@ -24615,9 +24639,13 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       const authorized = Boolean(policy && client.session.auth?.isAuthenticated && !client.session.auth?.isGuest);
       const emailProviderEnabled = database.authConfig.providers.email?.enabled === true;
       if (authorized && message.provider === "email" && emailProviderEnabled && normalized.ok && typeof normalized.password === "string") {
-        const throttle = currentEmailSignInThrottleState(database, normalized.email, client.session, EMAIL_REAUTHENTICATION_THROTTLE_FIELD);
-        if (!throttle.throttled) {
-          recordFailedEmailSignInAttempt(database, normalized.email, client.session, EMAIL_REAUTHENTICATION_THROTTLE_FIELD);
+        const reauthenticationThrottleKeys = [
+          `email:${createHash8("sha256").update(normalized.email).digest("base64url")}`,
+          `session:${createHash8("sha256").update(client.session.token).digest("base64url")}`
+        ];
+        const throttleNow = database.clock.now();
+        const reserved = await database.adapter.withTransaction((tx) => tx.reserveEmailReauthenticationAttempt({ keys: reauthenticationThrottleKeys, now: throttleNow.toISOString(), resetAt: new Date(throttleNow.getTime() + EMAIL_SIGN_IN_THROTTLE_WINDOW_MS).toISOString(), limit: EMAIL_SIGN_IN_FAILURE_LIMIT, maxEntries: EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES }));
+        if (reserved) {
           const now2 = database.clock.now();
           expiresAt = new Date(now2.getTime() + policy.maxAgeSeconds * 1e3).toISOString();
           try {
@@ -24626,9 +24654,11 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
               const credential = await tx.findEmailCredentialWithUser(normalized.email);
               if (!current || current.token !== client.session.token || current.userId !== client.session.auth.userId || !current.isAuthenticated || current.isGuest || Date.parse(current.expiresAt) <= now2.getTime() || credential?.userId !== current.userId || !verifyEmailPassword(normalized.password, credential.passwordSalt, credential.passwordHash)) return;
               const currentAuth = { userId: current.userId, displayName: current.displayName, email: current.email, picture: current.picture, isAuthenticated: Boolean(current.isAuthenticated), isGuest: Boolean(current.isGuest), provider: current.provider };
+              if (!await tx.claimEmailCredentialVersion(normalized.email, credential.passwordHash, credential.passwordSalt)) return;
               if (!await database.authorizeReauthentication(tx, currentAuth, purpose)) return;
               await tx.replaceReauthenticationProof({ id: randomUUID7(), userId: current.userId, sessionToken: current.token, purpose, createdAt: now2.toISOString(), expiresAt });
               ok = true;
+              await tx.clearEmailReauthenticationAttempts(reauthenticationThrottleKeys);
             });
           } catch {
             try {
@@ -24637,7 +24667,6 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
             }
             ok = false;
           }
-          if (ok) resetEmailSignInAttempts(database, normalized.email, client.session, EMAIL_REAUTHENTICATION_THROTTLE_FIELD);
         }
       }
       if (!ok && authorized && message.provider !== "email" && oauthProviderAdapter(database, message.provider)?.enabled) {

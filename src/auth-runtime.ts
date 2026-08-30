@@ -135,8 +135,6 @@ export const EMAIL_SIGN_IN_THROTTLE_FIELD = "__emailSignInThrottle";
 
 export const PASSWORD_CHANGE_THROTTLE_FIELD = "__emailPasswordChangeThrottle";
 
-export const EMAIL_REAUTHENTICATION_THROTTLE_FIELD = "__emailReauthenticationThrottle";
-
 export const PASSWORD_RESET_THROTTLE_FIELD = "__emailPasswordResetThrottle";
 
 export const PASSWORD_RESET_DEFAULT_PATH = "/reset-password";
@@ -3656,6 +3654,9 @@ export function createAnonymousAuthTables(sqlite: LooseRecord, _authConfig: Loos
       "[id] TEXT PRIMARY KEY, [userId] TEXT NOT NULL, [sessionToken] TEXT NOT NULL, [purpose] TEXT NOT NULL, " +
       "[createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL, UNIQUE ([sessionToken], [purpose]))",
     )),
+    () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_auth_reauthentication_throttle_fence] ([id] TEXT PRIMARY KEY, [version] INTEGER NOT NULL)")),
+    () => sqlite.prepare(sql("INSERT INTO [sporades_auth_reauthentication_throttle_fence] ([id], [version]) VALUES ('email', 0) ON CONFLICT ([id]) DO NOTHING")).run(),
+    () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_auth_reauthentication_throttle] ([key] TEXT PRIMARY KEY, [count] INTEGER NOT NULL, [resetAt] TEXT NOT NULL)")),
     () => sqlite.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [expiresAt] <= ? OR NOT EXISTS (SELECT 1 FROM [sporades_auth_sessions] [s] WHERE [s].[token] = [sporades_auth_reauthentication_proofs].[sessionToken])")).run(new Date().toISOString()),
     () => createProviderIdentityTables(sqlite),
     () =>

@@ -9,7 +9,7 @@ import { validateStripePaymentsRuntimeConfig } from "./stripe-payment-config.js"
 import { createMailRuntime } from "./mail-runtime.js";
 import { createEmailEventEndpoints } from "./email-events-runtime.js";
 import { assertJsonCompatible, commandError, invalidReferenceError } from "./runtime-errors.js";
-import { PASSWORD_RESET_REQUEST_JOB, PASSWORD_RESET_THROTTLE_FIELD, EMAIL_REAUTHENTICATION_THROTTLE_FIELD, PRIVILEGED_AUTH_USER_ID, authProvidersForClient, authStatus, capsuleIngressAuthUserId, confirmPasswordReset, createAuthDenialLogData, createEmailPasswordResetLink, currentEmailSignInThrottleState, emailAuthDisabledError, emitAuthDeniedLog, isReservedAuthUserId, mailNotConfiguredError, normalizeEmailCredentials, oauthProviderAdapter, prepareEmailPasswordResetDelivery, privilegedAuthUserId, readEndpointSessionToken, recordFailedEmailSignInAttempt, requireAuth, resetEmailSignInAttempts, resolveAnonymousSession, serverAuthError, setEmailPassword, setOwnEmailPassword, verifyEmailPassword, verifyPasswordResetCode, } from "./auth-runtime.js";
+import { PASSWORD_RESET_REQUEST_JOB, PASSWORD_RESET_THROTTLE_FIELD, EMAIL_SIGN_IN_FAILURE_LIMIT, EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES, EMAIL_SIGN_IN_THROTTLE_WINDOW_MS, PRIVILEGED_AUTH_USER_ID, authProvidersForClient, authStatus, capsuleIngressAuthUserId, confirmPasswordReset, createAuthDenialLogData, createEmailPasswordResetLink, currentEmailSignInThrottleState, emailAuthDisabledError, emitAuthDeniedLog, isReservedAuthUserId, mailNotConfiguredError, normalizeEmailCredentials, oauthProviderAdapter, prepareEmailPasswordResetDelivery, privilegedAuthUserId, readEndpointSessionToken, recordFailedEmailSignInAttempt, requireAuth, resolveAnonymousSession, serverAuthError, setEmailPassword, setOwnEmailPassword, verifyEmailPassword, verifyPasswordResetCode, } from "./auth-runtime.js";
 // Batch 5. `createWebSocketHub` calls the two email entry points and `routeSporadesAuth` calls
 // the identity link; all three left this file for `auth-runtime.ts` in that batch, once user
 // preferences stopped holding them.
@@ -4561,11 +4561,13 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
             const authorized = Boolean(policy && client.session.auth?.isAuthenticated && !client.session.auth?.isGuest);
             const emailProviderEnabled = database.authConfig.providers.email?.enabled === true;
             if (authorized && message.provider === "email" && emailProviderEnabled && normalized.ok && typeof normalized.password === "string") {
-                const throttle = currentEmailSignInThrottleState(database, normalized.email, client.session, EMAIL_REAUTHENTICATION_THROTTLE_FIELD);
-                if (!throttle.throttled) {
-                    // Reserve the attempt before entering the expensive password KDF. A
-                    // successful verification clears only this dedicated reauth bucket.
-                    recordFailedEmailSignInAttempt(database, normalized.email, client.session, EMAIL_REAUTHENTICATION_THROTTLE_FIELD);
+                const reauthenticationThrottleKeys = [
+                    `email:${createHash("sha256").update(normalized.email).digest("base64url")}`,
+                    `session:${createHash("sha256").update(client.session.token).digest("base64url")}`,
+                ];
+                const throttleNow = database.clock.now();
+                const reserved = await database.adapter.withTransaction((tx) => tx.reserveEmailReauthenticationAttempt({ keys: reauthenticationThrottleKeys, now: throttleNow.toISOString(), resetAt: new Date(throttleNow.getTime() + EMAIL_SIGN_IN_THROTTLE_WINDOW_MS).toISOString(), limit: EMAIL_SIGN_IN_FAILURE_LIMIT, maxEntries: EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES }));
+                if (reserved) {
                     const now = database.clock.now();
                     expiresAt = new Date(now.getTime() + policy.maxAgeSeconds * 1000).toISOString();
                     try {
@@ -4575,10 +4577,13 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
                             if (!current || current.token !== client.session.token || current.userId !== client.session.auth.userId || !current.isAuthenticated || current.isGuest || Date.parse(current.expiresAt) <= now.getTime() || credential?.userId !== current.userId || !verifyEmailPassword(normalized.password, credential.passwordSalt, credential.passwordHash))
                                 return;
                             const currentAuth = { userId: current.userId, displayName: current.displayName, email: current.email, picture: current.picture, isAuthenticated: Boolean(current.isAuthenticated), isGuest: Boolean(current.isGuest), provider: current.provider };
+                            if (!await tx.claimEmailCredentialVersion(normalized.email, credential.passwordHash, credential.passwordSalt))
+                                return;
                             if (!await database.authorizeReauthentication(tx, currentAuth, purpose))
                                 return;
                             await tx.replaceReauthenticationProof({ id: randomUUID(), userId: current.userId, sessionToken: current.token, purpose, createdAt: now.toISOString(), expiresAt });
                             ok = true;
+                            await tx.clearEmailReauthenticationAttempts(reauthenticationThrottleKeys);
                         });
                     }
                     catch {
@@ -4588,8 +4593,6 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
                         catch { }
                         ok = false;
                     }
-                    if (ok)
-                        resetEmailSignInAttempts(database, normalized.email, client.session, EMAIL_REAUTHENTICATION_THROTTLE_FIELD);
                 }
             }
             if (!ok && authorized && message.provider !== "email" && oauthProviderAdapter(database, message.provider)?.enabled) {
