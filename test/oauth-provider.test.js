@@ -42,6 +42,7 @@ import {
   fetchMicrosoftOidcJson,
   isOAuthLoopbackHostname,
   loadMicrosoftJwks,
+  oauthProviderAdapter,
   oauthProviderTestEndpoint,
   openDevDatabase,
   reconcileOAuthRegistrationKeys,
@@ -890,6 +891,14 @@ test("runtime OAuth provider seam completes query and form-post callbacks with p
     assert.equal(deniedResponse.statusCode, 500); assert.equal(database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_reauthentication_proofs").get().count, 0);
     assert.equal(database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_oauth_states WHERE state = ?").get(deniedState).count, 0, "denied callback state must be spent");
     authorizationAllowed = true; const staleResponse = responseRecorder(); await routeSporadesAuth(database, { method: "GET", url: `/__sporades/auth/query/callback?state=${deniedState}&code=query-code`, headers: {} }, staleResponse); assert.equal(database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_reauthentication_proofs").get().count, 0, "reauthorizing later must not resurrect a spent callback");
+    const policyLogs = []; database.log = { emit: async (event) => policyLogs.push(event) };
+    database.authorizeReauthentication = async () => { throw new Error("sensitive-policy-database-detail"); };
+    const failedPolicyStart = await beginOAuthSignIn(database, querySession, "query", { origin: "http://127.0.0.1:4000", reauthentication: { purpose: "administrator-authority", userId: linkedSession.userId } });
+    const failedPolicyState = new URL(failedPolicyStart.url).searchParams.get("state"); const failedPolicyResponse = responseRecorder();
+    await routeSporadesAuth(database, { method: "GET", url: `/__sporades/auth/query/callback?state=${failedPolicyState}&code=query-code`, headers: {} }, failedPolicyResponse);
+    assert.equal(failedPolicyResponse.statusCode, 500); assert.match(failedPolicyResponse.body, /REAUTHENTICATION_FAILED/); assert.doesNotMatch(failedPolicyResponse.body, /sensitive-policy|database-detail/); assert.equal(database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_reauthentication_proofs").get().count, 0);
+    assert.deepEqual(policyLogs.map(({ event, data }) => ({ event, data })), [{ event: "auth.reauthentication.authorization_failed", data: { provider: "query", purpose: "administrator-authority" } }]);
+    database.authorizeReauthentication = async (_transaction, auth, purpose) => authorizationAllowed && auth.userId === linkedSession.userId && purpose === "administrator-authority";
     const revokedStart = await beginOAuthSignIn(database, querySession, "query", { origin: "http://127.0.0.1:4000", reauthentication: { purpose: "administrator-authority", userId: linkedSession.userId } }); const revokedState = new URL(revokedStart.url).searchParams.get("state"); await database.adapter.deleteAuthSession(querySession.token); const revokedResponse = responseRecorder();
     assert.equal(await routeSporadesAuth(database, { method: "GET", url: `/__sporades/auth/query/callback?state=${revokedState}&code=query-code`, headers: {} }, revokedResponse), true); assert.equal(revokedResponse.statusCode, 500); assert.equal(database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_reauthentication_proofs").get().count, 0, "revoked Session cannot mint an OAuth proof");
     await database.adapter.insertAuthSession({ token: querySession.token, userId: linkedSession.userId, provider: "query", createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3600000).toISOString() });
@@ -932,7 +941,7 @@ test("runtime OAuth provider seam completes query and form-post callbacks with p
     assert.equal(formResponse.statusCode, 302, formResponse.body);
     assert.equal(formResponse.headers.location, "http://127.0.0.1:4000/after");
     assert.equal(database.adapter.readAuthSessionWithUser(formSession.token).provider, "form");
-    assert.equal(completions.length, 5);
+    assert.equal(completions.length, 6);
     assert.equal(completions[0].provider, "query");
     assert.ok(completions[0].nonce);
     assert.ok(completions[0].pkceVerifier);
@@ -1252,6 +1261,17 @@ test("Google identity tokens require signature, issuer, audience, expiry, nonce,
   });
 });
 
+test("Google reauthentication forces a fresh provider login", async () => {
+  await withTempDatabase(async (database) => {
+    database.authConfig.providers.google = { ...database.authConfig.providers.google, enabled: true, configured: true, clientIdEnv: "GOOGLE_CLIENT_ID", clientSecretEnv: "GOOGLE_CLIENT_SECRET" };
+    database.serverEnv.GOOGLE_CLIENT_ID = "google-client-id";
+    const adapter = oauthProviderAdapter(database, "google");
+    const authorization = new URL(adapter.begin({ state: "state", nonce: "nonce", redirectUri: "https://capsule.example.test/__sporades/auth/google/callback", pkceChallenge: "challenge", reauthentication: true }).url);
+    assert.equal(authorization.searchParams.get("prompt"), "login");
+    assert.equal(authorization.searchParams.get("max_age"), "0");
+  });
+});
+
 test("Microsoft uses discovered OIDC endpoints with PKCE, nonce, exact callback, and identity-only scopes", async () => {
   await withTempDatabase(async (database) => {
     configureMicrosoft(database);
@@ -1270,6 +1290,7 @@ test("Microsoft uses discovered OIDC endpoints with PKCE, nonce, exact callback,
       const start = await beginOAuthSignIn(database, session, "microsoft", {
         origin: "https://capsule.example.test",
         returnTo: "https://capsule.example.test/after",
+        reauthentication: { purpose: "administrator-authority", userId: session.auth.userId },
       });
       assert.equal(start.ok, true);
       const authorizationUrl = new URL(start.url);
@@ -1284,6 +1305,8 @@ test("Microsoft uses discovered OIDC endpoints with PKCE, nonce, exact callback,
       assert.ok(authorizationUrl.searchParams.get("state"));
       assert.ok(authorizationUrl.searchParams.get("nonce"));
       assert.equal(authorizationUrl.searchParams.has("offline_access"), false);
+      assert.equal(authorizationUrl.searchParams.get("prompt"), "login");
+      assert.equal(authorizationUrl.searchParams.get("max_age"), "0");
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -2343,7 +2366,7 @@ test("Apple only starts on eligible HTTPS domain origins and sends the exact web
     const origin = "https://capsule.example.test";
     assert.equal(appleOAuthOriginEligible(origin), true);
     const session = await resolveAnonymousSession(database, null);
-    const result = await beginOAuthSignIn(database, session, "apple", { origin, returnTo: `${origin}/after` });
+    const result = await beginOAuthSignIn(database, session, "apple", { origin, returnTo: `${origin}/after`, reauthentication: { purpose: "administrator-authority", userId: session.auth.userId } });
     assert.equal(result.ok, true);
     const authorization = new URL(result.url);
     assert.equal(authorization.origin, "https://appleid.apple.com");
@@ -2355,6 +2378,7 @@ test("Apple only starts on eligible HTTPS domain origins and sends the exact web
     assert.equal(authorization.searchParams.get("scope"), "name email");
     assert.ok(authorization.searchParams.get("state"));
     assert.ok(authorization.searchParams.get("nonce"));
+    assert.equal(authorization.searchParams.get("prompt"), "login");
     assert.equal(authorization.searchParams.has("code_challenge"), false);
 
     database.serverEnv.APPLE_PRIVATE_KEY = "not-a-private-key";

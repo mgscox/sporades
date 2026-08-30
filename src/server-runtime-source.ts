@@ -4921,7 +4921,12 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
         const credential = await database.adapter.findEmailCredentialWithUser(normalized.email);
         if (credential?.userId === client.session.auth.userId && verifyEmailPassword(normalized.password, credential.passwordSalt, credential.passwordHash)) {
           const now = database.clock.now(); expiresAt = new Date(now.getTime() + policy.maxAgeSeconds * 1000).toISOString();
-          await database.adapter.withTransaction(async (tx: LooseRecord) => { const current = await tx.readAuthSessionWithUser(client.session.token); if (!current || current.token !== client.session.token || current.userId !== client.session.auth.userId || !current.isAuthenticated || current.isGuest || Date.parse(current.expiresAt) <= now.getTime()) return; const currentAuth = { userId: current.userId, displayName: current.displayName, email: current.email, picture: current.picture, isAuthenticated: Boolean(current.isAuthenticated), isGuest: Boolean(current.isGuest), provider: current.provider }; if (!await database.authorizeReauthentication(tx, currentAuth, purpose)) return; await tx.replaceReauthenticationProof({ id: randomUUID(), userId: current.userId, sessionToken: current.token, purpose, createdAt: now.toISOString(), expiresAt }); ok = true; });
+          try {
+            await database.adapter.withTransaction(async (tx: LooseRecord) => { const current = await tx.readAuthSessionWithUser(client.session.token); if (!current || current.token !== client.session.token || current.userId !== client.session.auth.userId || !current.isAuthenticated || current.isGuest || Date.parse(current.expiresAt) <= now.getTime()) return; const currentAuth = { userId: current.userId, displayName: current.displayName, email: current.email, picture: current.picture, isAuthenticated: Boolean(current.isAuthenticated), isGuest: Boolean(current.isGuest), provider: current.provider }; if (!await database.authorizeReauthentication(tx, currentAuth, purpose)) return; await tx.replaceReauthenticationProof({ id: randomUUID(), userId: current.userId, sessionToken: current.token, purpose, createdAt: now.toISOString(), expiresAt }); ok = true; });
+          } catch {
+            try { await database.log?.emit?.({ category: "platform", event: "auth.reauthentication.authorization_failed", level: "error", message: "Reauthentication authorization policy failed.", data: { provider: "email", purpose } }); } catch {}
+            ok = false;
+          }
         }
       }
       if (!ok && authorized && message.provider !== "email" && oauthProviderAdapter(database, message.provider)?.enabled) {
@@ -5604,7 +5609,7 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
 
   async function signOutSession(database: LooseRecord, client: LooseRecord) {
     try {
-      await database.adapter.deleteAuthSession(client.session.token);
+      await database.adapter.withTransaction((tx: LooseRecord) => tx.deleteAuthSession(client.session.token));
       client.session = await resolveAnonymousSession(database, null);
       return { ok: true };
     } catch (error) {

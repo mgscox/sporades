@@ -314,6 +314,9 @@ export function createHooks(primitives) {
       signIn(provider, credentials, options) {
         return connect().signIn(provider, credentials, options);
       },
+      reauthenticate(provider, credentials, purpose) {
+        return connect().reauthenticate(provider, credentials, purpose);
+      },
       signOut() {
         return connect().signOut();
       },
@@ -375,6 +378,7 @@ export function createVueComposables(primitives) {
     state.isAuthenticated = () => Boolean(state.auth?.isAuthenticated);
     state.signUp = (provider, credentials, options) => connect().signUp(provider, credentials, options);
     state.signIn = (provider, credentials, options) => connect().signIn(provider, credentials, options);
+    state.reauthenticate = (provider, credentials, purpose) => connect().reauthenticate(provider, credentials, purpose);
     state.signOut = () => connect().signOut();
     state.setPassword = (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword);
     return state;
@@ -12799,6 +12803,10 @@ function createGoogleOAuthProviderAdapter(database) {
         code_challenge: context.pkceChallenge,
         code_challenge_method: "S256"
       });
+      if (context.reauthentication) {
+        params.set("prompt", "login");
+        params.set("max_age", "0");
+      }
       return { url: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}` };
     },
     complete(context) {
@@ -12851,6 +12859,7 @@ function createAppleOAuthProviderAdapter(database) {
         state: context.state,
         nonce: context.nonce
       });
+      if (context.reauthentication) params.set("prompt", "login");
       return { url: `https://appleid.apple.com/auth/authorize?${params.toString()}` };
     },
     complete(context) {
@@ -12985,6 +12994,7 @@ function createFacebookOAuthProviderAdapter(database) {
         scope: "public_profile,email",
         state: context.state
       });
+      if (context.reauthentication) params.set("auth_type", "reauthorize");
       const authorizationUrl = facebookOAuthEndpoint(
         process.env.SPORADES_FACEBOOK_AUTH_URL,
         `https://www.facebook.com/${graphVersion}/dialog/oauth`
@@ -13347,6 +13357,10 @@ function createMicrosoftOAuthProviderAdapter(database) {
         code_challenge: context.pkceChallenge,
         code_challenge_method: "S256"
       });
+      if (context.reauthentication) {
+        params.set("prompt", "login");
+        params.set("max_age", "0");
+      }
       return { url: `${discovery.authorization_endpoint}?${params.toString()}` };
     },
     complete(context) {
@@ -14397,7 +14411,7 @@ async function resolveAnonymousSession(database, sessionToken) {
     const existing = await database.adapter.readAuthSessionWithUser(sessionToken);
     if (existing) {
       if (isExpiredSession(existing)) {
-        await database.adapter.deleteAuthSession(sessionToken);
+        await database.adapter.withTransaction((tx) => tx.deleteAuthSession(sessionToken));
       } else {
         return sessionFromRow(existing);
       }
@@ -14959,15 +14973,24 @@ async function routeSporadesAuth(database, request, response) {
       const subject = normalizeSimulatedText(profile?.subject ?? profile?.sub);
       const policy = database.reauthenticationPolicy?.[stateRow.reauthPurpose];
       const now2 = database.clock.now();
-      const authorized = await database.adapter.withTransaction(async (tx) => {
-        const current = await tx.readAuthSessionWithUser(stateRow.sessionToken);
-        const identity = subject ? await tx.findAuthIdentityByProviderSubject(provider, subject) : null;
-        if (!policy || !current || current.token !== stateRow.sessionToken || current.userId !== stateRow.reauthUserId || !current.isAuthenticated || current.isGuest || Date.parse(current.expiresAt) <= now2.getTime() || identity?.userId !== current.userId) return false;
-        const currentAuth = sessionFromRow(current).auth;
-        if (!await database.authorizeReauthentication(tx, currentAuth, stateRow.reauthPurpose)) return false;
-        await tx.replaceReauthenticationProof({ id: nodeCryptoModule3.randomUUID(), userId: current.userId, sessionToken: stateRow.sessionToken, purpose: stateRow.reauthPurpose, createdAt: now2.toISOString(), expiresAt: new Date(now2.getTime() + policy.maxAgeSeconds * 1e3).toISOString() });
-        return true;
-      });
+      let authorized = false;
+      try {
+        authorized = await database.adapter.withTransaction(async (tx) => {
+          const current = await tx.readAuthSessionWithUser(stateRow.sessionToken);
+          const identity = subject ? await tx.findAuthIdentityByProviderSubject(provider, subject) : null;
+          if (!policy || !current || current.token !== stateRow.sessionToken || current.userId !== stateRow.reauthUserId || !current.isAuthenticated || current.isGuest || Date.parse(current.expiresAt) <= now2.getTime() || identity?.userId !== current.userId) return false;
+          const currentAuth = sessionFromRow(current).auth;
+          if (!await database.authorizeReauthentication(tx, currentAuth, stateRow.reauthPurpose)) return false;
+          await tx.replaceReauthenticationProof({ id: nodeCryptoModule3.randomUUID(), userId: current.userId, sessionToken: stateRow.sessionToken, purpose: stateRow.reauthPurpose, createdAt: now2.toISOString(), expiresAt: new Date(now2.getTime() + policy.maxAgeSeconds * 1e3).toISOString() });
+          return true;
+        });
+      } catch {
+        try {
+          await database.log?.emit?.({ category: "platform", event: "auth.reauthentication.authorization_failed", level: "error", message: "Reauthentication authorization policy failed.", data: { provider, purpose: stateRow.reauthPurpose } });
+        } catch {
+        }
+        throw commandError("Reauthentication failed.", "Verify the current linked identity and retry.", "REAUTHENTICATION_FAILED");
+      }
       if (!authorized) throw commandError("Reauthentication failed.", "Verify the current linked identity and retry.", "REAUTHENTICATION_FAILED");
       writeRedirect(response, stateRow.returnTo);
       return true;
@@ -15069,7 +15092,8 @@ async function beginOAuthSignIn(database, session, provider, options) {
       nonce,
       redirectUri,
       pkceChallenge,
-      pkceChallengeMethod: "S256"
+      pkceChallengeMethod: "S256",
+      reauthentication: Boolean(reauthentication?.purpose)
     });
   } catch {
     return {
@@ -15291,6 +15315,7 @@ function createAnonymousAuthTables(sqlite, _authConfig = null) {
     () => sqlite.exec(sql(
       "CREATE TABLE IF NOT EXISTS [sporades_auth_reauthentication_proofs] ([id] TEXT PRIMARY KEY, [userId] TEXT NOT NULL, [sessionToken] TEXT NOT NULL, [purpose] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL, UNIQUE ([sessionToken], [purpose]))"
     )),
+    () => sqlite.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [expiresAt] <= ? OR NOT EXISTS (SELECT 1 FROM [sporades_auth_sessions] [s] WHERE [s].[token] = [sporades_auth_reauthentication_proofs].[sessionToken])")).run((/* @__PURE__ */ new Date()).toISOString()),
     () => createProviderIdentityTables(sqlite),
     () => sqlite.exec(
       sql(
@@ -18691,7 +18716,10 @@ function createSharedDatabaseAdapterMethods(dialect) {
       );
     },
     deleteAuthSession(token) {
-      return this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [token] = ?")).run(token);
+      return chainMaybePromise([
+        () => this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ?")).run(token),
+        () => this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [token] = ?")).run(token)
+      ]);
     },
     refreshAuthSession(token, expiresAt) {
       return this.prepare(sql("UPDATE [sporades_auth_sessions] SET [expiresAt] = ? WHERE [token] = ?")).run(expiresAt, token);
@@ -18784,13 +18812,16 @@ function createSharedDatabaseAdapterMethods(dialect) {
       ]);
     },
     consumeReauthenticationProof(input) {
-      return thenIfPromise(this.prepare(sql("SELECT [p].[id] FROM [sporades_auth_reauthentication_proofs] [p] JOIN [sporades_auth_sessions] [s] ON [s].[token] = [p].[sessionToken] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [p].[sessionToken] = ? AND [p].[userId] = ? AND [p].[purpose] = ? AND [p].[expiresAt] > ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0")).get(input.sessionToken, input.userId, input.purpose, input.now, input.userId, input.now), (row) => {
+      return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [expiresAt] <= ?")).run(input.now), () => thenIfPromise(this.prepare(sql("SELECT [p].[id] FROM [sporades_auth_reauthentication_proofs] [p] JOIN [sporades_auth_sessions] [s] ON [s].[token] = [p].[sessionToken] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [p].[sessionToken] = ? AND [p].[userId] = ? AND [p].[purpose] = ? AND [p].[expiresAt] > ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0")).get(input.sessionToken, input.userId, input.purpose, input.now, input.userId, input.now), (row) => {
         if (!row) return false;
         return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [id] = ?")).run(row.id), (result) => result.changes === 1);
-      });
+      }));
     },
     deleteAuthSessionsForUser(userId) {
-      return this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [userId] = ?")).run(userId);
+      return chainMaybePromise([
+        () => this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [userId] = ?")).run(userId),
+        () => this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [userId] = ?")).run(userId)
+      ]);
     },
     insertPasswordResetCode(row) {
       assertNotReservedAuthUserId(row.userId);
@@ -24578,14 +24609,22 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
         if (credential?.userId === client.session.auth.userId && verifyEmailPassword(normalized.password, credential.passwordSalt, credential.passwordHash)) {
           const now2 = database.clock.now();
           expiresAt = new Date(now2.getTime() + policy.maxAgeSeconds * 1e3).toISOString();
-          await database.adapter.withTransaction(async (tx) => {
-            const current = await tx.readAuthSessionWithUser(client.session.token);
-            if (!current || current.token !== client.session.token || current.userId !== client.session.auth.userId || !current.isAuthenticated || current.isGuest || Date.parse(current.expiresAt) <= now2.getTime()) return;
-            const currentAuth = { userId: current.userId, displayName: current.displayName, email: current.email, picture: current.picture, isAuthenticated: Boolean(current.isAuthenticated), isGuest: Boolean(current.isGuest), provider: current.provider };
-            if (!await database.authorizeReauthentication(tx, currentAuth, purpose)) return;
-            await tx.replaceReauthenticationProof({ id: randomUUID7(), userId: current.userId, sessionToken: current.token, purpose, createdAt: now2.toISOString(), expiresAt });
-            ok = true;
-          });
+          try {
+            await database.adapter.withTransaction(async (tx) => {
+              const current = await tx.readAuthSessionWithUser(client.session.token);
+              if (!current || current.token !== client.session.token || current.userId !== client.session.auth.userId || !current.isAuthenticated || current.isGuest || Date.parse(current.expiresAt) <= now2.getTime()) return;
+              const currentAuth = { userId: current.userId, displayName: current.displayName, email: current.email, picture: current.picture, isAuthenticated: Boolean(current.isAuthenticated), isGuest: Boolean(current.isGuest), provider: current.provider };
+              if (!await database.authorizeReauthentication(tx, currentAuth, purpose)) return;
+              await tx.replaceReauthenticationProof({ id: randomUUID7(), userId: current.userId, sessionToken: current.token, purpose, createdAt: now2.toISOString(), expiresAt });
+              ok = true;
+            });
+          } catch {
+            try {
+              await database.log?.emit?.({ category: "platform", event: "auth.reauthentication.authorization_failed", level: "error", message: "Reauthentication authorization policy failed.", data: { provider: "email", purpose } });
+            } catch {
+            }
+            ok = false;
+          }
         }
       }
       if (!ok && authorized && message.provider !== "email" && oauthProviderAdapter(database, message.provider)?.enabled) {
@@ -25228,7 +25267,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
   }
   async function signOutSession(database, client) {
     try {
-      await database.adapter.deleteAuthSession(client.session.token);
+      await database.adapter.withTransaction((tx) => tx.deleteAuthSession(client.session.token));
       client.session = await resolveAnonymousSession(database, null);
       return { ok: true };
     } catch (error) {

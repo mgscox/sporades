@@ -172,13 +172,23 @@ The runtime stores the proof in its own database, bound to the User, exact
 Session, Capsule and purpose. Its maximum declared lifetime is 15 minutes.
 Minting and consumption re-read the exact Session from the database inside the
 same transaction, so sign-out, revocation or expiry in another tab takes effect
-even when a browser connection still holds cached auth state. A proof row may
-remain after Session revocation or expiry for bounded cleanup and audit, but it
-is unusable and cannot be consumed.
+even when a browser connection still holds cached auth state. Sign-out removes
+proofs for that Session transactionally; expired and orphaned proofs are swept
+on startup, and expired proofs are also swept during consumption. Thus an
+abandoned proof is both immediately unusable and retained no longer than its
+declared lifetime plus the interval until the next startup or proof attempt.
 Consumption is part of the guarded mutation transaction: a rejected command
 preserves the proof, one concurrent successful command wins, and commit makes
 it unusable even after restart. URLs, Capsule arguments and successful replies
 contain no proof handle or bearer.
+
+OAuth reauthentication is explicitly marked as step-up authentication when the
+runtime invokes Google, Microsoft, Apple or Facebook. Their authorization
+requests force a fresh login or provider reauthorization instead of silently
+accepting an existing SSO session. A Capsule `authorize` callback may apply
+additional current application policy; if it throws or its database read fails,
+Sporades logs only safe provider/purpose attribution and returns the same opaque
+`REAUTHENTICATION_FAILED` response as any other failed verification.
 
 The advantage is a small, auditable step-up boundary with atomic consumption
 and no second client credential. The trade-offs are an extra identity-provider

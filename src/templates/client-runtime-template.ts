@@ -291,6 +291,9 @@ export function createHooks(primitives) {
       signIn(provider, credentials, options) {
         return connect().signIn(provider, credentials, options);
       },
+      reauthenticate(provider, credentials, purpose) {
+        return connect().reauthenticate(provider, credentials, purpose);
+      },
       signOut() {
         return connect().signOut();
       },
@@ -352,6 +355,7 @@ export function createVueComposables(primitives) {
     state.isAuthenticated = () => Boolean(state.auth?.isAuthenticated);
     state.signUp = (provider, credentials, options) => connect().signUp(provider, credentials, options);
     state.signIn = (provider, credentials, options) => connect().signIn(provider, credentials, options);
+    state.reauthenticate = (provider, credentials, purpose) => connect().reauthenticate(provider, credentials, purpose);
     state.signOut = () => connect().signOut();
     state.setPassword = (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword);
     return state;

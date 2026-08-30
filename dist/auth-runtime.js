@@ -555,6 +555,10 @@ function createGoogleOAuthProviderAdapter(database) {
                 code_challenge: context.pkceChallenge,
                 code_challenge_method: "S256",
             });
+            if (context.reauthentication) {
+                params.set("prompt", "login");
+                params.set("max_age", "0");
+            }
             return { url: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}` };
         },
         complete(context) {
@@ -600,6 +604,8 @@ function createAppleOAuthProviderAdapter(database) {
                 state: context.state,
                 nonce: context.nonce,
             });
+            if (context.reauthentication)
+                params.set("prompt", "login");
             return { url: `https://appleid.apple.com/auth/authorize?${params.toString()}` };
         },
         complete(context) {
@@ -716,6 +722,8 @@ function createFacebookOAuthProviderAdapter(database) {
                 scope: "public_profile,email",
                 state: context.state,
             });
+            if (context.reauthentication)
+                params.set("auth_type", "reauthorize");
             const authorizationUrl = facebookOAuthEndpoint(process.env.SPORADES_FACEBOOK_AUTH_URL, `https://www.facebook.com/${graphVersion}/dialog/oauth`);
             authorizationUrl.search = params.toString();
             if (authorizationUrl.toString().length > 8192) {
@@ -1055,6 +1063,10 @@ function createMicrosoftOAuthProviderAdapter(database) {
                 code_challenge: context.pkceChallenge,
                 code_challenge_method: "S256",
             });
+            if (context.reauthentication) {
+                params.set("prompt", "login");
+                params.set("max_age", "0");
+            }
             return { url: `${discovery.authorization_endpoint}?${params.toString()}` };
         },
         complete(context) {
@@ -2270,7 +2282,7 @@ export async function resolveAnonymousSession(database, sessionToken) {
         const existing = await database.adapter.readAuthSessionWithUser(sessionToken);
         if (existing) {
             if (isExpiredSession(existing)) {
-                await database.adapter.deleteAuthSession(sessionToken);
+                await database.adapter.withTransaction((tx) => tx.deleteAuthSession(sessionToken));
             }
             else {
                 return sessionFromRow(existing);
@@ -2929,9 +2941,19 @@ export async function routeSporadesAuth(database, request, response) {
             const subject = normalizeSimulatedText(profile?.subject ?? profile?.sub);
             const policy = database.reauthenticationPolicy?.[stateRow.reauthPurpose];
             const now = database.clock.now();
-            const authorized = await database.adapter.withTransaction(async (tx) => { const current = await tx.readAuthSessionWithUser(stateRow.sessionToken); const identity = subject ? await tx.findAuthIdentityByProviderSubject(provider, subject) : null; if (!policy || !current || current.token !== stateRow.sessionToken || current.userId !== stateRow.reauthUserId || !current.isAuthenticated || current.isGuest || Date.parse(current.expiresAt) <= now.getTime() || identity?.userId !== current.userId)
-                return false; const currentAuth = sessionFromRow(current).auth; if (!await database.authorizeReauthentication(tx, currentAuth, stateRow.reauthPurpose))
-                return false; await tx.replaceReauthenticationProof({ id: nodeCryptoModule.randomUUID(), userId: current.userId, sessionToken: stateRow.sessionToken, purpose: stateRow.reauthPurpose, createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + policy.maxAgeSeconds * 1000).toISOString() }); return true; });
+            let authorized = false;
+            try {
+                authorized = await database.adapter.withTransaction(async (tx) => { const current = await tx.readAuthSessionWithUser(stateRow.sessionToken); const identity = subject ? await tx.findAuthIdentityByProviderSubject(provider, subject) : null; if (!policy || !current || current.token !== stateRow.sessionToken || current.userId !== stateRow.reauthUserId || !current.isAuthenticated || current.isGuest || Date.parse(current.expiresAt) <= now.getTime() || identity?.userId !== current.userId)
+                    return false; const currentAuth = sessionFromRow(current).auth; if (!await database.authorizeReauthentication(tx, currentAuth, stateRow.reauthPurpose))
+                    return false; await tx.replaceReauthenticationProof({ id: nodeCryptoModule.randomUUID(), userId: current.userId, sessionToken: stateRow.sessionToken, purpose: stateRow.reauthPurpose, createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + policy.maxAgeSeconds * 1000).toISOString() }); return true; });
+            }
+            catch {
+                try {
+                    await database.log?.emit?.({ category: "platform", event: "auth.reauthentication.authorization_failed", level: "error", message: "Reauthentication authorization policy failed.", data: { provider, purpose: stateRow.reauthPurpose } });
+                }
+                catch { }
+                throw commandError("Reauthentication failed.", "Verify the current linked identity and retry.", "REAUTHENTICATION_FAILED");
+            }
             if (!authorized)
                 throw commandError("Reauthentication failed.", "Verify the current linked identity and retry.", "REAUTHENTICATION_FAILED");
             writeRedirect(response, stateRow.returnTo);
@@ -3040,6 +3062,7 @@ export async function beginOAuthSignIn(database, session, provider, options) {
             redirectUri,
             pkceChallenge,
             pkceChallengeMethod: "S256",
+            reauthentication: Boolean(reauthentication?.purpose),
         });
     }
     catch {
@@ -3351,6 +3374,7 @@ export function createAnonymousAuthTables(sqlite, _authConfig = null) {
         () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_auth_reauthentication_proofs] (" +
             "[id] TEXT PRIMARY KEY, [userId] TEXT NOT NULL, [sessionToken] TEXT NOT NULL, [purpose] TEXT NOT NULL, " +
             "[createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL, UNIQUE ([sessionToken], [purpose]))")),
+        () => sqlite.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [expiresAt] <= ? OR NOT EXISTS (SELECT 1 FROM [sporades_auth_sessions] [s] WHERE [s].[token] = [sporades_auth_reauthentication_proofs].[sessionToken])")).run(new Date().toISOString()),
         () => createProviderIdentityTables(sqlite),
         () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_auth_email_credentials] (" +
             "[email] TEXT PRIMARY KEY, " +
