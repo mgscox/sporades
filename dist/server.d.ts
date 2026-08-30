@@ -27,6 +27,7 @@ export type EndpointOptions = {
             requestKeyHeader: string;
             partKeyHeader: string;
             requireStablePartKeys?: boolean;
+            claimAuthorities?: readonly ["actor" | "capsule-principal"];
         };
     };
 };

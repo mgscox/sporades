@@ -9,7 +9,7 @@ import { validateStripePaymentsRuntimeConfig } from "./stripe-payment-config.js"
 import { createMailRuntime } from "./mail-runtime.js";
 import { createEmailEventEndpoints } from "./email-events-runtime.js";
 import { assertJsonCompatible, commandError, invalidReferenceError } from "./runtime-errors.js";
-import { PASSWORD_RESET_REQUEST_JOB, PASSWORD_RESET_THROTTLE_FIELD, PRIVILEGED_AUTH_USER_ID, authProvidersForClient, authStatus, confirmPasswordReset, createAuthDenialLogData, createEmailPasswordResetLink, currentEmailSignInThrottleState, emailAuthDisabledError, emitAuthDeniedLog, mailNotConfiguredError, oauthProviderAdapter, prepareEmailPasswordResetDelivery, privilegedAuthUserId, readEndpointSessionToken, recordFailedEmailSignInAttempt, requireAuth, resolveAnonymousSession, serverAuthError, setEmailPassword, setOwnEmailPassword, verifyPasswordResetCode, } from "./auth-runtime.js";
+import { PASSWORD_RESET_REQUEST_JOB, PASSWORD_RESET_THROTTLE_FIELD, PRIVILEGED_AUTH_USER_ID, authProvidersForClient, authStatus, capsuleIngressAuthUserId, confirmPasswordReset, createAuthDenialLogData, createEmailPasswordResetLink, currentEmailSignInThrottleState, emailAuthDisabledError, emitAuthDeniedLog, isReservedAuthUserId, mailNotConfiguredError, oauthProviderAdapter, prepareEmailPasswordResetDelivery, privilegedAuthUserId, readEndpointSessionToken, recordFailedEmailSignInAttempt, requireAuth, resolveAnonymousSession, serverAuthError, setEmailPassword, setOwnEmailPassword, verifyPasswordResetCode, } from "./auth-runtime.js";
 // Batch 5. `createWebSocketHub` calls the two email entry points and `routeSporadesAuth` calls
 // the identity link; all three left this file for `auth-runtime.ts` in that batch, once user
 // preferences stopped holding them.
@@ -53,7 +53,7 @@ import { createEndpointIngressApi, finalizeEndpointIngressClaims, stageMultipart
 import { abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob, canonicalJobCredentialProvenance, captureJobAuthSnapshot, commitPendingJobCancellationAborts, createRuntimeClock, decodeJobCursor, dropPendingJobCancellationAborts, encodeJobCursor, ensureJobStorage, ensureScheduleStorage, finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence, normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, readJobAuthSnapshot, readJobCredentialProvenance, resolveSchedulePayload, RESERVED_JOB_NAME_PREFIX, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure, scheduleStripeEventPayloadCleanup, startStripeEventPayloadCleanup, stopStripeEventPayloadCleanup, STRIPE_EVENT_JOB, stripeEventPayloadRetentionStorageValue, scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduledOccurrenceIdentity, } from "./jobs-runtime.js";
 import { dispatchVerifiedStripeEvent } from "./stripe-events-runtime.js";
 const mutationResultsWithWrites = new WeakSet();
-const trustedReadPurposes = new Set(["teams.join-admission", "team-billing.authority"]);
+const trustedReadPurposes = new Set(["teams.join-admission", "team-billing.authority", "files.ingress-admission"]);
 const trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 const runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
 const atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
@@ -492,6 +492,29 @@ function emitRuntimeReplacementWarning(database, event, message, error, fallback
     }
     catch { }
 }
+function endpointIngressClaimAuthority(endpoint) {
+    const declared = endpoint?.options?.body?.multipart?.claimAuthorities;
+    if (declared === undefined)
+        return "actor";
+    if (!Array.isArray(declared) || declared.length !== 1 || !["actor", "capsule-principal"].includes(declared[0])) {
+        throw commandError("Invalid multipart claim authority.", "Declare exactly one of actor or capsule-principal for this endpoint.", "INVALID_FILE_INGRESS_AUTHORITY");
+    }
+    return declared[0];
+}
+function normalizeCapsuleFileIngressDefinition(files, endpoints) {
+    const usesCapsulePrincipal = endpoints.some((endpoint) => endpoint?.options?.body?.multipart && endpointIngressClaimAuthority(endpoint) === "capsule-principal");
+    if (!usesCapsulePrincipal)
+        return null;
+    const ingress = files?.ingress;
+    const namespaces = ingress?.principalNamespaces;
+    if (!ingress || typeof ingress !== "object" || Array.isArray(ingress) || typeof ingress.admit !== "function" || !Array.isArray(namespaces) || namespaces.length === 0 || namespaces.length > 32 || namespaces.some((value) => typeof value !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(value)) || new Set(namespaces).size !== namespaces.length) {
+        throw commandError("Invalid Capsule File ingress admission.", "Declare files.ingress with unique principalNamespaces and an admit function.", "INVALID_FILE_INGRESS_ADMISSION");
+    }
+    if (typeof files?.acl?.read !== "function" || typeof files?.acl?.delete !== "function") {
+        throw commandError("Capsule-principal File ingress requires explicit File ACL rules.", "Declare files.acl.read and files.acl.delete before enabling capsule-principal claims.", "FILE_INGRESS_ACL_REQUIRED");
+    }
+    return Object.freeze({ principalNamespaces: Object.freeze([...namespaces]), admit: ingress.admit });
+}
 export async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
     if (capsuleDefinition) {
         capsuleDefinition = normalizeCapsuleAuthDefinition(capsuleDefinition);
@@ -545,6 +568,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         }
     }
     const endpoints = [...capsuleEndpoints, ...providerEndpoints];
+    const fileIngressDefinition = normalizeCapsuleFileIngressDefinition(capsuleDefinition?.files, endpoints);
     const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
     const journeySessionInactivityMinutes = resolveJourneySessionInactivityMinutes(config);
     // Handler sources extracted from Capsule server code are re-created with
@@ -639,6 +663,8 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         securitySession: config.__sporadesSession ?? "container",
         clock,
         capsuleIdentity: String(config.name ?? "capsule"),
+        capsuleIngressOwnerId: capsuleIngressAuthUserId(config.name ?? capsuleDefinition?.name ?? "capsule"),
+        fileIngressDefinition,
         scheduleOccurrenceFault: options?.scheduleOccurrenceFault,
         scheduleReconciliationFault: options?.scheduleReconciliationFault,
         jobRecoveryFault: options?.jobRecoveryFault,
@@ -2954,6 +2980,34 @@ export async function routeEndpoint(database, request, response) {
     }
     return true;
 }
+async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, signal) {
+    const definition = database.fileIngressDefinition;
+    if (!definition)
+        throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
+    const decision = await database.adapter.withTransaction((transaction) => withTrustedRead(database, {
+        transaction,
+        purpose: "files.ingress-admission",
+        subject: { method: endpoint.options.method, path: endpoint.options.path },
+        signal,
+    }, (db) => definition.admit(Object.freeze({
+        db,
+        env: database.serverEnv,
+        signal,
+        request: Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }),
+    }), Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }))));
+    const namespace = decision?.principal?.namespace;
+    const key = decision?.principal?.key;
+    const serialized = (() => { try {
+        return JSON.stringify(decision);
+    }
+    catch {
+        return "";
+    } })();
+    if (decision?.allow !== true || typeof namespace !== "string" || !definition.principalNamespaces.includes(namespace) || typeof key !== "string" || key.length === 0 || Buffer.byteLength(key, "utf8") > 256 || /[\x00-\x1f\x7f]/.test(key) || Buffer.byteLength(serialized, "utf8") > 4096) {
+        throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
+    }
+    return Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId });
+}
 export async function runEndpoint(database, endpoint, requestUrl, request) {
     const handler = typeof endpoint.handler === "function"
         ? endpoint.handler
@@ -3005,8 +3059,18 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
         await recordAccessKeyUsage(database, accessKeyAdmission);
     }
     if (endpoint.options?.body?.multipart) {
+        const claimAuthority = endpointIngressClaimAuthority(endpoint);
         const admitted = (accessKeyAdmission ?? session);
-        const payload = await stageMultipartIngress(database, endpoint, request, endpointRequest, admitted.auth);
+        let ingressAuthority;
+        if (claimAuthority === "capsule-principal") {
+            ingressAuthority = await admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, request.signal);
+        }
+        else {
+            if (!admitted?.auth?.isAuthenticated || admitted.auth.isGuest || isReservedAuthUserId(admitted.auth.userId))
+                throw commandError("Unauthenticated.", "Sign in with a linked human or service User and retry.", "UNAUTHENTICATED");
+            ingressAuthority = Object.freeze({ kind: "actor", actorId: String(admitted.auth.userId), ownerId: String(admitted.auth.userId) });
+        }
+        const payload = await stageMultipartIngress(database, endpoint, request, endpointRequest, admitted.auth, ingressAuthority);
         endpointRequest = { ...endpointRequest, ...payload };
     }
     else {
@@ -3333,6 +3397,9 @@ function createEndpointContext(database, endpointRequest, session, options = {})
             ...(endpointRequest.multipart ? { multipart: endpointRequest.multipart } : {}),
         },
     };
+    if (endpointRequest.__ingressAuthority?.kind === "capsule-principal") {
+        context.ingress = Object.freeze({ principal: Object.freeze({ namespace: endpointRequest.__ingressAuthority.namespace, key: endpointRequest.__ingressAuthority.key }) });
+    }
     if (credential?.kind === "session" && typeof session.token === "string") {
         bindAccessKeyOwnerSession(context, session.token);
     }

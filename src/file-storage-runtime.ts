@@ -562,7 +562,7 @@ export function createFileStorageTables(sqlite: LooseRecord) {
       ),
     // Runtime-private ingress receipts. The identity columns are intentionally queryable:
     // endpoint transactions lock and classify a lease without scanning JSON payloads.
-    () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_file_ingress] ([key] TEXT PRIMARY KEY, [leaseId] TEXT, [state] TEXT, [actorId] TEXT, [endpointMethod] TEXT, [endpointPath] TEXT, [requestKey] TEXT, [partKey] TEXT, [expiresAt] TEXT, [sweepToken] TEXT, [payload] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)")),
+    () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_file_ingress] ([key] TEXT PRIMARY KEY, [leaseId] TEXT, [state] TEXT, [actorId] TEXT, [authorityKind] TEXT, [authorityId] TEXT, [ownerId] TEXT, [principalNamespace] TEXT, [principalKeyDigest] TEXT, [endpointMethod] TEXT, [endpointPath] TEXT, [requestKey] TEXT, [partKey] TEXT, [expiresAt] TEXT, [sweepToken] TEXT, [payload] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)")),
     () => ensureFileIngressColumns(sqlite),
   ]);
 }
@@ -1213,6 +1213,11 @@ function ensureFileIngressColumns(sqlite: LooseRecord) {
     ["leaseId", "TEXT"],
     ["state", "TEXT"],
     ["actorId", "TEXT"],
+    ["authorityKind", "TEXT"],
+    ["authorityId", "TEXT"],
+    ["ownerId", "TEXT"],
+    ["principalNamespace", "TEXT"],
+    ["principalKeyDigest", "TEXT"],
     ["endpointMethod", "TEXT"],
     ["endpointPath", "TEXT"],
     ["requestKey", "TEXT"],
@@ -1222,12 +1227,13 @@ function ensureFileIngressColumns(sqlite: LooseRecord) {
   ];
   return chainMaybePromise([
     ...addedColumns.map(([name, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_file_ingress", name, type)),
-    () => thenIfPromise(sqlite.prepare(sqlite.dialect.sql("SELECT [key], [payload] FROM [sporades_file_ingress] WHERE [leaseId] IS NULL OR [expiresAt] IS NULL")).all(), (rows: LooseRecord[]) =>
+    () => thenIfPromise(sqlite.prepare(sqlite.dialect.sql("SELECT [key], [payload] FROM [sporades_file_ingress] WHERE [leaseId] IS NULL OR [expiresAt] IS NULL OR [authorityKind] IS NULL")).all(), (rows: LooseRecord[]) =>
       chainMaybePromise(rows.map((stored) => () => {
         let row: LooseRecord;
         try { row = JSON.parse(stored.payload); } catch { return undefined; }
-        return sqlite.prepare(sqlite.dialect.sql("UPDATE [sporades_file_ingress] SET [leaseId]=?, [state]=?, [actorId]=?, [endpointMethod]=?, [endpointPath]=?, [requestKey]=?, [partKey]=?, [expiresAt]=?, [sweepToken]=? WHERE [key]=?"))
-          .run(row.leaseId ?? null, row.state ?? null, row.actorId ?? null, row.endpointMethod ?? null, row.endpointPath ?? null, row.requestKey ?? null, row.partKey ?? null, row.expiresAt ?? null, row.sweepToken ?? null, stored.key);
+        const normalized: LooseRecord = { ...row, authorityKind: row.authorityKind ?? "actor", authorityId: row.authorityId ?? `actor:${row.actorId}`, ownerId: row.ownerId ?? row.actorId };
+        return sqlite.prepare(sqlite.dialect.sql("UPDATE [sporades_file_ingress] SET [leaseId]=?, [state]=?, [actorId]=?, [authorityKind]=?, [authorityId]=?, [ownerId]=?, [principalNamespace]=?, [principalKeyDigest]=?, [endpointMethod]=?, [endpointPath]=?, [requestKey]=?, [partKey]=?, [expiresAt]=?, [sweepToken]=?, [payload]=? WHERE [key]=?"))
+          .run(normalized.leaseId ?? null, normalized.state ?? null, normalized.actorId ?? null, normalized.authorityKind, normalized.authorityId, normalized.ownerId, normalized.principalNamespace ?? null, normalized.principalKeyDigest ?? null, normalized.endpointMethod ?? null, normalized.endpointPath ?? null, normalized.requestKey ?? null, normalized.partKey ?? null, normalized.expiresAt ?? null, normalized.sweepToken ?? null, JSON.stringify(normalized), stored.key);
       }))),
     () => sqlite.exec(sqlite.dialect.sql("CREATE UNIQUE INDEX IF NOT EXISTS [sporades_file_ingress_lease_unique] ON [sporades_file_ingress] ([leaseId])")),
   ]);

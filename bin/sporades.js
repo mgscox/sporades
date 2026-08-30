@@ -11801,7 +11801,7 @@ function createFileStorageTables(sqlite) {
     ),
     // Runtime-private ingress receipts. The identity columns are intentionally queryable:
     // endpoint transactions lock and classify a lease without scanning JSON payloads.
-    () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_file_ingress] ([key] TEXT PRIMARY KEY, [leaseId] TEXT, [state] TEXT, [actorId] TEXT, [endpointMethod] TEXT, [endpointPath] TEXT, [requestKey] TEXT, [partKey] TEXT, [expiresAt] TEXT, [sweepToken] TEXT, [payload] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)")),
+    () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_file_ingress] ([key] TEXT PRIMARY KEY, [leaseId] TEXT, [state] TEXT, [actorId] TEXT, [authorityKind] TEXT, [authorityId] TEXT, [ownerId] TEXT, [principalNamespace] TEXT, [principalKeyDigest] TEXT, [endpointMethod] TEXT, [endpointPath] TEXT, [requestKey] TEXT, [partKey] TEXT, [expiresAt] TEXT, [sweepToken] TEXT, [payload] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)")),
     () => ensureFileIngressColumns(sqlite)
   ]);
 }
@@ -12373,6 +12373,11 @@ function ensureFileIngressColumns(sqlite) {
     ["leaseId", "TEXT"],
     ["state", "TEXT"],
     ["actorId", "TEXT"],
+    ["authorityKind", "TEXT"],
+    ["authorityId", "TEXT"],
+    ["ownerId", "TEXT"],
+    ["principalNamespace", "TEXT"],
+    ["principalKeyDigest", "TEXT"],
     ["endpointMethod", "TEXT"],
     ["endpointPath", "TEXT"],
     ["requestKey", "TEXT"],
@@ -12382,14 +12387,15 @@ function ensureFileIngressColumns(sqlite) {
   ];
   return chainMaybePromise([
     ...addedColumns.map(([name, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_file_ingress", name, type)),
-    () => thenIfPromise(sqlite.prepare(sqlite.dialect.sql("SELECT [key], [payload] FROM [sporades_file_ingress] WHERE [leaseId] IS NULL OR [expiresAt] IS NULL")).all(), (rows) => chainMaybePromise(rows.map((stored) => () => {
+    () => thenIfPromise(sqlite.prepare(sqlite.dialect.sql("SELECT [key], [payload] FROM [sporades_file_ingress] WHERE [leaseId] IS NULL OR [expiresAt] IS NULL OR [authorityKind] IS NULL")).all(), (rows) => chainMaybePromise(rows.map((stored) => () => {
       let row;
       try {
         row = JSON.parse(stored.payload);
       } catch {
         return void 0;
       }
-      return sqlite.prepare(sqlite.dialect.sql("UPDATE [sporades_file_ingress] SET [leaseId]=?, [state]=?, [actorId]=?, [endpointMethod]=?, [endpointPath]=?, [requestKey]=?, [partKey]=?, [expiresAt]=?, [sweepToken]=? WHERE [key]=?")).run(row.leaseId ?? null, row.state ?? null, row.actorId ?? null, row.endpointMethod ?? null, row.endpointPath ?? null, row.requestKey ?? null, row.partKey ?? null, row.expiresAt ?? null, row.sweepToken ?? null, stored.key);
+      const normalized = { ...row, authorityKind: row.authorityKind ?? "actor", authorityId: row.authorityId ?? `actor:${row.actorId}`, ownerId: row.ownerId ?? row.actorId };
+      return sqlite.prepare(sqlite.dialect.sql("UPDATE [sporades_file_ingress] SET [leaseId]=?, [state]=?, [actorId]=?, [authorityKind]=?, [authorityId]=?, [ownerId]=?, [principalNamespace]=?, [principalKeyDigest]=?, [endpointMethod]=?, [endpointPath]=?, [requestKey]=?, [partKey]=?, [expiresAt]=?, [sweepToken]=?, [payload]=? WHERE [key]=?")).run(normalized.leaseId ?? null, normalized.state ?? null, normalized.actorId ?? null, normalized.authorityKind, normalized.authorityId, normalized.ownerId, normalized.principalNamespace ?? null, normalized.principalKeyDigest ?? null, normalized.endpointMethod ?? null, normalized.endpointPath ?? null, normalized.requestKey ?? null, normalized.partKey ?? null, normalized.expiresAt ?? null, normalized.sweepToken ?? null, JSON.stringify(normalized), stored.key);
     }))),
     () => sqlite.exec(sqlite.dialect.sql("CREATE UNIQUE INDEX IF NOT EXISTS [sporades_file_ingress_lease_unique] ON [sporades_file_ingress] ([leaseId])"))
   ]);
@@ -14056,6 +14062,7 @@ function flushTeamSecurityEvents(database, context, options = {}) {
 // src/auth-runtime.ts
 var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");
 var PRIVILEGED_AUTH_USER_ID = "__privileged__";
+var CAPSULE_INGRESS_AUTH_USER_PREFIX = "__sporades_capsule_ingress__:";
 var EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
 var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
 var EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
@@ -14073,8 +14080,12 @@ var PASSWORD_RESET_REQUEST_JOB = "_sporades_password_reset_request";
 function privilegedAuthUserId() {
   return "__privileged__";
 }
+function capsuleIngressAuthUserId(capsuleIdentity) {
+  const digest = nodeCryptoModule3.createHash("sha256").update(String(capsuleIdentity ?? "capsule"), "utf8").digest("hex").slice(0, 32);
+  return `${CAPSULE_INGRESS_AUTH_USER_PREFIX}${digest}`;
+}
 function isReservedAuthUserId(userId) {
-  return userId === privilegedAuthUserId();
+  return userId === privilegedAuthUserId() || typeof userId === "string" && userId.startsWith(CAPSULE_INGRESS_AUTH_USER_PREFIX);
 }
 function authIdentityRowUnlessReserved(rowOrPromise) {
   if (rowOrPromise && typeof rowOrPromise.then === "function") {
@@ -19897,12 +19908,12 @@ async function receiptByLease(database, leaseId) {
   return stored ? JSON.parse(stored.payload) : null;
 }
 async function saveReceipt(database, row) {
-  const sql = database.adapter.dialect.sql("UPDATE [sporades_file_ingress] SET [leaseId]=?, [state]=?, [actorId]=?, [endpointMethod]=?, [endpointPath]=?, [requestKey]=?, [partKey]=?, [expiresAt]=?, [sweepToken]=?, [payload]=?, [updatedAt]=? WHERE [key]=?");
-  await database.adapter.prepare(sql).run(row.leaseId, row.state, row.actorId, row.endpointMethod, row.endpointPath, row.requestKey, row.partKey, row.expiresAt, row.sweepToken ?? null, JSON.stringify(row), (/* @__PURE__ */ new Date()).toISOString(), row.key);
+  const sql = database.adapter.dialect.sql("UPDATE [sporades_file_ingress] SET [leaseId]=?, [state]=?, [actorId]=?, [authorityKind]=?, [authorityId]=?, [ownerId]=?, [principalNamespace]=?, [principalKeyDigest]=?, [endpointMethod]=?, [endpointPath]=?, [requestKey]=?, [partKey]=?, [expiresAt]=?, [sweepToken]=?, [payload]=?, [updatedAt]=? WHERE [key]=?");
+  await database.adapter.prepare(sql).run(row.leaseId, row.state, row.actorId, row.authorityKind, row.authorityId, row.ownerId, row.principalNamespace ?? null, row.principalKeyDigest ?? null, row.endpointMethod, row.endpointPath, row.requestKey, row.partKey, row.expiresAt, row.sweepToken ?? null, JSON.stringify(row), (/* @__PURE__ */ new Date()).toISOString(), row.key);
 }
 async function acquireReceipt(database, candidate) {
-  const sql = database.adapter.dialect.sql("INSERT INTO [sporades_file_ingress] ([key], [leaseId], [state], [actorId], [endpointMethod], [endpointPath], [requestKey], [partKey], [expiresAt], [sweepToken], [payload], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT([key]) DO NOTHING");
-  const inserted = await database.adapter.prepare(sql).run(candidate.key, candidate.leaseId, candidate.state, candidate.actorId, candidate.endpointMethod, candidate.endpointPath, candidate.requestKey, candidate.partKey, candidate.expiresAt, null, JSON.stringify(candidate), (/* @__PURE__ */ new Date()).toISOString());
+  const sql = database.adapter.dialect.sql("INSERT INTO [sporades_file_ingress] ([key], [leaseId], [state], [actorId], [authorityKind], [authorityId], [ownerId], [principalNamespace], [principalKeyDigest], [endpointMethod], [endpointPath], [requestKey], [partKey], [expiresAt], [sweepToken], [payload], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT([key]) DO NOTHING");
+  const inserted = await database.adapter.prepare(sql).run(candidate.key, candidate.leaseId, candidate.state, candidate.actorId, candidate.authorityKind, candidate.authorityId, candidate.ownerId, candidate.principalNamespace ?? null, candidate.principalKeyDigest ?? null, candidate.endpointMethod, candidate.endpointPath, candidate.requestKey, candidate.partKey, candidate.expiresAt, null, JSON.stringify(candidate), (/* @__PURE__ */ new Date()).toISOString());
   if (Number(inserted?.changes ?? 0) > 0) return { row: candidate, winner: true };
   const row = await receipt(database, candidate.key);
   if (!row) throw new Error("Ingress receipt acquisition did not return a winner.");
@@ -19934,6 +19945,9 @@ function publicLease(row) {
 }
 function idempotencyConflict(message = "Ingress claim conflicts with the completed request.") {
   return Object.assign(new Error(message), { code: "IDEMPOTENCY_CONFLICT" });
+}
+function ingressAuthorityDenied() {
+  return Object.assign(new Error("File ingress authority is unavailable."), { code: "INGRESS_AUTHORITY_DENIED" });
 }
 function sameFileDescriptor(left, right) {
   return left?.id === right?.id && left?.ownerId === right?.ownerId && left?.path === right?.path && left?.name === right?.name && left?.type === right?.type && Number(left?.size) === Number(right?.size) && left?.version === right?.version;
@@ -20008,7 +20022,7 @@ async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes
   }
   throw Object.assign(new Error("Truncated multipart request."), { code: "INVALID_MULTIPART" });
 }
-async function stageMultipartIngress(database, endpoint, request, endpointRequest, actor) {
+async function stageMultipartIngress(database, endpoint, request, endpointRequest, actor, admittedAuthority) {
   const policy = endpoint.options.body.multipart;
   const contentType = String(endpointRequest.headers["content-type"] ?? "");
   const match = /^multipart\/form-data\s*;\s*boundary=([^;\s]+)$/i.exec(contentType);
@@ -20044,10 +20058,12 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
     if (policy.allowedMimeTypes && !policy.allowedMimeTypes.map(safeType).includes(type)) throw Object.assign(new Error("Multipart file type is not allowed."), { code: "MULTIPART_TYPE_DENIED" });
     const stablePartKey = partKey ?? crypto2.createHash("sha256").update(`${fieldName}:${files.length}`).digest("hex");
     const actorId = String(actor.userId ?? "");
-    const key = keyFor(endpoint, requestKey, stablePartKey, actorId);
+    const authority = admittedAuthority ?? { kind: "actor", actorId, ownerId: actorId };
+    const authorityId = authority.kind === "capsule-principal" ? `capsule:${authority.namespace}:${authority.keyDigest}` : `actor:${authority.actorId}`;
+    const key = keyFor(endpoint, requestKey, stablePartKey, authorityId);
     const digest = crypto2.createHash("sha256").update(body).digest("hex");
     const now2 = /* @__PURE__ */ new Date();
-    const candidate = { key, leaseId: crypto2.randomUUID(), partId: crypto2.createHash("sha256").update(key).digest("hex"), fieldName, name: safeName(filename), type, size: body.length, digest, fileId: crypto2.randomUUID(), version: crypto2.randomUUID(), state: "staging", actorId, endpointMethod: String(endpoint.options.method), endpointPath: String(endpoint.options.path), requestKey, partKey: stablePartKey, expiresAt: new Date(now2.getTime() + leaseTtlMs).toISOString() };
+    const candidate = { key, leaseId: crypto2.randomUUID(), partId: crypto2.createHash("sha256").update(key).digest("hex"), fieldName, name: safeName(filename), type, size: body.length, digest, fileId: crypto2.randomUUID(), version: crypto2.randomUUID(), state: "staging", actorId, authorityKind: authority.kind, authorityId, ownerId: authority.ownerId, ...authority.kind === "capsule-principal" ? { principalNamespace: authority.namespace, principalKeyDigest: authority.keyDigest } : {}, endpointMethod: String(endpoint.options.method), endpointPath: String(endpoint.options.path), requestKey, partKey: stablePartKey, expiresAt: new Date(now2.getTime() + leaseTtlMs).toISOString() };
     const acquired = await acquireReceipt(database, candidate);
     let row = acquired.row;
     if (row.digest !== digest || row.name !== candidate.name || row.type !== type || row.size !== body.length) throw Object.assign(new Error("Multipart retry descriptor conflicts with the original part."), { code: "INGRESS_DESCRIPTOR_CONFLICT" });
@@ -20066,7 +20082,7 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
   }, toUint8Array() {
     return new Uint8Array();
   }, *[Symbol.iterator]() {
-  } }), multipart: Object.freeze({ files: Object.freeze(files), fields: Object.freeze(fields) }), __ingressRequestKey: requestKey };
+  } }), multipart: Object.freeze({ files: Object.freeze(files), fields: Object.freeze(fields) }), __ingressRequestKey: requestKey, __ingressAuthority: admittedAuthority ?? Object.freeze({ kind: "actor", actorId: String(actor.userId ?? ""), ownerId: String(actor.userId ?? "") }) };
 }
 function createEndpointIngressApi(database, endpoint, endpointRequest, context) {
   const policy = endpoint.options.body?.multipart;
@@ -20076,20 +20092,31 @@ function createEndpointIngressApi(database, endpoint, endpointRequest, context) 
   if (!policy) return { claim: unavailable2, status: unavailable2 };
   const actorId = String(context.auth?.userId ?? "");
   const requestKey = endpointRequest.__ingressRequestKey;
+  const admittedAuthority = endpointRequest.__ingressAuthority ?? { kind: "actor", actorId, ownerId: actorId };
   return {
     async claim(lease, options) {
       const row = await receiptByLease(database, lease?.leaseId);
-      if (!row) throw idempotencyConflict("Ingress lease does not belong to this request.");
+      if (!row) throw ingressAuthorityDenied();
+      const requestedAuthority = options?.authority ?? { kind: "actor" };
+      let claimAuthorityId;
+      if (row.authorityKind === "capsule-principal") {
+        if (requestedAuthority?.kind !== "capsule-principal" || admittedAuthority?.kind !== "capsule-principal" || typeof requestedAuthority.namespace !== "string" || typeof requestedAuthority.key !== "string") throw ingressAuthorityDenied();
+        const requestedDigest = crypto2.createHash("sha256").update(`${requestedAuthority.namespace}\0${requestedAuthority.key}`, "utf8").digest("hex");
+        if (requestedAuthority.namespace !== admittedAuthority.namespace || requestedDigest !== admittedAuthority.keyDigest || row.principalNamespace !== requestedAuthority.namespace || row.principalKeyDigest !== requestedDigest || row.ownerId !== database.capsuleIngressOwnerId) throw ingressAuthorityDenied();
+        claimAuthorityId = `capsule:${requestedAuthority.namespace}:${requestedDigest}`;
+      } else {
+        if (requestedAuthority?.kind !== "actor" || admittedAuthority?.kind !== "actor" || !context.auth?.isAuthenticated || context.auth?.isGuest || admittedAuthority.actorId !== actorId || row.ownerId !== actorId) throw ingressAuthorityDenied();
+        claimAuthorityId = `actor:${actorId}`;
+      }
       const expectedLease = publicLease(row);
-      if (row.actorId !== actorId || row.endpointMethod !== String(endpoint.options.method) || row.endpointPath !== String(endpoint.options.path) || row.requestKey !== requestKey || expectedLease.leaseId !== lease?.leaseId || expectedLease.partId !== lease?.partId || expectedLease.fieldName !== lease?.fieldName || expectedLease.name !== lease?.name || expectedLease.type !== lease?.type || expectedLease.size !== lease?.size || expectedLease.expiresAt !== lease?.expiresAt) {
-        throw idempotencyConflict("Ingress lease identity or descriptor conflicts with this request.");
+      if (row.authorityId !== claimAuthorityId || row.endpointMethod !== String(endpoint.options.method) || row.endpointPath !== String(endpoint.options.path) || row.requestKey !== requestKey || expectedLease.leaseId !== lease?.leaseId || expectedLease.partId !== lease?.partId || expectedLease.fieldName !== lease?.fieldName || expectedLease.name !== lease?.name || expectedLease.type !== lease?.type || expectedLease.size !== lease?.size || expectedLease.expiresAt !== lease?.expiresAt) {
+        throw ingressAuthorityDenied();
       }
       const path12 = normalizeAbsoluteFilePath(options?.path);
       if (!policy.allowedPathPrefixes.some((prefix) => path12 === prefix || path12.startsWith(`${prefix}/`))) throw Object.assign(new Error("File path is outside the endpoint ingress policy."), { code: "INGRESS_PATH_DENIED" });
-      if (!context.auth?.isAuthenticated || context.auth?.isGuest) throw Object.assign(new Error("A linked actor is required to claim an ingress file."), { code: "INGRESS_ACTOR_REQUIRED" });
       const name = safeName(options?.name ?? row.name);
       const type = safeType(options?.type ?? row.type);
-      const expectedFile = { id: row.fileId, ownerId: actorId, path: path12, name, type, size: row.size, version: row.version };
+      const expectedFile = { id: row.fileId, ownerId: row.ownerId, path: path12, name, type, size: row.size, version: row.version };
       if (row.state === "complete") {
         if (!sameFileDescriptor(row.file, expectedFile)) throw idempotencyConflict();
         return fileMetadataFromRow(row.file);
@@ -20097,8 +20124,8 @@ function createEndpointIngressApi(database, endpoint, endpointRequest, context) 
       if (row.state === "expired" || Date.parse(row.expiresAt) <= Date.now()) throw Object.assign(new Error("File ingress lease has expired."), { code: "INGRESS_LEASE_EXPIRED" });
       if (row.state !== "leased") throw idempotencyConflict("Ingress lease is not claimable.");
       const now2 = (/* @__PURE__ */ new Date()).toISOString();
-      const bucket = await ensureFileBucket(database, actorId, "default", now2);
-      const file = { id: row.fileId, ownerId: actorId, bucketId: bucket.id, bucketName: bucket.name, path: path12, name: safeName(options?.name ?? row.name), type: safeType(options?.type ?? row.type), size: row.size, version: row.version, status: "uploaded", createdAt: now2, updatedAt: now2 };
+      const bucket = await ensureFileBucket(database, row.ownerId, "default", now2);
+      const file = { id: row.fileId, ownerId: row.ownerId, bucketId: bucket.id, bucketName: bucket.name, path: path12, name: safeName(options?.name ?? row.name), type: safeType(options?.type ?? row.type), size: row.size, version: row.version, status: "uploaded", createdAt: now2, updatedAt: now2 };
       try {
         await database.adapter.insertFileRowIfAbsent(file);
       } catch (error) {
@@ -20115,7 +20142,8 @@ function createEndpointIngressApi(database, endpoint, endpointRequest, context) 
       return fileMetadataFromRow(storedFile);
     },
     async status(statusRequestKey, partKey) {
-      const row = await receipt(database, keyFor(endpoint, statusRequestKey, partKey, actorId));
+      const authorityId = admittedAuthority.kind === "capsule-principal" ? `capsule:${admittedAuthority.namespace}:${admittedAuthority.keyDigest}` : `actor:${actorId}`;
+      const row = await receipt(database, keyFor(endpoint, statusRequestKey, partKey, authorityId));
       if (!row) return { state: "missing" };
       return row.state === "complete" ? { state: "complete", file: fileMetadataFromRow(row.file) } : { state: "leased", lease: publicLease(row) };
     }
@@ -20202,7 +20230,7 @@ async function dispatchVerifiedStripeEvent(ctx, event, subscription) {
 
 // src/server-runtime-source.ts
 var mutationResultsWithWrites = /* @__PURE__ */ new WeakSet();
-var trustedReadPurposes = /* @__PURE__ */ new Set(["teams.join-admission", "team-billing.authority"]);
+var trustedReadPurposes = /* @__PURE__ */ new Set(["teams.join-admission", "team-billing.authority", "files.ingress-admission"]);
 var trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 var runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
 var atomicStripeEventDefinitionBrand2 = Symbol.for("sporades.stripeEvent.atomicDefinition");
@@ -20333,6 +20361,27 @@ function emitRuntimeReplacementWarning(database, event, message, error, fallback
   } catch {
   }
 }
+function endpointIngressClaimAuthority(endpoint) {
+  const declared = endpoint?.options?.body?.multipart?.claimAuthorities;
+  if (declared === void 0) return "actor";
+  if (!Array.isArray(declared) || declared.length !== 1 || !["actor", "capsule-principal"].includes(declared[0])) {
+    throw commandError("Invalid multipart claim authority.", "Declare exactly one of actor or capsule-principal for this endpoint.", "INVALID_FILE_INGRESS_AUTHORITY");
+  }
+  return declared[0];
+}
+function normalizeCapsuleFileIngressDefinition(files, endpoints) {
+  const usesCapsulePrincipal = endpoints.some((endpoint) => endpoint?.options?.body?.multipart && endpointIngressClaimAuthority(endpoint) === "capsule-principal");
+  if (!usesCapsulePrincipal) return null;
+  const ingress = files?.ingress;
+  const namespaces = ingress?.principalNamespaces;
+  if (!ingress || typeof ingress !== "object" || Array.isArray(ingress) || typeof ingress.admit !== "function" || !Array.isArray(namespaces) || namespaces.length === 0 || namespaces.length > 32 || namespaces.some((value) => typeof value !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(value)) || new Set(namespaces).size !== namespaces.length) {
+    throw commandError("Invalid Capsule File ingress admission.", "Declare files.ingress with unique principalNamespaces and an admit function.", "INVALID_FILE_INGRESS_ADMISSION");
+  }
+  if (typeof files?.acl?.read !== "function" || typeof files?.acl?.delete !== "function") {
+    throw commandError("Capsule-principal File ingress requires explicit File ACL rules.", "Declare files.acl.read and files.acl.delete before enabling capsule-principal claims.", "FILE_INGRESS_ACL_REQUIRED");
+  }
+  return Object.freeze({ principalNamespaces: Object.freeze([...namespaces]), admit: ingress.admit });
+}
 async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
   if (capsuleDefinition) {
     capsuleDefinition = normalizeCapsuleAuthDefinition(capsuleDefinition);
@@ -20390,6 +20439,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     }
   }
   const endpoints = [...capsuleEndpoints, ...providerEndpoints];
+  const fileIngressDefinition = normalizeCapsuleFileIngressDefinition(capsuleDefinition?.files, endpoints);
   const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
   const journeySessionInactivityMinutes = resolveJourneySessionInactivityMinutes(config);
   globalThis.requireAuth = requireAuth;
@@ -20471,6 +20521,8 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     securitySession: config.__sporadesSession ?? "container",
     clock,
     capsuleIdentity: String(config.name ?? "capsule"),
+    capsuleIngressOwnerId: capsuleIngressAuthUserId(config.name ?? capsuleDefinition?.name ?? "capsule"),
+    fileIngressDefinition,
     scheduleOccurrenceFault: options?.scheduleOccurrenceFault,
     scheduleReconciliationFault: options?.scheduleReconciliationFault,
     jobRecoveryFault: options?.jobRecoveryFault,
@@ -22569,6 +22621,34 @@ async function routeEndpoint(database, request, response) {
   }
   return true;
 }
+async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, signal) {
+  const definition = database.fileIngressDefinition;
+  if (!definition) throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
+  const decision = await database.adapter.withTransaction((transaction) => withTrustedRead(database, {
+    transaction,
+    purpose: "files.ingress-admission",
+    subject: { method: endpoint.options.method, path: endpoint.options.path },
+    signal
+  }, (db) => definition.admit(Object.freeze({
+    db,
+    env: database.serverEnv,
+    signal,
+    request: Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) })
+  }), Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }))));
+  const namespace = decision?.principal?.namespace;
+  const key = decision?.principal?.key;
+  const serialized = (() => {
+    try {
+      return JSON.stringify(decision);
+    } catch {
+      return "";
+    }
+  })();
+  if (decision?.allow !== true || typeof namespace !== "string" || !definition.principalNamespaces.includes(namespace) || typeof key !== "string" || key.length === 0 || Buffer.byteLength(key, "utf8") > 256 || /[\x00-\x1f\x7f]/.test(key) || Buffer.byteLength(serialized, "utf8") > 4096) {
+    throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
+  }
+  return Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash8("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId });
+}
 async function runEndpoint(database, endpoint, requestUrl, request) {
   const handler = typeof endpoint.handler === "function" ? endpoint.handler : new Function(`return (${endpoint.handlerSource});`)();
   const runtimeOwnedProviderCallback = endpoint.runtimeOwnedEmailEvent || endpoint.runtimeOwnedStripeCallback;
@@ -22610,8 +22690,16 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
     await recordAccessKeyUsage(database, accessKeyAdmission);
   }
   if (endpoint.options?.body?.multipart) {
+    const claimAuthority = endpointIngressClaimAuthority(endpoint);
     const admitted = accessKeyAdmission ?? session;
-    const payload = await stageMultipartIngress(database, endpoint, request, endpointRequest, admitted.auth);
+    let ingressAuthority;
+    if (claimAuthority === "capsule-principal") {
+      ingressAuthority = await admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, request.signal);
+    } else {
+      if (!admitted?.auth?.isAuthenticated || admitted.auth.isGuest || isReservedAuthUserId(admitted.auth.userId)) throw commandError("Unauthenticated.", "Sign in with a linked human or service User and retry.", "UNAUTHENTICATED");
+      ingressAuthority = Object.freeze({ kind: "actor", actorId: String(admitted.auth.userId), ownerId: String(admitted.auth.userId) });
+    }
+    const payload = await stageMultipartIngress(database, endpoint, request, endpointRequest, admitted.auth, ingressAuthority);
     endpointRequest = { ...endpointRequest, ...payload };
   } else {
     endpointRequest = await readEndpointRequest(database, requestUrl, request, !endpoint.runtimeOwnedStripeCallback);
@@ -22929,6 +23017,9 @@ function createEndpointContext(database, endpointRequest, session, options = {})
       ...endpointRequest.multipart ? { multipart: endpointRequest.multipart } : {}
     }
   };
+  if (endpointRequest.__ingressAuthority?.kind === "capsule-principal") {
+    context.ingress = Object.freeze({ principal: Object.freeze({ namespace: endpointRequest.__ingressAuthority.namespace, key: endpointRequest.__ingressAuthority.key }) });
+  }
   if (credential?.kind === "session" && typeof session.token === "string") {
     bindAccessKeyOwnerSession(context, session.token);
   }

@@ -4,7 +4,7 @@ export declare function multipartParts(request: AsyncIterable<Uint8Array>, bound
     body: Buffer<ArrayBuffer>;
 }, void, unknown>;
 /** Parse only after endpoint credential admission. The bounded body is never exposed as an ordinary endpoint body. */
-export declare function stageMultipartIngress(database: RecordLike, endpoint: RecordLike, request: any, endpointRequest: RecordLike, actor: RecordLike): Promise<{
+export declare function stageMultipartIngress(database: RecordLike, endpoint: RecordLike, request: any, endpointRequest: RecordLike, actor: RecordLike, admittedAuthority?: RecordLike): Promise<{
     body: null;
     bodyBytes: Readonly<{
         byteLength: 0;
@@ -18,6 +18,11 @@ export declare function stageMultipartIngress(database: RecordLike, endpoint: Re
         fields: Readonly<RecordLike>;
     }>;
     __ingressRequestKey: string;
+    __ingressAuthority: RecordLike | Readonly<{
+        kind: string;
+        actorId: string;
+        ownerId: string;
+    }>;
 }>;
 export declare function createEndpointIngressApi(database: RecordLike, endpoint: RecordLike, endpointRequest: RecordLike, context: RecordLike): {
     claim(lease: RecordLike, options: RecordLike): Promise<{

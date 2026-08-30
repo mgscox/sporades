@@ -21,7 +21,7 @@ import {
   PASSWORD_RESET_MAX_TTL_MS, PASSWORD_RESET_MIN_TTL_MS, PASSWORD_RESET_THROTTLE_FIELD,
   PRIVILEGED_AUTH_USER_ID, appleOAuthOriginEligible, assertNotReservedAuthUserId,
   authIdentityRowUnlessReserved, authIdentityRowsUnlessReserved, authProvidersForClient, authStatus,
-  confirmPasswordReset, createAuthDenialLogData, createEmailPasswordResetLink, createSessionToken, currentEmailSignInThrottleState,
+  capsuleIngressAuthUserId, confirmPasswordReset, createAuthDenialLogData, createEmailPasswordResetLink, createSessionToken, currentEmailSignInThrottleState,
   emailAuthDisabledError, emitAuthDeniedLog, hashEmailPassword,
   invalidEmailCredentialsError, isReservedAuthUserId, mailNotConfiguredError,
   normalizeEmailCredentials, normalizePasswordResetPath, normalizeReturnTo, normalizeSimulatedText,
@@ -164,7 +164,7 @@ import {
 import { dispatchVerifiedStripeEvent } from "./stripe-events-runtime.js";
 
 const mutationResultsWithWrites = new WeakSet<object>();
-const trustedReadPurposes = new Set(["teams.join-admission", "team-billing.authority"]);
+const trustedReadPurposes = new Set(["teams.join-admission", "team-billing.authority", "files.ingress-admission"]);
 const trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 const runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
 const atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
@@ -605,6 +605,29 @@ function emitRuntimeReplacementWarning(database: LooseRecord, event: string, mes
 }
 
 
+function endpointIngressClaimAuthority(endpoint: LooseRecord) {
+  const declared = endpoint?.options?.body?.multipart?.claimAuthorities;
+  if (declared === undefined) return "actor";
+  if (!Array.isArray(declared) || declared.length !== 1 || !["actor", "capsule-principal"].includes(declared[0])) {
+    throw commandError("Invalid multipart claim authority.", "Declare exactly one of actor or capsule-principal for this endpoint.", "INVALID_FILE_INGRESS_AUTHORITY");
+  }
+  return declared[0];
+}
+
+function normalizeCapsuleFileIngressDefinition(files: LooseRecord | undefined, endpoints: LooseRecord[]) {
+  const usesCapsulePrincipal = endpoints.some((endpoint) => endpoint?.options?.body?.multipart && endpointIngressClaimAuthority(endpoint) === "capsule-principal");
+  if (!usesCapsulePrincipal) return null;
+  const ingress = files?.ingress;
+  const namespaces = ingress?.principalNamespaces;
+  if (!ingress || typeof ingress !== "object" || Array.isArray(ingress) || typeof ingress.admit !== "function" || !Array.isArray(namespaces) || namespaces.length === 0 || namespaces.length > 32 || namespaces.some((value: any) => typeof value !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(value)) || new Set(namespaces).size !== namespaces.length) {
+    throw commandError("Invalid Capsule File ingress admission.", "Declare files.ingress with unique principalNamespaces and an admit function.", "INVALID_FILE_INGRESS_ADMISSION");
+  }
+  if (typeof files?.acl?.read !== "function" || typeof files?.acl?.delete !== "function") {
+    throw commandError("Capsule-principal File ingress requires explicit File ACL rules.", "Declare files.acl.read and files.acl.delete before enabling capsule-principal claims.", "FILE_INGRESS_ACL_REQUIRED");
+  }
+  return Object.freeze({ principalNamespaces: Object.freeze([...namespaces]), admit: ingress.admit });
+}
+
 export async function openDevDatabase(
   databasePath: string,
   serverSource: any,
@@ -677,6 +700,7 @@ export async function openDevDatabase(
     }
   }
   const endpoints = [...capsuleEndpoints, ...providerEndpoints];
+  const fileIngressDefinition = normalizeCapsuleFileIngressDefinition(capsuleDefinition?.files, endpoints);
   const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
   const journeySessionInactivityMinutes = resolveJourneySessionInactivityMinutes(config);
   // Handler sources extracted from Capsule server code are re-created with
@@ -770,6 +794,8 @@ export async function openDevDatabase(
     securitySession: config.__sporadesSession ?? "container",
     clock,
     capsuleIdentity: String(config.name ?? "capsule"),
+    capsuleIngressOwnerId: capsuleIngressAuthUserId(config.name ?? capsuleDefinition?.name ?? "capsule"),
+    fileIngressDefinition,
     scheduleOccurrenceFault: options?.scheduleOccurrenceFault,
     scheduleReconciliationFault: options?.scheduleReconciliationFault,
     jobRecoveryFault: options?.jobRecoveryFault,
@@ -3244,6 +3270,28 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
 
 
 
+async function admitCapsuleIngressPrincipal(database: LooseRecord, endpoint: LooseRecord, endpointRequest: LooseRecord, signal: any) {
+  const definition = database.fileIngressDefinition;
+  if (!definition) throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
+  const decision = await database.adapter.withTransaction((transaction: LooseRecord) => withTrustedRead(database, {
+    transaction,
+    purpose: "files.ingress-admission",
+    subject: { method: endpoint.options.method, path: endpoint.options.path },
+    signal,
+  }, (db) => definition.admit(Object.freeze({
+    db,
+    env: database.serverEnv,
+    signal,
+    request: Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }),
+  }), Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }))));
+  const namespace = decision?.principal?.namespace; const key = decision?.principal?.key;
+  const serialized = (() => { try { return JSON.stringify(decision); } catch { return ""; } })();
+  if (decision?.allow !== true || typeof namespace !== "string" || !definition.principalNamespaces.includes(namespace) || typeof key !== "string" || key.length === 0 || Buffer.byteLength(key, "utf8") > 256 || /[\x00-\x1f\x7f]/.test(key) || Buffer.byteLength(serialized, "utf8") > 4096) {
+    throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
+  }
+  return Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId });
+}
+
 export async function runEndpoint(database: any, endpoint: { handler?: Function; handlerSource?: string; }, requestUrl: URL, request: any) {
   const handler =
     typeof endpoint.handler === "function"
@@ -3299,8 +3347,16 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
     await recordAccessKeyUsage(database, accessKeyAdmission);
   }
   if ((endpoint as LooseRecord).options?.body?.multipart) {
+    const claimAuthority = endpointIngressClaimAuthority(endpoint as LooseRecord);
     const admitted = (accessKeyAdmission ?? session) as LooseRecord;
-    const payload = await stageMultipartIngress(database, endpoint as LooseRecord, request, endpointRequest, admitted.auth);
+    let ingressAuthority: LooseRecord;
+    if (claimAuthority === "capsule-principal") {
+      ingressAuthority = await admitCapsuleIngressPrincipal(database, endpoint as LooseRecord, endpointRequest, request.signal);
+    } else {
+      if (!admitted?.auth?.isAuthenticated || admitted.auth.isGuest || isReservedAuthUserId(admitted.auth.userId)) throw commandError("Unauthenticated.", "Sign in with a linked human or service User and retry.", "UNAUTHENTICATED");
+      ingressAuthority = Object.freeze({ kind: "actor", actorId: String(admitted.auth.userId), ownerId: String(admitted.auth.userId) });
+    }
+    const payload = await stageMultipartIngress(database, endpoint as LooseRecord, request, endpointRequest, admitted.auth, ingressAuthority);
     endpointRequest = { ...endpointRequest, ...payload };
   } else {
     endpointRequest = await readEndpointRequest(database, requestUrl, request, !(endpoint as LooseRecord).runtimeOwnedStripeCallback);
@@ -3643,6 +3699,9 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
       ...(endpointRequest.multipart ? { multipart: endpointRequest.multipart } : {}),
     },
   };
+  if (endpointRequest.__ingressAuthority?.kind === "capsule-principal") {
+    context.ingress = Object.freeze({ principal: Object.freeze({ namespace: endpointRequest.__ingressAuthority.namespace, key: endpointRequest.__ingressAuthority.key }) });
+  }
   if (credential?.kind === "session" && typeof session.token === "string") {
     bindAccessKeyOwnerSession(context, session.token);
   }
