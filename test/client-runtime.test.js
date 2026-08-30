@@ -386,19 +386,25 @@ test("every framework auth helper forwards RegistrationOptions to sign-up and si
   } finally { browser.cleanup(); }
 });
 
-test("React, Vue, Solid, and Svelte auth adapters expose purpose-bound reauthentication", async () => {
+test("every framework auth adapter exposes purpose-bound reauthentication", async () => {
   const calls = []; const browser = installBrowserFakes(anonymousAuth, { handlers: { "auth.reauthenticate": async (message) => { calls.push(message); return { type: "auth.reauthenticate.result", data: { ok: true, purpose: message.purpose, expiresAt: "2026-08-30T12:00:00.000Z" }, error: null }; } } });
   try {
     const runtime = await importClientRuntime(); const signal = (initial) => { let value = initial; return [() => value, (next) => { value = typeof next === "function" ? next(value) : next; }]; };
     const react = runtime.createHooks({ useState: (initial) => [initial, () => {}], useEffect() {} }).useAuth();
     const vue = runtime.createVueComposables({ reactive: (value) => value, onScopeDispose() {} }).useAuth();
+    const lit = runtime.createLitControllers().authController({ addController() {}, requestUpdate() {} });
+    const inferno = runtime.createInfernoAdapters().authAdapter({ forceUpdate() {} });
     const solid = runtime.createSolidPrimitives({ createSignal: signal, onCleanup() {} }).createAuth(); const svelte = runtime.createSvelteStores().authStore();
     await react.reauthenticate("email", { email: "react@example.com", password: "password-123" }, "administrator-authority");
     await vue.reauthenticate("email", { email: "vue@example.com", password: "password-123" }, "administrator-authority");
+    await lit.reauthenticate("email", { email: "lit@example.com", password: "password-123" }, "administrator-authority");
+    await inferno.reauthenticate("email", { email: "inferno@example.com", password: "password-123" }, "administrator-authority");
     await solid.reauthenticate("email", { email: "solid@example.com", password: "password-123" }, "administrator-authority"); await svelte.reauthenticate("email", { email: "svelte@example.com", password: "password-123" }, "application-lifecycle");
     assert.deepEqual(calls.map(({ type, provider, credentials, purpose }) => ({ type, provider, credentials, purpose })), [
       { type: "auth.reauthenticate", provider: "email", credentials: { email: "react@example.com", password: "password-123" }, purpose: "administrator-authority" },
       { type: "auth.reauthenticate", provider: "email", credentials: { email: "vue@example.com", password: "password-123" }, purpose: "administrator-authority" },
+      { type: "auth.reauthenticate", provider: "email", credentials: { email: "lit@example.com", password: "password-123" }, purpose: "administrator-authority" },
+      { type: "auth.reauthenticate", provider: "email", credentials: { email: "inferno@example.com", password: "password-123" }, purpose: "administrator-authority" },
       { type: "auth.reauthenticate", provider: "email", credentials: { email: "solid@example.com", password: "password-123" }, purpose: "administrator-authority" },
       { type: "auth.reauthenticate", provider: "email", credentials: { email: "svelte@example.com", password: "password-123" }, purpose: "application-lifecycle" },
     ]);

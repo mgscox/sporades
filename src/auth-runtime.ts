@@ -135,6 +135,8 @@ export const EMAIL_SIGN_IN_THROTTLE_FIELD = "__emailSignInThrottle";
 
 export const PASSWORD_CHANGE_THROTTLE_FIELD = "__emailPasswordChangeThrottle";
 
+export const EMAIL_REAUTHENTICATION_THROTTLE_FIELD = "__emailReauthenticationThrottle";
+
 export const PASSWORD_RESET_THROTTLE_FIELD = "__emailPasswordResetThrottle";
 
 export const PASSWORD_RESET_DEFAULT_PATH = "/reset-password";

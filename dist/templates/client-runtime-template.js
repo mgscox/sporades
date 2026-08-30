@@ -509,6 +509,7 @@ export function createLitControllers() {
     controller.isAuthenticated = () => Boolean(controller.state.auth?.isAuthenticated);
     controller.signUp = (provider, credentials, options) => connect().signUp(provider, credentials, options);
     controller.signIn = (provider, credentials, options) => connect().signIn(provider, credentials, options);
+    controller.reauthenticate = (provider, credentials, purpose) => connect().reauthenticate(provider, credentials, purpose);
     controller.signOut = () => connect().signOut();
     controller.setPassword = (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword);
     return controller;
@@ -585,6 +586,7 @@ export function createInfernoAdapters() {
     adapter.isAuthenticated = () => Boolean(adapter.state.auth?.isAuthenticated);
     adapter.signUp = (provider, credentials, options) => connect().signUp(provider, credentials, options);
     adapter.signIn = (provider, credentials, options) => connect().signIn(provider, credentials, options);
+    adapter.reauthenticate = (provider, credentials, purpose) => connect().reauthenticate(provider, credentials, purpose);
     adapter.signOut = () => connect().signOut();
     adapter.setPassword = (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword);
     return adapter;

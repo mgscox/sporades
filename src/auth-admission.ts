@@ -153,11 +153,14 @@ function normalizeFileAccessKeyPolicy<Definition extends LooseRecord>(definition
 
 export function validateCapsuleAuthRequirements(definition: LooseRecord) {
   const declaredScopes = new Set<string>(definition.accessKeys?.scopes ?? []);
-  for (const collection of [definition.queries, definition.mutations, definition.endpoints, definition.messages]) {
+  for (const [kind, collection] of [["query", definition.queries], ["mutation", definition.mutations], ["endpoint", definition.endpoints], ["message", definition.messages]] as const) {
     for (const item of Object.values(collection ?? {}) as LooseRecord[]) {
       const requirements = readAuthRequirements(item?.handler);
       if (!requirements) {
         continue;
+      }
+      if (requirements.reauthentication && kind !== "mutation") {
+        throw invalidAuthRequirements("Reauthentication proofs may only guard mutations.");
       }
       for (const scope of requirements.scopes) {
         if (!declaredScopes.has(scope)) {

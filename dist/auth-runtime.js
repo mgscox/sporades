@@ -113,6 +113,7 @@ export const EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1000;
 export const EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
 export const EMAIL_SIGN_IN_THROTTLE_FIELD = "__emailSignInThrottle";
 export const PASSWORD_CHANGE_THROTTLE_FIELD = "__emailPasswordChangeThrottle";
+export const EMAIL_REAUTHENTICATION_THROTTLE_FIELD = "__emailReauthenticationThrottle";
 export const PASSWORD_RESET_THROTTLE_FIELD = "__emailPasswordResetThrottle";
 export const PASSWORD_RESET_DEFAULT_PATH = "/reset-password";
 export const PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1000;

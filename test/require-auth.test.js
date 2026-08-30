@@ -188,6 +188,13 @@ test("capsule registration fails closed for invalid scope and guard declarations
   assert.throws(() => requireAuth({ credentials: ["session", "session"] }, plainHandler), (error) => error.code === "INVALID_AUTH_REQUIREMENTS");
   assert.throws(() => requireAuth({ unknown: true }, plainHandler), (error) => error.code === "INVALID_AUTH_REQUIREMENTS");
   assert.throws(() => requireAuth(requireAuth(plainHandler)), (error) => error.code === "INVALID_AUTH_REQUIREMENTS");
+  for (const [kind, item] of [
+    ["query", query(requireAuth({ reauthentication: "administrator-authority" }, plainHandler))],
+    ["endpoint", endpoint({ method: "GET", path: "/reauth" }, requireAuth({ reauthentication: "administrator-authority" }, plainHandler))],
+    ["message", message(requireAuth({ reauthentication: "administrator-authority" }, plainHandler))],
+  ]) {
+    assert.throws(() => capsule({ name: `invalid-reauth-${kind}`, [`${kind === "query" ? "querie" : kind}s`]: { guarded: item } }), (error) => error.code === "INVALID_AUTH_REQUIREMENTS");
+  }
 });
 
 test("scope grants use case-sensitive whole-string wildcard matching", () => {

@@ -18,7 +18,7 @@ import { isInternalLogIndexMetadataRow, targetsInternalLogIndexTable } from "./l
 import { HelperError, assertJsonCompatible, commandError, invalidReferenceError } from "./runtime-errors.js";
 import {
   PASSWORD_RESET_DEFAULT_PATH, PASSWORD_RESET_DEFAULT_TTL_MS, PASSWORD_RESET_REQUEST_JOB,
-  PASSWORD_RESET_MAX_TTL_MS, PASSWORD_RESET_MIN_TTL_MS, PASSWORD_RESET_THROTTLE_FIELD,
+  PASSWORD_RESET_MAX_TTL_MS, PASSWORD_RESET_MIN_TTL_MS, PASSWORD_RESET_THROTTLE_FIELD, EMAIL_REAUTHENTICATION_THROTTLE_FIELD,
   PRIVILEGED_AUTH_USER_ID, appleOAuthOriginEligible, assertNotReservedAuthUserId,
   authIdentityRowUnlessReserved, authIdentityRowsUnlessReserved, authProvidersForClient, authStatus,
   capsuleIngressAuthUserId, confirmPasswordReset, createAuthDenialLogData, createEmailPasswordResetLink, createSessionToken, currentEmailSignInThrottleState,
@@ -4917,16 +4917,28 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
       const purpose = message.purpose; const policy = database.reauthenticationPolicy?.[purpose]; const normalized = normalizeEmailCredentials(message.credentials ?? {});
       let ok = false; let expiresAt: string | null = null;
       const authorized = Boolean(policy && client.session.auth?.isAuthenticated && !client.session.auth?.isGuest);
-      if (authorized && message.provider === "email" && normalized.ok && typeof normalized.password === "string") {
-        const credential = await database.adapter.findEmailCredentialWithUser(normalized.email);
-        if (credential?.userId === client.session.auth.userId && verifyEmailPassword(normalized.password, credential.passwordSalt, credential.passwordHash)) {
+      const emailProviderEnabled = database.authConfig.providers.email?.enabled === true;
+      if (authorized && message.provider === "email" && emailProviderEnabled && normalized.ok && typeof normalized.password === "string") {
+        const throttle = currentEmailSignInThrottleState(database, normalized.email, client.session, EMAIL_REAUTHENTICATION_THROTTLE_FIELD);
+        if (!throttle.throttled) {
+          // Reserve the attempt before entering the expensive password KDF. A
+          // successful verification clears only this dedicated reauth bucket.
+          recordFailedEmailSignInAttempt(database, normalized.email, client.session, EMAIL_REAUTHENTICATION_THROTTLE_FIELD);
           const now = database.clock.now(); expiresAt = new Date(now.getTime() + policy.maxAgeSeconds * 1000).toISOString();
           try {
-            await database.adapter.withTransaction(async (tx: LooseRecord) => { const current = await tx.readAuthSessionWithUser(client.session.token); if (!current || current.token !== client.session.token || current.userId !== client.session.auth.userId || !current.isAuthenticated || current.isGuest || Date.parse(current.expiresAt) <= now.getTime()) return; const currentAuth = { userId: current.userId, displayName: current.displayName, email: current.email, picture: current.picture, isAuthenticated: Boolean(current.isAuthenticated), isGuest: Boolean(current.isGuest), provider: current.provider }; if (!await database.authorizeReauthentication(tx, currentAuth, purpose)) return; await tx.replaceReauthenticationProof({ id: randomUUID(), userId: current.userId, sessionToken: current.token, purpose, createdAt: now.toISOString(), expiresAt }); ok = true; });
+            await database.adapter.withTransaction(async (tx: LooseRecord) => {
+              const current = await tx.readAuthSessionWithUser(client.session.token);
+              const credential = await tx.findEmailCredentialWithUser(normalized.email);
+              if (!current || current.token !== client.session.token || current.userId !== client.session.auth.userId || !current.isAuthenticated || current.isGuest || Date.parse(current.expiresAt) <= now.getTime() || credential?.userId !== current.userId || !verifyEmailPassword(normalized.password, credential.passwordSalt, credential.passwordHash)) return;
+              const currentAuth = { userId: current.userId, displayName: current.displayName, email: current.email, picture: current.picture, isAuthenticated: Boolean(current.isAuthenticated), isGuest: Boolean(current.isGuest), provider: current.provider };
+              if (!await database.authorizeReauthentication(tx, currentAuth, purpose)) return;
+              await tx.replaceReauthenticationProof({ id: randomUUID(), userId: current.userId, sessionToken: current.token, purpose, createdAt: now.toISOString(), expiresAt }); ok = true;
+            });
           } catch {
             try { await database.log?.emit?.({ category: "platform", event: "auth.reauthentication.authorization_failed", level: "error", message: "Reauthentication authorization policy failed.", data: { provider: "email", purpose } }); } catch {}
             ok = false;
           }
+          if (ok) resetEmailSignInAttempts(database, normalized.email, client.session, EMAIL_REAUTHENTICATION_THROTTLE_FIELD);
         }
       }
       if (!ok && authorized && message.provider !== "email" && oauthProviderAdapter(database, message.provider)?.enabled) {

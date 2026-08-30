@@ -23,7 +23,7 @@ async function startResetCapsule(dir) {
   await installFakeReact(projectDir);
   await writeFile(
     path.join(projectDir, "server", "index.ts"),
-    `import { capsule } from "sporades/server"; export default capsule({ name: "reset-capsule" });\n`,
+    `import { capsule } from "sporades/server"; export default capsule({ name: "reset-capsule", auth: { reauthentication: { purposes: { "credential-check": { maxAgeSeconds: 900 } } } } });\n`,
   );
   const child = startCli(["dev", "--json"], { cwd: projectDir });
   const started = await waitForJsonLine(child);
@@ -65,6 +65,44 @@ test("requesting a reset link over the transport cannot distinguish a registered
       socket?.close();
       await stopDevSession(child);
     }
+  });
+});
+
+test("email reauthentication uses an isolated bounded attempt bucket", async () => {
+  await withTempDir(async (dir) => {
+    const { child, url } = await startResetCapsule(dir);
+    let socket;
+    try {
+      socket = await openSocket(url);
+      await signUp(socket, "reauth-signup", "reauth@example.com", "password-123");
+      const attempt = (id, password) => sendAndWait(socket, { id, type: "auth.reauthenticate", provider: "email", credentials: { email: "reauth@example.com", password }, purpose: "credential-check" });
+      assert.equal((await attempt("wrong-before-success", "wrong-password")).error.code, "REAUTHENTICATION_FAILED");
+      assert.equal((await attempt("success-resets", "password-123")).error, null, "a successful proof resets only the reauthentication bucket");
+      for (let index = 0; index < 5; index += 1) assert.equal((await attempt(`wrong-${index}`, "wrong-password")).error.code, "REAUTHENTICATION_FAILED");
+      assert.equal((await attempt("throttled-correct", "password-123")).error.code, "REAUTHENTICATION_FAILED", "the bounded bucket rejects before another password verification");
+      await sendAndWait(socket, { id: "reauth-signout", type: "auth.signOut" });
+      assert.equal(await canSignIn(socket, "ordinary-signin-unaffected", "reauth@example.com", "password-123"), true, "reauth throttling must not collide with ordinary sign-in");
+    } finally {
+      socket?.close();
+      await stopDevSession(child);
+    }
+  });
+});
+
+test("disabled Email provider cannot mint a proof for an existing credential and Session", async () => {
+  await withTempDir(async (dir) => {
+    let runtime = await startResetCapsule(dir); let socket;
+    try {
+      socket = await openSocket(runtime.url);
+      const signedUp = await sendAndWait(socket, { id: "disabled-signup", type: "auth.signUp", provider: "email", credentials: { email: "disabled@example.com", password: "password-123", name: "Disabled" } });
+      const sessionToken = signedUp.data.sessionToken;
+      socket.close(); socket = null; await stopDevSession(runtime.child);
+      const projectDir = path.join(dir, "reset-capsule"); const configPath = path.join(projectDir, "sporades.json"); const config = JSON.parse(await readFile(configPath, "utf8")); config.auth.providers.email = false; await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+      const child = startCli(["dev", "--json"], { cwd: projectDir }); const started = await waitForJsonLine(child); runtime = { child, url: started.data.url };
+      socket = await openSocket(runtime.url, sessionToken);
+      const result = await sendAndWait(socket, { id: "disabled-reauth", type: "auth.reauthenticate", provider: "email", credentials: { email: "disabled@example.com", password: "password-123" }, purpose: "credential-check" });
+      assert.equal(result.error.code, "REAUTHENTICATION_FAILED"); assert.doesNotMatch(JSON.stringify(result), /provider.*disabled|credential/i);
+    } finally { socket?.close(); await stopDevSession(runtime.child); }
   });
 });
 

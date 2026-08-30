@@ -521,6 +521,7 @@ export type LitAuthController = LitReactiveController & {
   isAuthenticated(): boolean;
   signUp: AuthApi["signUp"];
   signIn: AuthApi["signIn"];
+  reauthenticate: AuthApi["reauthenticate"];
   signOut: AuthApi["signOut"];
   setPassword: AuthApi["setPassword"];
 };
@@ -541,7 +542,7 @@ export type InfernoQueryAdapter<Data = unknown> = InfernoObservedAdapter & { sta
 /** Inferno mutation state with pending-counted latest-invocation behavior. */
 export type InfernoMutationAdapter<Result = unknown> = { state: SolidMutationState<Result>; run(...args: unknown[]): Promise<SporadesResult<Result>> };
 /** Inferno auth observation and direct auth commands. */
-export type InfernoAuthAdapter = InfernoObservedAdapter & { state: AuthObserverState; isAuthenticated(): boolean; signUp: AuthApi["signUp"]; signIn: AuthApi["signIn"]; signOut: AuthApi["signOut"] };
+export type InfernoAuthAdapter = InfernoObservedAdapter & { state: AuthObserverState; isAuthenticated(): boolean; signUp: AuthApi["signUp"]; signIn: AuthApi["signIn"]; reauthenticate: AuthApi["reauthenticate"]; signOut: AuthApi["signOut"] };
 /** Inferno-native lifecycle adapters over the shared framework-neutral client connection. */
 export type SporadesInfernoAdapters = {
   queryAdapter<Data = unknown>(host: InfernoAdapterHost, name: string, ...args: JsonValue[]): InfernoQueryAdapter<Data>;

@@ -532,6 +532,7 @@ export function createLitControllers() {
     controller.isAuthenticated = () => Boolean(controller.state.auth?.isAuthenticated);
     controller.signUp = (provider, credentials, options) => connect().signUp(provider, credentials, options);
     controller.signIn = (provider, credentials, options) => connect().signIn(provider, credentials, options);
+    controller.reauthenticate = (provider, credentials, purpose) => connect().reauthenticate(provider, credentials, purpose);
     controller.signOut = () => connect().signOut();
     controller.setPassword = (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword);
     return controller;
@@ -608,6 +609,7 @@ export function createInfernoAdapters() {
     adapter.isAuthenticated = () => Boolean(adapter.state.auth?.isAuthenticated);
     adapter.signUp = (provider, credentials, options) => connect().signUp(provider, credentials, options);
     adapter.signIn = (provider, credentials, options) => connect().signIn(provider, credentials, options);
+    adapter.reauthenticate = (provider, credentials, purpose) => connect().reauthenticate(provider, credentials, purpose);
     adapter.signOut = () => connect().signOut();
     adapter.setPassword = (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword);
     return adapter;
@@ -2395,11 +2397,14 @@ function normalizeFileAccessKeyPolicy(definition) {
 }
 function validateCapsuleAuthRequirements(definition) {
   const declaredScopes = new Set(definition.accessKeys?.scopes ?? []);
-  for (const collection of [definition.queries, definition.mutations, definition.endpoints, definition.messages]) {
+  for (const [kind, collection] of [["query", definition.queries], ["mutation", definition.mutations], ["endpoint", definition.endpoints], ["message", definition.messages]]) {
     for (const item of Object.values(collection ?? {})) {
       const requirements = readAuthRequirements(item?.handler);
       if (!requirements) {
         continue;
+      }
+      if (requirements.reauthentication && kind !== "mutation") {
+        throw invalidAuthRequirements("Reauthentication proofs may only guard mutations.");
       }
       for (const scope of requirements.scopes) {
         if (!declaredScopes.has(scope)) {
@@ -12379,6 +12384,7 @@ var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
 var EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
 var EMAIL_SIGN_IN_THROTTLE_FIELD = "__emailSignInThrottle";
 var PASSWORD_CHANGE_THROTTLE_FIELD = "__emailPasswordChangeThrottle";
+var EMAIL_REAUTHENTICATION_THROTTLE_FIELD = "__emailReauthenticationThrottle";
 var PASSWORD_RESET_THROTTLE_FIELD = "__emailPasswordResetThrottle";
 var PASSWORD_RESET_DEFAULT_PATH = "/reset-password";
 var PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1e3;
@@ -24607,15 +24613,18 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       let ok = false;
       let expiresAt = null;
       const authorized = Boolean(policy && client.session.auth?.isAuthenticated && !client.session.auth?.isGuest);
-      if (authorized && message.provider === "email" && normalized.ok && typeof normalized.password === "string") {
-        const credential = await database.adapter.findEmailCredentialWithUser(normalized.email);
-        if (credential?.userId === client.session.auth.userId && verifyEmailPassword(normalized.password, credential.passwordSalt, credential.passwordHash)) {
+      const emailProviderEnabled = database.authConfig.providers.email?.enabled === true;
+      if (authorized && message.provider === "email" && emailProviderEnabled && normalized.ok && typeof normalized.password === "string") {
+        const throttle = currentEmailSignInThrottleState(database, normalized.email, client.session, EMAIL_REAUTHENTICATION_THROTTLE_FIELD);
+        if (!throttle.throttled) {
+          recordFailedEmailSignInAttempt(database, normalized.email, client.session, EMAIL_REAUTHENTICATION_THROTTLE_FIELD);
           const now2 = database.clock.now();
           expiresAt = new Date(now2.getTime() + policy.maxAgeSeconds * 1e3).toISOString();
           try {
             await database.adapter.withTransaction(async (tx) => {
               const current = await tx.readAuthSessionWithUser(client.session.token);
-              if (!current || current.token !== client.session.token || current.userId !== client.session.auth.userId || !current.isAuthenticated || current.isGuest || Date.parse(current.expiresAt) <= now2.getTime()) return;
+              const credential = await tx.findEmailCredentialWithUser(normalized.email);
+              if (!current || current.token !== client.session.token || current.userId !== client.session.auth.userId || !current.isAuthenticated || current.isGuest || Date.parse(current.expiresAt) <= now2.getTime() || credential?.userId !== current.userId || !verifyEmailPassword(normalized.password, credential.passwordSalt, credential.passwordHash)) return;
               const currentAuth = { userId: current.userId, displayName: current.displayName, email: current.email, picture: current.picture, isAuthenticated: Boolean(current.isAuthenticated), isGuest: Boolean(current.isGuest), provider: current.provider };
               if (!await database.authorizeReauthentication(tx, currentAuth, purpose)) return;
               await tx.replaceReauthenticationProof({ id: randomUUID7(), userId: current.userId, sessionToken: current.token, purpose, createdAt: now2.toISOString(), expiresAt });
@@ -24628,6 +24637,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
             }
             ok = false;
           }
+          if (ok) resetEmailSignInAttempts(database, normalized.email, client.session, EMAIL_REAUTHENTICATION_THROTTLE_FIELD);
         }
       }
       if (!ok && authorized && message.provider !== "email" && oauthProviderAdapter(database, message.provider)?.enabled) {

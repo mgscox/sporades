@@ -185,6 +185,15 @@ preserves the proof, one concurrent successful command wins, and commit makes
 it unusable even after restart. URLs, Capsule arguments and successful replies
 contain no proof handle or bearer.
 
+The declarative `reauthentication` requirement is mutation-only. Sporades
+rejects Capsule startup when a query, endpoint, or app-message guard declares
+it, because those read/request surfaces do not provide an atomic consume-and-
+commit boundary. Email step-up also requires the Email provider to remain
+enabled. Its password checks use a dedicated bounded attempt throttle, separate
+from ordinary sign-in, password-change, and reset buckets, and read the current
+credential in the same database transaction as Session/User authorization and
+proof insertion so a concurrent password rotation cannot mint from stale data.
+
 OAuth reauthentication is explicitly marked as step-up authentication when the
 runtime invokes Google, Microsoft, Apple or Facebook. Their authorization
 requests force a fresh login or provider reauthorization instead of silently
