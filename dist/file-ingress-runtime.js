@@ -29,11 +29,15 @@ async function acquireReceipt(database, candidate) {
     return { row, winner: false };
 }
 async function awaitCompletedStagingReceipt(database, key) {
-    for (let attempt = 0; attempt < 100; attempt += 1) {
+    const maximumDeadline = Date.now() + leaseTtlMs;
+    for (let attempt = 0; Date.now() < maximumDeadline; attempt += 1) {
         const row = await receipt(database, key);
         if (!row || row.state !== "staging")
             return row;
-        await new Promise((resolve) => setTimeout(resolve, Math.min(25, attempt + 1)));
+        const expiry = Date.parse(row.expiresAt);
+        if (!Number.isFinite(expiry) || expiry <= Date.now())
+            return row;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(25, attempt + 1, expiry - Date.now())));
     }
     throw Object.assign(new Error("Multipart ingress staging did not complete."), { code: "INGRESS_STAGING_INCOMPLETE" });
 }
@@ -63,6 +67,15 @@ function sameFileDescriptor(left, right) {
     return left?.id === right?.id && left?.ownerId === right?.ownerId && left?.path === right?.path && left?.name === right?.name && left?.type === right?.type && Number(left?.size) === Number(right?.size) && left?.version === right?.version;
 }
 function isUniqueConstraintError(error) { return /unique constraint|duplicate key|constraint failed/i.test(String(error?.message ?? error)); }
+function multipartBoundary(contentType) {
+    const match = /^multipart\/form-data\s*;\s*boundary\s*=\s*(?:"([^"\\]*)"|([^;\s]+))\s*$/i.exec(contentType);
+    if (!match)
+        return null;
+    const quoted = match[1] !== undefined;
+    const value = quoted ? match[1] : match[2];
+    const valid = quoted ? /^[0-9A-Za-z'()+_,\-./:=? ]*[0-9A-Za-z'()+_,\-./:=?]$/.test(value) : /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(value);
+    return value.length <= 70 && valid ? value : null;
+}
 // Keeps only one completed part (never the aggregate request) in memory. The storage adapter
 // currently accepts complete bounded bytes; this is deliberately the narrowest streaming seam.
 export async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes) {
@@ -169,8 +182,8 @@ export async function* multipartParts(request, boundaryText, maxWireBytes, maxPa
 export async function stageMultipartIngress(database, endpoint, request, endpointRequest, actor, admittedAuthority) {
     const policy = validateMultipartIngressPolicy(endpoint.options.body.multipart);
     const contentType = String(endpointRequest.headers["content-type"] ?? "");
-    const match = /^multipart\/form-data\s*;\s*boundary=([^;\s]+)$/i.exec(contentType);
-    if (!match || match[1].length > 200)
+    const boundary = multipartBoundary(contentType);
+    if (!boundary)
         throw Object.assign(new Error("Invalid multipart request."), { code: "INVALID_MULTIPART" });
     const requestKey = header(endpointRequest.headers, policy.requestKeyHeader);
     if (typeof requestKey !== "string" || requestKey.length < 1 || requestKey.length > 200)
@@ -184,7 +197,7 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
     const partKeys = new Set();
     const wonReceipts = [];
     try {
-        for await (const part of multipartParts(request, match[1], maxBytes, { file: policy.maxFileBytes, field: policy.maxFieldBytes })) {
+        for await (const part of multipartParts(request, boundary, maxBytes, { file: policy.maxFileBytes, field: policy.maxFieldBytes })) {
             const rawHeaders = part.rawHeaders;
             const body = part.body;
             if (rawHeaders.length > 16384)
@@ -250,7 +263,7 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
             else if (row.state === "staging") {
                 row = await awaitCompletedStagingReceipt(database, key);
             }
-            if (!row || row.state === "staging")
+            if (!row || (row.state !== "leased" && row.state !== "complete"))
                 throw Object.assign(new Error("Multipart ingress staging did not complete."), { code: "INGRESS_STAGING_INCOMPLETE" });
             files.push(publicLease(row));
         }
@@ -375,7 +388,11 @@ export function createEndpointIngressApi(database, endpoint, endpointRequest, co
             const tupleMatches = row?.endpointMethod === String(endpoint.options.method) && row?.endpointPath === String(endpoint.options.path) && row?.requestKey === statusRequestKey && row?.partKey === partKey;
             if (!row || !authorityMatches || !tupleMatches)
                 return { state: "missing" };
-            return row.state === "complete" ? { state: "complete", file: fileMetadataFromRow(row.file) } : { state: "leased", lease: publicLease(row) };
+            if (row.state === "complete")
+                return { state: "complete", file: fileMetadataFromRow(row.file) };
+            if (row.state === "leased" && Date.parse(row.expiresAt) > Date.now())
+                return { state: "leased", lease: publicLease(row) };
+            return { state: "failed", retryable: row.state !== "failed" ? true : row.retryable === true };
         },
     };
 }

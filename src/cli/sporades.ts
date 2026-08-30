@@ -799,6 +799,7 @@ function parseAuthArgs(args: string[]): LooseRecord {
   let picture = null;
   let port = null;
   let client = null;
+  let registration = null;
 
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
@@ -867,6 +868,15 @@ function parseAuthArgs(args: string[]): LooseRecord {
         }
         break;
 
+      case "--registration": {
+        const encoded = readFlagValue(rest, ++index, "--registration");
+        if (Buffer.byteLength(encoded, "utf8") > 16_384) throw commandError("Registration admission input is too large.", "Pass a JSON object no larger than 16384 UTF-8 bytes.", "INVALID_REGISTRATION_ADMISSION_INPUT");
+        try { registration = JSON.parse(encoded); }
+        catch { throw commandError("Registration admission input is malformed.", "Pass a valid JSON object to `--registration`.", "INVALID_REGISTRATION_ADMISSION_INPUT"); }
+        if (!registration || typeof registration !== "object" || Array.isArray(registration)) throw commandError("Registration admission input must be a JSON object.", "Pass a bounded JSON object to `--registration`.", "INVALID_REGISTRATION_ADMISSION_INPUT");
+        break;
+      }
+
       default:
         throw commandError(`Unknown flag: ${arg}`, "Use `sporades auth status`, `sporades auth set google`, or `sporades auth as email`.");
     }
@@ -883,7 +893,7 @@ function parseAuthArgs(args: string[]): LooseRecord {
       if (!simulatedProvider) {
         throw commandError("Missing simulated auth provider.", "Use `sporades auth as email --email <address> --json`.");
       }
-      return { subcommand, provider: simulatedProvider, email, displayName, picture, port, client, json, projectDir: process.cwd() };
+      return { subcommand, provider: simulatedProvider, email, displayName, picture, registration, port, client, json, projectDir: process.cwd() };
 
     case "set":
       if (!provider || !["anonymous", "email", "google", "microsoft", "apple", "facebook"].includes(provider)) {
@@ -2956,6 +2966,7 @@ async function manageAuth(options: LooseRecord) {
         email: options.email,
         displayName: options.displayName,
         picture: options.picture,
+        registration: options.registration,
         client: options.client,
       });
 

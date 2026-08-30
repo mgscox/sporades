@@ -249,6 +249,39 @@ test("twenty concurrent identical ingress receipts stage one durable lease", asy
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test("a retry waits beyond the former polling window for the durable staging winner", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-slow-winner-"));
+  try {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "slow-winner", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "slow-winner" }));
+    const endpoint = { options: { method: "POST", path: "/slow", body: { multipart: ingressPolicy() } } }; const headers = { "content-type": "multipart/form-data; boundary=slow", "idempotency-key": "same" };
+    const original = database.fileStorage.writeFileVersion.bind(database.fileStorage); let writes = 0;
+    database.fileStorage.writeFileVersion = async (input) => { writes += 1; await new Promise((resolve) => setTimeout(resolve, 2300)); return await original(input); };
+    const request = () => ({ async *[Symbol.asyncIterator]() { yield multipart("slow", 'Content-Disposition: form-data; name="file"; filename="a.txt"\r\nContent-Type: text/plain\r\nContent-ID: stable', "bytes"); } });
+    const [winner, retry] = await Promise.all([stageMultipartIngress(database, endpoint, request(), { headers }, { userId: "actor" }), stageMultipartIngress(database, endpoint, request(), { headers }, { userId: "actor" })]);
+    assert.equal(retry.multipart.files[0].leaseId, winner.multipart.files[0].leaseId); assert.equal(writes, 1);
+    const stored = await database.adapter.prepare("SELECT [key], [payload] FROM [sporades_file_ingress]").get(); const row = JSON.parse(stored.payload);
+    for (const replacement of [{ ...row, state: "staging", expiresAt: "2000-01-01T00:00:00.000Z" }, { ...row, state: "failed", retryable: false }]) {
+      await database.adapter.prepare("UPDATE [sporades_file_ingress] SET [payload] = ? WHERE [key] = ?").run(JSON.stringify(replacement), stored.key);
+      const started = Date.now(); await assert.rejects(stageMultipartIngress(database, endpoint, request(), { headers }, { userId: "actor" }), { code: "INGRESS_STAGING_INCOMPLETE" }); assert.ok(Date.now() - started < 500);
+    }
+    await database.close();
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("multipart Content-Type accepts RFC quoted boundaries and rejects malformed declarations before reading", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-content-type-"));
+  try {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "content-type", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "content-type" }));
+    const endpoint = { options: { method: "POST", path: "/quoted", body: { multipart: ingressPolicy() } } }; const boundary = "quoted:boundary";
+    const result = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipart(boundary, 'Content-Disposition: form-data; name="file"; filename="a.txt"\r\nContent-Type: text/plain\r\nContent-ID: stable', "bytes"); } }, { headers: { "content-type": `multipart/form-data; boundary="${boundary}"`, "idempotency-key": "quoted" } }, { userId: "actor" });
+    assert.equal(result.multipart.files.length, 1);
+    for (const contentType of ['multipart/form-data; boundary="unterminated', 'multipart/form-data; boundary="bad\\"escape"', `multipart/form-data; boundary=${"x".repeat(71)}`]) {
+      let reads = 0; await assert.rejects(stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { reads += 1; if (false) yield Buffer.alloc(0); } }, { headers: { "content-type": contentType, "idempotency-key": "bad" } }, { userId: "actor" }), { code: "INVALID_MULTIPART" }); assert.equal(reads, 0);
+    }
+    await database.close();
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test("failed ingress claim rolls File, receipt claim, and app row back together", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-rollback-")); let fail = true;
   try {
@@ -456,6 +489,12 @@ test("Capsule-principal status reports its leased and completed receipt while a 
     const leased = await api.status("principal-status-request", "stable-claim");
     assert.equal(leased.state, "leased"); assert.equal(leased.lease.leaseId, staged.multipart.files[0].leaseId);
     const stored = await database.adapter.prepare("SELECT [key], [payload] FROM [sporades_file_ingress]").get(); const consistent = JSON.parse(stored.payload); const inconsistent = { ...consistent, ownerId: "internal-wrong-owner" };
+    for (const [state, retryable] of [["expired", true], ["sweeping", true], ["failed", false], ["staging", true]]) {
+      await database.adapter.prepare("UPDATE [sporades_file_ingress] SET [payload] = ? WHERE [key] = ?").run(JSON.stringify({ ...consistent, state }), stored.key);
+      assert.deepEqual(await api.status("principal-status-request", "stable-claim"), { state: "failed", retryable });
+    }
+    await database.adapter.prepare("UPDATE [sporades_file_ingress] SET [payload] = ? WHERE [key] = ?").run(JSON.stringify({ ...consistent, expiresAt: "2000-01-01T00:00:00.000Z" }), stored.key);
+    assert.deepEqual(await api.status("principal-status-request", "stable-claim"), { state: "failed", retryable: true });
     await database.adapter.prepare("UPDATE [sporades_file_ingress] SET [payload] = ? WHERE [key] = ?").run(JSON.stringify(inconsistent), stored.key);
     assert.deepEqual(await api.status("principal-status-request", "stable-claim"), { state: "missing" });
     await database.adapter.prepare("UPDATE [sporades_file_ingress] SET [payload] = ? WHERE [key] = ?").run(JSON.stringify(consistent), stored.key);

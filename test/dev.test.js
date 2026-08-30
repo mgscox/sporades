@@ -5467,7 +5467,13 @@ test("sporades auth as email returns a localStorage session payload that resolve
     config.dev.port = 0;
     config.auth = { providers: { anonymous: true, email: true } };
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(path.join(projectDir, "server", "index.ts"), `import { capsule } from "sporades/server";\nexport default capsule({ name: "auth-island", auth: { registration: { admit: ({ admission }) => ({ allow: admission?.invitation === "invite-1" }), finalize: async () => {} } } });\n`);
     await installFakeReact(projectDir);
+
+    for (const admission of ["{", JSON.stringify({ value: "x".repeat(17_000) })]) {
+      const rejected = await runCli(["auth", "as", "email", "--email", "mira@example.com", "--registration", admission, "--json"], { cwd: projectDir });
+      assert.equal(rejected.code, 1); assert.match(JSON.parse(rejected.stdout).error.message, /Registration admission input/);
+    }
 
     const child = startCli(["dev", "--json"], { cwd: projectDir });
     let socket;
@@ -5485,6 +5491,8 @@ test("sporades auth as email returns a localStorage session payload that resolve
           "mira@example.com",
           "--display-name",
           "Mira Vale",
+          "--registration",
+          '{"invitation":"invite-1"}',
           "--json",
         ],
         { cwd: projectDir },

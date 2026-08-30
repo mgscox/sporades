@@ -626,6 +626,7 @@ For local browser testing, start a Dev session, then run:
 
 ```sh
 sporades auth as email --email mira@example.com --display-name "Mira Vale" --json
+sporades auth as email --email invited@example.com --registration '{"invitation":"invite-1"}' --json
 ```
 
 To push the simulated session into a connected browser:
@@ -639,6 +640,10 @@ sporades auth as email --email mira@example.com --client client-abc123 --json
 
 This is local identity simulation. It is useful for tests and development, but
 it is not OAuth and does not validate third-party tokens.
+`--registration` forwards a JSON object to the Capsule's Registration Admission
+policy for a newly simulated local identity. The CLI rejects malformed, non-object,
+or larger-than-16384-byte input before contacting Dev. Treat invitation values as
+sensitive shell history and prefer short-lived development-only credentials.
 
 ## Access-key management
 

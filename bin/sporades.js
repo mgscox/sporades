@@ -20141,10 +20141,13 @@ async function acquireReceipt(database, candidate) {
   return { row, winner: false };
 }
 async function awaitCompletedStagingReceipt(database, key) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  const maximumDeadline = Date.now() + leaseTtlMs;
+  for (let attempt = 0; Date.now() < maximumDeadline; attempt += 1) {
     const row = await receipt(database, key);
     if (!row || row.state !== "staging") return row;
-    await new Promise((resolve) => setTimeout(resolve, Math.min(25, attempt + 1)));
+    const expiry = Date.parse(row.expiresAt);
+    if (!Number.isFinite(expiry) || expiry <= Date.now()) return row;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(25, attempt + 1, expiry - Date.now())));
   }
   throw Object.assign(new Error("Multipart ingress staging did not complete."), { code: "INGRESS_STAGING_INCOMPLETE" });
 }
@@ -20196,6 +20199,14 @@ function sameFileDescriptor(left, right) {
 }
 function isUniqueConstraintError3(error) {
   return /unique constraint|duplicate key|constraint failed/i.test(String(error?.message ?? error));
+}
+function multipartBoundary(contentType) {
+  const match = /^multipart\/form-data\s*;\s*boundary\s*=\s*(?:"([^"\\]*)"|([^;\s]+))\s*$/i.exec(contentType);
+  if (!match) return null;
+  const quoted = match[1] !== void 0;
+  const value = quoted ? match[1] : match[2];
+  const valid = quoted ? /^[0-9A-Za-z'()+_,\-./:=? ]*[0-9A-Za-z'()+_,\-./:=?]$/.test(value) : /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(value);
+  return value.length <= 70 && valid ? value : null;
 }
 async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes) {
   const boundary = Buffer.from(`--${boundaryText}`);
@@ -20290,8 +20301,8 @@ async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes
 async function stageMultipartIngress(database, endpoint, request, endpointRequest, actor, admittedAuthority) {
   const policy = validateMultipartIngressPolicy(endpoint.options.body.multipart);
   const contentType = String(endpointRequest.headers["content-type"] ?? "");
-  const match = /^multipart\/form-data\s*;\s*boundary=([^;\s]+)$/i.exec(contentType);
-  if (!match || match[1].length > 200) throw Object.assign(new Error("Invalid multipart request."), { code: "INVALID_MULTIPART" });
+  const boundary = multipartBoundary(contentType);
+  if (!boundary) throw Object.assign(new Error("Invalid multipart request."), { code: "INVALID_MULTIPART" });
   const requestKey = header(endpointRequest.headers, policy.requestKeyHeader);
   if (typeof requestKey !== "string" || requestKey.length < 1 || requestKey.length > 200) throw Object.assign(new Error("Missing multipart idempotency key."), { code: "INVALID_MULTIPART_REQUEST_KEY" });
   const maxBytes = Number(policy.maxTotalFileBytes) + Number(policy.maxTotalFieldBytes) + 65536;
@@ -20303,7 +20314,7 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
   const partKeys = /* @__PURE__ */ new Set();
   const wonReceipts = [];
   try {
-    for await (const part of multipartParts(request, match[1], maxBytes, { file: policy.maxFileBytes, field: policy.maxFieldBytes })) {
+    for await (const part of multipartParts(request, boundary, maxBytes, { file: policy.maxFileBytes, field: policy.maxFieldBytes })) {
       const rawHeaders = part.rawHeaders;
       const body = part.body;
       if (rawHeaders.length > 16384) throw Object.assign(new Error("Multipart headers exceed limit."), { code: "MULTIPART_LIMIT_EXCEEDED" });
@@ -20355,7 +20366,7 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
       } else if (row.state === "staging") {
         row = await awaitCompletedStagingReceipt(database, key);
       }
-      if (!row || row.state === "staging") throw Object.assign(new Error("Multipart ingress staging did not complete."), { code: "INGRESS_STAGING_INCOMPLETE" });
+      if (!row || row.state !== "leased" && row.state !== "complete") throw Object.assign(new Error("Multipart ingress staging did not complete."), { code: "INGRESS_STAGING_INCOMPLETE" });
       files.push(publicLease(row));
     }
   } catch (primaryError) {
@@ -20453,7 +20464,9 @@ function createEndpointIngressApi(database, endpoint, endpointRequest, context) 
       const authorityMatches = capsulePrincipal ? row?.authorityKind === "capsule-principal" && row.authorityId === authorityId && row.ownerId === admittedAuthority.ownerId && row.principalNamespace === admittedAuthority.namespace && row.principalKeyDigest === admittedAuthority.keyDigest : row?.authorityId === authorityId && row.ownerId === actorId;
       const tupleMatches = row?.endpointMethod === String(endpoint.options.method) && row?.endpointPath === String(endpoint.options.path) && row?.requestKey === statusRequestKey && row?.partKey === partKey;
       if (!row || !authorityMatches || !tupleMatches) return { state: "missing" };
-      return row.state === "complete" ? { state: "complete", file: fileMetadataFromRow(row.file) } : { state: "leased", lease: publicLease(row) };
+      if (row.state === "complete") return { state: "complete", file: fileMetadataFromRow(row.file) };
+      if (row.state === "leased" && Date.parse(row.expiresAt) > Date.now()) return { state: "leased", lease: publicLease(row) };
+      return { state: "failed", retryable: row.state !== "failed" ? true : row.retryable === true };
     }
   };
 }
@@ -33047,6 +33060,7 @@ function parseAuthArgs(args) {
   let picture = null;
   let port = null;
   let client = null;
+  let registration = null;
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
     switch (arg) {
@@ -33098,6 +33112,17 @@ function parseAuthArgs(args) {
           throw commandError4("Invalid auth client target.", "Use `--client current`, `--client all`, or a client id from `sporades auth clients`.");
         }
         break;
+      case "--registration": {
+        const encoded = readFlagValue(rest, ++index, "--registration");
+        if (Buffer.byteLength(encoded, "utf8") > 16384) throw commandError4("Registration admission input is too large.", "Pass a JSON object no larger than 16384 UTF-8 bytes.", "INVALID_REGISTRATION_ADMISSION_INPUT");
+        try {
+          registration = JSON.parse(encoded);
+        } catch {
+          throw commandError4("Registration admission input is malformed.", "Pass a valid JSON object to `--registration`.", "INVALID_REGISTRATION_ADMISSION_INPUT");
+        }
+        if (!registration || typeof registration !== "object" || Array.isArray(registration)) throw commandError4("Registration admission input must be a JSON object.", "Pass a bounded JSON object to `--registration`.", "INVALID_REGISTRATION_ADMISSION_INPUT");
+        break;
+      }
       default:
         throw commandError4(`Unknown flag: ${arg}`, "Use `sporades auth status`, `sporades auth set google`, or `sporades auth as email`.");
     }
@@ -33111,7 +33136,7 @@ function parseAuthArgs(args) {
       if (!simulatedProvider) {
         throw commandError4("Missing simulated auth provider.", "Use `sporades auth as email --email <address> --json`.");
       }
-      return { subcommand, provider: simulatedProvider, email, displayName, picture, port, client, json, projectDir: process.cwd() };
+      return { subcommand, provider: simulatedProvider, email, displayName, picture, registration, port, client, json, projectDir: process.cwd() };
     case "set":
       if (!provider || !["anonymous", "email", "google", "microsoft", "apple", "facebook"].includes(provider)) {
         break;
@@ -34995,6 +35020,7 @@ async function manageAuth(options) {
         email: options.email,
         displayName: options.displayName,
         picture: options.picture,
+        registration: options.registration,
         client: options.client
       });
       if (options.json) {

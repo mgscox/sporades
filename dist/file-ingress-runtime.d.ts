@@ -42,6 +42,7 @@ export declare function createEndpointIngressApi(database: RecordLike, endpoint:
         state: "missing";
         file?: undefined;
         lease?: undefined;
+        retryable?: undefined;
     } | {
         state: "complete";
         file: {
@@ -54,6 +55,7 @@ export declare function createEndpointIngressApi(database: RecordLike, endpoint:
             version: any;
         };
         lease?: undefined;
+        retryable?: undefined;
     } | {
         state: "leased";
         lease: Readonly<{
@@ -67,6 +69,12 @@ export declare function createEndpointIngressApi(database: RecordLike, endpoint:
             expiresAt: any;
         }>;
         file?: undefined;
+        retryable?: undefined;
+    } | {
+        state: "failed";
+        retryable: boolean;
+        file?: undefined;
+        lease?: undefined;
     }>;
 };
 /** Database and object storage cannot share a transaction: publish Map state only after SQL commits. */

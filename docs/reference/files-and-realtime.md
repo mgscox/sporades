@@ -382,6 +382,9 @@ limits. Fragmented multipart boundaries are supported; malformed or truncated
 streams fail without publishing a partial lease. Completed parts appear only
 as private, expiring leases in `ctx.request.multipart.files`. A lease has no
 File URL, File row, or ACL visibility.
+Both token and commonly emitted quoted `boundary` parameters are accepted;
+Sporades unquotes and validates the RFC boundary grammar and 70-character cap
+before reading the body, and rejects malformed quoting or extra parameters.
 
 Every numeric limit is required and validated when the Capsule starts and again
 before request buffering. File counts and byte limits are positive finite
@@ -463,6 +466,11 @@ expiry; expired unclaimed leases cannot be claimed. Local filesystem and
 MinIO-backed storage use identical policy, admission, lease, claim, ACL,
 idempotency, expiry, and cleanup semantics. This server-only surface never
 exposes filesystem paths, object keys, buckets, or storage credentials.
+An identical concurrent retry waits for the durable staging winner until its
+bounded lease deadline (at most ten minutes), rather than using a short fixed
+poll count. Winner failure or lease expiry ends the wait. `status()`
+returns `leased` only for a currently claimable lease; expired, staging, sweeping,
+and failed/nonclaimable receipts return `failed` with an explicit `retryable` flag.
 
 Operationally, Capsule startup automatically runs a bounded, deterministic
 cleanup batch for expired unclaimed receipts. It deletes only staged bytes and
