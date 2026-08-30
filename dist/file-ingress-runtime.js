@@ -211,8 +211,9 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
     let fileBytes = 0;
     const partKeys = new Set();
     const wonReceipts = [];
+    const streamingFileLimit = Math.min(Number(policy.maxFileBytes), Number(database.fileMaxSizeBytes));
     try {
-        for await (const part of multipartParts(request, boundary, maxBytes, { file: policy.maxFileBytes, field: policy.maxFieldBytes })) {
+        for await (const part of multipartParts(request, boundary, maxBytes, { file: streamingFileLimit, field: policy.maxFieldBytes })) {
             const rawHeaders = part.rawHeaders;
             const body = part.body;
             if (rawHeaders.length > 16384)

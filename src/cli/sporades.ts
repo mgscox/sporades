@@ -800,7 +800,7 @@ function parseAuthArgs(args: string[]): LooseRecord {
   let picture = null;
   let port = null;
   let client = null;
-  let registration = null;
+  let registration: LooseRecord | undefined;
 
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
@@ -2967,7 +2967,7 @@ async function manageAuth(options: LooseRecord) {
         email: options.email,
         displayName: options.displayName,
         picture: options.picture,
-        registration: options.registration,
+        ...(options.registration !== undefined ? { registration: options.registration } : {}),
         client: options.client,
       });
 

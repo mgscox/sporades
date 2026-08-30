@@ -633,7 +633,7 @@ function parseAuthArgs(args) {
     let picture = null;
     let port = null;
     let client = null;
-    let registration = null;
+    let registration;
     for (let index = 0; index < rest.length; index += 1) {
         const arg = rest[index];
         switch (arg) {
@@ -2555,7 +2555,7 @@ async function manageAuth(options) {
                 email: options.email,
                 displayName: options.displayName,
                 picture: options.picture,
-                registration: options.registration,
+                ...(options.registration !== undefined ? { registration: options.registration } : {}),
                 client: options.client,
             });
             if (options.json) {

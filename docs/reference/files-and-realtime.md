@@ -399,7 +399,9 @@ begins `CRLF--boundary` remains payload unless the prefix
 is followed by the required `CRLF` or closing `--` delimiter suffix.
 Sporades classifies each part from its bounded headers before accumulating its
 body, so text uses `maxFieldBytes` while files use `maxFileBytes`; a large file
-allowance never expands the memory bound for a field. Field names are stored in
+allowance never expands the memory bound for a field. File streaming uses the
+smaller of endpoint `maxFileBytes` and the Capsule-wide File size limit, so the
+global limit aborts during streaming rather than after buffering. Field names are stored in
 an own-property-safe map, including `constructor`, `toString`, and `__proto__`.
 
 `requestKeyHeader` identifies the whole retry and `partKeyHeader` identifies a

@@ -644,6 +644,8 @@ it is not OAuth and does not validate third-party tokens.
 policy for a newly simulated local identity. The CLI rejects malformed, non-object,
 or larger-than-4096-byte input before contacting Dev. Treat invitation values as
 sensitive shell history and prefer short-lived development-only credentials.
+Without the flag the CLI omits registration admission entirely (`undefined`);
+an explicitly supplied nested JSON `null` remains `null`.
 
 ## Access-key management
 

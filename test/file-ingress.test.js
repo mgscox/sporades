@@ -118,6 +118,17 @@ test("multipart streaming applies the header-classified field cap before reading
   assert.equal(files[0].body.toString(), fileBody);
 });
 
+test("multipart streaming enforces the smaller endpoint and Capsule File limit before staging", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-global-cap-")); let database;
+  try {
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "global-cap", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "global-cap" })); const endpoint = { options: { method: "POST", path: "/cap", body: { multipart: { ...ingressPolicy(), maxFileBytes: 100, maxTotalFileBytes: 100 } } } };
+    const attempt = async (limit, body, requestKey) => { database.fileMaxSizeBytes = limit; let reads = 0; const bytes = multipart("cap", 'Content-Disposition: form-data; name="file"; filename="a.bin"\r\nContent-ID: stable', body); const request = { async *[Symbol.asyncIterator]() { for (const byte of bytes) { reads += 1; yield Buffer.from([byte]); } } }; return { get reads() { return reads; }, total: bytes.length, promise: stageMultipartIngress(database, endpoint, request, { headers: { "content-type": "multipart/form-data; boundary=cap", "idempotency-key": requestKey } }, { userId: "actor" }) }; };
+    let probe = await attempt(5, "123456", "global-small"); await assert.rejects(probe.promise, { code: "MULTIPART_LIMIT_EXCEEDED" }); assert.ok(probe.reads < probe.total); assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_file_ingress").get()).count), 0);
+    endpoint.options.body.multipart.maxFileBytes = 4; probe = await attempt(100, "12345", "endpoint-small"); await assert.rejects(probe.promise, { code: "MULTIPART_LIMIT_EXCEEDED" }); assert.ok(probe.reads < probe.total);
+    endpoint.options.body.multipart.maxFileBytes = 5; probe = await attempt(5, "12345", "equal"); const accepted = await probe.promise; assert.equal(accepted.multipart.files[0].size, 5);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("multipart fields safely aggregate prototype-shaped names", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-field-keys-")); let database;
   try {
