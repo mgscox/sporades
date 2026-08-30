@@ -2542,6 +2542,9 @@ function endpointHandlersFromCapsuleDefinition(capsuleDefinition) {
         name,
         method: definition.options.method.toUpperCase(),
         path: definition.options.path,
+        // Keep declaration-time transport policy with the runtime route. It is security
+        // configuration, not handler-owned data, and must survive Capsule registration.
+        options: definition.options,
         handler: definition.handler,
     }));
 }
@@ -3294,6 +3297,7 @@ function createEndpointContext(database, endpointRequest, session, options = {})
             query: endpointRequest.query,
             body: endpointRequest.body,
             bodyBytes: endpointRequest.bodyBytes,
+            ...(endpointRequest.multipart ? { multipart: endpointRequest.multipart } : {}),
         },
     };
     if (credential?.kind === "session" && typeof session.token === "string") {

@@ -25,7 +25,9 @@ test("trusted multipart ingress leases bytes before the handler and claim atomic
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve)); const { port } = server.address();
     const boundary = "ingress-boundary"; const body = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.txt"\r\nContent-Type: text/plain\r\nContent-ID: a\r\n\r\nhello\r\n--${boundary}--\r\n`;
     const response = await fetch(`http://127.0.0.1:${port}/upload`, { method: "POST", headers: { "content-type": `multipart/form-data; boundary=${boundary}`, "idempotency-key": "request-a", "x-sporades-session-token": "session" }, body });
-    assert.equal(response.status, 200, await response.text()); const file = (await response.json()).body;
+    const responseBody = await response.json();
+    if (response.status !== 200) console.log(await database.log.tail(20));
+    assert.equal(response.status, 200, JSON.stringify(responseBody)); const file = responseBody;
     assert.equal(file.path, "/attachments/a.txt"); assert.equal((await database.adapter.selectFileById(file.id)).status, "uploaded");
   } finally { if (server) await new Promise((resolve) => server.close(resolve)); await rm(dir, { recursive: true, force: true }); }
 });
