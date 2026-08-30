@@ -44,11 +44,88 @@ test("declared non-Content-ID part-key headers are case-insensitive and replay o
     const policy = { ...ingressPolicy(), partKeyHeader: "x-upload-part-key", requireStablePartKeys: true };
     const endpoint = { options: { method: "POST", path: "/custom-part-key", body: { multipart: policy } } };
     const headers = { "content-type": "multipart/form-data; boundary=custom-key", "idempotency-key": "stable-request" };
-    const request = () => ({ async *[Symbol.asyncIterator]() { yield multipart("custom-key", 'Content-Disposition: form-data; name="file"; filename="custom.txt"\r\nContent-Type: text/plain\r\nX-UPLOAD-PART-KEY: stable-custom', "custom-bytes"); } });
+    const request = () => ({ async *[Symbol.asyncIterator]() { yield multipart("custom-key", 'Content-Disposition: form-data; name="file"; filename="custom.txt"\r\nContent-Type: text/plain\r\nX-UPLOAD-PART-KEY: <opaque>', "custom-bytes"); } });
     const first = await stageMultipartIngress(database, endpoint, request(), { headers }, { userId: "actor" });
     const replay = await stageMultipartIngress(database, endpoint, request(), { headers }, { userId: "actor" });
     assert.equal(replay.multipart.files[0].leaseId, first.multipart.files[0].leaseId);
+    let receipt = JSON.parse((await database.adapter.prepare("SELECT [payload] FROM [sporades_file_ingress]").get()).payload); assert.equal(receipt.partKey, "<opaque>");
+    const legacyEndpoint = { options: { method: "POST", path: "/legacy-content-id", body: { multipart: ingressPolicy() } } };
+    const legacyHeaders = { "content-type": "multipart/form-data; boundary=legacy-key", "idempotency-key": "legacy-request" };
+    const legacyRequest = { async *[Symbol.asyncIterator]() { yield multipart("legacy-key", 'Content-Disposition: form-data; name="file"; filename="legacy.txt"\r\nContent-Type: text/plain\r\nContent-ID: <legacy>', "legacy-bytes"); } };
+    await stageMultipartIngress(database, legacyEndpoint, legacyRequest, { headers: legacyHeaders }, { userId: "actor" });
+    receipt = JSON.parse((await database.adapter.prepare("SELECT [payload] FROM [sporades_file_ingress] WHERE [requestKey] = ?").get("legacy-request")).payload); assert.equal(receipt.partKey, "legacy");
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 2);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a later field-count failure compensates only File parts won by this local request", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-request-cleanup-local-")); let database;
+  try {
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "request-cleanup-local", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "request-cleanup-local" }));
+    const endpoint = { options: { method: "POST", path: "/request-cleanup", body: { multipart: { ...ingressPolicy(), maxFieldCount: 1 } } } };
+    const headersFor = (requestKey) => ({ "content-type": "multipart/form-data; boundary=request-cleanup", "idempotency-key": requestKey });
+    const file = { headers: 'Content-Disposition: form-data; name="file"; filename="cleanup.txt"\r\nContent-Type: text/plain\r\nContent-ID: stable-cleanup', body: "cleanup-bytes" };
+    const tag = (body) => ({ headers: 'Content-Disposition: form-data; name="tag"', body });
+    const request = (parts) => ({ async *[Symbol.asyncIterator]() { yield multipartMany("request-cleanup", parts); } });
+    const writes = []; const write = database.fileStorage.writeFileVersion.bind(database.fileStorage); database.fileStorage.writeFileVersion = async (input) => { writes.push(input); return await write(input); };
+    await assert.rejects(stageMultipartIngress(database, endpoint, request([file, tag("a"), tag("b")]), { headers: headersFor("new-failure") }, { userId: "actor" }), { code: "MULTIPART_LIMIT_EXCEEDED" });
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 0);
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_files]").get()).count), 0);
+    await assert.rejects(access(path.join(dir, "files", writes[0].fileId, writes[0].version)));
+
+    const prior = await stageMultipartIngress(database, endpoint, request([file]), { headers: headersFor("pre-existing") }, { userId: "actor" }); const priorWrite = writes.at(-1);
+    await assert.rejects(stageMultipartIngress(database, endpoint, request([file, tag("a"), tag("b")]), { headers: headersFor("pre-existing") }, { userId: "actor" }), { code: "MULTIPART_LIMIT_EXCEEDED" });
     assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 1);
+    assert.ok(prior.multipart.files[0].leaseId); await access(path.join(dir, "files", priorWrite.fileId, priorWrite.version));
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a later field-count failure removes the request-owned fake-MinIO object and receipt", async () => {
+  await withFakeS3CompatibleService(async ({ endpoint: storageEndpoint, objects }) => {
+    const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-request-cleanup-minio-")); let database; const namespace = `cleanup-${randomUUID()}`;
+    try {
+      const config = { name: namespace, services: { storage: { kind: "storage", engine: "minio" } } }; const serviceEnv = { SPORADES_SERVICE_STORAGE_ENGINE: "minio", SPORADES_SERVICE_STORAGE_ENDPOINT: storageEndpoint, SPORADES_SERVICE_STORAGE_ACCESS_KEY: "sporades", SPORADES_SERVICE_STORAGE_SECRET_KEY: "sporades-minio-local-secret", SPORADES_SERVICE_STORAGE_BUCKET: "sporades-files", SPORADES_SERVICE_STORAGE_REGION: "eu-west-2", SPORADES_SERVICE_STORAGE_NAMESPACE: namespace };
+      database = await openDevDatabase(path.join(dir, "data.db"), "", serviceEnv, config, capsule({ name: namespace }), { serviceEnv });
+      const endpoint = { options: { method: "POST", path: "/request-cleanup-minio", body: { multipart: { ...ingressPolicy(), maxFieldCount: 1 } } } };
+      const headers = { "content-type": "multipart/form-data; boundary=request-cleanup-minio", "idempotency-key": "minio-failure" };
+      const parts = [
+        { headers: 'Content-Disposition: form-data; name="file"; filename="cleanup.txt"\r\nContent-Type: text/plain\r\nContent-ID: stable-cleanup', body: "cleanup-bytes" },
+        { headers: 'Content-Disposition: form-data; name="tag"', body: "a" },
+        { headers: 'Content-Disposition: form-data; name="tag"', body: "b" },
+      ];
+      const request = { async *[Symbol.asyncIterator]() { yield multipartMany("request-cleanup-minio", parts); } };
+      await assert.rejects(stageMultipartIngress(database, endpoint, request, { headers }, { userId: "actor" }), { code: "MULTIPART_LIMIT_EXCEEDED" });
+      assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 0);
+      assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_files]").get()).count), 0);
+      assert.deepEqual([...objects.keys()].filter((key) => key.startsWith(`capsules/${namespace}/`)), []);
+    } finally { await database?.close(); for (const key of [...objects.keys()].filter((value) => value.startsWith(`capsules/${namespace}/`))) objects.delete(key); await rm(dir, { recursive: true, force: true }); }
+  });
+});
+
+test("a parser disconnect after a completed File part compensates its request-owned staging", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-request-disconnect-")); let database;
+  try {
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "request-disconnect", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "request-disconnect" }));
+    const endpoint = { options: { method: "POST", path: "/request-disconnect", body: { multipart: ingressPolicy() } } };
+    const headers = { "content-type": "multipart/form-data; boundary=request-disconnect", "idempotency-key": "disconnect" };
+    const bytes = Buffer.from('--request-disconnect\r\nContent-Disposition: form-data; name="file"; filename="disconnect.txt"\r\nContent-Type: text/plain\r\nContent-ID: stable-disconnect\r\n\r\nfile-bytes\r\n--request-disconnect\r\nContent-Disposition: form-data; name="tag"\r\n\r\ntruncated');
+    const request = { async *[Symbol.asyncIterator]() { yield bytes; } };
+    await assert.rejects(stageMultipartIngress(database, endpoint, request, { headers }, { userId: "actor" }), { code: "INVALID_MULTIPART" });
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 0);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("request staging retains the primary parser error when compensation also fails", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-request-cleanup-error-")); let database;
+  try {
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "request-cleanup-error", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "request-cleanup-error" }));
+    const endpoint = { options: { method: "POST", path: "/request-cleanup-error", body: { multipart: { ...ingressPolicy(), maxFieldCount: 0 } } } };
+    const headers = { "content-type": "multipart/form-data; boundary=request-cleanup-error", "idempotency-key": "cleanup-error" };
+    const parts = [{ headers: 'Content-Disposition: form-data; name="file"; filename="cleanup.txt"\r\nContent-Type: text/plain\r\nContent-ID: stable-cleanup', body: "bytes" }, { headers: 'Content-Disposition: form-data; name="tag"', body: "a" }];
+    const remove = database.fileStorage.deleteFileVersion.bind(database.fileStorage); database.fileStorage.deleteFileVersion = async () => { throw new Error("controlled cleanup failure"); };
+    await assert.rejects(stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipartMany("request-cleanup-error", parts); } }, { headers }, { userId: "actor" }), (error) => error instanceof AggregateError && error.errors[0]?.code === "MULTIPART_LIMIT_EXCEEDED" && /controlled cleanup failure/.test(error.errors[1]?.message));
+    database.fileStorage.deleteFileVersion = remove;
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 0);
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -178,6 +255,9 @@ test("pre-authority actor receipt keys recover leased and completed retries with
     await database.adapter.createFileBucket({ id: "legacy-bucket", ownerId: actorId, name: "default", createdAt: "2026-01-01T00:00:00.000Z" });
     await database.adapter.insertFileRow(completed.file); await database.close(); database = null;
     database = await openDevDatabase(dbPath, "", {}, config, definition); let writes = 0; const write = database.fileStorage.writeFileVersion.bind(database.fileStorage); database.fileStorage.writeFileVersion = async (input) => { writes += 1; return await write(input); };
+    const statusApi = (requestKey) => createEndpointIngressApi(database, database.endpoints[0], { __ingressRequestKey: requestKey, __ingressAuthority: { kind: "actor", actorId, ownerId: actorId } }, { auth: { userId: actorId, isAuthenticated: true, isGuest: false } });
+    const leasedStatus = await statusApi("legacy-leased").status("legacy-leased", partKey); assert.equal(leasedStatus.state, "leased"); assert.equal(leasedStatus.lease.leaseId, leased.leaseId);
+    const completedStatus = await statusApi("legacy-complete").status("legacy-complete", partKey); assert.equal(completedStatus.state, "complete"); assert.equal(completedStatus.file.id, completed.fileId);
     const leasedRetry = await runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/legacy"), ingressRequest("legacy-leased"));
     const completedRetry = await runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/legacy"), ingressRequest("legacy-complete"));
     assert.equal(leasedRetry.id, leased.fileId); assert.equal(completedRetry.id, completed.fileId); assert.equal(writes, 0);
@@ -307,6 +387,10 @@ test("Capsule-principal status reports its leased and completed receipt while a 
     const api = createEndpointIngressApi(database, endpoint, endpointRequest, { auth: { userId: "", isAuthenticated: false, isGuest: true } });
     const leased = await api.status("principal-status-request", "stable-claim");
     assert.equal(leased.state, "leased"); assert.equal(leased.lease.leaseId, staged.multipart.files[0].leaseId);
+    const stored = await database.adapter.prepare("SELECT [key], [payload] FROM [sporades_file_ingress]").get(); const consistent = JSON.parse(stored.payload); const inconsistent = { ...consistent, ownerId: "internal-wrong-owner" };
+    await database.adapter.prepare("UPDATE [sporades_file_ingress] SET [payload] = ? WHERE [key] = ?").run(JSON.stringify(inconsistent), stored.key);
+    assert.deepEqual(await api.status("principal-status-request", "stable-claim"), { state: "missing" });
+    await database.adapter.prepare("UPDATE [sporades_file_ingress] SET [payload] = ? WHERE [key] = ?").run(JSON.stringify(consistent), stored.key);
     const file = await api.claim(staged.multipart.files[0], { path: "/attachments/principal-status.txt", authority: { kind: "capsule-principal", namespace, key: principalKey } });
     const completed = await api.status("principal-status-request", "stable-claim");
     assert.equal(completed.state, "complete"); assert.equal(completed.file.id, file.id);

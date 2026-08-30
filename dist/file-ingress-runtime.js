@@ -152,65 +152,85 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
     let fieldBytes = 0;
     let fileBytes = 0;
     const partKeys = new Set();
-    for await (const part of multipartParts(request, match[1], maxBytes, Math.max(Number(policy.maxFileBytes), Number(policy.maxFieldBytes)))) {
-        const rawHeaders = part.rawHeaders;
-        const body = part.body;
-        if (rawHeaders.length > 16384)
-            throw Object.assign(new Error("Multipart headers exceed limit."), { code: "MULTIPART_LIMIT_EXCEEDED" });
-        const disposition = /^content-disposition:\s*form-data;\s*name="([^"]+)"(?:;\s*filename="([^"]*)")?/im.exec(rawHeaders);
-        if (!disposition)
-            throw Object.assign(new Error("Malformed multipart part."), { code: "INVALID_MULTIPART" });
-        const fieldName = disposition[1];
-        const filename = disposition[2];
-        if (filename === undefined) {
-            fieldCount += 1;
-            fieldBytes += body.length;
-            if (fieldCount > policy.maxFieldCount || body.length > policy.maxFieldBytes || fieldBytes > policy.maxTotalFieldBytes)
-                throw Object.assign(new Error("Multipart field exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
-            (fields[fieldName] ??= []).push(body.toString("utf8"));
-            continue;
+    const wonReceipts = [];
+    try {
+        for await (const part of multipartParts(request, match[1], maxBytes, Math.max(Number(policy.maxFileBytes), Number(policy.maxFieldBytes)))) {
+            const rawHeaders = part.rawHeaders;
+            const body = part.body;
+            if (rawHeaders.length > 16384)
+                throw Object.assign(new Error("Multipart headers exceed limit."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+            const disposition = /^content-disposition:\s*form-data;\s*name="([^"]+)"(?:;\s*filename="([^"]*)")?/im.exec(rawHeaders);
+            if (!disposition)
+                throw Object.assign(new Error("Malformed multipart part."), { code: "INVALID_MULTIPART" });
+            const fieldName = disposition[1];
+            const filename = disposition[2];
+            if (filename === undefined) {
+                fieldCount += 1;
+                fieldBytes += body.length;
+                if (fieldCount > policy.maxFieldCount || body.length > policy.maxFieldBytes || fieldBytes > policy.maxTotalFieldBytes)
+                    throw Object.assign(new Error("Multipart field exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+                (fields[fieldName] ??= []).push(body.toString("utf8"));
+                continue;
+            }
+            fileBytes += body.length;
+            if (files.length >= policy.maxFiles || body.length > policy.maxFileBytes || fileBytes > policy.maxTotalFileBytes || body.length > database.fileMaxSizeBytes)
+                throw Object.assign(new Error("Multipart file exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+            const partKey = partHeader(rawHeaders, policy.partKeyHeader);
+            if (policy.requireStablePartKeys && (!partKey || partKeys.has(partKey)))
+                throw Object.assign(new Error("Multipart files require unique stable part keys."), { code: "INVALID_MULTIPART_PART_KEY" });
+            if (partKey)
+                partKeys.add(partKey);
+            const type = safeType(/^content-type:\s*([^\r\n]+)/im.exec(rawHeaders)?.[1] ?? "");
+            if (policy.allowedMimeTypes && !policy.allowedMimeTypes.map(safeType).includes(type))
+                throw Object.assign(new Error("Multipart file type is not allowed."), { code: "MULTIPART_TYPE_DENIED" });
+            const stablePartKey = partKey ?? crypto.createHash("sha256").update(`${fieldName}:${files.length}`).digest("hex");
+            const actorId = String(actor.userId ?? "");
+            const authority = admittedAuthority ?? { kind: "actor", actorId, ownerId: actorId };
+            const authorityId = authority.kind === "capsule-principal" ? `capsule:${authority.namespace}:${authority.keyDigest}` : `actor:${authority.actorId}`;
+            const key = keyFor(endpoint, requestKey, stablePartKey, authorityId);
+            const digest = crypto.createHash("sha256").update(body).digest("hex");
+            const now = new Date();
+            const candidate = { key, leaseId: crypto.randomUUID(), partId: crypto.createHash("sha256").update(key).digest("hex"), fieldName, name: safeName(filename), type, size: body.length, digest, fileId: crypto.randomUUID(), version: crypto.randomUUID(), state: "staging", actorId, authorityKind: authority.kind, authorityId, ownerId: authority.ownerId, ...(authority.kind === "capsule-principal" ? { principalNamespace: authority.namespace, principalKeyDigest: authority.keyDigest } : {}), endpointMethod: String(endpoint.options.method), endpointPath: String(endpoint.options.path), requestKey, partKey: stablePartKey, expiresAt: new Date(now.getTime() + leaseTtlMs).toISOString() };
+            // Pre-authority receipts used the raw actor ID in their durable key. Keep that key and
+            // its derived part/object identities intact: renaming only the key would strand retries,
+            // while regenerating the part would duplicate staged bytes.
+            const legacyActorKey = authority.kind === "actor" ? keyFor(endpoint, requestKey, stablePartKey, authority.actorId) : null;
+            const legacyActorRow = legacyActorKey && legacyActorKey !== key ? await receipt(database, legacyActorKey) : null;
+            const acquired = legacyActorRow?.authorityKind === "actor" && legacyActorRow.authorityId === authorityId && legacyActorRow.ownerId === authority.ownerId
+                ? { row: legacyActorRow, winner: false }
+                : await acquireReceipt(database, candidate);
+            let row = acquired.row;
+            if (row.digest !== digest || row.name !== candidate.name || row.type !== type || row.size !== body.length)
+                throw Object.assign(new Error("Multipart retry descriptor conflicts with the original part."), { code: "INGRESS_DESCRIPTOR_CONFLICT" });
+            if (acquired.winner) {
+                wonReceipts.push(row);
+                await database.fileStorage.writeFileVersion({ fileId: row.fileId, version: row.version, bytes: body });
+                row.state = "leased";
+                await saveReceipt(database, row);
+            }
+            else if (row.state === "staging") {
+                row = await awaitCompletedStagingReceipt(database, key);
+            }
+            if (!row || row.state === "staging")
+                throw Object.assign(new Error("Multipart ingress staging did not complete."), { code: "INGRESS_STAGING_INCOMPLETE" });
+            files.push(publicLease(row));
         }
-        fileBytes += body.length;
-        if (files.length >= policy.maxFiles || body.length > policy.maxFileBytes || fileBytes > policy.maxTotalFileBytes || body.length > database.fileMaxSizeBytes)
-            throw Object.assign(new Error("Multipart file exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
-        const partKey = partHeader(rawHeaders, policy.partKeyHeader);
-        if (policy.requireStablePartKeys && (!partKey || partKeys.has(partKey)))
-            throw Object.assign(new Error("Multipart files require unique stable part keys."), { code: "INVALID_MULTIPART_PART_KEY" });
-        if (partKey)
-            partKeys.add(partKey);
-        const type = safeType(/^content-type:\s*([^\r\n]+)/im.exec(rawHeaders)?.[1] ?? "");
-        if (policy.allowedMimeTypes && !policy.allowedMimeTypes.map(safeType).includes(type))
-            throw Object.assign(new Error("Multipart file type is not allowed."), { code: "MULTIPART_TYPE_DENIED" });
-        const stablePartKey = partKey ?? crypto.createHash("sha256").update(`${fieldName}:${files.length}`).digest("hex");
-        const actorId = String(actor.userId ?? "");
-        const authority = admittedAuthority ?? { kind: "actor", actorId, ownerId: actorId };
-        const authorityId = authority.kind === "capsule-principal" ? `capsule:${authority.namespace}:${authority.keyDigest}` : `actor:${authority.actorId}`;
-        const key = keyFor(endpoint, requestKey, stablePartKey, authorityId);
-        const digest = crypto.createHash("sha256").update(body).digest("hex");
-        const now = new Date();
-        const candidate = { key, leaseId: crypto.randomUUID(), partId: crypto.createHash("sha256").update(key).digest("hex"), fieldName, name: safeName(filename), type, size: body.length, digest, fileId: crypto.randomUUID(), version: crypto.randomUUID(), state: "staging", actorId, authorityKind: authority.kind, authorityId, ownerId: authority.ownerId, ...(authority.kind === "capsule-principal" ? { principalNamespace: authority.namespace, principalKeyDigest: authority.keyDigest } : {}), endpointMethod: String(endpoint.options.method), endpointPath: String(endpoint.options.path), requestKey, partKey: stablePartKey, expiresAt: new Date(now.getTime() + leaseTtlMs).toISOString() };
-        // Pre-authority receipts used the raw actor ID in their durable key. Keep that key and
-        // its derived part/object identities intact: renaming only the key would strand retries,
-        // while regenerating the part would duplicate staged bytes.
-        const legacyActorKey = authority.kind === "actor" ? keyFor(endpoint, requestKey, stablePartKey, authority.actorId) : null;
-        const legacyActorRow = legacyActorKey && legacyActorKey !== key ? await receipt(database, legacyActorKey) : null;
-        const acquired = legacyActorRow?.authorityKind === "actor" && legacyActorRow.authorityId === authorityId && legacyActorRow.ownerId === authority.ownerId
-            ? { row: legacyActorRow, winner: false }
-            : await acquireReceipt(database, candidate);
-        let row = acquired.row;
-        if (row.digest !== digest || row.name !== candidate.name || row.type !== type || row.size !== body.length)
-            throw Object.assign(new Error("Multipart retry descriptor conflicts with the original part."), { code: "INGRESS_DESCRIPTOR_CONFLICT" });
-        if (acquired.winner) {
-            await database.fileStorage.writeFileVersion({ fileId: row.fileId, version: row.version, bytes: body });
-            row.state = "leased";
-            await saveReceipt(database, row);
+    }
+    catch (primaryError) {
+        const cleanupErrors = [];
+        for (const row of wonReceipts.reverse()) {
+            try {
+                const deleted = await database.adapter.prepare(database.adapter.dialect.sql("DELETE FROM [sporades_file_ingress] WHERE [key] = ? AND [leaseId] = ? AND [state] IN ('staging', 'leased')")).run(row.key, row.leaseId);
+                if (Number(deleted?.changes ?? 0) > 0)
+                    await database.fileStorage.deleteFileVersion({ fileId: row.fileId, version: row.version });
+            }
+            catch (cleanupError) {
+                cleanupErrors.push(cleanupError);
+            }
         }
-        else if (row.state === "staging") {
-            row = await awaitCompletedStagingReceipt(database, key);
-        }
-        if (!row || row.state === "staging")
-            throw Object.assign(new Error("Multipart ingress staging did not complete."), { code: "INGRESS_STAGING_INCOMPLETE" });
-        files.push(publicLease(row));
+        if (cleanupErrors.length)
+            throw new AggregateError([primaryError, ...cleanupErrors], "Multipart ingress staging failed and cleanup was incomplete.");
+        throw primaryError;
     }
     return { body: null, bodyBytes: Object.freeze({ byteLength: 0, length: 0, at() { return undefined; }, toUint8Array() { return new Uint8Array(); }, *[Symbol.iterator]() { } }), multipart: Object.freeze({ files: Object.freeze(files), fields: Object.freeze(fields) }), __ingressRequestKey: requestKey, __ingressAuthority: admittedAuthority ?? Object.freeze({ kind: "actor", actorId: String(actor.userId ?? ""), ownerId: String(actor.userId ?? "") }) };
 }

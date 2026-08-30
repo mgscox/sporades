@@ -86,8 +86,8 @@ export async function stageMultipartIngress(database: RecordLike, endpoint: Reco
   const requestKey = header(endpointRequest.headers, policy.requestKeyHeader);
   if (typeof requestKey !== "string" || requestKey.length < 1 || requestKey.length > 200) throw Object.assign(new Error("Missing multipart idempotency key."), { code: "INVALID_MULTIPART_REQUEST_KEY" });
   const maxBytes = Number(policy.maxTotalFileBytes) + Number(policy.maxTotalFieldBytes) + 65536;
-  const files: any[] = []; const fields: RecordLike = {}; let fieldCount = 0; let fieldBytes = 0; let fileBytes = 0; const partKeys = new Set<string>();
-  for await (const part of multipartParts(request, match[1], maxBytes, Math.max(Number(policy.maxFileBytes), Number(policy.maxFieldBytes)))) {
+  const files: any[] = []; const fields: RecordLike = {}; let fieldCount = 0; let fieldBytes = 0; let fileBytes = 0; const partKeys = new Set<string>(); const wonReceipts: RecordLike[] = [];
+  try { for await (const part of multipartParts(request, match[1], maxBytes, Math.max(Number(policy.maxFileBytes), Number(policy.maxFieldBytes)))) {
     const rawHeaders = part.rawHeaders; const body = part.body;
     if (rawHeaders.length > 16384) throw Object.assign(new Error("Multipart headers exceed limit."), { code: "MULTIPART_LIMIT_EXCEEDED" });
     const disposition = /^content-disposition:\s*form-data;\s*name="([^"]+)"(?:;\s*filename="([^"]*)")?/im.exec(rawHeaders);
@@ -117,6 +117,7 @@ export async function stageMultipartIngress(database: RecordLike, endpoint: Reco
     let row = acquired.row;
     if (row.digest !== digest || row.name !== candidate.name || row.type !== type || row.size !== body.length) throw Object.assign(new Error("Multipart retry descriptor conflicts with the original part."), { code: "INGRESS_DESCRIPTOR_CONFLICT" });
     if (acquired.winner) {
+      wonReceipts.push(row);
       await database.fileStorage.writeFileVersion({ fileId: row.fileId, version: row.version, bytes: body });
       row.state = "leased"; await saveReceipt(database, row);
     } else if (row.state === "staging") {
@@ -124,6 +125,16 @@ export async function stageMultipartIngress(database: RecordLike, endpoint: Reco
     }
     if (!row || row.state === "staging") throw Object.assign(new Error("Multipart ingress staging did not complete."), { code: "INGRESS_STAGING_INCOMPLETE" });
     files.push(publicLease(row));
+  } } catch (primaryError) {
+    const cleanupErrors: any[] = [];
+    for (const row of wonReceipts.reverse()) {
+      try {
+        const deleted = await database.adapter.prepare(database.adapter.dialect.sql("DELETE FROM [sporades_file_ingress] WHERE [key] = ? AND [leaseId] = ? AND [state] IN ('staging', 'leased')")).run(row.key, row.leaseId);
+        if (Number(deleted?.changes ?? 0) > 0) await database.fileStorage.deleteFileVersion({ fileId: row.fileId, version: row.version });
+      } catch (cleanupError) { cleanupErrors.push(cleanupError); }
+    }
+    if (cleanupErrors.length) throw new AggregateError([primaryError, ...cleanupErrors], "Multipart ingress staging failed and cleanup was incomplete.");
+    throw primaryError;
   }
   return { body: null, bodyBytes: Object.freeze({ byteLength: 0, length: 0, at() { return undefined; }, toUint8Array() { return new Uint8Array(); }, *[Symbol.iterator]() {} }), multipart: Object.freeze({ files: Object.freeze(files), fields: Object.freeze(fields) }), __ingressRequestKey: requestKey, __ingressAuthority: admittedAuthority ?? Object.freeze({ kind: "actor", actorId: String(actor.userId ?? ""), ownerId: String(actor.userId ?? "") }) };
 }
