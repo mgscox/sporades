@@ -2590,22 +2590,23 @@ async function withRegistrationTransaction(database, fn) {
     }
 }
 export const REGISTRATION_ADMISSION_BYTE_LIMIT = 4096;
+const invalidRegistrationAdmission = Symbol("sporades.invalidRegistrationAdmission");
 function boundedRegistrationInput(input) {
     if (input === undefined)
         return undefined;
     try {
         const encoded = JSON.stringify(input);
-        return encoded === undefined || Buffer.byteLength(encoded, "utf8") > REGISTRATION_ADMISSION_BYTE_LIMIT ? null : JSON.parse(encoded);
+        return encoded === undefined || Buffer.byteLength(encoded, "utf8") > REGISTRATION_ADMISSION_BYTE_LIMIT ? invalidRegistrationAdmission : JSON.parse(encoded);
     }
     catch {
-        return null;
+        return invalidRegistrationAdmission;
     }
 }
 async function admitRegistration(database, tx, evidence, input) {
     if (typeof database.runRegistrationAdmission !== "function")
         return { ok: true };
     const admission = boundedRegistrationInput(input);
-    if (admission === null)
+    if (admission === invalidRegistrationAdmission)
         throw registrationDeniedRollback();
     try {
         // This durable row is the cross-connection registration decision fence. Its
@@ -3014,7 +3015,7 @@ export async function beginOAuthSignIn(database, session, provider, options) {
     const now = new Date().toISOString();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
     const admission = boundedRegistrationInput(options.registration?.admission);
-    if (admission === null)
+    if (admission === invalidRegistrationAdmission)
         return registrationDenied();
     const registrationCiphertext = admission === undefined ? null : await sealOAuthRegistration(database, admission, { provider, sessionToken: session.token, redirectUri, nonce, expiresAt });
     let started;
@@ -3246,7 +3247,8 @@ async function unsealOAuthRegistration(database, row, transactionAdapter = datab
         const decipher = nodeCryptoModule.createDecipheriv("aes-256-gcm", material, iv);
         decipher.setAAD(Buffer.from(oauthRegistrationAad(row)));
         decipher.setAuthTag(tag);
-        return boundedRegistrationInput(JSON.parse(Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8")));
+        const admission = boundedRegistrationInput(JSON.parse(Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8")));
+        return admission === invalidRegistrationAdmission ? oauthRegistrationUnsealFailed : admission;
     }
     catch {
         return oauthRegistrationUnsealFailed;

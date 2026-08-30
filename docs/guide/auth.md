@@ -158,6 +158,8 @@ for per-request authorization, post-registration roles, provider token
 validation, or a policy that must make a network request. Those belong in the
 normal authorization model, the registration finalizer, the OAuth provider
 adapter, or work completed before `auth.signIn`/`auth.signUp`, respectively.
+Admission is any JSON-safe value up to 4096 UTF-8 bytes, including explicit
+`null`; omission remains the distinct `undefined` case.
 
 The advantages are one policy for email, local simulation, and first-time OAuth
 linking; atomic policy reads and finalizer writes; and no half-created identity

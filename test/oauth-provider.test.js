@@ -476,6 +476,16 @@ test("OAuth registration admission survives a runtime restart without plaintext 
   } finally { database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("OAuth registration roundtrip preserves explicit null admission", async () => {
+  let seen = "unset"; const definition = { name: "oauth-null", auth: { registration: { admit: ({ admission }) => { seen = admission; return { allow: admission === null }; }, finalize: async () => {} } } };
+  await withTempDatabase(async (database) => {
+    database.__oauthProviderAdapters = { google: { provider: "google", responseMode: "query", enabled: true, begin: ({ state }) => ({ url: `https://google.example/authorize?state=${state}` }), complete: async () => ({ subject: "null-subject", email: "null@example.com", emailVerified: true }) } };
+    const session = await resolveAnonymousSession(database, null); const started = await beginOAuthSignIn(database, session, "google", { origin: "https://capsule.example.test", registration: { admission: null } }); const state = new URL(started.url).searchParams.get("state");
+    const response = responseRecorder(); await routeSporadesAuth(database, { method: "GET", url: `/__sporades/auth/google/callback?state=${state}&code=ok`, headers: {} }, response);
+    assert.equal(response.statusCode, 302); assert.equal(seen, null);
+  }, definition);
+});
+
 test("corrupt OAuth admission envelopes deny before a database-only first-user policy", async () => {
   let policyCalls = 0; let finalizerCalls = 0;
   const capsule = { name: "oauth-envelope-denial", schema: { claims: table({ userId: StringField() }) }, auth: { registration: {

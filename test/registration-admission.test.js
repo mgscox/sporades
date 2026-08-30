@@ -53,6 +53,16 @@ test("Registration Admission revokes captured read authority before finalizer wr
   });
 });
 
+test("explicit null admission reaches email and local Registration Admission unchanged", async () => {
+  const seen = [];
+  const definition = { name: "null-admission", auth: { registration: { admit: ({ evidence, admission }) => { seen.push([evidence.kind, admission]); return { allow: admission === null }; }, finalize: async () => {} } } };
+  await withDatabase(definition, async (database) => {
+    const email = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", { email: "null-email@example.com", password: "password-123" }, null); assert.equal(email.ok, true);
+    const local = await simulateLocalIdentitySession(database, { provider: "email", email: "null-local@example.com", registration: null }); assert.equal(local.ok, true);
+    assert.deepEqual(seen, [["email", null], ["local", null]]);
+  });
+});
+
 test("Registration Admission finalizer failure rolls back app and runtime registration state", async () => {
   let fail = true;
   const capsule = { name: "rollback", schema: { claims: table({ userId: String() }) }, auth: { registration: {

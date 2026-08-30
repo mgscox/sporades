@@ -2901,13 +2901,14 @@ async function withRegistrationTransaction(database: LooseRecord, fn: (tx: Loose
   }
 }
 export const REGISTRATION_ADMISSION_BYTE_LIMIT = 4096;
+const invalidRegistrationAdmission = Symbol("sporades.invalidRegistrationAdmission");
 function boundedRegistrationInput(input: unknown) {
   if (input === undefined) return undefined;
-  try { const encoded = JSON.stringify(input); return encoded === undefined || Buffer.byteLength(encoded, "utf8") > REGISTRATION_ADMISSION_BYTE_LIMIT ? null : JSON.parse(encoded); } catch { return null; }
+  try { const encoded = JSON.stringify(input); return encoded === undefined || Buffer.byteLength(encoded, "utf8") > REGISTRATION_ADMISSION_BYTE_LIMIT ? invalidRegistrationAdmission : JSON.parse(encoded); } catch { return invalidRegistrationAdmission; }
 }
 async function admitRegistration(database: LooseRecord, tx: LooseRecord, evidence: LooseRecord, input: unknown): Promise<any> {
   if (typeof database.runRegistrationAdmission !== "function") return { ok: true };
-  const admission = boundedRegistrationInput(input); if (admission === null) throw registrationDeniedRollback();
+  const admission = boundedRegistrationInput(input); if (admission === invalidRegistrationAdmission) throw registrationDeniedRollback();
   try {
     // This durable row is the cross-connection registration decision fence. Its
     // write lock is held by the surrounding identity transaction, so a later
@@ -3322,7 +3323,7 @@ export async function beginOAuthSignIn(database: LooseRecord, session: LooseReco
   const now = new Date().toISOString();
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
   const admission = boundedRegistrationInput(options.registration?.admission);
-  if (admission === null) return registrationDenied();
+  if (admission === invalidRegistrationAdmission) return registrationDenied();
   const registrationCiphertext = admission === undefined ? null : await sealOAuthRegistration(database, admission, { provider, sessionToken: session.token, redirectUri, nonce, expiresAt });
   let started;
   try {
@@ -3527,7 +3528,8 @@ async function unsealOAuthRegistration(database: LooseRecord, row?: LooseRecord,
     const material = await oauthRegistrationKeyForUnseal(transactionAdapter, keyId); if (!material) return oauthRegistrationUnsealFailed;
     const decipher = nodeCryptoModule.createDecipheriv("aes-256-gcm", material, iv);
     decipher.setAAD(Buffer.from(oauthRegistrationAad(row))); decipher.setAuthTag(tag);
-    return boundedRegistrationInput(JSON.parse(Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8")));
+    const admission = boundedRegistrationInput(JSON.parse(Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8")));
+    return admission === invalidRegistrationAdmission ? oauthRegistrationUnsealFailed : admission;
   } catch { return oauthRegistrationUnsealFailed; }
 }
 // The reset link origin and page path come from Capsule configuration only.

@@ -14643,19 +14643,20 @@ async function withRegistrationTransaction(database, fn) {
   }
 }
 var REGISTRATION_ADMISSION_BYTE_LIMIT = 4096;
+var invalidRegistrationAdmission = Symbol("sporades.invalidRegistrationAdmission");
 function boundedRegistrationInput(input) {
   if (input === void 0) return void 0;
   try {
     const encoded = JSON.stringify(input);
-    return encoded === void 0 || Buffer.byteLength(encoded, "utf8") > REGISTRATION_ADMISSION_BYTE_LIMIT ? null : JSON.parse(encoded);
+    return encoded === void 0 || Buffer.byteLength(encoded, "utf8") > REGISTRATION_ADMISSION_BYTE_LIMIT ? invalidRegistrationAdmission : JSON.parse(encoded);
   } catch {
-    return null;
+    return invalidRegistrationAdmission;
   }
 }
 async function admitRegistration(database, tx, evidence, input) {
   if (typeof database.runRegistrationAdmission !== "function") return { ok: true };
   const admission = boundedRegistrationInput(input);
-  if (admission === null) throw registrationDeniedRollback();
+  if (admission === invalidRegistrationAdmission) throw registrationDeniedRollback();
   try {
     const fenceSql = tx.dialect.sql("INSERT INTO [sporades] ([key], [value]) VALUES ('registration-admission-fence', 'v1') ON CONFLICT ([key]) DO NOTHING");
     await tx.prepare(fenceSql).run();
@@ -15020,7 +15021,7 @@ async function beginOAuthSignIn(database, session, provider, options) {
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const expiresAt = new Date(Date.now() + 10 * 60 * 1e3).toISOString();
   const admission = boundedRegistrationInput(options.registration?.admission);
-  if (admission === null) return registrationDenied();
+  if (admission === invalidRegistrationAdmission) return registrationDenied();
   const registrationCiphertext = admission === void 0 ? null : await sealOAuthRegistration(database, admission, { provider, sessionToken: session.token, redirectUri, nonce, expiresAt });
   let started;
   try {
@@ -15215,7 +15216,8 @@ async function unsealOAuthRegistration(database, row, transactionAdapter = datab
     const decipher = nodeCryptoModule3.createDecipheriv("aes-256-gcm", material, iv);
     decipher.setAAD(Buffer.from(oauthRegistrationAad(row)));
     decipher.setAuthTag(tag);
-    return boundedRegistrationInput(JSON.parse(Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8")));
+    const admission = boundedRegistrationInput(JSON.parse(Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8")));
+    return admission === invalidRegistrationAdmission ? oauthRegistrationUnsealFailed : admission;
   } catch {
     return oauthRegistrationUnsealFailed;
   }
