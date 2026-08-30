@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { authStatus, createBundle, isReservedServerEnvKeyName, isValidServerEnvKeyName, parseServerEnv, readServerEnvFile, serverEnvPlaintextSize, } from "../bundle-pipeline.js";
 import { replaceFilesAtomically } from "../file-transaction.js";
+import { REGISTRATION_ADMISSION_BYTE_LIMIT } from "../auth-runtime.js";
 import { CLIENT_FRAMEWORK_HINT, CLIENT_TEMPLATES, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, defaultClientToolchain, isClientFramework, isClientToolchain, resolveClientCapability, supportsClientCapability } from "../client-capabilities.js";
 import { discardPublicTree, getProcessStartIdentity, readPublicAsset, readPublicTreeConsumer, removePublicTreeConsumer, restorePublicTreeConsumer, summarizePublicTree, writePublicTreeConsumer, } from "../public-tree.js";
 import { SPORADES_BASE_IMAGE, baseImageLabels, baseImageRuntimeUser, } from "../base-image.js";
@@ -686,8 +687,8 @@ function parseAuthArgs(args) {
                 break;
             case "--registration": {
                 const encoded = readFlagValue(rest, ++index, "--registration");
-                if (Buffer.byteLength(encoded, "utf8") > 16_384)
-                    throw commandError("Registration admission input is too large.", "Pass a JSON object no larger than 16384 UTF-8 bytes.", "INVALID_REGISTRATION_ADMISSION_INPUT");
+                if (Buffer.byteLength(encoded, "utf8") > REGISTRATION_ADMISSION_BYTE_LIMIT)
+                    throw commandError("Registration admission input is too large.", `Pass a JSON object no larger than ${REGISTRATION_ADMISSION_BYTE_LIMIT} UTF-8 bytes.`, "INVALID_REGISTRATION_ADMISSION_INPUT");
                 try {
                     registration = JSON.parse(encoded);
                 }

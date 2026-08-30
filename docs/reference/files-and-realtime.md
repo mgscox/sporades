@@ -390,8 +390,12 @@ Malformed quoting, invalid punctuation, and extra parameters are rejected.
 Every numeric limit is required and validated when the Capsule starts and again
 before request buffering. File counts and byte limits are positive finite
 integers; field counts and byte limits are non-negative finite integers. String,
-fractional, missing, `NaN`, and infinite values fail the declaration. A payload
-sequence that merely begins `CRLF--boundary` remains payload unless the prefix
+fractional, missing, `NaN`, and infinite values fail the declaration. The same
+pre-buffer validation requires normalized absolute path-prefix arrays,
+valid optional MIME-type arrays, syntactically valid request/part header names,
+a boolean stable-key switch, and exactly one supported claim authority when
+declared; unknown policy fields are rejected. A payload sequence that merely
+begins `CRLF--boundary` remains payload unless the prefix
 is followed by the required `CRLF` or closing `--` delimiter suffix.
 Sporades classifies each part from its bounded headers before accumulating its
 body, so text uses `maxFieldBytes` while files use `maxFileBytes`; a large file

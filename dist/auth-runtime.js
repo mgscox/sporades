@@ -2589,12 +2589,13 @@ async function withRegistrationTransaction(database, fn) {
         throw error;
     }
 }
+export const REGISTRATION_ADMISSION_BYTE_LIMIT = 4096;
 function boundedRegistrationInput(input) {
     if (input === undefined)
         return undefined;
     try {
         const encoded = JSON.stringify(input);
-        return encoded === undefined || Buffer.byteLength(encoded, "utf8") > 4096 ? null : JSON.parse(encoded);
+        return encoded === undefined || Buffer.byteLength(encoded, "utf8") > REGISTRATION_ADMISSION_BYTE_LIMIT ? null : JSON.parse(encoded);
     }
     catch {
         return null;

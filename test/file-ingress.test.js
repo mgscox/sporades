@@ -56,6 +56,10 @@ test("multipart policy rejects missing and non-finite or fractional limits befor
     for (const [name, value] of [["maxFiles", 0], ["maxFileBytes", 0], ["maxTotalFileBytes", 0], ["maxFieldCount", -1], ["maxFieldBytes", -1], ["maxTotalFieldBytes", -1]]) {
       await assert.rejects(stageMultipartIngress(database, { options: { method: "POST", path: "/invalid", body: { multipart: { ...ingressPolicy(), [name]: value } } } }, { async *[Symbol.asyncIterator]() { throw new Error("must not read"); } }, { headers: { "content-type": "multipart/form-data; boundary=invalid", "idempotency-key": "request" } }, { userId: "actor" }), { code: "INVALID_MULTIPART_POLICY" });
     }
+    const malformed = [["allowedPathPrefixes", undefined], ["allowedPathPrefixes", []], ["allowedPathPrefixes", ["relative"]], ["allowedMimeTypes", "text/plain"], ["allowedMimeTypes", ["bad"]], ["requestKeyHeader", "bad header"], ["partKeyHeader", ""], ["requireStablePartKeys", "true"], ["claimAuthorities", ["actor", "capsule-principal"]], ["unknown", true]];
+    for (const [name, value] of malformed) {
+      let reads = 0; const policy = { ...ingressPolicy(), [name]: value }; await assert.rejects(stageMultipartIngress(database, { options: { method: "POST", path: "/invalid", body: { multipart: policy } } }, { async *[Symbol.asyncIterator]() { reads += 1; yield multipart("invalid"); } }, { headers: { "content-type": "multipart/form-data; boundary=invalid", "idempotency-key": "request" } }, { userId: "actor" }), { code: "INVALID_MULTIPART_POLICY" }); assert.equal(reads, 0, name);
+    }
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -519,11 +523,12 @@ test("pre-v2 Capsule-principal receipts replay leased and completed state withou
     let writes = 0; const write = database.fileStorage.writeFileVersion.bind(database.fileStorage); database.fileStorage.writeFileVersion = async (input) => { writes += 1; return await write(input); };
     const first = await stageMultipartIngress(database, endpoint, request(), { headers: request().headers }, { userId: "" }, authority);
     const stored = await database.adapter.prepare("SELECT [key], [payload] FROM [sporades_file_ingress]").get(); const row = JSON.parse(stored.payload);
-    const legacyKey = `POST:/legacy-principal:capsule:${namespace}:${keyDigest}:legacy-principal-request:stable-claim`; row.key = legacyKey;
+    const legacyKey = `POST:/legacy-principal:capsule:${namespace}:${keyDigest}:legacy-principal-request:stable-claim`; row.key = legacyKey; row.state = "staging";
     await database.adapter.prepare("UPDATE [sporades_file_ingress] SET [key] = ?, [payload] = ? WHERE [key] = ?").run(legacyKey, JSON.stringify(row), stored.key);
     const api = createEndpointIngressApi(database, endpoint, { __ingressRequestKey: row.requestKey, __ingressAuthority: authority }, { auth: { userId: "", isAuthenticated: false, isGuest: true } });
+    const publish = setTimeout(async () => { row.state = "leased"; await database.adapter.prepare("UPDATE [sporades_file_ingress] SET [state] = ?, [payload] = ? WHERE [key] = ?").run("leased", JSON.stringify(row), legacyKey); }, 2300);
+    const replay = await stageMultipartIngress(database, endpoint, request(), { headers: request().headers }, { userId: "" }, authority); clearTimeout(publish); assert.equal(replay.multipart.files[0].leaseId, first.multipart.files[0].leaseId); assert.equal(writes, 1);
     const leased = await api.status(row.requestKey, row.partKey); assert.equal(leased.state, "leased"); assert.equal(leased.lease.leaseId, first.multipart.files[0].leaseId);
-    const replay = await stageMultipartIngress(database, endpoint, request(), { headers: request().headers }, { userId: "" }, authority); assert.equal(replay.multipart.files[0].leaseId, first.multipart.files[0].leaseId); assert.equal(writes, 1);
     const file = await api.claim(replay.multipart.files[0], { path: "/attachments/legacy-principal.txt", authority: { kind: "capsule-principal", namespace, key: principalKey } });
     const completedReplay = await stageMultipartIngress(database, endpoint, request(), { headers: request().headers }, { userId: "" }, authority); assert.equal(completedReplay.multipart.files[0].leaseId, first.multipart.files[0].leaseId); assert.equal(writes, 1);
     const completed = await api.status(row.requestKey, row.partKey); assert.equal(completed.state, "complete"); assert.equal(completed.file.id, file.id);

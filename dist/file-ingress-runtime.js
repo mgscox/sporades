@@ -262,7 +262,7 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
                 await saveReceipt(database, row);
             }
             else if (row.state === "staging") {
-                row = await awaitCompletedStagingReceipt(database, key);
+                row = await awaitCompletedStagingReceipt(database, row.key);
             }
             if (!row || (row.state !== "leased" && row.state !== "complete"))
                 throw Object.assign(new Error("Multipart ingress staging did not complete."), { code: "INGRESS_STAGING_INCOMPLETE" });
@@ -289,6 +289,12 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
 }
 export function validateMultipartIngressPolicy(policy) {
     const invalid = () => { throw Object.assign(new Error("Invalid multipart ingress policy."), { code: "INVALID_MULTIPART_POLICY" }); };
+    const validPathPrefix = (value) => { try {
+        return typeof value === "string" && normalizeAbsoluteFilePath(value) === value;
+    }
+    catch {
+        return false;
+    } };
     if (!policy || typeof policy !== "object" || Array.isArray(policy))
         invalid();
     for (const name of ["maxFiles", "maxFileBytes", "maxTotalFileBytes"])
@@ -297,6 +303,20 @@ export function validateMultipartIngressPolicy(policy) {
     for (const name of ["maxFieldCount", "maxFieldBytes", "maxTotalFieldBytes"])
         if (typeof policy[name] !== "number" || !Number.isFinite(policy[name]) || !Number.isInteger(policy[name]) || policy[name] < 0)
             invalid();
+    const allowedKeys = new Set(["maxFiles", "maxFileBytes", "maxTotalFileBytes", "maxFieldCount", "maxFieldBytes", "maxTotalFieldBytes", "allowedPathPrefixes", "allowedMimeTypes", "requestKeyHeader", "partKeyHeader", "requireStablePartKeys", "claimAuthorities"]);
+    if (Object.keys(policy).some((key) => !allowedKeys.has(key)))
+        invalid();
+    if (!Array.isArray(policy.allowedPathPrefixes) || policy.allowedPathPrefixes.length === 0 || policy.allowedPathPrefixes.some((value) => !validPathPrefix(value)))
+        invalid();
+    if (policy.allowedMimeTypes !== undefined && (!Array.isArray(policy.allowedMimeTypes) || policy.allowedMimeTypes.some((value) => typeof value !== "string" || safeType(value) !== value.toLowerCase())))
+        invalid();
+    for (const name of ["requestKeyHeader", "partKeyHeader"])
+        if (typeof policy[name] !== "string" || policy[name].length > 100 || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(policy[name]))
+            invalid();
+    if (typeof policy.requireStablePartKeys !== "boolean")
+        invalid();
+    if (policy.claimAuthorities !== undefined && (!Array.isArray(policy.claimAuthorities) || policy.claimAuthorities.length !== 1 || !["actor", "capsule-principal"].includes(policy.claimAuthorities[0])))
+        invalid();
     return policy;
 }
 export function createEndpointIngressApi(database, endpoint, endpointRequest, context) {

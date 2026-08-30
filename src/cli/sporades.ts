@@ -17,6 +17,7 @@ import {
   serverEnvPlaintextSize,
 } from "../bundle-pipeline.js";
 import { replaceFilesAtomically } from "../file-transaction.js";
+import { REGISTRATION_ADMISSION_BYTE_LIMIT } from "../auth-runtime.js";
 import { CLIENT_FRAMEWORK_HINT, CLIENT_TEMPLATES, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, defaultClientToolchain, isClientFramework, isClientToolchain, resolveClientCapability, supportsClientCapability } from "../client-capabilities.js";
 import {
   discardPublicTree,
@@ -870,7 +871,7 @@ function parseAuthArgs(args: string[]): LooseRecord {
 
       case "--registration": {
         const encoded = readFlagValue(rest, ++index, "--registration");
-        if (Buffer.byteLength(encoded, "utf8") > 16_384) throw commandError("Registration admission input is too large.", "Pass a JSON object no larger than 16384 UTF-8 bytes.", "INVALID_REGISTRATION_ADMISSION_INPUT");
+        if (Buffer.byteLength(encoded, "utf8") > REGISTRATION_ADMISSION_BYTE_LIMIT) throw commandError("Registration admission input is too large.", `Pass a JSON object no larger than ${REGISTRATION_ADMISSION_BYTE_LIMIT} UTF-8 bytes.`, "INVALID_REGISTRATION_ADMISSION_INPUT");
         try { registration = JSON.parse(encoded); }
         catch { throw commandError("Registration admission input is malformed.", "Pass a valid JSON object to `--registration`.", "INVALID_REGISTRATION_ADMISSION_INPUT"); }
         if (!registration || typeof registration !== "object" || Array.isArray(registration)) throw commandError("Registration admission input must be a JSON object.", "Pass a bounded JSON object to `--registration`.", "INVALID_REGISTRATION_ADMISSION_INPUT");

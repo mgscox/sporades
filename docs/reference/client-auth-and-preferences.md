@@ -642,7 +642,7 @@ This is local identity simulation. It is useful for tests and development, but
 it is not OAuth and does not validate third-party tokens.
 `--registration` forwards a JSON object to the Capsule's Registration Admission
 policy for a newly simulated local identity. The CLI rejects malformed, non-object,
-or larger-than-16384-byte input before contacting Dev. Treat invitation values as
+or larger-than-4096-byte input before contacting Dev. Treat invitation values as
 sensitive shell history and prefer short-lived development-only credentials.
 
 ## Access-key management

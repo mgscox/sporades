@@ -5470,7 +5470,10 @@ test("sporades auth as email returns a localStorage session payload that resolve
     await writeFile(path.join(projectDir, "server", "index.ts"), `import { capsule } from "sporades/server";\nexport default capsule({ name: "auth-island", auth: { registration: { admit: ({ admission }) => ({ allow: admission?.invitation === "invite-1" }), finalize: async () => {} } } });\n`);
     await installFakeReact(projectDir);
 
-    for (const admission of ["{", JSON.stringify({ value: "x".repeat(17_000) })]) {
+    const admissionAtLimit = { invitation: "invite-1", padding: "" }; admissionAtLimit.padding = "x".repeat(4096 - Buffer.byteLength(JSON.stringify(admissionAtLimit)));
+    const encodedAtLimit = JSON.stringify(admissionAtLimit); assert.equal(Buffer.byteLength(encodedAtLimit), 4096);
+    const encodedOverLimit = `${encodedAtLimit.slice(0, -3)}é"}`; assert.equal(Buffer.byteLength(encodedOverLimit), 4097);
+    for (const admission of ["{", encodedOverLimit]) {
       const rejected = await runCli(["auth", "as", "email", "--email", "mira@example.com", "--registration", admission, "--json"], { cwd: projectDir });
       assert.equal(rejected.code, 1); assert.match(JSON.parse(rejected.stdout).error.message, /Registration admission input/);
     }
@@ -5492,7 +5495,7 @@ test("sporades auth as email returns a localStorage session payload that resolve
           "--display-name",
           "Mira Vale",
           "--registration",
-          '{"invitation":"invite-1"}',
+          encodedAtLimit,
           "--json",
         ],
         { cwd: projectDir },
