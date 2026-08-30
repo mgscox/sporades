@@ -198,11 +198,13 @@ export function createEndpointIngressApi(database, endpoint, endpointRequest, co
             if (!await database.adapter.findFileBucket(actorId, "default"))
                 await database.adapter.createFileBucket(bucket);
             const file = { id: row.fileId, ownerId: actorId, bucketId: bucket.id, bucketName: bucket.name, path, name: safeName(options?.name ?? row.name), type: safeType(options?.type ?? row.type), size: row.size, version: row.version, status: "uploaded", createdAt: now, updatedAt: now };
+            // This function receives the endpoint's transaction-scoped adapter. Persisting the
+            // receipt transition here means File metadata, claim state, and app writes commit or
+            // roll back together; there is no post-commit in-memory publication step.
             await database.adapter.insertFileRow(file);
-            row.state = "claiming";
+            row.state = "complete";
             row.file = file;
             await saveReceipt(database, row);
-            (context.__sporadesIngressClaims ??= []).push(row);
             return fileMetadataFromRow(file);
         },
         async status(statusRequestKey, partKey) { const row = await receipt(database, keyFor(endpoint, statusRequestKey, partKey, actorId)); if (!row)
@@ -211,11 +213,6 @@ export function createEndpointIngressApi(database, endpoint, endpointRequest, co
 }
 /** Database and object storage cannot share a transaction: publish Map state only after SQL commits. */
 export function finalizeEndpointIngressClaims(context, committed) {
-    for (const row of context?.__sporadesIngressClaims ?? []) {
-        if (row.state === "claiming")
-            row.state = committed ? "complete" : "leased";
-        if (!committed)
-            delete row.file;
-    }
+    // Claim state is persisted in the endpoint transaction; retained for call-site compatibility.
 }
 //# sourceMappingURL=file-ingress-runtime.js.map

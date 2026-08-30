@@ -20010,10 +20010,9 @@ function createEndpointIngressApi(database, endpoint, endpointRequest, context) 
       if (!await database.adapter.findFileBucket(actorId, "default")) await database.adapter.createFileBucket(bucket);
       const file = { id: row.fileId, ownerId: actorId, bucketId: bucket.id, bucketName: bucket.name, path: path12, name: safeName(options?.name ?? row.name), type: safeType(options?.type ?? row.type), size: row.size, version: row.version, status: "uploaded", createdAt: now2, updatedAt: now2 };
       await database.adapter.insertFileRow(file);
-      row.state = "claiming";
+      row.state = "complete";
       row.file = file;
       await saveReceipt(database, row);
-      (context.__sporadesIngressClaims ??= []).push(row);
       return fileMetadataFromRow(file);
     },
     async status(statusRequestKey, partKey) {
@@ -20024,10 +20023,6 @@ function createEndpointIngressApi(database, endpoint, endpointRequest, context) 
   };
 }
 function finalizeEndpointIngressClaims(context, committed) {
-  for (const row of context?.__sporadesIngressClaims ?? []) {
-    if (row.state === "claiming") row.state = committed ? "complete" : "leased";
-    if (!committed) delete row.file;
-  }
 }
 
 // src/stripe-events-runtime.ts
