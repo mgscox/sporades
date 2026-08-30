@@ -121,7 +121,10 @@ export async function stageMultipartIngress(database: RecordLike, endpoint: Reco
 }
 
 export function createEndpointIngressApi(database: RecordLike, endpoint: RecordLike, endpointRequest: RecordLike, context: RecordLike) {
-  const policy = endpoint.options.body?.multipart;
+  // Runtime-owned provider callbacks predate Capsule endpoint options and do
+  // not declare multipart ingress. Keep their ordinary endpoint context
+  // available without requiring a synthetic declaration object.
+  const policy = endpoint.options?.body?.multipart;
   const unavailable = () => { throw Object.assign(new Error("File ingress was not declared for this endpoint."), { code: "FILE_INGRESS_UNAVAILABLE" }); };
   if (!policy) return { claim: unavailable, status: unavailable };
   const actorId = String(context.auth?.userId ?? ""); const requestKey = endpointRequest.__ingressRequestKey; const admittedAuthority = endpointRequest.__ingressAuthority ?? { kind: "actor", actorId, ownerId: actorId };

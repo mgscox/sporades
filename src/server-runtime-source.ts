@@ -3388,6 +3388,10 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
     endpointRequest = { ...endpointRequest, ...payload };
   } else {
     endpointRequest = await readEndpointRequest(database, requestUrl, request, !(endpoint as LooseRecord).runtimeOwnedStripeCallback);
+    // `readEndpointRequest` rebuilds the request head before reading the body.
+    // Preserve the long-standing guard invariant that a consumed Bearer value
+    // never reaches Capsule middleware or handler code.
+    if (requirements) delete endpointRequest.headers.authorization;
   }
   let context: LooseRecord | undefined;
   try {

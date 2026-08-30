@@ -20285,7 +20285,7 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
   } }), multipart: Object.freeze({ files: Object.freeze(files), fields: Object.freeze(fields) }), __ingressRequestKey: requestKey, __ingressAuthority: admittedAuthority ?? Object.freeze({ kind: "actor", actorId: String(actor.userId ?? ""), ownerId: String(actor.userId ?? "") }) };
 }
 function createEndpointIngressApi(database, endpoint, endpointRequest, context) {
-  const policy = endpoint.options.body?.multipart;
+  const policy = endpoint.options?.body?.multipart;
   const unavailable2 = () => {
     throw Object.assign(new Error("File ingress was not declared for this endpoint."), { code: "FILE_INGRESS_UNAVAILABLE" });
   };
@@ -22937,6 +22937,7 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
     endpointRequest = { ...endpointRequest, ...payload };
   } else {
     endpointRequest = await readEndpointRequest(database, requestUrl, request, !endpoint.runtimeOwnedStripeCallback);
+    if (requirements) delete endpointRequest.headers.authorization;
   }
   let context;
   try {

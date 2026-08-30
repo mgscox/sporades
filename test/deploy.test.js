@@ -2315,6 +2315,7 @@ test("sporades logs and db can inspect a local Container session by published po
         "sporades_auth_sessions",
         "sporades_auth_users",
         "sporades_file_buckets",
+        "sporades_file_ingress",
         "sporades_file_public_urls",
         "sporades_file_uploads",
         "sporades_files",

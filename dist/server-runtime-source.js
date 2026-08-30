@@ -3116,6 +3116,11 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
     }
     else {
         endpointRequest = await readEndpointRequest(database, requestUrl, request, !endpoint.runtimeOwnedStripeCallback);
+        // `readEndpointRequest` rebuilds the request head before reading the body.
+        // Preserve the long-standing guard invariant that a consumed Bearer value
+        // never reaches Capsule middleware or handler code.
+        if (requirements)
+            delete endpointRequest.headers.authorization;
     }
     let context;
     try {

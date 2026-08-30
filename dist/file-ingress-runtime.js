@@ -203,7 +203,10 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
     return { body: null, bodyBytes: Object.freeze({ byteLength: 0, length: 0, at() { return undefined; }, toUint8Array() { return new Uint8Array(); }, *[Symbol.iterator]() { } }), multipart: Object.freeze({ files: Object.freeze(files), fields: Object.freeze(fields) }), __ingressRequestKey: requestKey, __ingressAuthority: admittedAuthority ?? Object.freeze({ kind: "actor", actorId: String(actor.userId ?? ""), ownerId: String(actor.userId ?? "") }) };
 }
 export function createEndpointIngressApi(database, endpoint, endpointRequest, context) {
-    const policy = endpoint.options.body?.multipart;
+    // Runtime-owned provider callbacks predate Capsule endpoint options and do
+    // not declare multipart ingress. Keep their ordinary endpoint context
+    // available without requiring a synthetic declaration object.
+    const policy = endpoint.options?.body?.multipart;
     const unavailable = () => { throw Object.assign(new Error("File ingress was not declared for this endpoint."), { code: "FILE_INGRESS_UNAVAILABLE" }); };
     if (!policy)
         return { claim: unavailable, status: unavailable };
