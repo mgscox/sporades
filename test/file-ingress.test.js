@@ -7,7 +7,7 @@ import { test } from "node:test";
 
 import { capsule, endpoint, requireAuth } from "../dist/server.js";
 import { openDevDatabase, routeEndpoint, runEndpoint } from "../dist/server-runtime-source.js";
-import { multipartParts } from "../dist/file-ingress-runtime.js";
+import { multipartParts, stageMultipartIngress } from "../dist/file-ingress-runtime.js";
 
 function multipart(boundary, headers = 'Content-Disposition: form-data; name="file"; filename="a.txt"\r\nContent-Type: text/plain', bytes = "hello") {
   return Buffer.from(`--${boundary}\r\n${headers}\r\n\r\n${bytes}\r\n--${boundary}--`);
@@ -48,6 +48,21 @@ test("disconnects in every multipart parser state reject without yielding a stag
     await assert.rejects(async () => { for await (const part of multipartParts(splitEvery(bytes, 1), boundary, 1000, 1000)) yielded.push(part); }, { code: "INVALID_MULTIPART" });
     assert.deepEqual(yielded, []);
   }
+});
+
+test("twenty concurrent identical ingress receipts stage one durable lease", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-race-"));
+  try {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "race", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "race" }));
+    const policy = { maxFiles: 1, maxFileBytes: 100, maxTotalFileBytes: 100, maxFieldCount: 1, maxFieldBytes: 100, maxTotalFieldBytes: 100, allowedPathPrefixes: ["/attachments"], requestKeyHeader: "idempotency-key", partKeyHeader: "content-id", requireStablePartKeys: true };
+    const endpoint = { options: { method: "POST", path: "/race", body: { multipart: policy } } }; const headers = { "content-type": "multipart/form-data; boundary=race", "idempotency-key": "same" };
+    let writes = 0; const write = database.fileStorage.writeFileVersion.bind(database.fileStorage); database.fileStorage.writeFileVersion = async (input) => { writes += 1; return await write(input); };
+    const partHeaders = 'Content-Disposition: form-data; name="file"; filename="a.txt"\r\nContent-Type: text/plain\r\nContent-ID: stable-a';
+    const makeRequest = () => ({ async *[Symbol.asyncIterator]() { yield multipart("race", partHeaders, "same-bytes"); } });
+    const results = await Promise.all(Array.from({ length: 20 }, () => stageMultipartIngress(database, endpoint, makeRequest(), { headers }, { userId: "actor" })));
+    assert.equal(new Set(results.map((result) => result.multipart.files[0].leaseId)).size, 1); assert.equal(writes, 1);
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 1);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test("trusted multipart ingress leases bytes before the handler and claim atomically creates an ordinary private File", async () => {
