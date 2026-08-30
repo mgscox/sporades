@@ -22414,6 +22414,9 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
     request,
     readEndpointSessionToken(endpointRequest.headers, endpointRequest.query)
   ) : null;
+  if (!accessKeyAdmission && requirements && endpoint.options?.body?.multipart) {
+    admitCredentialHandler(handler, { auth: session?.auth, credential: { kind: "session" } }, "endpoint");
+  }
   if (accessKeyAdmission) {
     const admissionContext = {
       auth: accessKeyAdmission.auth,

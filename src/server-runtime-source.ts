@@ -3272,6 +3272,12 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
       readEndpointSessionToken(endpointRequest.headers, endpointRequest.query),
     )
     : null;
+  // Multipart is an ingress capability, not a way to make an unauthenticated client
+  // pay us in bytes before we reject it. Session guards have no body dependency, so
+  // admit them before the multipart reader advances the request iterator.
+  if (!accessKeyAdmission && requirements && (endpoint as LooseRecord).options?.body?.multipart) {
+    admitCredentialHandler(handler, { auth: session?.auth, credential: { kind: "session" } }, "endpoint");
+  }
   if (accessKeyAdmission) {
     const admissionContext = {
       auth: accessKeyAdmission.auth,
