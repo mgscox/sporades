@@ -18,6 +18,16 @@ async function saveReceipt(database: RecordLike, row: RecordLike) {
   const sql = database.adapter.dialect.sql("INSERT INTO [sporades_file_ingress] ([key], [payload], [updatedAt]) VALUES (?, ?, ?) ON CONFLICT([key]) DO UPDATE SET [payload]=excluded.[payload], [updatedAt]=excluded.[updatedAt]");
   await database.adapter.prepare(sql).run(row.key, JSON.stringify(row), new Date().toISOString());
 }
+async function acquireReceipt(database: RecordLike, candidate: RecordLike) {
+  // All supported adapters accept this conflict form. The unique key is the
+  // serialization point; no read-then-insert window exists for two retries.
+  const sql = database.adapter.dialect.sql("INSERT INTO [sporades_file_ingress] ([key], [payload], [updatedAt]) VALUES (?, ?, ?) ON CONFLICT([key]) DO NOTHING");
+  const inserted = await database.adapter.prepare(sql).run(candidate.key, JSON.stringify(candidate), new Date().toISOString());
+  if (Number(inserted?.changes ?? 0) > 0) return { row: candidate, winner: true };
+  const row = await receipt(database, candidate.key);
+  if (!row) throw new Error("Ingress receipt acquisition did not return a winner.");
+  return { row, winner: false };
+}
 
 function header(headers: RecordLike, name: string) { return headers[String(name).toLowerCase()]; }
 function safeName(value: string) { return String(value ?? "upload").replace(/[\\/\x00-\x1f]/g, "_").trim().slice(0, 255) || "upload"; }
@@ -67,10 +77,12 @@ export async function stageMultipartIngress(database: RecordLike, endpoint: Reco
     if (partKey) partKeys.add(partKey);
     const type = safeType(/^content-type:\s*([^\r\n]+)/im.exec(rawHeaders)?.[1] ?? "");
     if (policy.allowedMimeTypes && !policy.allowedMimeTypes.map(safeType).includes(type)) throw Object.assign(new Error("Multipart file type is not allowed."), { code: "MULTIPART_TYPE_DENIED" });
-    const stablePartKey = partKey ?? crypto.createHash("sha256").update(`${fieldName}:${files.length}`).digest("hex"); const actorId = String(actor.userId ?? ""); const key = keyFor(endpoint, requestKey, stablePartKey, actorId); let row = await receipt(database, key);
+    const stablePartKey = partKey ?? crypto.createHash("sha256").update(`${fieldName}:${files.length}`).digest("hex"); const actorId = String(actor.userId ?? ""); const key = keyFor(endpoint, requestKey, stablePartKey, actorId);
     const digest = crypto.createHash("sha256").update(body).digest("hex");
-    if (row && (row.digest !== digest || row.name !== safeName(filename) || row.type !== type)) throw Object.assign(new Error("Multipart retry descriptor conflicts with the original part."), { code: "INGRESS_DESCRIPTOR_CONFLICT" });
-    if (!row) { const now = new Date(); row = { key, leaseId: crypto.randomUUID(), partId: crypto.createHash("sha256").update(key).digest("hex"), fieldName, name: safeName(filename), type, size: body.length, digest, fileId: crypto.randomUUID(), version: crypto.randomUUID(), state: "leased", expiresAt: new Date(now.getTime() + leaseTtlMs).toISOString() }; await database.fileStorage.writeFileVersion({ fileId: row.fileId, version: row.version, bytes: body }); await saveReceipt(database, row); }
+    const now = new Date(); const candidate = { key, leaseId: crypto.randomUUID(), partId: crypto.createHash("sha256").update(key).digest("hex"), fieldName, name: safeName(filename), type, size: body.length, digest, fileId: crypto.randomUUID(), version: crypto.randomUUID(), state: "leased", expiresAt: new Date(now.getTime() + leaseTtlMs).toISOString() };
+    const acquired = await acquireReceipt(database, candidate); const row = acquired.row;
+    if (row.digest !== digest || row.name !== candidate.name || row.type !== type || row.size !== body.length) throw Object.assign(new Error("Multipart retry descriptor conflicts with the original part."), { code: "INGRESS_DESCRIPTOR_CONFLICT" });
+    if (acquired.winner) await database.fileStorage.writeFileVersion({ fileId: row.fileId, version: row.version, bytes: body });
     files.push(publicLease(row));
   }
   return { body: null, bodyBytes: Object.freeze({ byteLength: 0, length: 0, at() { return undefined; }, toUint8Array() { return new Uint8Array(); }, *[Symbol.iterator]() {} }), multipart: Object.freeze({ files: Object.freeze(files), fields: Object.freeze(fields) }), __ingressRequestKey: requestKey };

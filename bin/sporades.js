@@ -19843,6 +19843,14 @@ async function saveReceipt(database, row) {
   const sql = database.adapter.dialect.sql("INSERT INTO [sporades_file_ingress] ([key], [payload], [updatedAt]) VALUES (?, ?, ?) ON CONFLICT([key]) DO UPDATE SET [payload]=excluded.[payload], [updatedAt]=excluded.[updatedAt]");
   await database.adapter.prepare(sql).run(row.key, JSON.stringify(row), (/* @__PURE__ */ new Date()).toISOString());
 }
+async function acquireReceipt(database, candidate) {
+  const sql = database.adapter.dialect.sql("INSERT INTO [sporades_file_ingress] ([key], [payload], [updatedAt]) VALUES (?, ?, ?) ON CONFLICT([key]) DO NOTHING");
+  const inserted = await database.adapter.prepare(sql).run(candidate.key, JSON.stringify(candidate), (/* @__PURE__ */ new Date()).toISOString());
+  if (Number(inserted?.changes ?? 0) > 0) return { row: candidate, winner: true };
+  const row = await receipt(database, candidate.key);
+  if (!row) throw new Error("Ingress receipt acquisition did not return a winner.");
+  return { row, winner: false };
+}
 function header(headers, name) {
   return headers[String(name).toLowerCase()];
 }
@@ -19963,15 +19971,13 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
     const stablePartKey = partKey ?? crypto2.createHash("sha256").update(`${fieldName}:${files.length}`).digest("hex");
     const actorId = String(actor.userId ?? "");
     const key = keyFor(endpoint, requestKey, stablePartKey, actorId);
-    let row = await receipt(database, key);
     const digest = crypto2.createHash("sha256").update(body).digest("hex");
-    if (row && (row.digest !== digest || row.name !== safeName(filename) || row.type !== type)) throw Object.assign(new Error("Multipart retry descriptor conflicts with the original part."), { code: "INGRESS_DESCRIPTOR_CONFLICT" });
-    if (!row) {
-      const now2 = /* @__PURE__ */ new Date();
-      row = { key, leaseId: crypto2.randomUUID(), partId: crypto2.createHash("sha256").update(key).digest("hex"), fieldName, name: safeName(filename), type, size: body.length, digest, fileId: crypto2.randomUUID(), version: crypto2.randomUUID(), state: "leased", expiresAt: new Date(now2.getTime() + leaseTtlMs).toISOString() };
-      await database.fileStorage.writeFileVersion({ fileId: row.fileId, version: row.version, bytes: body });
-      await saveReceipt(database, row);
-    }
+    const now2 = /* @__PURE__ */ new Date();
+    const candidate = { key, leaseId: crypto2.randomUUID(), partId: crypto2.createHash("sha256").update(key).digest("hex"), fieldName, name: safeName(filename), type, size: body.length, digest, fileId: crypto2.randomUUID(), version: crypto2.randomUUID(), state: "leased", expiresAt: new Date(now2.getTime() + leaseTtlMs).toISOString() };
+    const acquired = await acquireReceipt(database, candidate);
+    const row = acquired.row;
+    if (row.digest !== digest || row.name !== candidate.name || row.type !== type || row.size !== body.length) throw Object.assign(new Error("Multipart retry descriptor conflicts with the original part."), { code: "INGRESS_DESCRIPTOR_CONFLICT" });
+    if (acquired.winner) await database.fileStorage.writeFileVersion({ fileId: row.fileId, version: row.version, bytes: body });
     files.push(publicLease(row));
   }
   return { body: null, bodyBytes: Object.freeze({ byteLength: 0, length: 0, at() {
