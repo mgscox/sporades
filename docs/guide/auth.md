@@ -101,3 +101,33 @@ guards do not enable File Bearer access. For operational retirement, use the
 [five metadata-only operator commands](../reference/operations-and-hosting.md#inspect-and-retire-access-keys).
 Operators cannot issue, rotate, or recover plaintext, and stopped Capsules are
 not opened just to reach Auth storage.
+
+## Admit newly linked registrations
+
+Capsules may opt into `auth.registration` to decide, and atomically record, a
+new email or local simulated identity before Sporades creates its credential,
+linked User, singleton Team, membership, or Session. The callback receives only
+normalized identity evidence and a bounded opaque `admission` value supplied as
+the optional third argument to `auth.signUp`.
+
+```ts
+export default capsule({
+  name: "controlled-registration",
+  auth: {
+    registration: {
+      admit: async ({ db, evidence, admission }) =>
+        (await db.bootstrapClaims.all()).length === 0 && admission?.key === "approved"
+          ? { allow: true } : { allow: false },
+      finalize: async ({ db, evidence }) => {
+        await db.bootstrapClaims.insert({ userId: evidence.userId });
+      },
+    },
+  },
+});
+```
+
+Both callbacks run in the same Auth transaction. A denial, invalid input, throw,
+or finalizer failure returns the bounded `REGISTRATION_DENIED` result and rolls
+back both application and runtime changes. The database handles are
+transaction-bound and reject use after either callback settles. Omitting the
+declaration preserves existing registration behaviour.

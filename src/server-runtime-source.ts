@@ -871,6 +871,26 @@ export async function openDevDatabase(
     teamApplicationRoles,
     teamBillingDefinition,
     teamBillingErasureObjectKey: (providerObjectId: string) => teamBillingErasureObjectKey(database, providerObjectId),
+    runRegistrationAdmission: typeof capsuleDefinition?.auth?.registration?.admit === "function"
+      ? async function (this: LooseRecord, transactionAdapter: LooseRecord, evidence: LooseRecord, admission: unknown) {
+        const rootDatabase = this.__rootDatabase ?? this;
+        const transaction = (this as any)[trustedReadTransactionAdapter] ?? transactionAdapter;
+        const registrationDatabase = createTransactionDatabase(rootDatabase, transaction);
+        let active = true;
+        const assertActive = () => { if (!active) throw commandError("Registration access is no longer active.", "Start a new registration callback.", "REGISTRATION_ACCESS_INACTIVE"); };
+        const readContext: LooseRecord = { purpose: "auth.registration", evidence, admission };
+        grantPrivilegedDbAccess(readContext); const readHolder = createContextHolder(readContext);
+        try {
+          const decision = await capsuleDefinition.auth.registration.admit({ db: createEndpointReadOnlyDatabaseApi(registrationDatabase, () => readHolder.current, assertActive), evidence, admission });
+          if (!decision || decision.allow !== true) return false;
+          const finalizeContext: LooseRecord = { purpose: "auth.registration-finalize", evidence };
+          grantPrivilegedDbAccess(finalizeContext); const finalizeHolder = createContextHolder(finalizeContext);
+          try { await capsuleDefinition.auth.registration.finalize({ db: createEndpointDatabaseApi(registrationDatabase, () => finalizeHolder.current), evidence }, { ...evidence, state: decision.state }); }
+          finally { revokePrivilegedDbAccess(finalizeContext); }
+          return true;
+        } finally { active = false; revokePrivilegedDbAccess(readContext); await drainPendingLogWrites(registrationDatabase); }
+      }
+      : undefined,
     runTeamJoinAdmission: typeof capsuleDefinition?.teams?.admitJoin === "function"
       ? async function (this: LooseRecord, transactionAdapter: LooseRecord, auth: LooseRecord, input: LooseRecord, signal: any) {
         const rootDatabase = this.__rootDatabase ?? this;
@@ -4751,7 +4771,7 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
     }
 
     if (message.type === "auth.signUp") {
-      const result: any = await signUpWithEmail(database, client.session, message.provider, message.credentials ?? {});
+      const result: any = await signUpWithEmail(database, client.session, message.provider, message.credentials ?? {}, message.registration?.admission);
       if (result.ok) {
         retireJourney(client);
         client.session = {

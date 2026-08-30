@@ -730,6 +730,39 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         teamApplicationRoles,
         teamBillingDefinition,
         teamBillingErasureObjectKey: (providerObjectId) => teamBillingErasureObjectKey(database, providerObjectId),
+        runRegistrationAdmission: typeof capsuleDefinition?.auth?.registration?.admit === "function"
+            ? async function (transactionAdapter, evidence, admission) {
+                const rootDatabase = this.__rootDatabase ?? this;
+                const transaction = this[trustedReadTransactionAdapter] ?? transactionAdapter;
+                const registrationDatabase = createTransactionDatabase(rootDatabase, transaction);
+                let active = true;
+                const assertActive = () => { if (!active)
+                    throw commandError("Registration access is no longer active.", "Start a new registration callback.", "REGISTRATION_ACCESS_INACTIVE"); };
+                const readContext = { purpose: "auth.registration", evidence, admission };
+                grantPrivilegedDbAccess(readContext);
+                const readHolder = createContextHolder(readContext);
+                try {
+                    const decision = await capsuleDefinition.auth.registration.admit({ db: createEndpointReadOnlyDatabaseApi(registrationDatabase, () => readHolder.current, assertActive), evidence, admission });
+                    if (!decision || decision.allow !== true)
+                        return false;
+                    const finalizeContext = { purpose: "auth.registration-finalize", evidence };
+                    grantPrivilegedDbAccess(finalizeContext);
+                    const finalizeHolder = createContextHolder(finalizeContext);
+                    try {
+                        await capsuleDefinition.auth.registration.finalize({ db: createEndpointDatabaseApi(registrationDatabase, () => finalizeHolder.current), evidence }, { ...evidence, state: decision.state });
+                    }
+                    finally {
+                        revokePrivilegedDbAccess(finalizeContext);
+                    }
+                    return true;
+                }
+                finally {
+                    active = false;
+                    revokePrivilegedDbAccess(readContext);
+                    await drainPendingLogWrites(registrationDatabase);
+                }
+            }
+            : undefined,
         runTeamJoinAdmission: typeof capsuleDefinition?.teams?.admitJoin === "function"
             ? async function (transactionAdapter, auth, input, signal) {
                 const rootDatabase = this.__rootDatabase ?? this;
@@ -4342,7 +4375,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
             return;
         }
         if (message.type === "auth.signUp") {
-            const result = await signUpWithEmail(database, client.session, message.provider, message.credentials ?? {});
+            const result = await signUpWithEmail(database, client.session, message.provider, message.credentials ?? {}, message.registration?.admission);
             if (result.ok) {
                 retireJourney(client);
                 client.session = {

@@ -1064,6 +1064,7 @@ export type ScheduleDefinition = {
  */
 export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition> = {
   name: string;
+  auth?: { registration: RegistrationAdmission<Schema> };
   accessKeys?: { scopes: readonly string[] };
   schema?: Schema;
   queries?: Record<string, QueryDefinition<QueryHandler<Schema, any> | AuthGuardedHandler<(...args: any[]) => any>>>;
@@ -1088,6 +1089,11 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   journey?: { enabled: true; ttlSeconds?: number; capture?: { navigation?: boolean; focus?: boolean; interactions?: boolean } };
   middleware?: ContextMiddleware<Schema>[];
   hooks?: CapsuleHooks<Schema>;
+};
+export type RegistrationEvidence = Readonly<{ userId: string; provider: string; email: string | null; displayName: string; picture: string | null; kind: "email" | "local" }>;
+export type RegistrationAdmission<Schema extends SchemaDefinition> = {
+  admit(ctx: { db: ReadOnlyDatabaseFromSchema<Schema>; evidence: RegistrationEvidence; admission: unknown }): MaybePromise<{ allow: false } | { allow: true; state?: unknown }>;
+  finalize(ctx: { db: DatabaseFromSchema<Schema>; evidence: RegistrationEvidence }, input: RegistrationEvidence & { state?: unknown }): MaybePromise<void>;
 };
 
 export type Capsule<Definition extends object = CapsuleDefinition> = Definition & {

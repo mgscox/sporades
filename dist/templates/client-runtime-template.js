@@ -181,8 +181,8 @@ export const auth = {
   subscribe(listener) {
     return connect().subscribeAuth(listener);
   },
-  signUp(provider, credentials) {
-    return connect().signUp(provider, credentials);
+  signUp(provider, credentials, options) {
+    return connect().signUp(provider, credentials, options);
   },
   signIn(provider, credentials) {
     return connect().signIn(provider, credentials);
@@ -1116,8 +1116,8 @@ function createConnection() {
       let active = true;
       return { unsubscribe() { if (!active) return; active = false; authStateListeners.delete(wrapped); } };
     },
-    signUp(provider, credentials) {
-      return request("auth.signUp", { provider, credentials }).then((result) => {
+    signUp(provider, credentials, options) {
+      return request("auth.signUp", { provider, credentials, registration: options?.registration }).then((result) => {
         if (result.data?.sessionToken) {
           return storeAuthSession(result);
         }

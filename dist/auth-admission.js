@@ -69,6 +69,15 @@ export function normalizeCapsuleAuthDefinition(definition) {
             accessKeys: Object.freeze({ scopes: Object.freeze(scopes) }),
         };
     }
+    if (Object.hasOwn(normalized, "auth") && normalized.auth !== undefined) {
+        const registration = normalized.auth?.registration;
+        if (!isPlainObject(normalized.auth) || Object.keys(normalized.auth).some((key) => key !== "registration") || !isPlainObject(registration)
+            || typeof registration.admit !== "function" || typeof registration.finalize !== "function"
+            || Object.keys(registration).some((key) => key !== "admit" && key !== "finalize")) {
+            throw commandError("Invalid Capsule Registration Admission declaration.", "Declare auth.registration with both admit and finalize server functions.", "INVALID_REGISTRATION_ADMISSION");
+        }
+        normalized = { ...normalized, auth: Object.freeze({ registration: Object.freeze(registration) }) };
+    }
     return normalizeFileAccessKeyPolicy(normalized);
 }
 function normalizeFileAccessKeyPolicy(definition) {

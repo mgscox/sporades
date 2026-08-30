@@ -241,6 +241,9 @@ export async function simulateLocalIdentitySession(database, options = {}) {
             });
         }
         else {
+            const registration = await admitRegistration(database, tx, { provider, email, displayName, picture, userId, kind: "local" }, options.registration);
+            if (!registration.ok)
+                return registration;
             await tx.insertAuthUser({
                 id: userId,
                 createdAt: now,
@@ -2495,7 +2498,7 @@ export function authProvidersForClient(authConfig, origin = null) {
 // what ships, so they were reported and left standing; the deletion ticket removed the declarations
 // too, along with `refreshSession`, which was dead in the same way.
 // ---------------------------------------------------------------------------------------------
-export async function signUpWithEmail(database, session, provider, credentials) {
+export async function signUpWithEmail(database, session, provider, credentials, registrationInput) {
     if (provider !== "email") {
         return {
             ok: false,
@@ -2533,6 +2536,9 @@ export async function signUpWithEmail(database, session, provider, credentials) 
         provider: "email",
     };
     return await withAuthTransaction(database, async (tx) => {
+        const registration = await admitRegistration(database, tx, { provider: "email", email: normalized.email, displayName, picture: null, userId: auth.userId, kind: "email" }, registrationInput);
+        if (!registration.ok)
+            return registration;
         await tx.insertEmailCredential({
             email: normalized.email,
             userId: auth.userId,
@@ -2552,6 +2558,31 @@ export async function signUpWithEmail(database, session, provider, credentials) 
         await bootstrapInitialTeamForLinkedUser(tx, auth.userId);
         return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
     });
+}
+function registrationDenied() { return { ok: false, error: { code: "REGISTRATION_DENIED", message: "Registration was not admitted.", hint: "Use valid registration admission and retry." } }; }
+function boundedRegistrationInput(input) {
+    if (input === undefined)
+        return undefined;
+    try {
+        const encoded = JSON.stringify(input);
+        return encoded === undefined || Buffer.byteLength(encoded, "utf8") > 4096 ? null : JSON.parse(encoded);
+    }
+    catch {
+        return null;
+    }
+}
+async function admitRegistration(database, tx, evidence, input) {
+    if (typeof database.runRegistrationAdmission !== "function")
+        return { ok: true };
+    const admission = boundedRegistrationInput(input);
+    if (admission === null)
+        return registrationDenied();
+    try {
+        return await database.runRegistrationAdmission(tx, Object.freeze({ ...evidence }), admission) ? { ok: true } : registrationDenied();
+    }
+    catch {
+        return registrationDenied();
+    }
 }
 export async function signInWithEmail(database, session, credentials) {
     if (!database.authConfig.providers.email.enabled) {

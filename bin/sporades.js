@@ -204,8 +204,8 @@ export const auth = {
   subscribe(listener) {
     return connect().subscribeAuth(listener);
   },
-  signUp(provider, credentials) {
-    return connect().signUp(provider, credentials);
+  signUp(provider, credentials, options) {
+    return connect().signUp(provider, credentials, options);
   },
   signIn(provider, credentials) {
     return connect().signIn(provider, credentials);
@@ -1139,8 +1139,8 @@ function createConnection() {
       let active = true;
       return { unsubscribe() { if (!active) return; active = false; authStateListeners.delete(wrapped); } };
     },
-    signUp(provider, credentials) {
-      return request("auth.signUp", { provider, credentials }).then((result) => {
+    signUp(provider, credentials, options) {
+      return request("auth.signUp", { provider, credentials, registration: options?.registration }).then((result) => {
         if (result.data?.sessionToken) {
           return storeAuthSession(result);
         }
@@ -2320,6 +2320,13 @@ function normalizeCapsuleAuthDefinition(definition) {
       ...definition,
       accessKeys: Object.freeze({ scopes: Object.freeze(scopes) })
     };
+  }
+  if (Object.hasOwn(normalized, "auth") && normalized.auth !== void 0) {
+    const registration = normalized.auth?.registration;
+    if (!isPlainObject(normalized.auth) || Object.keys(normalized.auth).some((key) => key !== "registration") || !isPlainObject(registration) || typeof registration.admit !== "function" || typeof registration.finalize !== "function" || Object.keys(registration).some((key) => key !== "admit" && key !== "finalize")) {
+      throw commandError("Invalid Capsule Registration Admission declaration.", "Declare auth.registration with both admit and finalize server functions.", "INVALID_REGISTRATION_ADMISSION");
+    }
+    normalized = { ...normalized, auth: Object.freeze({ registration: Object.freeze(registration) }) };
   }
   return normalizeFileAccessKeyPolicy(normalized);
 }
@@ -14161,6 +14168,8 @@ async function simulateLocalIdentitySession(database, options = {}) {
         updatedAt: now2
       });
     } else {
+      const registration = await admitRegistration(database, tx, { provider, email, displayName, picture, userId, kind: "local" }, options.registration);
+      if (!registration.ok) return registration;
       await tx.insertAuthUser({
         id: userId,
         createdAt: now2,
@@ -16232,7 +16241,7 @@ function authProvidersForClient(authConfig, origin = null) {
   }
   return providers;
 }
-async function signUpWithEmail(database, session, provider, credentials) {
+async function signUpWithEmail(database, session, provider, credentials, registrationInput) {
   if (provider !== "email") {
     return {
       ok: false,
@@ -16270,6 +16279,8 @@ async function signUpWithEmail(database, session, provider, credentials) {
     provider: "email"
   };
   return await withAuthTransaction(database, async (tx) => {
+    const registration = await admitRegistration(database, tx, { provider: "email", email: normalized.email, displayName, picture: null, userId: auth.userId, kind: "email" }, registrationInput);
+    if (!registration.ok) return registration;
     await tx.insertEmailCredential({
       email: normalized.email,
       userId: auth.userId,
@@ -16289,6 +16300,28 @@ async function signUpWithEmail(database, session, provider, credentials) {
     await bootstrapInitialTeamForLinkedUser(tx, auth.userId);
     return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
   });
+}
+function registrationDenied() {
+  return { ok: false, error: { code: "REGISTRATION_DENIED", message: "Registration was not admitted.", hint: "Use valid registration admission and retry." } };
+}
+function boundedRegistrationInput(input) {
+  if (input === void 0) return void 0;
+  try {
+    const encoded = JSON.stringify(input);
+    return encoded === void 0 || Buffer.byteLength(encoded, "utf8") > 4096 ? null : JSON.parse(encoded);
+  } catch {
+    return null;
+  }
+}
+async function admitRegistration(database, tx, evidence, input) {
+  if (typeof database.runRegistrationAdmission !== "function") return { ok: true };
+  const admission = boundedRegistrationInput(input);
+  if (admission === null) return registrationDenied();
+  try {
+    return await database.runRegistrationAdmission(tx, Object.freeze({ ...evidence }), admission) ? { ok: true } : registrationDenied();
+  } catch {
+    return registrationDenied();
+  }
 }
 async function signInWithEmail(database, session, credentials) {
   if (!database.authConfig.providers.email.enabled) {
@@ -20216,6 +20249,35 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     teamApplicationRoles,
     teamBillingDefinition,
     teamBillingErasureObjectKey: (providerObjectId) => teamBillingErasureObjectKey(database, providerObjectId),
+    runRegistrationAdmission: typeof capsuleDefinition?.auth?.registration?.admit === "function" ? async function(transactionAdapter, evidence, admission) {
+      const rootDatabase = this.__rootDatabase ?? this;
+      const transaction = this[trustedReadTransactionAdapter] ?? transactionAdapter;
+      const registrationDatabase = createTransactionDatabase(rootDatabase, transaction);
+      let active = true;
+      const assertActive = () => {
+        if (!active) throw commandError("Registration access is no longer active.", "Start a new registration callback.", "REGISTRATION_ACCESS_INACTIVE");
+      };
+      const readContext = { purpose: "auth.registration", evidence, admission };
+      grantPrivilegedDbAccess(readContext);
+      const readHolder = createContextHolder(readContext);
+      try {
+        const decision = await capsuleDefinition.auth.registration.admit({ db: createEndpointReadOnlyDatabaseApi(registrationDatabase, () => readHolder.current, assertActive), evidence, admission });
+        if (!decision || decision.allow !== true) return false;
+        const finalizeContext = { purpose: "auth.registration-finalize", evidence };
+        grantPrivilegedDbAccess(finalizeContext);
+        const finalizeHolder = createContextHolder(finalizeContext);
+        try {
+          await capsuleDefinition.auth.registration.finalize({ db: createEndpointDatabaseApi(registrationDatabase, () => finalizeHolder.current), evidence }, { ...evidence, state: decision.state });
+        } finally {
+          revokePrivilegedDbAccess(finalizeContext);
+        }
+        return true;
+      } finally {
+        active = false;
+        revokePrivilegedDbAccess(readContext);
+        await drainPendingLogWrites(registrationDatabase);
+      }
+    } : void 0,
     runTeamJoinAdmission: typeof capsuleDefinition?.teams?.admitJoin === "function" ? async function(transactionAdapter, auth, input, signal) {
       const rootDatabase = this.__rootDatabase ?? this;
       const trustedTransaction = this[trustedReadTransactionAdapter] ?? transactionAdapter;
@@ -23582,7 +23644,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       return;
     }
     if (message.type === "auth.signUp") {
-      const result = await signUpWithEmail(database, client.session, message.provider, message.credentials ?? {});
+      const result = await signUpWithEmail(database, client.session, message.provider, message.credentials ?? {}, message.registration?.admission);
       if (result.ok) {
         retireJourney(client);
         client.session = {
