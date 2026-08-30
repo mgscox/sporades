@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { authStatus, createBundle, isReservedServerEnvKeyName, isValidServerEnvKeyName, parseServerEnv, readServerEnvFile, serverEnvPlaintextSize, } from "../bundle-pipeline.js";
 import { replaceFilesAtomically } from "../file-transaction.js";
+import { REGISTRATION_ADMISSION_BYTE_LIMIT } from "../auth-runtime.js";
 import { CLIENT_FRAMEWORK_HINT, CLIENT_TEMPLATES, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, defaultClientToolchain, isClientFramework, isClientToolchain, resolveClientCapability, supportsClientCapability } from "../client-capabilities.js";
 import { discardPublicTree, getProcessStartIdentity, readPublicAsset, readPublicTreeConsumer, removePublicTreeConsumer, restorePublicTreeConsumer, summarizePublicTree, writePublicTreeConsumer, } from "../public-tree.js";
 import { SPORADES_BASE_IMAGE, baseImageLabels, baseImageRuntimeUser, } from "../base-image.js";
@@ -632,6 +633,7 @@ function parseAuthArgs(args) {
     let picture = null;
     let port = null;
     let client = null;
+    let registration;
     for (let index = 0; index < rest.length; index += 1) {
         const arg = rest[index];
         switch (arg) {
@@ -683,6 +685,20 @@ function parseAuthArgs(args) {
                     throw commandError("Invalid auth client target.", "Use `--client current`, `--client all`, or a client id from `sporades auth clients`.");
                 }
                 break;
+            case "--registration": {
+                const encoded = readFlagValue(rest, ++index, "--registration");
+                if (Buffer.byteLength(encoded, "utf8") > REGISTRATION_ADMISSION_BYTE_LIMIT)
+                    throw commandError("Registration admission input is too large.", `Pass a JSON object no larger than ${REGISTRATION_ADMISSION_BYTE_LIMIT} UTF-8 bytes.`, "INVALID_REGISTRATION_ADMISSION_INPUT");
+                try {
+                    registration = JSON.parse(encoded);
+                }
+                catch {
+                    throw commandError("Registration admission input is malformed.", "Pass a valid JSON object to `--registration`.", "INVALID_REGISTRATION_ADMISSION_INPUT");
+                }
+                if (!registration || typeof registration !== "object" || Array.isArray(registration))
+                    throw commandError("Registration admission input must be a JSON object.", "Pass a bounded JSON object to `--registration`.", "INVALID_REGISTRATION_ADMISSION_INPUT");
+                break;
+            }
             default:
                 throw commandError(`Unknown flag: ${arg}`, "Use `sporades auth status`, `sporades auth set google`, or `sporades auth as email`.");
         }
@@ -696,7 +712,7 @@ function parseAuthArgs(args) {
             if (!simulatedProvider) {
                 throw commandError("Missing simulated auth provider.", "Use `sporades auth as email --email <address> --json`.");
             }
-            return { subcommand, provider: simulatedProvider, email, displayName, picture, port, client, json, projectDir: process.cwd() };
+            return { subcommand, provider: simulatedProvider, email, displayName, picture, registration, port, client, json, projectDir: process.cwd() };
         case "set":
             if (!provider || !["anonymous", "email", "google", "microsoft", "apple", "facebook"].includes(provider)) {
                 break;
@@ -2539,6 +2555,7 @@ async function manageAuth(options) {
                 email: options.email,
                 displayName: options.displayName,
                 picture: options.picture,
+                ...(options.registration !== undefined ? { registration: options.registration } : {}),
                 client: options.client,
             });
             if (options.json) {

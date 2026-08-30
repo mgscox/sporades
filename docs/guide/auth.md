@@ -101,3 +101,97 @@ guards do not enable File Bearer access. For operational retirement, use the
 [five metadata-only operator commands](../reference/operations-and-hosting.md#inspect-and-retire-access-keys).
 Operators cannot issue, rotate, or recover plaintext, and stopped Capsules are
 not opened just to reach Auth storage.
+
+## Admit newly linked registrations
+
+Capsules may opt into `auth.registration` to decide, and atomically record, a
+new email or local simulated identity before Sporades creates its credential,
+linked User, singleton Team, membership, or Session. The callback receives only
+normalized identity evidence and a bounded opaque `admission` value supplied as
+the optional third argument to `auth.signUp`.
+
+```ts
+export default capsule({
+  name: "controlled-registration",
+  auth: {
+    registration: {
+      admit: async ({ db, evidence, admission }) =>
+        (await db.bootstrapClaims.all()).length === 0 && admission?.key === "approved"
+          ? { allow: true } : { allow: false },
+      finalize: async ({ db, evidence }) => {
+        await db.bootstrapClaims.insert({ userId: evidence.userId });
+      },
+    },
+  },
+});
+```
+
+Both callbacks run in the same Auth transaction. A denial, invalid input, throw,
+or finalizer failure returns the bounded `REGISTRATION_DENIED` result and rolls
+back both application and runtime changes. The database handles are
+transaction-bound and reject use after either callback settles. Omitting the
+declaration preserves existing registration behaviour.
+
+For first-time OAuth linking, pass the same option to `auth.signIn`. Sporades
+stores the admission only as authenticated ciphertext bound to that provider,
+anonymous Session, callback URI, nonce, and expiry; it is consumed with the
+single-use OAuth state and is never added to redirects, provider traffic, or
+callback errors.
+
+Use Registration Admission when a Capsule must make its first-user or invite
+decision from application state atomically with creating an identity. It is not
+an authorization hook for existing users: linking an existing identity bypasses
+admission. The admission must be JSON-safe and no larger than 4 KiB; its benefit
+is a single durable allow/deny decision, while the tradeoff is that slow or
+external policy work belongs before sign-in, not inside the transaction.
+Sporades fences that decision with a runtime-owned database row. Separate
+libSQL and Postgres connections therefore serialize before reading policy
+state, then re-evaluate after the prior registration commits or rolls back;
+the fence does not depend on one Node runtime's in-memory transaction queue.
+The read-only `admit` database capability is revoked as soon as `admit` settles,
+before `finalize` receives its separate transaction-scoped write capability;
+captured or unawaited admission reads cannot overlap or observe finalizer writes.
+
+Good uses include an invitation key, a one-time bootstrap administrator claim,
+or a tenant allow-list that already lives in the Capsule database. Do not use it
+for per-request authorization, post-registration roles, provider token
+validation, or a policy that must make a network request. Those belong in the
+normal authorization model, the registration finalizer, the OAuth provider
+adapter, or work completed before `auth.signIn`/`auth.signUp`, respectively.
+Admission is any JSON-safe value up to 4096 UTF-8 bytes, including explicit
+`null`; omission remains the distinct `undefined` case.
+
+The advantages are one policy for email, local simulation, and first-time OAuth
+linking; atomic policy reads and finalizer writes; and no half-created identity
+after denial. The costs are deliberate coupling of registration availability to
+the Capsule database, a short transaction whose callback must remain bounded,
+and an encrypted OAuth hand-off that needs runtime-owned key maintenance. A
+broken policy denies new identities with `REGISTRATION_DENIED`; it does not
+disable sign-in for an already-linked identity.
+
+OAuth admission persistence is encrypted with the exact callback binding above.
+Its active key is an immutable 22-character identifier pointing to separate
+43-character material. Upgrades migrate the former `active` material once and
+retain a bounded `active` alias until every outstanding legacy OAuth state has
+expired (at least ten minutes). New envelopes always carry the immutable ID.
+Malformed, unknown, or expired IDs fail closed without creating key rows; an
+invalid envelope, unknown key, or authentication-tag failure is distinguished
+from a legitimately absent admission and denies before Capsule policy or
+finalizer code runs. Envelopes have exactly four dot-separated components;
+their encoded binary components use canonical undecorated base64url, with a 12-byte IV and
+16-byte authentication tag. An operator must restore the retained material if it is lost, after which affected
+OAuth starts should be retried.
+
+Sporades performs legacy-key reconciliation and safe retirement automatically
+when an admission-enabled Capsule opens. Framework release and recovery tooling
+uses the runtime maintenance API `reconcileOAuthRegistrationKeys(database)`,
+`rotateOAuthRegistrationKey(database)`, and
+`retireOAuthRegistrationKeys(database)`. These functions are runtime-internal,
+not imports for Capsule code: rotation atomically swaps the active pointer and
+returns only key IDs plus `retainUntil`; retirement removes an old material row
+only after both that deadline and every matching OAuth state expiry. Never edit
+the `oauth-registration-key:*` rows by hand or copy their values into logs.
+There is intentionally no Capsule-facing key command in this release. If key
+material is missing or corrupt, stop accepting new OAuth registrations, restore
+the database from a protected backup, reopen the Capsule to reconcile, and ask
+users whose state expired during recovery to start OAuth again.

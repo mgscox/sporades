@@ -21,7 +21,7 @@ import {
   PASSWORD_RESET_MAX_TTL_MS, PASSWORD_RESET_MIN_TTL_MS, PASSWORD_RESET_THROTTLE_FIELD,
   PRIVILEGED_AUTH_USER_ID, appleOAuthOriginEligible, assertNotReservedAuthUserId,
   authIdentityRowUnlessReserved, authIdentityRowsUnlessReserved, authProvidersForClient, authStatus,
-  confirmPasswordReset, createAuthDenialLogData, createEmailPasswordResetLink, createSessionToken, currentEmailSignInThrottleState,
+  capsuleIngressAuthUserId, confirmPasswordReset, createAuthDenialLogData, createEmailPasswordResetLink, createSessionToken, currentEmailSignInThrottleState,
   emailAuthDisabledError, emitAuthDeniedLog, hashEmailPassword,
   invalidEmailCredentialsError, isReservedAuthUserId, mailNotConfiguredError,
   normalizeEmailCredentials, normalizePasswordResetPath, normalizeReturnTo, normalizeSimulatedText,
@@ -38,7 +38,7 @@ import { linkProviderIdentity, signInWithEmail, signUpWithEmail } from "./auth-r
 // Batch 8. `createWebSocketHub` starts an OAuth sign-in, and `openDevDatabase` and
 // `sendEmailPasswordResetLink` read the reset-link configuration. Both left this file for
 // `auth-runtime.ts` in that batch, once the HTTP layer stopped holding them.
-import { beginOAuthSignIn, resolvePasswordResetConfig } from "./auth-runtime.js";
+import { beginOAuthSignIn, reconcileOAuthRegistrationKeys, resolvePasswordResetConfig, retireOAuthRegistrationKeys } from "./auth-runtime.js";
 // Batch 9. The auth storage bootstrap went home to its own domain's module once the shared adapter
 // method set — the only thing that calls it — was on its way out of this file. `ensureAuthStorage()`
 // resolves it here for as long as that method set is still below.
@@ -147,6 +147,7 @@ import {
   getPrivateFileUrl, isAbsoluteFilePath, normalizeAbsoluteFilePath, resolvePrivilegedLiveFileReference,
   revokePublicFileUrl,
 } from "./file-storage-runtime.js";
+import { createEndpointIngressApi, finalizeEndpointIngressClaims, stageMultipartIngress, sweepExpiredFileIngress, validateMultipartIngressPolicy } from "./file-ingress-runtime.js";
 import {
   abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob,
   canonicalJobAuthSnapshot, canonicalJobCredentialProvenance, captureJobAuthSnapshot,
@@ -163,7 +164,7 @@ import {
 import { dispatchVerifiedStripeEvent } from "./stripe-events-runtime.js";
 
 const mutationResultsWithWrites = new WeakSet<object>();
-const trustedReadPurposes = new Set(["teams.join-admission", "team-billing.authority"]);
+const trustedReadPurposes = new Set(["teams.join-admission", "team-billing.authority", "files.ingress-admission"]);
 const trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 const runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
 const atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
@@ -604,6 +605,29 @@ function emitRuntimeReplacementWarning(database: LooseRecord, event: string, mes
 }
 
 
+function endpointIngressClaimAuthority(endpoint: LooseRecord) {
+  const declared = endpoint?.options?.body?.multipart?.claimAuthorities;
+  if (declared === undefined) return "actor";
+  if (!Array.isArray(declared) || declared.length !== 1 || !["actor", "capsule-principal"].includes(declared[0])) {
+    throw commandError("Invalid multipart claim authority.", "Declare exactly one of actor or capsule-principal for this endpoint.", "INVALID_FILE_INGRESS_AUTHORITY");
+  }
+  return declared[0];
+}
+
+function normalizeCapsuleFileIngressDefinition(files: LooseRecord | undefined, endpoints: LooseRecord[]) {
+  const usesCapsulePrincipal = endpoints.some((endpoint) => endpoint?.options?.body?.multipart && endpointIngressClaimAuthority(endpoint) === "capsule-principal");
+  if (!usesCapsulePrincipal) return null;
+  const ingress = files?.ingress;
+  const namespaces = ingress?.principalNamespaces;
+  if (!ingress || typeof ingress !== "object" || Array.isArray(ingress) || typeof ingress.admit !== "function" || !Array.isArray(namespaces) || namespaces.length === 0 || namespaces.length > 32 || namespaces.some((value: any) => typeof value !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(value)) || new Set(namespaces).size !== namespaces.length) {
+    throw commandError("Invalid Capsule File ingress admission.", "Declare files.ingress with unique principalNamespaces and an admit function.", "INVALID_FILE_INGRESS_ADMISSION");
+  }
+  if (typeof files?.acl?.read !== "function" || typeof files?.acl?.delete !== "function") {
+    throw commandError("Capsule-principal File ingress requires explicit File ACL rules.", "Declare files.acl.read and files.acl.delete before enabling capsule-principal claims.", "FILE_INGRESS_ACL_REQUIRED");
+  }
+  return Object.freeze({ principalNamespaces: Object.freeze([...namespaces]), admit: ingress.admit });
+}
+
 export async function openDevDatabase(
   databasePath: string,
   serverSource: any,
@@ -642,6 +666,7 @@ export async function openDevDatabase(
   const capsuleEndpoints = capsuleDefinition
     ? endpointHandlersFromCapsuleDefinition(capsuleDefinition)
     : extractEndpoints(serverSource);
+  for (const declaredEndpoint of capsuleEndpoints as LooseRecord[]) if (declaredEndpoint?.options?.body?.multipart !== undefined) validateMultipartIngressPolicy(declaredEndpoint.options.body.multipart);
   const emailEventEndpoints = createEmailEventEndpoints(mailConfig, serverEnv, capsuleDefinition?.emailEvents);
   const stripeCallbackEndpoint = paymentsConfig?.stripe.enabled
     ? options?.createStripeCallbackEndpoint?.(
@@ -676,6 +701,7 @@ export async function openDevDatabase(
     }
   }
   const endpoints = [...capsuleEndpoints, ...providerEndpoints];
+  const fileIngressDefinition = normalizeCapsuleFileIngressDefinition(capsuleDefinition?.files, endpoints);
   const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
   const journeySessionInactivityMinutes = resolveJourneySessionInactivityMinutes(config);
   // Handler sources extracted from Capsule server code are re-created with
@@ -769,6 +795,8 @@ export async function openDevDatabase(
     securitySession: config.__sporadesSession ?? "container",
     clock,
     capsuleIdentity: String(config.name ?? "capsule"),
+    capsuleIngressOwnerId: capsuleIngressAuthUserId(config.name ?? capsuleDefinition?.name ?? "capsule"),
+    fileIngressDefinition,
     scheduleOccurrenceFault: options?.scheduleOccurrenceFault,
     scheduleReconciliationFault: options?.scheduleReconciliationFault,
     jobRecoveryFault: options?.jobRecoveryFault,
@@ -871,6 +899,28 @@ export async function openDevDatabase(
     teamApplicationRoles,
     teamBillingDefinition,
     teamBillingErasureObjectKey: (providerObjectId: string) => teamBillingErasureObjectKey(database, providerObjectId),
+    runRegistrationAdmission: typeof capsuleDefinition?.auth?.registration?.admit === "function"
+      ? async function (this: LooseRecord, transactionAdapter: LooseRecord, evidence: LooseRecord, admission: unknown) {
+        const rootDatabase = this.__rootDatabase ?? this;
+        const transaction = (this as any)[trustedReadTransactionAdapter] ?? transactionAdapter;
+        const registrationDatabase = createTransactionDatabase(rootDatabase, transaction);
+        let active = true;
+        const assertActive = () => { if (!active) throw commandError("Registration access is no longer active.", "Start a new registration callback.", "REGISTRATION_ACCESS_INACTIVE"); };
+        const readContext: LooseRecord = { purpose: "auth.registration", evidence, admission };
+        grantPrivilegedDbAccess(readContext); const readHolder = createContextHolder(readContext);
+        try {
+          let decision: LooseRecord | null = null;
+          try { decision = await capsuleDefinition.auth.registration.admit({ db: createEndpointReadOnlyDatabaseApi(registrationDatabase, () => readHolder.current, assertActive), evidence, admission }); }
+          finally { active = false; revokePrivilegedDbAccess(readContext); }
+          if (!decision || decision.allow !== true) return false;
+          const finalizeContext: LooseRecord = { purpose: "auth.registration-finalize", evidence };
+          grantPrivilegedDbAccess(finalizeContext); const finalizeHolder = createContextHolder(finalizeContext);
+          try { await capsuleDefinition.auth.registration.finalize({ db: createEndpointDatabaseApi(registrationDatabase, () => finalizeHolder.current), evidence }, { ...evidence, state: decision.state }); }
+          finally { revokePrivilegedDbAccess(finalizeContext); }
+          return true;
+        } finally { active = false; revokePrivilegedDbAccess(readContext); await drainPendingLogWrites(registrationDatabase); }
+      }
+      : undefined,
     runTeamJoinAdmission: typeof capsuleDefinition?.teams?.admitJoin === "function"
       ? async function (this: LooseRecord, transactionAdapter: LooseRecord, auth: LooseRecord, input: LooseRecord, signal: any) {
         const rootDatabase = this.__rootDatabase ?? this;
@@ -1105,6 +1155,14 @@ export async function openDevDatabase(
     } catch { database.accessKeyScopes = []; }
   }
   await sqlite.ensureAuthStorage(database.authConfig);
+  // Reconcile the former single `active` OAuth admission key before this
+  // runtime can accept a callback. Retirement is deliberately a separate,
+  // bounded pass: it removes only keys whose grace and outstanding states have
+  // both expired.
+  if (database.runRegistrationAdmission) {
+    await reconcileOAuthRegistrationKeys(database);
+    await retireOAuthRegistrationKeys(database);
+  }
   await sqlite.ensureUserPreferencesStorage();
   await sqlite.ensureTeamsStorage();
   if (teamBillingDefinition) await sqlite.ensureTeamBillingStorage();
@@ -1112,6 +1170,10 @@ export async function openDevDatabase(
   await ensureScheduleStorage(sqlite, options?.scheduleStorageFault);
   await sqlite.ensureFileStorage();
   await sqlite.ensureLogStorage();
+  if (!options?.runtimeActionOnly) {
+    const ingressSweep = await sweepExpiredFileIngress(database);
+    if (ingressSweep.failures.length > 0) await database.log.emit({ category: "platform", event: "file.ingress.sweep_failed", level: "warn", message: "Multipart ingress cleanup left retryable orphan state", data: { code: ingressSweep.failures[0].code, failures: ingressSweep.failures.length, scanned: ingressSweep.scanned } });
+  }
   if (!options?.runtimeActionOnly) {
     await recoverInvalidRetainedJobState(database);
     await recoverExpiredJobLeases(database);
@@ -2758,6 +2820,9 @@ function endpointHandlersFromCapsuleDefinition(capsuleDefinition: any) {
       name,
       method: definition.options.method.toUpperCase(),
       path: definition.options.path,
+      // Keep declaration-time transport policy with the runtime route. It is security
+      // configuration, not handler-owned data, and must survive Capsule registration.
+      options: definition.options,
       handler: definition.handler,
     }));
 }
@@ -3236,18 +3301,37 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
 
 
 
+async function admitCapsuleIngressPrincipal(database: LooseRecord, endpoint: LooseRecord, endpointRequest: LooseRecord, signal: any) {
+  const definition = database.fileIngressDefinition;
+  if (!definition) throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
+  const decision = await database.adapter.withTransaction((transaction: LooseRecord) => withTrustedRead(database, {
+    transaction,
+    purpose: "files.ingress-admission",
+    subject: { method: endpoint.options.method, path: endpoint.options.path },
+    signal,
+  }, (db) => definition.admit(Object.freeze({
+    db,
+    env: database.serverEnv,
+    signal,
+    request: Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }),
+  }), Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }))));
+  const namespace = decision?.principal?.namespace; const key = decision?.principal?.key;
+  const serialized = (() => { try { return JSON.stringify(decision); } catch { return ""; } })();
+  if (decision?.allow !== true || typeof namespace !== "string" || !definition.principalNamespaces.includes(namespace) || typeof key !== "string" || key.length === 0 || Buffer.byteLength(key, "utf8") > 256 || /[\x00-\x1f\x7f]/.test(key) || Buffer.byteLength(serialized, "utf8") > 4096) {
+    throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
+  }
+  return Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId });
+}
+
 export async function runEndpoint(database: any, endpoint: { handler?: Function; handlerSource?: string; }, requestUrl: URL, request: any) {
   const handler =
     typeof endpoint.handler === "function"
       ? endpoint.handler
       : new Function(`return (${endpoint.handlerSource});`)();
   const runtimeOwnedProviderCallback = (endpoint as LooseRecord).runtimeOwnedEmailEvent || (endpoint as LooseRecord).runtimeOwnedStripeCallback;
-  const endpointRequest = await readEndpointRequest(
-    database,
-    requestUrl,
-    request,
-    !(endpoint as LooseRecord).runtimeOwnedStripeCallback,
-  );
+  // Admission intentionally precedes multipart body consumption. Ordinary endpoint bodies retain
+  // their historic bounded read path below.
+  let endpointRequest = endpointRequestHead(requestUrl, request);
   const requirements = readAuthRequirements(handler);
   const hasAuthorization = requirements ? endpointHasAuthorization(request) : false;
   if (requirements) delete endpointRequest.headers.authorization;
@@ -3271,6 +3355,12 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
       readEndpointSessionToken(endpointRequest.headers, endpointRequest.query),
     )
     : null;
+  // Multipart is an ingress capability, not a way to make an unauthenticated client
+  // pay us in bytes before we reject it. Session guards have no body dependency, so
+  // admit them before the multipart reader advances the request iterator.
+  if (!accessKeyAdmission && requirements && (endpoint as LooseRecord).options?.body?.multipart) {
+    admitCredentialHandler(handler, { auth: session?.auth, credential: { kind: "session" } }, "endpoint");
+  }
   if (accessKeyAdmission) {
     const admissionContext = {
       auth: accessKeyAdmission.auth,
@@ -3287,41 +3377,81 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
     emitAccessKeyAdmittedAudit(database, { ...admissionContext, kind: "endpoint" }, accessKeyAdmission.record);
     await recordAccessKeyUsage(database, accessKeyAdmission);
   }
+  if ((endpoint as LooseRecord).options?.body?.multipart) {
+    const claimAuthority = endpointIngressClaimAuthority(endpoint as LooseRecord);
+    const admitted = (accessKeyAdmission ?? session) as LooseRecord;
+    let ingressAuthority: LooseRecord;
+    if (claimAuthority === "capsule-principal") {
+      ingressAuthority = await admitCapsuleIngressPrincipal(database, endpoint as LooseRecord, endpointRequest, request.signal);
+    } else {
+      if (!admitted?.auth?.isAuthenticated || admitted.auth.isGuest || isReservedAuthUserId(admitted.auth.userId)) throw commandError("Unauthenticated.", "Sign in with a linked human or service User and retry.", "UNAUTHENTICATED");
+      ingressAuthority = Object.freeze({ kind: "actor", actorId: String(admitted.auth.userId), ownerId: String(admitted.auth.userId) });
+    }
+    const payload = await stageMultipartIngress(database, endpoint as LooseRecord, request, endpointRequest, admitted.auth, ingressAuthority);
+    endpointRequest = { ...endpointRequest, ...payload };
+  } else {
+    endpointRequest = await readEndpointRequest(database, requestUrl, request, !(endpoint as LooseRecord).runtimeOwnedStripeCallback);
+    // `readEndpointRequest` rebuilds the request head before reading the body.
+    // Preserve the long-standing guard invariant that a consumed Bearer value
+    // never reaches Capsule middleware or handler code.
+    if (requirements) delete endpointRequest.headers.authorization;
+  }
   let context: LooseRecord | undefined;
   try {
-    const result = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter: any) => {
-      const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
-      let handlerFailed = false;
+    let result: any; let transactionAttempt = 0;
+    while (true) {
+      let ingressFenceAcquired = false;
       try {
-        const resolvedSession = (accessKeyAdmission ?? session) as LooseRecord;
-        context = createEndpointContext(transactionDatabase, endpointRequest, resolvedSession, {
-          ordinaryCredential: !runtimeOwnedProviderCallback,
-          credential: accessKeyAdmission?.credential,
-          accessKeyGrants: accessKeyAdmission?.grants,
+        context = undefined;
+        result = await database.adapter.withTransaction(async (transactionAdapter: any) => {
+          // This conditional no-op UPDATE is deliberately the first endpoint SQL. It gives every
+          // runtime connection the same sorted receipt lock order before middleware or app code
+          // can produce effects. SQLite contention is retried only while this fence is unarmed.
+          const ingressLeaseIds = (((endpointRequest as LooseRecord).multipart?.files) ?? []).map((lease: LooseRecord) => String(lease.leaseId));
+          if (ingressLeaseIds.length > 0) await transactionAdapter.lockIngressReceipts(ingressLeaseIds);
+          ingressFenceAcquired = true;
+          const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
+          let handlerFailed = false;
+          try {
+            const resolvedSession = (accessKeyAdmission ?? session) as LooseRecord;
+            context = createEndpointContext(transactionDatabase, endpointRequest, resolvedSession, {
+              ordinaryCredential: !runtimeOwnedProviderCallback,
+              credential: accessKeyAdmission?.credential,
+              accessKeyGrants: accessKeyAdmission?.grants,
+            });
+            context.files = createEndpointIngressApi(transactionDatabase, endpoint as LooseRecord, endpointRequest, context);
+            if ((endpoint as LooseRecord).runtimeOwnedStripeCallback) {
+              Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
+            }
+            if (!runtimeOwnedProviderCallback) {
+              if (!accessKeyAdmission) admitCredentialHandler(handler, context, "endpoint");
+              context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
+            }
+            const result = await handler(context);
+            if (accessKeySecretWasDisclosed(context)) (request as LooseRecord).__sporadesSecretDisclosed = true;
+            return result;
+          } catch (error) {
+            handlerFailed = true;
+            throw error;
+          } finally {
+            await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
+          }
         });
-        if ((endpoint as LooseRecord).runtimeOwnedStripeCallback) {
-          Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
-        }
-        if (!runtimeOwnedProviderCallback) {
-          if (!accessKeyAdmission) admitCredentialHandler(handler, context, "endpoint");
-          context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
-        }
-        const result = await handler(context);
-        if (accessKeySecretWasDisclosed(context)) (request as LooseRecord).__sporadesSecretDisclosed = true;
-        return result;
-      } catch (error) {
-        handlerFailed = true;
-        throw error;
-      } finally {
-        await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
+        break;
+      } catch (error: any) {
+        if (ingressFenceAcquired || database.adapter.engine !== "sqlite" || transactionAttempt >= 100 || !String(error?.message ?? "").includes("database is locked")) throw error;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(25, transactionAttempt + 1)));
+        transactionAttempt += 1;
       }
-    });
+    }
+    finalizeEndpointIngressClaims(context ?? {}, true);
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     return result;
   } catch (error) {
+    finalizeEndpointIngressClaims(context ?? {}, false);
     dropPendingJobCancellationAborts(context);
     dropAccessKeyLifecycleAuditEvents(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
@@ -3551,6 +3681,12 @@ export async function runAtomicStripeConsequence(
 }
 
 async function readEndpointRequest(database: LooseRecord, requestUrl: URL, request: any, parseJsonBody = true) {
+  const head = endpointRequestHead(requestUrl, request);
+  const payload = await readEndpointPayload(request, head.headers, database, parseJsonBody);
+  return { ...head, ...payload };
+}
+
+function endpointRequestHead(requestUrl: URL, request: any) {
   const headers = Object.fromEntries(
     Object.entries(request.headers).map(([name, value]) => [
       name.toLowerCase(),
@@ -3558,13 +3694,11 @@ async function readEndpointRequest(database: LooseRecord, requestUrl: URL, reque
     ]),
   );
   const query = endpointQueryFromUrl(requestUrl);
-  const payload = await readEndpointPayload(request, headers, database, parseJsonBody);
   return {
     method: request.method,
     path: requestUrl.pathname,
     headers,
     query,
-    ...payload,
   };
 }
 
@@ -3597,8 +3731,12 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
       query: endpointRequest.query,
       body: endpointRequest.body,
       bodyBytes: endpointRequest.bodyBytes,
+      ...(endpointRequest.multipart ? { multipart: endpointRequest.multipart } : {}),
     },
   };
+  if (endpointRequest.__ingressAuthority?.kind === "capsule-principal") {
+    context.ingress = Object.freeze({ principal: Object.freeze({ namespace: endpointRequest.__ingressAuthority.namespace, key: endpointRequest.__ingressAuthority.key }) });
+  }
   if (credential?.kind === "session" && typeof session.token === "string") {
     bindAccessKeyOwnerSession(context, session.token);
   }
@@ -4751,7 +4889,7 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
     }
 
     if (message.type === "auth.signUp") {
-      const result: any = await signUpWithEmail(database, client.session, message.provider, message.credentials ?? {});
+      const result: any = await signUpWithEmail(database, client.session, message.provider, message.credentials ?? {}, message.registration?.admission);
       if (result.ok) {
         retireJourney(client);
         client.session = {
@@ -4799,9 +4937,10 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
         });
         return;
       }
-      const result = await beginOAuthSignIn(database, client.session, provider, {
+      const result: any = await beginOAuthSignIn(database, client.session, provider, {
         origin: client.origin,
         returnTo: message.returnTo,
+        registration: message.registration,
       });
       if (!result.ok) {
         sendJson(client, {

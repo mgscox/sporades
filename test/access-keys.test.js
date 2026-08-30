@@ -45,7 +45,9 @@ async function requestEndpoint(database, pathName, options = {}) {
     headers,
     rawHeaders,
     socket: { remoteAddress: options.remoteAddress ?? "127.0.0.1" },
-    async *[Symbol.asyncIterator]() {},
+    async *[Symbol.asyncIterator]() {
+      if (options.body !== undefined) yield Buffer.from(typeof options.body === "string" ? options.body : JSON.stringify(options.body));
+    },
   };
   const responseHeaders = {};
   const response = {
@@ -461,6 +463,12 @@ test("a guarded endpoint admits, attributes, scopes, and revokes a Bearer Access
         { method: "POST", path: "/requests" },
         requireAuth({ credentials: ["access-key"], scopes: ["requests:write"] }, () => ({ body: { ok: true } })),
       ),
+      ordinaryBody: endpoint(
+        { method: "POST", path: "/ordinary-body" },
+        requireAuth({ credentials: ["access-key"], scopes: ["requests:read"] }, (ctx) => ({
+          body: { received: ctx.request.body, authorizationVisible: "authorization" in ctx.request.headers },
+        })),
+      ),
       unwrapped: endpoint({ method: "GET", path: "/webhook" }, (ctx) => ({
         body: { provider: ctx.auth.provider, authorization: ctx.request.headers.authorization },
       })),
@@ -534,6 +542,21 @@ test("a guarded endpoint admits, attributes, scopes, and revokes a Bearer Access
     assert.equal(admittedBody.credentialFrozen, true);
     assert.equal(admittedBody.authorizationVisible, false);
     assert.deepEqual(globalThis.__accessKeyMiddlewareObserved[0], {
+      provider: "access-key",
+      credential: { kind: "access-key", id: issued.data.accessKey.id, name: "reader" },
+      authorizationVisible: false,
+    });
+    const ordinaryBody = await requestEndpoint(database, "/ordinary-body", {
+      method: "POST",
+      headers: { authorization: `Bearer ${issued.data.token}`, "content-type": "application/json" },
+      body: { ticketId: "ticket-123", action: "inspect" },
+    });
+    assert.equal(ordinaryBody.status, 200);
+    assert.deepEqual(await ordinaryBody.json(), {
+      received: { ticketId: "ticket-123", action: "inspect" },
+      authorizationVisible: false,
+    });
+    assert.deepEqual(globalThis.__accessKeyMiddlewareObserved[1], {
       provider: "access-key",
       credential: { kind: "access-key", id: issued.data.accessKey.id, name: "reader" },
       authorizationVisible: false,

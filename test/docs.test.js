@@ -71,6 +71,30 @@ test("documentation validation stays separate from the full regression suite", a
   assert.doesNotMatch(workflow, /- run: npm test(?:\s|$)/);
 });
 
+test("Registration Admission docs cover policy choice, atomicity, limits, OAuth custody, and recovery", async () => {
+  const [guide, reference] = await Promise.all([
+    readProjectFile("docs/guide/auth.md"),
+    readProjectFile("docs/reference/client-auth-and-preferences.md"),
+  ]);
+  for (const contents of [guide, reference]) {
+    assert.match(contents, /Registration Admission/i);
+    assert.match(contents, /4 KiB/);
+    assert.match(contents, /existing (?:identity|user)|already-linked identity/i);
+    assert.match(contents, /REGISTRATION_DENIED/);
+    assert.match(contents, /atomic|same (?:Auth )?transaction/i);
+    assert.match(contents, /provider[\s\S]{0,160}Session[\s\S]{0,160}callback URI[\s\S]{0,160}nonce[\s\S]{0,160}expiry/i);
+    assert.match(contents, /immutable/);
+    assert.match(contents, /rotateOAuthRegistrationKey/);
+    assert.match(contents, /retireOAuthRegistrationKeys/);
+    assert.match(contents, /restore[\s\S]{0,160}(?:backup|database)/i);
+    assert.match(contents, /benefit|advantage/i);
+    assert.match(contents, /cost|tradeoff/i);
+  }
+  assert.match(reference, /auth\.signUp\("email", credentials, \{ registration: \{ admission: \{ invite \} \} \}\)/);
+  assert.match(reference, /auth\.signIn\("google", undefined, \{ registration: \{ admission: \{ invite \} \} \}\)/);
+  assert.doesNotMatch(reference, /auth\.(?:signUp|signIn)\([^\n]+, \{ admission:/);
+});
+
 async function runShell(scriptPath, options) {
   return new Promise((resolve) => {
     const child = spawn("bash", [scriptPath], {
@@ -1224,6 +1248,22 @@ test("docs describe MinIO storage services and File reference boundaries", async
   assert.match(roadmap, /extend the existing internal Storage adapter\/config model beyond local MinIO/i);
   assert.doesNotMatch(roadmap, /S3-compatible storage plugin/i);
   assert.doesNotMatch(roadmap, /Allow uploaded bytes to live in S3-compatible object storage/i);
+});
+
+test("File reference docs define the trusted multipart ingress contract and operations", async () => {
+  const contents = await readProjectFile("docs/reference/files-and-realtime.md");
+  assert.match(contents, /claimAuthorities: \["capsule-principal"\]/);
+  assert.match(contents, /principalNamespaces/);
+  assert.match(contents, /files\.acl\.read/);
+  assert.match(contents, /before reading any body bytes/i);
+  assert.match(contents, /requestKeyHeader/);
+  assert.match(contents, /partKeyHeader/);
+  assert.match(contents, /INGRESS_AUTHORITY_DENIED/);
+  assert.match(contents, /Capsule startup automatically runs a bounded, deterministic\s+cleanup batch/i);
+  assert.match(contents, /There is no\s+public manual ingress-sweeper API/i);
+  assert.doesNotMatch(contents, /sweepExpiredFileIngress/);
+  assert.match(contents, /Local filesystem and\s+MinIO-backed/i);
+  assert.match(contents, /completed receipts remain replayable/i);
 });
 
 test("docs describe Host-generated Sealed Server env custody and lost-key recovery", async () => {

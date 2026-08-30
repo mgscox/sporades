@@ -1,6 +1,32 @@
 # Changes
 
-- Expose the verified provider-free Team Billing projection to active Capsule
+## 0.9.6 - 2026-08-30
+
+Changes since v0.9.5.
+
+### 🚀 Features
+
+- Add opt-in Registration Admission for database-backed invitation, first-user,
+  and tenant allow-list decisions. Email, local simulation, and first-time OAuth
+  registration share one bounded policy and transaction, so denial or finalizer
+  failure leaves no partial runtime or Capsule identity state. Existing linked
+  users and Capsules that omit `auth.registration` retain their current behavior.
+  A database-owned fence also serializes first-user and single-use invitation
+  decisions across separate libSQL and Postgres runtime connections.
+- Add trusted multipart File ingress for authenticated users, scoped service
+  users, and explicitly declared Capsule principals. Runtime-owned leases,
+  idempotent claims, bounded cleanup, and local/MinIO storage parity prevent
+  duplicate or orphaned File state across retry, restart, and concurrency.
+
+### 📝 Documentation
+
+- Document when Registration Admission is appropriate, why its atomic creation
+  gate is preferable to app-managed identity cleanup, its benefits and costs,
+  OAuth ciphertext/key lifecycle, safe rotation and retirement, and recovery.
+- Document trusted File ingress authority, multipart limits, ownership, claim,
+  replay, expiry, cleanup, and storage-adapter behavior.
+
+- Expose the verified provider-free headless Team Billing projection to active Capsule
   query and mutation contexts and to exact-Team Join admission. Current members
   may be authorized for safe reads while all customer-directed commands remain
   current-Team-admin operations; retained context handles are revoked.
@@ -55,7 +81,4 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
-
-
-
 

@@ -3,6 +3,7 @@ import type { BinaryLike } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 type LooseRecord = Record<string, any>;
 export declare const PRIVILEGED_AUTH_USER_ID = "__privileged__";
+export declare const CAPSULE_INGRESS_AUTH_USER_PREFIX = "__sporades_capsule_ingress__:";
 export declare const EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
 export declare const EMAIL_SIGN_IN_THROTTLE_WINDOW_MS: number;
 export declare const EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
@@ -17,6 +18,7 @@ export declare const PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL = 5;
 export declare const PASSWORD_RESET_MAIL_JOB = "_sporades_password_reset_mail";
 export declare const PASSWORD_RESET_REQUEST_JOB = "_sporades_password_reset_request";
 export declare function privilegedAuthUserId(): string;
+export declare function capsuleIngressAuthUserId(capsuleIdentity: any): string;
 export declare function isReservedAuthUserId(userId: any): boolean;
 export declare function authIdentityRowUnlessReserved(rowOrPromise: any): any;
 export declare function authIdentityRowsUnlessReserved(rowsOrPromise: any): any;
@@ -267,9 +269,10 @@ export declare function authStatus(config: LooseRecord, serverEnv: LooseRecord):
     };
 };
 export declare function authProvidersForClient(authConfig: LooseRecord, origin?: any): LooseRecord;
-export declare function signUpWithEmail(database: LooseRecord, session: LooseRecord, provider: string, credentials: any): Promise<any>;
+export declare function signUpWithEmail(database: LooseRecord, session: LooseRecord, provider: string, credentials: any, registrationInput?: unknown): Promise<any>;
+export declare const REGISTRATION_ADMISSION_BYTE_LIMIT = 4096;
 export declare function signInWithEmail(database: LooseRecord, session: any, credentials: any): Promise<any>;
-export declare function linkProviderIdentity(database: LooseRecord, session: LooseRecord, provider: string, profile: LooseRecord): Promise<any>;
+export declare function linkProviderIdentity(database: LooseRecord, session: LooseRecord, provider: string, profile: LooseRecord, sealedRegistration?: LooseRecord): Promise<any>;
 export declare function routeSporadesAuth(database: LooseRecord, request: IncomingMessage, response: ServerResponse<IncomingMessage> & {
     req: IncomingMessage;
 }): Promise<boolean>;
@@ -280,12 +283,13 @@ export declare function beginOAuthSignIn(database: LooseRecord, session: LooseRe
         message: string;
         hint: string;
     };
-    url?: undefined;
 } | {
     ok: boolean;
     url: any;
-    error?: undefined;
 }>;
+export declare function reconcileOAuthRegistrationKeys(database: LooseRecord, options?: LooseRecord): Promise<any>;
+export declare function rotateOAuthRegistrationKey(database: LooseRecord, options?: LooseRecord): Promise<any>;
+export declare function retireOAuthRegistrationKeys(database: LooseRecord, options?: LooseRecord): Promise<any>;
 export declare function resolvePasswordResetConfig(config: LooseRecord): {
     path: string;
     origin: string;

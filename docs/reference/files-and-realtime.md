@@ -345,3 +345,148 @@ receiver-side filtering is deferred. Publication, reads, and subscriptions are
 client-only. Capsule server handlers and the Privileged server role cannot
 impersonate user activity, and transient client claims must not become
 authoritative server business-logic inputs.
+
+## Trusted endpoint multipart ingress
+
+A Custom endpoint should use trusted multipart ingress when an HTTP integration
+must send files directly to an endpoint. Browser and first-party app uploads
+should continue to use the normal `files.upload` flow. The endpoint declares
+hard request limits and stable retry keys:
+
+```ts
+const upload = endpoint({
+  method: "POST",
+  path: "/attachments",
+  body: { multipart: {
+    maxFiles: 4,
+    maxFileBytes: 10_000_000,
+    maxTotalFileBytes: 20_000_000,
+    maxFieldCount: 8,
+    maxFieldBytes: 8_192,
+    maxTotalFieldBytes: 32_768,
+    allowedMimeTypes: ["image/png", "application/pdf"],
+    allowedPathPrefixes: ["/attachments"],
+    requestKeyHeader: "idempotency-key",
+    partKeyHeader: "content-id",
+    requireStablePartKeys: true,
+  } },
+}, requireAuth(async (ctx) => {
+  const [lease] = ctx.request.multipart.files;
+  return await ctx.files.claim(lease, { path: `/attachments/${lease.partId}` });
+}));
+```
+
+Sporades admits the endpoint credential before reading any body bytes. It then
+parses the stream within the declared file, field, header, part, and aggregate
+limits. Fragmented multipart boundaries are supported; malformed or truncated
+streams fail without publishing a partial lease. Completed parts appear only
+as private, expiring leases in `ctx.request.multipart.files`. A lease has no
+File URL, File row, or ACL visibility.
+Both token and commonly emitted quoted `boundary` parameters are accepted;
+Sporades validates RFC 2046 `bchars`, applies HTTP-token restrictions to the
+unquoted form, and enforces the 70-character cap before reading the body.
+Malformed quoting, invalid punctuation, and extra parameters are rejected.
+
+Every numeric limit is required and validated when the Capsule starts and again
+before request buffering. File counts and byte limits are positive finite
+integers; field counts and byte limits are non-negative finite integers. String,
+fractional, missing, `NaN`, and infinite values fail the declaration. The same
+pre-buffer validation requires normalized absolute path-prefix arrays,
+valid optional MIME-type arrays, syntactically valid request/part header names,
+an optional boolean stable-key switch (omission remains `false`), and exactly one supported claim authority when
+declared; unknown policy fields are rejected. A payload sequence that merely
+begins `CRLF--boundary` remains payload unless the prefix
+is followed by the required `CRLF` or closing `--` delimiter suffix.
+Sporades classifies each part from its bounded headers before accumulating its
+body, so text uses `maxFieldBytes` while files use `maxFileBytes`; a large file
+allowance never expands the memory bound for a field. File streaming uses the
+smaller of endpoint `maxFileBytes` and the Capsule-wide File size limit, so the
+global limit aborts during streaming rather than after buffering. Field names are stored in
+an own-property-safe map, including `constructor`, `toString`, and `__proto__`.
+
+`requestKeyHeader` identifies the whole retry and `partKeyHeader` identifies a
+part independently of multipart ordering. Use sender-provided, stable,
+non-secret values. With `requireStablePartKeys`, missing or repeated part keys
+are rejected. Reusing a key with different bytes, name, media type, or size is
+an idempotency conflict rather than a new upload.
+The durable identity is a versioned, length-framed digest of method, path,
+authority, request key, and part key, so delimiter-bearing values cannot alias.
+Existing pre-0.9.6 delimiter-framed receipts remain replayable only when their
+stored tuple exactly matches; every newly staged receipt uses the framed digest.
+
+By default, the authenticated human or Access-key service User is the actor and
+File owner. A scoped service User remains a normal non-session actor; do not
+create login-capable bot accounts merely to receive a file. For integrations
+whose external principal is admitted by Capsule code, declare the sole claim
+authority and a bounded pre-body admission function:
+
+```ts
+const definition = capsule({
+  files: {
+    ingress: {
+      principalNamespaces: ["application"],
+      admit: async (ctx, request) => {
+        const app = await ctx.db.integrations.where({ token: request.headers["x-app-token"] }).first();
+        return app
+          ? { allow: true, principal: { namespace: "application", key: app.id } }
+          : { allow: false };
+      },
+    },
+    acl: {
+      read: ({ ctx, file }) => canReadAttachment(ctx, file),
+      delete: ({ ctx, file }) => canDeleteAttachment(ctx, file),
+    },
+  },
+  endpoints: {
+    upload: endpoint({
+      method: "POST",
+      path: "/integration-upload",
+      body: { multipart: { ...limits, claimAuthorities: ["capsule-principal"] } },
+    }, async (ctx) => ctx.files.claim(ctx.request.multipart.files[0], {
+      path: "/attachments/integration.pdf",
+      authority: { kind: "capsule-principal", ...ctx.ingress.principal },
+    })),
+  },
+});
+```
+
+The namespace must be declared, the principal key is bounded, and only its
+digest is persisted. Capsule-principal ingress requires explicit
+`files.acl.read` and `files.acl.delete` rules because its deterministic runtime
+owner is reserved, cannot authenticate, cannot hold an Access key or Session,
+and must never gain implicit human-owner access. Anonymous, cross-user,
+cross-principal, and cross-Capsule claims all fail opaquely with
+`INGRESS_AUTHORITY_DENIED`; callers cannot use the error to discover whether a
+lease exists. Completed retries enforce the same authority.
+
+Trusted server code claims a lease inside the endpoint transaction with an
+application-chosen absolute path:
+
+```ts
+const file = await ctx.files.claim(lease, { path: `/attachments/${id}/source` });
+```
+
+The staged bytes must exist before the receipt is completed. The File row,
+receipt completion, bucket, and application writes then commit together. A
+staging receipt becomes claimable only through a key, lease, state, and expiry
+compare-and-set after its object write. If expiry cleanup wins that race,
+Sporades compensates the exact newly written object and never revives the row;
+a concurrently completed receipt is preserved.
+lost response can replay the completed File even after the original lease
+expiry; expired unclaimed leases cannot be claimed. Local filesystem and
+MinIO-backed storage use identical policy, admission, lease, claim, ACL,
+idempotency, expiry, and cleanup semantics. This server-only surface never
+exposes filesystem paths, object keys, buckets, or storage credentials.
+An identical concurrent retry waits for the durable staging winner until its
+bounded lease deadline (at most ten minutes), rather than using a short fixed
+poll count. Winner failure or lease expiry ends the wait. `status()`
+returns `leased` only for a currently claimable lease; expired, staging, sweeping,
+and failed/nonclaimable receipts return `failed` with an explicit `retryable` flag.
+
+Operationally, Capsule startup automatically runs a bounded, deterministic
+cleanup batch for expired unclaimed receipts. It deletes only staged bytes and
+never deletes a committed File. Interrupted cleanup state remains durable and
+is retried on a later startup; completed receipts remain replayable. There is no
+public manual ingress-sweeper API. Monitor the stable platform cleanup warning,
+but do not log authorization headers, principal keys, idempotency keys that
+contain secrets, or storage connection details.

@@ -172,8 +172,13 @@ export type FileAclRule = (input: FileAclRuleInput) => MaybePromise<boolean>;
  */
 export type FileAclRules = Partial<Record<FileAclOperation, FileAclRule>>;
 
-export type CapsuleFilesDefinition = {
+export type FileIngressPrincipal = Readonly<{ namespace: string; key: string }>;
+export type FileIngressAdmissionDecision = Readonly<{ allow: false } | { allow: true; principal: FileIngressPrincipal }>;
+export type FileIngressAdmissionRequest = Readonly<{ method: string; path: string; headers: Readonly<Record<string, string>>; query: Readonly<Record<string, string>> }>;
+export type FileIngressAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
+export type CapsuleFilesDefinition<Schema extends SchemaDefinition = SchemaDefinition> = {
   acl?: FileAclRules; accessKeys?: CapsuleFileAccessKeyPolicy;
+  ingress?: { principalNamespaces: readonly string[]; admit(ctx: FileIngressAdmissionContext<Schema>, request: FileIngressAdmissionRequest): MaybePromise<FileIngressAdmissionDecision> };
 };
 
 /**
@@ -801,13 +806,24 @@ export type EndpointRequest = {
   headers: Record<string, string>;
   body?: unknown;
   readonly bodyBytes: EndpointBodyBytes;
+  /** Completed, private ingress leases. Present only for an endpoint declaring multipart ingress. */
+  readonly multipart?: { readonly files: readonly EndpointFileIngressLease[]; readonly fields: Readonly<Record<string, readonly string[]>> };
 };
+
+export type EndpointFileIngressLease = Readonly<{ leaseId: string; partId: string; fieldName: string; name: string; type: string; declaredSize: number | null; size: number; expiresAt: string }>;
+export type EndpointFileMetadata = Readonly<{ id: string; bucket: string; size: number; type: string; name: string; path: string; version: string }>;
+export type FileIngressOptions = Readonly<{ path: string; name?: string; type?: string; authority?: { kind: "actor" } | ({ kind: "capsule-principal" } & FileIngressPrincipal) }>;
+export type EndpointFileIngressApi = { claim(lease: EndpointFileIngressLease, options: FileIngressOptions): Promise<EndpointFileMetadata>; status(requestKey: string, partKey: string): Promise<{ state: "missing" } | { state: "leased"; lease: EndpointFileIngressLease } | { state: "complete"; file: EndpointFileMetadata } | { state: "failed"; retryable: boolean }>; };
 
 export type EndpointContext<
   Schema extends SchemaDefinition = SchemaDefinition,
   Credential extends CredentialProvenance = CredentialProvenance,
 > = CapsuleContext<Schema, Credential> & {
   request: EndpointRequest;
+  /** Available only while handling a declared multipart ingress endpoint. */
+  files: EndpointFileIngressApi;
+  /** Present only after declared Capsule-principal pre-body admission. */
+  readonly ingress?: Readonly<{ principal: FileIngressPrincipal }>;
 };
 
 /** Provider-neutral lifecycle state reported by an outbound email provider. */
@@ -951,6 +967,7 @@ export type MutationDefinition<Handler = MutationHandler> = {
 export type EndpointOptions = {
   method: string;
   path: string;
+  body?: { multipart: { maxFiles: number; maxFileBytes: number; maxTotalFileBytes: number; maxFieldCount: number; maxFieldBytes: number; maxTotalFieldBytes: number; allowedMimeTypes?: readonly string[]; allowedPathPrefixes: readonly string[]; requestKeyHeader: string; partKeyHeader: string; requireStablePartKeys?: boolean; claimAuthorities?: readonly ["actor" | "capsule-principal"]; } };
 };
 
 export type EndpointDefinition<Handler = EndpointHandler> = {
@@ -1064,6 +1081,7 @@ export type ScheduleDefinition = {
  */
 export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition> = {
   name: string;
+  auth?: { registration: RegistrationAdmission<Schema> };
   accessKeys?: { scopes: readonly string[] };
   schema?: Schema;
   queries?: Record<string, QueryDefinition<QueryHandler<Schema, any> | AuthGuardedHandler<(...args: any[]) => any>>>;
@@ -1083,11 +1101,16 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   /** Optional headless Team Billing control plane. Omission leaves billing dormant and creates no billing storage. */
   teamBilling?: TeamBillingDefinition<Schema>;
   /** Optional File ACL rules for deliberate non-owner access to normal File operations. File ownership and public-URL revocation remain with the File owner. */
-  files?: CapsuleFilesDefinition;
+  files?: CapsuleFilesDefinition<Schema>;
   /** Enable the client-only Journey tracker and define its TTL and automatic-capture ceiling. */
   journey?: { enabled: true; ttlSeconds?: number; capture?: { navigation?: boolean; focus?: boolean; interactions?: boolean } };
   middleware?: ContextMiddleware<Schema>[];
   hooks?: CapsuleHooks<Schema>;
+};
+export type RegistrationEvidence = Readonly<{ userId: string; provider: string; email: string | null; displayName: string; picture: string | null; kind: "email" | "oauth" | "local" }>;
+export type RegistrationAdmission<Schema extends SchemaDefinition> = {
+  admit(ctx: { db: ReadOnlyDatabaseFromSchema<Schema>; evidence: RegistrationEvidence; admission: unknown }): MaybePromise<{ allow: false } | { allow: true; state?: unknown }>;
+  finalize(ctx: { db: DatabaseFromSchema<Schema>; evidence: RegistrationEvidence }, input: RegistrationEvidence & { state?: unknown }): MaybePromise<void>;
 };
 
 export type Capsule<Definition extends object = CapsuleDefinition> = Definition & {

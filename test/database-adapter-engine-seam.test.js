@@ -288,6 +288,11 @@ const MIGRATED_RUNTIME_MODULES = [
   // defined in terms of it, so no honest edit removes it.
   { file: "maybe-promise.js", atLeast: 2, sentinel: "isPromiseLike" },
   { file: "file-storage-runtime.js", atLeast: 40, sentinel: "resolveLiveFileReference" },
+  // Trusted multipart ingress ships as a complete runtime module. Its private
+  // descriptor comparator is the idempotency boundary used to distinguish a
+  // replay from a conflicting claim, so it must remain visible to the deployed
+  // module census even though Capsule code cannot import it.
+  { file: "file-ingress-runtime.js", atLeast: 10, sentinel: "sameFileDescriptor" },
   // Batch 7's two non-domain modules, each holding two functions, so each floor is 1 — a floor only
   // ever asserts that the parse returned something, and for a module this size "something" is both.
   // Both sentinels are exported, as `mail-config`'s and `maybe-promise`'s are, because the monolith

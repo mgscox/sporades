@@ -293,6 +293,10 @@ var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
 var PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1e3;
 var PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1e3;
 var PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1e3;
+var registrationDeniedRollbackMarker = Symbol("sporades.registrationDeniedRollback");
+var invalidRegistrationAdmission = Symbol("sporades.invalidRegistrationAdmission");
+var OAUTH_REGISTRATION_KEY_GRACE_MS = 10 * 60 * 1e3;
+var oauthRegistrationUnsealFailed = Symbol("sporades.oauthRegistrationUnsealFailed");
 
 // src/cli/access-key-operator-envelope.ts
 import { createInterface } from "node:readline/promises";
@@ -454,6 +458,10 @@ var nodeFsModule = process.getBuiltinModule("node:fs");
 var transactionOperations = Symbol.for("sporades.database.transactionOperations");
 var transactionBeforeCommitChecks2 = Symbol.for("sporades.database.transactionBeforeCommitChecks");
 
+// src/file-ingress-runtime.ts
+var crypto2 = process.getBuiltinModule("node:crypto");
+var leaseTtlMs = 10 * 60 * 1e3;
+
 // src/server-runtime-source.ts
 var trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 var runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
@@ -614,7 +622,7 @@ function writeEnvelope(result, failed = false) {
 }
 
 // src/cli/cli-version.ts
-var CLI_VERSION = "0.9.5";
+var CLI_VERSION = "0.9.6";
 
 // src/cli/schedule-inspection-envelope.ts
 var SCHEDULE_DIAGNOSTIC_FIELDS = /* @__PURE__ */ new Set([
