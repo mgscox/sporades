@@ -38,3 +38,36 @@ test("Registration Admission finalizer writes and runtime identity commit togeth
     assert.throws(() => retained.all(), /no longer active/);
   });
 });
+
+test("Registration Admission finalizer failure rolls back app and runtime registration state", async () => {
+  let fail = true;
+  const capsule = { name: "rollback", schema: { claims: table({ userId: String() }) }, auth: { registration: {
+    admit: () => ({ allow: true }),
+    finalize: async (ctx) => {
+      await ctx.db.claims.insert({ userId: ctx.evidence.userId });
+      if (fail) throw new Error("controlled finalizer failure");
+    },
+  } } };
+  await withDatabase(capsule, async (database) => {
+    const session = await resolveAnonymousSession(database, null);
+    const before = {
+      users: (await database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_users").get()).count,
+      sessions: (await database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_sessions").get()).count,
+    };
+    const result = await signUpWithEmail(database, session, "email", { email: "rollback@example.com", password: "password-123" });
+    assert.equal(result.error.code, "REGISTRATION_DENIED");
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM claims").get()).count, 0);
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_users").get()).count, before.users);
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_email_credentials").get()).count, 0);
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_sessions").get()).count, before.sessions);
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_teams").get()).count, 0);
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_team_memberships").get()).count, 0);
+    fail = false;
+    const retried = await signUpWithEmail(database, session, "email", { email: "rollback@example.com", password: "password-123" });
+    assert.equal(retried.ok, true);
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM claims").get()).count, 1);
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_email_credentials").get()).count, 1);
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_teams").get()).count, 1);
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_team_memberships").get()).count, 1);
+  });
+});

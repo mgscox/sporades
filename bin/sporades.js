@@ -14153,7 +14153,7 @@ async function simulateLocalIdentitySession(database, options = {}) {
   const picture = normalizeSimulatedText(options.picture);
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const token = createSessionToken();
-  return await withAuthTransaction(database, async (tx) => {
+  return await withRegistrationTransaction(database, async (tx) => {
     const subject = `local:${email}`;
     const identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
     const userId = identity?.userId ?? nodeCryptoModule3.randomUUID();
@@ -16278,7 +16278,7 @@ async function signUpWithEmail(database, session, provider, credentials, registr
     isGuest: false,
     provider: "email"
   };
-  return await withAuthTransaction(database, async (tx) => {
+  return await withRegistrationTransaction(database, async (tx) => {
     const registration = await admitRegistration(database, tx, { provider: "email", email: normalized.email, displayName, picture: null, userId: auth.userId, kind: "email" }, registrationInput);
     if (!registration.ok) return registration;
     await tx.insertEmailCredential({
@@ -16304,6 +16304,23 @@ async function signUpWithEmail(database, session, provider, credentials, registr
 function registrationDenied() {
   return { ok: false, error: { code: "REGISTRATION_DENIED", message: "Registration was not admitted.", hint: "Use valid registration admission and retry." } };
 }
+var registrationDeniedRollbackMarker = Symbol("sporades.registrationDeniedRollback");
+function registrationDeniedRollback(cause) {
+  const failure = new Error("Registration Admission failed.");
+  failure[registrationDeniedRollbackMarker] = true;
+  if (cause?.code !== void 0) failure.code = cause.code;
+  if (cause?.constraint !== void 0) failure.constraint = cause.constraint;
+  if (cause?.errstr !== void 0) failure.errstr = cause.errstr;
+  return failure;
+}
+async function withRegistrationTransaction(database, fn) {
+  try {
+    return await withAuthTransaction(database, fn);
+  } catch (error) {
+    if (error?.[registrationDeniedRollbackMarker] && !database.__transactionActive) return registrationDenied();
+    throw error;
+  }
+}
 function boundedRegistrationInput(input) {
   if (input === void 0) return void 0;
   try {
@@ -16316,11 +16333,13 @@ function boundedRegistrationInput(input) {
 async function admitRegistration(database, tx, evidence, input) {
   if (typeof database.runRegistrationAdmission !== "function") return { ok: true };
   const admission = boundedRegistrationInput(input);
-  if (admission === null) return registrationDenied();
+  if (admission === null) throw registrationDeniedRollback();
   try {
-    return await database.runRegistrationAdmission(tx, Object.freeze({ ...evidence }), admission) ? { ok: true } : registrationDenied();
-  } catch {
-    return registrationDenied();
+    if (await database.runRegistrationAdmission(tx, Object.freeze({ ...evidence }), admission)) return { ok: true };
+    throw registrationDeniedRollback();
+  } catch (error) {
+    if (error?.[registrationDeniedRollbackMarker]) throw error;
+    throw registrationDeniedRollback(error);
   }
 }
 async function signInWithEmail(database, session, credentials) {
@@ -16369,7 +16388,7 @@ async function linkProviderIdentity(database, session, provider, profile, sealed
       }
     };
   }
-  return await withAuthTransaction(database, async (tx) => {
+  return await withRegistrationTransaction(database, async (tx) => {
     let identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
     const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
     if (!identity && email && provider === "google") {

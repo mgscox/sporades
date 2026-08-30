@@ -274,7 +274,7 @@ export async function simulateLocalIdentitySession(database: LooseRecord, option
   const now = new Date().toISOString();
   const token = createSessionToken();
 
-  return await withAuthTransaction(database, async (tx: LooseRecord) => {
+  return await withRegistrationTransaction(database, async (tx: LooseRecord) => {
     const subject = `local:${email}`;
     const identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
     const userId = identity?.userId ?? nodeCryptoModule.randomUUID();
@@ -2851,7 +2851,7 @@ export async function signUpWithEmail(database: LooseRecord, session: LooseRecor
     isGuest: false,
     provider: "email",
   };
-  return await withAuthTransaction(database, async (tx: LooseRecord) => {
+  return await withRegistrationTransaction(database, async (tx: LooseRecord) => {
     const registration = await admitRegistration(database, tx, { provider: "email", email: normalized.email, displayName, picture: null, userId: auth.userId, kind: "email" }, registrationInput);
     if (!registration.ok) return registration;
     await tx.insertEmailCredential({
@@ -2876,14 +2876,38 @@ export async function signUpWithEmail(database: LooseRecord, session: LooseRecor
 }
 
 function registrationDenied() { return { ok: false, error: { code: "REGISTRATION_DENIED", message: "Registration was not admitted.", hint: "Use valid registration admission and retry." } }; }
+const registrationDeniedRollbackMarker = Symbol("sporades.registrationDeniedRollback");
+function registrationDeniedRollback(cause?: any) {
+  const failure: any = new Error("Registration Admission failed.");
+  failure[registrationDeniedRollbackMarker] = true;
+  if (cause?.code !== undefined) failure.code = cause.code;
+  if (cause?.constraint !== undefined) failure.constraint = cause.constraint;
+  if (cause?.errstr !== undefined) failure.errstr = cause.errstr;
+  return failure;
+}
+async function withRegistrationTransaction(database: LooseRecord, fn: (tx: LooseRecord) => any) {
+  try { return await withAuthTransaction(database, fn); }
+  catch (error: any) {
+    // A joined transaction is not ours to commit or translate. Preserve the
+    // sentinel so its true owner must roll back before producing a response.
+    if (error?.[registrationDeniedRollbackMarker] && !database.__transactionActive) return registrationDenied();
+    throw error;
+  }
+}
 function boundedRegistrationInput(input: unknown) {
   if (input === undefined) return undefined;
   try { const encoded = JSON.stringify(input); return encoded === undefined || Buffer.byteLength(encoded, "utf8") > 4096 ? null : JSON.parse(encoded); } catch { return null; }
 }
 async function admitRegistration(database: LooseRecord, tx: LooseRecord, evidence: LooseRecord, input: unknown): Promise<any> {
   if (typeof database.runRegistrationAdmission !== "function") return { ok: true };
-  const admission = boundedRegistrationInput(input); if (admission === null) return registrationDenied();
-  try { return await database.runRegistrationAdmission(tx, Object.freeze({ ...evidence }), admission) ? { ok: true } : registrationDenied(); } catch { return registrationDenied(); }
+  const admission = boundedRegistrationInput(input); if (admission === null) throw registrationDeniedRollback();
+  try {
+    if (await database.runRegistrationAdmission(tx, Object.freeze({ ...evidence }), admission)) return { ok: true };
+    throw registrationDeniedRollback();
+  } catch (error: any) {
+    if (error?.[registrationDeniedRollbackMarker]) throw error;
+    throw registrationDeniedRollback(error);
+  }
 }
 
 export async function signInWithEmail(database: LooseRecord, session: any, credentials: any) {
@@ -2940,7 +2964,7 @@ export async function linkProviderIdentity(database: LooseRecord, session: Loose
     };
   }
 
-  return await withAuthTransaction(database, async (tx: LooseRecord) => {
+  return await withRegistrationTransaction(database, async (tx: LooseRecord) => {
     let identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
     const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
     if (!identity && email && provider === "google") {
