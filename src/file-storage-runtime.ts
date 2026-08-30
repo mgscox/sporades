@@ -560,10 +560,10 @@ export function createFileStorageTables(sqlite: LooseRecord) {
           ")",
         ),
       ),
-    // Runtime-private ingress receipts: bytes remain staged until a later endpoint
-    // transaction claims one. A single payload column keeps this additive across the
-    // current adapter set while the key remains the durable idempotency fence.
-    () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_file_ingress] ([key] TEXT PRIMARY KEY, [payload] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)")),
+    // Runtime-private ingress receipts. The identity columns are intentionally queryable:
+    // endpoint transactions lock and classify a lease without scanning JSON payloads.
+    () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_file_ingress] ([key] TEXT PRIMARY KEY, [leaseId] TEXT, [state] TEXT, [actorId] TEXT, [endpointMethod] TEXT, [endpointPath] TEXT, [requestKey] TEXT, [partKey] TEXT, [payload] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)")),
+    () => ensureFileIngressColumns(sqlite),
   ]);
 }
 
@@ -1031,7 +1031,7 @@ async function resolveFileWriteTarget(database: LooseRecord, ownerId: any, input
   return { bucket, path };
 }
 
-async function ensureFileBucket(database: LooseRecord, ownerId: any, name: string, now: any) {
+export async function ensureFileBucket(database: LooseRecord, ownerId: any, name: string, now: any) {
   const existing = await database.adapter.findFileBucket(ownerId, name);
   if (existing) return existing;
   const bucket = { id: nodeCryptoModule.randomUUID(), ownerId, name, createdAt: now };
@@ -1205,6 +1205,29 @@ function ensureFileUploadTargetColumns(sqlite: LooseRecord) {
   return chainMaybePromise([
     ...addedColumns.map(([name, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_file_uploads", name, type)),
     ...statements.map((statement) => () => sqlite.exec(sqlite.dialect.sql(statement))),
+  ]);
+}
+
+function ensureFileIngressColumns(sqlite: LooseRecord) {
+  const addedColumns = [
+    ["leaseId", "TEXT"],
+    ["state", "TEXT"],
+    ["actorId", "TEXT"],
+    ["endpointMethod", "TEXT"],
+    ["endpointPath", "TEXT"],
+    ["requestKey", "TEXT"],
+    ["partKey", "TEXT"],
+  ];
+  return chainMaybePromise([
+    ...addedColumns.map(([name, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_file_ingress", name, type)),
+    () => thenIfPromise(sqlite.prepare(sqlite.dialect.sql("SELECT [key], [payload] FROM [sporades_file_ingress] WHERE [leaseId] IS NULL")).all(), (rows: LooseRecord[]) =>
+      chainMaybePromise(rows.map((stored) => () => {
+        let row: LooseRecord;
+        try { row = JSON.parse(stored.payload); } catch { return undefined; }
+        return sqlite.prepare(sqlite.dialect.sql("UPDATE [sporades_file_ingress] SET [leaseId]=?, [state]=?, [actorId]=?, [endpointMethod]=?, [endpointPath]=?, [requestKey]=?, [partKey]=? WHERE [key]=?"))
+          .run(row.leaseId ?? null, row.state ?? null, row.actorId ?? null, row.endpointMethod ?? null, row.endpointPath ?? null, row.requestKey ?? null, row.partKey ?? null, stored.key);
+      }))),
+    () => sqlite.exec(sqlite.dialect.sql("CREATE UNIQUE INDEX IF NOT EXISTS [sporades_file_ingress_lease_unique] ON [sporades_file_ingress] ([leaseId])")),
   ]);
 }
 

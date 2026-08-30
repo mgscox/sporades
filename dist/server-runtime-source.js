@@ -3009,38 +3009,60 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
     }
     let context;
     try {
-        const result = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
-            const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
-            let handlerFailed = false;
+        let result;
+        let transactionAttempt = 0;
+        while (true) {
+            let ingressFenceAcquired = false;
             try {
-                const resolvedSession = (accessKeyAdmission ?? session);
-                context = createEndpointContext(transactionDatabase, endpointRequest, resolvedSession, {
-                    ordinaryCredential: !runtimeOwnedProviderCallback,
-                    credential: accessKeyAdmission?.credential,
-                    accessKeyGrants: accessKeyAdmission?.grants,
+                context = undefined;
+                result = await database.adapter.withTransaction(async (transactionAdapter) => {
+                    // This conditional no-op UPDATE is deliberately the first endpoint SQL. It gives every
+                    // runtime connection the same sorted receipt lock order before middleware or app code
+                    // can produce effects. SQLite contention is retried only while this fence is unarmed.
+                    const ingressLeaseIds = ((endpointRequest.multipart?.files) ?? []).map((lease) => String(lease.leaseId));
+                    if (ingressLeaseIds.length > 0)
+                        await transactionAdapter.lockIngressReceipts(ingressLeaseIds);
+                    ingressFenceAcquired = true;
+                    const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
+                    let handlerFailed = false;
+                    try {
+                        const resolvedSession = (accessKeyAdmission ?? session);
+                        context = createEndpointContext(transactionDatabase, endpointRequest, resolvedSession, {
+                            ordinaryCredential: !runtimeOwnedProviderCallback,
+                            credential: accessKeyAdmission?.credential,
+                            accessKeyGrants: accessKeyAdmission?.grants,
+                        });
+                        context.files = createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context);
+                        if (endpoint.runtimeOwnedStripeCallback) {
+                            Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
+                        }
+                        if (!runtimeOwnedProviderCallback) {
+                            if (!accessKeyAdmission)
+                                admitCredentialHandler(handler, context, "endpoint");
+                            context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
+                        }
+                        const result = await handler(context);
+                        if (accessKeySecretWasDisclosed(context))
+                            request.__sporadesSecretDisclosed = true;
+                        return result;
+                    }
+                    catch (error) {
+                        handlerFailed = true;
+                        throw error;
+                    }
+                    finally {
+                        await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
+                    }
                 });
-                context.files = createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context);
-                if (endpoint.runtimeOwnedStripeCallback) {
-                    Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
-                }
-                if (!runtimeOwnedProviderCallback) {
-                    if (!accessKeyAdmission)
-                        admitCredentialHandler(handler, context, "endpoint");
-                    context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
-                }
-                const result = await handler(context);
-                if (accessKeySecretWasDisclosed(context))
-                    request.__sporadesSecretDisclosed = true;
-                return result;
+                break;
             }
             catch (error) {
-                handlerFailed = true;
-                throw error;
+                if (ingressFenceAcquired || database.adapter.engine !== "sqlite" || transactionAttempt >= 100 || !String(error?.message ?? "").includes("database is locked"))
+                    throw error;
+                await new Promise((resolve) => setTimeout(resolve, Math.min(25, transactionAttempt + 1)));
+                transactionAttempt += 1;
             }
-            finally {
-                await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
-            }
-        });
+        }
         finalizeEndpointIngressClaims(context ?? {}, true);
         commitPendingJobCancellationAborts(context);
         await flushAccessKeyLifecycleAuditEvents(database, context);

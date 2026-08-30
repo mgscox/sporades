@@ -559,6 +559,24 @@ export function createSharedDatabaseAdapterMethods(dialect) {
                 "([id], [ownerId], [bucketId], [bucketName], [path], [name], [type], [size], [version], [status], [createdAt], [updatedAt], [deletedAt]) " +
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)")).run(row.id, row.ownerId, row.bucketId, row.bucketName, row.path, row.name, row.type, row.size, row.version, row.status, row.createdAt, row.updatedAt);
         },
+        insertFileRowIfAbsent(row) {
+            return this.prepare(sql("INSERT INTO [sporades_files] " +
+                "([id], [ownerId], [bucketId], [bucketName], [path], [name], [type], [size], [version], [status], [createdAt], [updatedAt], [deletedAt]) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL) ON CONFLICT([id]) DO NOTHING")).run(row.id, row.ownerId, row.bucketId, row.bucketName, row.path, row.name, row.type, row.size, row.version, row.status, row.createdAt, row.updatedAt);
+        },
+        selectIngressByLease(leaseId) {
+            return this.prepare(sql("SELECT * FROM [sporades_file_ingress] WHERE [leaseId] = ?")).get(leaseId) ?? null;
+        },
+        lockIngressReceipts(leaseIds) {
+            const sorted = [...new Set(leaseIds.map(String))].sort();
+            if (sorted.length === 0)
+                return { changes: 0 };
+            return this.prepare(sql(`UPDATE [sporades_file_ingress] SET [updatedAt] = [updatedAt] WHERE [leaseId] IN (${sorted.map(() => "?").join(", ")})`)).run(...sorted);
+        },
+        completeIngressClaim(row) {
+            const updatedAt = new Date().toISOString();
+            return thenIfPromise(this.prepare(sql("UPDATE [sporades_file_ingress] SET [payload] = ?, [state] = ?, [updatedAt] = ? WHERE [leaseId] = ? AND [state] = ?")).run(JSON.stringify(row), "complete", updatedAt, row.leaseId, "leased"), () => this.selectIngressByLease(row.leaseId));
+        },
         updatePendingFileRow(row) {
             return this.prepare(sql("UPDATE [sporades_files] SET [bucketId] = ?, [bucketName] = ?, [path] = ?, [name] = ?, [type] = ?, [size] = ?, " +
                 "[version] = ?, [status] = ?, [updatedAt] = ?, [deletedAt] = NULL WHERE [id] = ?")).run(row.bucketId, row.bucketName, row.path, row.name, row.type, row.size, row.version, row.status, row.updatedAt, row.id);

@@ -164,6 +164,7 @@ export declare function fileMetadataFromRow(row: LooseRecord): {
     path: any;
     version: any;
 };
+export declare function ensureFileBucket(database: LooseRecord, ownerId: any, name: string, now: any): Promise<any>;
 export declare function normalizeAbsoluteFilePath(value: string): string;
 export declare function isAbsoluteFilePath(value: string): boolean;
 export declare function resolvePrivilegedLiveFileReference(database: LooseRecord, reference: any): Promise<{

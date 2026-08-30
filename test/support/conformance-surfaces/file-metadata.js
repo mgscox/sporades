@@ -593,6 +593,28 @@ const FILE_METADATA_CONFORMANCE_CASES = [
     },
   },
   {
+    name: "ingress receipt locks, completion, lookup, and File insert-if-absent agree across adapters",
+    async run(adapter) {
+      const file = fileRow({ id: "file-ingress-conformance", path: "/media/ingress-conformance.txt", name: "ingress-conformance.txt" });
+      assert.equal((await adapter.insertFileRowIfAbsent(file)).changes, 1);
+      assert.equal((await adapter.insertFileRowIfAbsent({ ...file, name: "must-not-replace.txt" })).changes, 0);
+      assert.equal((await adapter.selectFileById(file.id)).name, "ingress-conformance.txt");
+
+      const leased = { key: "POST:/upload:owner:request:part", leaseId: "lease-conformance", state: "leased", actorId: OWNER_ID, endpointMethod: "POST", endpointPath: "/upload", requestKey: "request", partKey: "part", fileId: file.id };
+      await adapter.prepare(adapter.dialect.sql("INSERT INTO [sporades_file_ingress] ([key], [leaseId], [state], [actorId], [endpointMethod], [endpointPath], [requestKey], [partKey], [payload], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")).run(leased.key, leased.leaseId, leased.state, leased.actorId, leased.endpointMethod, leased.endpointPath, leased.requestKey, leased.partKey, JSON.stringify(leased), NOW);
+      await adapter.lockIngressReceipts([leased.leaseId]);
+      assert.deepEqual(
+        (({ leaseId, state, actorId, endpointMethod, endpointPath, requestKey, partKey }) => ({ leaseId, state, actorId, endpointMethod, endpointPath, requestKey, partKey }))(await adapter.selectIngressByLease(leased.leaseId)),
+        { leaseId: leased.leaseId, state: "leased", actorId: OWNER_ID, endpointMethod: "POST", endpointPath: "/upload", requestKey: "request", partKey: "part" },
+      );
+      const completed = await adapter.completeIngressClaim({ ...leased, state: "complete", file });
+      assert.equal(completed.state, "complete");
+      assert.equal(JSON.parse(completed.payload).file.id, file.id);
+      assert.equal((await adapter.completeIngressClaim({ ...leased, state: "complete", file })).state, "complete");
+      assert.equal(await adapter.selectIngressByLease("missing-lease"), null);
+    },
+  },
+  {
     // `ensureFileStorage` is a DDL method, and the engines emit different statement text for it —
     // which ADR-0034 permits. What they may not differ on is the answer, and its answer is the
     // storage a Capsule boot finds afterwards: the tables exist, they are writable, and running it

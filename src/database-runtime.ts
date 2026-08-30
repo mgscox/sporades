@@ -651,6 +651,28 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
         row.updatedAt,
       );
     },
+    insertFileRowIfAbsent(row: { id: any; ownerId: any; bucketId: any; bucketName: any; path: any; name: any; type: any; size: any; version: any; status: any; createdAt: any; updatedAt: any; }) {
+      return this.prepare(
+        sql(
+          "INSERT INTO [sporades_files] " +
+          "([id], [ownerId], [bucketId], [bucketName], [path], [name], [type], [size], [version], [status], [createdAt], [updatedAt], [deletedAt]) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL) ON CONFLICT([id]) DO NOTHING",
+        ),
+      ).run(row.id, row.ownerId, row.bucketId, row.bucketName, row.path, row.name, row.type, row.size, row.version, row.status, row.createdAt, row.updatedAt);
+    },
+    selectIngressByLease(leaseId: string) {
+      return this.prepare(sql("SELECT * FROM [sporades_file_ingress] WHERE [leaseId] = ?")).get(leaseId) ?? null;
+    },
+    lockIngressReceipts(leaseIds: string[]) {
+      const sorted = [...new Set(leaseIds.map(String))].sort();
+      if (sorted.length === 0) return { changes: 0 };
+      return this.prepare(sql(`UPDATE [sporades_file_ingress] SET [updatedAt] = [updatedAt] WHERE [leaseId] IN (${sorted.map(() => "?").join(", ")})`)).run(...sorted);
+    },
+    completeIngressClaim(row: LooseRecord) {
+      const updatedAt = new Date().toISOString();
+      return thenIfPromise(this.prepare(sql("UPDATE [sporades_file_ingress] SET [payload] = ?, [state] = ?, [updatedAt] = ? WHERE [leaseId] = ? AND [state] = ?")).run(JSON.stringify(row), "complete", updatedAt, row.leaseId, "leased"),
+        () => this.selectIngressByLease(row.leaseId));
+    },
     updatePendingFileRow(row: { bucketId: any; bucketName: any; path: any; name: any; type: any; size: any; version: any; status: any; updatedAt: any; id: any; }) {
       return this.prepare(
         sql(
