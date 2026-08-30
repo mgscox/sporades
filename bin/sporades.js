@@ -18784,7 +18784,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
       ]);
     },
     consumeReauthenticationProof(input) {
-      return thenIfPromise(this.prepare(sql("SELECT [p].[id] FROM [sporades_auth_reauthentication_proofs] [p] JOIN [sporades_auth_sessions] [s] ON [s].[token] = [p].[sessionToken] WHERE [p].[sessionToken] = ? AND [p].[userId] = ? AND [p].[purpose] = ? AND [p].[expiresAt] > ? AND [s].[userId] = ? AND [s].[expiresAt] > ?")).get(input.sessionToken, input.userId, input.purpose, input.now, input.userId, input.now), (row) => {
+      return thenIfPromise(this.prepare(sql("SELECT [p].[id] FROM [sporades_auth_reauthentication_proofs] [p] JOIN [sporades_auth_sessions] [s] ON [s].[token] = [p].[sessionToken] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [p].[sessionToken] = ? AND [p].[userId] = ? AND [p].[purpose] = ? AND [p].[expiresAt] > ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0")).get(input.sessionToken, input.userId, input.purpose, input.now, input.userId, input.now), (row) => {
         if (!row) return false;
         return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [id] = ?")).run(row.id), (result) => result.changes === 1);
       });
