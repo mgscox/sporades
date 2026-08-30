@@ -1,41 +1,67 @@
 # Changes
 
-## 0.9.6 - 2026-08-30
+## Unreleased - 2026-08-30
 
 Changes since v0.9.5.
 
 ### 🚀 Features
 
-- Add opt-in Registration Admission for database-backed invitation, first-user,
-  and tenant allow-list decisions. Email, local simulation, and first-time OAuth
-  registration share one bounded policy and transaction, so denial or finalizer
-  failure leaves no partial runtime or Capsule identity state. Existing linked
-  users and Capsules that omit `auth.registration` retain their current behavior.
-  A database-owned fence also serializes first-user and single-use invitation
-  decisions across separate libSQL and Postgres runtime connections.
-- Add trusted multipart File ingress for authenticated users, scoped service
-  users, and explicitly declared Capsule principals. Runtime-owned leases,
-  idempotent claims, bounded cleanup, and local/MinIO storage parity prevent
-  duplicate or orphaned File state across retry, restart, and concurrency.
+- Persist encrypted OAuth registration admission (920f4a71).
+- Persist ingress receipts in runtime storage (015b03d0).
+- Stream bounded multipart ingress parts (3996fe29).
+- Add email registration admission seam (70168d34).
+- Add trusted multipart file ingress leases (b51afa4e).
+
+### 🐛 Bug Fixes
+
+- Publish ingress leases with CAS (9627b286).
+- Preserve absent registration and stream file caps (7d5b35b4).
+- Preserve null registration admission (252cf282).
+- Close ingress and admission lifetimes (fa026b59).
+- Preserve optional stable ingress keys (0002dc04).
+- Align admission and ingress validation (1856cef4).
+- Enforce multipart boundary grammar (44c43a3e).
+- Complete local admission and ingress lifecycle (80d1d1c6).
+- Validate OAuth admission envelope grammar (904b572d).
+- Enforce multipart and OAuth admission bounds (ed405e88).
+- Replay legacy principal ingress receipts (42290032).
+- Fence registration and harden multipart framing (0f0a7429).
+- Compensate failed multipart staging (2bcd0f2b).
+- Honor trusted multipart ingress policy (7a425e98).
+- Complete registration admission release parity (baeee2eb).
+- Fix integrated endpoint ingress compatibility (5149e47f).
+- Fix registration finalizer rollback (ed6d2129).
+- Recover legacy actor ingress receipts (7fcb4994).
+- Harden OAuth registration admission keys (582f0d90).
+- Bind ingress ownership to explicit authority (033f4c6e).
+- Migrate OAuth registration key pointers (fa7df6e9).
+- Retire expired ingress leases safely (1b6a6cc5).
+- Serialize ingress claims across runtimes (dc6c00c0).
+- Persist ingress claim completion transactionally (2d3f98e1).
+- Serialize ingress receipt acquisition (47d74918).
+- Retain multipart parser state across chunks (a3d0ca92).
+- Preserve multipart endpoint policy at runtime (cc4353ec).
 
 ### 📝 Documentation
 
-- Document when Registration Admission is appropriate, why its atomic creation
-  gate is preferable to app-managed identity cleanup, its benefits and costs,
-  OAuth ciphertext/key lifecycle, safe rotation and retirement, and recovery.
-- Document trusted File ingress authority, multipart limits, ownership, claim,
-  replay, expiry, cleanup, and storage-adapter behavior.
+- Prove fragmented MinIO ingress cleanup (e4d9c7c6).
+- Complete trusted file ingress parity (dd50047f).
+- Fix registration admission option examples (a18f91e6).
 
-- Expose the verified provider-free headless Team Billing projection to active Capsule
-  query and mutation contexts and to exact-Team Join admission. Current members
-  may be authorized for safe reads while all customer-directed commands remain
-  current-Team-admin operations; retained context handles are revoked.
-- Add an offline `sporades/server/team-billing-import` seam for exact,
-  provider-free import of verified legacy Subscription snapshots and replay
-  guards. Incomplete or conflicting evidence fails closed, including drift in
-  durable Event ordering, terminal-latch safety fields, and contradictory
-  Subscription Event/state tuples. The public adapter type now declares the
-  complete named-dialect, execution, prepared-statement, and transaction seam.
+### 🧪 Tests
+
+- Prove ingress claim transaction rollback (60a4b98c).
+- Register ingress storage in adapter conformance (0001d96d).
+- Prove ingress response loss recovery (c41025df).
+- Prove ingress descriptor conflict race (0a12ed19).
+- Prove concurrent ingress receipt acquisition (996db64d).
+- Prove multipart ingress denial and disconnect cleanup (f2a08da5).
+- Prove bounded multipart streaming (d3824243).
+
+### 📦 Packaging
+
+- Refresh host helper auth runtime (9248fc86).
+- Prepare Sporades 0.9.6 integration candidate (50bb32ae).
 
 ## Unreleased - 2026-08-26
 
@@ -81,4 +107,5 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
+
 
