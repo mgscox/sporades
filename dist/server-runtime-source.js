@@ -756,19 +756,21 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         mail,
         authConfig: authStatus(config, serverEnv),
         reauthenticationPolicy: capsuleDefinition?.auth?.reauthentication?.purposes ?? null,
-        authorizeReauthentication: typeof capsuleDefinition?.auth?.reauthentication?.authorize === "function" ? async function (auth, purpose) {
-            return database.adapter.withTransaction(async (transaction) => {
-                const reauthDatabase = createTransactionDatabase(database, transaction);
-                const reauthContext = { purpose: "auth.reauthentication", auth };
-                grantPrivilegedDbAccess(reauthContext);
-                const holder = createContextHolder(reauthContext);
-                try {
-                    return (await capsuleDefinition.auth.reauthentication.authorize({ db: createEndpointReadOnlyDatabaseApi(reauthDatabase, () => holder.current), auth }, purpose)) === true;
-                }
-                finally {
-                    revokePrivilegedDbAccess(reauthContext);
-                }
-            });
+        authorizeReauthentication: typeof capsuleDefinition?.auth?.reauthentication?.authorize === "function" ? async function (transaction, auth, purpose) {
+            const reauthDatabase = createTransactionDatabase(database, transaction);
+            let active = true;
+            const assertActive = () => { if (!active)
+                throw commandError("Reauthentication access is no longer active.", "Start a new reauthentication attempt.", "REAUTHENTICATION_ACCESS_INACTIVE"); };
+            const reauthContext = { purpose: "auth.reauthentication", auth };
+            grantPrivilegedDbAccess(reauthContext);
+            const holder = createContextHolder(reauthContext);
+            try {
+                return (await capsuleDefinition.auth.reauthentication.authorize({ db: createEndpointReadOnlyDatabaseApi(reauthDatabase, () => holder.current, assertActive), auth }, purpose)) === true;
+            }
+            finally {
+                active = false;
+                revokePrivilegedDbAccess(reauthContext);
+            }
         } : async () => true,
         passwordResetConfig: resolvePasswordResetConfig(config),
         teamJoinLinkConfig: resolveTeamJoinLinkConfig(config),
@@ -4556,14 +4558,14 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
             const normalized = normalizeEmailCredentials(message.credentials ?? {});
             let ok = false;
             let expiresAt = null;
-            const authorized = Boolean(policy && client.session.auth?.isAuthenticated && !client.session.auth?.isGuest && await database.authorizeReauthentication(client.session.auth, purpose));
+            const authorized = Boolean(policy && client.session.auth?.isAuthenticated && !client.session.auth?.isGuest);
             if (authorized && message.provider === "email" && normalized.ok && typeof normalized.password === "string") {
                 const credential = await database.adapter.findEmailCredentialWithUser(normalized.email);
                 if (credential?.userId === client.session.auth.userId && verifyEmailPassword(normalized.password, credential.passwordSalt, credential.passwordHash)) {
                     const now = database.clock.now();
                     expiresAt = new Date(now.getTime() + policy.maxAgeSeconds * 1000).toISOString();
-                    await database.adapter.withTransaction((tx) => tx.replaceReauthenticationProof({ id: randomUUID(), userId: client.session.auth.userId, sessionToken: client.session.token, purpose, createdAt: now.toISOString(), expiresAt }));
-                    ok = true;
+                    await database.adapter.withTransaction(async (tx) => { if (!await database.authorizeReauthentication(tx, client.session.auth, purpose))
+                        return; await tx.replaceReauthenticationProof({ id: randomUUID(), userId: client.session.auth.userId, sessionToken: client.session.token, purpose, createdAt: now.toISOString(), expiresAt }); ok = true; });
                 }
             }
             if (!ok && authorized && message.provider !== "email" && oauthProviderAdapter(database, message.provider)?.enabled) {

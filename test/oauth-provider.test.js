@@ -878,6 +878,18 @@ test("runtime OAuth provider seam completes query and form-post callbacks with p
     const linkedSession = database.adapter.readAuthSessionWithUser(querySession.token);
     const identitiesBeforeReauthentication = database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_identities").get().count;
     database.reauthenticationPolicy = { "administrator-authority": { maxAgeSeconds: 900 } };
+    let authorizationAllowed = true;
+    database.authorizeReauthentication = async (_transaction, auth, purpose) => authorizationAllowed && auth.userId === linkedSession.userId && purpose === "administrator-authority";
+    const deniedStart = await beginOAuthSignIn(database, querySession, "query", {
+      origin: "http://127.0.0.1:4000",
+      reauthentication: { purpose: "administrator-authority", userId: linkedSession.userId },
+    });
+    const deniedState = new URL(deniedStart.url).searchParams.get("state"); authorizationAllowed = false;
+    const deniedResponse = responseRecorder();
+    assert.equal(await routeSporadesAuth(database, { method: "GET", url: `/__sporades/auth/query/callback?state=${deniedState}&code=query-code`, headers: {} }, deniedResponse), true);
+    assert.equal(deniedResponse.statusCode, 500); assert.equal(database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_reauthentication_proofs").get().count, 0);
+    assert.equal(database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_oauth_states WHERE state = ?").get(deniedState).count, 0, "denied callback state must be spent");
+    authorizationAllowed = true; const staleResponse = responseRecorder(); await routeSporadesAuth(database, { method: "GET", url: `/__sporades/auth/query/callback?state=${deniedState}&code=query-code`, headers: {} }, staleResponse); assert.equal(database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_reauthentication_proofs").get().count, 0, "reauthorizing later must not resurrect a spent callback");
     const reauthenticationStart = await beginOAuthSignIn(database, querySession, "query", {
       origin: "http://127.0.0.1:4000",
       reauthentication: { purpose: "administrator-authority", userId: linkedSession.userId },
@@ -917,7 +929,7 @@ test("runtime OAuth provider seam completes query and form-post callbacks with p
     assert.equal(formResponse.statusCode, 302, formResponse.body);
     assert.equal(formResponse.headers.location, "http://127.0.0.1:4000/after");
     assert.equal(database.adapter.readAuthSessionWithUser(formSession.token).provider, "form");
-    assert.equal(completions.length, 3);
+    assert.equal(completions.length, 4);
     assert.equal(completions[0].provider, "query");
     assert.ok(completions[0].nonce);
     assert.ok(completions[0].pkceVerifier);

@@ -2933,7 +2933,10 @@ export async function routeSporadesAuth(database, request, response) {
             if (!policy || !session.auth?.isAuthenticated || session.auth?.isGuest || session.auth.userId !== stateRow.reauthUserId || identity?.userId !== session.auth.userId)
                 throw commandError("Reauthentication failed.", "Verify the current linked identity and retry.", "REAUTHENTICATION_FAILED");
             const now = database.clock.now();
-            await database.adapter.withTransaction((tx) => tx.replaceReauthenticationProof({ id: nodeCryptoModule.randomUUID(), userId: session.auth.userId, sessionToken: stateRow.sessionToken, purpose: stateRow.reauthPurpose, createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + policy.maxAgeSeconds * 1000).toISOString() }));
+            const authorized = await database.adapter.withTransaction(async (tx) => { if (!await database.authorizeReauthentication(tx, session.auth, stateRow.reauthPurpose))
+                return false; await tx.replaceReauthenticationProof({ id: nodeCryptoModule.randomUUID(), userId: session.auth.userId, sessionToken: stateRow.sessionToken, purpose: stateRow.reauthPurpose, createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + policy.maxAgeSeconds * 1000).toISOString() }); return true; });
+            if (!authorized)
+                throw commandError("Reauthentication failed.", "Verify the current linked identity and retry.", "REAUTHENTICATION_FAILED");
             writeRedirect(response, stateRow.returnTo);
             return true;
         }
