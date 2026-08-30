@@ -153,6 +153,7 @@ export type DeclarativeRequireAuthOptions = {
     linked?: boolean;
     credentials?: readonly CredentialKind[];
     scopes?: readonly string[];
+    reauthentication?: string;
 };
 export type RequireAuthContext = {
     auth: AuthContext;

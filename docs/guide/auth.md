@@ -138,6 +138,50 @@ anonymous Session, callback URI, nonce, and expiry; it is consumed with the
 single-use OAuth state and is never added to redirects, provider traffic, or
 callback errors.
 
+### Purpose-bound reauthentication
+
+Use Reauthentication Proofs when an already signed-in human must freshly
+verify the identity behind the current Session before a high-risk mutation,
+such as administrator promotion or relinquishment. Do not use them for routine
+authorization: the Capsule must still recheck its own administrator, Team and
+resource rules inside the mutation.
+
+```ts
+export default capsule({
+  auth: { reauthentication: { purposes: {
+    "administrator-authority": { maxAgeSeconds: 900 },
+  } } },
+  mutations: {
+    promote: mutation(requireAuth({
+      credentials: ["session"],
+      reauthentication: "administrator-authority",
+    }, async (ctx, input) => promoteAdministrator(ctx, input))),
+  },
+});
+```
+
+The browser verifies the current linked identity without receiving proof
+material:
+
+```ts
+await auth.reauthenticate("email", { email, password }, "administrator-authority");
+await mutations.promote({ userId });
+```
+
+The runtime stores the proof in its own database, bound to the User, exact
+Session, Capsule and purpose. Its maximum declared lifetime is 15 minutes.
+Consumption is part of the guarded mutation transaction: a rejected command
+preserves the proof, one concurrent successful command wins, and commit makes
+it unusable even after restart. URLs, Capsule arguments and successful replies
+contain no proof handle or bearer.
+
+The advantage is a small, auditable step-up boundary with atomic consumption
+and no second client credential. The trade-offs are an extra identity-provider
+interaction, server-side proof state, and a deliberately narrow purpose list;
+it does not replace normal authorization, credential revocation, throttling or
+transactional domain invariants. Capsules that omit `auth.reauthentication`
+retain their existing authentication and mutation behavior.
+
 Use Registration Admission when a Capsule must make its first-user or invite
 decision from application state atomically with creating an identity. It is not
 an authorization hook for existing users: linking an existing identity bypasses

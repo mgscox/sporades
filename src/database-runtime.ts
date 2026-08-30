@@ -1299,10 +1299,10 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
       return this.prepare(
         sql(
           "INSERT INTO [sporades_auth_oauth_states] " +
-          "([state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier], [registrationCiphertext]) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          "([state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier], [registrationCiphertext], [reauthPurpose], [reauthUserId]) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ),
-      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null, row.registrationCiphertext ?? null);
+      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null, row.registrationCiphertext ?? null, row.reauthPurpose ?? null, row.reauthUserId ?? null);
     },
     // One statement, not a SELECT followed by a DELETE. The two-statement form was correct on
     // SQLite and a race everywhere else: nothing ordered the delete after the read, so on an
@@ -1315,7 +1315,7 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
           sql(
             "DELETE FROM [sporades_auth_oauth_states] WHERE [state] = ? " +
             "RETURNING [state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], " +
-            "[nonce], [pkceVerifier], [registrationCiphertext]",
+            "[nonce], [pkceVerifier], [registrationCiphertext], [reauthPurpose], [reauthUserId]",
           ),
         ).get(state),
         (row: any) => row ?? null,
@@ -1354,6 +1354,18 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
         ).get(email),
         (row: any) => (isReservedAuthUserId(row?.userId) ? null : row ?? null),
       );
+    },
+    replaceReauthenticationProof(row: LooseRecord) {
+      return chainMaybePromise([
+        () => this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ? AND [purpose] = ?")).run(row.sessionToken, row.purpose),
+        () => this.prepare(sql("INSERT INTO [sporades_auth_reauthentication_proofs] ([id], [userId], [sessionToken], [purpose], [createdAt], [expiresAt]) VALUES (?, ?, ?, ?, ?, ?)")).run(row.id, row.userId, row.sessionToken, row.purpose, row.createdAt, row.expiresAt),
+      ]);
+    },
+    consumeReauthenticationProof(input: LooseRecord) {
+      return thenIfPromise(this.prepare(sql("SELECT [id] FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ? AND [userId] = ? AND [purpose] = ? AND [expiresAt] > ?")).get(input.sessionToken, input.userId, input.purpose, input.now), (row: LooseRecord | null | undefined) => {
+        if (!row) return false;
+        return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [id] = ?")).run(row.id), (result: LooseRecord) => result.changes === 1);
+      });
     },
     deleteAuthSessionsForUser(userId: any) {
       return this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [userId] = ?")).run(userId);

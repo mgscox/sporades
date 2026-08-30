@@ -7,6 +7,7 @@ export type AuthRequirements = Readonly<{
     linked: boolean;
     credentials: readonly CredentialKind[];
     scopes: readonly string[];
+    reauthentication: string | null;
 }>;
 export declare function invalidAuthRequirements(hint: string): import("./runtime-errors.js").HelperError;
 export declare function normalizeRequireUserAuthOptions(options?: unknown): Readonly<{

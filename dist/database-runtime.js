@@ -982,8 +982,8 @@ export function createSharedDatabaseAdapterMethods(dialect) {
             const provider = row.provider ?? "google";
             const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1000).toISOString();
             return this.prepare(sql("INSERT INTO [sporades_auth_oauth_states] " +
-                "([state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier], [registrationCiphertext]) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null, row.registrationCiphertext ?? null);
+                "([state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier], [registrationCiphertext], [reauthPurpose], [reauthUserId]) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null, row.registrationCiphertext ?? null, row.reauthPurpose ?? null, row.reauthUserId ?? null);
         },
         // One statement, not a SELECT followed by a DELETE. The two-statement form was correct on
         // SQLite and a race everywhere else: nothing ordered the delete after the read, so on an
@@ -993,7 +993,7 @@ export function createSharedDatabaseAdapterMethods(dialect) {
         consumeOAuthState(state) {
             return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_oauth_states] WHERE [state] = ? " +
                 "RETURNING [state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], " +
-                "[nonce], [pkceVerifier], [registrationCiphertext]")).get(state), (row) => row ?? null);
+                "[nonce], [pkceVerifier], [registrationCiphertext], [reauthPurpose], [reauthUserId]")).get(state), (row) => row ?? null);
         },
         emailCredentialExists(email) {
             return thenIfPromise(this.prepare(sql("SELECT [email] FROM [sporades_auth_email_credentials] WHERE [email] = ?")).get(email), (row) => Boolean(row));
@@ -1012,6 +1012,19 @@ export function createSharedDatabaseAdapterMethods(dialect) {
                 "FROM [sporades_auth_email_credentials] [c] " +
                 "JOIN [sporades_auth_users] [u] ON [u].[id] = [c].[userId] " +
                 "WHERE [c].[email] = ?")).get(email), (row) => (isReservedAuthUserId(row?.userId) ? null : row ?? null));
+        },
+        replaceReauthenticationProof(row) {
+            return chainMaybePromise([
+                () => this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ? AND [purpose] = ?")).run(row.sessionToken, row.purpose),
+                () => this.prepare(sql("INSERT INTO [sporades_auth_reauthentication_proofs] ([id], [userId], [sessionToken], [purpose], [createdAt], [expiresAt]) VALUES (?, ?, ?, ?, ?, ?)")).run(row.id, row.userId, row.sessionToken, row.purpose, row.createdAt, row.expiresAt),
+            ]);
+        },
+        consumeReauthenticationProof(input) {
+            return thenIfPromise(this.prepare(sql("SELECT [id] FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ? AND [userId] = ? AND [purpose] = ? AND [expiresAt] > ?")).get(input.sessionToken, input.userId, input.purpose, input.now), (row) => {
+                if (!row)
+                    return false;
+                return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [id] = ?")).run(row.id), (result) => result.changes === 1);
+            });
         },
         deleteAuthSessionsForUser(userId) {
             return this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [userId] = ?")).run(userId);

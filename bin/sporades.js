@@ -210,6 +210,9 @@ export const auth = {
   signIn(provider, credentials, options) {
     return connect().signIn(provider, credentials, options);
   },
+  reauthenticate(provider, credentials, purpose) {
+    return connect().reauthenticate(provider, credentials, purpose);
+  },
   signOut() {
     return connect().signOut();
   },
@@ -425,6 +428,7 @@ export function createSolidPrimitives(primitives) {
       isAuthenticated: () => Boolean(state().auth?.isAuthenticated),
       signUp: (provider, credentials, options) => connect().signUp(provider, credentials, options),
       signIn: (provider, credentials, options) => connect().signIn(provider, credentials, options),
+      reauthenticate: (provider, credentials, purpose) => connect().reauthenticate(provider, credentials, purpose),
       signOut: () => connect().signOut(),
       setPassword: (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword),
     };
@@ -651,6 +655,7 @@ export function createSvelteStores() {
       subscribe: store.subscribe,
       signUp: (provider, credentials, options) => connect().signUp(provider, credentials, options),
       signIn: (provider, credentials, options) => connect().signIn(provider, credentials, options),
+      reauthenticate: (provider, credentials, purpose) => connect().reauthenticate(provider, credentials, purpose),
       signOut: () => connect().signOut(),
       setPassword: (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword),
     };
@@ -1164,6 +1169,9 @@ function createConnection() {
         }
         return result;
       });
+    },
+    reauthenticate(provider, credentials, purpose) {
+      return request("auth.reauthenticate", { provider, credentials, purpose, returnTo: window.location.href }).then((result) => { if (result.data?.url) window.location.assign(result.data.url); return result; });
     },
     signOut() {
       return request("auth.signOut").then(async (result) => {
@@ -2282,8 +2290,8 @@ function readAuthRequirements(handler) {
   return typeof handler === "function" ? handler[AUTH_REQUIREMENTS] ?? null : null;
 }
 function normalizeAuthRequirements(options = {}) {
-  if (!isPlainObject(options) || Object.keys(options).some((key) => !["linked", "credentials", "scopes"].includes(key))) {
-    throw invalidAuthRequirements("Use only linked, credentials, and scopes in a declarative Auth requirement.");
+  if (!isPlainObject(options) || Object.keys(options).some((key) => !["linked", "credentials", "scopes", "reauthentication"].includes(key))) {
+    throw invalidAuthRequirements("Use only linked, credentials, scopes, and reauthentication in a declarative Auth requirement.");
   }
   if ("linked" in options && typeof options.linked !== "boolean") {
     throw invalidAuthRequirements("linked must be a boolean when supplied.");
@@ -2294,10 +2302,13 @@ function normalizeAuthRequirements(options = {}) {
     code: "INVALID_AUTH_REQUIREMENTS",
     hint: "Required scopes must be unique concrete strings declared by the Capsule."
   });
+  const reauthentication = options.reauthentication;
+  if (reauthentication !== void 0 && (typeof reauthentication !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(reauthentication))) throw invalidAuthRequirements("reauthentication must be a declared concrete purpose.");
   return Object.freeze({
     linked: options.linked === true,
     credentials: Object.freeze(credentials),
-    scopes: Object.freeze(scopes)
+    scopes: Object.freeze(scopes),
+    reauthentication: reauthentication ?? null
   });
 }
 function normalizeCapsuleAuthDefinition(definition) {
@@ -2323,10 +2334,17 @@ function normalizeCapsuleAuthDefinition(definition) {
   }
   if (Object.hasOwn(normalized, "auth") && normalized.auth !== void 0) {
     const registration = normalized.auth?.registration;
-    if (!isPlainObject(normalized.auth) || Object.keys(normalized.auth).some((key) => key !== "registration") || !isPlainObject(registration) || typeof registration.admit !== "function" || typeof registration.finalize !== "function" || Object.keys(registration).some((key) => key !== "admit" && key !== "finalize")) {
+    const reauthentication = normalized.auth?.reauthentication;
+    if (!isPlainObject(normalized.auth) || Object.keys(normalized.auth).some((key) => !["registration", "reauthentication"].includes(key)) || registration !== void 0 && (!isPlainObject(registration) || typeof registration.admit !== "function" || typeof registration.finalize !== "function" || Object.keys(registration).some((key) => key !== "admit" && key !== "finalize"))) {
       throw commandError("Invalid Capsule Registration Admission declaration.", "Declare auth.registration with both admit and finalize server functions.", "INVALID_REGISTRATION_ADMISSION");
     }
-    normalized = { ...normalized, auth: Object.freeze({ registration: Object.freeze(registration) }) };
+    if (reauthentication !== void 0 && (!isPlainObject(reauthentication) || Object.keys(reauthentication).some((key) => !["purposes", "authorize"].includes(key)) || reauthentication.authorize !== void 0 && typeof reauthentication.authorize !== "function" || !isPlainObject(reauthentication.purposes) || Object.keys(reauthentication.purposes).length < 1 || Object.entries(reauthentication.purposes).some(([purpose, policy]) => !/^[a-z][a-z0-9-]{0,63}$/.test(purpose) || !isPlainObject(policy) || Object.keys(policy).some((key) => key !== "maxAgeSeconds") || !Number.isInteger(policy.maxAgeSeconds) || policy.maxAgeSeconds < 1 || policy.maxAgeSeconds > 900))) throw commandError("Invalid Reauthentication declaration.", "Declare concrete purposes with maxAgeSeconds from 1 through 900 and an optional authorize callback.", "INVALID_REAUTHENTICATION_DECLARATION");
+    normalized = { ...normalized, auth: Object.freeze({ ...registration ? { registration: Object.freeze(registration) } : {}, ...reauthentication ? { reauthentication: Object.freeze({ purposes: Object.freeze(Object.fromEntries(Object.entries(reauthentication.purposes).map(([purpose, policy]) => [purpose, Object.freeze({ maxAgeSeconds: policy.maxAgeSeconds })]))), ...reauthentication.authorize ? { authorize: reauthentication.authorize } : {} }) } : {} }) };
+  }
+  const declaredPurposes = new Set(Object.keys(normalized.auth?.reauthentication?.purposes ?? {}));
+  for (const item of Object.values(normalized.mutations ?? {})) {
+    const purpose = readAuthRequirements(item?.handler)?.reauthentication;
+    if (purpose && !declaredPurposes.has(purpose)) throw invalidAuthRequirements("Every reauthentication purpose must be declared by the Capsule.");
   }
   return normalizeFileAccessKeyPolicy(normalized);
 }
@@ -2479,8 +2497,8 @@ function normalizeUserAuthOptions(options = {}) {
 }
 
 function normalizeGuardOptions(options = {}) {
-  if (!plainObject(options) || Object.keys(options).some((key) => !["linked", "credentials", "scopes"].includes(key))) {
-    throw authRequirementsError("Use only linked, credentials, and scopes in a declarative Auth requirement.");
+  if (!plainObject(options) || Object.keys(options).some((key) => !["linked", "credentials", "scopes", "reauthentication"].includes(key))) {
+    throw authRequirementsError("Use only linked, credentials, scopes, and reauthentication in a declarative Auth requirement.");
   }
   if ("linked" in options && typeof options.linked !== "boolean") throw authRequirementsError("linked must be a boolean when supplied.");
   const credentials = options.credentials === undefined ? ["session", "access-key"] : options.credentials;
@@ -2491,7 +2509,9 @@ function normalizeGuardOptions(options = {}) {
   if (!Array.isArray(scopes) || (options.scopes !== undefined && scopes.length === 0) || scopes.length > 1024 || scopes.some((scope) => typeof scope !== "string" || scope.length === 0 || scope.includes("*") || new TextEncoder().encode(scope).byteLength > 256) || new Set(scopes).size !== scopes.length) {
     throw authRequirementsError("Required scopes must be unique concrete strings declared by the Capsule.");
   }
-  return Object.freeze({ linked: options.linked === true, credentials: Object.freeze([...credentials]), scopes: Object.freeze([...scopes]) });
+  const reauthentication = options.reauthentication;
+  if (reauthentication !== undefined && (typeof reauthentication !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(reauthentication))) throw authRequirementsError("reauthentication must be a declared concrete purpose.");
+  return Object.freeze({ linked: options.linked === true, credentials: Object.freeze([...credentials]), scopes: Object.freeze([...scopes]), reauthentication: reauthentication ?? null });
 }
 
 function decorateAuth(options, handler) {
@@ -14936,6 +14956,16 @@ async function routeSporadesAuth(database, request, response) {
       parameters
     });
     const session = await resolveAnonymousSession(database, stateRow.sessionToken);
+    if (stateRow.reauthPurpose) {
+      const subject = normalizeSimulatedText(profile?.subject ?? profile?.sub);
+      const identity = subject ? await database.adapter.findAuthIdentityByProviderSubject(provider, subject) : null;
+      const policy = database.reauthenticationPolicy?.[stateRow.reauthPurpose];
+      if (!policy || !session.auth?.isAuthenticated || session.auth?.isGuest || session.auth.userId !== stateRow.reauthUserId || identity?.userId !== session.auth.userId) throw commandError("Reauthentication failed.", "Verify the current linked identity and retry.", "REAUTHENTICATION_FAILED");
+      const now2 = database.clock.now();
+      await database.adapter.withTransaction((tx) => tx.replaceReauthenticationProof({ id: nodeCryptoModule3.randomUUID(), userId: session.auth.userId, sessionToken: stateRow.sessionToken, purpose: stateRow.reauthPurpose, createdAt: now2.toISOString(), expiresAt: new Date(now2.getTime() + policy.maxAgeSeconds * 1e3).toISOString() }));
+      writeRedirect(response, stateRow.returnTo);
+      return true;
+    }
     let result;
     try {
       result = await linkProviderIdentity(database, session, provider, profile, stateRow.registrationCiphertext ? stateRow : void 0);
@@ -15023,6 +15053,7 @@ async function beginOAuthSignIn(database, session, provider, options) {
   const admission = boundedRegistrationInput(options.registration?.admission);
   if (admission === invalidRegistrationAdmission) return registrationDenied();
   const registrationCiphertext = admission === void 0 ? null : await sealOAuthRegistration(database, admission, { provider, sessionToken: session.token, redirectUri, nonce, expiresAt });
+  const reauthentication = options.reauthentication;
   let started;
   try {
     started = await adapter.begin({
@@ -15063,7 +15094,9 @@ async function beginOAuthSignIn(database, session, provider, options) {
     expiresAt,
     nonce,
     pkceVerifier,
-    registrationCiphertext
+    registrationCiphertext,
+    reauthPurpose: reauthentication?.purpose ?? null,
+    reauthUserId: reauthentication?.userId ?? null
   });
   return { ok: true, url: started.url };
 }
@@ -15248,6 +15281,9 @@ function createAnonymousAuthTables(sqlite, _authConfig = null) {
     ),
     () => ensureSessionLifecycleColumns(sqlite),
     () => ensureSessionProvenanceColumn(sqlite),
+    () => sqlite.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_auth_reauthentication_proofs] ([id] TEXT PRIMARY KEY, [userId] TEXT NOT NULL, [sessionToken] TEXT NOT NULL, [purpose] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL, UNIQUE ([sessionToken], [purpose]))"
+    )),
     () => createProviderIdentityTables(sqlite),
     () => sqlite.exec(
       sql(
@@ -15261,7 +15297,7 @@ function createAnonymousAuthTables(sqlite, _authConfig = null) {
     ),
     () => sqlite.exec(
       sql(
-        "CREATE TABLE IF NOT EXISTS [sporades_auth_oauth_states] ([state] TEXT PRIMARY KEY, [provider] TEXT NOT NULL, [sessionToken] TEXT NOT NULL, [returnTo] TEXT NOT NULL, [redirectUri] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL, [nonce] TEXT, [pkceVerifier] TEXT, [registrationCiphertext] TEXT)"
+        "CREATE TABLE IF NOT EXISTS [sporades_auth_oauth_states] ([state] TEXT PRIMARY KEY, [provider] TEXT NOT NULL, [sessionToken] TEXT NOT NULL, [returnTo] TEXT NOT NULL, [redirectUri] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL, [nonce] TEXT, [pkceVerifier] TEXT, [registrationCiphertext] TEXT, [reauthPurpose] TEXT, [reauthUserId] TEXT)"
       )
     ),
     () => ensureOAuthStateColumns(sqlite)
@@ -15275,7 +15311,9 @@ function ensureOAuthStateColumns(sqlite) {
       ["expiresAt", "TEXT"],
       ["nonce", "TEXT"],
       ["pkceVerifier", "TEXT"],
-      ["registrationCiphertext", "TEXT"]
+      ["registrationCiphertext", "TEXT"],
+      ["reauthPurpose", "TEXT"],
+      ["reauthUserId", "TEXT"]
     ].map(([name, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_oauth_states", name, type)),
     () => sqlite.exec(sql("UPDATE [sporades_auth_oauth_states] SET [provider] = 'google' WHERE [provider] IS NULL")),
     () => sqlite.exec(sql("UPDATE [sporades_auth_oauth_states] SET [expiresAt] = [createdAt] WHERE [expiresAt] IS NULL"))
@@ -18684,9 +18722,9 @@ function createSharedDatabaseAdapterMethods(dialect) {
       const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1e3).toISOString();
       return this.prepare(
         sql(
-          "INSERT INTO [sporades_auth_oauth_states] ([state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier], [registrationCiphertext]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+          "INSERT INTO [sporades_auth_oauth_states] ([state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier], [registrationCiphertext], [reauthPurpose], [reauthUserId]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
-      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null, row.registrationCiphertext ?? null);
+      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null, row.registrationCiphertext ?? null, row.reauthPurpose ?? null, row.reauthUserId ?? null);
     },
     // One statement, not a SELECT followed by a DELETE. The two-statement form was correct on
     // SQLite and a race everywhere else: nothing ordered the delete after the read, so on an
@@ -18697,7 +18735,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
       return thenIfPromise(
         this.prepare(
           sql(
-            "DELETE FROM [sporades_auth_oauth_states] WHERE [state] = ? RETURNING [state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier], [registrationCiphertext]"
+            "DELETE FROM [sporades_auth_oauth_states] WHERE [state] = ? RETURNING [state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier], [registrationCiphertext], [reauthPurpose], [reauthUserId]"
           )
         ).get(state),
         (row) => row ?? null
@@ -18731,6 +18769,18 @@ function createSharedDatabaseAdapterMethods(dialect) {
         ).get(email),
         (row) => isReservedAuthUserId(row?.userId) ? null : row ?? null
       );
+    },
+    replaceReauthenticationProof(row) {
+      return chainMaybePromise([
+        () => this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ? AND [purpose] = ?")).run(row.sessionToken, row.purpose),
+        () => this.prepare(sql("INSERT INTO [sporades_auth_reauthentication_proofs] ([id], [userId], [sessionToken], [purpose], [createdAt], [expiresAt]) VALUES (?, ?, ?, ?, ?, ?)")).run(row.id, row.userId, row.sessionToken, row.purpose, row.createdAt, row.expiresAt)
+      ]);
+    },
+    consumeReauthenticationProof(input) {
+      return thenIfPromise(this.prepare(sql("SELECT [id] FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ? AND [userId] = ? AND [purpose] = ? AND [expiresAt] > ?")).get(input.sessionToken, input.userId, input.purpose, input.now), (row) => {
+        if (!row) return false;
+        return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [id] = ?")).run(row.id), (result) => result.changes === 1);
+      });
     },
     deleteAuthSessionsForUser(userId) {
       return this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [userId] = ?")).run(userId);
@@ -20991,6 +21041,20 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     scheduleTeamBillingJobDispatch: () => scheduleCurrentUserJobWorker(database),
     mail,
     authConfig: authStatus2(config, serverEnv),
+    reauthenticationPolicy: capsuleDefinition?.auth?.reauthentication?.purposes ?? null,
+    authorizeReauthentication: typeof capsuleDefinition?.auth?.reauthentication?.authorize === "function" ? async function(auth, purpose) {
+      return database.adapter.withTransaction(async (transaction) => {
+        const reauthDatabase = createTransactionDatabase(database, transaction);
+        const reauthContext = { purpose: "auth.reauthentication", auth };
+        grantPrivilegedDbAccess(reauthContext);
+        const holder = createContextHolder(reauthContext);
+        try {
+          return await capsuleDefinition.auth.reauthentication.authorize({ db: createEndpointReadOnlyDatabaseApi(reauthDatabase, () => holder.current), auth }, purpose) === true;
+        } finally {
+          revokePrivilegedDbAccess(reauthContext);
+        }
+      });
+    } : async () => true,
     passwordResetConfig: resolvePasswordResetConfig(config),
     teamJoinLinkConfig: resolveTeamJoinLinkConfig(config),
     teamApplicationRoles,
@@ -24492,6 +24556,32 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       });
       return;
     }
+    if (message.type === "auth.reauthenticate") {
+      const purpose = message.purpose;
+      const policy = database.reauthenticationPolicy?.[purpose];
+      const normalized = normalizeEmailCredentials(message.credentials ?? {});
+      let ok = false;
+      let expiresAt = null;
+      const authorized = Boolean(policy && client.session.auth?.isAuthenticated && !client.session.auth?.isGuest && await database.authorizeReauthentication(client.session.auth, purpose));
+      if (authorized && message.provider === "email" && normalized.ok && typeof normalized.password === "string") {
+        const credential = await database.adapter.findEmailCredentialWithUser(normalized.email);
+        if (credential?.userId === client.session.auth.userId && verifyEmailPassword(normalized.password, credential.passwordSalt, credential.passwordHash)) {
+          const now2 = database.clock.now();
+          expiresAt = new Date(now2.getTime() + policy.maxAgeSeconds * 1e3).toISOString();
+          await database.adapter.withTransaction((tx) => tx.replaceReauthenticationProof({ id: randomUUID7(), userId: client.session.auth.userId, sessionToken: client.session.token, purpose, createdAt: now2.toISOString(), expiresAt }));
+          ok = true;
+        }
+      }
+      if (!ok && authorized && message.provider !== "email" && oauthProviderAdapter(database, message.provider)?.enabled) {
+        const started = await beginOAuthSignIn(database, client.session, message.provider, { origin: client.origin, returnTo: message.returnTo, reauthentication: { purpose, userId: client.session.auth.userId } });
+        if (started.ok) {
+          sendJson(client, { id: message.id ?? null, type: "auth.redirect", data: { url: started.url }, error: null });
+          return;
+        }
+      }
+      sendJson(client, { id: message.id ?? null, type: ok ? "auth.reauthenticate.result" : "error", data: ok ? { ok: true, purpose, expiresAt } : null, error: ok ? null : { code: "REAUTHENTICATION_FAILED", message: "Reauthentication failed.", hint: "Verify the current linked identity and retry." } });
+      return;
+    }
     if (message.type === "auth.signIn" || message.type === "auth.signInWithGoogle") {
       const provider = message.type === "auth.signInWithGoogle" ? "google" : message.provider;
       if (provider === "email") {
@@ -25472,6 +25562,11 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
         const customHandler = transactionDatabase.mutations.find((candidate) => candidate.name === mutationName);
         const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
         if (mutationHandler) admitCredentialHandler(mutationHandler, context, "mutation");
+        const reauthenticationPurpose = readAuthRequirements(mutationHandler)?.reauthentication;
+        if (reauthenticationPurpose) {
+          const consumed = typeof options.sessionToken === "string" && await transactionAdapter.consumeReauthenticationProof({ sessionToken: options.sessionToken, userId: auth.userId, purpose: reauthenticationPurpose, now: database.clock.now().toISOString() });
+          if (!consumed) throw commandError("Reauthentication required.", "Verify the current Session for this purpose and retry.", "REAUTHENTICATION_REQUIRED");
+        }
         context = await applyContextMiddleware(transactionDatabase, context, "mutation");
         for (const hookSource of database.mutationHooks.beforeMutation) {
           await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
@@ -32480,7 +32575,7 @@ jobs:
 }
 
 // src/cli/cli-version.ts
-var CLI_VERSION = "0.9.7";
+var CLI_VERSION = "0.9.8";
 
 // src/cli/sporades.ts
 var SUPPORTED_TEMPLATES = new Set(CLIENT_TEMPLATES);

@@ -9,7 +9,7 @@ import { validateStripePaymentsRuntimeConfig } from "./stripe-payment-config.js"
 import { createMailRuntime } from "./mail-runtime.js";
 import { createEmailEventEndpoints } from "./email-events-runtime.js";
 import { assertJsonCompatible, commandError, invalidReferenceError } from "./runtime-errors.js";
-import { PASSWORD_RESET_REQUEST_JOB, PASSWORD_RESET_THROTTLE_FIELD, PRIVILEGED_AUTH_USER_ID, authProvidersForClient, authStatus, capsuleIngressAuthUserId, confirmPasswordReset, createAuthDenialLogData, createEmailPasswordResetLink, currentEmailSignInThrottleState, emailAuthDisabledError, emitAuthDeniedLog, isReservedAuthUserId, mailNotConfiguredError, oauthProviderAdapter, prepareEmailPasswordResetDelivery, privilegedAuthUserId, readEndpointSessionToken, recordFailedEmailSignInAttempt, requireAuth, resolveAnonymousSession, serverAuthError, setEmailPassword, setOwnEmailPassword, verifyPasswordResetCode, } from "./auth-runtime.js";
+import { PASSWORD_RESET_REQUEST_JOB, PASSWORD_RESET_THROTTLE_FIELD, PRIVILEGED_AUTH_USER_ID, authProvidersForClient, authStatus, capsuleIngressAuthUserId, confirmPasswordReset, createAuthDenialLogData, createEmailPasswordResetLink, currentEmailSignInThrottleState, emailAuthDisabledError, emitAuthDeniedLog, isReservedAuthUserId, mailNotConfiguredError, normalizeEmailCredentials, oauthProviderAdapter, prepareEmailPasswordResetDelivery, privilegedAuthUserId, readEndpointSessionToken, recordFailedEmailSignInAttempt, requireAuth, resolveAnonymousSession, serverAuthError, setEmailPassword, setOwnEmailPassword, verifyEmailPassword, verifyPasswordResetCode, } from "./auth-runtime.js";
 // Batch 5. `createWebSocketHub` calls the two email entry points and `routeSporadesAuth` calls
 // the identity link; all three left this file for `auth-runtime.ts` in that batch, once user
 // preferences stopped holding them.
@@ -755,6 +755,21 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         scheduleTeamBillingJobDispatch: () => scheduleCurrentUserJobWorker(database),
         mail,
         authConfig: authStatus(config, serverEnv),
+        reauthenticationPolicy: capsuleDefinition?.auth?.reauthentication?.purposes ?? null,
+        authorizeReauthentication: typeof capsuleDefinition?.auth?.reauthentication?.authorize === "function" ? async function (auth, purpose) {
+            return database.adapter.withTransaction(async (transaction) => {
+                const reauthDatabase = createTransactionDatabase(database, transaction);
+                const reauthContext = { purpose: "auth.reauthentication", auth };
+                grantPrivilegedDbAccess(reauthContext);
+                const holder = createContextHolder(reauthContext);
+                try {
+                    return (await capsuleDefinition.auth.reauthentication.authorize({ db: createEndpointReadOnlyDatabaseApi(reauthDatabase, () => holder.current), auth }, purpose)) === true;
+                }
+                finally {
+                    revokePrivilegedDbAccess(reauthContext);
+                }
+            });
+        } : async () => true,
         passwordResetConfig: resolvePasswordResetConfig(config),
         teamJoinLinkConfig: resolveTeamJoinLinkConfig(config),
         teamApplicationRoles,
@@ -4535,6 +4550,32 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
             });
             return;
         }
+        if (message.type === "auth.reauthenticate") {
+            const purpose = message.purpose;
+            const policy = database.reauthenticationPolicy?.[purpose];
+            const normalized = normalizeEmailCredentials(message.credentials ?? {});
+            let ok = false;
+            let expiresAt = null;
+            const authorized = Boolean(policy && client.session.auth?.isAuthenticated && !client.session.auth?.isGuest && await database.authorizeReauthentication(client.session.auth, purpose));
+            if (authorized && message.provider === "email" && normalized.ok && typeof normalized.password === "string") {
+                const credential = await database.adapter.findEmailCredentialWithUser(normalized.email);
+                if (credential?.userId === client.session.auth.userId && verifyEmailPassword(normalized.password, credential.passwordSalt, credential.passwordHash)) {
+                    const now = database.clock.now();
+                    expiresAt = new Date(now.getTime() + policy.maxAgeSeconds * 1000).toISOString();
+                    await database.adapter.withTransaction((tx) => tx.replaceReauthenticationProof({ id: randomUUID(), userId: client.session.auth.userId, sessionToken: client.session.token, purpose, createdAt: now.toISOString(), expiresAt }));
+                    ok = true;
+                }
+            }
+            if (!ok && authorized && message.provider !== "email" && oauthProviderAdapter(database, message.provider)?.enabled) {
+                const started = await beginOAuthSignIn(database, client.session, message.provider, { origin: client.origin, returnTo: message.returnTo, reauthentication: { purpose, userId: client.session.auth.userId } });
+                if (started.ok) {
+                    sendJson(client, { id: message.id ?? null, type: "auth.redirect", data: { url: started.url }, error: null });
+                    return;
+                }
+            }
+            sendJson(client, { id: message.id ?? null, type: ok ? "auth.reauthenticate.result" : "error", data: ok ? { ok: true, purpose, expiresAt } : null, error: ok ? null : { code: "REAUTHENTICATION_FAILED", message: "Reauthentication failed.", hint: "Verify the current linked identity and retry." } });
+            return;
+        }
         if (message.type === "auth.signIn" || message.type === "auth.signInWithGoogle") {
             const provider = message.type === "auth.signInWithGoogle" ? "google" : message.provider;
             if (provider === "email") {
@@ -5599,6 +5640,12 @@ export async function runMutation(database, auth, mutationName, args, options = 
                 const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
                 if (mutationHandler)
                     admitCredentialHandler(mutationHandler, context, "mutation");
+                const reauthenticationPurpose = readAuthRequirements(mutationHandler)?.reauthentication;
+                if (reauthenticationPurpose) {
+                    const consumed = typeof options.sessionToken === "string" && await transactionAdapter.consumeReauthenticationProof({ sessionToken: options.sessionToken, userId: auth.userId, purpose: reauthenticationPurpose, now: database.clock.now().toISOString() });
+                    if (!consumed)
+                        throw commandError("Reauthentication required.", "Verify the current Session for this purpose and retry.", "REAUTHENTICATION_REQUIRED");
+                }
                 context = await applyContextMiddleware(transactionDatabase, context, "mutation");
                 for (const hookSource of database.mutationHooks.beforeMutation) {
                     await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);

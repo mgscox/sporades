@@ -3233,6 +3233,11 @@ export async function routeSporadesAuth(database: LooseRecord, request: Incoming
       parameters,
     });
     const session = await resolveAnonymousSession(database, stateRow.sessionToken);
+    if (stateRow.reauthPurpose) {
+      const subject = normalizeSimulatedText(profile?.subject ?? profile?.sub); const identity = subject ? await database.adapter.findAuthIdentityByProviderSubject(provider, subject) : null; const policy = database.reauthenticationPolicy?.[stateRow.reauthPurpose];
+      if (!policy || !session.auth?.isAuthenticated || session.auth?.isGuest || session.auth.userId !== stateRow.reauthUserId || identity?.userId !== session.auth.userId) throw commandError("Reauthentication failed.", "Verify the current linked identity and retry.", "REAUTHENTICATION_FAILED");
+      const now = database.clock.now(); await database.adapter.withTransaction((tx: LooseRecord) => tx.replaceReauthenticationProof({ id: nodeCryptoModule.randomUUID(), userId: session.auth.userId, sessionToken: stateRow.sessionToken, purpose: stateRow.reauthPurpose, createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + policy.maxAgeSeconds * 1000).toISOString() })); writeRedirect(response, stateRow.returnTo); return true;
+    }
     let result;
     try {
       result = await linkProviderIdentity(database, session, provider, profile, stateRow.registrationCiphertext ? stateRow : undefined);
@@ -3325,6 +3330,7 @@ export async function beginOAuthSignIn(database: LooseRecord, session: LooseReco
   const admission = boundedRegistrationInput(options.registration?.admission);
   if (admission === invalidRegistrationAdmission) return registrationDenied();
   const registrationCiphertext = admission === undefined ? null : await sealOAuthRegistration(database, admission, { provider, sessionToken: session.token, redirectUri, nonce, expiresAt });
+  const reauthentication = options.reauthentication;
   let started;
   try {
     started = await adapter.begin({
@@ -3366,6 +3372,8 @@ export async function beginOAuthSignIn(database: LooseRecord, session: LooseReco
     nonce,
     pkceVerifier,
     registrationCiphertext,
+    reauthPurpose: reauthentication?.purpose ?? null,
+    reauthUserId: reauthentication?.userId ?? null,
   });
   return { ok: true, url: started.url };
 }
@@ -3624,6 +3632,11 @@ export function createAnonymousAuthTables(sqlite: LooseRecord, _authConfig: Loos
       ),
     () => ensureSessionLifecycleColumns(sqlite),
     () => ensureSessionProvenanceColumn(sqlite),
+    () => sqlite.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_auth_reauthentication_proofs] (" +
+      "[id] TEXT PRIMARY KEY, [userId] TEXT NOT NULL, [sessionToken] TEXT NOT NULL, [purpose] TEXT NOT NULL, " +
+      "[createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL, UNIQUE ([sessionToken], [purpose]))",
+    )),
     () => createProviderIdentityTables(sqlite),
     () =>
       sqlite.exec(
@@ -3663,7 +3676,9 @@ export function createAnonymousAuthTables(sqlite: LooseRecord, _authConfig: Loos
           "[expiresAt] TEXT NOT NULL, " +
           "[nonce] TEXT, " +
           "[pkceVerifier] TEXT, " +
-          "[registrationCiphertext] TEXT" +
+          "[registrationCiphertext] TEXT, " +
+          "[reauthPurpose] TEXT, " +
+          "[reauthUserId] TEXT" +
           ")",
         ),
       ),
@@ -3680,6 +3695,8 @@ function ensureOAuthStateColumns(sqlite: LooseRecord) {
       ["nonce", "TEXT"],
       ["pkceVerifier", "TEXT"],
       ["registrationCiphertext", "TEXT"],
+      ["reauthPurpose", "TEXT"],
+      ["reauthUserId", "TEXT"],
     ].map(([name, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_oauth_states", name, type)),
     () => sqlite.exec(sql("UPDATE [sporades_auth_oauth_states] SET [provider] = 'google' WHERE [provider] IS NULL")),
     () => sqlite.exec(sql("UPDATE [sporades_auth_oauth_states] SET [expiresAt] = [createdAt] WHERE [expiresAt] IS NULL")),

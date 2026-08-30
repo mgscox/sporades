@@ -875,6 +875,30 @@ test("runtime OAuth provider seam completes query and form-post callbacks with p
     assert.equal(queryResponse.headers.location, "http://127.0.0.1:4000");
     assert.equal(database.adapter.readAuthSessionWithUser(querySession.token).provider, "query");
 
+    const linkedSession = database.adapter.readAuthSessionWithUser(querySession.token);
+    const identitiesBeforeReauthentication = database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_identities").get().count;
+    database.reauthenticationPolicy = { "administrator-authority": { maxAgeSeconds: 900 } };
+    const reauthenticationStart = await beginOAuthSignIn(database, querySession, "query", {
+      origin: "http://127.0.0.1:4000",
+      reauthentication: { purpose: "administrator-authority", userId: linkedSession.userId },
+    });
+    const reauthenticationState = new URL(reauthenticationStart.url).searchParams.get("state");
+    const storedReauthentication = database.adapter.prepare("SELECT * FROM sporades_auth_oauth_states WHERE state = ?").get(reauthenticationState);
+    assert.equal(storedReauthentication.reauthPurpose, "administrator-authority");
+    assert.equal(storedReauthentication.reauthUserId, linkedSession.userId);
+    assert.ok(database.clock?.now);
+    const reauthenticationResponse = responseRecorder();
+    assert.equal(await routeSporadesAuth(
+      database,
+      { method: "GET", url: `/__sporades/auth/query/callback?state=${reauthenticationState}&code=query-code`, headers: {} },
+      reauthenticationResponse,
+    ), true);
+    assert.equal(reauthenticationResponse.statusCode, 302, reauthenticationResponse.body);
+    assert.equal(database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_identities").get().count, identitiesBeforeReauthentication, "reauthentication must not link or replace identities");
+    const proof = database.adapter.prepare("SELECT * FROM sporades_auth_reauthentication_proofs WHERE sessionToken = ? AND purpose = ?").get(querySession.token, "administrator-authority");
+    assert.equal(proof.userId, linkedSession.userId);
+    assert.equal(database.adapter.readAuthSessionWithUser(querySession.token).userId, linkedSession.userId, "reauthentication must not replace the Session User");
+
     const formSession = await resolveAnonymousSession(database, null);
     const formStart = await beginOAuthSignIn(database, formSession, "form", {
       origin: "http://127.0.0.1:4000",
@@ -893,7 +917,7 @@ test("runtime OAuth provider seam completes query and form-post callbacks with p
     assert.equal(formResponse.statusCode, 302, formResponse.body);
     assert.equal(formResponse.headers.location, "http://127.0.0.1:4000/after");
     assert.equal(database.adapter.readAuthSessionWithUser(formSession.token).provider, "form");
-    assert.equal(completions.length, 2);
+    assert.equal(completions.length, 3);
     assert.equal(completions[0].provider, "query");
     assert.ok(completions[0].nonce);
     assert.ok(completions[0].pkceVerifier);

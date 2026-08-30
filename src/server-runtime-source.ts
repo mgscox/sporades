@@ -894,6 +894,14 @@ export async function openDevDatabase(
     scheduleTeamBillingJobDispatch: () => scheduleCurrentUserJobWorker(database),
     mail,
     authConfig: authStatus(config, serverEnv),
+    reauthenticationPolicy: capsuleDefinition?.auth?.reauthentication?.purposes ?? null,
+    authorizeReauthentication: typeof capsuleDefinition?.auth?.reauthentication?.authorize === "function" ? async function (auth: LooseRecord, purpose: string) {
+      return database.adapter.withTransaction(async (transaction: LooseRecord) => {
+        const reauthDatabase = createTransactionDatabase(database, transaction); const reauthContext: LooseRecord = { purpose: "auth.reauthentication", auth }; grantPrivilegedDbAccess(reauthContext); const holder = createContextHolder(reauthContext);
+        try { return (await capsuleDefinition.auth.reauthentication.authorize({ db: createEndpointReadOnlyDatabaseApi(reauthDatabase, () => holder.current), auth }, purpose)) === true; }
+        finally { revokePrivilegedDbAccess(reauthContext); }
+      });
+    } : async () => true,
     passwordResetConfig: resolvePasswordResetConfig(config),
     teamJoinLinkConfig: resolveTeamJoinLinkConfig(config),
     teamApplicationRoles,
@@ -4906,6 +4914,24 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
       return;
     }
 
+    if (message.type === "auth.reauthenticate") {
+      const purpose = message.purpose; const policy = database.reauthenticationPolicy?.[purpose]; const normalized = normalizeEmailCredentials(message.credentials ?? {});
+      let ok = false; let expiresAt: string | null = null;
+      const authorized = Boolean(policy && client.session.auth?.isAuthenticated && !client.session.auth?.isGuest && await database.authorizeReauthentication(client.session.auth, purpose));
+      if (authorized && message.provider === "email" && normalized.ok && typeof normalized.password === "string") {
+        const credential = await database.adapter.findEmailCredentialWithUser(normalized.email);
+        if (credential?.userId === client.session.auth.userId && verifyEmailPassword(normalized.password, credential.passwordSalt, credential.passwordHash)) {
+          const now = database.clock.now(); expiresAt = new Date(now.getTime() + policy.maxAgeSeconds * 1000).toISOString();
+          await database.adapter.withTransaction((tx: LooseRecord) => tx.replaceReauthenticationProof({ id: randomUUID(), userId: client.session.auth.userId, sessionToken: client.session.token, purpose, createdAt: now.toISOString(), expiresAt })); ok = true;
+        }
+      }
+      if (!ok && authorized && message.provider !== "email" && oauthProviderAdapter(database, message.provider)?.enabled) {
+        const started: any = await beginOAuthSignIn(database, client.session, message.provider, { origin: client.origin, returnTo: message.returnTo, reauthentication: { purpose, userId: client.session.auth.userId } });
+        if (started.ok) { sendJson(client, { id: message.id ?? null, type: "auth.redirect", data: { url: started.url }, error: null }); return; }
+      }
+      sendJson(client, { id: message.id ?? null, type: ok ? "auth.reauthenticate.result" : "error", data: ok ? { ok: true, purpose, expiresAt } : null, error: ok ? null : { code: "REAUTHENTICATION_FAILED", message: "Reauthentication failed.", hint: "Verify the current linked identity and retry." } }); return;
+    }
+
     if (message.type === "auth.signIn" || message.type === "auth.signInWithGoogle") {
       const provider = message.type === "auth.signInWithGoogle" ? "google" : message.provider;
       if (provider === "email") {
@@ -5993,6 +6019,11 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
         const customHandler = transactionDatabase.mutations.find((candidate: { name: any; }) => candidate.name === mutationName);
         const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
         if (mutationHandler) admitCredentialHandler(mutationHandler, context, "mutation");
+        const reauthenticationPurpose = readAuthRequirements(mutationHandler)?.reauthentication;
+        if (reauthenticationPurpose) {
+          const consumed = typeof options.sessionToken === "string" && await transactionAdapter.consumeReauthenticationProof({ sessionToken: options.sessionToken, userId: auth.userId, purpose: reauthenticationPurpose, now: database.clock.now().toISOString() });
+          if (!consumed) throw commandError("Reauthentication required.", "Verify the current Session for this purpose and retry.", "REAUTHENTICATION_REQUIRED");
+        }
         context = await applyContextMiddleware(transactionDatabase, context, "mutation");
 
         for (const hookSource of database.mutationHooks.beforeMutation) {
