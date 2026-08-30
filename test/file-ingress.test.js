@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,6 +12,7 @@ import { openDevDatabase, routeEndpoint, runEndpoint } from "../dist/server-runt
 import { multipartParts, stageMultipartIngress, sweepExpiredFileIngress } from "../dist/file-ingress-runtime.js";
 import { capsuleIngressAuthUserId } from "../dist/auth-runtime.js";
 import { accessKeyVerifierDigest, createAccessKeySecret } from "../dist/access-keys-runtime.js";
+import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
 
 function multipart(boundary, headers = 'Content-Disposition: form-data; name="file"; filename="a.txt"\r\nContent-Type: text/plain', bytes = "hello") {
   return Buffer.from(`--${boundary}\r\n${headers}\r\n\r\n${bytes}\r\n--${boundary}--`);
@@ -283,6 +284,37 @@ test("cross-principal and cross-Capsule claims fail with the same opaque authori
     let crossCapsule; await assert.rejects(runEndpoint(second, second.endpoints[0], new URL("http://capsule.test/principal-isolation"), request("app-a", "request-c")), (error) => { crossCapsule = error; return error.code === "INGRESS_AUTHORITY_DENIED"; });
     assert.equal(crossPrincipal.message, crossCapsule.message); assert.equal(JSON.stringify(crossPrincipal).includes("app-a"), false); assert.equal(Number((await first.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_files]").get()).count), 0);
   } finally { await first?.close(); await second?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("trusted ingress has identical denial, claim, replay, restart, disconnect, and cleanup semantics on MinIO", async () => {
+  await withFakeS3CompatibleService(async ({ endpoint: storageEndpoint, objects }) => {
+    const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-minio-")); let database; const namespace = `ingress-${randomUUID()}`;
+    try {
+      let shouldClaim = true;
+      const definition = capsule({ name: namespace, endpoints: {
+        upload: endpoint({ method: "POST", path: "/minio", body: { multipart: ingressPolicy() } }, requireAuth(async (ctx) => shouldClaim ? await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/minio.txt" }) : ctx.request.multipart.files[0])),
+        denied: endpoint({ method: "POST", path: "/minio-denied", body: { multipart: ingressPolicy() } }, requireAuth(() => ({ body: { impossible: true } }))),
+      } });
+      const dbPath = path.join(dir, "data.db"); const config = { name: namespace, services: { storage: { kind: "storage", engine: "minio" } } };
+      const serviceEnv = { SPORADES_SERVICE_STORAGE_ENGINE: "minio", SPORADES_SERVICE_STORAGE_ENDPOINT: storageEndpoint, SPORADES_SERVICE_STORAGE_ACCESS_KEY: "sporades", SPORADES_SERVICE_STORAGE_SECRET_KEY: "sporades-minio-local-secret", SPORADES_SERVICE_STORAGE_BUCKET: "sporades-files", SPORADES_SERVICE_STORAGE_REGION: "eu-west-2", SPORADES_SERVICE_STORAGE_NAMESPACE: namespace };
+      database = await openDevDatabase(dbPath, "", serviceEnv, config, definition, { serviceEnv }); await seedIngressUser(database);
+      let deniedReads = 0; const denied = ingressRequest("minio-denied"); delete denied.headers["x-sporades-session-token"]; denied[Symbol.asyncIterator] = async function* () { deniedReads += 1; yield multipart("claim"); };
+      await assert.rejects(runEndpoint(database, database.endpoints.find((route) => route.options.path === "/minio-denied"), new URL("http://capsule.test/minio-denied"), denied), { code: "UNAUTHENTICATED" }); assert.equal(deniedReads, 0); assert.equal(objects.size, 0);
+      const route = database.endpoints.find((candidate) => candidate.options.path === "/minio");
+      const claims = await Promise.all(Array.from({ length: 20 }, () => runEndpoint(database, route, new URL("http://capsule.test/minio"), ingressRequest("minio-claim"))));
+      assert.equal(new Set(claims.map((file) => file.id)).size, 1); assert.equal(objects.size, 1); const canonicalKey = [...objects.keys()][0]; assert.ok(canonicalKey.startsWith(`capsules/${namespace}/files/`));
+      await database.close(); database = await openDevDatabase(dbPath, "", serviceEnv, config, definition, { serviceEnv }); const replay = await runEndpoint(database, database.endpoints.find((candidate) => candidate.options.path === "/minio"), new URL("http://capsule.test/minio"), ingressRequest("minio-claim")); assert.equal(replay.id, claims[0].id); assert.deepEqual([...objects.keys()], [canonicalKey]);
+      const truncated = ingressRequest("minio-truncated"); truncated[Symbol.asyncIterator] = async function* () { yield Buffer.from("--claim\r\nContent-Disposition: form-data; name=\"file\"; filename=\"cut.txt\"\r\n\r\npartial"); };
+      await assert.rejects(runEndpoint(database, database.endpoints.find((candidate) => candidate.options.path === "/minio"), new URL("http://capsule.test/minio"), truncated), { code: "INVALID_MULTIPART" }); assert.deepEqual([...objects.keys()], [canonicalKey]);
+      shouldClaim = false; const orphan = await runEndpoint(database, database.endpoints.find((candidate) => candidate.options.path === "/minio"), new URL("http://capsule.test/minio"), ingressRequest("minio-orphan")); const orphanRow = await expireIngressReceipt(database, orphan.leaseId); const orphanKey = `capsules/${namespace}/files/${orphanRow.fileId}/${orphanRow.version}`; assert.equal(objects.has(orphanKey), true);
+      const swept = await sweepExpiredFileIngress(database, { limit: 1 }); assert.equal(swept.cleaned.length, 1); assert.equal(objects.has(orphanKey), false); assert.deepEqual([...objects.keys()], [canonicalKey]);
+    } finally {
+      await database?.close();
+      for (const key of [...objects.keys()].filter((value) => value.startsWith(`capsules/${namespace}/`))) objects.delete(key);
+      assert.equal([...objects.keys()].some((value) => value.startsWith(`capsules/${namespace}/`)), false);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 test("twenty claims across two SQLite connections all recover one completed File", async () => {
