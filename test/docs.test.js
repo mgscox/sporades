@@ -90,6 +90,9 @@ test("Registration Admission docs cover policy choice, atomicity, limits, OAuth 
     assert.match(contents, /benefit|advantage/i);
     assert.match(contents, /cost|tradeoff/i);
   }
+  assert.match(reference, /auth\.signUp\("email", credentials, \{ registration: \{ admission: \{ invite \} \} \}\)/);
+  assert.match(reference, /auth\.signIn\("google", undefined, \{ registration: \{ admission: \{ invite \} \} \}\)/);
+  assert.doesNotMatch(reference, /auth\.(?:signUp|signIn)\([^\n]+, \{ admission:/);
 });
 
 async function runShell(scriptPath, options) {

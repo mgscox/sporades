@@ -510,8 +510,8 @@ auth: {
 Pass the admission as the optional third argument:
 
 ```ts
-await auth.signUp("email", credentials, { admission: { invite } });
-await auth.signIn("google", undefined, { admission: { invite } });
+await auth.signUp("email", credentials, { registration: { admission: { invite } } });
+await auth.signIn("google", undefined, { registration: { admission: { invite } } });
 ```
 
 The admission must survive `JSON.stringify`, must not contain secrets that need
