@@ -6015,6 +6015,12 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
   let result;
   const writeState = { didWrite: false };
   try {
+    const declaredHandler = database.mutations.find((candidate: { name: any; }) => candidate.name === mutationName);
+    const declaredMutationHandler = declaredHandler ? materializeHandler(declaredHandler) : null;
+    if (readAuthRequirements(declaredMutationHandler)?.reauthentication) {
+      const maintenanceNow = database.clock.now().toISOString();
+      await database.adapter.withTransaction((maintenanceAdapter: LooseRecord) => maintenanceAdapter.deleteExpiredReauthenticationProofs(maintenanceNow));
+    }
     const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter: any) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
       let handlerFailed = false;

@@ -5643,6 +5643,12 @@ export async function runMutation(database, auth, mutationName, args, options = 
     let result;
     const writeState = { didWrite: false };
     try {
+        const declaredHandler = database.mutations.find((candidate) => candidate.name === mutationName);
+        const declaredMutationHandler = declaredHandler ? materializeHandler(declaredHandler) : null;
+        if (readAuthRequirements(declaredMutationHandler)?.reauthentication) {
+            const maintenanceNow = database.clock.now().toISOString();
+            await database.adapter.withTransaction((maintenanceAdapter) => maintenanceAdapter.deleteExpiredReauthenticationProofs(maintenanceNow));
+        }
         const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
             const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
             let handlerFailed = false;

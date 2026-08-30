@@ -174,7 +174,10 @@ Minting and consumption re-read the exact Session from the database inside the
 same transaction, so sign-out, revocation or expiry in another tab takes effect
 even when a browser connection still holds cached auth state. Sign-out removes
 proofs for that Session transactionally; expired and orphaned proofs are swept
-on startup, and expired proofs are also swept during consumption. Thus an
+on startup, and expired proofs are also swept in an independent maintenance
+transaction before a guarded mutation begins. A later
+`REAUTHENTICATION_REQUIRED` or handler rollback therefore cannot undo expiry
+cleanup. Thus an
 abandoned proof is both immediately unusable and retained no longer than its
 declared lifetime plus the interval until the next startup or proof attempt.
 Consumption is part of the guarded mutation transaction: a rejected command

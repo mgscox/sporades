@@ -18811,11 +18811,14 @@ function createSharedDatabaseAdapterMethods(dialect) {
         () => this.prepare(sql("INSERT INTO [sporades_auth_reauthentication_proofs] ([id], [userId], [sessionToken], [purpose], [createdAt], [expiresAt]) VALUES (?, ?, ?, ?, ?, ?)")).run(row.id, row.userId, row.sessionToken, row.purpose, row.createdAt, row.expiresAt)
       ]);
     },
+    deleteExpiredReauthenticationProofs(now2) {
+      return this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [expiresAt] <= ?")).run(now2);
+    },
     consumeReauthenticationProof(input) {
-      return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [expiresAt] <= ?")).run(input.now), () => thenIfPromise(this.prepare(sql("SELECT [p].[id] FROM [sporades_auth_reauthentication_proofs] [p] JOIN [sporades_auth_sessions] [s] ON [s].[token] = [p].[sessionToken] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [p].[sessionToken] = ? AND [p].[userId] = ? AND [p].[purpose] = ? AND [p].[expiresAt] > ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0")).get(input.sessionToken, input.userId, input.purpose, input.now, input.userId, input.now), (row) => {
+      return thenIfPromise(this.prepare(sql("SELECT [p].[id] FROM [sporades_auth_reauthentication_proofs] [p] JOIN [sporades_auth_sessions] [s] ON [s].[token] = [p].[sessionToken] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [p].[sessionToken] = ? AND [p].[userId] = ? AND [p].[purpose] = ? AND [p].[expiresAt] > ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0")).get(input.sessionToken, input.userId, input.purpose, input.now, input.userId, input.now), (row) => {
         if (!row) return false;
         return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [id] = ?")).run(row.id), (result) => result.changes === 1);
-      }));
+      });
     },
     deleteAuthSessionsForUser(userId) {
       return chainMaybePromise([
@@ -25609,6 +25612,12 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
   let result;
   const writeState = { didWrite: false };
   try {
+    const declaredHandler = database.mutations.find((candidate) => candidate.name === mutationName);
+    const declaredMutationHandler = declaredHandler ? materializeHandler(declaredHandler) : null;
+    if (readAuthRequirements(declaredMutationHandler)?.reauthentication) {
+      const maintenanceNow = database.clock.now().toISOString();
+      await database.adapter.withTransaction((maintenanceAdapter) => maintenanceAdapter.deleteExpiredReauthenticationProofs(maintenanceNow));
+    }
     const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
       let handlerFailed = false;
