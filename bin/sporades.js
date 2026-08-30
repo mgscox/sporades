@@ -5871,7 +5871,7 @@ function buildSmtpMessage(message) {
     `Date: ${(/* @__PURE__ */ new Date()).toUTCString()}`,
     `Message-ID: ${message.messageId ?? `<${crypto.randomUUID()}@sporades.local>`}`,
     "MIME-Version: 1.0",
-    ...(message.providerHeaders ?? []).map((header) => header.json ? foldMailgunJsonHeader(header.name, header.value) : header.verbatim ? `${header.name}: ${header.value}` : foldMimeHeader(header.name, header.value))
+    ...(message.providerHeaders ?? []).map((header2) => header2.json ? foldMailgunJsonHeader(header2.name, header2.value) : header2.verbatim ? `${header2.name}: ${header2.value}` : foldMimeHeader(header2.name, header2.value))
   ];
   if (message.textBody !== void 0 && message.htmlBody !== void 0) {
     const boundary = `sporades-${crypto.randomUUID()}`;
@@ -14587,7 +14587,7 @@ function createAppleClientSecret(database, nowSeconds2 = Math.floor(Date.now() /
       "OAUTH_CLIENT_CREDENTIAL_INVALID"
     );
   }
-  const header = Buffer.from(JSON.stringify({ alg: "ES256", kid: apple.keyId, typ: "JWT" })).toString("base64url");
+  const header2 = Buffer.from(JSON.stringify({ alg: "ES256", kid: apple.keyId, typ: "JWT" })).toString("base64url");
   const claims = Buffer.from(JSON.stringify({
     iss: apple.teamId,
     iat: nowSeconds2,
@@ -14597,7 +14597,7 @@ function createAppleClientSecret(database, nowSeconds2 = Math.floor(Date.now() /
   })).toString("base64url");
   const signatureBytes = nodeCryptoModule3.sign(
     "sha256",
-    Buffer.from(`${header}.${claims}`),
+    Buffer.from(`${header2}.${claims}`),
     { key: signingKey, dsaEncoding: "ieee-p1363" }
   );
   if (signatureBytes.length !== 64) {
@@ -14607,7 +14607,7 @@ function createAppleClientSecret(database, nowSeconds2 = Math.floor(Date.now() /
       "OAUTH_CLIENT_CREDENTIAL_INVALID"
     );
   }
-  return `${header}.${claims}.${signatureBytes.toString("base64url")}`;
+  return `${header2}.${claims}.${signatureBytes.toString("base64url")}`;
 }
 function createFacebookOAuthProviderAdapter(database) {
   const facebook = database.authConfig.providers.facebook;
@@ -14908,15 +14908,15 @@ async function verifyGoogleIdentityToken(database, token, expectedNonce) {
   if (parts.length !== 3) {
     throw commandError("Google identity token was invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
-  let header;
+  let header2;
   let claims;
   try {
-    header = JSON.parse(decodeJwtPart(parts[0]).toString("utf8"));
+    header2 = JSON.parse(decodeJwtPart(parts[0]).toString("utf8"));
     claims = JSON.parse(decodeJwtPart(parts[1]).toString("utf8"));
   } catch {
     throw commandError("Google identity token was invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
-  if (header.alg !== "RS256" || typeof header.kid !== "string") {
+  if (header2.alg !== "RS256" || typeof header2.kid !== "string") {
     throw commandError("Google identity token used an unsupported signature.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
   const jwksUrl = oauthProviderTestEndpoint(
@@ -14944,7 +14944,7 @@ async function verifyGoogleIdentityToken(database, token, expectedNonce) {
   if (!keys) {
     throw commandError("Google signing keys were invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
   }
-  const jwk = keys.find((candidate) => isPlainJsonObject(candidate) && candidate.kid === header.kid && candidate.kty === "RSA" && typeof candidate.n === "string" && typeof candidate.e === "string");
+  const jwk = keys.find((candidate) => isPlainJsonObject(candidate) && candidate.kid === header2.kid && candidate.kty === "RSA" && typeof candidate.n === "string" && typeof candidate.e === "string");
   if (!jwk) {
     throw commandError("Google identity token signing key was not recognized.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
@@ -15244,11 +15244,11 @@ async function verifyMicrosoftIdentityToken(database, token, expectedNonce, disc
   if (parts.length !== 3 || parts.some((part) => part.length === 0)) {
     throw commandError("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
-  let header;
+  let header2;
   let claims;
   let signature;
   try {
-    header = parseMicrosoftJwtPart(parts[0], 2 * 1024);
+    header2 = parseMicrosoftJwtPart(parts[0], 2 * 1024);
     claims = parseMicrosoftJwtPart(parts[1], 12 * 1024);
     signature = decodeJwtPart(parts[2]);
     if (signature.length < 128 || signature.length > 1024) throw new Error("signature size");
@@ -15260,11 +15260,11 @@ async function verifyMicrosoftIdentityToken(database, token, expectedNonce, disc
   const numericDate = (value) => Number.isSafeInteger(value) && value >= 0;
   const optionalNumericDate = (value) => value === void 0 || numericDate(value);
   const optionalProfile = (value, max) => value === void 0 || value === null || typeof value === "string" && value.length <= max;
-  const structurallyValid = header.alg === "RS256" && visible(header.kid, 255) && visible(claims.iss, 2048) && validAudience && numericDate(claims.exp) && optionalNumericDate(claims.nbf) && optionalNumericDate(claims.iat) && visible(claims.nonce, 512) && typeof claims.tid === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(claims.tid) && visible(claims.sub, 255) && optionalProfile(claims.email, 1024) && optionalProfile(claims.name, 1024) && optionalProfile(claims.preferred_username, 1024);
+  const structurallyValid = header2.alg === "RS256" && visible(header2.kid, 255) && visible(claims.iss, 2048) && validAudience && numericDate(claims.exp) && optionalNumericDate(claims.nbf) && optionalNumericDate(claims.iat) && visible(claims.nonce, 512) && typeof claims.tid === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(claims.tid) && visible(claims.sub, 255) && optionalProfile(claims.email, 1024) && optionalProfile(claims.name, 1024) && optionalProfile(claims.preferred_username, 1024);
   if (!structurallyValid) {
     throw commandError("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
-  const jwk = await selectMicrosoftJwk(database, discovery, header.kid);
+  const jwk = await selectMicrosoftJwk(database, discovery, header2.kid);
   let signatureValid = false;
   let signatureCheckFailed = false;
   try {
@@ -15310,15 +15310,15 @@ async function verifyAppleIdentityToken(database, token, expectedNonce) {
   if (parts.length !== 3) {
     throw commandError("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
-  let header;
+  let header2;
   let claims;
   try {
-    header = parseBoundedJwtObject(parts[0]);
+    header2 = parseBoundedJwtObject(parts[0]);
     claims = parseBoundedJwtObject(parts[1]);
   } catch {
     throw commandError("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
-  if (header.alg !== "RS256" || typeof header.kid !== "string" || !/^[\x21-\x7e]{1,255}$/.test(header.kid) || header.typ !== void 0 && header.typ !== "JWT") {
+  if (header2.alg !== "RS256" || typeof header2.kid !== "string" || !/^[\x21-\x7e]{1,255}$/.test(header2.kid) || header2.typ !== void 0 && header2.typ !== "JWT") {
     throw commandError("Apple identity token used an unsupported signature.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
   const jwksUrl = oauthProviderTestEndpoint(
@@ -15346,7 +15346,7 @@ async function verifyAppleIdentityToken(database, token, expectedNonce) {
   if (!keys) {
     throw commandError("Apple signing keys were invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
   }
-  const jwk = keys.find((candidate) => isPlainJsonObject(candidate) && candidate.kid === header.kid && candidate.kty === "RSA" && candidate.use === "sig" && candidate.alg === "RS256" && typeof candidate.n === "string" && typeof candidate.e === "string");
+  const jwk = keys.find((candidate) => isPlainJsonObject(candidate) && candidate.kid === header2.kid && candidate.kty === "RSA" && candidate.use === "sig" && candidate.alg === "RS256" && typeof candidate.n === "string" && typeof candidate.e === "string");
   if (!jwk) {
     throw commandError("Apple identity token signing key was not recognized.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
@@ -18865,7 +18865,7 @@ async function createPostgresDatabaseAdapter(options) {
 }
 async function createPostgresConnection(url) {
   const net = await import("node:net");
-  const crypto2 = await import("node:crypto");
+  const crypto3 = await import("node:crypto");
   const options = postgresUrlOptions(url);
   const socket = net.createConnection({ host: options.host, port: options.port });
   socket.setNoDelay(true);
@@ -18915,7 +18915,7 @@ async function createPostgresConnection(url) {
             "Use the Sporades-managed Postgres Capsule service, which authenticates with SCRAM-SHA-256."
           );
         }
-        scram = createPostgresScramSession(crypto2, options.password);
+        scram = createPostgresScramSession(crypto3, options.password);
         const clientFirst = Buffer.from(scram.clientFirstMessage, "utf8");
         socket.write(
           postgresPasswordMessage(
@@ -19039,8 +19039,8 @@ function postgresPasswordMessage(body) {
   const bodyBuffer = Buffer.isBuffer(body) ? body : Buffer.from(body);
   return Buffer.concat([Buffer.from("p"), postgresInt32(bodyBuffer.length + 4), bodyBuffer]);
 }
-function createPostgresScramSession(crypto2, password) {
-  const clientNonce = crypto2.randomBytes(18).toString("base64");
+function createPostgresScramSession(crypto3, password) {
+  const clientNonce = crypto3.randomBytes(18).toString("base64");
   const clientFirstBare = `n=,r=${clientNonce}`;
   let serverSignature = null;
   return {
@@ -19053,15 +19053,15 @@ function createPostgresScramSession(crypto2, password) {
       if (!serverNonce.startsWith(clientNonce) || salt.length === 0 || !Number.isInteger(iterations) || iterations <= 0) {
         throw new Error("Invalid Postgres SCRAM server-first message.");
       }
-      const saltedPassword = crypto2.pbkdf2Sync(password, salt, iterations, 32, "sha256");
-      const clientKey = crypto2.createHmac("sha256", saltedPassword).update("Client Key").digest();
-      const storedKey = crypto2.createHash("sha256").update(clientKey).digest();
+      const saltedPassword = crypto3.pbkdf2Sync(password, salt, iterations, 32, "sha256");
+      const clientKey = crypto3.createHmac("sha256", saltedPassword).update("Client Key").digest();
+      const storedKey = crypto3.createHash("sha256").update(clientKey).digest();
       const clientFinalWithoutProof = `c=biws,r=${serverNonce}`;
       const authMessage = `${clientFirstBare},${serverFirstMessage},${clientFinalWithoutProof}`;
-      const clientSignature = crypto2.createHmac("sha256", storedKey).update(authMessage).digest();
+      const clientSignature = crypto3.createHmac("sha256", storedKey).update(authMessage).digest();
       const clientProof = Buffer.from(clientKey.map((byte, index) => byte ^ clientSignature[index]));
-      const serverKey = crypto2.createHmac("sha256", saltedPassword).update("Server Key").digest();
-      serverSignature = crypto2.createHmac("sha256", serverKey).update(authMessage).digest("base64");
+      const serverKey = crypto3.createHmac("sha256", saltedPassword).update("Server Key").digest();
+      serverSignature = crypto3.createHmac("sha256", serverKey).update(authMessage).digest("base64");
       return `${clientFinalWithoutProof},p=${clientProof.toString("base64")}`;
     },
     verify(serverFinalMessage) {
@@ -19820,6 +19820,142 @@ function splitSqlStatements(sql) {
 }
 function quoteIdentifier(identifier) {
   return `"${String(identifier).replaceAll('"', '""')}"`;
+}
+
+// src/file-ingress-runtime.ts
+var crypto2 = process.getBuiltinModule("node:crypto");
+var leaseTtlMs = 10 * 60 * 1e3;
+function store(database) {
+  const root = database.__rootDatabase ?? database;
+  return root.__sporadesIngressLeases ??= /* @__PURE__ */ new Map();
+}
+function header(headers, name) {
+  return headers[String(name).toLowerCase()];
+}
+function safeName(value) {
+  return String(value ?? "upload").replace(/[\\/\x00-\x1f]/g, "_").trim().slice(0, 255) || "upload";
+}
+function safeType(value) {
+  const type = String(value ?? "").split(";", 1)[0].trim().toLowerCase();
+  return /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(type) ? type : "application/octet-stream";
+}
+function keyFor(endpoint, requestKey, partKey, actor) {
+  return `${endpoint.options.method}:${endpoint.options.path}:${actor}:${requestKey}:${partKey}`;
+}
+function publicLease(row) {
+  return Object.freeze({ leaseId: row.leaseId, partId: row.partId, fieldName: row.fieldName, name: row.name, type: row.type, declaredSize: null, size: row.size, expiresAt: row.expiresAt });
+}
+async function stageMultipartIngress(database, endpoint, request, endpointRequest, actor) {
+  const policy = endpoint.options.body.multipart;
+  const contentType = String(endpointRequest.headers["content-type"] ?? "");
+  const match = /^multipart\/form-data\s*;\s*boundary=([^;\s]+)$/i.exec(contentType);
+  if (!match || match[1].length > 200) throw Object.assign(new Error("Invalid multipart request."), { code: "INVALID_MULTIPART" });
+  const requestKey = header(endpointRequest.headers, policy.requestKeyHeader);
+  if (typeof requestKey !== "string" || requestKey.length < 1 || requestKey.length > 200) throw Object.assign(new Error("Missing multipart idempotency key."), { code: "INVALID_MULTIPART_REQUEST_KEY" });
+  const maxBytes = Math.min(Number(policy.maxTotalFileBytes) + Number(policy.maxTotalFieldBytes) + 65536, Number(database.fileMaxSizeBytes ?? Infinity) + Number(policy.maxTotalFieldBytes) + 65536);
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of request) {
+    total += chunk.length;
+    if (total > maxBytes) throw Object.assign(new Error("Multipart body exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+    chunks.push(Buffer.from(chunk));
+  }
+  const raw = Buffer.concat(chunks);
+  const boundary = Buffer.from(`--${match[1]}`);
+  const pieces = raw.toString("latin1").split(boundary.toString("latin1")).slice(1, -1);
+  if (pieces.length > Number(policy.maxFiles) + Number(policy.maxFieldCount)) throw Object.assign(new Error("Too many multipart parts."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+  const files = [];
+  const fields = {};
+  let fieldBytes = 0;
+  let fileBytes = 0;
+  const partKeys = /* @__PURE__ */ new Set();
+  for (let part of pieces) {
+    if (!part.startsWith("\r\n")) throw Object.assign(new Error("Malformed multipart request."), { code: "INVALID_MULTIPART" });
+    part = part.slice(2);
+    const split = part.indexOf("\r\n\r\n");
+    if (split < 0) throw Object.assign(new Error("Malformed multipart request."), { code: "INVALID_MULTIPART" });
+    const rawHeaders = part.slice(0, split);
+    const body = Buffer.from(part.slice(split + 4).replace(/\r\n$/, ""), "latin1");
+    if (rawHeaders.length > 16384) throw Object.assign(new Error("Multipart headers exceed limit."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+    const disposition = /^content-disposition:\s*form-data;\s*name="([^"]+)"(?:;\s*filename="([^"]*)")?/im.exec(rawHeaders);
+    if (!disposition) throw Object.assign(new Error("Malformed multipart part."), { code: "INVALID_MULTIPART" });
+    const fieldName = disposition[1];
+    const filename = disposition[2];
+    if (filename === void 0) {
+      fieldBytes += body.length;
+      if (body.length > policy.maxFieldBytes || fieldBytes > policy.maxTotalFieldBytes) throw Object.assign(new Error("Multipart field exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+      (fields[fieldName] ??= []).push(body.toString("utf8"));
+      continue;
+    }
+    fileBytes += body.length;
+    if (files.length >= policy.maxFiles || body.length > policy.maxFileBytes || fileBytes > policy.maxTotalFileBytes || body.length > database.fileMaxSizeBytes) throw Object.assign(new Error("Multipart file exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+    const partKey = /^content-id:\s*<?([^>\r\n]+)>?\s*$/im.exec(rawHeaders)?.[1];
+    if (policy.requireStablePartKeys && (!partKey || partKeys.has(partKey))) throw Object.assign(new Error("Multipart files require unique stable part keys."), { code: "INVALID_MULTIPART_PART_KEY" });
+    if (partKey) partKeys.add(partKey);
+    const type = safeType(/^content-type:\s*([^\r\n]+)/im.exec(rawHeaders)?.[1] ?? "");
+    if (policy.allowedMimeTypes && !policy.allowedMimeTypes.map(safeType).includes(type)) throw Object.assign(new Error("Multipart file type is not allowed."), { code: "MULTIPART_TYPE_DENIED" });
+    const stablePartKey = partKey ?? crypto2.createHash("sha256").update(`${fieldName}:${files.length}`).digest("hex");
+    const actorId = String(actor.userId ?? "");
+    const key = keyFor(endpoint, requestKey, stablePartKey, actorId);
+    const leases = store(database);
+    let row = leases.get(key);
+    const digest = crypto2.createHash("sha256").update(body).digest("hex");
+    if (row && (row.digest !== digest || row.name !== safeName(filename) || row.type !== type)) throw Object.assign(new Error("Multipart retry descriptor conflicts with the original part."), { code: "INGRESS_DESCRIPTOR_CONFLICT" });
+    if (!row) {
+      const now2 = /* @__PURE__ */ new Date();
+      row = { key, leaseId: crypto2.randomUUID(), partId: crypto2.createHash("sha256").update(key).digest("hex"), fieldName, name: safeName(filename), type, size: body.length, digest, fileId: crypto2.randomUUID(), version: crypto2.randomUUID(), state: "leased", expiresAt: new Date(now2.getTime() + leaseTtlMs).toISOString() };
+      await database.fileStorage.writeFileVersion({ fileId: row.fileId, version: row.version, bytes: body });
+      leases.set(key, row);
+    }
+    files.push(publicLease(row));
+  }
+  return { body: null, bodyBytes: Object.freeze({ byteLength: 0, length: 0, at() {
+    return void 0;
+  }, toUint8Array() {
+    return new Uint8Array();
+  }, *[Symbol.iterator]() {
+  } }), multipart: Object.freeze({ files: Object.freeze(files), fields: Object.freeze(fields) }), __ingressRequestKey: requestKey };
+}
+function createEndpointIngressApi(database, endpoint, endpointRequest, context) {
+  const policy = endpoint.options.body?.multipart;
+  const unavailable2 = () => {
+    throw Object.assign(new Error("File ingress was not declared for this endpoint."), { code: "FILE_INGRESS_UNAVAILABLE" });
+  };
+  if (!policy) return { claim: unavailable2, status: unavailable2 };
+  const actorId = String(context.auth?.userId ?? "");
+  const requestKey = endpointRequest.__ingressRequestKey;
+  return {
+    async claim(lease, options) {
+      const row = [...store(database).values()].find((candidate) => candidate.leaseId === lease?.leaseId);
+      if (!row || row.state === "expired" || Date.parse(row.expiresAt) <= Date.now()) throw Object.assign(new Error("File ingress lease has expired."), { code: "INGRESS_LEASE_EXPIRED" });
+      if (row.state === "complete") return fileMetadataFromRow(row.file);
+      const path12 = normalizeAbsoluteFilePath(options?.path);
+      if (!policy.allowedPathPrefixes.some((prefix) => path12 === prefix || path12.startsWith(`${prefix}/`))) throw Object.assign(new Error("File path is outside the endpoint ingress policy."), { code: "INGRESS_PATH_DENIED" });
+      if (!context.auth?.isAuthenticated || context.auth?.isGuest) throw Object.assign(new Error("A linked actor is required to claim an ingress file."), { code: "INGRESS_ACTOR_REQUIRED" });
+      const existing = await database.adapter.selectLiveFileByPath(path12);
+      if (existing?.length) throw Object.assign(new Error("File path already exists."), { code: "FILE_PATH_EXISTS" });
+      const now2 = (/* @__PURE__ */ new Date()).toISOString();
+      const bucket = await database.adapter.findFileBucket(actorId, "default") ?? { id: crypto2.randomUUID(), ownerId: actorId, name: "default", createdAt: now2 };
+      if (!await database.adapter.findFileBucket(actorId, "default")) await database.adapter.createFileBucket(bucket);
+      const file = { id: row.fileId, ownerId: actorId, bucketId: bucket.id, bucketName: bucket.name, path: path12, name: safeName(options?.name ?? row.name), type: safeType(options?.type ?? row.type), size: row.size, version: row.version, status: "uploaded", createdAt: now2, updatedAt: now2 };
+      await database.adapter.insertFileRow(file);
+      row.state = "claiming";
+      row.file = file;
+      (context.__sporadesIngressClaims ??= []).push(row);
+      return fileMetadataFromRow(file);
+    },
+    async status(statusRequestKey, partKey) {
+      const row = store(database).get(keyFor(endpoint, statusRequestKey, partKey, actorId));
+      if (!row) return { state: "missing" };
+      return row.state === "complete" ? { state: "complete", file: fileMetadataFromRow(row.file) } : { state: "leased", lease: publicLease(row) };
+    }
+  };
+}
+function finalizeEndpointIngressClaims(context, committed) {
+  for (const row of context?.__sporadesIngressClaims ?? []) {
+    if (row.state === "claiming") row.state = committed ? "complete" : "leased";
+    if (!committed) delete row.file;
+  }
 }
 
 // src/stripe-events-runtime.ts
@@ -22205,12 +22341,7 @@ async function routeEndpoint(database, request, response) {
 async function runEndpoint(database, endpoint, requestUrl, request) {
   const handler = typeof endpoint.handler === "function" ? endpoint.handler : new Function(`return (${endpoint.handlerSource});`)();
   const runtimeOwnedProviderCallback = endpoint.runtimeOwnedEmailEvent || endpoint.runtimeOwnedStripeCallback;
-  const endpointRequest = await readEndpointRequest(
-    database,
-    requestUrl,
-    request,
-    !endpoint.runtimeOwnedStripeCallback
-  );
+  let endpointRequest = endpointRequestHead(requestUrl, request);
   const requirements = readAuthRequirements(handler);
   const hasAuthorization = requirements ? endpointHasAuthorization(request) : false;
   if (requirements) delete endpointRequest.headers.authorization;
@@ -22244,6 +22375,13 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
     emitAccessKeyAdmittedAudit(database, { ...admissionContext, kind: "endpoint" }, accessKeyAdmission.record);
     await recordAccessKeyUsage(database, accessKeyAdmission);
   }
+  if (endpoint.options?.body?.multipart) {
+    const admitted = accessKeyAdmission ?? session;
+    const payload = await stageMultipartIngress(database, endpoint, request, endpointRequest, admitted.auth);
+    endpointRequest = { ...endpointRequest, ...payload };
+  } else {
+    endpointRequest = await readEndpointRequest(database, requestUrl, request, !endpoint.runtimeOwnedStripeCallback);
+  }
   let context;
   try {
     const result = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
@@ -22256,6 +22394,7 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
           credential: accessKeyAdmission?.credential,
           accessKeyGrants: accessKeyAdmission?.grants
         });
+        context.files = createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context);
         if (endpoint.runtimeOwnedStripeCallback) {
           Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
         }
@@ -22273,12 +22412,14 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
         await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
       }
     });
+    finalizeEndpointIngressClaims(context ?? {}, true);
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     return result;
   } catch (error) {
+    finalizeEndpointIngressClaims(context ?? {}, false);
     dropPendingJobCancellationAborts(context);
     dropAccessKeyLifecycleAuditEvents(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
@@ -22489,6 +22630,11 @@ async function runAtomicStripeConsequence(database, parentContext, event, subscr
   throw new Error("Unreachable atomic Stripe consequence fence state.");
 }
 async function readEndpointRequest(database, requestUrl, request, parseJsonBody = true) {
+  const head = endpointRequestHead(requestUrl, request);
+  const payload = await readEndpointPayload(request, head.headers, database, parseJsonBody);
+  return { ...head, ...payload };
+}
+function endpointRequestHead(requestUrl, request) {
   const headers = Object.fromEntries(
     Object.entries(request.headers).map(([name, value]) => [
       name.toLowerCase(),
@@ -22496,13 +22642,11 @@ async function readEndpointRequest(database, requestUrl, request, parseJsonBody 
     ])
   );
   const query = endpointQueryFromUrl(requestUrl);
-  const payload = await readEndpointPayload(request, headers, database, parseJsonBody);
   return {
     method: request.method,
     path: requestUrl.pathname,
     headers,
-    query,
-    ...payload
+    query
   };
 }
 function createEndpointContext(database, endpointRequest, session, options = {}) {
@@ -24382,21 +24526,21 @@ function closeWebSocketClient(client) {
 }
 function encodeWebSocketJson(message) {
   const payload = Buffer.from(JSON.stringify(message));
-  let header;
+  let header2;
   if (payload.length < 126) {
-    header = Buffer.from([129, payload.length]);
+    header2 = Buffer.from([129, payload.length]);
   } else if (payload.length < 65536) {
-    header = Buffer.alloc(4);
-    header[0] = 129;
-    header[1] = 126;
-    header.writeUInt16BE(payload.length, 2);
+    header2 = Buffer.alloc(4);
+    header2[0] = 129;
+    header2[1] = 126;
+    header2.writeUInt16BE(payload.length, 2);
   } else {
-    header = Buffer.alloc(10);
-    header[0] = 129;
-    header[1] = 127;
-    header.writeBigUInt64BE(BigInt(payload.length), 2);
+    header2 = Buffer.alloc(10);
+    header2[0] = 129;
+    header2[1] = 127;
+    header2.writeBigUInt64BE(BigInt(payload.length), 2);
   }
-  return Buffer.concat([header, payload]);
+  return Buffer.concat([header2, payload]);
 }
 function sendJson(client, message) {
   client.socket.write(encodeWebSocketJson(message));
@@ -33960,8 +34104,8 @@ function requireDevInspectionToken(request, response, expectedToken) {
   });
   return false;
 }
-function devInspectionTokenMatches(header, expectedToken) {
-  const actualToken = Array.isArray(header) ? header[0] : header;
+function devInspectionTokenMatches(header2, expectedToken) {
+  const actualToken = Array.isArray(header2) ? header2[0] : header2;
   if (typeof actualToken !== "string" || typeof expectedToken !== "string") {
     return false;
   }

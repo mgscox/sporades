@@ -49,6 +49,7 @@ import { deserializeFieldValue, deserializeRow, normalizeDateValue, serializeFie
 // here, so importing them would declare a name nothing in this file reads.
 import { applyReadAcl, assertActivePrivilegedJobAccess, createPrivilegedAuditEmitter, createPrivilegedAuditEmissionPublicError, createPrivilegedFileApi, createPrivilegedRunAbortError, createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi, drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit, filterRowsByReadAcl, grantPrivilegedDbAccess, isPrivilegedAuditEmissionPublicError, normalizeFileAcl, normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback, revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode, } from "./acl-runtime.js";
 import { createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter, deletePrivateFile, getPrivateFileUrl, revokePublicFileUrl, } from "./file-storage-runtime.js";
+import { createEndpointIngressApi, finalizeEndpointIngressClaims, stageMultipartIngress } from "./file-ingress-runtime.js";
 import { abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob, canonicalJobCredentialProvenance, captureJobAuthSnapshot, commitPendingJobCancellationAborts, createRuntimeClock, decodeJobCursor, dropPendingJobCancellationAborts, encodeJobCursor, ensureJobStorage, ensureScheduleStorage, finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence, normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, readJobAuthSnapshot, readJobCredentialProvenance, resolveSchedulePayload, RESERVED_JOB_NAME_PREFIX, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure, scheduleStripeEventPayloadCleanup, startStripeEventPayloadCleanup, stopStripeEventPayloadCleanup, STRIPE_EVENT_JOB, stripeEventPayloadRetentionStorageValue, scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduledOccurrenceIdentity, } from "./jobs-runtime.js";
 import { dispatchVerifiedStripeEvent } from "./stripe-events-runtime.js";
 const mutationResultsWithWrites = new WeakSet();
@@ -2950,7 +2951,9 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
         ? endpoint.handler
         : new Function(`return (${endpoint.handlerSource});`)();
     const runtimeOwnedProviderCallback = endpoint.runtimeOwnedEmailEvent || endpoint.runtimeOwnedStripeCallback;
-    const endpointRequest = await readEndpointRequest(database, requestUrl, request, !endpoint.runtimeOwnedStripeCallback);
+    // Admission intentionally precedes multipart body consumption. Ordinary endpoint bodies retain
+    // their historic bounded read path below.
+    let endpointRequest = endpointRequestHead(requestUrl, request);
     const requirements = readAuthRequirements(handler);
     const hasAuthorization = requirements ? endpointHasAuthorization(request) : false;
     if (requirements)
@@ -2987,6 +2990,14 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
         emitAccessKeyAdmittedAudit(database, { ...admissionContext, kind: "endpoint" }, accessKeyAdmission.record);
         await recordAccessKeyUsage(database, accessKeyAdmission);
     }
+    if (endpoint.options?.body?.multipart) {
+        const admitted = (accessKeyAdmission ?? session);
+        const payload = await stageMultipartIngress(database, endpoint, request, endpointRequest, admitted.auth);
+        endpointRequest = { ...endpointRequest, ...payload };
+    }
+    else {
+        endpointRequest = await readEndpointRequest(database, requestUrl, request, !endpoint.runtimeOwnedStripeCallback);
+    }
     let context;
     try {
         const result = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
@@ -2999,6 +3010,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                     credential: accessKeyAdmission?.credential,
                     accessKeyGrants: accessKeyAdmission?.grants,
                 });
+                context.files = createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context);
                 if (endpoint.runtimeOwnedStripeCallback) {
                     Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
                 }
@@ -3020,6 +3032,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                 await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
             }
         });
+        finalizeEndpointIngressClaims(context ?? {}, true);
         commitPendingJobCancellationAborts(context);
         await flushAccessKeyLifecycleAuditEvents(database, context);
         flushTeamSecurityEvents(database, context);
@@ -3027,6 +3040,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
         return result;
     }
     catch (error) {
+        finalizeEndpointIngressClaims(context ?? {}, false);
         dropPendingJobCancellationAborts(context);
         dropAccessKeyLifecycleAuditEvents(context);
         flushTeamSecurityEvents(database, context, { deniedOnly: true });
@@ -3234,18 +3248,21 @@ export async function runAtomicStripeConsequence(database, parentContext, event,
     throw new Error("Unreachable atomic Stripe consequence fence state.");
 }
 async function readEndpointRequest(database, requestUrl, request, parseJsonBody = true) {
+    const head = endpointRequestHead(requestUrl, request);
+    const payload = await readEndpointPayload(request, head.headers, database, parseJsonBody);
+    return { ...head, ...payload };
+}
+function endpointRequestHead(requestUrl, request) {
     const headers = Object.fromEntries(Object.entries(request.headers).map(([name, value]) => [
         name.toLowerCase(),
         Array.isArray(value) ? value.join(", ") : value,
     ]));
     const query = endpointQueryFromUrl(requestUrl);
-    const payload = await readEndpointPayload(request, headers, database, parseJsonBody);
     return {
         method: request.method,
         path: requestUrl.pathname,
         headers,
         query,
-        ...payload,
     };
 }
 function createEndpointContext(database, endpointRequest, session, options = {}) {

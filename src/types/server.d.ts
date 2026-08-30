@@ -801,13 +801,21 @@ export type EndpointRequest = {
   headers: Record<string, string>;
   body?: unknown;
   readonly bodyBytes: EndpointBodyBytes;
+  /** Completed, private ingress leases. Present only for an endpoint declaring multipart ingress. */
+  readonly multipart?: { readonly files: readonly EndpointFileIngressLease[]; readonly fields: Readonly<Record<string, readonly string[]>> };
 };
+
+export type EndpointFileIngressLease = Readonly<{ leaseId: string; partId: string; fieldName: string; name: string; type: string; declaredSize: number | null; size: number; expiresAt: string }>;
+export type FileIngressOptions = Readonly<{ path: string; name?: string; type?: string }>;
+export type EndpointFileIngressApi = { claim(lease: EndpointFileIngressLease, options: FileIngressOptions): Promise<FileMetadata>; status(requestKey: string, partKey: string): Promise<{ state: "missing" } | { state: "leased"; lease: EndpointFileIngressLease } | { state: "complete"; file: FileMetadata } | { state: "failed"; retryable: boolean }>; };
 
 export type EndpointContext<
   Schema extends SchemaDefinition = SchemaDefinition,
   Credential extends CredentialProvenance = CredentialProvenance,
 > = CapsuleContext<Schema, Credential> & {
   request: EndpointRequest;
+  /** Available only while handling a declared multipart ingress endpoint. */
+  files: EndpointFileIngressApi;
 };
 
 /** Provider-neutral lifecycle state reported by an outbound email provider. */
@@ -951,6 +959,7 @@ export type MutationDefinition<Handler = MutationHandler> = {
 export type EndpointOptions = {
   method: string;
   path: string;
+  body?: { multipart: { maxFiles: number; maxFileBytes: number; maxTotalFileBytes: number; maxFieldCount: number; maxFieldBytes: number; maxTotalFieldBytes: number; allowedMimeTypes?: readonly string[]; allowedPathPrefixes: readonly string[]; requestKeyHeader: string; partKeyHeader: string; requireStablePartKeys?: boolean; } };
 };
 
 export type EndpointDefinition<Handler = EndpointHandler> = {

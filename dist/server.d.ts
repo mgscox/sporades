@@ -13,6 +13,22 @@ export type Capsule<Definition extends CapsuleDefinition = CapsuleDefinition> = 
 export type EndpointOptions = {
     method: string;
     path: string;
+    /** Runtime-owned bounded multipart ingress for a trusted Custom endpoint. */
+    body?: {
+        multipart: {
+            maxFiles: number;
+            maxFileBytes: number;
+            maxTotalFileBytes: number;
+            maxFieldCount: number;
+            maxFieldBytes: number;
+            maxTotalFieldBytes: number;
+            allowedMimeTypes?: readonly string[];
+            allowedPathPrefixes: readonly string[];
+            requestKeyHeader: string;
+            partKeyHeader: string;
+            requireStablePartKeys?: boolean;
+        };
+    };
 };
 export type EndpointDefinition<HandlerType extends Handler = Handler> = {
     kind: "endpoint";

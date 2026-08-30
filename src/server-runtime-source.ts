@@ -147,6 +147,7 @@ import {
   getPrivateFileUrl, isAbsoluteFilePath, normalizeAbsoluteFilePath, resolvePrivilegedLiveFileReference,
   revokePublicFileUrl,
 } from "./file-storage-runtime.js";
+import { createEndpointIngressApi, finalizeEndpointIngressClaims, stageMultipartIngress } from "./file-ingress-runtime.js";
 import {
   abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob,
   canonicalJobAuthSnapshot, canonicalJobCredentialProvenance, captureJobAuthSnapshot,
@@ -3242,12 +3243,9 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
       ? endpoint.handler
       : new Function(`return (${endpoint.handlerSource});`)();
   const runtimeOwnedProviderCallback = (endpoint as LooseRecord).runtimeOwnedEmailEvent || (endpoint as LooseRecord).runtimeOwnedStripeCallback;
-  const endpointRequest = await readEndpointRequest(
-    database,
-    requestUrl,
-    request,
-    !(endpoint as LooseRecord).runtimeOwnedStripeCallback,
-  );
+  // Admission intentionally precedes multipart body consumption. Ordinary endpoint bodies retain
+  // their historic bounded read path below.
+  let endpointRequest = endpointRequestHead(requestUrl, request);
   const requirements = readAuthRequirements(handler);
   const hasAuthorization = requirements ? endpointHasAuthorization(request) : false;
   if (requirements) delete endpointRequest.headers.authorization;
@@ -3287,6 +3285,13 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
     emitAccessKeyAdmittedAudit(database, { ...admissionContext, kind: "endpoint" }, accessKeyAdmission.record);
     await recordAccessKeyUsage(database, accessKeyAdmission);
   }
+  if ((endpoint as LooseRecord).options?.body?.multipart) {
+    const admitted = (accessKeyAdmission ?? session) as LooseRecord;
+    const payload = await stageMultipartIngress(database, endpoint as LooseRecord, request, endpointRequest, admitted.auth);
+    endpointRequest = { ...endpointRequest, ...payload };
+  } else {
+    endpointRequest = await readEndpointRequest(database, requestUrl, request, !(endpoint as LooseRecord).runtimeOwnedStripeCallback);
+  }
   let context: LooseRecord | undefined;
   try {
     const result = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter: any) => {
@@ -3299,6 +3304,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
           credential: accessKeyAdmission?.credential,
           accessKeyGrants: accessKeyAdmission?.grants,
         });
+        context.files = createEndpointIngressApi(transactionDatabase, endpoint as LooseRecord, endpointRequest, context);
         if ((endpoint as LooseRecord).runtimeOwnedStripeCallback) {
           Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
         }
@@ -3316,12 +3322,14 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
         await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
       }
     });
+    finalizeEndpointIngressClaims(context ?? {}, true);
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     return result;
   } catch (error) {
+    finalizeEndpointIngressClaims(context ?? {}, false);
     dropPendingJobCancellationAborts(context);
     dropAccessKeyLifecycleAuditEvents(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
@@ -3551,6 +3559,12 @@ export async function runAtomicStripeConsequence(
 }
 
 async function readEndpointRequest(database: LooseRecord, requestUrl: URL, request: any, parseJsonBody = true) {
+  const head = endpointRequestHead(requestUrl, request);
+  const payload = await readEndpointPayload(request, head.headers, database, parseJsonBody);
+  return { ...head, ...payload };
+}
+
+function endpointRequestHead(requestUrl: URL, request: any) {
   const headers = Object.fromEntries(
     Object.entries(request.headers).map(([name, value]) => [
       name.toLowerCase(),
@@ -3558,13 +3572,11 @@ async function readEndpointRequest(database: LooseRecord, requestUrl: URL, reque
     ]),
   );
   const query = endpointQueryFromUrl(requestUrl);
-  const payload = await readEndpointPayload(request, headers, database, parseJsonBody);
   return {
     method: request.method,
     path: requestUrl.pathname,
     headers,
     query,
-    ...payload,
   };
 }
 

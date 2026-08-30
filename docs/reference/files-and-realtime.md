@@ -345,3 +345,19 @@ receiver-side filtering is deferred. Publication, reads, and subscriptions are
 client-only. Capsule server handlers and the Privileged server role cannot
 impersonate user activity, and transient client claims must not become
 authoritative server business-logic inputs.
+
+## Trusted endpoint multipart ingress
+
+A Custom endpoint can declare a bounded `body.multipart` policy. Sporades
+authenticates the endpoint before reading multipart bytes and exposes completed
+parts only as private, expiring leases in `ctx.request.multipart.files`. A
+lease has no File URL, File row, or ACL visibility. Trusted server code claims
+one inside the endpoint transaction with an application-chosen absolute path:
+
+```ts
+const file = await ctx.files.claim(lease, { path: `/attachments/${id}/source` });
+```
+
+The File row and application writes commit together. Request and part keys make
+retries independent of part order; changing a descriptor for an existing key is
+rejected. This server-only surface never exposes adapter paths or credentials.
