@@ -9,13 +9,16 @@ import { test } from "node:test";
 
 import { capsule, endpoint, requireAuth, String as StringField, table } from "../dist/server.js";
 import { openDevDatabase, routeEndpoint, runEndpoint } from "../dist/server-runtime-source.js";
-import { multipartParts, stageMultipartIngress, sweepExpiredFileIngress } from "../dist/file-ingress-runtime.js";
+import { createEndpointIngressApi, multipartParts, stageMultipartIngress, sweepExpiredFileIngress } from "../dist/file-ingress-runtime.js";
 import { capsuleIngressAuthUserId } from "../dist/auth-runtime.js";
 import { accessKeyVerifierDigest, createAccessKeySecret } from "../dist/access-keys-runtime.js";
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
 
 function multipart(boundary, headers = 'Content-Disposition: form-data; name="file"; filename="a.txt"\r\nContent-Type: text/plain', bytes = "hello") {
   return Buffer.from(`--${boundary}\r\n${headers}\r\n\r\n${bytes}\r\n--${boundary}--`);
+}
+function multipartMany(boundary, parts) {
+  return Buffer.from(parts.map(({ headers, body }) => `--${boundary}\r\n${headers}\r\n\r\n${body}\r\n`).join("") + `--${boundary}--`);
 }
 async function* splitEvery(bytes, size) { for (let index = 0; index < bytes.length; index += size) yield bytes.subarray(index, index + size); }
 
@@ -32,6 +35,37 @@ test("multipart framing rejects malformed terminators and bounded headers/parts"
   await assert.rejects(async () => { for await (const _ of multipartParts(splitEvery(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="x"\r\n\r\na\r\n--${boundary}X`), 1), boundary, 1000, 1000)) {} }, { code: "INVALID_MULTIPART" });
   await assert.rejects(async () => { for await (const _ of multipartParts(splitEvery(multipart(boundary, `X: ${"a".repeat(17000)}`), 17), boundary, 20000, 20000)) {} }, { code: "MULTIPART_LIMIT_EXCEEDED" });
   await assert.rejects(async () => { for await (const _ of multipartParts(splitEvery(multipart(boundary, undefined, "x".repeat(20)), 1), boundary, 1000, 10)) {} }, { code: "MULTIPART_LIMIT_EXCEEDED" });
+});
+
+test("declared non-Content-ID part-key headers are case-insensitive and replay one stable lease", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-custom-part-key-")); let database;
+  try {
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "custom-part-key", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "custom-part-key" }));
+    const policy = { ...ingressPolicy(), partKeyHeader: "x-upload-part-key", requireStablePartKeys: true };
+    const endpoint = { options: { method: "POST", path: "/custom-part-key", body: { multipart: policy } } };
+    const headers = { "content-type": "multipart/form-data; boundary=custom-key", "idempotency-key": "stable-request" };
+    const request = () => ({ async *[Symbol.asyncIterator]() { yield multipart("custom-key", 'Content-Disposition: form-data; name="file"; filename="custom.txt"\r\nContent-Type: text/plain\r\nX-UPLOAD-PART-KEY: stable-custom', "custom-bytes"); } });
+    const first = await stageMultipartIngress(database, endpoint, request(), { headers }, { userId: "actor" });
+    const replay = await stageMultipartIngress(database, endpoint, request(), { headers }, { userId: "actor" });
+    assert.equal(replay.multipart.files[0].leaseId, first.multipart.files[0].leaseId);
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 1);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("maxFieldCount accepts the exact text-part boundary and rejects one repeated-name part beyond it without residue", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-field-count-")); let database;
+  try {
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "field-count", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "field-count" }));
+    const endpoint = { options: { method: "POST", path: "/field-count", body: { multipart: { ...ingressPolicy(), maxFieldCount: 2 } } } };
+    const headers = { "content-type": "multipart/form-data; boundary=fields", "idempotency-key": "field-request" };
+    const part = (body) => ({ headers: 'Content-Disposition: form-data; name="tag"', body });
+    const request = (parts) => ({ async *[Symbol.asyncIterator]() { yield multipartMany("fields", parts); } });
+    const exact = await stageMultipartIngress(database, endpoint, request([part("a"), part("b")]), { headers }, { userId: "actor" });
+    assert.deepEqual(exact.multipart.fields, { tag: ["a", "b"] });
+    await assert.rejects(stageMultipartIngress(database, endpoint, request([part("a"), part("b"), part("c")]), { headers }, { userId: "actor" }), { code: "MULTIPART_LIMIT_EXCEEDED" });
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 0);
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_files]").get()).count), 0);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
 test("denied multipart admission does not advance the file-body source or create ingress state", async () => {
@@ -257,6 +291,29 @@ test("Capsule-principal claims persist a reserved owner and digest, never the ra
     assert.equal((await database.adapter.selectFileById(first.id)).ownerId, ownerId); assert.equal(receipt.ownerId, ownerId); assert.equal(receipt.authorityKind, "capsule-principal"); assert.equal(receipt.principalNamespace, "application"); assert.equal(JSON.stringify(receipt).includes("app-a-secret"), false); assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_auth_users] WHERE [id] = ?").get(ownerId)).count), 0);
     await database.close(); database = await openDevDatabase(dbPath, "", {}, config, definition); const retry = await runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/principal"), request());
     assert.equal(retry.id, first.id); assert.equal((await database.adapter.selectFileById(first.id)).ownerId, ownerId);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("Capsule-principal status reports its leased and completed receipt while a wrong principal sees opaque missing", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-principal-status-")); let database;
+  try {
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "principal-status", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "principal-status" }));
+    const endpoint = { options: { method: "POST", path: "/principal-status", body: { multipart: { ...ingressPolicy(), claimAuthorities: ["capsule-principal"] } } } };
+    const principalKey = "principal-status-key"; const namespace = "application";
+    const authority = Object.freeze({ kind: "capsule-principal", namespace, key: principalKey, keyDigest: createHash("sha256").update(`${namespace}\0${principalKey}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId });
+    const request = ingressRequest("principal-status-request"); delete request.headers["x-sporades-session-token"];
+    const staged = await stageMultipartIngress(database, endpoint, request, { headers: request.headers }, { userId: "" }, authority);
+    const endpointRequest = { __ingressRequestKey: "principal-status-request", __ingressAuthority: authority };
+    const api = createEndpointIngressApi(database, endpoint, endpointRequest, { auth: { userId: "", isAuthenticated: false, isGuest: true } });
+    const leased = await api.status("principal-status-request", "stable-claim");
+    assert.equal(leased.state, "leased"); assert.equal(leased.lease.leaseId, staged.multipart.files[0].leaseId);
+    const file = await api.claim(staged.multipart.files[0], { path: "/attachments/principal-status.txt", authority: { kind: "capsule-principal", namespace, key: principalKey } });
+    const completed = await api.status("principal-status-request", "stable-claim");
+    assert.equal(completed.state, "complete"); assert.equal(completed.file.id, file.id);
+    const wrongKey = "wrong-principal";
+    const wrongAuthority = Object.freeze({ kind: "capsule-principal", namespace, key: wrongKey, keyDigest: createHash("sha256").update(`${namespace}\0${wrongKey}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId });
+    const wrongApi = createEndpointIngressApi(database, endpoint, { ...endpointRequest, __ingressAuthority: wrongAuthority }, { auth: { userId: "", isAuthenticated: false, isGuest: true } });
+    assert.deepEqual(await wrongApi.status("principal-status-request", "stable-claim"), { state: "missing" });
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 

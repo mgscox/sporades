@@ -39,6 +39,14 @@ async function awaitCompletedStagingReceipt(database: RecordLike, key: string) {
 }
 
 function header(headers: RecordLike, name: string) { return headers[String(name).toLowerCase()]; }
+function partHeader(rawHeaders: string, name: string) {
+  const normalizedName = String(name).trim().toLowerCase();
+  const line = rawHeaders.split("\r\n").find((candidate) => { const separator = candidate.indexOf(":"); return separator > 0 && candidate.slice(0, separator).trim().toLowerCase() === normalizedName; });
+  if (!line) return undefined;
+  const value = line.slice(line.indexOf(":") + 1).trim();
+  if (normalizedName === "content-id") return /^<([^>\r\n]+)>$/.exec(value)?.[1] ?? value;
+  return value;
+}
 function safeName(value: string) { return String(value ?? "upload").replace(/[\\/\x00-\x1f]/g, "_").trim().slice(0, 255) || "upload"; }
 function safeType(value: string) { const type = String(value ?? "").split(";", 1)[0].trim().toLowerCase(); return /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(type) ? type : "application/octet-stream"; }
 function keyFor(endpoint: RecordLike, requestKey: string, partKey: string, actor: string) { return `${endpoint.options.method}:${endpoint.options.path}:${actor}:${requestKey}:${partKey}`; }
@@ -78,16 +86,16 @@ export async function stageMultipartIngress(database: RecordLike, endpoint: Reco
   const requestKey = header(endpointRequest.headers, policy.requestKeyHeader);
   if (typeof requestKey !== "string" || requestKey.length < 1 || requestKey.length > 200) throw Object.assign(new Error("Missing multipart idempotency key."), { code: "INVALID_MULTIPART_REQUEST_KEY" });
   const maxBytes = Number(policy.maxTotalFileBytes) + Number(policy.maxTotalFieldBytes) + 65536;
-  const files: any[] = []; const fields: RecordLike = {}; let fieldBytes = 0; let fileBytes = 0; const partKeys = new Set<string>();
+  const files: any[] = []; const fields: RecordLike = {}; let fieldCount = 0; let fieldBytes = 0; let fileBytes = 0; const partKeys = new Set<string>();
   for await (const part of multipartParts(request, match[1], maxBytes, Math.max(Number(policy.maxFileBytes), Number(policy.maxFieldBytes)))) {
     const rawHeaders = part.rawHeaders; const body = part.body;
     if (rawHeaders.length > 16384) throw Object.assign(new Error("Multipart headers exceed limit."), { code: "MULTIPART_LIMIT_EXCEEDED" });
     const disposition = /^content-disposition:\s*form-data;\s*name="([^"]+)"(?:;\s*filename="([^"]*)")?/im.exec(rawHeaders);
     if (!disposition) throw Object.assign(new Error("Malformed multipart part."), { code: "INVALID_MULTIPART" });
     const fieldName = disposition[1]; const filename = disposition[2];
-    if (filename === undefined) { fieldBytes += body.length; if (body.length > policy.maxFieldBytes || fieldBytes > policy.maxTotalFieldBytes) throw Object.assign(new Error("Multipart field exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" }); (fields[fieldName] ??= []).push(body.toString("utf8")); continue; }
+    if (filename === undefined) { fieldCount += 1; fieldBytes += body.length; if (fieldCount > policy.maxFieldCount || body.length > policy.maxFieldBytes || fieldBytes > policy.maxTotalFieldBytes) throw Object.assign(new Error("Multipart field exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" }); (fields[fieldName] ??= []).push(body.toString("utf8")); continue; }
     fileBytes += body.length; if (files.length >= policy.maxFiles || body.length > policy.maxFileBytes || fileBytes > policy.maxTotalFileBytes || body.length > database.fileMaxSizeBytes) throw Object.assign(new Error("Multipart file exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
-    const partKey = /^content-id:\s*<?([^>\r\n]+)>?\s*$/im.exec(rawHeaders)?.[1];
+    const partKey = partHeader(rawHeaders, policy.partKeyHeader);
     if (policy.requireStablePartKeys && (!partKey || partKeys.has(partKey))) throw Object.assign(new Error("Multipart files require unique stable part keys."), { code: "INVALID_MULTIPART_PART_KEY" });
     if (partKey) partKeys.add(partKey);
     const type = safeType(/^content-type:\s*([^\r\n]+)/im.exec(rawHeaders)?.[1] ?? "");
@@ -171,7 +179,17 @@ export function createEndpointIngressApi(database: RecordLike, endpoint: RecordL
       if (!completed || completed.state !== "complete" || !sameFileDescriptor(completed.file, file)) throw idempotencyConflict("Ingress receipt completion conflicted with another claim.");
       return fileMetadataFromRow(storedFile);
     },
-    async status(statusRequestKey: string, partKey: string) { const authorityId = admittedAuthority.kind === "capsule-principal" ? `capsule:${admittedAuthority.namespace}:${admittedAuthority.keyDigest}` : `actor:${actorId}`; let row = await receipt(database, keyFor(endpoint, statusRequestKey, partKey, authorityId)); if (!row && admittedAuthority.kind === "actor") row = await receipt(database, keyFor(endpoint, statusRequestKey, partKey, actorId)); if (!row || row.authorityId !== authorityId || row.ownerId !== actorId) return { state: "missing" as const }; return row.state === "complete" ? { state: "complete" as const, file: fileMetadataFromRow(row.file) } : { state: "leased" as const, lease: publicLease(row) }; },
+    async status(statusRequestKey: string, partKey: string) {
+      const capsulePrincipal = admittedAuthority.kind === "capsule-principal";
+      const authorityId = capsulePrincipal ? `capsule:${admittedAuthority.namespace}:${admittedAuthority.keyDigest}` : `actor:${actorId}`;
+      let row = await receipt(database, keyFor(endpoint, statusRequestKey, partKey, authorityId));
+      if (!row && !capsulePrincipal) row = await receipt(database, keyFor(endpoint, statusRequestKey, partKey, actorId));
+      const authorityMatches = capsulePrincipal
+        ? row?.authorityKind === "capsule-principal" && row.authorityId === authorityId && row.ownerId === admittedAuthority.ownerId && row.principalNamespace === admittedAuthority.namespace && row.principalKeyDigest === admittedAuthority.keyDigest
+        : row?.authorityId === authorityId && row.ownerId === actorId;
+      if (!row || !authorityMatches) return { state: "missing" as const };
+      return row.state === "complete" ? { state: "complete" as const, file: fileMetadataFromRow(row.file) } : { state: "leased" as const, lease: publicLease(row) };
+    },
   };
 }
 

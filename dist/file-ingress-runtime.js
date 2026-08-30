@@ -38,6 +38,16 @@ async function awaitCompletedStagingReceipt(database, key) {
     throw Object.assign(new Error("Multipart ingress staging did not complete."), { code: "INGRESS_STAGING_INCOMPLETE" });
 }
 function header(headers, name) { return headers[String(name).toLowerCase()]; }
+function partHeader(rawHeaders, name) {
+    const normalizedName = String(name).trim().toLowerCase();
+    const line = rawHeaders.split("\r\n").find((candidate) => { const separator = candidate.indexOf(":"); return separator > 0 && candidate.slice(0, separator).trim().toLowerCase() === normalizedName; });
+    if (!line)
+        return undefined;
+    const value = line.slice(line.indexOf(":") + 1).trim();
+    if (normalizedName === "content-id")
+        return /^<([^>\r\n]+)>$/.exec(value)?.[1] ?? value;
+    return value;
+}
 function safeName(value) { return String(value ?? "upload").replace(/[\\/\x00-\x1f]/g, "_").trim().slice(0, 255) || "upload"; }
 function safeType(value) { const type = String(value ?? "").split(";", 1)[0].trim().toLowerCase(); return /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(type) ? type : "application/octet-stream"; }
 function keyFor(endpoint, requestKey, partKey, actor) { return `${endpoint.options.method}:${endpoint.options.path}:${actor}:${requestKey}:${partKey}`; }
@@ -138,6 +148,7 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
     const maxBytes = Number(policy.maxTotalFileBytes) + Number(policy.maxTotalFieldBytes) + 65536;
     const files = [];
     const fields = {};
+    let fieldCount = 0;
     let fieldBytes = 0;
     let fileBytes = 0;
     const partKeys = new Set();
@@ -152,8 +163,9 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
         const fieldName = disposition[1];
         const filename = disposition[2];
         if (filename === undefined) {
+            fieldCount += 1;
             fieldBytes += body.length;
-            if (body.length > policy.maxFieldBytes || fieldBytes > policy.maxTotalFieldBytes)
+            if (fieldCount > policy.maxFieldCount || body.length > policy.maxFieldBytes || fieldBytes > policy.maxTotalFieldBytes)
                 throw Object.assign(new Error("Multipart field exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
             (fields[fieldName] ??= []).push(body.toString("utf8"));
             continue;
@@ -161,7 +173,7 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
         fileBytes += body.length;
         if (files.length >= policy.maxFiles || body.length > policy.maxFileBytes || fileBytes > policy.maxTotalFileBytes || body.length > database.fileMaxSizeBytes)
             throw Object.assign(new Error("Multipart file exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
-        const partKey = /^content-id:\s*<?([^>\r\n]+)>?\s*$/im.exec(rawHeaders)?.[1];
+        const partKey = partHeader(rawHeaders, policy.partKeyHeader);
         if (policy.requireStablePartKeys && (!partKey || partKeys.has(partKey)))
             throw Object.assign(new Error("Multipart files require unique stable part keys."), { code: "INVALID_MULTIPART_PART_KEY" });
         if (partKey)
@@ -278,9 +290,19 @@ export function createEndpointIngressApi(database, endpoint, endpointRequest, co
                 throw idempotencyConflict("Ingress receipt completion conflicted with another claim.");
             return fileMetadataFromRow(storedFile);
         },
-        async status(statusRequestKey, partKey) { const authorityId = admittedAuthority.kind === "capsule-principal" ? `capsule:${admittedAuthority.namespace}:${admittedAuthority.keyDigest}` : `actor:${actorId}`; let row = await receipt(database, keyFor(endpoint, statusRequestKey, partKey, authorityId)); if (!row && admittedAuthority.kind === "actor")
-            row = await receipt(database, keyFor(endpoint, statusRequestKey, partKey, actorId)); if (!row || row.authorityId !== authorityId || row.ownerId !== actorId)
-            return { state: "missing" }; return row.state === "complete" ? { state: "complete", file: fileMetadataFromRow(row.file) } : { state: "leased", lease: publicLease(row) }; },
+        async status(statusRequestKey, partKey) {
+            const capsulePrincipal = admittedAuthority.kind === "capsule-principal";
+            const authorityId = capsulePrincipal ? `capsule:${admittedAuthority.namespace}:${admittedAuthority.keyDigest}` : `actor:${actorId}`;
+            let row = await receipt(database, keyFor(endpoint, statusRequestKey, partKey, authorityId));
+            if (!row && !capsulePrincipal)
+                row = await receipt(database, keyFor(endpoint, statusRequestKey, partKey, actorId));
+            const authorityMatches = capsulePrincipal
+                ? row?.authorityKind === "capsule-principal" && row.authorityId === authorityId && row.ownerId === admittedAuthority.ownerId && row.principalNamespace === admittedAuthority.namespace && row.principalKeyDigest === admittedAuthority.keyDigest
+                : row?.authorityId === authorityId && row.ownerId === actorId;
+            if (!row || !authorityMatches)
+                return { state: "missing" };
+            return row.state === "complete" ? { state: "complete", file: fileMetadataFromRow(row.file) } : { state: "leased", lease: publicLease(row) };
+        },
     };
 }
 /** Database and object storage cannot share a transaction: publish Map state only after SQL commits. */
