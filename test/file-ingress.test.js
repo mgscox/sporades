@@ -71,6 +71,17 @@ test("Capsule startup rejects an invalid untyped multipart declaration", async (
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test("omitted optional stable-part-key policy is accepted at startup and before body reads", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-optional-stable-key-")); let database;
+  try {
+    const policy = { ...ingressPolicy() }; delete policy.requireStablePartKeys;
+    const definition = capsule({ name: "optional-stable-key", endpoints: { upload: endpoint({ method: "POST", path: "/upload", body: { multipart: policy } }, () => ({ ok: true })) } });
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "optional-stable-key", files: { storagePath: path.join(dir, "files") } }, definition);
+    let reads = 0; const result = await stageMultipartIngress(database, database.endpoints[0], { async *[Symbol.asyncIterator]() { reads += 1; yield multipart("optional", 'Content-Disposition: form-data; name="file"; filename="a.txt"', "bytes"); } }, { headers: { "content-type": "multipart/form-data; boundary=optional", "idempotency-key": "request" } }, { userId: "actor" });
+    assert.equal(reads, 1); assert.equal(result.multipart.files.length, 1); assert.equal(Object.hasOwn(policy, "requireStablePartKeys"), false);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("length-framed ingress keys distinguish delimiter-collision tuples", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-framed-key-")); let database;
   try {

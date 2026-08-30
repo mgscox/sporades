@@ -393,7 +393,7 @@ integers; field counts and byte limits are non-negative finite integers. String,
 fractional, missing, `NaN`, and infinite values fail the declaration. The same
 pre-buffer validation requires normalized absolute path-prefix arrays,
 valid optional MIME-type arrays, syntactically valid request/part header names,
-a boolean stable-key switch, and exactly one supported claim authority when
+an optional boolean stable-key switch (omission remains `false`), and exactly one supported claim authority when
 declared; unknown policy fields are rejected. A payload sequence that merely
 begins `CRLF--boundary` remains payload unless the prefix
 is followed by the required `CRLF` or closing `--` delimiter suffix.

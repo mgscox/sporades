@@ -166,7 +166,7 @@ export function validateMultipartIngressPolicy(policy: RecordLike) {
   if (!Array.isArray(policy.allowedPathPrefixes) || policy.allowedPathPrefixes.length === 0 || policy.allowedPathPrefixes.some((value: any) => !validPathPrefix(value))) invalid();
   if (policy.allowedMimeTypes !== undefined && (!Array.isArray(policy.allowedMimeTypes) || policy.allowedMimeTypes.some((value: any) => typeof value !== "string" || safeType(value) !== value.toLowerCase()))) invalid();
   for (const name of ["requestKeyHeader", "partKeyHeader"]) if (typeof policy[name] !== "string" || policy[name].length > 100 || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(policy[name])) invalid();
-  if (typeof policy.requireStablePartKeys !== "boolean") invalid();
+  if (policy.requireStablePartKeys !== undefined && typeof policy.requireStablePartKeys !== "boolean") invalid();
   if (policy.claimAuthorities !== undefined && (!Array.isArray(policy.claimAuthorities) || policy.claimAuthorities.length !== 1 || !["actor", "capsule-principal"].includes(policy.claimAuthorities[0]))) invalid();
   return policy;
 }

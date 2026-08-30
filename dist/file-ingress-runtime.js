@@ -313,7 +313,7 @@ export function validateMultipartIngressPolicy(policy) {
     for (const name of ["requestKeyHeader", "partKeyHeader"])
         if (typeof policy[name] !== "string" || policy[name].length > 100 || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(policy[name]))
             invalid();
-    if (typeof policy.requireStablePartKeys !== "boolean")
+    if (policy.requireStablePartKeys !== undefined && typeof policy.requireStablePartKeys !== "boolean")
         invalid();
     if (policy.claimAuthorities !== undefined && (!Array.isArray(policy.claimAuthorities) || policy.claimAuthorities.length !== 1 || !["actor", "capsule-principal"].includes(policy.claimAuthorities[0])))
         invalid();
