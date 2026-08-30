@@ -284,6 +284,21 @@ test("twenty concurrent identical ingress receipts stage one durable lease", asy
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test("staging publication CAS compensates its object when sweep or deletion wins", async () => {
+  for (const mode of ["sweeping", "deleted"]) {
+    const dir = await mkdtemp(path.join(tmpdir(), `sporades-ingress-publish-${mode}-`)); let database;
+    try {
+      database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: `publish-${mode}`, files: { storagePath: path.join(dir, "files") } }, capsule({ name: `publish-${mode}` })); const endpoint = { options: { method: "POST", path: "/publish", body: { multipart: ingressPolicy() } } }; let deletes = 0;
+      const write = database.fileStorage.writeFileVersion.bind(database.fileStorage); const remove = database.fileStorage.deleteFileVersion.bind(database.fileStorage);
+      database.fileStorage.deleteFileVersion = async (input) => { deletes += 1; return await remove(input); };
+      database.fileStorage.writeFileVersion = async (input) => { await write(input); const stored = await database.adapter.prepare("SELECT [key], [payload] FROM [sporades_file_ingress]").get(); const row = JSON.parse(stored.payload); if (mode === "deleted") await database.adapter.prepare("DELETE FROM [sporades_file_ingress] WHERE [key] = ?").run(stored.key); else await database.adapter.prepare("UPDATE [sporades_file_ingress] SET [state]='sweeping', [payload]=? WHERE [key]=?").run(JSON.stringify({ ...row, state: "sweeping" }), stored.key); };
+      const request = { async *[Symbol.asyncIterator]() { yield multipart("publish", 'Content-Disposition: form-data; name="file"; filename="a.txt"\r\nContent-ID: stable', "bytes"); } };
+      await assert.rejects(stageMultipartIngress(database, endpoint, request, { headers: { "content-type": "multipart/form-data; boundary=publish", "idempotency-key": mode } }, { userId: "actor" }), { code: "INGRESS_STAGING_INCOMPLETE" }); assert.ok(deletes >= 1);
+      const rows = await database.adapter.prepare("SELECT [state] FROM [sporades_file_ingress]").all(); assert.equal(rows.some((row) => row.state === "leased"), false);
+    } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+  }
+});
+
 test("a retry waits beyond the former polling window for the durable staging winner", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-slow-winner-"));
   try {

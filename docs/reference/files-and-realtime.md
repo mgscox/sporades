@@ -468,6 +468,10 @@ const file = await ctx.files.claim(lease, { path: `/attachments/${id}/source` })
 
 The staged bytes must exist before the receipt is completed. The File row,
 receipt completion, bucket, and application writes then commit together. A
+staging receipt becomes claimable only through a key, lease, state, and expiry
+compare-and-set after its object write. If expiry cleanup wins that race,
+Sporades compensates the exact newly written object and never revives the row;
+a concurrently completed receipt is preserved.
 lost response can replay the completed File even after the original lease
 expiry; expired unclaimed leases cannot be claimed. Local filesystem and
 MinIO-backed storage use identical policy, admission, lease, claim, ACL,

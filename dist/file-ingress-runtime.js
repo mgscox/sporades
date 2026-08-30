@@ -12,9 +12,12 @@ async function receiptByLease(database, leaseId) {
     const stored = await database.adapter.selectIngressByLease(leaseId);
     return stored ? JSON.parse(stored.payload) : null;
 }
-async function saveReceipt(database, row) {
-    const sql = database.adapter.dialect.sql("UPDATE [sporades_file_ingress] SET [leaseId]=?, [state]=?, [actorId]=?, [authorityKind]=?, [authorityId]=?, [ownerId]=?, [principalNamespace]=?, [principalKeyDigest]=?, [endpointMethod]=?, [endpointPath]=?, [requestKey]=?, [partKey]=?, [expiresAt]=?, [sweepToken]=?, [payload]=?, [updatedAt]=? WHERE [key]=?");
-    await database.adapter.prepare(sql).run(row.leaseId, row.state, row.actorId, row.authorityKind, row.authorityId, row.ownerId, row.principalNamespace ?? null, row.principalKeyDigest ?? null, row.endpointMethod, row.endpointPath, row.requestKey, row.partKey, row.expiresAt, row.sweepToken ?? null, JSON.stringify(row), new Date().toISOString(), row.key);
+async function publishStagedReceipt(database, row) {
+    const leased = { ...row, state: "leased" };
+    const now = new Date().toISOString();
+    const sql = database.adapter.dialect.sql("UPDATE [sporades_file_ingress] SET [state]='leased', [payload]=?, [updatedAt]=? WHERE [key]=? AND [leaseId]=? AND [state]='staging' AND [expiresAt]>?");
+    const result = await database.adapter.prepare(sql).run(JSON.stringify(leased), now, row.key, row.leaseId, now);
+    return Number(result?.changes ?? 0) > 0 ? leased : null;
 }
 async function acquireReceipt(database, candidate) {
     // All supported adapters accept this conflict form. The unique key is the
@@ -273,8 +276,24 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
             if (acquired.winner) {
                 wonReceipts.push(row);
                 await database.fileStorage.writeFileVersion({ fileId: row.fileId, version: row.version, bytes: body });
-                row.state = "leased";
-                await saveReceipt(database, row);
+                const published = await publishStagedReceipt(database, row);
+                if (published)
+                    row = published;
+                else {
+                    const current = await receipt(database, row.key);
+                    if (current?.state === "complete" && current.leaseId === row.leaseId)
+                        row = current;
+                    else {
+                        const primary = Object.assign(new Error("Multipart ingress staging lost its publication lease."), { code: "INGRESS_STAGING_INCOMPLETE" });
+                        try {
+                            await database.fileStorage.deleteFileVersion({ fileId: row.fileId, version: row.version });
+                        }
+                        catch (cleanup) {
+                            throw new AggregateError([primary, cleanup], "Multipart ingress staging lost publication and object cleanup failed.");
+                        }
+                        throw primary;
+                    }
+                }
             }
             else if (row.state === "staging") {
                 row = await awaitCompletedStagingReceipt(database, row.key);
