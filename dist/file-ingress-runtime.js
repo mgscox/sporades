@@ -165,18 +165,32 @@ export async function* multipartParts(request, boundaryText, maxWireBytes, maxPa
                 state = "separator";
                 continue;
             }
-            if (pending.length < 2)
+            if (state === "separator") {
+                if (pending.length < 2)
+                    break;
+                const separator = pending.subarray(0, 2).toString();
+                if (separator !== "\r\n" && separator !== "--")
+                    throw Object.assign(new Error("Malformed multipart request."), { code: "INVALID_MULTIPART" });
+                pending = pending.subarray(2);
+                yield { rawHeaders, body: Buffer.concat(pieces, size) };
+                if (separator === "--") {
+                    state = "closing";
+                    continue;
+                }
+                state = "headers";
+                continue;
+            }
+            if (pending.length === 0)
                 break;
-            const separator = pending.subarray(0, 2).toString();
-            if (separator !== "\r\n" && separator !== "--")
-                throw Object.assign(new Error("Malformed multipart request."), { code: "INVALID_MULTIPART" });
-            pending = pending.subarray(2);
-            yield { rawHeaders, body: Buffer.concat(pieces, size) };
-            if (separator === "--")
-                return;
-            state = "headers";
+            if (pending.length === 1 && pending[0] === 13)
+                break;
+            if (pending.subarray(0, 2).toString() !== "\r\n")
+                throw Object.assign(new Error("Malformed multipart closing delimiter."), { code: "INVALID_MULTIPART" });
+            return;
         }
     }
+    if (state === "closing" && pending.length === 0)
+        return;
     throw Object.assign(new Error("Truncated multipart request."), { code: "INVALID_MULTIPART" });
 }
 /** Parse only after endpoint credential admission. The bounded body is never exposed as an ordinary endpoint body. */

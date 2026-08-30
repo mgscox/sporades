@@ -20289,15 +20289,26 @@ async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes
         state = "separator";
         continue;
       }
-      if (pending.length < 2) break;
-      const separator = pending.subarray(0, 2).toString();
-      if (separator !== "\r\n" && separator !== "--") throw Object.assign(new Error("Malformed multipart request."), { code: "INVALID_MULTIPART" });
-      pending = pending.subarray(2);
-      yield { rawHeaders, body: Buffer.concat(pieces, size) };
-      if (separator === "--") return;
-      state = "headers";
+      if (state === "separator") {
+        if (pending.length < 2) break;
+        const separator = pending.subarray(0, 2).toString();
+        if (separator !== "\r\n" && separator !== "--") throw Object.assign(new Error("Malformed multipart request."), { code: "INVALID_MULTIPART" });
+        pending = pending.subarray(2);
+        yield { rawHeaders, body: Buffer.concat(pieces, size) };
+        if (separator === "--") {
+          state = "closing";
+          continue;
+        }
+        state = "headers";
+        continue;
+      }
+      if (pending.length === 0) break;
+      if (pending.length === 1 && pending[0] === 13) break;
+      if (pending.subarray(0, 2).toString() !== "\r\n") throw Object.assign(new Error("Malformed multipart closing delimiter."), { code: "INVALID_MULTIPART" });
+      return;
     }
   }
+  if (state === "closing" && pending.length === 0) return;
   throw Object.assign(new Error("Truncated multipart request."), { code: "INVALID_MULTIPART" });
 }
 async function stageMultipartIngress(database, endpoint, request, endpointRequest, actor, admittedAuthority) {
@@ -20978,7 +20989,13 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       grantPrivilegedDbAccess(readContext);
       const readHolder = createContextHolder(readContext);
       try {
-        const decision = await capsuleDefinition.auth.registration.admit({ db: createEndpointReadOnlyDatabaseApi(registrationDatabase, () => readHolder.current, assertActive), evidence, admission });
+        let decision = null;
+        try {
+          decision = await capsuleDefinition.auth.registration.admit({ db: createEndpointReadOnlyDatabaseApi(registrationDatabase, () => readHolder.current, assertActive), evidence, admission });
+        } finally {
+          active = false;
+          revokePrivilegedDbAccess(readContext);
+        }
         if (!decision || decision.allow !== true) return false;
         const finalizeContext = { purpose: "auth.registration-finalize", evidence };
         grantPrivilegedDbAccess(finalizeContext);

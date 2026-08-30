@@ -40,6 +40,15 @@ test("multipart framing retains false boundary prefixes, including binary suffix
   }
 });
 
+test("multipart closing delimiters require EOF or CRLF and never silently truncate suffix bytes", async () => {
+  const boundary = "closing"; const headers = 'Content-Disposition: form-data; name="file"; filename="a.bin"';
+  const invalid = Buffer.from(`--${boundary}\r\n${headers}\r\n\r\npayload\r\n--${boundary}--X`);
+  for (let split = 1; split < invalid.length; split += 1) await assert.rejects(async () => { const yielded = []; for await (const part of multipartParts(splitEvery(invalid, split), boundary, 10000, 10000)) yielded.push(part); }, { code: "INVALID_MULTIPART" });
+  const valid = Buffer.from(`--${boundary}\r\n${headers}\r\n\r\npayload\r\n--${boundary}--\r\nepilogue`); const parts = [];
+  for await (const part of multipartParts(splitEvery(valid, 1), boundary, 10000, 10000)) parts.push(part); assert.equal(parts[0].body.toString(), "payload");
+  await assert.rejects(async () => { for await (const _ of multipartParts(splitEvery(Buffer.from(`--${boundary}\r\n${headers}\r\n\r\npayload\r\n--${boundary}-`), 1), boundary, 10000, 10000)) {} }, { code: "INVALID_MULTIPART" });
+});
+
 test("multipart policy rejects missing and non-finite or fractional limits before reading request bytes", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-invalid-limits-")); let database;
   try {

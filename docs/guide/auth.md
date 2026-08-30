@@ -148,6 +148,9 @@ Sporades fences that decision with a runtime-owned database row. Separate
 libSQL and Postgres connections therefore serialize before reading policy
 state, then re-evaluate after the prior registration commits or rolls back;
 the fence does not depend on one Node runtime's in-memory transaction queue.
+The read-only `admit` database capability is revoked as soon as `admit` settles,
+before `finalize` receives its separate transaction-scoped write capability;
+captured or unawaited admission reads cannot overlap or observe finalizer writes.
 
 Good uses include an invitation key, a one-time bootstrap administrator claim,
 or a tenant allow-list that already lives in the Capsule database. Do not use it

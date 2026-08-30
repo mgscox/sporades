@@ -41,6 +41,18 @@ test("Registration Admission finalizer writes and runtime identity commit togeth
   });
 });
 
+test("Registration Admission revokes captured read authority before finalizer writes", async () => {
+  let captured; let lateError;
+  const definition = { name: "admission-lifetime", schema: { claims: table({ userId: String() }) }, auth: { registration: {
+    admit: async (ctx) => { captured = ctx.db.claims; assert.deepEqual(await captured.all(), []); return { allow: true }; },
+    finalize: async (ctx) => { await ctx.db.claims.insert({ userId: ctx.evidence.userId }); try { await captured.all(); } catch (error) { lateError = error; } },
+  } } };
+  await withDatabase(definition, async (database) => {
+    const result = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", { email: "lifetime@example.com", password: "password-123" });
+    assert.equal(result.ok, true); assert.equal(lateError?.code, "REGISTRATION_ACCESS_INACTIVE"); assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM claims").get()).count, 1);
+  });
+});
+
 test("Registration Admission finalizer failure rolls back app and runtime registration state", async () => {
   let fail = true;
   const capsule = { name: "rollback", schema: { claims: table({ userId: String() }) }, auth: { registration: {

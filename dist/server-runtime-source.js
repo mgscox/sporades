@@ -772,7 +772,14 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 grantPrivilegedDbAccess(readContext);
                 const readHolder = createContextHolder(readContext);
                 try {
-                    const decision = await capsuleDefinition.auth.registration.admit({ db: createEndpointReadOnlyDatabaseApi(registrationDatabase, () => readHolder.current, assertActive), evidence, admission });
+                    let decision = null;
+                    try {
+                        decision = await capsuleDefinition.auth.registration.admit({ db: createEndpointReadOnlyDatabaseApi(registrationDatabase, () => readHolder.current, assertActive), evidence, admission });
+                    }
+                    finally {
+                        active = false;
+                        revokePrivilegedDbAccess(readContext);
+                    }
                     if (!decision || decision.allow !== true)
                         return false;
                     const finalizeContext = { purpose: "auth.registration-finalize", evidence };
