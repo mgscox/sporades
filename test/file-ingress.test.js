@@ -275,7 +275,7 @@ test("multipart Content-Type accepts RFC quoted boundaries and rejects malformed
     const endpoint = { options: { method: "POST", path: "/quoted", body: { multipart: ingressPolicy() } } }; const boundary = "quoted:boundary";
     const result = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipart(boundary, 'Content-Disposition: form-data; name="file"; filename="a.txt"\r\nContent-Type: text/plain\r\nContent-ID: stable', "bytes"); } }, { headers: { "content-type": `multipart/form-data; boundary="${boundary}"`, "idempotency-key": "quoted" } }, { userId: "actor" });
     assert.equal(result.multipart.files.length, 1);
-    for (const contentType of ['multipart/form-data; boundary="unterminated', 'multipart/form-data; boundary="bad\\"escape"', `multipart/form-data; boundary=${"x".repeat(71)}`]) {
+    for (const contentType of ['multipart/form-data; boundary="unterminated', 'multipart/form-data; boundary="bad\\"escape"', 'multipart/form-data; boundary=bad!boundary', 'multipart/form-data; boundary=bad|boundary', 'multipart/form-data; boundary=bad~boundary', `multipart/form-data; boundary=${"x".repeat(71)}`]) {
       let reads = 0; await assert.rejects(stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { reads += 1; if (false) yield Buffer.alloc(0); } }, { headers: { "content-type": contentType, "idempotency-key": "bad" } }, { userId: "actor" }), { code: "INVALID_MULTIPART" }); assert.equal(reads, 0);
     }
     await database.close();

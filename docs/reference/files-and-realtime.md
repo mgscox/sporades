@@ -383,8 +383,9 @@ streams fail without publishing a partial lease. Completed parts appear only
 as private, expiring leases in `ctx.request.multipart.files`. A lease has no
 File URL, File row, or ACL visibility.
 Both token and commonly emitted quoted `boundary` parameters are accepted;
-Sporades unquotes and validates the RFC boundary grammar and 70-character cap
-before reading the body, and rejects malformed quoting or extra parameters.
+Sporades validates RFC 2046 `bchars`, applies HTTP-token restrictions to the
+unquoted form, and enforces the 70-character cap before reading the body.
+Malformed quoting, invalid punctuation, and extra parameters are rejected.
 
 Every numeric limit is required and validated when the Capsule starts and again
 before request buffering. File counts and byte limits are positive finite

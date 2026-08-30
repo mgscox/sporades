@@ -20205,8 +20205,9 @@ function multipartBoundary(contentType) {
   if (!match) return null;
   const quoted = match[1] !== void 0;
   const value = quoted ? match[1] : match[2];
-  const valid = quoted ? /^[0-9A-Za-z'()+_,\-./:=? ]*[0-9A-Za-z'()+_,\-./:=?]$/.test(value) : /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(value);
-  return value.length <= 70 && valid ? value : null;
+  const validBchars = /^[0-9A-Za-z'()+_,\-./:=? ]*[0-9A-Za-z'()+_,\-./:=?]$/.test(value);
+  const validToken = /^[0-9A-Za-z'+_.-]+$/.test(value);
+  return value.length <= 70 && validBchars && (quoted || validToken) ? value : null;
 }
 async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes) {
   const boundary = Buffer.from(`--${boundaryText}`);

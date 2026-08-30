@@ -68,8 +68,9 @@ function multipartBoundary(contentType: string) {
   const match = /^multipart\/form-data\s*;\s*boundary\s*=\s*(?:"([^"\\]*)"|([^;\s]+))\s*$/i.exec(contentType);
   if (!match) return null;
   const quoted = match[1] !== undefined; const value = quoted ? match[1] : match[2];
-  const valid = quoted ? /^[0-9A-Za-z'()+_,\-./:=? ]*[0-9A-Za-z'()+_,\-./:=?]$/.test(value) : /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(value);
-  return value.length <= 70 && valid ? value : null;
+  const validBchars = /^[0-9A-Za-z'()+_,\-./:=? ]*[0-9A-Za-z'()+_,\-./:=?]$/.test(value);
+  const validToken = /^[0-9A-Za-z'+_.-]+$/.test(value);
+  return value.length <= 70 && validBchars && (quoted || validToken) ? value : null;
 }
 
 // Keeps only one completed part (never the aggregate request) in memory. The storage adapter
