@@ -147,7 +147,7 @@ import {
   getPrivateFileUrl, isAbsoluteFilePath, normalizeAbsoluteFilePath, resolvePrivilegedLiveFileReference,
   revokePublicFileUrl,
 } from "./file-storage-runtime.js";
-import { createEndpointIngressApi, finalizeEndpointIngressClaims, stageMultipartIngress } from "./file-ingress-runtime.js";
+import { createEndpointIngressApi, finalizeEndpointIngressClaims, stageMultipartIngress, sweepExpiredFileIngress } from "./file-ingress-runtime.js";
 import {
   abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob,
   canonicalJobAuthSnapshot, canonicalJobCredentialProvenance, captureJobAuthSnapshot,
@@ -1113,6 +1113,10 @@ export async function openDevDatabase(
   await ensureScheduleStorage(sqlite, options?.scheduleStorageFault);
   await sqlite.ensureFileStorage();
   await sqlite.ensureLogStorage();
+  if (!options?.runtimeActionOnly) {
+    const ingressSweep = await sweepExpiredFileIngress(database);
+    if (ingressSweep.failures.length > 0) await database.log.emit({ category: "platform", event: "file.ingress.sweep_failed", level: "warn", message: "Multipart ingress cleanup left retryable orphan state", data: { code: ingressSweep.failures[0].code, failures: ingressSweep.failures.length, scanned: ingressSweep.scanned } });
+  }
   if (!options?.runtimeActionOnly) {
     await recoverInvalidRetainedJobState(database);
     await recoverExpiredJobLeases(database);

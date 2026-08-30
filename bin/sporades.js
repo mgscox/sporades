@@ -11801,7 +11801,7 @@ function createFileStorageTables(sqlite) {
     ),
     // Runtime-private ingress receipts. The identity columns are intentionally queryable:
     // endpoint transactions lock and classify a lease without scanning JSON payloads.
-    () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_file_ingress] ([key] TEXT PRIMARY KEY, [leaseId] TEXT, [state] TEXT, [actorId] TEXT, [endpointMethod] TEXT, [endpointPath] TEXT, [requestKey] TEXT, [partKey] TEXT, [payload] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)")),
+    () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_file_ingress] ([key] TEXT PRIMARY KEY, [leaseId] TEXT, [state] TEXT, [actorId] TEXT, [endpointMethod] TEXT, [endpointPath] TEXT, [requestKey] TEXT, [partKey] TEXT, [expiresAt] TEXT, [sweepToken] TEXT, [payload] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)")),
     () => ensureFileIngressColumns(sqlite)
   ]);
 }
@@ -12376,18 +12376,20 @@ function ensureFileIngressColumns(sqlite) {
     ["endpointMethod", "TEXT"],
     ["endpointPath", "TEXT"],
     ["requestKey", "TEXT"],
-    ["partKey", "TEXT"]
+    ["partKey", "TEXT"],
+    ["expiresAt", "TEXT"],
+    ["sweepToken", "TEXT"]
   ];
   return chainMaybePromise([
     ...addedColumns.map(([name, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_file_ingress", name, type)),
-    () => thenIfPromise(sqlite.prepare(sqlite.dialect.sql("SELECT [key], [payload] FROM [sporades_file_ingress] WHERE [leaseId] IS NULL")).all(), (rows) => chainMaybePromise(rows.map((stored) => () => {
+    () => thenIfPromise(sqlite.prepare(sqlite.dialect.sql("SELECT [key], [payload] FROM [sporades_file_ingress] WHERE [leaseId] IS NULL OR [expiresAt] IS NULL")).all(), (rows) => chainMaybePromise(rows.map((stored) => () => {
       let row;
       try {
         row = JSON.parse(stored.payload);
       } catch {
         return void 0;
       }
-      return sqlite.prepare(sqlite.dialect.sql("UPDATE [sporades_file_ingress] SET [leaseId]=?, [state]=?, [actorId]=?, [endpointMethod]=?, [endpointPath]=?, [requestKey]=?, [partKey]=? WHERE [key]=?")).run(row.leaseId ?? null, row.state ?? null, row.actorId ?? null, row.endpointMethod ?? null, row.endpointPath ?? null, row.requestKey ?? null, row.partKey ?? null, stored.key);
+      return sqlite.prepare(sqlite.dialect.sql("UPDATE [sporades_file_ingress] SET [leaseId]=?, [state]=?, [actorId]=?, [endpointMethod]=?, [endpointPath]=?, [requestKey]=?, [partKey]=?, [expiresAt]=?, [sweepToken]=? WHERE [key]=?")).run(row.leaseId ?? null, row.state ?? null, row.actorId ?? null, row.endpointMethod ?? null, row.endpointPath ?? null, row.requestKey ?? null, row.partKey ?? null, row.expiresAt ?? null, row.sweepToken ?? null, stored.key);
     }))),
     () => sqlite.exec(sqlite.dialect.sql("CREATE UNIQUE INDEX IF NOT EXISTS [sporades_file_ingress_lease_unique] ON [sporades_file_ingress] ([leaseId])"))
   ]);
@@ -17873,6 +17875,16 @@ function createSharedDatabaseAdapterMethods(dialect) {
         () => this.selectIngressByLease(row.leaseId)
       );
     },
+    selectIngressSweepCandidates(now2, limit) {
+      return this.prepare(sql("SELECT * FROM [sporades_file_ingress] WHERE [state] = 'sweeping' OR ([state] IN ('leased', 'staging') AND [expiresAt] <= ?) ORDER BY CASE WHEN [state] = 'sweeping' THEN 0 ELSE 1 END, [expiresAt], [key] LIMIT ?")).all(now2, limit);
+    },
+    markIngressReceiptSweeping(row, sweepToken, now2) {
+      const sweeping = { ...row, state: "sweeping", sweepToken };
+      return this.prepare(sql("UPDATE [sporades_file_ingress] SET [state] = 'sweeping', [sweepToken] = ?, [payload] = ?, [updatedAt] = ? WHERE [leaseId] = ? AND ([state] = 'sweeping' OR ([state] IN ('leased', 'staging') AND [expiresAt] <= ?))")).run(sweepToken, JSON.stringify(sweeping), now2, row.leaseId, now2);
+    },
+    deleteIngressSweepingReceipt(leaseId, sweepToken) {
+      return this.prepare(sql("DELETE FROM [sporades_file_ingress] WHERE [leaseId] = ? AND [state] = 'sweeping' AND [sweepToken] = ?")).run(leaseId, sweepToken);
+    },
     updatePendingFileRow(row) {
       return this.prepare(
         sql(
@@ -19885,12 +19897,12 @@ async function receiptByLease(database, leaseId) {
   return stored ? JSON.parse(stored.payload) : null;
 }
 async function saveReceipt(database, row) {
-  const sql = database.adapter.dialect.sql("UPDATE [sporades_file_ingress] SET [leaseId]=?, [state]=?, [actorId]=?, [endpointMethod]=?, [endpointPath]=?, [requestKey]=?, [partKey]=?, [payload]=?, [updatedAt]=? WHERE [key]=?");
-  await database.adapter.prepare(sql).run(row.leaseId, row.state, row.actorId, row.endpointMethod, row.endpointPath, row.requestKey, row.partKey, JSON.stringify(row), (/* @__PURE__ */ new Date()).toISOString(), row.key);
+  const sql = database.adapter.dialect.sql("UPDATE [sporades_file_ingress] SET [leaseId]=?, [state]=?, [actorId]=?, [endpointMethod]=?, [endpointPath]=?, [requestKey]=?, [partKey]=?, [expiresAt]=?, [sweepToken]=?, [payload]=?, [updatedAt]=? WHERE [key]=?");
+  await database.adapter.prepare(sql).run(row.leaseId, row.state, row.actorId, row.endpointMethod, row.endpointPath, row.requestKey, row.partKey, row.expiresAt, row.sweepToken ?? null, JSON.stringify(row), (/* @__PURE__ */ new Date()).toISOString(), row.key);
 }
 async function acquireReceipt(database, candidate) {
-  const sql = database.adapter.dialect.sql("INSERT INTO [sporades_file_ingress] ([key], [leaseId], [state], [actorId], [endpointMethod], [endpointPath], [requestKey], [partKey], [payload], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT([key]) DO NOTHING");
-  const inserted = await database.adapter.prepare(sql).run(candidate.key, candidate.leaseId, candidate.state, candidate.actorId, candidate.endpointMethod, candidate.endpointPath, candidate.requestKey, candidate.partKey, JSON.stringify(candidate), (/* @__PURE__ */ new Date()).toISOString());
+  const sql = database.adapter.dialect.sql("INSERT INTO [sporades_file_ingress] ([key], [leaseId], [state], [actorId], [endpointMethod], [endpointPath], [requestKey], [partKey], [expiresAt], [sweepToken], [payload], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT([key]) DO NOTHING");
+  const inserted = await database.adapter.prepare(sql).run(candidate.key, candidate.leaseId, candidate.state, candidate.actorId, candidate.endpointMethod, candidate.endpointPath, candidate.requestKey, candidate.partKey, candidate.expiresAt, null, JSON.stringify(candidate), (/* @__PURE__ */ new Date()).toISOString());
   if (Number(inserted?.changes ?? 0) > 0) return { row: candidate, winner: true };
   const row = await receipt(database, candidate.key);
   if (!row) throw new Error("Ingress receipt acquisition did not return a winner.");
@@ -20110,6 +20122,64 @@ function createEndpointIngressApi(database, endpoint, endpointRequest, context) 
   };
 }
 function finalizeEndpointIngressClaims(context, committed) {
+}
+async function armIngressSweep(database, candidate, now2, sweepToken) {
+  for (let attempt = 0; attempt <= 100; attempt += 1) {
+    let fenceAcquired = false;
+    try {
+      return await database.adapter.withTransaction(async (adapter) => {
+        await adapter.lockIngressReceipts([candidate.leaseId]);
+        fenceAcquired = true;
+        const stored = await adapter.selectIngressByLease(candidate.leaseId);
+        if (!stored || stored.state === "complete") return null;
+        let row;
+        try {
+          row = JSON.parse(stored.payload);
+        } catch {
+          throw Object.assign(new Error("Ingress receipt payload is invalid."), { code: "INGRESS_SWEEP_INVALID_RECEIPT" });
+        }
+        if (row.fileId && await adapter.selectFileById(row.fileId)) return null;
+        const armed = await adapter.markIngressReceiptSweeping(row, sweepToken, now2);
+        return Number(armed?.changes ?? 0) > 0 ? { ...row, state: "sweeping", sweepToken } : null;
+      });
+    } catch (error) {
+      if (fenceAcquired || database.adapter.engine !== "sqlite" || attempt >= 100 || !String(error?.message ?? "").includes("database is locked")) throw error;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(25, attempt + 1)));
+    }
+  }
+  return null;
+}
+async function sweepExpiredFileIngress(database, options = {}) {
+  const now2 = typeof options.now === "string" && Number.isFinite(Date.parse(options.now)) ? new Date(options.now).toISOString() : (/* @__PURE__ */ new Date()).toISOString();
+  const requestedLimit = Number(options.limit ?? 50);
+  const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(100, requestedLimit)) : 50;
+  let candidates;
+  try {
+    candidates = await database.adapter.selectIngressSweepCandidates(now2, limit);
+  } catch {
+    return Object.freeze({ scanned: 0, cleaned: Object.freeze([]), failures: Object.freeze([{ code: "INGRESS_SWEEP_STORAGE_FAILED" }]) });
+  }
+  const cleaned = [];
+  const failures = [];
+  for (const candidate of candidates) {
+    const leaseId = String(candidate.leaseId ?? "");
+    const sweepToken = crypto2.randomUUID();
+    try {
+      const armed = await armIngressSweep(database, candidate, now2, sweepToken);
+      if (!armed) continue;
+      try {
+        await database.fileStorage.deleteFileVersion({ fileId: armed.fileId, version: armed.version });
+      } catch {
+        failures.push(Object.freeze({ leaseId, code: "INGRESS_ORPHAN_CLEANUP_FAILED" }));
+        continue;
+      }
+      const deleted = await database.adapter.deleteIngressSweepingReceipt(leaseId, sweepToken);
+      if (Number(deleted?.changes ?? 0) > 0) cleaned.push(Object.freeze({ leaseId, requestKey: armed.requestKey, partKey: armed.partKey }));
+    } catch (error) {
+      failures.push(Object.freeze({ leaseId, code: error?.code === "INGRESS_SWEEP_INVALID_RECEIPT" ? "INGRESS_SWEEP_INVALID_RECEIPT" : "INGRESS_SWEEP_STORAGE_FAILED" }));
+    }
+  }
+  return Object.freeze({ scanned: candidates.length, cleaned: Object.freeze(cleaned), failures: Object.freeze(failures) });
 }
 
 // src/stripe-events-runtime.ts
@@ -20741,6 +20811,10 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   await ensureScheduleStorage(sqlite, options?.scheduleStorageFault);
   await sqlite.ensureFileStorage();
   await sqlite.ensureLogStorage();
+  if (!options?.runtimeActionOnly) {
+    const ingressSweep = await sweepExpiredFileIngress(database);
+    if (ingressSweep.failures.length > 0) await database.log.emit({ category: "platform", event: "file.ingress.sweep_failed", level: "warn", message: "Multipart ingress cleanup left retryable orphan state", data: { code: ingressSweep.failures[0].code, failures: ingressSweep.failures.length, scanned: ingressSweep.scanned } });
+  }
   if (!options?.runtimeActionOnly) {
     await recoverInvalidRetainedJobState(database);
     await recoverExpiredJobLeases(database);

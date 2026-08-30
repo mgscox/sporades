@@ -577,6 +577,17 @@ export function createSharedDatabaseAdapterMethods(dialect) {
             const updatedAt = new Date().toISOString();
             return thenIfPromise(this.prepare(sql("UPDATE [sporades_file_ingress] SET [payload] = ?, [state] = ?, [updatedAt] = ? WHERE [leaseId] = ? AND [state] = ?")).run(JSON.stringify(row), "complete", updatedAt, row.leaseId, "leased"), () => this.selectIngressByLease(row.leaseId));
         },
+        selectIngressSweepCandidates(now, limit) {
+            return this.prepare(sql("SELECT * FROM [sporades_file_ingress] WHERE [state] = 'sweeping' OR ([state] IN ('leased', 'staging') AND [expiresAt] <= ?) ORDER BY CASE WHEN [state] = 'sweeping' THEN 0 ELSE 1 END, [expiresAt], [key] LIMIT ?")).all(now, limit);
+        },
+        markIngressReceiptSweeping(row, sweepToken, now) {
+            const sweeping = { ...row, state: "sweeping", sweepToken };
+            return this.prepare(sql("UPDATE [sporades_file_ingress] SET [state] = 'sweeping', [sweepToken] = ?, [payload] = ?, [updatedAt] = ? WHERE [leaseId] = ? AND ([state] = 'sweeping' OR ([state] IN ('leased', 'staging') AND [expiresAt] <= ?))"))
+                .run(sweepToken, JSON.stringify(sweeping), now, row.leaseId, now);
+        },
+        deleteIngressSweepingReceipt(leaseId, sweepToken) {
+            return this.prepare(sql("DELETE FROM [sporades_file_ingress] WHERE [leaseId] = ? AND [state] = 'sweeping' AND [sweepToken] = ?")).run(leaseId, sweepToken);
+        },
         updatePendingFileRow(row) {
             return this.prepare(sql("UPDATE [sporades_files] SET [bucketId] = ?, [bucketName] = ?, [path] = ?, [name] = ?, [type] = ?, [size] = ?, " +
                 "[version] = ?, [status] = ?, [updatedAt] = ?, [deletedAt] = NULL WHERE [id] = ?")).run(row.bucketId, row.bucketName, row.path, row.name, row.type, row.size, row.version, row.status, row.updatedAt, row.id);

@@ -600,8 +600,8 @@ const FILE_METADATA_CONFORMANCE_CASES = [
       assert.equal((await adapter.insertFileRowIfAbsent({ ...file, name: "must-not-replace.txt" })).changes, 0);
       assert.equal((await adapter.selectFileById(file.id)).name, "ingress-conformance.txt");
 
-      const leased = { key: "POST:/upload:owner:request:part", leaseId: "lease-conformance", state: "leased", actorId: OWNER_ID, endpointMethod: "POST", endpointPath: "/upload", requestKey: "request", partKey: "part", fileId: file.id };
-      await adapter.prepare(adapter.dialect.sql("INSERT INTO [sporades_file_ingress] ([key], [leaseId], [state], [actorId], [endpointMethod], [endpointPath], [requestKey], [partKey], [payload], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")).run(leased.key, leased.leaseId, leased.state, leased.actorId, leased.endpointMethod, leased.endpointPath, leased.requestKey, leased.partKey, JSON.stringify(leased), NOW);
+      const leased = { key: "POST:/upload:owner:request:part", leaseId: "lease-conformance", state: "leased", actorId: OWNER_ID, endpointMethod: "POST", endpointPath: "/upload", requestKey: "request", partKey: "part", fileId: file.id, expiresAt: LATER };
+      await adapter.prepare(adapter.dialect.sql("INSERT INTO [sporades_file_ingress] ([key], [leaseId], [state], [actorId], [endpointMethod], [endpointPath], [requestKey], [partKey], [expiresAt], [sweepToken], [payload], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)")).run(leased.key, leased.leaseId, leased.state, leased.actorId, leased.endpointMethod, leased.endpointPath, leased.requestKey, leased.partKey, leased.expiresAt, JSON.stringify(leased), NOW);
       await adapter.lockIngressReceipts([leased.leaseId]);
       assert.deepEqual(
         (({ leaseId, state, actorId, endpointMethod, endpointPath, requestKey, partKey }) => ({ leaseId, state, actorId, endpointMethod, endpointPath, requestKey, partKey }))(await adapter.selectIngressByLease(leased.leaseId)),
@@ -612,6 +612,15 @@ const FILE_METADATA_CONFORMANCE_CASES = [
       assert.equal(JSON.parse(completed.payload).file.id, file.id);
       assert.equal((await adapter.completeIngressClaim({ ...leased, state: "complete", file })).state, "complete");
       assert.equal(await adapter.selectIngressByLease("missing-lease"), null);
+
+      const expired = { ...leased, key: "POST:/upload:owner:expired:part", leaseId: "lease-expired-conformance", requestKey: "expired", fileId: "uncommitted-file", expiresAt: NOW };
+      await adapter.prepare(adapter.dialect.sql("INSERT INTO [sporades_file_ingress] ([key], [leaseId], [state], [actorId], [endpointMethod], [endpointPath], [requestKey], [partKey], [expiresAt], [sweepToken], [payload], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)")).run(expired.key, expired.leaseId, expired.state, expired.actorId, expired.endpointMethod, expired.endpointPath, expired.requestKey, expired.partKey, expired.expiresAt, JSON.stringify(expired), NOW);
+      assert.deepEqual((await adapter.selectIngressSweepCandidates(LATEST, 10)).map((row) => row.leaseId), [expired.leaseId]);
+      assert.equal((await adapter.markIngressReceiptSweeping(expired, "sweep-token", LATEST)).changes, 1);
+      assert.equal((await adapter.selectIngressByLease(expired.leaseId)).state, "sweeping");
+      assert.equal((await adapter.deleteIngressSweepingReceipt(expired.leaseId, "wrong-token")).changes, 0);
+      assert.equal((await adapter.deleteIngressSweepingReceipt(expired.leaseId, "sweep-token")).changes, 1);
+      assert.equal(await adapter.selectIngressByLease(expired.leaseId), null);
     },
   },
   {

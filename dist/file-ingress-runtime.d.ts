@@ -62,5 +62,17 @@ export declare function createEndpointIngressApi(database: RecordLike, endpoint:
 };
 /** Database and object storage cannot share a transaction: publish Map state only after SQL commits. */
 export declare function finalizeEndpointIngressClaims(context: RecordLike, committed: boolean): void;
+/** Retire one deterministic bounded batch. Object deletion precedes the token-fenced receipt delete. */
+export declare function sweepExpiredFileIngress(database: RecordLike, options?: RecordLike): Promise<Readonly<{
+    scanned: 0;
+    cleaned: readonly never[];
+    failures: readonly {
+        code: string;
+    }[];
+}> | Readonly<{
+    scanned: number;
+    cleaned: readonly RecordLike[];
+    failures: readonly RecordLike[];
+}>>;
 export {};
 //# sourceMappingURL=file-ingress-runtime.d.ts.map

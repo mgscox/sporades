@@ -15,14 +15,14 @@ async function receiptByLease(database: RecordLike, leaseId: string) {
   return stored ? JSON.parse(stored.payload) : null;
 }
 async function saveReceipt(database: RecordLike, row: RecordLike) {
-  const sql = database.adapter.dialect.sql("UPDATE [sporades_file_ingress] SET [leaseId]=?, [state]=?, [actorId]=?, [endpointMethod]=?, [endpointPath]=?, [requestKey]=?, [partKey]=?, [payload]=?, [updatedAt]=? WHERE [key]=?");
-  await database.adapter.prepare(sql).run(row.leaseId, row.state, row.actorId, row.endpointMethod, row.endpointPath, row.requestKey, row.partKey, JSON.stringify(row), new Date().toISOString(), row.key);
+  const sql = database.adapter.dialect.sql("UPDATE [sporades_file_ingress] SET [leaseId]=?, [state]=?, [actorId]=?, [endpointMethod]=?, [endpointPath]=?, [requestKey]=?, [partKey]=?, [expiresAt]=?, [sweepToken]=?, [payload]=?, [updatedAt]=? WHERE [key]=?");
+  await database.adapter.prepare(sql).run(row.leaseId, row.state, row.actorId, row.endpointMethod, row.endpointPath, row.requestKey, row.partKey, row.expiresAt, row.sweepToken ?? null, JSON.stringify(row), new Date().toISOString(), row.key);
 }
 async function acquireReceipt(database: RecordLike, candidate: RecordLike) {
   // All supported adapters accept this conflict form. The unique key is the
   // serialization point; no read-then-insert window exists for two retries.
-  const sql = database.adapter.dialect.sql("INSERT INTO [sporades_file_ingress] ([key], [leaseId], [state], [actorId], [endpointMethod], [endpointPath], [requestKey], [partKey], [payload], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT([key]) DO NOTHING");
-  const inserted = await database.adapter.prepare(sql).run(candidate.key, candidate.leaseId, candidate.state, candidate.actorId, candidate.endpointMethod, candidate.endpointPath, candidate.requestKey, candidate.partKey, JSON.stringify(candidate), new Date().toISOString());
+  const sql = database.adapter.dialect.sql("INSERT INTO [sporades_file_ingress] ([key], [leaseId], [state], [actorId], [endpointMethod], [endpointPath], [requestKey], [partKey], [expiresAt], [sweepToken], [payload], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT([key]) DO NOTHING");
+  const inserted = await database.adapter.prepare(sql).run(candidate.key, candidate.leaseId, candidate.state, candidate.actorId, candidate.endpointMethod, candidate.endpointPath, candidate.requestKey, candidate.partKey, candidate.expiresAt, null, JSON.stringify(candidate), new Date().toISOString());
   if (Number(inserted?.changes ?? 0) > 0) return { row: candidate, winner: true };
   const row = await receipt(database, candidate.key);
   if (!row) throw new Error("Ingress receipt acquisition did not return a winner.");
@@ -153,4 +153,53 @@ export function createEndpointIngressApi(database: RecordLike, endpoint: RecordL
 /** Database and object storage cannot share a transaction: publish Map state only after SQL commits. */
 export function finalizeEndpointIngressClaims(context: RecordLike, committed: boolean) {
   // Claim state is persisted in the endpoint transaction; retained for call-site compatibility.
+}
+
+async function armIngressSweep(database: RecordLike, candidate: RecordLike, now: string, sweepToken: string) {
+  for (let attempt = 0; attempt <= 100; attempt += 1) {
+    let fenceAcquired = false;
+    try {
+      return await database.adapter.withTransaction(async (adapter: RecordLike) => {
+        await adapter.lockIngressReceipts([candidate.leaseId]); fenceAcquired = true;
+        const stored = await adapter.selectIngressByLease(candidate.leaseId);
+        if (!stored || stored.state === "complete") return null;
+        let row: RecordLike;
+        try { row = JSON.parse(stored.payload); }
+        catch { throw Object.assign(new Error("Ingress receipt payload is invalid."), { code: "INGRESS_SWEEP_INVALID_RECEIPT" }); }
+        // A File row is committed application state. Even a damaged legacy receipt must never
+        // authorize its object deletion; leave it for explicit repair instead.
+        if (row.fileId && await adapter.selectFileById(row.fileId)) return null;
+        const armed = await adapter.markIngressReceiptSweeping(row, sweepToken, now);
+        return Number(armed?.changes ?? 0) > 0 ? { ...row, state: "sweeping", sweepToken } : null;
+      });
+    } catch (error: any) {
+      if (fenceAcquired || database.adapter.engine !== "sqlite" || attempt >= 100 || !String(error?.message ?? "").includes("database is locked")) throw error;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(25, attempt + 1)));
+    }
+  }
+  return null;
+}
+
+/** Retire one deterministic bounded batch. Object deletion precedes the token-fenced receipt delete. */
+export async function sweepExpiredFileIngress(database: RecordLike, options: RecordLike = {}) {
+  const now = typeof options.now === "string" && Number.isFinite(Date.parse(options.now)) ? new Date(options.now).toISOString() : new Date().toISOString();
+  const requestedLimit = Number(options.limit ?? 50); const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(100, requestedLimit)) : 50;
+  let candidates: RecordLike[];
+  try { candidates = await database.adapter.selectIngressSweepCandidates(now, limit); }
+  catch { return Object.freeze({ scanned: 0, cleaned: Object.freeze([]), failures: Object.freeze([{ code: "INGRESS_SWEEP_STORAGE_FAILED" }]) }); }
+  const cleaned: RecordLike[] = []; const failures: RecordLike[] = [];
+  for (const candidate of candidates) {
+    const leaseId = String(candidate.leaseId ?? ""); const sweepToken = crypto.randomUUID();
+    try {
+      const armed = await armIngressSweep(database, candidate, now, sweepToken);
+      if (!armed) continue;
+      try { await database.fileStorage.deleteFileVersion({ fileId: armed.fileId, version: armed.version }); }
+      catch { failures.push(Object.freeze({ leaseId, code: "INGRESS_ORPHAN_CLEANUP_FAILED" })); continue; }
+      const deleted = await database.adapter.deleteIngressSweepingReceipt(leaseId, sweepToken);
+      if (Number(deleted?.changes ?? 0) > 0) cleaned.push(Object.freeze({ leaseId, requestKey: armed.requestKey, partKey: armed.partKey }));
+    } catch (error: any) {
+      failures.push(Object.freeze({ leaseId, code: error?.code === "INGRESS_SWEEP_INVALID_RECEIPT" ? "INGRESS_SWEEP_INVALID_RECEIPT" : "INGRESS_SWEEP_STORAGE_FAILED" }));
+    }
+  }
+  return Object.freeze({ scanned: candidates.length, cleaned: Object.freeze(cleaned), failures: Object.freeze(failures) });
 }

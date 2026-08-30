@@ -673,6 +673,17 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
       return thenIfPromise(this.prepare(sql("UPDATE [sporades_file_ingress] SET [payload] = ?, [state] = ?, [updatedAt] = ? WHERE [leaseId] = ? AND [state] = ?")).run(JSON.stringify(row), "complete", updatedAt, row.leaseId, "leased"),
         () => this.selectIngressByLease(row.leaseId));
     },
+    selectIngressSweepCandidates(now: string, limit: number) {
+      return this.prepare(sql("SELECT * FROM [sporades_file_ingress] WHERE [state] = 'sweeping' OR ([state] IN ('leased', 'staging') AND [expiresAt] <= ?) ORDER BY CASE WHEN [state] = 'sweeping' THEN 0 ELSE 1 END, [expiresAt], [key] LIMIT ?")).all(now, limit);
+    },
+    markIngressReceiptSweeping(row: LooseRecord, sweepToken: string, now: string) {
+      const sweeping = { ...row, state: "sweeping", sweepToken };
+      return this.prepare(sql("UPDATE [sporades_file_ingress] SET [state] = 'sweeping', [sweepToken] = ?, [payload] = ?, [updatedAt] = ? WHERE [leaseId] = ? AND ([state] = 'sweeping' OR ([state] IN ('leased', 'staging') AND [expiresAt] <= ?))"))
+        .run(sweepToken, JSON.stringify(sweeping), now, row.leaseId, now);
+    },
+    deleteIngressSweepingReceipt(leaseId: string, sweepToken: string) {
+      return this.prepare(sql("DELETE FROM [sporades_file_ingress] WHERE [leaseId] = ? AND [state] = 'sweeping' AND [sweepToken] = ?")).run(leaseId, sweepToken);
+    },
     updatePendingFileRow(row: { bucketId: any; bucketName: any; path: any; name: any; type: any; size: any; version: any; status: any; updatedAt: any; id: any; }) {
       return this.prepare(
         sql(
