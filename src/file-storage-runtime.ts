@@ -560,6 +560,10 @@ export function createFileStorageTables(sqlite: LooseRecord) {
           ")",
         ),
       ),
+    // Runtime-private ingress receipts: bytes remain staged until a later endpoint
+    // transaction claims one. A single payload column keeps this additive across the
+    // current adapter set while the key remains the durable idempotency fence.
+    () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_file_ingress] ([key] TEXT PRIMARY KEY, [payload] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)")),
   ]);
 }
 

@@ -11798,7 +11798,11 @@ function createFileStorageTables(sqlite) {
       sql(
         "CREATE TABLE IF NOT EXISTS [sporades_file_public_urls] ([id] TEXT PRIMARY KEY, [fileId] TEXT NOT NULL, [ownerId] TEXT NOT NULL, [version] TEXT NOT NULL, [expiresAt] TEXT, [createdAt] TEXT NOT NULL, [revokedAt] TEXT)"
       )
-    )
+    ),
+    // Runtime-private ingress receipts: bytes remain staged until a later endpoint
+    // transaction claims one. A single payload column keeps this additive across the
+    // current adapter set while the key remains the durable idempotency fence.
+    () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_file_ingress] ([key] TEXT PRIMARY KEY, [payload] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"))
   ]);
 }
 async function readRequestBytes(request, maxBytes) {
@@ -19825,9 +19829,19 @@ function quoteIdentifier(identifier) {
 // src/file-ingress-runtime.ts
 var crypto2 = process.getBuiltinModule("node:crypto");
 var leaseTtlMs = 10 * 60 * 1e3;
-function store(database) {
-  const root = database.__rootDatabase ?? database;
-  return root.__sporadesIngressLeases ??= /* @__PURE__ */ new Map();
+async function receipt(database, key) {
+  const sql = database.adapter.dialect.sql("SELECT [payload] FROM [sporades_file_ingress] WHERE [key] = ?");
+  const row = await database.adapter.prepare(sql).get(key);
+  return row ? JSON.parse(row.payload) : null;
+}
+async function receiptByLease(database, leaseId) {
+  const sql = database.adapter.dialect.sql("SELECT [payload] FROM [sporades_file_ingress]");
+  const rows = await database.adapter.prepare(sql).all();
+  return rows.map((row) => JSON.parse(row.payload)).find((row) => row.leaseId === leaseId) ?? null;
+}
+async function saveReceipt(database, row) {
+  const sql = database.adapter.dialect.sql("INSERT INTO [sporades_file_ingress] ([key], [payload], [updatedAt]) VALUES (?, ?, ?) ON CONFLICT([key]) DO UPDATE SET [payload]=excluded.[payload], [updatedAt]=excluded.[updatedAt]");
+  await database.adapter.prepare(sql).run(row.key, JSON.stringify(row), (/* @__PURE__ */ new Date()).toISOString());
 }
 function header(headers, name) {
   return headers[String(name).toLowerCase()];
@@ -19949,15 +19963,14 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
     const stablePartKey = partKey ?? crypto2.createHash("sha256").update(`${fieldName}:${files.length}`).digest("hex");
     const actorId = String(actor.userId ?? "");
     const key = keyFor(endpoint, requestKey, stablePartKey, actorId);
-    const leases = store(database);
-    let row = leases.get(key);
+    let row = await receipt(database, key);
     const digest = crypto2.createHash("sha256").update(body).digest("hex");
     if (row && (row.digest !== digest || row.name !== safeName(filename) || row.type !== type)) throw Object.assign(new Error("Multipart retry descriptor conflicts with the original part."), { code: "INGRESS_DESCRIPTOR_CONFLICT" });
     if (!row) {
       const now2 = /* @__PURE__ */ new Date();
       row = { key, leaseId: crypto2.randomUUID(), partId: crypto2.createHash("sha256").update(key).digest("hex"), fieldName, name: safeName(filename), type, size: body.length, digest, fileId: crypto2.randomUUID(), version: crypto2.randomUUID(), state: "leased", expiresAt: new Date(now2.getTime() + leaseTtlMs).toISOString() };
       await database.fileStorage.writeFileVersion({ fileId: row.fileId, version: row.version, bytes: body });
-      leases.set(key, row);
+      await saveReceipt(database, row);
     }
     files.push(publicLease(row));
   }
@@ -19978,7 +19991,7 @@ function createEndpointIngressApi(database, endpoint, endpointRequest, context) 
   const requestKey = endpointRequest.__ingressRequestKey;
   return {
     async claim(lease, options) {
-      const row = [...store(database).values()].find((candidate) => candidate.leaseId === lease?.leaseId);
+      const row = await receiptByLease(database, lease?.leaseId);
       if (!row || row.state === "expired" || Date.parse(row.expiresAt) <= Date.now()) throw Object.assign(new Error("File ingress lease has expired."), { code: "INGRESS_LEASE_EXPIRED" });
       if (row.state === "complete") return fileMetadataFromRow(row.file);
       const path12 = normalizeAbsoluteFilePath(options?.path);
@@ -19993,11 +20006,12 @@ function createEndpointIngressApi(database, endpoint, endpointRequest, context) 
       await database.adapter.insertFileRow(file);
       row.state = "claiming";
       row.file = file;
+      await saveReceipt(database, row);
       (context.__sporadesIngressClaims ??= []).push(row);
       return fileMetadataFromRow(file);
     },
     async status(statusRequestKey, partKey) {
-      const row = store(database).get(keyFor(endpoint, statusRequestKey, partKey, actorId));
+      const row = await receipt(database, keyFor(endpoint, statusRequestKey, partKey, actorId));
       if (!row) return { state: "missing" };
       return row.state === "complete" ? { state: "complete", file: fileMetadataFromRow(row.file) } : { state: "leased", lease: publicLease(row) };
     }

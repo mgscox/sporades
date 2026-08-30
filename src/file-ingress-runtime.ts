@@ -6,9 +6,17 @@ type RecordLike = Record<string, any>;
 const crypto = process.getBuiltinModule("node:crypto");
 const leaseTtlMs = 10 * 60 * 1000;
 
-function store(database: RecordLike) {
-  const root = database.__rootDatabase ?? database;
-  return (root.__sporadesIngressLeases ??= new Map<string, RecordLike>());
+async function receipt(database: RecordLike, key: string) {
+  const sql = database.adapter.dialect.sql("SELECT [payload] FROM [sporades_file_ingress] WHERE [key] = ?");
+  const row = await database.adapter.prepare(sql).get(key); return row ? JSON.parse(row.payload) : null;
+}
+async function receiptByLease(database: RecordLike, leaseId: string) {
+  const sql = database.adapter.dialect.sql("SELECT [payload] FROM [sporades_file_ingress]");
+  const rows = await database.adapter.prepare(sql).all(); return rows.map((row: any) => JSON.parse(row.payload)).find((row: any) => row.leaseId === leaseId) ?? null;
+}
+async function saveReceipt(database: RecordLike, row: RecordLike) {
+  const sql = database.adapter.dialect.sql("INSERT INTO [sporades_file_ingress] ([key], [payload], [updatedAt]) VALUES (?, ?, ?) ON CONFLICT([key]) DO UPDATE SET [payload]=excluded.[payload], [updatedAt]=excluded.[updatedAt]");
+  await database.adapter.prepare(sql).run(row.key, JSON.stringify(row), new Date().toISOString());
 }
 
 function header(headers: RecordLike, name: string) { return headers[String(name).toLowerCase()]; }
@@ -59,10 +67,10 @@ export async function stageMultipartIngress(database: RecordLike, endpoint: Reco
     if (partKey) partKeys.add(partKey);
     const type = safeType(/^content-type:\s*([^\r\n]+)/im.exec(rawHeaders)?.[1] ?? "");
     if (policy.allowedMimeTypes && !policy.allowedMimeTypes.map(safeType).includes(type)) throw Object.assign(new Error("Multipart file type is not allowed."), { code: "MULTIPART_TYPE_DENIED" });
-    const stablePartKey = partKey ?? crypto.createHash("sha256").update(`${fieldName}:${files.length}`).digest("hex"); const actorId = String(actor.userId ?? ""); const key = keyFor(endpoint, requestKey, stablePartKey, actorId); const leases = store(database); let row = leases.get(key);
+    const stablePartKey = partKey ?? crypto.createHash("sha256").update(`${fieldName}:${files.length}`).digest("hex"); const actorId = String(actor.userId ?? ""); const key = keyFor(endpoint, requestKey, stablePartKey, actorId); let row = await receipt(database, key);
     const digest = crypto.createHash("sha256").update(body).digest("hex");
     if (row && (row.digest !== digest || row.name !== safeName(filename) || row.type !== type)) throw Object.assign(new Error("Multipart retry descriptor conflicts with the original part."), { code: "INGRESS_DESCRIPTOR_CONFLICT" });
-    if (!row) { const now = new Date(); row = { key, leaseId: crypto.randomUUID(), partId: crypto.createHash("sha256").update(key).digest("hex"), fieldName, name: safeName(filename), type, size: body.length, digest, fileId: crypto.randomUUID(), version: crypto.randomUUID(), state: "leased", expiresAt: new Date(now.getTime() + leaseTtlMs).toISOString() }; await database.fileStorage.writeFileVersion({ fileId: row.fileId, version: row.version, bytes: body }); leases.set(key, row); }
+    if (!row) { const now = new Date(); row = { key, leaseId: crypto.randomUUID(), partId: crypto.createHash("sha256").update(key).digest("hex"), fieldName, name: safeName(filename), type, size: body.length, digest, fileId: crypto.randomUUID(), version: crypto.randomUUID(), state: "leased", expiresAt: new Date(now.getTime() + leaseTtlMs).toISOString() }; await database.fileStorage.writeFileVersion({ fileId: row.fileId, version: row.version, bytes: body }); await saveReceipt(database, row); }
     files.push(publicLease(row));
   }
   return { body: null, bodyBytes: Object.freeze({ byteLength: 0, length: 0, at() { return undefined; }, toUint8Array() { return new Uint8Array(); }, *[Symbol.iterator]() {} }), multipart: Object.freeze({ files: Object.freeze(files), fields: Object.freeze(fields) }), __ingressRequestKey: requestKey };
@@ -75,7 +83,7 @@ export function createEndpointIngressApi(database: RecordLike, endpoint: RecordL
   const actorId = String(context.auth?.userId ?? ""); const requestKey = endpointRequest.__ingressRequestKey;
   return {
     async claim(lease: RecordLike, options: RecordLike) {
-      const row = [...store(database).values()].find((candidate) => candidate.leaseId === lease?.leaseId);
+      const row = await receiptByLease(database, lease?.leaseId);
       if (!row || row.state === "expired" || Date.parse(row.expiresAt) <= Date.now()) throw Object.assign(new Error("File ingress lease has expired."), { code: "INGRESS_LEASE_EXPIRED" });
       if (row.state === "complete") return fileMetadataFromRow(row.file);
       const path = normalizeAbsoluteFilePath(options?.path); if (!policy.allowedPathPrefixes.some((prefix: string) => path === prefix || path.startsWith(`${prefix}/`))) throw Object.assign(new Error("File path is outside the endpoint ingress policy."), { code: "INGRESS_PATH_DENIED" });
@@ -84,9 +92,9 @@ export function createEndpointIngressApi(database: RecordLike, endpoint: RecordL
       const now = new Date().toISOString(); const bucket = (await database.adapter.findFileBucket(actorId, "default")) ?? { id: crypto.randomUUID(), ownerId: actorId, name: "default", createdAt: now };
       if (!await database.adapter.findFileBucket(actorId, "default")) await database.adapter.createFileBucket(bucket);
       const file = { id: row.fileId, ownerId: actorId, bucketId: bucket.id, bucketName: bucket.name, path, name: safeName(options?.name ?? row.name), type: safeType(options?.type ?? row.type), size: row.size, version: row.version, status: "uploaded", createdAt: now, updatedAt: now };
-      await database.adapter.insertFileRow(file); row.state = "claiming"; row.file = file; (context.__sporadesIngressClaims ??= []).push(row); return fileMetadataFromRow(file);
+      await database.adapter.insertFileRow(file); row.state = "claiming"; row.file = file; await saveReceipt(database, row); (context.__sporadesIngressClaims ??= []).push(row); return fileMetadataFromRow(file);
     },
-    async status(statusRequestKey: string, partKey: string) { const row = store(database).get(keyFor(endpoint, statusRequestKey, partKey, actorId)); if (!row) return { state: "missing" as const }; return row.state === "complete" ? { state: "complete" as const, file: fileMetadataFromRow(row.file) } : { state: "leased" as const, lease: publicLease(row) }; },
+    async status(statusRequestKey: string, partKey: string) { const row = await receipt(database, keyFor(endpoint, statusRequestKey, partKey, actorId)); if (!row) return { state: "missing" as const }; return row.state === "complete" ? { state: "complete" as const, file: fileMetadataFromRow(row.file) } : { state: "leased" as const, lease: publicLease(row) }; },
   };
 }
 
