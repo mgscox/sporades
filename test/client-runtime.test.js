@@ -351,6 +351,41 @@ test("browser client runtime exposes opaque Team Join, application-role, and lif
   assert.equal(typeof runtime.teams.delete, "function");
 });
 
+test("every framework auth helper forwards RegistrationOptions to sign-up and sign-in", async () => {
+  const calls = [];
+  const browser = installBrowserFakes(anonymousAuth, { handlers: {
+    "auth.signUp": async (message) => { calls.push(message); return { type: "auth.signUp.result", data: { auth: anonymousAuth }, error: null }; },
+    "auth.signIn": async (message) => { calls.push(message); return { type: "auth.signIn.result", data: { auth: anonymousAuth }, error: null }; },
+  }});
+  try {
+    const runtime = await importClientRuntime();
+    const signal = (initial) => { let value = initial; return [() => value, (next) => { value = typeof next === "function" ? next(value) : next; }]; };
+    const helpers = {
+      react: runtime.createHooks({ useState: (initial) => [initial, () => {}], useEffect() {} }).useAuth(),
+      vue: runtime.createVueComposables({ reactive: (value) => value, onScopeDispose() {} }).useAuth(),
+      solid: runtime.createSolidPrimitives({ createSignal: signal, onCleanup() {} }).createAuth(),
+      lit: runtime.createLitControllers().authController({ addController() {}, requestUpdate() {} }),
+      inferno: runtime.createInfernoAdapters().authAdapter({ forceUpdate() {} }),
+      svelte: runtime.createSvelteStores().authStore(),
+    };
+
+    for (const [framework, helper] of Object.entries(helpers)) {
+      const registration = { admission: { framework } };
+      await helper.signUp("email", { email: `${framework}@example.com`, password: "password-123" }, { registration });
+      await helper.signIn("email", { email: `${framework}@example.com`, password: "password-123" }, { registration });
+    }
+
+    assert.equal(calls.length, 12);
+    for (const framework of Object.keys(helpers)) {
+      const frameworkCalls = calls.filter((message) => message.credentials?.email === `${framework}@example.com`);
+      assert.deepEqual(frameworkCalls.map(({ type, registration }) => ({ type, registration })), [
+        { type: "auth.signUp", registration: { admission: { framework } } },
+        { type: "auth.signIn", registration: { admission: { framework } } },
+      ]);
+    }
+  } finally { browser.cleanup(); }
+});
+
 test("Vue composables expose complete reactive state and dispose shared subscriptions", async () => {
   const unsubscribes = [];
   const browser = installBrowserFakes(anonymousAuth, { handlers: {

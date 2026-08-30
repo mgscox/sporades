@@ -24,7 +24,7 @@ Changes since v0.9.5.
 - Document trusted File ingress authority, multipart limits, ownership, claim,
   replay, expiry, cleanup, and storage-adapter behavior.
 
-- Expose the verified provider-free Team Billing projection to active Capsule
+- Expose the verified provider-free headless Team Billing projection to active Capsule
   query and mutation contexts and to exact-Team Join admission. Current members
   may be authorized for safe reads while all customer-directed commands remain
   current-Team-admin operations; retained context handles are revoked.
@@ -79,6 +79,5 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
-
 
 

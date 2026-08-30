@@ -105,8 +105,8 @@ export type AuthApi = {
   get(): Promise<SporadesResult<AuthResult>>;
   subscribe(listener: (state: AuthObserverState) => void): Subscription;
   signUp(provider: "email", credentials: EmailCredentials, options?: RegistrationOptions): Promise<SporadesResult>;
-  signUp(provider: string, credentials?: unknown): Promise<SporadesResult>;
-  signIn(provider: "email", credentials: EmailCredentials): Promise<SporadesResult>;
+  signUp(provider: string, credentials?: unknown, options?: RegistrationOptions): Promise<SporadesResult>;
+  signIn(provider: "email", credentials: EmailCredentials, options?: RegistrationOptions): Promise<SporadesResult>;
   signIn(provider: string, credentials?: unknown, options?: RegistrationOptions): Promise<SporadesResult>;
   signOut(): Promise<SporadesResult<{ ok: boolean }>>;
   /** Change the signed-in email credential after verifying its current password. */

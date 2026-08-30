@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { openDevDatabase } from "../dist/server-runtime-source.js";
-import { resolveAnonymousSession, signUpWithEmail } from "../dist/auth-runtime.js";
+import { resolveAnonymousSession, signUpWithEmail, simulateLocalIdentitySession } from "../dist/auth-runtime.js";
 import { String, table } from "../dist/server.js";
 
 async function withDatabase(definition, body) {
@@ -69,5 +69,42 @@ test("Registration Admission finalizer failure rolls back app and runtime regist
     assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_email_credentials").get()).count, 1);
     assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_teams").get()).count, 1);
     assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_team_memberships").get()).count, 1);
+  });
+});
+
+test("local identity simulation enforces admission atomically and bypasses it for an existing identity", async () => {
+  let mode = "deny";
+  const evidence = [];
+  const capsule = { name: "local-admission", schema: { claims: table({ userId: String() }).unique("userId") }, auth: { registration: {
+    admit: (ctx) => { evidence.push({ kind: ctx.evidence.kind, admission: ctx.admission }); return { allow: mode !== "deny" }; },
+    finalize: async (ctx) => { await ctx.db.claims.insert({ userId: ctx.evidence.userId }); if (mode === "rollback") throw new Error("local finalizer failure"); },
+  } } };
+  await withDatabase(capsule, async (database) => {
+    const options = { provider: "email", email: "local@example.com", displayName: "Local User", registration: { invitation: "invite-1" } };
+    const denied = await simulateLocalIdentitySession(database, options);
+    assert.equal(denied.error.code, "REGISTRATION_DENIED");
+    assert.deepEqual(evidence, [{ kind: "local", admission: { invitation: "invite-1" } }]);
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM claims").get()).count, 0);
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_identities").get()).count, 0);
+
+    mode = "rollback";
+    const rolledBack = await simulateLocalIdentitySession(database, options);
+    assert.equal(rolledBack.error.code, "REGISTRATION_DENIED");
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM claims").get()).count, 0);
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_identities").get()).count, 0);
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_teams").get()).count, 0);
+
+    mode = "allow";
+    const admitted = await simulateLocalIdentitySession(database, options);
+    assert.equal(admitted.ok, true);
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM claims").get()).count, 1);
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_identities").get()).count, 1);
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_teams").get()).count, 1);
+
+    mode = "deny";
+    const existing = await simulateLocalIdentitySession(database, { ...options, displayName: "Updated Local User", registration: { invitation: "invalid" } });
+    assert.equal(existing.ok, true, "an existing linked identity bypasses new-registration admission");
+    assert.equal(evidence.length, 3, "existing identity does not invoke admission or finalization again");
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM claims").get()).count, 1);
   });
 });

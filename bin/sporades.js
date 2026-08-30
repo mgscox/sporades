@@ -305,11 +305,11 @@ export function createHooks(primitives) {
       isAuthenticated() {
         return Boolean(state.auth?.isAuthenticated);
       },
-      signUp(provider, credentials) {
-        return connect().signUp(provider, credentials);
+      signUp(provider, credentials, options) {
+        return connect().signUp(provider, credentials, options);
       },
-      signIn(provider, credentials) {
-        return connect().signIn(provider, credentials);
+      signIn(provider, credentials, options) {
+        return connect().signIn(provider, credentials, options);
       },
       signOut() {
         return connect().signOut();
@@ -370,8 +370,8 @@ export function createVueComposables(primitives) {
     const subscription = auth.subscribe((nextState) => Object.assign(state, nextState));
     onScopeDispose(() => subscription.unsubscribe());
     state.isAuthenticated = () => Boolean(state.auth?.isAuthenticated);
-    state.signUp = (provider, credentials) => connect().signUp(provider, credentials);
-    state.signIn = (provider, credentials) => connect().signIn(provider, credentials);
+    state.signUp = (provider, credentials, options) => connect().signUp(provider, credentials, options);
+    state.signIn = (provider, credentials, options) => connect().signIn(provider, credentials, options);
     state.signOut = () => connect().signOut();
     state.setPassword = (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword);
     return state;
@@ -423,8 +423,8 @@ export function createSolidPrimitives(primitives) {
     return {
       state,
       isAuthenticated: () => Boolean(state().auth?.isAuthenticated),
-      signUp: (provider, credentials) => connect().signUp(provider, credentials),
-      signIn: (provider, credentials) => connect().signIn(provider, credentials),
+      signUp: (provider, credentials, options) => connect().signUp(provider, credentials, options),
+      signIn: (provider, credentials, options) => connect().signIn(provider, credentials, options),
       signOut: () => connect().signOut(),
       setPassword: (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword),
     };
@@ -522,8 +522,8 @@ export function createLitControllers() {
   function authController(host) {
     const controller = observedController(host, { auth: null, providers: {}, loading: true, error: null }, (publish) => auth.subscribe(publish));
     controller.isAuthenticated = () => Boolean(controller.state.auth?.isAuthenticated);
-    controller.signUp = (provider, credentials) => connect().signUp(provider, credentials);
-    controller.signIn = (provider, credentials) => connect().signIn(provider, credentials);
+    controller.signUp = (provider, credentials, options) => connect().signUp(provider, credentials, options);
+    controller.signIn = (provider, credentials, options) => connect().signIn(provider, credentials, options);
     controller.signOut = () => connect().signOut();
     controller.setPassword = (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword);
     return controller;
@@ -598,8 +598,8 @@ export function createInfernoAdapters() {
   function authAdapter(host) {
     const adapter = observedAdapter(host, { auth: null, providers: {}, loading: true, error: null }, (publish) => auth.subscribe(publish));
     adapter.isAuthenticated = () => Boolean(adapter.state.auth?.isAuthenticated);
-    adapter.signUp = (provider, credentials) => connect().signUp(provider, credentials);
-    adapter.signIn = (provider, credentials) => connect().signIn(provider, credentials);
+    adapter.signUp = (provider, credentials, options) => connect().signUp(provider, credentials, options);
+    adapter.signIn = (provider, credentials, options) => connect().signIn(provider, credentials, options);
     adapter.signOut = () => connect().signOut();
     adapter.setPassword = (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword);
     return adapter;
@@ -649,8 +649,8 @@ export function createSvelteStores() {
     );
     return {
       subscribe: store.subscribe,
-      signUp: (provider, credentials) => connect().signUp(provider, credentials),
-      signIn: (provider, credentials) => connect().signIn(provider, credentials),
+      signUp: (provider, credentials, options) => connect().signUp(provider, credentials, options),
+      signIn: (provider, credentials, options) => connect().signIn(provider, credentials, options),
       signOut: () => connect().signOut(),
       setPassword: (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword),
     };
