@@ -24,6 +24,7 @@ export declare function stageMultipartIngress(database: RecordLike, endpoint: Re
         ownerId: string;
     }>;
 }>;
+export declare function validateMultipartIngressPolicy(policy: RecordLike): RecordLike;
 export declare function createEndpointIngressApi(database: RecordLike, endpoint: RecordLike, endpointRequest: RecordLike, context: RecordLike): {
     claim(lease: RecordLike, options: RecordLike): Promise<{
         id: any;

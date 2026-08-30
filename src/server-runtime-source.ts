@@ -147,7 +147,7 @@ import {
   getPrivateFileUrl, isAbsoluteFilePath, normalizeAbsoluteFilePath, resolvePrivilegedLiveFileReference,
   revokePublicFileUrl,
 } from "./file-storage-runtime.js";
-import { createEndpointIngressApi, finalizeEndpointIngressClaims, stageMultipartIngress, sweepExpiredFileIngress } from "./file-ingress-runtime.js";
+import { createEndpointIngressApi, finalizeEndpointIngressClaims, stageMultipartIngress, sweepExpiredFileIngress, validateMultipartIngressPolicy } from "./file-ingress-runtime.js";
 import {
   abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob,
   canonicalJobAuthSnapshot, canonicalJobCredentialProvenance, captureJobAuthSnapshot,
@@ -666,6 +666,7 @@ export async function openDevDatabase(
   const capsuleEndpoints = capsuleDefinition
     ? endpointHandlersFromCapsuleDefinition(capsuleDefinition)
     : extractEndpoints(serverSource);
+  for (const declaredEndpoint of capsuleEndpoints as LooseRecord[]) if (declaredEndpoint?.options?.body?.multipart !== undefined) validateMultipartIngressPolicy(declaredEndpoint.options.body.multipart);
   const emailEventEndpoints = createEmailEventEndpoints(mailConfig, serverEnv, capsuleDefinition?.emailEvents);
   const stripeCallbackEndpoint = paymentsConfig?.stripe.enabled
     ? options?.createStripeCallbackEndpoint?.(

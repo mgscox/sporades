@@ -30,6 +30,54 @@ test("multipart framing survives every one-byte boundary/header split and keeps 
   }
 });
 
+test("multipart framing retains false boundary prefixes, including binary suffixes split from the prefix", async () => {
+  const boundary = "false-prefix";
+  const falsePrefixes = Buffer.concat([Buffer.from("before\r\n--false-prefixXmiddle\r\n--false-prefix"), Buffer.from([0]), Buffer.from("after")]);
+  const source = Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="binary.bin"\r\n\r\n`), falsePrefixes, Buffer.from(`\r\n--${boundary}--`)]);
+  for (let split = 1; split <= source.length; split += 1) {
+    const parts = []; for await (const part of multipartParts(splitEvery(source, split), boundary, 10000, 10000)) parts.push(part);
+    assert.equal(parts.length, 1, `split ${split}`); assert.deepEqual(parts[0].body, falsePrefixes, `split ${split}`);
+  }
+});
+
+test("multipart policy rejects missing and non-finite or fractional limits before reading request bytes", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-invalid-limits-")); let database;
+  try {
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "invalid-limits" }, capsule({ name: "invalid-limits" }));
+    const invalid = [undefined, NaN, Infinity, -Infinity, 1.5, "1"];
+    for (const name of ["maxFiles", "maxFileBytes", "maxTotalFileBytes", "maxFieldCount", "maxFieldBytes", "maxTotalFieldBytes"]) {
+      for (const value of invalid) {
+        const policy = { ...ingressPolicy(), [name]: value }; let reads = 0;
+        const request = { async *[Symbol.asyncIterator]() { reads += 1; yield multipart("invalid"); } };
+        await assert.rejects(stageMultipartIngress(database, { options: { method: "POST", path: "/invalid", body: { multipart: policy } } }, request, { headers: { "content-type": "multipart/form-data; boundary=invalid", "idempotency-key": "request" } }, { userId: "actor" }), { code: "INVALID_MULTIPART_POLICY" });
+        assert.equal(reads, 0, `${name}=${String(value)}`);
+      }
+    }
+    for (const [name, value] of [["maxFiles", 0], ["maxFileBytes", 0], ["maxTotalFileBytes", 0], ["maxFieldCount", -1], ["maxFieldBytes", -1], ["maxTotalFieldBytes", -1]]) {
+      await assert.rejects(stageMultipartIngress(database, { options: { method: "POST", path: "/invalid", body: { multipart: { ...ingressPolicy(), [name]: value } } } }, { async *[Symbol.asyncIterator]() { throw new Error("must not read"); } }, { headers: { "content-type": "multipart/form-data; boundary=invalid", "idempotency-key": "request" } }, { userId: "actor" }), { code: "INVALID_MULTIPART_POLICY" });
+    }
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("Capsule startup rejects an invalid untyped multipart declaration", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-invalid-startup-"));
+  try {
+    const definition = capsule({ name: "invalid-startup", endpoints: { upload: endpoint({ method: "POST", path: "/upload", body: { multipart: { ...ingressPolicy(), maxFileBytes: NaN } } }, () => ({ ok: true })) } });
+    await assert.rejects(openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "invalid-startup" }, definition), { code: "INVALID_MULTIPART_POLICY" });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("length-framed ingress keys distinguish delimiter-collision tuples", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-framed-key-")); let database;
+  try {
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "framed-key", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "framed-key" }));
+    const policy = ingressPolicy(); const make = (endpointPath, actorId, requestKey, partKey, body) => stageMultipartIngress(database, { options: { method: "POST", path: endpointPath, body: { multipart: policy } } }, { async *[Symbol.asyncIterator]() { yield multipart("framed", `Content-Disposition: form-data; name="file"; filename="a.txt"\r\nContent-Type: text/plain\r\nContent-ID: ${partKey}`, body); } }, { headers: { "content-type": "multipart/form-data; boundary=framed", "idempotency-key": requestKey } }, { userId: actorId });
+    const first = await make("/upload", "actor", "a:b", "c", "first"); const second = await make("/upload", "actor", "a", "b:c", "second");
+    assert.notEqual(first.multipart.files[0].leaseId, second.multipart.files[0].leaseId);
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 2);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("multipart framing rejects malformed terminators and bounded headers/parts", async () => {
   const boundary = "limits";
   await assert.rejects(async () => { for await (const _ of multipartParts(splitEvery(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="x"\r\n\r\na\r\n--${boundary}X`), 1), boundary, 1000, 1000)) {} }, { code: "INVALID_MULTIPART" });

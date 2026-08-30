@@ -6,7 +6,9 @@ import { test } from "node:test";
 
 import { openDevDatabase } from "../dist/server-runtime-source.js";
 import { resolveAnonymousSession, signUpWithEmail, simulateLocalIdentitySession } from "../dist/auth-runtime.js";
-import { String, table } from "../dist/server.js";
+import { Boolean as BooleanField, capsule, String, table } from "../dist/server.js";
+import { withFakeLibsqlService } from "./support/libsql-http-service.js";
+import { POSTGRES_SKIP_REASON, postgresTestUrl, withPostgresAdapter } from "./support/database-adapter-engines.js";
 
 async function withDatabase(definition, body) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-registration-"));
@@ -107,4 +109,44 @@ test("local identity simulation enforces admission atomically and bypasses it fo
     assert.equal(evidence.length, 3, "existing identity does not invoke admission or finalization again");
     assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM claims").get()).count, 1);
   });
+});
+
+async function proveSeparateRuntimeRegistrationFence({ dir, config, serviceEnv, invitation }) {
+  const definition = capsule({ name: "registration-fence", schema: {
+    claims: table({ userId: String() }),
+    invitations: table({ key: String(), used: BooleanField() }),
+  }, auth: { registration: {
+    admit: async (ctx) => {
+      if (!invitation) { const allow = (await ctx.db.claims.all()).length === 0; await new Promise((resolve) => setTimeout(resolve, 40)); return { allow }; }
+      const row = (await ctx.db.invitations.all()).find((candidate) => candidate.key === ctx.admission?.key && candidate.used === false);
+      await new Promise((resolve) => setTimeout(resolve, 40)); return row ? { allow: true, state: { invitationId: row.id } } : { allow: false };
+    },
+    finalize: async (ctx, admitted) => { if (admitted.state?.invitationId) await ctx.db.invitations.update(admitted.state.invitationId, { used: true }); await ctx.db.claims.insert({ userId: ctx.evidence.userId }); },
+  } } });
+  const first = await openDevDatabase(path.join(dir, "first.db"), "", {}, config, definition, { serviceEnv });
+  const second = await openDevDatabase(path.join(dir, "second.db"), "", {}, config, definition, { serviceEnv });
+  try {
+    assert.notEqual(first, second); assert.notEqual(first.adapter, second.adapter);
+    if (invitation) await first.adapter.insertAppRow(first.schema.tables.find((table) => table.name === "invitations"), { id: "invite-1", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", key: "single", used: false });
+    const sessions = await Promise.all([resolveAnonymousSession(first, null), resolveAnonymousSession(second, null)]);
+    const results = await Promise.all([
+      signUpWithEmail(first, sessions[0], "email", { email: `one-${invitation ? "invite" : "first"}@example.com`, password: "password-123" }, invitation ? { key: "single" } : undefined),
+      signUpWithEmail(second, sessions[1], "email", { email: `two-${invitation ? "invite" : "first"}@example.com`, password: "password-123" }, invitation ? { key: "single" } : undefined),
+    ]);
+    assert.equal(results.filter((result) => result.ok).length, 1); assert.equal(results.filter((result) => result.error?.code === "REGISTRATION_DENIED").length, 1);
+    assert.equal(Number((await first.adapter.prepare(first.adapter.dialect.sql("SELECT COUNT(*) AS [count] FROM [claims]")).get()).count), 1);
+    if (invitation) assert.equal(globalThis.Boolean((await first.adapter.prepare(first.adapter.dialect.sql("SELECT [used] FROM [invitations] WHERE [key] = ?")).get("single")).used), true);
+  } finally { await Promise.allSettled([first.close(), second.close()]); }
+}
+
+for (const invitation of [false, true]) test(`libSQL separate runtimes serialize ${invitation ? "single-use invitation" : "first-user"} Registration Admission`, async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-registration-libsql-fence-"));
+  try { await withFakeLibsqlService(path.join(dir, "shared.db"), async ({ url }) => proveSeparateRuntimeRegistrationFence({ dir, config: { name: "registration-fence", auth: { providers: { anonymous: true, email: true } }, services: { database: { kind: "database", engine: "libsql" } } }, serviceEnv: { SPORADES_SERVICE_DATABASE_ENGINE: "libsql", SPORADES_SERVICE_DATABASE_URL: url }, invitation })); }
+  finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+for (const invitation of [false, true]) test(`Postgres separate runtimes serialize ${invitation ? "single-use invitation" : "first-user"} Registration Admission`, { skip: POSTGRES_SKIP_REASON }, async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-registration-postgres-fence-"));
+  try { await withPostgresAdapter(async () => proveSeparateRuntimeRegistrationFence({ dir, config: { name: "registration-fence", auth: { providers: { anonymous: true, email: true } }, services: { database: { kind: "database", engine: "postgres" } } }, serviceEnv: { SPORADES_SERVICE_DATABASE_ENGINE: "postgres", SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, invitation }), { appTableNames: ["claims", "invitations"] }); }
+  finally { await rm(dir, { recursive: true, force: true }); }
 });

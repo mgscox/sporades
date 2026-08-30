@@ -50,7 +50,12 @@ function partHeader(rawHeaders, name) {
 }
 function safeName(value) { return String(value ?? "upload").replace(/[\\/\x00-\x1f]/g, "_").trim().slice(0, 255) || "upload"; }
 function safeType(value) { const type = String(value ?? "").split(";", 1)[0].trim().toLowerCase(); return /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(type) ? type : "application/octet-stream"; }
-function keyFor(endpoint, requestKey, partKey, actor) { return `${endpoint.options.method}:${endpoint.options.path}:${actor}:${requestKey}:${partKey}`; }
+function framedIngressKey(parts) {
+    const framed = parts.map((value) => { const bytes = Buffer.from(String(value), "utf8"); return `${bytes.length}:${bytes.toString("base64")}`; }).join("|");
+    return `v2:${crypto.createHash("sha256").update(framed).digest("hex")}`;
+}
+function keyFor(endpoint, requestKey, partKey, actor) { return framedIngressKey([String(endpoint.options.method), String(endpoint.options.path), actor, requestKey, partKey]); }
+function legacyDelimitedKeyFor(endpoint, requestKey, partKey, actor) { return `${endpoint.options.method}:${endpoint.options.path}:${actor}:${requestKey}:${partKey}`; }
 function publicLease(row) { return Object.freeze({ leaseId: row.leaseId, partId: row.partId, fieldName: row.fieldName, name: row.name, type: row.type, declaredSize: null, size: row.size, expiresAt: row.expiresAt }); }
 function idempotencyConflict(message = "Ingress claim conflicts with the completed request.") { return Object.assign(new Error(message), { code: "IDEMPOTENCY_CONFLICT" }); }
 function ingressAuthorityDenied() { return Object.assign(new Error("File ingress authority is unavailable."), { code: "INGRESS_AUTHORITY_DENIED" }); }
@@ -111,6 +116,24 @@ export async function* multipartParts(request, boundaryText, maxWireBytes, maxPa
                     }
                     break;
                 }
+                if (pending.length < at + marker.length + 2) {
+                    if (at) {
+                        pieces.push(pending.subarray(0, at));
+                        size += at;
+                        pending = pending.subarray(at);
+                    }
+                    break;
+                }
+                const suffix = pending.subarray(at + marker.length, at + marker.length + 2).toString();
+                if (suffix !== "\r\n" && suffix !== "--") {
+                    const take = at + marker.length;
+                    pieces.push(pending.subarray(0, take));
+                    size += take;
+                    if (size > maxPartBytes)
+                        throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+                    pending = pending.subarray(take);
+                    continue;
+                }
                 if (at) {
                     pieces.push(pending.subarray(0, at));
                     size += at;
@@ -137,7 +160,7 @@ export async function* multipartParts(request, boundaryText, maxWireBytes, maxPa
 }
 /** Parse only after endpoint credential admission. The bounded body is never exposed as an ordinary endpoint body. */
 export async function stageMultipartIngress(database, endpoint, request, endpointRequest, actor, admittedAuthority) {
-    const policy = endpoint.options.body.multipart;
+    const policy = validateMultipartIngressPolicy(endpoint.options.body.multipart);
     const contentType = String(endpointRequest.headers["content-type"] ?? "");
     const match = /^multipart\/form-data\s*;\s*boundary=([^;\s]+)$/i.exec(contentType);
     if (!match || match[1].length > 200)
@@ -194,8 +217,15 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
             // Pre-authority receipts used the raw actor ID in their durable key. Keep that key and
             // its derived part/object identities intact: renaming only the key would strand retries,
             // while regenerating the part would duplicate staged bytes.
-            const legacyActorKey = authority.kind === "actor" ? keyFor(endpoint, requestKey, stablePartKey, authority.actorId) : null;
-            const legacyActorRow = legacyActorKey && legacyActorKey !== key ? await receipt(database, legacyActorKey) : null;
+            const legacyAuthorityKey = legacyDelimitedKeyFor(endpoint, requestKey, stablePartKey, authorityId);
+            const legacyActorKey = authority.kind === "actor" ? legacyDelimitedKeyFor(endpoint, requestKey, stablePartKey, authority.actorId) : null;
+            const legacyActorRow = await (async () => { for (const legacyKey of [legacyAuthorityKey, legacyActorKey]) {
+                if (!legacyKey || legacyKey === key)
+                    continue;
+                const row = await receipt(database, legacyKey);
+                if (row?.endpointMethod === String(endpoint.options.method) && row?.endpointPath === String(endpoint.options.path) && row?.requestKey === requestKey && row?.partKey === stablePartKey && row?.authorityKind === authority.kind && row?.authorityId === authorityId && row?.ownerId === authority.ownerId)
+                    return row;
+            } return null; })();
             const acquired = legacyActorRow?.authorityKind === "actor" && legacyActorRow.authorityId === authorityId && legacyActorRow.ownerId === authority.ownerId
                 ? { row: legacyActorRow, winner: false }
                 : await acquireReceipt(database, candidate);
@@ -233,6 +263,18 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
         throw primaryError;
     }
     return { body: null, bodyBytes: Object.freeze({ byteLength: 0, length: 0, at() { return undefined; }, toUint8Array() { return new Uint8Array(); }, *[Symbol.iterator]() { } }), multipart: Object.freeze({ files: Object.freeze(files), fields: Object.freeze(fields) }), __ingressRequestKey: requestKey, __ingressAuthority: admittedAuthority ?? Object.freeze({ kind: "actor", actorId: String(actor.userId ?? ""), ownerId: String(actor.userId ?? "") }) };
+}
+export function validateMultipartIngressPolicy(policy) {
+    const invalid = () => { throw Object.assign(new Error("Invalid multipart ingress policy."), { code: "INVALID_MULTIPART_POLICY" }); };
+    if (!policy || typeof policy !== "object" || Array.isArray(policy))
+        invalid();
+    for (const name of ["maxFiles", "maxFileBytes", "maxTotalFileBytes"])
+        if (typeof policy[name] !== "number" || !Number.isFinite(policy[name]) || !Number.isInteger(policy[name]) || policy[name] <= 0)
+            invalid();
+    for (const name of ["maxFieldCount", "maxFieldBytes", "maxTotalFieldBytes"])
+        if (typeof policy[name] !== "number" || !Number.isFinite(policy[name]) || !Number.isInteger(policy[name]) || policy[name] < 0)
+            invalid();
+    return policy;
 }
 export function createEndpointIngressApi(database, endpoint, endpointRequest, context) {
     // Runtime-owned provider callbacks predate Capsule endpoint options and do
@@ -314,8 +356,10 @@ export function createEndpointIngressApi(database, endpoint, endpointRequest, co
             const capsulePrincipal = admittedAuthority.kind === "capsule-principal";
             const authorityId = capsulePrincipal ? `capsule:${admittedAuthority.namespace}:${admittedAuthority.keyDigest}` : `actor:${actorId}`;
             let row = await receipt(database, keyFor(endpoint, statusRequestKey, partKey, authorityId));
+            if (!row)
+                row = await receipt(database, legacyDelimitedKeyFor(endpoint, statusRequestKey, partKey, authorityId));
             if (!row && !capsulePrincipal)
-                row = await receipt(database, keyFor(endpoint, statusRequestKey, partKey, actorId));
+                row = await receipt(database, legacyDelimitedKeyFor(endpoint, statusRequestKey, partKey, actorId));
             const authorityMatches = capsulePrincipal
                 ? row?.authorityKind === "capsule-principal" && row.authorityId === authorityId && row.ownerId === admittedAuthority.ownerId && row.principalNamespace === admittedAuthority.namespace && row.principalKeyDigest === admittedAuthority.keyDigest
                 : row?.authorityId === authorityId && row.ownerId === actorId;

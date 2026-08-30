@@ -2607,6 +2607,13 @@ async function admitRegistration(database, tx, evidence, input) {
     if (admission === null)
         throw registrationDeniedRollback();
     try {
+        // This durable row is the cross-connection registration decision fence. Its
+        // write lock is held by the surrounding identity transaction, so a later
+        // runtime evaluates first-user/invitation state only after the winner's
+        // finalizer and identity writes commit (or after they roll back).
+        const fenceSql = tx.dialect.sql("INSERT INTO [sporades] ([key], [value]) VALUES ('registration-admission-fence', 'v1') ON CONFLICT ([key]) DO NOTHING");
+        await tx.prepare(fenceSql).run();
+        await tx.prepare(tx.dialect.sql("UPDATE [sporades] SET [value]=[value] WHERE [key]='registration-admission-fence'")).run();
         if (await database.runRegistrationAdmission(tx, Object.freeze({ ...evidence }), admission))
             return { ok: true };
         throw registrationDeniedRollback();

@@ -523,6 +523,12 @@ initial Team and membership, Session transition, and finalizer writes share one
 transaction, so denial or failure commits none of them. Callback database
 handles are revoked after settlement.
 
+A runtime-owned database write fence serializes new-registration policy across
+separate SQLite, libSQL, and Postgres connections. The waiter evaluates policy
+only after the previous transaction's finalizer and identity writes commit, or
+after they roll back. Keep `admit` and `finalize` bounded and provider-free:
+they deliberately hold this per-Capsule registration fence.
+
 Admission runs only when an anonymous user would create a new linked identity.
 Sign-in to an existing identity, recovery of a pre-Teams linked identity, and
 linking another provider to an already-linked user bypass it. Consequently this

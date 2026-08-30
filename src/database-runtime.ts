@@ -674,7 +674,7 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
         () => this.selectIngressByLease(row.leaseId));
     },
     selectIngressSweepCandidates(now: string, limit: number) {
-      return this.prepare(sql("SELECT * FROM [sporades_file_ingress] WHERE [state] = 'sweeping' OR ([state] IN ('leased', 'staging') AND [expiresAt] <= ?) ORDER BY CASE WHEN [state] = 'sweeping' THEN 0 ELSE 1 END, [expiresAt], [key] LIMIT ?")).all(now, limit);
+      return this.prepare(sql("SELECT * FROM [sporades_file_ingress] WHERE [state] = 'sweeping' OR ([state] IN ('leased', 'staging') AND [expiresAt] <= ?) ORDER BY CASE WHEN [state] = 'sweeping' THEN 0 ELSE 1 END, [expiresAt], [requestKey], [partKey], [key] LIMIT ?")).all(now, limit);
     },
     markIngressReceiptSweeping(row: LooseRecord, sweepToken: string, now: string) {
       const sweeping = { ...row, state: "sweeping", sweepToken };

@@ -16376,6 +16376,9 @@ async function admitRegistration(database, tx, evidence, input) {
   const admission = boundedRegistrationInput(input);
   if (admission === null) throw registrationDeniedRollback();
   try {
+    const fenceSql = tx.dialect.sql("INSERT INTO [sporades] ([key], [value]) VALUES ('registration-admission-fence', 'v1') ON CONFLICT ([key]) DO NOTHING");
+    await tx.prepare(fenceSql).run();
+    await tx.prepare(tx.dialect.sql("UPDATE [sporades] SET [value]=[value] WHERE [key]='registration-admission-fence'")).run();
     if (await database.runRegistrationAdmission(tx, Object.freeze({ ...evidence }), admission)) return { ok: true };
     throw registrationDeniedRollback();
   } catch (error) {
@@ -18085,7 +18088,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
       );
     },
     selectIngressSweepCandidates(now2, limit) {
-      return this.prepare(sql("SELECT * FROM [sporades_file_ingress] WHERE [state] = 'sweeping' OR ([state] IN ('leased', 'staging') AND [expiresAt] <= ?) ORDER BY CASE WHEN [state] = 'sweeping' THEN 0 ELSE 1 END, [expiresAt], [key] LIMIT ?")).all(now2, limit);
+      return this.prepare(sql("SELECT * FROM [sporades_file_ingress] WHERE [state] = 'sweeping' OR ([state] IN ('leased', 'staging') AND [expiresAt] <= ?) ORDER BY CASE WHEN [state] = 'sweeping' THEN 0 ELSE 1 END, [expiresAt], [requestKey], [partKey], [key] LIMIT ?")).all(now2, limit);
     },
     markIngressReceiptSweeping(row, sweepToken, now2) {
       const sweeping = { ...row, state: "sweeping", sweepToken };
@@ -20146,7 +20149,17 @@ function safeType(value) {
   const type = String(value ?? "").split(";", 1)[0].trim().toLowerCase();
   return /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(type) ? type : "application/octet-stream";
 }
+function framedIngressKey(parts) {
+  const framed = parts.map((value) => {
+    const bytes = Buffer.from(String(value), "utf8");
+    return `${bytes.length}:${bytes.toString("base64")}`;
+  }).join("|");
+  return `v2:${crypto2.createHash("sha256").update(framed).digest("hex")}`;
+}
 function keyFor(endpoint, requestKey, partKey, actor) {
+  return framedIngressKey([String(endpoint.options.method), String(endpoint.options.path), actor, requestKey, partKey]);
+}
+function legacyDelimitedKeyFor(endpoint, requestKey, partKey, actor) {
   return `${endpoint.options.method}:${endpoint.options.path}:${actor}:${requestKey}:${partKey}`;
 }
 function publicLease(row) {
@@ -20211,6 +20224,23 @@ async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes
           }
           break;
         }
+        if (pending.length < at + marker.length + 2) {
+          if (at) {
+            pieces.push(pending.subarray(0, at));
+            size += at;
+            pending = pending.subarray(at);
+          }
+          break;
+        }
+        const suffix = pending.subarray(at + marker.length, at + marker.length + 2).toString();
+        if (suffix !== "\r\n" && suffix !== "--") {
+          const take = at + marker.length;
+          pieces.push(pending.subarray(0, take));
+          size += take;
+          if (size > maxPartBytes) throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+          pending = pending.subarray(take);
+          continue;
+        }
         if (at) {
           pieces.push(pending.subarray(0, at));
           size += at;
@@ -20232,7 +20262,7 @@ async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes
   throw Object.assign(new Error("Truncated multipart request."), { code: "INVALID_MULTIPART" });
 }
 async function stageMultipartIngress(database, endpoint, request, endpointRequest, actor, admittedAuthority) {
-  const policy = endpoint.options.body.multipart;
+  const policy = validateMultipartIngressPolicy(endpoint.options.body.multipart);
   const contentType = String(endpointRequest.headers["content-type"] ?? "");
   const match = /^multipart\/form-data\s*;\s*boundary=([^;\s]+)$/i.exec(contentType);
   if (!match || match[1].length > 200) throw Object.assign(new Error("Invalid multipart request."), { code: "INVALID_MULTIPART" });
@@ -20277,8 +20307,16 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
       const digest = crypto2.createHash("sha256").update(body).digest("hex");
       const now2 = /* @__PURE__ */ new Date();
       const candidate = { key, leaseId: crypto2.randomUUID(), partId: crypto2.createHash("sha256").update(key).digest("hex"), fieldName, name: safeName(filename), type, size: body.length, digest, fileId: crypto2.randomUUID(), version: crypto2.randomUUID(), state: "staging", actorId, authorityKind: authority.kind, authorityId, ownerId: authority.ownerId, ...authority.kind === "capsule-principal" ? { principalNamespace: authority.namespace, principalKeyDigest: authority.keyDigest } : {}, endpointMethod: String(endpoint.options.method), endpointPath: String(endpoint.options.path), requestKey, partKey: stablePartKey, expiresAt: new Date(now2.getTime() + leaseTtlMs).toISOString() };
-      const legacyActorKey = authority.kind === "actor" ? keyFor(endpoint, requestKey, stablePartKey, authority.actorId) : null;
-      const legacyActorRow = legacyActorKey && legacyActorKey !== key ? await receipt(database, legacyActorKey) : null;
+      const legacyAuthorityKey = legacyDelimitedKeyFor(endpoint, requestKey, stablePartKey, authorityId);
+      const legacyActorKey = authority.kind === "actor" ? legacyDelimitedKeyFor(endpoint, requestKey, stablePartKey, authority.actorId) : null;
+      const legacyActorRow = await (async () => {
+        for (const legacyKey of [legacyAuthorityKey, legacyActorKey]) {
+          if (!legacyKey || legacyKey === key) continue;
+          const row2 = await receipt(database, legacyKey);
+          if (row2?.endpointMethod === String(endpoint.options.method) && row2?.endpointPath === String(endpoint.options.path) && row2?.requestKey === requestKey && row2?.partKey === stablePartKey && row2?.authorityKind === authority.kind && row2?.authorityId === authorityId && row2?.ownerId === authority.ownerId) return row2;
+        }
+        return null;
+      })();
       const acquired = legacyActorRow?.authorityKind === "actor" && legacyActorRow.authorityId === authorityId && legacyActorRow.ownerId === authority.ownerId ? { row: legacyActorRow, winner: false } : await acquireReceipt(database, candidate);
       let row = acquired.row;
       if (row.digest !== digest || row.name !== candidate.name || row.type !== type || row.size !== body.length) throw Object.assign(new Error("Multipart retry descriptor conflicts with the original part."), { code: "INGRESS_DESCRIPTOR_CONFLICT" });
@@ -20312,6 +20350,15 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
     return new Uint8Array();
   }, *[Symbol.iterator]() {
   } }), multipart: Object.freeze({ files: Object.freeze(files), fields: Object.freeze(fields) }), __ingressRequestKey: requestKey, __ingressAuthority: admittedAuthority ?? Object.freeze({ kind: "actor", actorId: String(actor.userId ?? ""), ownerId: String(actor.userId ?? "") }) };
+}
+function validateMultipartIngressPolicy(policy) {
+  const invalid = () => {
+    throw Object.assign(new Error("Invalid multipart ingress policy."), { code: "INVALID_MULTIPART_POLICY" });
+  };
+  if (!policy || typeof policy !== "object" || Array.isArray(policy)) invalid();
+  for (const name of ["maxFiles", "maxFileBytes", "maxTotalFileBytes"]) if (typeof policy[name] !== "number" || !Number.isFinite(policy[name]) || !Number.isInteger(policy[name]) || policy[name] <= 0) invalid();
+  for (const name of ["maxFieldCount", "maxFieldBytes", "maxTotalFieldBytes"]) if (typeof policy[name] !== "number" || !Number.isFinite(policy[name]) || !Number.isInteger(policy[name]) || policy[name] < 0) invalid();
+  return policy;
 }
 function createEndpointIngressApi(database, endpoint, endpointRequest, context) {
   const policy = endpoint.options?.body?.multipart;
@@ -20374,7 +20421,8 @@ function createEndpointIngressApi(database, endpoint, endpointRequest, context) 
       const capsulePrincipal = admittedAuthority.kind === "capsule-principal";
       const authorityId = capsulePrincipal ? `capsule:${admittedAuthority.namespace}:${admittedAuthority.keyDigest}` : `actor:${actorId}`;
       let row = await receipt(database, keyFor(endpoint, statusRequestKey, partKey, authorityId));
-      if (!row && !capsulePrincipal) row = await receipt(database, keyFor(endpoint, statusRequestKey, partKey, actorId));
+      if (!row) row = await receipt(database, legacyDelimitedKeyFor(endpoint, statusRequestKey, partKey, authorityId));
+      if (!row && !capsulePrincipal) row = await receipt(database, legacyDelimitedKeyFor(endpoint, statusRequestKey, partKey, actorId));
       const authorityMatches = capsulePrincipal ? row?.authorityKind === "capsule-principal" && row.authorityId === authorityId && row.ownerId === admittedAuthority.ownerId && row.principalNamespace === admittedAuthority.namespace && row.principalKeyDigest === admittedAuthority.keyDigest : row?.authorityId === authorityId && row.ownerId === actorId;
       if (!row || !authorityMatches) return { state: "missing" };
       return row.state === "complete" ? { state: "complete", file: fileMetadataFromRow(row.file) } : { state: "leased", lease: publicLease(row) };
@@ -20641,6 +20689,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     mailLog: options.mailLog ?? ((event) => mailLogSink?.emit(event))
   });
   const capsuleEndpoints = capsuleDefinition ? endpointHandlersFromCapsuleDefinition(capsuleDefinition) : extractEndpoints(serverSource);
+  for (const declaredEndpoint of capsuleEndpoints) if (declaredEndpoint?.options?.body?.multipart !== void 0) validateMultipartIngressPolicy(declaredEndpoint.options.body.multipart);
   const emailEventEndpoints = createEmailEventEndpoints(mailConfig, serverEnv, capsuleDefinition?.emailEvents);
   const stripeCallbackEndpoint = paymentsConfig?.stripe.enabled ? options?.createStripeCallbackEndpoint?.(
     paymentsConfig,

@@ -578,7 +578,7 @@ export function createSharedDatabaseAdapterMethods(dialect) {
             return thenIfPromise(this.prepare(sql("UPDATE [sporades_file_ingress] SET [payload] = ?, [state] = ?, [updatedAt] = ? WHERE [leaseId] = ? AND [state] = ?")).run(JSON.stringify(row), "complete", updatedAt, row.leaseId, "leased"), () => this.selectIngressByLease(row.leaseId));
         },
         selectIngressSweepCandidates(now, limit) {
-            return this.prepare(sql("SELECT * FROM [sporades_file_ingress] WHERE [state] = 'sweeping' OR ([state] IN ('leased', 'staging') AND [expiresAt] <= ?) ORDER BY CASE WHEN [state] = 'sweeping' THEN 0 ELSE 1 END, [expiresAt], [key] LIMIT ?")).all(now, limit);
+            return this.prepare(sql("SELECT * FROM [sporades_file_ingress] WHERE [state] = 'sweeping' OR ([state] IN ('leased', 'staging') AND [expiresAt] <= ?) ORDER BY CASE WHEN [state] = 'sweeping' THEN 0 ELSE 1 END, [expiresAt], [requestKey], [partKey], [key] LIMIT ?")).all(now, limit);
         },
         markIngressReceiptSweeping(row, sweepToken, now) {
             const sweeping = { ...row, state: "sweeping", sweepToken };

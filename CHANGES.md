@@ -11,6 +11,8 @@ Changes since v0.9.5.
   registration share one bounded policy and transaction, so denial or finalizer
   failure leaves no partial runtime or Capsule identity state. Existing linked
   users and Capsules that omit `auth.registration` retain their current behavior.
+  A database-owned fence also serializes first-user and single-use invitation
+  decisions across separate libSQL and Postgres runtime connections.
 - Add trusted multipart File ingress for authenticated users, scoped service
   users, and explicitly declared Capsule principals. Runtime-owned leases,
   idempotent claims, bounded cleanup, and local/MinIO storage parity prevent
@@ -79,5 +81,4 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
-
 

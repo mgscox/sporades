@@ -144,6 +144,10 @@ an authorization hook for existing users: linking an existing identity bypasses
 admission. The admission must be JSON-safe and no larger than 4 KiB; its benefit
 is a single durable allow/deny decision, while the tradeoff is that slow or
 external policy work belongs before sign-in, not inside the transaction.
+Sporades fences that decision with a runtime-owned database row. Separate
+libSQL and Postgres connections therefore serialize before reading policy
+state, then re-evaluate after the prior registration commits or rolls back;
+the fence does not depend on one Node runtime's in-memory transaction queue.
 
 Good uses include an invitation key, a one-time bootstrap administrator claim,
 or a tenant allow-list that already lives in the Capsule database. Do not use it

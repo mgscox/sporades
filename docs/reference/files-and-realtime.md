@@ -383,11 +383,22 @@ streams fail without publishing a partial lease. Completed parts appear only
 as private, expiring leases in `ctx.request.multipart.files`. A lease has no
 File URL, File row, or ACL visibility.
 
+Every numeric limit is required and validated when the Capsule starts and again
+before request buffering. File counts and byte limits are positive finite
+integers; field counts and byte limits are non-negative finite integers. String,
+fractional, missing, `NaN`, and infinite values fail the declaration. A payload
+sequence that merely begins `CRLF--boundary` remains payload unless the prefix
+is followed by the required `CRLF` or closing `--` delimiter suffix.
+
 `requestKeyHeader` identifies the whole retry and `partKeyHeader` identifies a
 part independently of multipart ordering. Use sender-provided, stable,
 non-secret values. With `requireStablePartKeys`, missing or repeated part keys
 are rejected. Reusing a key with different bytes, name, media type, or size is
 an idempotency conflict rather than a new upload.
+The durable identity is a versioned, length-framed digest of method, path,
+authority, request key, and part key, so delimiter-bearing values cannot alias.
+Existing pre-0.9.6 delimiter-framed receipts remain replayable only when their
+stored tuple exactly matches; every newly staged receipt uses the framed digest.
 
 By default, the authenticated human or Access-key service User is the actor and
 File owner. A scoped service User remains a normal non-session actor; do not
