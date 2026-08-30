@@ -20064,7 +20064,9 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
     const digest = crypto2.createHash("sha256").update(body).digest("hex");
     const now2 = /* @__PURE__ */ new Date();
     const candidate = { key, leaseId: crypto2.randomUUID(), partId: crypto2.createHash("sha256").update(key).digest("hex"), fieldName, name: safeName(filename), type, size: body.length, digest, fileId: crypto2.randomUUID(), version: crypto2.randomUUID(), state: "staging", actorId, authorityKind: authority.kind, authorityId, ownerId: authority.ownerId, ...authority.kind === "capsule-principal" ? { principalNamespace: authority.namespace, principalKeyDigest: authority.keyDigest } : {}, endpointMethod: String(endpoint.options.method), endpointPath: String(endpoint.options.path), requestKey, partKey: stablePartKey, expiresAt: new Date(now2.getTime() + leaseTtlMs).toISOString() };
-    const acquired = await acquireReceipt(database, candidate);
+    const legacyActorKey = authority.kind === "actor" ? keyFor(endpoint, requestKey, stablePartKey, authority.actorId) : null;
+    const legacyActorRow = legacyActorKey && legacyActorKey !== key ? await receipt(database, legacyActorKey) : null;
+    const acquired = legacyActorRow?.authorityKind === "actor" && legacyActorRow.authorityId === authorityId && legacyActorRow.ownerId === authority.ownerId ? { row: legacyActorRow, winner: false } : await acquireReceipt(database, candidate);
     let row = acquired.row;
     if (row.digest !== digest || row.name !== candidate.name || row.type !== type || row.size !== body.length) throw Object.assign(new Error("Multipart retry descriptor conflicts with the original part."), { code: "INGRESS_DESCRIPTOR_CONFLICT" });
     if (acquired.winner) {
@@ -20143,8 +20145,9 @@ function createEndpointIngressApi(database, endpoint, endpointRequest, context) 
     },
     async status(statusRequestKey, partKey) {
       const authorityId = admittedAuthority.kind === "capsule-principal" ? `capsule:${admittedAuthority.namespace}:${admittedAuthority.keyDigest}` : `actor:${actorId}`;
-      const row = await receipt(database, keyFor(endpoint, statusRequestKey, partKey, authorityId));
-      if (!row) return { state: "missing" };
+      let row = await receipt(database, keyFor(endpoint, statusRequestKey, partKey, authorityId));
+      if (!row && admittedAuthority.kind === "actor") row = await receipt(database, keyFor(endpoint, statusRequestKey, partKey, actorId));
+      if (!row || row.authorityId !== authorityId || row.ownerId !== actorId) return { state: "missing" };
       return row.state === "complete" ? { state: "complete", file: fileMetadataFromRow(row.file) } : { state: "leased", lease: publicLease(row) };
     }
   };
