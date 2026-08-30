@@ -3331,42 +3331,140 @@ export async function beginOAuthSignIn(database: LooseRecord, session: LooseReco
 const OAUTH_REGISTRATION_ACTIVE_KEY = "oauth-registration-key:active";
 const OAUTH_REGISTRATION_ALIAS_KEY = "oauth-registration-key:alias:active";
 const oauthRegistrationMaterialKey = (keyId: string) => `oauth-registration-key:key:${keyId}`;
+const oauthRegistrationRetentionKey = (keyId: string) => `oauth-registration-key:retain:${keyId}`;
 const oauthRegistrationKeyId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{22}$/.test(value);
 const oauthRegistrationMaterial = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value);
+const OAUTH_REGISTRATION_KEY_GRACE_MS = 10 * 60 * 1000;
 
-async function oauthRegistrationAliasExpiry(adapter: LooseRecord) {
-  const row = await adapter.prepare(adapter.dialect.sql("SELECT MAX([expiresAt]) AS [expiresAt] FROM [sporades_auth_oauth_states] WHERE [registrationCiphertext] LIKE ?")).get("active.%");
-  const outstanding = Date.parse(String(row?.expiresAt ?? ""));
-  return new Date(Math.max(Date.now() + 10 * 60 * 1000, Number.isFinite(outstanding) ? outstanding : 0)).toISOString();
+function oauthRegistrationInstant(value: unknown) {
+  if (typeof value !== "string") return null;
+  const instant = Date.parse(value);
+  return Number.isFinite(instant) && new Date(instant).toISOString() === value ? instant : null;
 }
-async function oauthRegistrationKeyForSeal(database: LooseRecord, adapter: LooseRecord) {
+
+async function oauthRegistrationOutstandingExpiry(adapter: LooseRecord, keyId: string, now: number) {
+  const rows = await adapter.prepare(adapter.dialect.sql(
+    "SELECT [expiresAt] FROM [sporades_auth_oauth_states] WHERE [registrationCiphertext] LIKE ?",
+  )).all(`${keyId}.%`);
+  return rows.reduce((latest: number, row: LooseRecord) => {
+    const expiry = typeof row?.expiresAt === "string" ? Date.parse(row.expiresAt) : Number.NaN;
+    return Number.isFinite(expiry) && expiry > latest ? expiry : latest;
+  }, now);
+}
+
+function oauthRegistrationAlias(value: unknown, now: number) {
+  try {
+    const parsed = JSON.parse(String(value ?? ""));
+    const expiresAt = oauthRegistrationInstant(parsed?.expiresAt);
+    return oauthRegistrationKeyId(parsed?.keyId) && expiresAt !== null && expiresAt > now
+      ? { keyId: parsed.keyId, expiresAt }
+      : null;
+  } catch { return null; }
+}
+
+async function deleteOAuthRegistrationMetadata(adapter: LooseRecord, key: string) {
+  return await adapter.prepare(adapter.dialect.sql("DELETE FROM [sporades] WHERE [key] = ?")).run(key);
+}
+
+async function reconcileOAuthRegistrationKeysOnAdapter(adapter: LooseRecord, now: number) {
   const active = await adapter.readSystemMetadata(OAUTH_REGISTRATION_ACTIVE_KEY);
   if (oauthRegistrationKeyId(active?.value)) {
     const material = await adapter.readSystemMetadata(oauthRegistrationMaterialKey(active.value));
     if (!oauthRegistrationMaterial(material?.value)) throw new Error("OAuth registration key is unavailable.");
-    return { keyId: active.value, material: Buffer.from(material.value, "base64url") };
+    return { keyId: active.value, migratedLegacy: false };
   }
   if (active && !oauthRegistrationMaterial(active.value)) throw new Error("OAuth registration key is unavailable.");
   const candidateId = nodeCryptoModule.randomBytes(16).toString("base64url");
   const candidateMaterial = active?.value ?? nodeCryptoModule.randomBytes(32).toString("base64url");
-  await adapter.writeSystemMetadata(oauthRegistrationMaterialKey(candidateId), candidateMaterial);
+  await adapter.prepare(adapter.dialect.sql(
+    "INSERT INTO [sporades] ([key], [value]) VALUES (?, ?) ON CONFLICT([key]) DO NOTHING",
+  )).run(oauthRegistrationMaterialKey(candidateId), candidateMaterial);
   if (active) await adapter.prepare(adapter.dialect.sql("UPDATE [sporades] SET [value] = ? WHERE [key] = ? AND [value] = ?")).run(candidateId, OAUTH_REGISTRATION_ACTIVE_KEY, active.value);
   else await adapter.prepare(adapter.dialect.sql("INSERT INTO [sporades] ([key], [value]) VALUES (?, ?) ON CONFLICT([key]) DO NOTHING")).run(OAUTH_REGISTRATION_ACTIVE_KEY, candidateId);
   const converged = await adapter.readSystemMetadata(OAUTH_REGISTRATION_ACTIVE_KEY);
   if (!oauthRegistrationKeyId(converged?.value)) throw new Error("OAuth registration key is unavailable.");
   const material = await adapter.readSystemMetadata(oauthRegistrationMaterialKey(converged.value));
   if (!oauthRegistrationMaterial(material?.value)) throw new Error("OAuth registration key is unavailable.");
-  if (active && oauthRegistrationMaterial(active.value)) await adapter.writeSystemMetadata(OAUTH_REGISTRATION_ALIAS_KEY, JSON.stringify({ keyId: converged.value, expiresAt: await oauthRegistrationAliasExpiry(adapter) }));
-  return { keyId: converged.value, material: Buffer.from(material.value, "base64url") };
+  if (candidateId !== converged.value) await deleteOAuthRegistrationMetadata(adapter, oauthRegistrationMaterialKey(candidateId));
+  if (active && oauthRegistrationMaterial(active.value)) {
+    const outstanding = await oauthRegistrationOutstandingExpiry(adapter, "active", now);
+    const expiresAt = new Date(Math.max(now + OAUTH_REGISTRATION_KEY_GRACE_MS, outstanding)).toISOString();
+    await adapter.writeSystemMetadata(OAUTH_REGISTRATION_ALIAS_KEY, JSON.stringify({ keyId: converged.value, expiresAt }));
+  }
+  return { keyId: converged.value, migratedLegacy: Boolean(active) };
+}
+
+export async function reconcileOAuthRegistrationKeys(database: LooseRecord, options: LooseRecord = {}) {
+  const now = Number.isFinite(options.now) ? Number(options.now) : Date.now();
+  return await withAuthTransaction(database, async (adapter: LooseRecord) => reconcileOAuthRegistrationKeysOnAdapter(adapter, now));
+}
+
+async function oauthRegistrationKeyForSeal(database: LooseRecord, adapter: LooseRecord) {
+  const reconciled = await reconcileOAuthRegistrationKeysOnAdapter(adapter, Date.now());
+  const material = await adapter.readSystemMetadata(oauthRegistrationMaterialKey(reconciled.keyId));
+  if (!oauthRegistrationMaterial(material?.value)) throw new Error("OAuth registration key is unavailable.");
+  return { keyId: reconciled.keyId, material: Buffer.from(material.value, "base64url") };
 }
 async function oauthRegistrationKeyForUnseal(adapter: LooseRecord, keyId: string) {
   let resolved = keyId;
   if (keyId === "active") {
-    try { const alias = JSON.parse(String((await adapter.readSystemMetadata(OAUTH_REGISTRATION_ALIAS_KEY))?.value ?? "")); if (!oauthRegistrationKeyId(alias?.keyId) || typeof alias.expiresAt !== "string" || Date.parse(alias.expiresAt) <= Date.now()) return null; resolved = alias.keyId; } catch { return null; }
+    const alias = oauthRegistrationAlias((await adapter.readSystemMetadata(OAUTH_REGISTRATION_ALIAS_KEY))?.value, Date.now());
+    if (!alias) return null;
+    resolved = alias.keyId;
   }
   if (!oauthRegistrationKeyId(resolved)) return null;
   const material = await adapter.readSystemMetadata(oauthRegistrationMaterialKey(resolved));
   return oauthRegistrationMaterial(material?.value) ? Buffer.from(material.value, "base64url") : null;
+}
+
+export async function rotateOAuthRegistrationKey(database: LooseRecord, options: LooseRecord = {}) {
+  const now = Number.isFinite(options.now) ? Number(options.now) : Date.now();
+  return await withAuthTransaction(database, async (adapter: LooseRecord) => {
+    const current = await reconcileOAuthRegistrationKeysOnAdapter(adapter, now);
+    const nextId = nodeCryptoModule.randomBytes(16).toString("base64url");
+    const nextMaterial = nodeCryptoModule.randomBytes(32).toString("base64url");
+    await adapter.writeSystemMetadata(oauthRegistrationMaterialKey(nextId), nextMaterial);
+    const swapped = await adapter.prepare(adapter.dialect.sql(
+      "UPDATE [sporades] SET [value] = ? WHERE [key] = ? AND [value] = ?",
+    )).run(nextId, OAUTH_REGISTRATION_ACTIVE_KEY, current.keyId);
+    const converged = await adapter.readSystemMetadata(OAUTH_REGISTRATION_ACTIVE_KEY);
+    if (converged?.value !== nextId) {
+      await deleteOAuthRegistrationMetadata(adapter, oauthRegistrationMaterialKey(nextId));
+      if (!oauthRegistrationKeyId(converged?.value)) throw new Error("OAuth registration key rotation did not converge.");
+      return { keyId: converged.value, rotated: false };
+    }
+    const outstanding = await oauthRegistrationOutstandingExpiry(adapter, current.keyId, now);
+    const alias = oauthRegistrationAlias((await adapter.readSystemMetadata(OAUTH_REGISTRATION_ALIAS_KEY))?.value, now);
+    const legacyOutstanding = alias && alias.keyId === current.keyId ? alias.expiresAt : now;
+    const retainUntil = new Date(Math.max(now + OAUTH_REGISTRATION_KEY_GRACE_MS, outstanding, legacyOutstanding)).toISOString();
+    await adapter.writeSystemMetadata(oauthRegistrationRetentionKey(current.keyId), JSON.stringify({ expiresAt: retainUntil }));
+    return { keyId: nextId, previousKeyId: current.keyId, retainUntil, rotated: Boolean(swapped) };
+  });
+}
+
+export async function retireOAuthRegistrationKeys(database: LooseRecord, options: LooseRecord = {}) {
+  const now = Number.isFinite(options.now) ? Number(options.now) : Date.now();
+  return await withAuthTransaction(database, async (adapter: LooseRecord) => {
+    const current = await reconcileOAuthRegistrationKeysOnAdapter(adapter, now);
+    const rows = await adapter.prepare(adapter.dialect.sql(
+      "SELECT [key], [value] FROM [sporades] WHERE [key] LIKE ? ORDER BY [key]",
+    )).all("oauth-registration-key:retain:%");
+    const retired: string[] = [];
+    for (const row of rows) {
+      const keyId = String(row.key).slice("oauth-registration-key:retain:".length);
+      if (!oauthRegistrationKeyId(keyId) || keyId === current.keyId) continue;
+      let retainUntil: number | null = null;
+      try { retainUntil = oauthRegistrationInstant(JSON.parse(String(row.value))?.expiresAt); } catch { retainUntil = null; }
+      const outstanding = await oauthRegistrationOutstandingExpiry(adapter, keyId, now);
+      if (retainUntil === null || retainUntil > now || outstanding > now) continue;
+      await deleteOAuthRegistrationMetadata(adapter, oauthRegistrationMaterialKey(keyId));
+      await deleteOAuthRegistrationMetadata(adapter, oauthRegistrationRetentionKey(keyId));
+      retired.push(keyId);
+    }
+    const aliasRow = await adapter.readSystemMetadata(OAUTH_REGISTRATION_ALIAS_KEY);
+    if (aliasRow && !oauthRegistrationAlias(aliasRow.value, now)) await deleteOAuthRegistrationMetadata(adapter, OAUTH_REGISTRATION_ALIAS_KEY);
+    return { activeKeyId: current.keyId, retired };
+  });
 }
 function oauthRegistrationAad(row: LooseRecord) { return `${row.provider}\n${row.sessionToken}\n${row.redirectUri}\n${row.nonce}\n${row.expiresAt}`; }
 async function sealOAuthRegistration(database: LooseRecord, value: unknown, binding: LooseRecord) {

@@ -17,7 +17,7 @@ import { signInWithEmail, signUpWithEmail } from "./auth-runtime.js";
 // Batch 8. `createWebSocketHub` starts an OAuth sign-in, and `openDevDatabase` and
 // `sendEmailPasswordResetLink` read the reset-link configuration. Both left this file for
 // `auth-runtime.ts` in that batch, once the HTTP layer stopped holding them.
-import { beginOAuthSignIn, resolvePasswordResetConfig } from "./auth-runtime.js";
+import { beginOAuthSignIn, reconcileOAuthRegistrationKeys, resolvePasswordResetConfig, retireOAuthRegistrationKeys } from "./auth-runtime.js";
 import { readCurrentUserPreferences, updateCurrentUserPreferences, } from "./user-preferences-runtime.js";
 import { countAcceptedTeamMembers, countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createPrivilegedTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
 import { TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, TEAM_BILLING_PORTAL_EXPIRY_JOB, TEAM_BILLING_PORTAL_JOB, TEAM_BILLING_PORTAL_MAX_ATTEMPTS, createPrivilegedTeamBillingApi, expireTeamBillingCheckout, expireTeamBillingPortal, normalizeTeamBillingDefinition, performTeamBillingCheckout, performTeamBillingPortal, readCurrentUserTeamBilling, safeTeamBillingProjection, settleExhaustedTeamBillingCheckoutJob, startTeamBillingCheckout, startTeamBillingPortal, teamBillingErasureObjectKey, } from "./team-billing-runtime.js";
@@ -1029,6 +1029,14 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         }
     }
     await sqlite.ensureAuthStorage(database.authConfig);
+    // Reconcile the former single `active` OAuth admission key before this
+    // runtime can accept a callback. Retirement is deliberately a separate,
+    // bounded pass: it removes only keys whose grace and outstanding states have
+    // both expired.
+    if (database.runRegistrationAdmission) {
+        await reconcileOAuthRegistrationKeys(database);
+        await retireOAuthRegistrationKeys(database);
+    }
     await sqlite.ensureUserPreferencesStorage();
     await sqlite.ensureTeamsStorage();
     if (teamBillingDefinition)

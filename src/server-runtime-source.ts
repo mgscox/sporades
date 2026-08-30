@@ -38,7 +38,7 @@ import { linkProviderIdentity, signInWithEmail, signUpWithEmail } from "./auth-r
 // Batch 8. `createWebSocketHub` starts an OAuth sign-in, and `openDevDatabase` and
 // `sendEmailPasswordResetLink` read the reset-link configuration. Both left this file for
 // `auth-runtime.ts` in that batch, once the HTTP layer stopped holding them.
-import { beginOAuthSignIn, resolvePasswordResetConfig } from "./auth-runtime.js";
+import { beginOAuthSignIn, reconcileOAuthRegistrationKeys, resolvePasswordResetConfig, retireOAuthRegistrationKeys } from "./auth-runtime.js";
 // Batch 9. The auth storage bootstrap went home to its own domain's module once the shared adapter
 // method set — the only thing that calls it — was on its way out of this file. `ensureAuthStorage()`
 // resolves it here for as long as that method set is still below.
@@ -1125,6 +1125,14 @@ export async function openDevDatabase(
     } catch { database.accessKeyScopes = []; }
   }
   await sqlite.ensureAuthStorage(database.authConfig);
+  // Reconcile the former single `active` OAuth admission key before this
+  // runtime can accept a callback. Retirement is deliberately a separate,
+  // bounded pass: it removes only keys whose grace and outstanding states have
+  // both expired.
+  if (database.runRegistrationAdmission) {
+    await reconcileOAuthRegistrationKeys(database);
+    await retireOAuthRegistrationKeys(database);
+  }
   await sqlite.ensureUserPreferencesStorage();
   await sqlite.ensureTeamsStorage();
   if (teamBillingDefinition) await sqlite.ensureTeamBillingStorage();

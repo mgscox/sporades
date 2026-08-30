@@ -16720,47 +16720,111 @@ async function beginOAuthSignIn(database, session, provider, options) {
 var OAUTH_REGISTRATION_ACTIVE_KEY = "oauth-registration-key:active";
 var OAUTH_REGISTRATION_ALIAS_KEY = "oauth-registration-key:alias:active";
 var oauthRegistrationMaterialKey = (keyId) => `oauth-registration-key:key:${keyId}`;
+var oauthRegistrationRetentionKey = (keyId) => `oauth-registration-key:retain:${keyId}`;
 var oauthRegistrationKeyId = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{22}$/.test(value);
 var oauthRegistrationMaterial = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value);
-async function oauthRegistrationAliasExpiry(adapter) {
-  const row = await adapter.prepare(adapter.dialect.sql("SELECT MAX([expiresAt]) AS [expiresAt] FROM [sporades_auth_oauth_states] WHERE [registrationCiphertext] LIKE ?")).get("active.%");
-  const outstanding = Date.parse(String(row?.expiresAt ?? ""));
-  return new Date(Math.max(Date.now() + 10 * 60 * 1e3, Number.isFinite(outstanding) ? outstanding : 0)).toISOString();
+var OAUTH_REGISTRATION_KEY_GRACE_MS = 10 * 60 * 1e3;
+function oauthRegistrationInstant(value) {
+  if (typeof value !== "string") return null;
+  const instant = Date.parse(value);
+  return Number.isFinite(instant) && new Date(instant).toISOString() === value ? instant : null;
 }
-async function oauthRegistrationKeyForSeal(database, adapter) {
+async function oauthRegistrationOutstandingExpiry(adapter, keyId, now2) {
+  const rows = await adapter.prepare(adapter.dialect.sql(
+    "SELECT [expiresAt] FROM [sporades_auth_oauth_states] WHERE [registrationCiphertext] LIKE ?"
+  )).all(`${keyId}.%`);
+  return rows.reduce((latest, row) => {
+    const expiry = typeof row?.expiresAt === "string" ? Date.parse(row.expiresAt) : Number.NaN;
+    return Number.isFinite(expiry) && expiry > latest ? expiry : latest;
+  }, now2);
+}
+function oauthRegistrationAlias(value, now2) {
+  try {
+    const parsed = JSON.parse(String(value ?? ""));
+    const expiresAt = oauthRegistrationInstant(parsed?.expiresAt);
+    return oauthRegistrationKeyId(parsed?.keyId) && expiresAt !== null && expiresAt > now2 ? { keyId: parsed.keyId, expiresAt } : null;
+  } catch {
+    return null;
+  }
+}
+async function deleteOAuthRegistrationMetadata(adapter, key) {
+  return await adapter.prepare(adapter.dialect.sql("DELETE FROM [sporades] WHERE [key] = ?")).run(key);
+}
+async function reconcileOAuthRegistrationKeysOnAdapter(adapter, now2) {
   const active = await adapter.readSystemMetadata(OAUTH_REGISTRATION_ACTIVE_KEY);
   if (oauthRegistrationKeyId(active?.value)) {
     const material2 = await adapter.readSystemMetadata(oauthRegistrationMaterialKey(active.value));
     if (!oauthRegistrationMaterial(material2?.value)) throw new Error("OAuth registration key is unavailable.");
-    return { keyId: active.value, material: Buffer.from(material2.value, "base64url") };
+    return { keyId: active.value, migratedLegacy: false };
   }
   if (active && !oauthRegistrationMaterial(active.value)) throw new Error("OAuth registration key is unavailable.");
   const candidateId = nodeCryptoModule3.randomBytes(16).toString("base64url");
   const candidateMaterial = active?.value ?? nodeCryptoModule3.randomBytes(32).toString("base64url");
-  await adapter.writeSystemMetadata(oauthRegistrationMaterialKey(candidateId), candidateMaterial);
+  await adapter.prepare(adapter.dialect.sql(
+    "INSERT INTO [sporades] ([key], [value]) VALUES (?, ?) ON CONFLICT([key]) DO NOTHING"
+  )).run(oauthRegistrationMaterialKey(candidateId), candidateMaterial);
   if (active) await adapter.prepare(adapter.dialect.sql("UPDATE [sporades] SET [value] = ? WHERE [key] = ? AND [value] = ?")).run(candidateId, OAUTH_REGISTRATION_ACTIVE_KEY, active.value);
   else await adapter.prepare(adapter.dialect.sql("INSERT INTO [sporades] ([key], [value]) VALUES (?, ?) ON CONFLICT([key]) DO NOTHING")).run(OAUTH_REGISTRATION_ACTIVE_KEY, candidateId);
   const converged = await adapter.readSystemMetadata(OAUTH_REGISTRATION_ACTIVE_KEY);
   if (!oauthRegistrationKeyId(converged?.value)) throw new Error("OAuth registration key is unavailable.");
   const material = await adapter.readSystemMetadata(oauthRegistrationMaterialKey(converged.value));
   if (!oauthRegistrationMaterial(material?.value)) throw new Error("OAuth registration key is unavailable.");
-  if (active && oauthRegistrationMaterial(active.value)) await adapter.writeSystemMetadata(OAUTH_REGISTRATION_ALIAS_KEY, JSON.stringify({ keyId: converged.value, expiresAt: await oauthRegistrationAliasExpiry(adapter) }));
-  return { keyId: converged.value, material: Buffer.from(material.value, "base64url") };
+  if (candidateId !== converged.value) await deleteOAuthRegistrationMetadata(adapter, oauthRegistrationMaterialKey(candidateId));
+  if (active && oauthRegistrationMaterial(active.value)) {
+    const outstanding = await oauthRegistrationOutstandingExpiry(adapter, "active", now2);
+    const expiresAt = new Date(Math.max(now2 + OAUTH_REGISTRATION_KEY_GRACE_MS, outstanding)).toISOString();
+    await adapter.writeSystemMetadata(OAUTH_REGISTRATION_ALIAS_KEY, JSON.stringify({ keyId: converged.value, expiresAt }));
+  }
+  return { keyId: converged.value, migratedLegacy: Boolean(active) };
+}
+async function reconcileOAuthRegistrationKeys(database, options = {}) {
+  const now2 = Number.isFinite(options.now) ? Number(options.now) : Date.now();
+  return await withAuthTransaction(database, async (adapter) => reconcileOAuthRegistrationKeysOnAdapter(adapter, now2));
+}
+async function oauthRegistrationKeyForSeal(database, adapter) {
+  const reconciled = await reconcileOAuthRegistrationKeysOnAdapter(adapter, Date.now());
+  const material = await adapter.readSystemMetadata(oauthRegistrationMaterialKey(reconciled.keyId));
+  if (!oauthRegistrationMaterial(material?.value)) throw new Error("OAuth registration key is unavailable.");
+  return { keyId: reconciled.keyId, material: Buffer.from(material.value, "base64url") };
 }
 async function oauthRegistrationKeyForUnseal(adapter, keyId) {
   let resolved = keyId;
   if (keyId === "active") {
-    try {
-      const alias = JSON.parse(String((await adapter.readSystemMetadata(OAUTH_REGISTRATION_ALIAS_KEY))?.value ?? ""));
-      if (!oauthRegistrationKeyId(alias?.keyId) || typeof alias.expiresAt !== "string" || Date.parse(alias.expiresAt) <= Date.now()) return null;
-      resolved = alias.keyId;
-    } catch {
-      return null;
-    }
+    const alias = oauthRegistrationAlias((await adapter.readSystemMetadata(OAUTH_REGISTRATION_ALIAS_KEY))?.value, Date.now());
+    if (!alias) return null;
+    resolved = alias.keyId;
   }
   if (!oauthRegistrationKeyId(resolved)) return null;
   const material = await adapter.readSystemMetadata(oauthRegistrationMaterialKey(resolved));
   return oauthRegistrationMaterial(material?.value) ? Buffer.from(material.value, "base64url") : null;
+}
+async function retireOAuthRegistrationKeys(database, options = {}) {
+  const now2 = Number.isFinite(options.now) ? Number(options.now) : Date.now();
+  return await withAuthTransaction(database, async (adapter) => {
+    const current = await reconcileOAuthRegistrationKeysOnAdapter(adapter, now2);
+    const rows = await adapter.prepare(adapter.dialect.sql(
+      "SELECT [key], [value] FROM [sporades] WHERE [key] LIKE ? ORDER BY [key]"
+    )).all("oauth-registration-key:retain:%");
+    const retired = [];
+    for (const row of rows) {
+      const keyId = String(row.key).slice("oauth-registration-key:retain:".length);
+      if (!oauthRegistrationKeyId(keyId) || keyId === current.keyId) continue;
+      let retainUntil = null;
+      try {
+        retainUntil = oauthRegistrationInstant(JSON.parse(String(row.value))?.expiresAt);
+      } catch {
+        retainUntil = null;
+      }
+      const outstanding = await oauthRegistrationOutstandingExpiry(adapter, keyId, now2);
+      if (retainUntil === null || retainUntil > now2 || outstanding > now2) continue;
+      await deleteOAuthRegistrationMetadata(adapter, oauthRegistrationMaterialKey(keyId));
+      await deleteOAuthRegistrationMetadata(adapter, oauthRegistrationRetentionKey(keyId));
+      retired.push(keyId);
+    }
+    const aliasRow = await adapter.readSystemMetadata(OAUTH_REGISTRATION_ALIAS_KEY);
+    if (aliasRow && !oauthRegistrationAlias(aliasRow.value, now2)) await deleteOAuthRegistrationMetadata(adapter, OAUTH_REGISTRATION_ALIAS_KEY);
+    return { activeKeyId: current.keyId, retired };
+  });
 }
 function oauthRegistrationAad(row) {
   return `${row.provider}
@@ -20588,6 +20652,10 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     }
   }
   await sqlite.ensureAuthStorage(database.authConfig);
+  if (database.runRegistrationAdmission) {
+    await reconcileOAuthRegistrationKeys(database);
+    await retireOAuthRegistrationKeys(database);
+  }
   await sqlite.ensureUserPreferencesStorage();
   await sqlite.ensureTeamsStorage();
   if (teamBillingDefinition) await sqlite.ensureTeamBillingStorage();

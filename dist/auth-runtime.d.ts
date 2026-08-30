@@ -284,6 +284,9 @@ export declare function beginOAuthSignIn(database: LooseRecord, session: LooseRe
     ok: boolean;
     url: any;
 }>;
+export declare function reconcileOAuthRegistrationKeys(database: LooseRecord, options?: LooseRecord): Promise<any>;
+export declare function rotateOAuthRegistrationKey(database: LooseRecord, options?: LooseRecord): Promise<any>;
+export declare function retireOAuthRegistrationKeys(database: LooseRecord, options?: LooseRecord): Promise<any>;
 export declare function resolvePasswordResetConfig(config: LooseRecord): {
     path: string;
     origin: string;

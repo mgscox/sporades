@@ -145,6 +145,21 @@ admission. The admission must be JSON-safe and no larger than 4 KiB; its benefit
 is a single durable allow/deny decision, while the tradeoff is that slow or
 external policy work belongs before sign-in, not inside the transaction.
 
+Good uses include an invitation key, a one-time bootstrap administrator claim,
+or a tenant allow-list that already lives in the Capsule database. Do not use it
+for per-request authorization, post-registration roles, provider token
+validation, or a policy that must make a network request. Those belong in the
+normal authorization model, the registration finalizer, the OAuth provider
+adapter, or work completed before `auth.signIn`/`auth.signUp`, respectively.
+
+The advantages are one policy for email, local simulation, and first-time OAuth
+linking; atomic policy reads and finalizer writes; and no half-created identity
+after denial. The costs are deliberate coupling of registration availability to
+the Capsule database, a short transaction whose callback must remain bounded,
+and an encrypted OAuth hand-off that needs runtime-owned key maintenance. A
+broken policy denies new identities with `REGISTRATION_DENIED`; it does not
+disable sign-in for an already-linked identity.
+
 OAuth admission persistence is encrypted with the exact callback binding above.
 Its active key is an immutable 22-character identifier pointing to separate
 43-character material. Upgrades migrate the former `active` material once and
@@ -153,3 +168,17 @@ expired (at least ten minutes). New envelopes always carry the immutable ID.
 Malformed, unknown, or expired IDs fail closed without creating key rows; an
 operator must restore the retained material if it is lost, after which affected
 OAuth starts should be retried.
+
+Sporades performs legacy-key reconciliation and safe retirement automatically
+when an admission-enabled Capsule opens. Framework release and recovery tooling
+uses the runtime maintenance API `reconcileOAuthRegistrationKeys(database)`,
+`rotateOAuthRegistrationKey(database)`, and
+`retireOAuthRegistrationKeys(database)`. These functions are runtime-internal,
+not imports for Capsule code: rotation atomically swaps the active pointer and
+returns only key IDs plus `retainUntil`; retirement removes an old material row
+only after both that deadline and every matching OAuth state expiry. Never edit
+the `oauth-registration-key:*` rows by hand or copy their values into logs.
+There is intentionally no Capsule-facing key command in this release. If key
+material is missing or corrupt, stop accepting new OAuth registrations, restore
+the database from a protected backup, reopen the Capsule to reconcile, and ask
+users whose state expired during recovery to start OAuth again.

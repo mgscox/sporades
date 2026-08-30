@@ -483,6 +483,87 @@ const signIn = await auth.signIn("email", {
 
 Check `result.data` and `result.error`; do not assume sign-in succeeded.
 
+### Registration Admission
+
+Declare `auth.registration` when creating a new linked identity must be gated by
+Capsule data. `admit` receives a transaction-bound read-only `db`, normalized
+`evidence`, and the optional client admission. It must return `{ allow: true,
+state? }` to continue. `finalize` receives a write-capable transaction-bound
+`db`; its second argument contains the evidence plus the admitted `state`.
+
+```ts
+auth: {
+  registration: {
+    admit: async ({ db, evidence, admission }) => {
+      const invite = await db.invites.get(admission?.invite);
+      return invite?.email === evidence.email
+        ? { allow: true, state: { inviteId: invite.id } }
+        : { allow: false };
+    },
+    finalize: async ({ db }, admitted) => {
+      await db.invites.update(admitted.state.inviteId, { usedBy: admitted.userId });
+    },
+  },
+}
+```
+
+Pass the admission as the optional third argument:
+
+```ts
+await auth.signUp("email", credentials, { admission: { invite } });
+await auth.signIn("google", undefined, { admission: { invite } });
+```
+
+The admission must survive `JSON.stringify`, must not contain secrets that need
+to outlive the attempt, and is limited to 4 KiB encoded as UTF-8. A policy may
+deny a missing admission; oversized, cyclic, explicitly denied, throwing, or
+failing-finalizer paths return the same bounded `REGISTRATION_DENIED` error. The
+Auth identity, credential, User,
+initial Team and membership, Session transition, and finalizer writes share one
+transaction, so denial or failure commits none of them. Callback database
+handles are revoked after settlement.
+
+Admission runs only when an anonymous user would create a new linked identity.
+Sign-in to an existing identity, recovery of a pre-Teams linked identity, and
+linking another provider to an already-linked user bypass it. Consequently this
+is a creation gate, not an ongoing ACL or role system.
+
+For OAuth, Sporades encrypts the admission with AES-256-GCM. The authenticated
+data binds provider, anonymous Session token, exact callback URI, nonce, and
+expiry. The ciphertext stays in the single-use OAuth state row, is never sent to
+the provider or redirect, and becomes unusable if any binding changes or the
+state expires. New envelopes name an immutable random key ID. On an upgrade,
+admission-enabled runtimes transactionally migrate the former 43-character
+`active` material to an immutable material row before any callback is accepted,
+and retain a read-only `active` alias through the latest outstanding legacy
+state expiry, with a minimum ten-minute grace.
+
+Runtime release and recovery tooling has three exact maintenance operations:
+
+- `reconcileOAuthRegistrationKeys(database)` creates or migrates the active
+  immutable key under the Auth transaction fence.
+- `rotateOAuthRegistrationKey(database)` atomically swaps the pointer and
+  returns safe metadata: the new and previous key IDs and `retainUntil`.
+- `retireOAuthRegistrationKeys(database)` deletes old material only when its
+  retention deadline and every matching OAuth state expiry have passed.
+
+They are internal runtime exports, not supported `sporades/server` Capsule
+imports, and never return key material. Normal Capsule operators do not need to
+invoke them: reconcile and safe retirement run at startup when registration
+admission is enabled. Do not directly edit `oauth-registration-key:*` metadata.
+For a missing or malformed active key, pause new OAuth registration and restore
+the database from a protected backup; reopening then reconciles state. OAuth
+attempts that expire during recovery must be restarted. Unknown or malformed
+envelope key IDs fail closed and cause no metadata write.
+
+Use this feature for database-backed invitations, a first-administrator claim,
+or an existing tenant allow-list. Its benefits are consistent provider policy,
+atomic application/runtime state, and bounded denials. Its costs are database
+availability on the registration path, short-lived encrypted key lifecycle,
+and the requirement that callbacks remain fast and deterministic. Do not use it
+for request authorization, post-registration roles, provider verification, or
+network policy calls.
+
 ### Reset or Change an Email Password
 
 The runtime exposes `auth.setPassword(email, currentPassword, newPassword)` on the client SDK
