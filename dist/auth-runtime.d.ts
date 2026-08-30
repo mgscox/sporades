@@ -267,9 +267,9 @@ export declare function authStatus(config: LooseRecord, serverEnv: LooseRecord):
     };
 };
 export declare function authProvidersForClient(authConfig: LooseRecord, origin?: any): LooseRecord;
-export declare function signUpWithEmail(database: LooseRecord, session: LooseRecord, provider: string, credentials: any): Promise<any>;
+export declare function signUpWithEmail(database: LooseRecord, session: LooseRecord, provider: string, credentials: any, registrationInput?: unknown): Promise<any>;
 export declare function signInWithEmail(database: LooseRecord, session: any, credentials: any): Promise<any>;
-export declare function linkProviderIdentity(database: LooseRecord, session: LooseRecord, provider: string, profile: LooseRecord): Promise<any>;
+export declare function linkProviderIdentity(database: LooseRecord, session: LooseRecord, provider: string, profile: LooseRecord, sealedRegistration?: LooseRecord): Promise<any>;
 export declare function routeSporadesAuth(database: LooseRecord, request: IncomingMessage, response: ServerResponse<IncomingMessage> & {
     req: IncomingMessage;
 }): Promise<boolean>;
@@ -280,12 +280,13 @@ export declare function beginOAuthSignIn(database: LooseRecord, session: LooseRe
         message: string;
         hint: string;
     };
-    url?: undefined;
 } | {
     ok: boolean;
     url: any;
-    error?: undefined;
 }>;
+export declare function reconcileOAuthRegistrationKeys(database: LooseRecord, options?: LooseRecord): Promise<any>;
+export declare function rotateOAuthRegistrationKey(database: LooseRecord, options?: LooseRecord): Promise<any>;
+export declare function retireOAuthRegistrationKeys(database: LooseRecord, options?: LooseRecord): Promise<any>;
 export declare function resolvePasswordResetConfig(config: LooseRecord): {
     path: string;
     origin: string;

@@ -71,6 +71,30 @@ test("documentation validation stays separate from the full regression suite", a
   assert.doesNotMatch(workflow, /- run: npm test(?:\s|$)/);
 });
 
+test("Registration Admission docs cover policy choice, atomicity, limits, OAuth custody, and recovery", async () => {
+  const [guide, reference] = await Promise.all([
+    readProjectFile("docs/guide/auth.md"),
+    readProjectFile("docs/reference/client-auth-and-preferences.md"),
+  ]);
+  for (const contents of [guide, reference]) {
+    assert.match(contents, /Registration Admission/i);
+    assert.match(contents, /4 KiB/);
+    assert.match(contents, /existing (?:identity|user)|already-linked identity/i);
+    assert.match(contents, /REGISTRATION_DENIED/);
+    assert.match(contents, /atomic|same (?:Auth )?transaction/i);
+    assert.match(contents, /provider[\s\S]{0,160}Session[\s\S]{0,160}callback URI[\s\S]{0,160}nonce[\s\S]{0,160}expiry/i);
+    assert.match(contents, /immutable/);
+    assert.match(contents, /rotateOAuthRegistrationKey/);
+    assert.match(contents, /retireOAuthRegistrationKeys/);
+    assert.match(contents, /restore[\s\S]{0,160}(?:backup|database)/i);
+    assert.match(contents, /benefit|advantage/i);
+    assert.match(contents, /cost|tradeoff/i);
+  }
+  assert.match(reference, /auth\.signUp\("email", credentials, \{ registration: \{ admission: \{ invite \} \} \}\)/);
+  assert.match(reference, /auth\.signIn\("google", undefined, \{ registration: \{ admission: \{ invite \} \} \}\)/);
+  assert.doesNotMatch(reference, /auth\.(?:signUp|signIn)\([^\n]+, \{ admission:/);
+});
+
 async function runShell(scriptPath, options) {
   return new Promise((resolve) => {
     const child = spawn("bash", [scriptPath], {

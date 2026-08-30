@@ -225,7 +225,7 @@ export async function simulateLocalIdentitySession(database, options = {}) {
     const picture = normalizeSimulatedText(options.picture);
     const now = new Date().toISOString();
     const token = createSessionToken();
-    return await withAuthTransaction(database, async (tx) => {
+    return await withRegistrationTransaction(database, async (tx) => {
         const subject = `local:${email}`;
         const identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
         const userId = identity?.userId ?? nodeCryptoModule.randomUUID();
@@ -241,6 +241,9 @@ export async function simulateLocalIdentitySession(database, options = {}) {
             });
         }
         else {
+            const registration = await admitRegistration(database, tx, { provider, email, displayName, picture, userId, kind: "local" }, options.registration);
+            if (!registration.ok)
+                return registration;
             await tx.insertAuthUser({
                 id: userId,
                 createdAt: now,
@@ -2495,7 +2498,7 @@ export function authProvidersForClient(authConfig, origin = null) {
 // what ships, so they were reported and left standing; the deletion ticket removed the declarations
 // too, along with `refreshSession`, which was dead in the same way.
 // ---------------------------------------------------------------------------------------------
-export async function signUpWithEmail(database, session, provider, credentials) {
+export async function signUpWithEmail(database, session, provider, credentials, registrationInput) {
     if (provider !== "email") {
         return {
             ok: false,
@@ -2532,7 +2535,10 @@ export async function signUpWithEmail(database, session, provider, credentials) 
         isGuest: false,
         provider: "email",
     };
-    return await withAuthTransaction(database, async (tx) => {
+    return await withRegistrationTransaction(database, async (tx) => {
+        const registration = await admitRegistration(database, tx, { provider: "email", email: normalized.email, displayName, picture: null, userId: auth.userId, kind: "email" }, registrationInput);
+        if (!registration.ok)
+            return registration;
         await tx.insertEmailCredential({
             email: normalized.email,
             userId: auth.userId,
@@ -2552,6 +2558,59 @@ export async function signUpWithEmail(database, session, provider, credentials) 
         await bootstrapInitialTeamForLinkedUser(tx, auth.userId);
         return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
     });
+}
+function registrationDenied() { return { ok: false, error: { code: "REGISTRATION_DENIED", message: "Registration was not admitted.", hint: "Use valid registration admission and retry." } }; }
+const registrationDeniedRollbackMarker = Symbol("sporades.registrationDeniedRollback");
+function registrationDeniedRollback(cause) {
+    const failure = new Error("Registration Admission failed.");
+    failure[registrationDeniedRollbackMarker] = true;
+    if (cause?.code !== undefined)
+        failure.code = cause.code;
+    if (cause?.constraint !== undefined)
+        failure.constraint = cause.constraint;
+    if (cause?.errstr !== undefined)
+        failure.errstr = cause.errstr;
+    return failure;
+}
+async function withRegistrationTransaction(database, fn) {
+    try {
+        return await withAuthTransaction(database, fn);
+    }
+    catch (error) {
+        // A joined transaction is not ours to commit or translate. Preserve the
+        // sentinel so its true owner must roll back before producing a response.
+        if (error?.[registrationDeniedRollbackMarker] && !database.__transactionActive)
+            return registrationDenied();
+        throw error;
+    }
+}
+function boundedRegistrationInput(input) {
+    if (input === undefined)
+        return undefined;
+    try {
+        const encoded = JSON.stringify(input);
+        return encoded === undefined || Buffer.byteLength(encoded, "utf8") > 4096 ? null : JSON.parse(encoded);
+    }
+    catch {
+        return null;
+    }
+}
+async function admitRegistration(database, tx, evidence, input) {
+    if (typeof database.runRegistrationAdmission !== "function")
+        return { ok: true };
+    const admission = boundedRegistrationInput(input);
+    if (admission === null)
+        throw registrationDeniedRollback();
+    try {
+        if (await database.runRegistrationAdmission(tx, Object.freeze({ ...evidence }), admission))
+            return { ok: true };
+        throw registrationDeniedRollback();
+    }
+    catch (error) {
+        if (error?.[registrationDeniedRollbackMarker])
+            throw error;
+        throw registrationDeniedRollback(error);
+    }
 }
 export async function signInWithEmail(database, session, credentials) {
     if (!database.authConfig.providers.email.enabled) {
@@ -2586,7 +2645,7 @@ export async function signInWithEmail(database, session, credentials) {
         auth,
     }));
 }
-export async function linkProviderIdentity(database, session, provider, profile) {
+export async function linkProviderIdentity(database, session, provider, profile, sealedRegistration) {
     const subject = normalizeSimulatedText(profile.subject ?? profile.sub);
     const safeProvider = typeof provider === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(provider)
         ? provider
@@ -2601,7 +2660,7 @@ export async function linkProviderIdentity(database, session, provider, profile)
             },
         };
     }
-    return await withAuthTransaction(database, async (tx) => {
+    return await withRegistrationTransaction(database, async (tx) => {
         let identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
         const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
         if (!identity && email && provider === "google") {
@@ -2631,6 +2690,11 @@ export async function linkProviderIdentity(database, session, provider, profile)
         // Decide only after legacy recovery. A pre-Teams Google account is already
         // linked even when its old identity must be recovered by verified email.
         const bootstrapInitialTeam = !identity && session.auth.isGuest;
+        const registration = bootstrapInitialTeam
+            ? await admitRegistration(database, tx, { provider, email, displayName: normalizeSimulatedText(profile.displayName) ?? email ?? `${providerName} user`, picture: profile.picture ?? null, userId: session.auth.userId, kind: "oauth" }, await unsealOAuthRegistration(database, sealedRegistration, tx))
+            : { ok: true };
+        if (!registration.ok)
+            return registration;
         if (identity && !session.auth.isGuest && identity.userId !== session.auth.userId) {
             return {
                 ok: false,
@@ -2846,7 +2910,7 @@ export async function routeSporadesAuth(database, request, response) {
         const session = await resolveAnonymousSession(database, stateRow.sessionToken);
         let result;
         try {
-            result = await linkProviderIdentity(database, session, provider, profile);
+            result = await linkProviderIdentity(database, session, provider, profile, stateRow.registrationCiphertext ? stateRow : undefined);
         }
         catch {
             throw commandError("OAuth account linking failed.", "Retry sign-in. If the problem persists, check the database connection.", "AUTH_TRANSACTION_FAILED");
@@ -2932,6 +2996,10 @@ export async function beginOAuthSignIn(database, session, provider, options) {
     const pkceChallenge = nodeCryptoModule.createHash("sha256").update(pkceVerifier).digest("base64url");
     const now = new Date().toISOString();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    const admission = boundedRegistrationInput(options.registration?.admission);
+    if (admission === null)
+        return registrationDenied();
+    const registrationCiphertext = admission === undefined ? null : await sealOAuthRegistration(database, admission, { provider, sessionToken: session.token, redirectUri, nonce, expiresAt });
     let started;
     try {
         started = await adapter.begin({
@@ -2973,8 +3041,181 @@ export async function beginOAuthSignIn(database, session, provider, options) {
         expiresAt,
         nonce,
         pkceVerifier,
+        registrationCiphertext,
     });
     return { ok: true, url: started.url };
+}
+const OAUTH_REGISTRATION_ACTIVE_KEY = "oauth-registration-key:active";
+const OAUTH_REGISTRATION_ALIAS_KEY = "oauth-registration-key:alias:active";
+const oauthRegistrationMaterialKey = (keyId) => `oauth-registration-key:key:${keyId}`;
+const oauthRegistrationRetentionKey = (keyId) => `oauth-registration-key:retain:${keyId}`;
+const oauthRegistrationKeyId = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{22}$/.test(value);
+const oauthRegistrationMaterial = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value);
+const OAUTH_REGISTRATION_KEY_GRACE_MS = 10 * 60 * 1000;
+function oauthRegistrationInstant(value) {
+    if (typeof value !== "string")
+        return null;
+    const instant = Date.parse(value);
+    return Number.isFinite(instant) && new Date(instant).toISOString() === value ? instant : null;
+}
+async function oauthRegistrationOutstandingExpiry(adapter, keyId, now) {
+    const rows = await adapter.prepare(adapter.dialect.sql("SELECT [expiresAt] FROM [sporades_auth_oauth_states] WHERE [registrationCiphertext] LIKE ?")).all(`${keyId}.%`);
+    return rows.reduce((latest, row) => {
+        const expiry = typeof row?.expiresAt === "string" ? Date.parse(row.expiresAt) : Number.NaN;
+        return Number.isFinite(expiry) && expiry > latest ? expiry : latest;
+    }, now);
+}
+function oauthRegistrationAlias(value, now) {
+    try {
+        const parsed = JSON.parse(String(value ?? ""));
+        const expiresAt = oauthRegistrationInstant(parsed?.expiresAt);
+        return oauthRegistrationKeyId(parsed?.keyId) && expiresAt !== null && expiresAt > now
+            ? { keyId: parsed.keyId, expiresAt }
+            : null;
+    }
+    catch {
+        return null;
+    }
+}
+async function deleteOAuthRegistrationMetadata(adapter, key) {
+    return await adapter.prepare(adapter.dialect.sql("DELETE FROM [sporades] WHERE [key] = ?")).run(key);
+}
+async function reconcileOAuthRegistrationKeysOnAdapter(adapter, now) {
+    const active = await adapter.readSystemMetadata(OAUTH_REGISTRATION_ACTIVE_KEY);
+    if (oauthRegistrationKeyId(active?.value)) {
+        const material = await adapter.readSystemMetadata(oauthRegistrationMaterialKey(active.value));
+        if (!oauthRegistrationMaterial(material?.value))
+            throw new Error("OAuth registration key is unavailable.");
+        return { keyId: active.value, migratedLegacy: false };
+    }
+    if (active && !oauthRegistrationMaterial(active.value))
+        throw new Error("OAuth registration key is unavailable.");
+    const candidateId = nodeCryptoModule.randomBytes(16).toString("base64url");
+    const candidateMaterial = active?.value ?? nodeCryptoModule.randomBytes(32).toString("base64url");
+    await adapter.prepare(adapter.dialect.sql("INSERT INTO [sporades] ([key], [value]) VALUES (?, ?) ON CONFLICT([key]) DO NOTHING")).run(oauthRegistrationMaterialKey(candidateId), candidateMaterial);
+    if (active)
+        await adapter.prepare(adapter.dialect.sql("UPDATE [sporades] SET [value] = ? WHERE [key] = ? AND [value] = ?")).run(candidateId, OAUTH_REGISTRATION_ACTIVE_KEY, active.value);
+    else
+        await adapter.prepare(adapter.dialect.sql("INSERT INTO [sporades] ([key], [value]) VALUES (?, ?) ON CONFLICT([key]) DO NOTHING")).run(OAUTH_REGISTRATION_ACTIVE_KEY, candidateId);
+    const converged = await adapter.readSystemMetadata(OAUTH_REGISTRATION_ACTIVE_KEY);
+    if (!oauthRegistrationKeyId(converged?.value))
+        throw new Error("OAuth registration key is unavailable.");
+    const material = await adapter.readSystemMetadata(oauthRegistrationMaterialKey(converged.value));
+    if (!oauthRegistrationMaterial(material?.value))
+        throw new Error("OAuth registration key is unavailable.");
+    if (candidateId !== converged.value)
+        await deleteOAuthRegistrationMetadata(adapter, oauthRegistrationMaterialKey(candidateId));
+    if (active && oauthRegistrationMaterial(active.value)) {
+        const outstanding = await oauthRegistrationOutstandingExpiry(adapter, "active", now);
+        const expiresAt = new Date(Math.max(now + OAUTH_REGISTRATION_KEY_GRACE_MS, outstanding)).toISOString();
+        await adapter.writeSystemMetadata(OAUTH_REGISTRATION_ALIAS_KEY, JSON.stringify({ keyId: converged.value, expiresAt }));
+    }
+    return { keyId: converged.value, migratedLegacy: Boolean(active) };
+}
+export async function reconcileOAuthRegistrationKeys(database, options = {}) {
+    const now = Number.isFinite(options.now) ? Number(options.now) : Date.now();
+    return await withAuthTransaction(database, async (adapter) => reconcileOAuthRegistrationKeysOnAdapter(adapter, now));
+}
+async function oauthRegistrationKeyForSeal(database, adapter) {
+    const reconciled = await reconcileOAuthRegistrationKeysOnAdapter(adapter, Date.now());
+    const material = await adapter.readSystemMetadata(oauthRegistrationMaterialKey(reconciled.keyId));
+    if (!oauthRegistrationMaterial(material?.value))
+        throw new Error("OAuth registration key is unavailable.");
+    return { keyId: reconciled.keyId, material: Buffer.from(material.value, "base64url") };
+}
+async function oauthRegistrationKeyForUnseal(adapter, keyId) {
+    let resolved = keyId;
+    if (keyId === "active") {
+        const alias = oauthRegistrationAlias((await adapter.readSystemMetadata(OAUTH_REGISTRATION_ALIAS_KEY))?.value, Date.now());
+        if (!alias)
+            return null;
+        resolved = alias.keyId;
+    }
+    if (!oauthRegistrationKeyId(resolved))
+        return null;
+    const material = await adapter.readSystemMetadata(oauthRegistrationMaterialKey(resolved));
+    return oauthRegistrationMaterial(material?.value) ? Buffer.from(material.value, "base64url") : null;
+}
+export async function rotateOAuthRegistrationKey(database, options = {}) {
+    const now = Number.isFinite(options.now) ? Number(options.now) : Date.now();
+    return await withAuthTransaction(database, async (adapter) => {
+        const current = await reconcileOAuthRegistrationKeysOnAdapter(adapter, now);
+        const nextId = nodeCryptoModule.randomBytes(16).toString("base64url");
+        const nextMaterial = nodeCryptoModule.randomBytes(32).toString("base64url");
+        await adapter.writeSystemMetadata(oauthRegistrationMaterialKey(nextId), nextMaterial);
+        const swapped = await adapter.prepare(adapter.dialect.sql("UPDATE [sporades] SET [value] = ? WHERE [key] = ? AND [value] = ?")).run(nextId, OAUTH_REGISTRATION_ACTIVE_KEY, current.keyId);
+        const converged = await adapter.readSystemMetadata(OAUTH_REGISTRATION_ACTIVE_KEY);
+        if (converged?.value !== nextId) {
+            await deleteOAuthRegistrationMetadata(adapter, oauthRegistrationMaterialKey(nextId));
+            if (!oauthRegistrationKeyId(converged?.value))
+                throw new Error("OAuth registration key rotation did not converge.");
+            return { keyId: converged.value, rotated: false };
+        }
+        const outstanding = await oauthRegistrationOutstandingExpiry(adapter, current.keyId, now);
+        const alias = oauthRegistrationAlias((await adapter.readSystemMetadata(OAUTH_REGISTRATION_ALIAS_KEY))?.value, now);
+        const legacyOutstanding = alias && alias.keyId === current.keyId ? alias.expiresAt : now;
+        const retainUntil = new Date(Math.max(now + OAUTH_REGISTRATION_KEY_GRACE_MS, outstanding, legacyOutstanding)).toISOString();
+        await adapter.writeSystemMetadata(oauthRegistrationRetentionKey(current.keyId), JSON.stringify({ expiresAt: retainUntil }));
+        return { keyId: nextId, previousKeyId: current.keyId, retainUntil, rotated: Boolean(swapped) };
+    });
+}
+export async function retireOAuthRegistrationKeys(database, options = {}) {
+    const now = Number.isFinite(options.now) ? Number(options.now) : Date.now();
+    return await withAuthTransaction(database, async (adapter) => {
+        const current = await reconcileOAuthRegistrationKeysOnAdapter(adapter, now);
+        const rows = await adapter.prepare(adapter.dialect.sql("SELECT [key], [value] FROM [sporades] WHERE [key] LIKE ? ORDER BY [key]")).all("oauth-registration-key:retain:%");
+        const retired = [];
+        for (const row of rows) {
+            const keyId = String(row.key).slice("oauth-registration-key:retain:".length);
+            if (!oauthRegistrationKeyId(keyId) || keyId === current.keyId)
+                continue;
+            let retainUntil = null;
+            try {
+                retainUntil = oauthRegistrationInstant(JSON.parse(String(row.value))?.expiresAt);
+            }
+            catch {
+                retainUntil = null;
+            }
+            const outstanding = await oauthRegistrationOutstandingExpiry(adapter, keyId, now);
+            if (retainUntil === null || retainUntil > now || outstanding > now)
+                continue;
+            await deleteOAuthRegistrationMetadata(adapter, oauthRegistrationMaterialKey(keyId));
+            await deleteOAuthRegistrationMetadata(adapter, oauthRegistrationRetentionKey(keyId));
+            retired.push(keyId);
+        }
+        const aliasRow = await adapter.readSystemMetadata(OAUTH_REGISTRATION_ALIAS_KEY);
+        if (aliasRow && !oauthRegistrationAlias(aliasRow.value, now))
+            await deleteOAuthRegistrationMetadata(adapter, OAUTH_REGISTRATION_ALIAS_KEY);
+        return { activeKeyId: current.keyId, retired };
+    });
+}
+function oauthRegistrationAad(row) { return `${row.provider}\n${row.sessionToken}\n${row.redirectUri}\n${row.nonce}\n${row.expiresAt}`; }
+async function sealOAuthRegistration(database, value, binding) {
+    const key = await withAuthTransaction(database, async (tx) => oauthRegistrationKeyForSeal(database, tx));
+    const iv = nodeCryptoModule.randomBytes(12);
+    const cipher = nodeCryptoModule.createCipheriv("aes-256-gcm", key.material, iv);
+    cipher.setAAD(Buffer.from(oauthRegistrationAad(binding)));
+    const encrypted = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
+    return `${key.keyId}.${iv.toString("base64url")}.${cipher.getAuthTag().toString("base64url")}.${encrypted.toString("base64url")}`;
+}
+async function unsealOAuthRegistration(database, row, transactionAdapter = database.adapter) {
+    if (!row?.registrationCiphertext)
+        return undefined;
+    try {
+        const [keyId, ivText, tagText, ciphertext] = String(row.registrationCiphertext).split(".");
+        if (!keyId || !ivText || !tagText || !ciphertext)
+            return null;
+        const material = await oauthRegistrationKeyForUnseal(transactionAdapter, keyId);
+        if (!material)
+            return null;
+        const decipher = nodeCryptoModule.createDecipheriv("aes-256-gcm", material, Buffer.from(ivText, "base64url"));
+        decipher.setAAD(Buffer.from(oauthRegistrationAad(row)));
+        decipher.setAuthTag(Buffer.from(tagText, "base64url"));
+        return boundedRegistrationInput(JSON.parse(Buffer.concat([decipher.update(Buffer.from(ciphertext, "base64url")), decipher.final()]).toString("utf8")));
+    }
+    catch {
+        return null;
+    }
 }
 // The reset link origin and page path come from Capsule configuration only.
 // Deriving either from a request header would let an attacker who can reach the
@@ -3080,7 +3321,8 @@ export function createAnonymousAuthTables(sqlite, _authConfig = null) {
             "[createdAt] TEXT NOT NULL, " +
             "[expiresAt] TEXT NOT NULL, " +
             "[nonce] TEXT, " +
-            "[pkceVerifier] TEXT" +
+            "[pkceVerifier] TEXT, " +
+            "[registrationCiphertext] TEXT" +
             ")")),
         () => ensureOAuthStateColumns(sqlite),
     ]);
@@ -3093,6 +3335,7 @@ function ensureOAuthStateColumns(sqlite) {
             ["expiresAt", "TEXT"],
             ["nonce", "TEXT"],
             ["pkceVerifier", "TEXT"],
+            ["registrationCiphertext", "TEXT"],
         ].map(([name, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_oauth_states", name, type)),
         () => sqlite.exec(sql("UPDATE [sporades_auth_oauth_states] SET [provider] = 'google' WHERE [provider] IS NULL")),
         () => sqlite.exec(sql("UPDATE [sporades_auth_oauth_states] SET [expiresAt] = [createdAt] WHERE [expiresAt] IS NULL")),

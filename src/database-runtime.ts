@@ -1266,10 +1266,10 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
       return this.prepare(
         sql(
           "INSERT INTO [sporades_auth_oauth_states] " +
-          "([state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier]) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          "([state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier], [registrationCiphertext]) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ),
-      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
+      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null, row.registrationCiphertext ?? null);
     },
     // One statement, not a SELECT followed by a DELETE. The two-statement form was correct on
     // SQLite and a race everywhere else: nothing ordered the delete after the read, so on an
@@ -1282,7 +1282,7 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
           sql(
             "DELETE FROM [sporades_auth_oauth_states] WHERE [state] = ? " +
             "RETURNING [state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], " +
-            "[nonce], [pkceVerifier]",
+            "[nonce], [pkceVerifier], [registrationCiphertext]",
           ),
         ).get(state),
         (row: any) => row ?? null,

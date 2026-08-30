@@ -181,11 +181,11 @@ export const auth = {
   subscribe(listener) {
     return connect().subscribeAuth(listener);
   },
-  signUp(provider, credentials) {
-    return connect().signUp(provider, credentials);
+  signUp(provider, credentials, options) {
+    return connect().signUp(provider, credentials, options);
   },
-  signIn(provider, credentials) {
-    return connect().signIn(provider, credentials);
+  signIn(provider, credentials, options) {
+    return connect().signIn(provider, credentials, options);
   },
   signOut() {
     return connect().signOut();
@@ -1116,17 +1116,17 @@ function createConnection() {
       let active = true;
       return { unsubscribe() { if (!active) return; active = false; authStateListeners.delete(wrapped); } };
     },
-    signUp(provider, credentials) {
-      return request("auth.signUp", { provider, credentials }).then((result) => {
+    signUp(provider, credentials, options) {
+      return request("auth.signUp", { provider, credentials, registration: options?.registration }).then((result) => {
         if (result.data?.sessionToken) {
           return storeAuthSession(result);
         }
         return result;
       });
     },
-    signIn(provider, credentials) {
+    signIn(provider, credentials, options) {
       if (credentials) {
-        return request("auth.signIn", { provider, credentials }).then((result) => {
+        return request("auth.signIn", { provider, credentials, registration: options?.registration }).then((result) => {
           if (result.data?.sessionToken) {
             return storeAuthSession(result);
           }
@@ -1135,7 +1135,7 @@ function createConnection() {
       }
       const returnTo = window.location.href;
       localStorage.setItem("sporades.authReturnTo", returnTo);
-      return request("auth.signIn", { provider, returnTo }).then((result) => {
+      return request("auth.signIn", { provider, returnTo, registration: options?.registration }).then((result) => {
         if (result.data?.url) {
           window.location.assign(result.data.url);
         }

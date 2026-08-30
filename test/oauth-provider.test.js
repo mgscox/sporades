@@ -6,7 +6,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
-import { generateKeyPairSync, sign, verify } from "node:crypto";
+import { createCipheriv, generateKeyPairSync, randomBytes, sign, verify } from "node:crypto";
 import test from "node:test";
 import { promisify } from "node:util";
 
@@ -43,6 +43,9 @@ import {
   loadMicrosoftJwks,
   oauthProviderTestEndpoint,
   openDevDatabase,
+  reconcileOAuthRegistrationKeys,
+  retireOAuthRegistrationKeys,
+  rotateOAuthRegistrationKey,
   resolveAnonymousSession,
   resolveOAuthRequestOrigin,
   routeSporadesAuth,
@@ -429,11 +432,11 @@ test("shared OpenID exchange bounds status, malformed, oversized, and stalled re
   }
 });
 
-async function withTempDatabase(fn) {
+async function withTempDatabase(fn, capsuleDefinition = undefined) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-oauth-provider-"));
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
     auth: { providers: { anonymous: true } },
-  });
+  }, capsuleDefinition);
   try {
     return await fn(database);
   } finally {
@@ -441,6 +444,169 @@ async function withTempDatabase(fn) {
     await rm(dir, { recursive: true, force: true });
   }
 }
+
+test("OAuth registration admission survives a runtime restart without plaintext state and spends once", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-oauth-registration-restart-"));
+  const file = path.join(dir, "data.db");
+  let admissionShape = null;
+  const capsule = { name: "restart-admission", schema: {}, auth: { registration: { admit: ({ admission }) => { admissionShape = { type: typeof admission, keys: admission && typeof admission === "object" ? Object.keys(admission).sort() : [], bytes: Buffer.byteLength(JSON.stringify(admission ?? null)) }; return admission?.key === "restart" ? { allow: true } : { allow: false }; }, finalize: () => {} } } };
+  const adapter = { provider: "google", responseMode: "query", enabled: true, begin: ({ state }) => ({ url: `https://google.example/authorize?state=${state}` }), complete: async () => ({ subject: "restart-subject", email: "restart@example.com", emailVerified: true }) };
+  let database;
+  try {
+    database = await openDevDatabase(file, "", {}, { auth: { providers: { anonymous: true } } }, capsule); database.__oauthProviderAdapters = { google: adapter };
+    const session = await resolveAnonymousSession(database, null);
+    const started = await beginOAuthSignIn(database, session, "google", { origin: "https://capsule.example.test", returnTo: "https://capsule.example.test/after", registration: { admission: { key: "restart" } } });
+    const state = new URL(started.url).searchParams.get("state");
+    const stored = await database.adapter.prepare("SELECT registrationCiphertext, provider, sessionToken, redirectUri, nonce, expiresAt FROM sporades_auth_oauth_states WHERE state = ?").get(state);
+    assert.doesNotMatch(stored.registrationCiphertext, /restart/); assert.match(stored.registrationCiphertext, /^[A-Za-z0-9_-]{22}\./); assert.doesNotMatch(stored.registrationCiphertext, /^active\./);
+    database.close(); database = await openDevDatabase(file, "", {}, { auth: { providers: { anonymous: true } } }, capsule); database.__oauthProviderAdapters = { google: adapter };
+    const restarted = await database.adapter.prepare("SELECT registrationCiphertext, provider, sessionToken, redirectUri, nonce, expiresAt FROM sporades_auth_oauth_states WHERE state = ?").get(state);
+    assert.deepEqual(Object.fromEntries(["provider", "sessionToken", "redirectUri", "nonce", "expiresAt"].map((key) => [key, restarted[key] === stored[key]])), { provider: true, sessionToken: true, redirectUri: true, nonce: true, expiresAt: true });
+    const active = await database.adapter.readSystemMetadata("oauth-registration-key:active");
+    assert.match(active.value, /^[A-Za-z0-9_-]{22}$/);
+    assert.match((await database.adapter.readSystemMetadata(`oauth-registration-key:key:${active.value}`)).value, /^[A-Za-z0-9_-]{43}$/);
+    assert.equal((await resolveAnonymousSession(database, stored.sessionToken)).auth.isGuest, true);
+    assert.equal(typeof database.runRegistrationAdmission, "function");
+    const first = responseRecorder(); await routeSporadesAuth(database, { method: "GET", url: `/__sporades/auth/google/callback?state=${state}&code=ok`, headers: {} }, first);
+    assert.deepEqual(admissionShape, { type: "object", keys: ["key"], bytes: 17 });
+    assert.equal(first.statusCode, 302, first.body);
+    const replay = responseRecorder(); await routeSporadesAuth(database, { method: "GET", url: `/__sporades/auth/google/callback?state=${state}&code=ok`, headers: {} }, replay);
+    assert.equal(replay.statusCode, 400); assert.doesNotMatch(replay.body, /restart|active\.|[A-Za-z0-9_-]{43}/);
+  } finally { database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+function legacyOAuthRegistrationCiphertext(material, value, row) {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", Buffer.from(material, "base64url"), iv);
+  cipher.setAAD(Buffer.from(`${row.provider}\n${row.sessionToken}\n${row.redirectUri}\n${row.nonce}\n${row.expiresAt}`));
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
+  return `active.${iv.toString("base64url")}.${cipher.getAuthTag().toString("base64url")}.${encrypted.toString("base64url")}`;
+}
+
+test("startup migrates a legacy active OAuth admission key before callback without requiring a new OAuth start", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-oauth-registration-legacy-"));
+  const file = path.join(dir, "data.db");
+  const material = randomBytes(32).toString("base64url");
+  const capsule = { name: "legacy-admission", schema: {}, auth: { registration: { admit: ({ admission }) => admission?.invite === "kept" ? { allow: true } : { allow: false }, finalize: () => {} } } };
+  const provider = { provider: "google", responseMode: "query", enabled: true, begin: () => ({ url: "https://unused.example" }), complete: async () => ({ subject: "legacy-subject", email: "legacy@example.com", emailVerified: true }) };
+  let database;
+  try {
+    database = await openDevDatabase(file, "", {}, { auth: { providers: { anonymous: true } } });
+    const session = await resolveAnonymousSession(database, null);
+    const row = { state: "legacy-state", provider: "google", sessionToken: session.token, returnTo: "https://capsule.example.test/after", redirectUri: "https://capsule.example.test/__sporades/auth/google/callback", createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), nonce: "legacy-nonce", pkceVerifier: "legacy-verifier" };
+    await database.adapter.writeSystemMetadata("oauth-registration-key:active", material);
+    await database.adapter.insertOAuthState({ ...row, registrationCiphertext: legacyOAuthRegistrationCiphertext(material, { invite: "kept" }, row) });
+    database.close();
+
+    database = await openDevDatabase(file, "", {}, { auth: { providers: { anonymous: true } } }, capsule);
+    database.__oauthProviderAdapters = { google: provider };
+    const active = await database.adapter.readSystemMetadata("oauth-registration-key:active");
+    assert.match(active.value, /^[A-Za-z0-9_-]{22}$/);
+    assert.equal((await database.adapter.readSystemMetadata(`oauth-registration-key:key:${active.value}`)).value, material);
+    const alias = JSON.parse((await database.adapter.readSystemMetadata("oauth-registration-key:alias:active")).value);
+    assert.equal(alias.keyId, active.value);
+    assert.ok(Date.parse(alias.expiresAt) >= Date.now() + 9 * 60_000);
+    const rotated = await rotateOAuthRegistrationKey(database);
+    assert.equal(rotated.previousKeyId, active.value);
+    assert.ok(Date.parse(rotated.retainUntil) >= Date.parse(alias.expiresAt));
+    const response = responseRecorder();
+    await routeSporadesAuth(database, { method: "GET", url: "/__sporades/auth/google/callback?state=legacy-state&code=ok", headers: {} }, response);
+    assert.equal(response.statusCode, 302, response.body);
+  } finally { database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("malformed or expired legacy aliases and attacker key ids fail closed without metadata writes", async () => {
+  const capsule = { name: "alias-admission", schema: {}, auth: { registration: { admit: ({ admission }) => admission?.expected === true ? { allow: true } : { allow: false }, finalize: () => {} } } };
+  await withTempDatabase(async (database) => {
+    const reconciled = await reconcileOAuthRegistrationKeys(database);
+    database.__oauthProviderAdapters = { google: { provider: "google", responseMode: "query", enabled: true, complete: async () => ({ subject: randomBytes(8).toString("hex"), email: "alias@example.com", emailVerified: true }) } };
+    const before = () => database.adapter.prepare("SELECT key, value FROM sporades WHERE key LIKE 'oauth-registration-key:%' ORDER BY key").all();
+    for (const alias of [
+      JSON.stringify({ keyId: reconciled.keyId, expiresAt: "not-a-date" }),
+      JSON.stringify({ keyId: reconciled.keyId, expiresAt: new Date(Date.now() - 1).toISOString() }),
+      JSON.stringify({ keyId: reconciled.keyId, expiresAt: "275760-09-13T00:00:00.000Z" }),
+    ]) {
+      await database.adapter.writeSystemMetadata("oauth-registration-key:alias:active", alias);
+      const snapshot = before();
+      const session = await resolveAnonymousSession(database, null);
+      const now = new Date().toISOString();
+      const state = randomBytes(8).toString("hex");
+      await database.adapter.insertOAuthState({ state, provider: "google", sessionToken: session.token, returnTo: "https://capsule.example.test", redirectUri: "https://capsule.example.test/__sporades/auth/google/callback", createdAt: now, expiresAt: new Date(Date.now() + 60_000).toISOString(), nonce: "n", pkceVerifier: "p", registrationCiphertext: "active.AAAAAAAAAAAAAAAA.AAAAAAAAAAAAAAAAAAAAAA.AA" });
+      const response = responseRecorder();
+      await routeSporadesAuth(database, { method: "GET", url: `/__sporades/auth/google/callback?state=${state}&code=ok`, headers: {} }, response);
+      assert.equal(response.statusCode, 500);
+      assert.equal(JSON.parse(response.body).error.code, "REGISTRATION_DENIED");
+      assert.deepEqual(before(), snapshot);
+    }
+    const snapshot = before();
+    const session = await resolveAnonymousSession(database, null);
+    const row = { provider: "google", sessionToken: session.token, redirectUri: "https://capsule.example.test/__sporades/auth/google/callback", nonce: "n", expiresAt: new Date(Date.now() + 60_000).toISOString() };
+    const state = "attacker-key-id";
+    await database.adapter.insertOAuthState({ state, ...row, returnTo: "https://capsule.example.test", createdAt: new Date().toISOString(), pkceVerifier: "p", registrationCiphertext: "../../metadata.AAAAAAAAAAAAAAAA.AAAAAAAAAAAAAAAAAAAAAA.AA" });
+    const response = responseRecorder();
+    await routeSporadesAuth(database, { method: "GET", url: `/__sporades/auth/google/callback?state=${state}&code=ok`, headers: {} }, response);
+    assert.equal(response.statusCode, 500);
+    assert.equal(JSON.parse(response.body).error.code, "REGISTRATION_DENIED");
+    assert.deepEqual(before(), snapshot);
+  }, capsule);
+});
+
+test("concurrent legacy startup converges on one immutable key and one bounded alias", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-oauth-registration-converge-"));
+  const file = path.join(dir, "data.db");
+  const material = randomBytes(32).toString("base64url");
+  let first; let second; let freshFirst; let freshSecond;
+  try {
+    first = await openDevDatabase(file, "", {}, { auth: { providers: { anonymous: true } } });
+    await first.adapter.writeSystemMetadata("oauth-registration-key:active", material);
+    second = await openDevDatabase(file, "", {}, { auth: { providers: { anonymous: true } } });
+    const [left, right] = await Promise.all([reconcileOAuthRegistrationKeys(first), reconcileOAuthRegistrationKeys(second)]);
+    assert.equal(left.keyId, right.keyId);
+    assert.equal((await first.adapter.readSystemMetadata(`oauth-registration-key:key:${left.keyId}`)).value, material);
+    const keys = await first.adapter.prepare("SELECT key FROM sporades WHERE key LIKE 'oauth-registration-key:key:%'").all();
+    assert.deepEqual(keys.map(({ key }) => key), [`oauth-registration-key:key:${left.keyId}`]);
+    const alias = JSON.parse((await first.adapter.readSystemMetadata("oauth-registration-key:alias:active")).value);
+    assert.equal(alias.keyId, left.keyId);
+    const freshFile = path.join(dir, "fresh.db");
+    freshFirst = await openDevDatabase(freshFile, "", {}, { auth: { providers: { anonymous: true } } });
+    freshSecond = await openDevDatabase(freshFile, "", {}, { auth: { providers: { anonymous: true } } });
+    const [freshLeft, freshRight] = await Promise.all([reconcileOAuthRegistrationKeys(freshFirst), reconcileOAuthRegistrationKeys(freshSecond)]);
+    assert.equal(freshLeft.keyId, freshRight.keyId);
+    assert.equal((await freshFirst.adapter.prepare("SELECT COUNT(*) AS count FROM sporades WHERE key LIKE 'oauth-registration-key:key:%'").get()).count, 1);
+  } finally { first?.close(); second?.close(); freshFirst?.close(); freshSecond?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("rotation preserves outstanding state and retirement removes only safely expired material across restart", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-oauth-registration-rotate-"));
+  const file = path.join(dir, "data.db");
+  let database;
+  try {
+    const capsule = { name: "rotation-admission", schema: {}, auth: { registration: { admit: ({ admission }) => admission?.invite === "rotation" ? { allow: true } : { allow: false }, finalize: () => {} } } };
+    database = await openDevDatabase(file, "", {}, { auth: { providers: { anonymous: true } } }, capsule);
+    const session = await resolveAnonymousSession(database, null);
+    database.__oauthProviderAdapters = { google: { provider: "google", responseMode: "query", enabled: true, begin: ({ state }) => ({ url: `https://google.example/authorize?state=${state}` }), complete: async () => ({ subject: "rotation-subject", email: "rotation@example.com", emailVerified: true }) } };
+    const started = await beginOAuthSignIn(database, session, "google", { origin: "https://capsule.example.test", registration: { admission: { invite: "rotation" } } });
+    const state = new URL(started.url).searchParams.get("state");
+    const stored = await database.adapter.prepare("SELECT * FROM sporades_auth_oauth_states WHERE state = ?").get(state);
+    const previousKeyId = stored.registrationCiphertext.split(".")[0];
+    const rotatedAt = Date.now();
+    const rotated = await rotateOAuthRegistrationKey(database, { now: rotatedAt });
+    assert.equal(rotated.previousKeyId, previousKeyId);
+    assert.ok(Date.parse(rotated.retainUntil) >= Date.parse(stored.expiresAt));
+    assert.ok(await database.adapter.readSystemMetadata(`oauth-registration-key:key:${previousKeyId}`));
+    const callback = responseRecorder();
+    await routeSporadesAuth(database, { method: "GET", url: `/__sporades/auth/google/callback?state=${state}&code=ok`, headers: {} }, callback);
+    assert.equal(callback.statusCode, 302, callback.body);
+    const early = await retireOAuthRegistrationKeys(database, { now: rotatedAt + 1 });
+    assert.deepEqual(early.retired, []);
+    const late = await retireOAuthRegistrationKeys(database, { now: Date.parse(rotated.retainUntil) + 1 });
+    assert.deepEqual(late.retired, [previousKeyId]);
+    assert.equal(await database.adapter.readSystemMetadata(`oauth-registration-key:key:${previousKeyId}`), null);
+    database.close();
+    database = await openDevDatabase(file, "", {}, { auth: { providers: { anonymous: true } } }, capsule);
+    assert.equal((await reconcileOAuthRegistrationKeys(database)).keyId, rotated.keyId);
+  } finally { database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
 
 function responseRecorder() {
   return {

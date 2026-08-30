@@ -17,7 +17,7 @@ import { signInWithEmail, signUpWithEmail } from "./auth-runtime.js";
 // Batch 8. `createWebSocketHub` starts an OAuth sign-in, and `openDevDatabase` and
 // `sendEmailPasswordResetLink` read the reset-link configuration. Both left this file for
 // `auth-runtime.ts` in that batch, once the HTTP layer stopped holding them.
-import { beginOAuthSignIn, resolvePasswordResetConfig } from "./auth-runtime.js";
+import { beginOAuthSignIn, reconcileOAuthRegistrationKeys, resolvePasswordResetConfig, retireOAuthRegistrationKeys } from "./auth-runtime.js";
 import { readCurrentUserPreferences, updateCurrentUserPreferences, } from "./user-preferences-runtime.js";
 import { countAcceptedTeamMembers, countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createPrivilegedTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
 import { TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, TEAM_BILLING_PORTAL_EXPIRY_JOB, TEAM_BILLING_PORTAL_JOB, TEAM_BILLING_PORTAL_MAX_ATTEMPTS, createPrivilegedTeamBillingApi, expireTeamBillingCheckout, expireTeamBillingPortal, normalizeTeamBillingDefinition, performTeamBillingCheckout, performTeamBillingPortal, readCurrentUserTeamBilling, safeTeamBillingProjection, settleExhaustedTeamBillingCheckoutJob, startTeamBillingCheckout, startTeamBillingPortal, teamBillingErasureObjectKey, } from "./team-billing-runtime.js";
@@ -730,6 +730,39 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         teamApplicationRoles,
         teamBillingDefinition,
         teamBillingErasureObjectKey: (providerObjectId) => teamBillingErasureObjectKey(database, providerObjectId),
+        runRegistrationAdmission: typeof capsuleDefinition?.auth?.registration?.admit === "function"
+            ? async function (transactionAdapter, evidence, admission) {
+                const rootDatabase = this.__rootDatabase ?? this;
+                const transaction = this[trustedReadTransactionAdapter] ?? transactionAdapter;
+                const registrationDatabase = createTransactionDatabase(rootDatabase, transaction);
+                let active = true;
+                const assertActive = () => { if (!active)
+                    throw commandError("Registration access is no longer active.", "Start a new registration callback.", "REGISTRATION_ACCESS_INACTIVE"); };
+                const readContext = { purpose: "auth.registration", evidence, admission };
+                grantPrivilegedDbAccess(readContext);
+                const readHolder = createContextHolder(readContext);
+                try {
+                    const decision = await capsuleDefinition.auth.registration.admit({ db: createEndpointReadOnlyDatabaseApi(registrationDatabase, () => readHolder.current, assertActive), evidence, admission });
+                    if (!decision || decision.allow !== true)
+                        return false;
+                    const finalizeContext = { purpose: "auth.registration-finalize", evidence };
+                    grantPrivilegedDbAccess(finalizeContext);
+                    const finalizeHolder = createContextHolder(finalizeContext);
+                    try {
+                        await capsuleDefinition.auth.registration.finalize({ db: createEndpointDatabaseApi(registrationDatabase, () => finalizeHolder.current), evidence }, { ...evidence, state: decision.state });
+                    }
+                    finally {
+                        revokePrivilegedDbAccess(finalizeContext);
+                    }
+                    return true;
+                }
+                finally {
+                    active = false;
+                    revokePrivilegedDbAccess(readContext);
+                    await drainPendingLogWrites(registrationDatabase);
+                }
+            }
+            : undefined,
         runTeamJoinAdmission: typeof capsuleDefinition?.teams?.admitJoin === "function"
             ? async function (transactionAdapter, auth, input, signal) {
                 const rootDatabase = this.__rootDatabase ?? this;
@@ -996,6 +1029,14 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         }
     }
     await sqlite.ensureAuthStorage(database.authConfig);
+    // Reconcile the former single `active` OAuth admission key before this
+    // runtime can accept a callback. Retirement is deliberately a separate,
+    // bounded pass: it removes only keys whose grace and outstanding states have
+    // both expired.
+    if (database.runRegistrationAdmission) {
+        await reconcileOAuthRegistrationKeys(database);
+        await retireOAuthRegistrationKeys(database);
+    }
     await sqlite.ensureUserPreferencesStorage();
     await sqlite.ensureTeamsStorage();
     if (teamBillingDefinition)
@@ -4342,7 +4383,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
             return;
         }
         if (message.type === "auth.signUp") {
-            const result = await signUpWithEmail(database, client.session, message.provider, message.credentials ?? {});
+            const result = await signUpWithEmail(database, client.session, message.provider, message.credentials ?? {}, message.registration?.admission);
             if (result.ok) {
                 retireJourney(client);
                 client.session = {
@@ -4392,6 +4433,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
             const result = await beginOAuthSignIn(database, client.session, provider, {
                 origin: client.origin,
                 returnTo: message.returnTo,
+                registration: message.registration,
             });
             if (!result.ok) {
                 sendJson(client, {
