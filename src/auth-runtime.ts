@@ -3328,27 +3328,58 @@ export async function beginOAuthSignIn(database: LooseRecord, session: LooseReco
   return { ok: true, url: started.url };
 }
 
-async function oauthRegistrationKey(database: LooseRecord, keyId = "active", adapter = database.adapter) {
-  const key = `oauth-registration-key:${keyId}`; const sql = adapter.dialect.sql;
-  let row = await adapter.prepare(sql("SELECT [value] FROM [sporades] WHERE [key] = ?")).get(key);
-  if (!row) {
-    const material = nodeCryptoModule.randomBytes(32).toString("base64url");
-    await adapter.prepare(sql("INSERT INTO [sporades] ([key], [value]) VALUES (?, ?) ON CONFLICT([key]) DO NOTHING")).run(key, material);
-    row = await adapter.prepare(sql("SELECT [value] FROM [sporades] WHERE [key] = ?")).get(key);
+const OAUTH_REGISTRATION_ACTIVE_KEY = "oauth-registration-key:active";
+const OAUTH_REGISTRATION_ALIAS_KEY = "oauth-registration-key:alias:active";
+const oauthRegistrationMaterialKey = (keyId: string) => `oauth-registration-key:key:${keyId}`;
+const oauthRegistrationKeyId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{22}$/.test(value);
+const oauthRegistrationMaterial = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value);
+
+async function oauthRegistrationAliasExpiry(adapter: LooseRecord) {
+  const row = await adapter.prepare(adapter.dialect.sql("SELECT MAX([expiresAt]) AS [expiresAt] FROM [sporades_auth_oauth_states] WHERE [registrationCiphertext] LIKE ?")).get("active.%");
+  const outstanding = Date.parse(String(row?.expiresAt ?? ""));
+  return new Date(Math.max(Date.now() + 10 * 60 * 1000, Number.isFinite(outstanding) ? outstanding : 0)).toISOString();
+}
+async function oauthRegistrationKeyForSeal(database: LooseRecord, adapter: LooseRecord) {
+  const active = await adapter.readSystemMetadata(OAUTH_REGISTRATION_ACTIVE_KEY);
+  if (oauthRegistrationKeyId(active?.value)) {
+    const material = await adapter.readSystemMetadata(oauthRegistrationMaterialKey(active.value));
+    if (!oauthRegistrationMaterial(material?.value)) throw new Error("OAuth registration key is unavailable.");
+    return { keyId: active.value, material: Buffer.from(material.value, "base64url") };
   }
-  if (typeof row?.value !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(row.value)) throw new Error("OAuth registration key is unavailable.");
-  return Buffer.from(row.value, "base64url");
+  if (active && !oauthRegistrationMaterial(active.value)) throw new Error("OAuth registration key is unavailable.");
+  const candidateId = nodeCryptoModule.randomBytes(16).toString("base64url");
+  const candidateMaterial = active?.value ?? nodeCryptoModule.randomBytes(32).toString("base64url");
+  await adapter.writeSystemMetadata(oauthRegistrationMaterialKey(candidateId), candidateMaterial);
+  if (active) await adapter.prepare(adapter.dialect.sql("UPDATE [sporades] SET [value] = ? WHERE [key] = ? AND [value] = ?")).run(candidateId, OAUTH_REGISTRATION_ACTIVE_KEY, active.value);
+  else await adapter.prepare(adapter.dialect.sql("INSERT INTO [sporades] ([key], [value]) VALUES (?, ?) ON CONFLICT([key]) DO NOTHING")).run(OAUTH_REGISTRATION_ACTIVE_KEY, candidateId);
+  const converged = await adapter.readSystemMetadata(OAUTH_REGISTRATION_ACTIVE_KEY);
+  if (!oauthRegistrationKeyId(converged?.value)) throw new Error("OAuth registration key is unavailable.");
+  const material = await adapter.readSystemMetadata(oauthRegistrationMaterialKey(converged.value));
+  if (!oauthRegistrationMaterial(material?.value)) throw new Error("OAuth registration key is unavailable.");
+  if (active && oauthRegistrationMaterial(active.value)) await adapter.writeSystemMetadata(OAUTH_REGISTRATION_ALIAS_KEY, JSON.stringify({ keyId: converged.value, expiresAt: await oauthRegistrationAliasExpiry(adapter) }));
+  return { keyId: converged.value, material: Buffer.from(material.value, "base64url") };
+}
+async function oauthRegistrationKeyForUnseal(adapter: LooseRecord, keyId: string) {
+  let resolved = keyId;
+  if (keyId === "active") {
+    try { const alias = JSON.parse(String((await adapter.readSystemMetadata(OAUTH_REGISTRATION_ALIAS_KEY))?.value ?? "")); if (!oauthRegistrationKeyId(alias?.keyId) || typeof alias.expiresAt !== "string" || Date.parse(alias.expiresAt) <= Date.now()) return null; resolved = alias.keyId; } catch { return null; }
+  }
+  if (!oauthRegistrationKeyId(resolved)) return null;
+  const material = await adapter.readSystemMetadata(oauthRegistrationMaterialKey(resolved));
+  return oauthRegistrationMaterial(material?.value) ? Buffer.from(material.value, "base64url") : null;
 }
 function oauthRegistrationAad(row: LooseRecord) { return `${row.provider}\n${row.sessionToken}\n${row.redirectUri}\n${row.nonce}\n${row.expiresAt}`; }
 async function sealOAuthRegistration(database: LooseRecord, value: unknown, binding: LooseRecord) {
-  const iv = nodeCryptoModule.randomBytes(12); const cipher = nodeCryptoModule.createCipheriv("aes-256-gcm", await oauthRegistrationKey(database), iv);
+  const key = await withAuthTransaction(database, async (tx: LooseRecord) => oauthRegistrationKeyForSeal(database, tx));
+  const iv = nodeCryptoModule.randomBytes(12); const cipher = nodeCryptoModule.createCipheriv("aes-256-gcm", key.material, iv);
   cipher.setAAD(Buffer.from(oauthRegistrationAad(binding))); const encrypted = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
-  return `active.${iv.toString("base64url")}.${cipher.getAuthTag().toString("base64url")}.${encrypted.toString("base64url")}`;
+  return `${key.keyId}.${iv.toString("base64url")}.${cipher.getAuthTag().toString("base64url")}.${encrypted.toString("base64url")}`;
 }
 async function unsealOAuthRegistration(database: LooseRecord, row?: LooseRecord, transactionAdapter = database.adapter) {
   if (!row?.registrationCiphertext) return undefined;
   try { const [keyId, ivText, tagText, ciphertext] = String(row.registrationCiphertext).split("."); if (!keyId || !ivText || !tagText || !ciphertext) return null;
-    const decipher = nodeCryptoModule.createDecipheriv("aes-256-gcm", await oauthRegistrationKey(database, keyId, transactionAdapter), Buffer.from(ivText, "base64url"));
+    const material = await oauthRegistrationKeyForUnseal(transactionAdapter, keyId); if (!material) return null;
+    const decipher = nodeCryptoModule.createDecipheriv("aes-256-gcm", material, Buffer.from(ivText, "base64url"));
     decipher.setAAD(Buffer.from(oauthRegistrationAad(row))); decipher.setAuthTag(Buffer.from(tagText, "base64url"));
     return boundedRegistrationInput(JSON.parse(Buffer.concat([decipher.update(Buffer.from(ciphertext, "base64url")), decipher.final()]).toString("utf8")));
   } catch { return null; }

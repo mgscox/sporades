@@ -137,3 +137,19 @@ stores the admission only as authenticated ciphertext bound to that provider,
 anonymous Session, callback URI, nonce, and expiry; it is consumed with the
 single-use OAuth state and is never added to redirects, provider traffic, or
 callback errors.
+
+Use Registration Admission when a Capsule must make its first-user or invite
+decision from application state atomically with creating an identity. It is not
+an authorization hook for existing users: linking an existing identity bypasses
+admission. The admission must be JSON-safe and no larger than 4 KiB; its benefit
+is a single durable allow/deny decision, while the tradeoff is that slow or
+external policy work belongs before sign-in, not inside the transaction.
+
+OAuth admission persistence is encrypted with the exact callback binding above.
+Its active key is an immutable 22-character identifier pointing to separate
+43-character material. Upgrades migrate the former `active` material once and
+retain a bounded `active` alias until every outstanding legacy OAuth state has
+expired (at least ten minutes). New envelopes always carry the immutable ID.
+Malformed, unknown, or expired IDs fail closed without creating key rows; an
+operator must restore the retained material if it is lost, after which affected
+OAuth starts should be retried.

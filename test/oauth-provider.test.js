@@ -455,11 +455,13 @@ test("OAuth registration admission survives a runtime restart without plaintext 
     const started = await beginOAuthSignIn(database, session, "google", { origin: "https://capsule.example.test", returnTo: "https://capsule.example.test/after", registration: { admission: { key: "restart" } } });
     const state = new URL(started.url).searchParams.get("state");
     const stored = await database.adapter.prepare("SELECT registrationCiphertext, provider, sessionToken, redirectUri, nonce, expiresAt FROM sporades_auth_oauth_states WHERE state = ?").get(state);
-    assert.doesNotMatch(stored.registrationCiphertext, /restart/); assert.match(stored.registrationCiphertext, /^active\./);
+    assert.doesNotMatch(stored.registrationCiphertext, /restart/); assert.match(stored.registrationCiphertext, /^[A-Za-z0-9_-]{22}\./); assert.doesNotMatch(stored.registrationCiphertext, /^active\./);
     database.close(); database = await openDevDatabase(file, "", {}, { auth: { providers: { anonymous: true } } }, capsule); database.__oauthProviderAdapters = { google: adapter };
     const restarted = await database.adapter.prepare("SELECT registrationCiphertext, provider, sessionToken, redirectUri, nonce, expiresAt FROM sporades_auth_oauth_states WHERE state = ?").get(state);
     assert.deepEqual(Object.fromEntries(["provider", "sessionToken", "redirectUri", "nonce", "expiresAt"].map((key) => [key, restarted[key] === stored[key]])), { provider: true, sessionToken: true, redirectUri: true, nonce: true, expiresAt: true });
-    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades WHERE key = ?").get("oauth-registration-key:active")).count, 1);
+    const active = await database.adapter.readSystemMetadata("oauth-registration-key:active");
+    assert.match(active.value, /^[A-Za-z0-9_-]{22}$/);
+    assert.match((await database.adapter.readSystemMetadata(`oauth-registration-key:key:${active.value}`)).value, /^[A-Za-z0-9_-]{43}$/);
     assert.equal((await resolveAnonymousSession(database, stored.sessionToken)).auth.isGuest, true);
     assert.equal(typeof database.runRegistrationAdmission, "function");
     const first = responseRecorder(); await routeSporadesAuth(database, { method: "GET", url: `/__sporades/auth/google/callback?state=${state}&code=ok`, headers: {} }, first);
