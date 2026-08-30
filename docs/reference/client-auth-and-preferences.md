@@ -523,6 +523,11 @@ initial Team and membership, Session transition, and finalizer writes share one
 transaction, so denial or failure commits none of them. Callback database
 handles are revoked after settlement.
 
+For OAuth, missing admission is a legitimate value only when the OAuth start did
+not carry one. A malformed ciphertext, unknown retained key, invalid binding, or
+authentication-tag failure denies before `admit` or `finalize` runs and cannot
+fall through to a first-user or database-only allow rule.
+
 A runtime-owned database write fence serializes new-registration policy across
 separate SQLite, libSQL, and Postgres connections. The waiter evaluates policy
 only after the previous transaction's finalizer and identity writes commit, or

@@ -1,5 +1,8 @@
 type RecordLike = Record<string, any>;
-export declare function multipartParts(request: AsyncIterable<Uint8Array>, boundaryText: string, maxWireBytes: number, maxPartBytes: number): AsyncGenerator<{
+export declare function multipartParts(request: AsyncIterable<Uint8Array>, boundaryText: string, maxWireBytes: number, maxPartBytes: number | {
+    file: number;
+    field: number;
+}): AsyncGenerator<{
     rawHeaders: string;
     body: Buffer<ArrayBuffer>;
 }, void, unknown>;

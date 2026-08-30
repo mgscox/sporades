@@ -85,6 +85,26 @@ test("multipart framing rejects malformed terminators and bounded headers/parts"
   await assert.rejects(async () => { for await (const _ of multipartParts(splitEvery(multipart(boundary, undefined, "x".repeat(20)), 1), boundary, 1000, 10)) {} }, { code: "MULTIPART_LIMIT_EXCEEDED" });
 });
 
+test("multipart streaming applies the header-classified field cap before reading a file-sized body", async () => {
+  const boundary = "classified-limit"; const fieldBytes = "x".repeat(200); const fieldSource = multipart(boundary, 'Content-Disposition: form-data; name="tag"', fieldBytes);
+  let reads = 0; const chunks = splitEvery(fieldSource, 8); const request = { async *[Symbol.asyncIterator]() { for await (const chunk of chunks) { reads += 1; yield chunk; } } };
+  await assert.rejects(async () => { for await (const _ of multipartParts(request, boundary, 1000, { file: 512, field: 16 })) {} }, { code: "MULTIPART_LIMIT_EXCEEDED" });
+  assert.ok(reads < Math.ceil(fieldSource.length / 8), `read ${reads} chunks for ${fieldSource.length} bytes`);
+  const fileBody = "y".repeat(200); const files = []; for await (const part of multipartParts(splitEvery(multipart(boundary, 'Content-Disposition: form-data; name="file"; filename="large.bin"', fileBody), 7), boundary, 1000, { file: 512, field: 16 })) files.push(part);
+  assert.equal(files[0].body.toString(), fileBody);
+});
+
+test("multipart fields safely aggregate prototype-shaped names", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-field-keys-")); let database;
+  try {
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "field-keys" }, capsule({ name: "field-keys" }));
+    const endpoint = { options: { method: "POST", path: "/field-keys", body: { multipart: { ...ingressPolicy(), maxFieldCount: 4 } } } };
+    const parts = ["constructor", "toString", "__proto__", "constructor"].map((name, index) => ({ headers: `Content-Disposition: form-data; name="${name}"`, body: `v${index}` }));
+    const result = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipartMany("field-keys", parts); } }, { headers: { "content-type": "multipart/form-data; boundary=field-keys", "idempotency-key": "field-keys" } }, { userId: "actor" });
+    assert.equal(Object.getPrototypeOf(result.multipart.fields), null); assert.deepEqual([...result.multipart.fields.constructor], ["v0", "v3"]); assert.deepEqual([...result.multipart.fields.toString], ["v1"]); assert.deepEqual([...result.multipart.fields.__proto__], ["v2"]); assert.equal({}.v2, undefined);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("declared non-Content-ID part-key headers are case-insensitive and replay one stable lease", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-custom-part-key-")); let database;
   try {
@@ -186,7 +206,7 @@ test("maxFieldCount accepts the exact text-part boundary and rejects one repeate
     const part = (body) => ({ headers: 'Content-Disposition: form-data; name="tag"', body });
     const request = (parts) => ({ async *[Symbol.asyncIterator]() { yield multipartMany("fields", parts); } });
     const exact = await stageMultipartIngress(database, endpoint, request([part("a"), part("b")]), { headers }, { userId: "actor" });
-    assert.deepEqual(exact.multipart.fields, { tag: ["a", "b"] });
+    assert.deepEqual({ ...exact.multipart.fields }, { tag: ["a", "b"] });
     await assert.rejects(stageMultipartIngress(database, endpoint, request([part("a"), part("b"), part("c")]), { headers }, { userId: "actor" }), { code: "MULTIPART_LIMIT_EXCEEDED" });
     assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 0);
     assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_files]").get()).count), 0);

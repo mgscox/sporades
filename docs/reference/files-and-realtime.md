@@ -389,6 +389,10 @@ integers; field counts and byte limits are non-negative finite integers. String,
 fractional, missing, `NaN`, and infinite values fail the declaration. A payload
 sequence that merely begins `CRLF--boundary` remains payload unless the prefix
 is followed by the required `CRLF` or closing `--` delimiter suffix.
+Sporades classifies each part from its bounded headers before accumulating its
+body, so text uses `maxFieldBytes` while files use `maxFileBytes`; a large file
+allowance never expands the memory bound for a field. Field names are stored in
+an own-property-safe map, including `constructor`, `toString`, and `__proto__`.
 
 `requestKeyHeader` identifies the whole retry and `partKeyHeader` identifies a
 part independently of multipart ordering. Use sender-provided, stable,

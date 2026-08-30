@@ -74,6 +74,7 @@ export async function* multipartParts(request, boundaryText, maxWireBytes, maxPa
     let rawHeaders = "";
     let pieces = [];
     let size = 0;
+    let partLimit = typeof maxPartBytes === "number" ? maxPartBytes : Math.max(maxPartBytes.file, maxPartBytes.field);
     for await (const source of request) {
         wire += source.byteLength;
         if (wire > maxWireBytes)
@@ -97,6 +98,10 @@ export async function* multipartParts(request, boundaryText, maxWireBytes, maxPa
                     break;
                 }
                 rawHeaders = pending.subarray(0, headerEnd).toString("latin1");
+                if (typeof maxPartBytes !== "number") {
+                    const disposition = /^content-disposition:\s*form-data;\s*name="[^"]+"(?:;\s*filename="([^"]*)")?/im.exec(rawHeaders);
+                    partLimit = disposition?.[1] !== undefined ? maxPartBytes.file : maxPartBytes.field;
+                }
                 pending = pending.subarray(headerEnd + 4);
                 pieces = [];
                 size = 0;
@@ -110,7 +115,7 @@ export async function* multipartParts(request, boundaryText, maxWireBytes, maxPa
                     if (take) {
                         pieces.push(pending.subarray(0, take));
                         size += take;
-                        if (size > maxPartBytes)
+                        if (size > partLimit)
                             throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
                         pending = pending.subarray(take);
                     }
@@ -120,6 +125,8 @@ export async function* multipartParts(request, boundaryText, maxWireBytes, maxPa
                     if (at) {
                         pieces.push(pending.subarray(0, at));
                         size += at;
+                        if (size > partLimit)
+                            throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
                         pending = pending.subarray(at);
                     }
                     break;
@@ -129,7 +136,7 @@ export async function* multipartParts(request, boundaryText, maxWireBytes, maxPa
                     const take = at + marker.length;
                     pieces.push(pending.subarray(0, take));
                     size += take;
-                    if (size > maxPartBytes)
+                    if (size > partLimit)
                         throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
                     pending = pending.subarray(take);
                     continue;
@@ -138,7 +145,7 @@ export async function* multipartParts(request, boundaryText, maxWireBytes, maxPa
                     pieces.push(pending.subarray(0, at));
                     size += at;
                 }
-                if (size > maxPartBytes)
+                if (size > partLimit)
                     throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
                 pending = pending.subarray(at + marker.length);
                 state = "separator";
@@ -170,14 +177,14 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
         throw Object.assign(new Error("Missing multipart idempotency key."), { code: "INVALID_MULTIPART_REQUEST_KEY" });
     const maxBytes = Number(policy.maxTotalFileBytes) + Number(policy.maxTotalFieldBytes) + 65536;
     const files = [];
-    const fields = {};
+    const fields = Object.create(null);
     let fieldCount = 0;
     let fieldBytes = 0;
     let fileBytes = 0;
     const partKeys = new Set();
     const wonReceipts = [];
     try {
-        for await (const part of multipartParts(request, match[1], maxBytes, Math.max(Number(policy.maxFileBytes), Number(policy.maxFieldBytes)))) {
+        for await (const part of multipartParts(request, match[1], maxBytes, { file: policy.maxFileBytes, field: policy.maxFieldBytes })) {
             const rawHeaders = part.rawHeaders;
             const body = part.body;
             if (rawHeaders.length > 16384)
@@ -192,7 +199,9 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
                 fieldBytes += body.length;
                 if (fieldCount > policy.maxFieldCount || body.length > policy.maxFieldBytes || fieldBytes > policy.maxTotalFieldBytes)
                     throw Object.assign(new Error("Multipart field exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
-                (fields[fieldName] ??= []).push(body.toString("utf8"));
+                if (!Object.prototype.hasOwnProperty.call(fields, fieldName))
+                    fields[fieldName] = [];
+                fields[fieldName].push(body.toString("utf8"));
                 continue;
             }
             fileBytes += body.length;

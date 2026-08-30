@@ -9,6 +9,7 @@ import { Readable } from "node:stream";
 import { createCipheriv, generateKeyPairSync, randomBytes, sign, verify } from "node:crypto";
 import test from "node:test";
 import { promisify } from "node:util";
+import { String as StringField, table } from "../dist/server.js";
 
 // Thirteen of these were `SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === …)` until batch 3
 // moved the auth domain into `auth-runtime.ts`. That lookup does not fail when a domain leaves the
@@ -473,6 +474,31 @@ test("OAuth registration admission survives a runtime restart without plaintext 
     const replay = responseRecorder(); await routeSporadesAuth(database, { method: "GET", url: `/__sporades/auth/google/callback?state=${state}&code=ok`, headers: {} }, replay);
     assert.equal(replay.statusCode, 400); assert.doesNotMatch(replay.body, /restart|active\.|[A-Za-z0-9_-]{43}/);
   } finally { database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("corrupt OAuth admission envelopes deny before a database-only first-user policy", async () => {
+  let policyCalls = 0; let finalizerCalls = 0;
+  const capsule = { name: "oauth-envelope-denial", schema: { claims: table({ userId: StringField() }) }, auth: { registration: {
+    admit: async ({ db }) => { policyCalls += 1; return { allow: (await db.claims.all()).length === 0 }; },
+    finalize: async ({ db }, admitted) => { finalizerCalls += 1; await db.claims.insert({ userId: admitted.userId }); },
+  } } };
+  await withTempDatabase(async (database) => {
+    const active = await database.adapter.readSystemMetadata("oauth-registration-key:active");
+    const bindings = { provider: "google", redirectUri: "https://capsule.example.test/__sporades/auth/google/callback", nonce: "nonce", expiresAt: "2099-01-01T00:00:00.000Z" };
+    const cases = [
+      "malformed",
+      `${"u".repeat(22)}.${randomBytes(12).toString("base64url")}.${randomBytes(16).toString("base64url")}.${randomBytes(8).toString("base64url")}`,
+      `${active.value}.${randomBytes(12).toString("base64url")}.${randomBytes(16).toString("base64url")}.${randomBytes(8).toString("base64url")}`,
+    ];
+    for (const [index, registrationCiphertext] of cases.entries()) {
+      const session = await resolveAnonymousSession(database, null); const before = {};
+      for (const tableName of ["sporades_auth_users", "sporades_auth_sessions", "sporades_auth_identities", "sporades_teams", "sporades_team_memberships", "claims"]) before[tableName] = Number((await database.adapter.prepare(`SELECT COUNT(*) AS count FROM ${tableName}`).get()).count);
+      const result = await linkProviderIdentity(database, session, "google", { subject: `corrupt-${index}`, email: `corrupt-${index}@example.com`, emailVerified: true }, { ...bindings, sessionToken: session.token, registrationCiphertext });
+      assert.equal(result.error.code, "REGISTRATION_DENIED");
+      for (const [tableName, count] of Object.entries(before)) assert.equal(Number((await database.adapter.prepare(`SELECT COUNT(*) AS count FROM ${tableName}`).get()).count), count, tableName);
+    }
+    assert.equal(policyCalls, 0); assert.equal(finalizerCalls, 0);
+  }, capsule);
 });
 
 function legacyOAuthRegistrationCiphertext(material, value, row) {

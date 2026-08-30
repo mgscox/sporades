@@ -295,6 +295,7 @@ var PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1e3;
 var PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1e3;
 var registrationDeniedRollbackMarker = Symbol("sporades.registrationDeniedRollback");
 var OAUTH_REGISTRATION_KEY_GRACE_MS = 10 * 60 * 1e3;
+var oauthRegistrationUnsealFailed = Symbol("sporades.oauthRegistrationUnsealFailed");
 
 // src/cli/access-key-operator-envelope.ts
 import { createInterface } from "node:readline/promises";

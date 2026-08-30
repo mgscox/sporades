@@ -16460,7 +16460,12 @@ async function linkProviderIdentity(database, session, provider, profile, sealed
       identity = legacyIdentities[0] ?? null;
     }
     const bootstrapInitialTeam = !identity && session.auth.isGuest;
-    const registration = bootstrapInitialTeam ? await admitRegistration(database, tx, { provider, email, displayName: normalizeSimulatedText(profile.displayName) ?? email ?? `${providerName} user`, picture: profile.picture ?? null, userId: session.auth.userId, kind: "oauth" }, await unsealOAuthRegistration(database, sealedRegistration, tx)) : { ok: true };
+    let registration = { ok: true };
+    if (bootstrapInitialTeam) {
+      const oauthAdmission = await unsealOAuthRegistration(database, sealedRegistration, tx);
+      if (oauthAdmission === oauthRegistrationUnsealFailed) throw registrationDeniedRollback();
+      registration = await admitRegistration(database, tx, { provider, email, displayName: normalizeSimulatedText(profile.displayName) ?? email ?? `${providerName} user`, picture: profile.picture ?? null, userId: session.auth.userId, kind: "oauth" }, oauthAdmission);
+    }
     if (!registration.ok) return registration;
     if (identity && !session.auth.isGuest && identity.userId !== session.auth.userId) {
       return {
@@ -16904,19 +16909,20 @@ async function sealOAuthRegistration(database, value, binding) {
   const encrypted = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
   return `${key.keyId}.${iv.toString("base64url")}.${cipher.getAuthTag().toString("base64url")}.${encrypted.toString("base64url")}`;
 }
+var oauthRegistrationUnsealFailed = Symbol("sporades.oauthRegistrationUnsealFailed");
 async function unsealOAuthRegistration(database, row, transactionAdapter = database.adapter) {
   if (!row?.registrationCiphertext) return void 0;
   try {
     const [keyId, ivText, tagText, ciphertext] = String(row.registrationCiphertext).split(".");
-    if (!keyId || !ivText || !tagText || !ciphertext) return null;
+    if (!keyId || !ivText || !tagText || !ciphertext) return oauthRegistrationUnsealFailed;
     const material = await oauthRegistrationKeyForUnseal(transactionAdapter, keyId);
-    if (!material) return null;
+    if (!material) return oauthRegistrationUnsealFailed;
     const decipher = nodeCryptoModule3.createDecipheriv("aes-256-gcm", material, Buffer.from(ivText, "base64url"));
     decipher.setAAD(Buffer.from(oauthRegistrationAad(row)));
     decipher.setAuthTag(Buffer.from(tagText, "base64url"));
     return boundedRegistrationInput(JSON.parse(Buffer.concat([decipher.update(Buffer.from(ciphertext, "base64url")), decipher.final()]).toString("utf8")));
   } catch {
-    return null;
+    return oauthRegistrationUnsealFailed;
   }
 }
 function resolvePasswordResetConfig(config) {
@@ -20187,6 +20193,7 @@ async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes
   let rawHeaders = "";
   let pieces = [];
   let size = 0;
+  let partLimit = typeof maxPartBytes === "number" ? maxPartBytes : Math.max(maxPartBytes.file, maxPartBytes.field);
   for await (const source of request) {
     wire += source.byteLength;
     if (wire > maxWireBytes) throw Object.assign(new Error("Multipart body exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
@@ -20206,6 +20213,10 @@ async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes
           break;
         }
         rawHeaders = pending.subarray(0, headerEnd).toString("latin1");
+        if (typeof maxPartBytes !== "number") {
+          const disposition = /^content-disposition:\s*form-data;\s*name="[^"]+"(?:;\s*filename="([^"]*)")?/im.exec(rawHeaders);
+          partLimit = disposition?.[1] !== void 0 ? maxPartBytes.file : maxPartBytes.field;
+        }
         pending = pending.subarray(headerEnd + 4);
         pieces = [];
         size = 0;
@@ -20219,7 +20230,7 @@ async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes
           if (take) {
             pieces.push(pending.subarray(0, take));
             size += take;
-            if (size > maxPartBytes) throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+            if (size > partLimit) throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
             pending = pending.subarray(take);
           }
           break;
@@ -20228,6 +20239,7 @@ async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes
           if (at) {
             pieces.push(pending.subarray(0, at));
             size += at;
+            if (size > partLimit) throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
             pending = pending.subarray(at);
           }
           break;
@@ -20237,7 +20249,7 @@ async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes
           const take = at + marker.length;
           pieces.push(pending.subarray(0, take));
           size += take;
-          if (size > maxPartBytes) throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+          if (size > partLimit) throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
           pending = pending.subarray(take);
           continue;
         }
@@ -20245,7 +20257,7 @@ async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes
           pieces.push(pending.subarray(0, at));
           size += at;
         }
-        if (size > maxPartBytes) throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+        if (size > partLimit) throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
         pending = pending.subarray(at + marker.length);
         state = "separator";
         continue;
@@ -20270,14 +20282,14 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
   if (typeof requestKey !== "string" || requestKey.length < 1 || requestKey.length > 200) throw Object.assign(new Error("Missing multipart idempotency key."), { code: "INVALID_MULTIPART_REQUEST_KEY" });
   const maxBytes = Number(policy.maxTotalFileBytes) + Number(policy.maxTotalFieldBytes) + 65536;
   const files = [];
-  const fields = {};
+  const fields = /* @__PURE__ */ Object.create(null);
   let fieldCount = 0;
   let fieldBytes = 0;
   let fileBytes = 0;
   const partKeys = /* @__PURE__ */ new Set();
   const wonReceipts = [];
   try {
-    for await (const part of multipartParts(request, match[1], maxBytes, Math.max(Number(policy.maxFileBytes), Number(policy.maxFieldBytes)))) {
+    for await (const part of multipartParts(request, match[1], maxBytes, { file: policy.maxFileBytes, field: policy.maxFieldBytes })) {
       const rawHeaders = part.rawHeaders;
       const body = part.body;
       if (rawHeaders.length > 16384) throw Object.assign(new Error("Multipart headers exceed limit."), { code: "MULTIPART_LIMIT_EXCEEDED" });
@@ -20289,7 +20301,8 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
         fieldCount += 1;
         fieldBytes += body.length;
         if (fieldCount > policy.maxFieldCount || body.length > policy.maxFieldBytes || fieldBytes > policy.maxTotalFieldBytes) throw Object.assign(new Error("Multipart field exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
-        (fields[fieldName] ??= []).push(body.toString("utf8"));
+        if (!Object.prototype.hasOwnProperty.call(fields, fieldName)) fields[fieldName] = [];
+        fields[fieldName].push(body.toString("utf8"));
         continue;
       }
       fileBytes += body.length;

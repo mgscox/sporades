@@ -3007,9 +3007,12 @@ export async function linkProviderIdentity(database: LooseRecord, session: Loose
     // Decide only after legacy recovery. A pre-Teams Google account is already
     // linked even when its old identity must be recovered by verified email.
     const bootstrapInitialTeam = !identity && session.auth.isGuest;
-    const registration = bootstrapInitialTeam
-      ? await admitRegistration(database, tx, { provider, email, displayName: normalizeSimulatedText(profile.displayName) ?? email ?? `${providerName} user`, picture: profile.picture ?? null, userId: session.auth.userId, kind: "oauth" }, await unsealOAuthRegistration(database, sealedRegistration, tx))
-      : { ok: true };
+    let registration = { ok: true };
+    if (bootstrapInitialTeam) {
+      const oauthAdmission = await unsealOAuthRegistration(database, sealedRegistration, tx);
+      if (oauthAdmission === oauthRegistrationUnsealFailed) throw registrationDeniedRollback();
+      registration = await admitRegistration(database, tx, { provider, email, displayName: normalizeSimulatedText(profile.displayName) ?? email ?? `${providerName} user`, picture: profile.picture ?? null, userId: session.auth.userId, kind: "oauth" }, oauthAdmission);
+    }
     if (!registration.ok) return registration;
     if (identity && !session.auth.isGuest && identity.userId !== session.auth.userId) {
       return {
@@ -3510,14 +3513,15 @@ async function sealOAuthRegistration(database: LooseRecord, value: unknown, bind
   cipher.setAAD(Buffer.from(oauthRegistrationAad(binding))); const encrypted = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
   return `${key.keyId}.${iv.toString("base64url")}.${cipher.getAuthTag().toString("base64url")}.${encrypted.toString("base64url")}`;
 }
+const oauthRegistrationUnsealFailed = Symbol("sporades.oauthRegistrationUnsealFailed");
 async function unsealOAuthRegistration(database: LooseRecord, row?: LooseRecord, transactionAdapter = database.adapter) {
   if (!row?.registrationCiphertext) return undefined;
-  try { const [keyId, ivText, tagText, ciphertext] = String(row.registrationCiphertext).split("."); if (!keyId || !ivText || !tagText || !ciphertext) return null;
-    const material = await oauthRegistrationKeyForUnseal(transactionAdapter, keyId); if (!material) return null;
+  try { const [keyId, ivText, tagText, ciphertext] = String(row.registrationCiphertext).split("."); if (!keyId || !ivText || !tagText || !ciphertext) return oauthRegistrationUnsealFailed;
+    const material = await oauthRegistrationKeyForUnseal(transactionAdapter, keyId); if (!material) return oauthRegistrationUnsealFailed;
     const decipher = nodeCryptoModule.createDecipheriv("aes-256-gcm", material, Buffer.from(ivText, "base64url"));
     decipher.setAAD(Buffer.from(oauthRegistrationAad(row))); decipher.setAuthTag(Buffer.from(tagText, "base64url"));
     return boundedRegistrationInput(JSON.parse(Buffer.concat([decipher.update(Buffer.from(ciphertext, "base64url")), decipher.final()]).toString("utf8")));
-  } catch { return null; }
+  } catch { return oauthRegistrationUnsealFailed; }
 }
 // The reset link origin and page path come from Capsule configuration only.
 // Deriving either from a request header would let an attacker who can reach the

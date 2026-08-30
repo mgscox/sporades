@@ -170,7 +170,9 @@ Its active key is an immutable 22-character identifier pointing to separate
 retain a bounded `active` alias until every outstanding legacy OAuth state has
 expired (at least ten minutes). New envelopes always carry the immutable ID.
 Malformed, unknown, or expired IDs fail closed without creating key rows; an
-operator must restore the retained material if it is lost, after which affected
+invalid envelope, unknown key, or authentication-tag failure is distinguished
+from a legitimately absent admission and denies before Capsule policy or
+finalizer code runs. An operator must restore the retained material if it is lost, after which affected
 OAuth starts should be retried.
 
 Sporades performs legacy-key reconciliation and safe retirement automatically
