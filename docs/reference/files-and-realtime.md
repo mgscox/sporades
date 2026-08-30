@@ -449,10 +449,10 @@ MinIO-backed storage use identical policy, admission, lease, claim, ACL,
 idempotency, expiry, and cleanup semantics. This server-only surface never
 exposes filesystem paths, object keys, buckets, or storage credentials.
 
-Operationally, run the bounded runtime `sweepExpiredFileIngress` maintenance
-path on a schedule appropriate to upload volume. It deterministically selects
-expired unclaimed receipts, deletes only their staged bytes, and never deletes
-a committed File. Interrupted cleanup remains retryable after restart;
-completed receipts remain replayable. Monitor stable ingress error codes and
-cleanup failures, but do not log authorization headers, principal keys,
-idempotency keys that contain secrets, or storage connection details.
+Operationally, Capsule startup automatically runs a bounded, deterministic
+cleanup batch for expired unclaimed receipts. It deletes only staged bytes and
+never deletes a committed File. Interrupted cleanup state remains durable and
+is retried on a later startup; completed receipts remain replayable. There is no
+public manual ingress-sweeper API. Monitor the stable platform cleanup warning,
+but do not log authorization headers, principal keys, idempotency keys that
+contain secrets, or storage connection details.

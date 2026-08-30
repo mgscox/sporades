@@ -317,6 +317,36 @@ test("trusted ingress has identical denial, claim, replay, restart, disconnect, 
   });
 });
 
+test("MinIO ingress accepts byte-fragmented multipart and leaves no residue for every disconnected parser state", async () => {
+  await withFakeS3CompatibleService(async ({ endpoint: storageEndpoint, objects }) => {
+    const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-minio-fragments-")); let database; const namespace = `ingress-fragments-${randomUUID()}`;
+    try {
+      const definition = capsule({ name: namespace, endpoints: { upload: endpoint({ method: "POST", path: "/fragments", body: { multipart: ingressPolicy() } }, requireAuth(async (ctx) => await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/fragmented.txt" }))) } });
+      const config = { name: namespace, services: { storage: { kind: "storage", engine: "minio" } } }; const serviceEnv = { SPORADES_SERVICE_STORAGE_ENGINE: "minio", SPORADES_SERVICE_STORAGE_ENDPOINT: storageEndpoint, SPORADES_SERVICE_STORAGE_ACCESS_KEY: "sporades", SPORADES_SERVICE_STORAGE_SECRET_KEY: "sporades-minio-local-secret", SPORADES_SERVICE_STORAGE_BUCKET: "sporades-files", SPORADES_SERVICE_STORAGE_REGION: "eu-west-2", SPORADES_SERVICE_STORAGE_NAMESPACE: namespace };
+      database = await openDevDatabase(path.join(dir, "data.db"), "", serviceEnv, config, definition, { serviceEnv }); await seedIngressUser(database); const route = database.endpoints[0];
+      const cuts = [
+        Buffer.from("--claim"),
+        Buffer.from('--claim\r\nContent-Disposition: form-data; name="file"; filename="cut.txt"'),
+        Buffer.from('--claim\r\nContent-Disposition: form-data; name="file"; filename="cut.txt"\r\nContent-Type: text/plain\r\nContent-ID: stable-claim\r\n\r\npartial'),
+        Buffer.from('--claim\r\nContent-Disposition: form-data; name="file"; filename="cut.txt"\r\nContent-Type: text/plain\r\nContent-ID: stable-claim\r\n\r\npartial\r\n--claim'),
+      ];
+      for (const [index, cut] of cuts.entries()) {
+        const request = ingressRequest(`fragment-cut-${index}`); request[Symbol.asyncIterator] = async function* () { for (const byte of cut) yield Buffer.from([byte]); };
+        await assert.rejects(runEndpoint(database, route, new URL("http://capsule.test/fragments"), request), { code: "INVALID_MULTIPART" });
+        assert.deepEqual([...objects.keys()].filter((key) => key.startsWith(`capsules/${namespace}/`)), []);
+        assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 0);
+        assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_files]").get()).count), 0);
+      }
+      const source = multipart("claim", 'Content-Disposition: form-data; name="file"; filename="fragmented.txt"\r\nContent-Type: text/plain\r\nContent-ID: stable-claim', "fragmented-bytes"); const success = ingressRequest("fragment-success"); success[Symbol.asyncIterator] = async function* () { yield* splitEvery(source, 1); };
+      const file = await runEndpoint(database, route, new URL("http://capsule.test/fragments"), success); const keys = [...objects.keys()].filter((key) => key.startsWith(`capsules/${namespace}/`));
+      assert.deepEqual(keys, [`capsules/${namespace}/files/${file.id}/${file.version}`]); assert.equal(objects.get(keys[0]).toString(), "fragmented-bytes");
+      assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 1); assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_files]").get()).count), 1);
+    } finally {
+      await database?.close(); for (const key of [...objects.keys()].filter((value) => value.startsWith(`capsules/${namespace}/`))) objects.delete(key); assert.equal([...objects.keys()].some((value) => value.startsWith(`capsules/${namespace}/`)), false); await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 test("twenty claims across two SQLite connections all recover one completed File", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-two-connection-")); let first; let second;
   try {

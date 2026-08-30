@@ -1235,7 +1235,9 @@ test("File reference docs define the trusted multipart ingress contract and oper
   assert.match(contents, /requestKeyHeader/);
   assert.match(contents, /partKeyHeader/);
   assert.match(contents, /INGRESS_AUTHORITY_DENIED/);
-  assert.match(contents, /sweepExpiredFileIngress/);
+  assert.match(contents, /Capsule startup automatically runs a bounded, deterministic\s+cleanup batch/i);
+  assert.match(contents, /There is no\s+public manual ingress-sweeper API/i);
+  assert.doesNotMatch(contents, /sweepExpiredFileIngress/);
   assert.match(contents, /Local filesystem and\s+MinIO-backed/i);
   assert.match(contents, /completed receipts remain replayable/i);
 });
