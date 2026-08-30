@@ -4819,9 +4819,10 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
         });
         return;
       }
-      const result = await beginOAuthSignIn(database, client.session, provider, {
+      const result: any = await beginOAuthSignIn(database, client.session, provider, {
         origin: client.origin,
         returnTo: message.returnTo,
+        registration: message.registration,
       });
       if (!result.ok) {
         sendJson(client, {

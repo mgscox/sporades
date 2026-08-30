@@ -207,8 +207,8 @@ export const auth = {
   signUp(provider, credentials, options) {
     return connect().signUp(provider, credentials, options);
   },
-  signIn(provider, credentials) {
-    return connect().signIn(provider, credentials);
+  signIn(provider, credentials, options) {
+    return connect().signIn(provider, credentials, options);
   },
   signOut() {
     return connect().signOut();
@@ -1147,9 +1147,9 @@ function createConnection() {
         return result;
       });
     },
-    signIn(provider, credentials) {
+    signIn(provider, credentials, options) {
       if (credentials) {
-        return request("auth.signIn", { provider, credentials }).then((result) => {
+        return request("auth.signIn", { provider, credentials, registration: options?.registration }).then((result) => {
           if (result.data?.sessionToken) {
             return storeAuthSession(result);
           }
@@ -1158,7 +1158,7 @@ function createConnection() {
       }
       const returnTo = window.location.href;
       localStorage.setItem("sporades.authReturnTo", returnTo);
-      return request("auth.signIn", { provider, returnTo }).then((result) => {
+      return request("auth.signIn", { provider, returnTo, registration: options?.registration }).then((result) => {
         if (result.data?.url) {
           window.location.assign(result.data.url);
         }
@@ -16356,7 +16356,7 @@ async function signInWithEmail(database, session, credentials) {
     auth
   }));
 }
-async function linkProviderIdentity(database, session, provider, profile) {
+async function linkProviderIdentity(database, session, provider, profile, sealedRegistration) {
   const subject = normalizeSimulatedText(profile.subject ?? profile.sub);
   const safeProvider = typeof provider === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(provider) ? provider : "provider";
   const providerName = `${safeProvider[0].toUpperCase()}${safeProvider.slice(1)}`;
@@ -16397,6 +16397,8 @@ async function linkProviderIdentity(database, session, provider, profile) {
       identity = legacyIdentities[0] ?? null;
     }
     const bootstrapInitialTeam = !identity && session.auth.isGuest;
+    const registration = bootstrapInitialTeam ? await admitRegistration(database, tx, { provider, email, displayName: normalizeSimulatedText(profile.displayName) ?? email ?? `${providerName} user`, picture: profile.picture ?? null, userId: session.auth.userId, kind: "oauth" }, await unsealOAuthRegistration(database, sealedRegistration, tx)) : { ok: true };
+    if (!registration.ok) return registration;
     if (identity && !session.auth.isGuest && identity.userId !== session.auth.userId) {
       return {
         ok: false,
@@ -16586,7 +16588,7 @@ async function routeSporadesAuth(database, request, response) {
     const session = await resolveAnonymousSession(database, stateRow.sessionToken);
     let result;
     try {
-      result = await linkProviderIdentity(database, session, provider, profile);
+      result = await linkProviderIdentity(database, session, provider, profile, stateRow.registrationCiphertext ? stateRow : void 0);
     } catch {
       throw commandError(
         "OAuth account linking failed.",
@@ -16668,6 +16670,9 @@ async function beginOAuthSignIn(database, session, provider, options) {
   const pkceChallenge = nodeCryptoModule3.createHash("sha256").update(pkceVerifier).digest("base64url");
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const expiresAt = new Date(Date.now() + 10 * 60 * 1e3).toISOString();
+  const admission = boundedRegistrationInput(options.registration?.admission);
+  if (admission === null) return registrationDenied();
+  const registrationCiphertext = admission === void 0 ? null : await sealOAuthRegistration(database, admission, { provider, sessionToken: session.token, redirectUri, nonce, expiresAt });
   let started;
   try {
     started = await adapter.begin({
@@ -16707,9 +16712,49 @@ async function beginOAuthSignIn(database, session, provider, options) {
     createdAt: now2,
     expiresAt,
     nonce,
-    pkceVerifier
+    pkceVerifier,
+    registrationCiphertext
   });
   return { ok: true, url: started.url };
+}
+async function oauthRegistrationKey(database, keyId = "active", adapter = database.adapter) {
+  const key = `oauth-registration-key:${keyId}`;
+  const sql = adapter.dialect.sql;
+  let row = await adapter.prepare(sql("SELECT [value] FROM [sporades] WHERE [key] = ?")).get(key);
+  if (!row) {
+    const material = nodeCryptoModule3.randomBytes(32).toString("base64url");
+    await adapter.prepare(sql("INSERT INTO [sporades] ([key], [value]) VALUES (?, ?) ON CONFLICT([key]) DO NOTHING")).run(key, material);
+    row = await adapter.prepare(sql("SELECT [value] FROM [sporades] WHERE [key] = ?")).get(key);
+  }
+  if (typeof row?.value !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(row.value)) throw new Error("OAuth registration key is unavailable.");
+  return Buffer.from(row.value, "base64url");
+}
+function oauthRegistrationAad(row) {
+  return `${row.provider}
+${row.sessionToken}
+${row.redirectUri}
+${row.nonce}
+${row.expiresAt}`;
+}
+async function sealOAuthRegistration(database, value, binding) {
+  const iv = nodeCryptoModule3.randomBytes(12);
+  const cipher = nodeCryptoModule3.createCipheriv("aes-256-gcm", await oauthRegistrationKey(database), iv);
+  cipher.setAAD(Buffer.from(oauthRegistrationAad(binding)));
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
+  return `active.${iv.toString("base64url")}.${cipher.getAuthTag().toString("base64url")}.${encrypted.toString("base64url")}`;
+}
+async function unsealOAuthRegistration(database, row, transactionAdapter = database.adapter) {
+  if (!row?.registrationCiphertext) return void 0;
+  try {
+    const [keyId, ivText, tagText, ciphertext] = String(row.registrationCiphertext).split(".");
+    if (!keyId || !ivText || !tagText || !ciphertext) return null;
+    const decipher = nodeCryptoModule3.createDecipheriv("aes-256-gcm", await oauthRegistrationKey(database, keyId, transactionAdapter), Buffer.from(ivText, "base64url"));
+    decipher.setAAD(Buffer.from(oauthRegistrationAad(row)));
+    decipher.setAuthTag(Buffer.from(tagText, "base64url"));
+    return boundedRegistrationInput(JSON.parse(Buffer.concat([decipher.update(Buffer.from(ciphertext, "base64url")), decipher.final()]).toString("utf8")));
+  } catch {
+    return null;
+  }
 }
 function resolvePasswordResetConfig(config) {
   const passwordReset = config.auth?.email?.passwordReset ?? {};
@@ -16750,7 +16795,7 @@ function createAnonymousAuthTables(sqlite, _authConfig = null) {
     ),
     () => sqlite.exec(
       sql(
-        "CREATE TABLE IF NOT EXISTS [sporades_auth_oauth_states] ([state] TEXT PRIMARY KEY, [provider] TEXT NOT NULL, [sessionToken] TEXT NOT NULL, [returnTo] TEXT NOT NULL, [redirectUri] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL, [nonce] TEXT, [pkceVerifier] TEXT)"
+        "CREATE TABLE IF NOT EXISTS [sporades_auth_oauth_states] ([state] TEXT PRIMARY KEY, [provider] TEXT NOT NULL, [sessionToken] TEXT NOT NULL, [returnTo] TEXT NOT NULL, [redirectUri] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL, [nonce] TEXT, [pkceVerifier] TEXT, [registrationCiphertext] TEXT)"
       )
     ),
     () => ensureOAuthStateColumns(sqlite)
@@ -16763,7 +16808,8 @@ function ensureOAuthStateColumns(sqlite) {
       ["provider", "TEXT"],
       ["expiresAt", "TEXT"],
       ["nonce", "TEXT"],
-      ["pkceVerifier", "TEXT"]
+      ["pkceVerifier", "TEXT"],
+      ["registrationCiphertext", "TEXT"]
     ].map(([name, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_oauth_states", name, type)),
     () => sqlite.exec(sql("UPDATE [sporades_auth_oauth_states] SET [provider] = 'google' WHERE [provider] IS NULL")),
     () => sqlite.exec(sql("UPDATE [sporades_auth_oauth_states] SET [expiresAt] = [createdAt] WHERE [expiresAt] IS NULL"))
@@ -18420,9 +18466,9 @@ function createSharedDatabaseAdapterMethods(dialect) {
       const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1e3).toISOString();
       return this.prepare(
         sql(
-          "INSERT INTO [sporades_auth_oauth_states] ([state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+          "INSERT INTO [sporades_auth_oauth_states] ([state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier], [registrationCiphertext]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
-      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
+      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null, row.registrationCiphertext ?? null);
     },
     // One statement, not a SELECT followed by a DELETE. The two-statement form was correct on
     // SQLite and a race everywhere else: nothing ordered the delete after the read, so on an
@@ -18433,7 +18479,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
       return thenIfPromise(
         this.prepare(
           sql(
-            "DELETE FROM [sporades_auth_oauth_states] WHERE [state] = ? RETURNING [state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier]"
+            "DELETE FROM [sporades_auth_oauth_states] WHERE [state] = ? RETURNING [state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier], [registrationCiphertext]"
           )
         ).get(state),
         (row) => row ?? null
@@ -23693,7 +23739,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       }
       const result = await beginOAuthSignIn(database, client.session, provider, {
         origin: client.origin,
-        returnTo: message.returnTo
+        returnTo: message.returnTo,
+        registration: message.registration
       });
       if (!result.ok) {
         sendJson(client, {

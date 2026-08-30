@@ -953,8 +953,8 @@ export function createSharedDatabaseAdapterMethods(dialect) {
             const provider = row.provider ?? "google";
             const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1000).toISOString();
             return this.prepare(sql("INSERT INTO [sporades_auth_oauth_states] " +
-                "([state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier]) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
+                "([state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier], [registrationCiphertext]) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null, row.registrationCiphertext ?? null);
         },
         // One statement, not a SELECT followed by a DELETE. The two-statement form was correct on
         // SQLite and a race everywhere else: nothing ordered the delete after the read, so on an
@@ -964,7 +964,7 @@ export function createSharedDatabaseAdapterMethods(dialect) {
         consumeOAuthState(state) {
             return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_oauth_states] WHERE [state] = ? " +
                 "RETURNING [state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], " +
-                "[nonce], [pkceVerifier]")).get(state), (row) => row ?? null);
+                "[nonce], [pkceVerifier], [registrationCiphertext]")).get(state), (row) => row ?? null);
         },
         emailCredentialExists(email) {
             return thenIfPromise(this.prepare(sql("SELECT [email] FROM [sporades_auth_email_credentials] WHERE [email] = ?")).get(email), (row) => Boolean(row));

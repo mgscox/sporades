@@ -1090,7 +1090,7 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   middleware?: ContextMiddleware<Schema>[];
   hooks?: CapsuleHooks<Schema>;
 };
-export type RegistrationEvidence = Readonly<{ userId: string; provider: string; email: string | null; displayName: string; picture: string | null; kind: "email" | "local" }>;
+export type RegistrationEvidence = Readonly<{ userId: string; provider: string; email: string | null; displayName: string; picture: string | null; kind: "email" | "oauth" | "local" }>;
 export type RegistrationAdmission<Schema extends SchemaDefinition> = {
   admit(ctx: { db: ReadOnlyDatabaseFromSchema<Schema>; evidence: RegistrationEvidence; admission: unknown }): MaybePromise<{ allow: false } | { allow: true; state?: unknown }>;
   finalize(ctx: { db: DatabaseFromSchema<Schema>; evidence: RegistrationEvidence }, input: RegistrationEvidence & { state?: unknown }): MaybePromise<void>;

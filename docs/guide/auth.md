@@ -131,3 +131,9 @@ or finalizer failure returns the bounded `REGISTRATION_DENIED` result and rolls
 back both application and runtime changes. The database handles are
 transaction-bound and reject use after either callback settles. Omitting the
 declaration preserves existing registration behaviour.
+
+For first-time OAuth linking, pass the same option to `auth.signIn`. Sporades
+stores the admission only as authenticated ciphertext bound to that provider,
+anonymous Session, callback URI, nonce, and expiry; it is consumed with the
+single-use OAuth state and is never added to redirects, provider traffic, or
+callback errors.

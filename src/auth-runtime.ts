@@ -2924,7 +2924,7 @@ export async function signInWithEmail(database: LooseRecord, session: any, crede
   }));
 }
 
-export async function linkProviderIdentity(database: LooseRecord, session: LooseRecord, provider: string, profile: LooseRecord) {
+export async function linkProviderIdentity(database: LooseRecord, session: LooseRecord, provider: string, profile: LooseRecord, sealedRegistration?: LooseRecord) {
   const subject = normalizeSimulatedText(profile.subject ?? profile.sub);
   const safeProvider = typeof provider === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(provider)
     ? provider
@@ -2970,6 +2970,10 @@ export async function linkProviderIdentity(database: LooseRecord, session: Loose
     // Decide only after legacy recovery. A pre-Teams Google account is already
     // linked even when its old identity must be recovered by verified email.
     const bootstrapInitialTeam = !identity && session.auth.isGuest;
+    const registration = bootstrapInitialTeam
+      ? await admitRegistration(database, tx, { provider, email, displayName: normalizeSimulatedText(profile.displayName) ?? email ?? `${providerName} user`, picture: profile.picture ?? null, userId: session.auth.userId, kind: "oauth" }, await unsealOAuthRegistration(database, sealedRegistration, tx))
+      : { ok: true };
+    if (!registration.ok) return registration;
     if (identity && !session.auth.isGuest && identity.userId !== session.auth.userId) {
       return {
         ok: false,
@@ -3189,7 +3193,7 @@ export async function routeSporadesAuth(database: LooseRecord, request: Incoming
     const session = await resolveAnonymousSession(database, stateRow.sessionToken);
     let result;
     try {
-      result = await linkProviderIdentity(database, session, provider, profile);
+      result = await linkProviderIdentity(database, session, provider, profile, stateRow.registrationCiphertext ? stateRow : undefined);
     } catch {
       throw commandError(
         "OAuth account linking failed.",
@@ -3276,6 +3280,9 @@ export async function beginOAuthSignIn(database: LooseRecord, session: LooseReco
   const pkceChallenge = nodeCryptoModule.createHash("sha256").update(pkceVerifier).digest("base64url");
   const now = new Date().toISOString();
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  const admission = boundedRegistrationInput(options.registration?.admission);
+  if (admission === null) return registrationDenied();
+  const registrationCiphertext = admission === undefined ? null : await sealOAuthRegistration(database, admission, { provider, sessionToken: session.token, redirectUri, nonce, expiresAt });
   let started;
   try {
     started = await adapter.begin({
@@ -3316,8 +3323,35 @@ export async function beginOAuthSignIn(database: LooseRecord, session: LooseReco
     expiresAt,
     nonce,
     pkceVerifier,
+    registrationCiphertext,
   });
   return { ok: true, url: started.url };
+}
+
+async function oauthRegistrationKey(database: LooseRecord, keyId = "active", adapter = database.adapter) {
+  const key = `oauth-registration-key:${keyId}`; const sql = adapter.dialect.sql;
+  let row = await adapter.prepare(sql("SELECT [value] FROM [sporades] WHERE [key] = ?")).get(key);
+  if (!row) {
+    const material = nodeCryptoModule.randomBytes(32).toString("base64url");
+    await adapter.prepare(sql("INSERT INTO [sporades] ([key], [value]) VALUES (?, ?) ON CONFLICT([key]) DO NOTHING")).run(key, material);
+    row = await adapter.prepare(sql("SELECT [value] FROM [sporades] WHERE [key] = ?")).get(key);
+  }
+  if (typeof row?.value !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(row.value)) throw new Error("OAuth registration key is unavailable.");
+  return Buffer.from(row.value, "base64url");
+}
+function oauthRegistrationAad(row: LooseRecord) { return `${row.provider}\n${row.sessionToken}\n${row.redirectUri}\n${row.nonce}\n${row.expiresAt}`; }
+async function sealOAuthRegistration(database: LooseRecord, value: unknown, binding: LooseRecord) {
+  const iv = nodeCryptoModule.randomBytes(12); const cipher = nodeCryptoModule.createCipheriv("aes-256-gcm", await oauthRegistrationKey(database), iv);
+  cipher.setAAD(Buffer.from(oauthRegistrationAad(binding))); const encrypted = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
+  return `active.${iv.toString("base64url")}.${cipher.getAuthTag().toString("base64url")}.${encrypted.toString("base64url")}`;
+}
+async function unsealOAuthRegistration(database: LooseRecord, row?: LooseRecord, transactionAdapter = database.adapter) {
+  if (!row?.registrationCiphertext) return undefined;
+  try { const [keyId, ivText, tagText, ciphertext] = String(row.registrationCiphertext).split("."); if (!keyId || !ivText || !tagText || !ciphertext) return null;
+    const decipher = nodeCryptoModule.createDecipheriv("aes-256-gcm", await oauthRegistrationKey(database, keyId, transactionAdapter), Buffer.from(ivText, "base64url"));
+    decipher.setAAD(Buffer.from(oauthRegistrationAad(row))); decipher.setAuthTag(Buffer.from(tagText, "base64url"));
+    return boundedRegistrationInput(JSON.parse(Buffer.concat([decipher.update(Buffer.from(ciphertext, "base64url")), decipher.final()]).toString("utf8")));
+  } catch { return null; }
 }
 // The reset link origin and page path come from Capsule configuration only.
 // Deriving either from a request header would let an attacker who can reach the
@@ -3449,7 +3483,8 @@ export function createAnonymousAuthTables(sqlite: LooseRecord, _authConfig: Loos
           "[createdAt] TEXT NOT NULL, " +
           "[expiresAt] TEXT NOT NULL, " +
           "[nonce] TEXT, " +
-          "[pkceVerifier] TEXT" +
+          "[pkceVerifier] TEXT, " +
+          "[registrationCiphertext] TEXT" +
           ")",
         ),
       ),
@@ -3465,6 +3500,7 @@ function ensureOAuthStateColumns(sqlite: LooseRecord) {
       ["expiresAt", "TEXT"],
       ["nonce", "TEXT"],
       ["pkceVerifier", "TEXT"],
+      ["registrationCiphertext", "TEXT"],
     ].map(([name, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_oauth_states", name, type)),
     () => sqlite.exec(sql("UPDATE [sporades_auth_oauth_states] SET [provider] = 'google' WHERE [provider] IS NULL")),
     () => sqlite.exec(sql("UPDATE [sporades_auth_oauth_states] SET [expiresAt] = [createdAt] WHERE [expiresAt] IS NULL")),

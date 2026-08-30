@@ -4425,6 +4425,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
             const result = await beginOAuthSignIn(database, client.session, provider, {
                 origin: client.origin,
                 returnTo: message.returnTo,
+                registration: message.registration,
             });
             if (!result.ok) {
                 sendJson(client, {
