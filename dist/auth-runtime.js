@@ -3215,20 +3215,37 @@ async function sealOAuthRegistration(database, value, binding) {
     return `${key.keyId}.${iv.toString("base64url")}.${cipher.getAuthTag().toString("base64url")}.${encrypted.toString("base64url")}`;
 }
 const oauthRegistrationUnsealFailed = Symbol("sporades.oauthRegistrationUnsealFailed");
+function canonicalOAuthRegistrationBase64url(value, byteLength) {
+    if (typeof value !== "string" || !/^[A-Za-z0-9_-]+$/.test(value))
+        return null;
+    try {
+        const bytes = Buffer.from(value, "base64url");
+        return bytes.length > 0 && (byteLength === undefined || bytes.length === byteLength) && bytes.toString("base64url") === value ? bytes : null;
+    }
+    catch {
+        return null;
+    }
+}
 async function unsealOAuthRegistration(database, row, transactionAdapter = database.adapter) {
     if (!row?.registrationCiphertext)
         return undefined;
     try {
-        const [keyId, ivText, tagText, ciphertext] = String(row.registrationCiphertext).split(".");
-        if (!keyId || !ivText || !tagText || !ciphertext)
+        const segments = String(row.registrationCiphertext).split(".");
+        if (segments.length !== 4)
+            return oauthRegistrationUnsealFailed;
+        const [keyId, ivText, tagText, ciphertext] = segments;
+        const iv = canonicalOAuthRegistrationBase64url(ivText, 12);
+        const tag = canonicalOAuthRegistrationBase64url(tagText, 16);
+        const encrypted = canonicalOAuthRegistrationBase64url(ciphertext);
+        if ((!oauthRegistrationKeyId(keyId) && keyId !== "active") || !iv || !tag || !encrypted)
             return oauthRegistrationUnsealFailed;
         const material = await oauthRegistrationKeyForUnseal(transactionAdapter, keyId);
         if (!material)
             return oauthRegistrationUnsealFailed;
-        const decipher = nodeCryptoModule.createDecipheriv("aes-256-gcm", material, Buffer.from(ivText, "base64url"));
+        const decipher = nodeCryptoModule.createDecipheriv("aes-256-gcm", material, iv);
         decipher.setAAD(Buffer.from(oauthRegistrationAad(row)));
-        decipher.setAuthTag(Buffer.from(tagText, "base64url"));
-        return boundedRegistrationInput(JSON.parse(Buffer.concat([decipher.update(Buffer.from(ciphertext, "base64url")), decipher.final()]).toString("utf8")));
+        decipher.setAuthTag(tag);
+        return boundedRegistrationInput(JSON.parse(Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8")));
     }
     catch {
         return oauthRegistrationUnsealFailed;

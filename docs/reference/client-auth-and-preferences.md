@@ -527,6 +527,10 @@ For OAuth, missing admission is a legitimate value only when the OAuth start did
 not carry one. A malformed ciphertext, unknown retained key, invalid binding, or
 authentication-tag failure denies before `admit` or `finalize` runs and cannot
 fall through to a first-user or database-only allow rule.
+The encrypted envelope accepts exactly four segments, canonical undecorated
+base64url binary components, a 12-byte IV, a 16-byte authentication tag, and non-empty
+ciphertext; extra segments, permissive decoder aliases, and wrong lengths fail
+closed before key lookup or policy execution.
 
 A runtime-owned database write fence serializes new-registration policy across
 separate SQLite, libSQL, and Postgres connections. The waiter evaluates policy

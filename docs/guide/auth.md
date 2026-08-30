@@ -172,7 +172,9 @@ expired (at least ten minutes). New envelopes always carry the immutable ID.
 Malformed, unknown, or expired IDs fail closed without creating key rows; an
 invalid envelope, unknown key, or authentication-tag failure is distinguished
 from a legitimately absent admission and denies before Capsule policy or
-finalizer code runs. An operator must restore the retained material if it is lost, after which affected
+finalizer code runs. Envelopes have exactly four dot-separated components;
+their encoded binary components use canonical undecorated base64url, with a 12-byte IV and
+16-byte authentication tag. An operator must restore the retained material if it is lost, after which affected
 OAuth starts should be retried.
 
 Sporades performs legacy-key reconciliation and safe retirement automatically

@@ -484,15 +484,25 @@ test("corrupt OAuth admission envelopes deny before a database-only first-user p
   } } };
   await withTempDatabase(async (database) => {
     const active = await database.adapter.readSystemMetadata("oauth-registration-key:active");
+    const material = (await database.adapter.readSystemMetadata(`oauth-registration-key:key:${active.value}`)).value;
     const bindings = { provider: "google", redirectUri: "https://capsule.example.test/__sporades/auth/google/callback", nonce: "nonce", expiresAt: "2099-01-01T00:00:00.000Z" };
+    const authenticatedEnvelope = (plaintext, binding = bindings) => { const iv = randomBytes(12); const cipher = createCipheriv("aes-256-gcm", Buffer.from(material, "base64url"), iv); cipher.setAAD(Buffer.from(`${binding.provider}\n${binding.sessionToken}\n${binding.redirectUri}\n${binding.nonce}\n${binding.expiresAt}`)); const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]); return `${active.value}.${iv.toString("base64url")}.${cipher.getAuthTag().toString("base64url")}.${encrypted.toString("base64url")}`; };
+    const validBinding = { ...bindings, sessionToken: "filled-per-case" }; const valid = authenticatedEnvelope(JSON.stringify({ invite: "valid" }), validBinding); const [keyId, iv, tag, encrypted] = valid.split(".");
     const cases = [
-      "malformed",
-      `${"u".repeat(22)}.${randomBytes(12).toString("base64url")}.${randomBytes(16).toString("base64url")}.${randomBytes(8).toString("base64url")}`,
-      `${active.value}.${randomBytes(12).toString("base64url")}.${randomBytes(16).toString("base64url")}.${randomBytes(8).toString("base64url")}`,
+      { ciphertext: "malformed" },
+      { ciphertext: `${valid}.extra` },
+      { ciphertext: `${keyId}.${iv}=.${tag}.${encrypted}` },
+      { ciphertext: `${keyId}.${iv}.${tag}.${encrypted}+` },
+      { ciphertext: `${keyId}.${randomBytes(11).toString("base64url")}.${tag}.${encrypted}` },
+      { ciphertext: `${keyId}.${iv}.${randomBytes(15).toString("base64url")}.${encrypted}` },
+      { ciphertext: `${"u".repeat(22)}.${iv}.${tag}.${encrypted}` },
+      { ciphertextFor: (binding) => authenticatedEnvelope(JSON.stringify({ invite: "bound-elsewhere" }), { ...binding, nonce: "different-nonce" }) },
+      { ciphertextFor: (binding) => authenticatedEnvelope("not-json", binding) },
     ];
-    for (const [index, registrationCiphertext] of cases.entries()) {
+    for (const [index, candidate] of cases.entries()) {
       const session = await resolveAnonymousSession(database, null); const before = {};
       for (const tableName of ["sporades_auth_users", "sporades_auth_sessions", "sporades_auth_identities", "sporades_teams", "sporades_team_memberships", "claims"]) before[tableName] = Number((await database.adapter.prepare(`SELECT COUNT(*) AS count FROM ${tableName}`).get()).count);
+      const binding = { ...bindings, sessionToken: session.token }; const registrationCiphertext = candidate.ciphertextFor ? candidate.ciphertextFor(binding) : candidate.ciphertext;
       const result = await linkProviderIdentity(database, session, "google", { subject: `corrupt-${index}`, email: `corrupt-${index}@example.com`, emailVerified: true }, { ...bindings, sessionToken: session.token, registrationCiphertext });
       assert.equal(result.error.code, "REGISTRATION_DENIED");
       for (const [tableName, count] of Object.entries(before)) assert.equal(Number((await database.adapter.prepare(`SELECT COUNT(*) AS count FROM ${tableName}`).get()).count), count, tableName);
