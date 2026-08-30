@@ -449,6 +449,32 @@ test("Capsule-principal status reports its leased and completed receipt while a 
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("pre-v2 Capsule-principal receipts replay leased and completed state without a second receipt or object", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-legacy-principal-")); let database;
+  try {
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "legacy-principal", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "legacy-principal" }));
+    const endpoint = { options: { method: "POST", path: "/legacy-principal", body: { multipart: { ...ingressPolicy(), claimAuthorities: ["capsule-principal"] } } } };
+    const namespace = "application"; const principalKey = "legacy-secret"; const keyDigest = createHash("sha256").update(`${namespace}\0${principalKey}`, "utf8").digest("hex");
+    const authority = Object.freeze({ kind: "capsule-principal", namespace, key: principalKey, keyDigest, ownerId: database.capsuleIngressOwnerId });
+    const request = () => { const value = ingressRequest("legacy-principal-request"); delete value.headers["x-sporades-session-token"]; return value; };
+    let writes = 0; const write = database.fileStorage.writeFileVersion.bind(database.fileStorage); database.fileStorage.writeFileVersion = async (input) => { writes += 1; return await write(input); };
+    const first = await stageMultipartIngress(database, endpoint, request(), { headers: request().headers }, { userId: "" }, authority);
+    const stored = await database.adapter.prepare("SELECT [key], [payload] FROM [sporades_file_ingress]").get(); const row = JSON.parse(stored.payload);
+    const legacyKey = `POST:/legacy-principal:capsule:${namespace}:${keyDigest}:legacy-principal-request:stable-claim`; row.key = legacyKey;
+    await database.adapter.prepare("UPDATE [sporades_file_ingress] SET [key] = ?, [payload] = ? WHERE [key] = ?").run(legacyKey, JSON.stringify(row), stored.key);
+    const api = createEndpointIngressApi(database, endpoint, { __ingressRequestKey: row.requestKey, __ingressAuthority: authority }, { auth: { userId: "", isAuthenticated: false, isGuest: true } });
+    const leased = await api.status(row.requestKey, row.partKey); assert.equal(leased.state, "leased"); assert.equal(leased.lease.leaseId, first.multipart.files[0].leaseId);
+    const replay = await stageMultipartIngress(database, endpoint, request(), { headers: request().headers }, { userId: "" }, authority); assert.equal(replay.multipart.files[0].leaseId, first.multipart.files[0].leaseId); assert.equal(writes, 1);
+    const file = await api.claim(replay.multipart.files[0], { path: "/attachments/legacy-principal.txt", authority: { kind: "capsule-principal", namespace, key: principalKey } });
+    const completedReplay = await stageMultipartIngress(database, endpoint, request(), { headers: request().headers }, { userId: "" }, authority); assert.equal(completedReplay.multipart.files[0].leaseId, first.multipart.files[0].leaseId); assert.equal(writes, 1);
+    const completed = await api.status(row.requestKey, row.partKey); assert.equal(completed.state, "complete"); assert.equal(completed.file.id, file.id);
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 1); assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_files]").get()).count), 1);
+    const inconsistent = { ...JSON.parse((await database.adapter.prepare("SELECT [payload] FROM [sporades_file_ingress]").get()).payload), endpointPath: "/wrong" };
+    await database.adapter.prepare("UPDATE [sporades_file_ingress] SET [payload] = ? WHERE [key] = ?").run(JSON.stringify(inconsistent), legacyKey);
+    assert.deepEqual(await api.status(row.requestKey, row.partKey), { state: "missing" });
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("Capsule-principal ingress requires explicit read and delete ACL declarations", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-principal-acl-"));
   try {

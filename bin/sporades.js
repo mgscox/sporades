@@ -20309,7 +20309,7 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
       const candidate = { key, leaseId: crypto2.randomUUID(), partId: crypto2.createHash("sha256").update(key).digest("hex"), fieldName, name: safeName(filename), type, size: body.length, digest, fileId: crypto2.randomUUID(), version: crypto2.randomUUID(), state: "staging", actorId, authorityKind: authority.kind, authorityId, ownerId: authority.ownerId, ...authority.kind === "capsule-principal" ? { principalNamespace: authority.namespace, principalKeyDigest: authority.keyDigest } : {}, endpointMethod: String(endpoint.options.method), endpointPath: String(endpoint.options.path), requestKey, partKey: stablePartKey, expiresAt: new Date(now2.getTime() + leaseTtlMs).toISOString() };
       const legacyAuthorityKey = legacyDelimitedKeyFor(endpoint, requestKey, stablePartKey, authorityId);
       const legacyActorKey = authority.kind === "actor" ? legacyDelimitedKeyFor(endpoint, requestKey, stablePartKey, authority.actorId) : null;
-      const legacyActorRow = await (async () => {
+      const legacyRow = await (async () => {
         for (const legacyKey of [legacyAuthorityKey, legacyActorKey]) {
           if (!legacyKey || legacyKey === key) continue;
           const row2 = await receipt(database, legacyKey);
@@ -20317,7 +20317,7 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
         }
         return null;
       })();
-      const acquired = legacyActorRow?.authorityKind === "actor" && legacyActorRow.authorityId === authorityId && legacyActorRow.ownerId === authority.ownerId ? { row: legacyActorRow, winner: false } : await acquireReceipt(database, candidate);
+      const acquired = legacyRow ? { row: legacyRow, winner: false } : await acquireReceipt(database, candidate);
       let row = acquired.row;
       if (row.digest !== digest || row.name !== candidate.name || row.type !== type || row.size !== body.length) throw Object.assign(new Error("Multipart retry descriptor conflicts with the original part."), { code: "INGRESS_DESCRIPTOR_CONFLICT" });
       if (acquired.winner) {
@@ -20424,7 +20424,8 @@ function createEndpointIngressApi(database, endpoint, endpointRequest, context) 
       if (!row) row = await receipt(database, legacyDelimitedKeyFor(endpoint, statusRequestKey, partKey, authorityId));
       if (!row && !capsulePrincipal) row = await receipt(database, legacyDelimitedKeyFor(endpoint, statusRequestKey, partKey, actorId));
       const authorityMatches = capsulePrincipal ? row?.authorityKind === "capsule-principal" && row.authorityId === authorityId && row.ownerId === admittedAuthority.ownerId && row.principalNamespace === admittedAuthority.namespace && row.principalKeyDigest === admittedAuthority.keyDigest : row?.authorityId === authorityId && row.ownerId === actorId;
-      if (!row || !authorityMatches) return { state: "missing" };
+      const tupleMatches = row?.endpointMethod === String(endpoint.options.method) && row?.endpointPath === String(endpoint.options.path) && row?.requestKey === statusRequestKey && row?.partKey === partKey;
+      if (!row || !authorityMatches || !tupleMatches) return { state: "missing" };
       return row.state === "complete" ? { state: "complete", file: fileMetadataFromRow(row.file) } : { state: "leased", lease: publicLease(row) };
     }
   };

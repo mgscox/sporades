@@ -219,15 +219,15 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
             // while regenerating the part would duplicate staged bytes.
             const legacyAuthorityKey = legacyDelimitedKeyFor(endpoint, requestKey, stablePartKey, authorityId);
             const legacyActorKey = authority.kind === "actor" ? legacyDelimitedKeyFor(endpoint, requestKey, stablePartKey, authority.actorId) : null;
-            const legacyActorRow = await (async () => { for (const legacyKey of [legacyAuthorityKey, legacyActorKey]) {
+            const legacyRow = await (async () => { for (const legacyKey of [legacyAuthorityKey, legacyActorKey]) {
                 if (!legacyKey || legacyKey === key)
                     continue;
                 const row = await receipt(database, legacyKey);
                 if (row?.endpointMethod === String(endpoint.options.method) && row?.endpointPath === String(endpoint.options.path) && row?.requestKey === requestKey && row?.partKey === stablePartKey && row?.authorityKind === authority.kind && row?.authorityId === authorityId && row?.ownerId === authority.ownerId)
                     return row;
             } return null; })();
-            const acquired = legacyActorRow?.authorityKind === "actor" && legacyActorRow.authorityId === authorityId && legacyActorRow.ownerId === authority.ownerId
-                ? { row: legacyActorRow, winner: false }
+            const acquired = legacyRow
+                ? { row: legacyRow, winner: false }
                 : await acquireReceipt(database, candidate);
             let row = acquired.row;
             if (row.digest !== digest || row.name !== candidate.name || row.type !== type || row.size !== body.length)
@@ -363,7 +363,8 @@ export function createEndpointIngressApi(database, endpoint, endpointRequest, co
             const authorityMatches = capsulePrincipal
                 ? row?.authorityKind === "capsule-principal" && row.authorityId === authorityId && row.ownerId === admittedAuthority.ownerId && row.principalNamespace === admittedAuthority.namespace && row.principalKeyDigest === admittedAuthority.keyDigest
                 : row?.authorityId === authorityId && row.ownerId === actorId;
-            if (!row || !authorityMatches)
+            const tupleMatches = row?.endpointMethod === String(endpoint.options.method) && row?.endpointPath === String(endpoint.options.path) && row?.requestKey === statusRequestKey && row?.partKey === partKey;
+            if (!row || !authorityMatches || !tupleMatches)
                 return { state: "missing" };
             return row.state === "complete" ? { state: "complete", file: fileMetadataFromRow(row.file) } : { state: "leased", lease: publicLease(row) };
         },
