@@ -107,6 +107,7 @@ const nodeCryptoModule = process.getBuiltinModule("node:crypto");
 // *exports* re-exported through `server-runtime-source.js` — so a private threshold would not fail
 // that probe, it would silently stop being compared between the two bundles.
 export const PRIVILEGED_AUTH_USER_ID = "__privileged__";
+export const CAPSULE_INGRESS_AUTH_USER_PREFIX = "__sporades_capsule_ingress__:";
 export const EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
 export const EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1000;
 export const EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
@@ -125,8 +126,12 @@ export const PASSWORD_RESET_REQUEST_JOB = "_sporades_password_reset_request";
 export function privilegedAuthUserId() {
     return "__privileged__";
 }
+export function capsuleIngressAuthUserId(capsuleIdentity) {
+    const digest = nodeCryptoModule.createHash("sha256").update(String(capsuleIdentity ?? "capsule"), "utf8").digest("hex").slice(0, 32);
+    return `${CAPSULE_INGRESS_AUTH_USER_PREFIX}${digest}`;
+}
 export function isReservedAuthUserId(userId) {
-    return userId === privilegedAuthUserId();
+    return userId === privilegedAuthUserId() || (typeof userId === "string" && userId.startsWith(CAPSULE_INGRESS_AUTH_USER_PREFIX));
 }
 export function authIdentityRowUnlessReserved(rowOrPromise) {
     if (rowOrPromise && typeof rowOrPromise.then === "function") {

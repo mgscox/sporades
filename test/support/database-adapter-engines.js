@@ -28,6 +28,7 @@ const RUNTIME_TABLE_NAMES = [
   "sporades_auth_sessions",
   "sporades_auth_users",
   "sporades_file_buckets",
+  "sporades_file_ingress",
   "sporades_file_public_urls",
   "sporades_file_uploads",
   "sporades_files",

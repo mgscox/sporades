@@ -456,6 +456,10 @@ var nodeFsModule = process.getBuiltinModule("node:fs");
 var transactionOperations = Symbol.for("sporades.database.transactionOperations");
 var transactionBeforeCommitChecks2 = Symbol.for("sporades.database.transactionBeforeCommitChecks");
 
+// src/file-ingress-runtime.ts
+var crypto2 = process.getBuiltinModule("node:crypto");
+var leaseTtlMs = 10 * 60 * 1e3;
+
 // src/server-runtime-source.ts
 var trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 var runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");

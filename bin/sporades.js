@@ -5878,7 +5878,7 @@ function buildSmtpMessage(message) {
     `Date: ${(/* @__PURE__ */ new Date()).toUTCString()}`,
     `Message-ID: ${message.messageId ?? `<${crypto.randomUUID()}@sporades.local>`}`,
     "MIME-Version: 1.0",
-    ...(message.providerHeaders ?? []).map((header) => header.json ? foldMailgunJsonHeader(header.name, header.value) : header.verbatim ? `${header.name}: ${header.value}` : foldMimeHeader(header.name, header.value))
+    ...(message.providerHeaders ?? []).map((header2) => header2.json ? foldMailgunJsonHeader(header2.name, header2.value) : header2.verbatim ? `${header2.name}: ${header2.value}` : foldMimeHeader(header2.name, header2.value))
   ];
   if (message.textBody !== void 0 && message.htmlBody !== void 0) {
     const boundary = `sporades-${crypto.randomUUID()}`;
@@ -11805,7 +11805,11 @@ function createFileStorageTables(sqlite) {
       sql(
         "CREATE TABLE IF NOT EXISTS [sporades_file_public_urls] ([id] TEXT PRIMARY KEY, [fileId] TEXT NOT NULL, [ownerId] TEXT NOT NULL, [version] TEXT NOT NULL, [expiresAt] TEXT, [createdAt] TEXT NOT NULL, [revokedAt] TEXT)"
       )
-    )
+    ),
+    // Runtime-private ingress receipts. The identity columns are intentionally queryable:
+    // endpoint transactions lock and classify a lease without scanning JSON payloads.
+    () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_file_ingress] ([key] TEXT PRIMARY KEY, [leaseId] TEXT, [state] TEXT, [actorId] TEXT, [authorityKind] TEXT, [authorityId] TEXT, [ownerId] TEXT, [principalNamespace] TEXT, [principalKeyDigest] TEXT, [endpointMethod] TEXT, [endpointPath] TEXT, [requestKey] TEXT, [partKey] TEXT, [expiresAt] TEXT, [sweepToken] TEXT, [payload] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)")),
+    () => ensureFileIngressColumns(sqlite)
   ]);
 }
 async function readRequestBytes(request, maxBytes) {
@@ -12369,6 +12373,38 @@ function ensureFileUploadTargetColumns(sqlite) {
   return chainMaybePromise([
     ...addedColumns.map(([name, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_file_uploads", name, type)),
     ...statements.map((statement) => () => sqlite.exec(sqlite.dialect.sql(statement)))
+  ]);
+}
+function ensureFileIngressColumns(sqlite) {
+  const addedColumns = [
+    ["leaseId", "TEXT"],
+    ["state", "TEXT"],
+    ["actorId", "TEXT"],
+    ["authorityKind", "TEXT"],
+    ["authorityId", "TEXT"],
+    ["ownerId", "TEXT"],
+    ["principalNamespace", "TEXT"],
+    ["principalKeyDigest", "TEXT"],
+    ["endpointMethod", "TEXT"],
+    ["endpointPath", "TEXT"],
+    ["requestKey", "TEXT"],
+    ["partKey", "TEXT"],
+    ["expiresAt", "TEXT"],
+    ["sweepToken", "TEXT"]
+  ];
+  return chainMaybePromise([
+    ...addedColumns.map(([name, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_file_ingress", name, type)),
+    () => thenIfPromise(sqlite.prepare(sqlite.dialect.sql("SELECT [key], [payload] FROM [sporades_file_ingress] WHERE [leaseId] IS NULL OR [expiresAt] IS NULL OR [authorityKind] IS NULL")).all(), (rows) => chainMaybePromise(rows.map((stored) => () => {
+      let row;
+      try {
+        row = JSON.parse(stored.payload);
+      } catch {
+        return void 0;
+      }
+      const normalized = { ...row, authorityKind: row.authorityKind ?? "actor", authorityId: row.authorityId ?? `actor:${row.actorId}`, ownerId: row.ownerId ?? row.actorId };
+      return sqlite.prepare(sqlite.dialect.sql("UPDATE [sporades_file_ingress] SET [leaseId]=?, [state]=?, [actorId]=?, [authorityKind]=?, [authorityId]=?, [ownerId]=?, [principalNamespace]=?, [principalKeyDigest]=?, [endpointMethod]=?, [endpointPath]=?, [requestKey]=?, [partKey]=?, [expiresAt]=?, [sweepToken]=?, [payload]=? WHERE [key]=?")).run(normalized.leaseId ?? null, normalized.state ?? null, normalized.actorId ?? null, normalized.authorityKind, normalized.authorityId, normalized.ownerId, normalized.principalNamespace ?? null, normalized.principalKeyDigest ?? null, normalized.endpointMethod ?? null, normalized.endpointPath ?? null, normalized.requestKey ?? null, normalized.partKey ?? null, normalized.expiresAt ?? null, normalized.sweepToken ?? null, JSON.stringify(normalized), stored.key);
+    }))),
+    () => sqlite.exec(sqlite.dialect.sql("CREATE UNIQUE INDEX IF NOT EXISTS [sporades_file_ingress_lease_unique] ON [sporades_file_ingress] ([leaseId])"))
   ]);
 }
 function createStructuredFileError(message, hint) {
@@ -14033,6 +14069,7 @@ function flushTeamSecurityEvents(database, context, options = {}) {
 // src/auth-runtime.ts
 var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");
 var PRIVILEGED_AUTH_USER_ID = "__privileged__";
+var CAPSULE_INGRESS_AUTH_USER_PREFIX = "__sporades_capsule_ingress__:";
 var EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
 var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
 var EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
@@ -14050,8 +14087,12 @@ var PASSWORD_RESET_REQUEST_JOB = "_sporades_password_reset_request";
 function privilegedAuthUserId() {
   return "__privileged__";
 }
+function capsuleIngressAuthUserId(capsuleIdentity) {
+  const digest = nodeCryptoModule3.createHash("sha256").update(String(capsuleIdentity ?? "capsule"), "utf8").digest("hex").slice(0, 32);
+  return `${CAPSULE_INGRESS_AUTH_USER_PREFIX}${digest}`;
+}
 function isReservedAuthUserId(userId) {
-  return userId === privilegedAuthUserId();
+  return userId === privilegedAuthUserId() || typeof userId === "string" && userId.startsWith(CAPSULE_INGRESS_AUTH_USER_PREFIX);
 }
 function authIdentityRowUnlessReserved(rowOrPromise) {
   if (rowOrPromise && typeof rowOrPromise.then === "function") {
@@ -14596,7 +14637,7 @@ function createAppleClientSecret(database, nowSeconds2 = Math.floor(Date.now() /
       "OAUTH_CLIENT_CREDENTIAL_INVALID"
     );
   }
-  const header = Buffer.from(JSON.stringify({ alg: "ES256", kid: apple.keyId, typ: "JWT" })).toString("base64url");
+  const header2 = Buffer.from(JSON.stringify({ alg: "ES256", kid: apple.keyId, typ: "JWT" })).toString("base64url");
   const claims = Buffer.from(JSON.stringify({
     iss: apple.teamId,
     iat: nowSeconds2,
@@ -14606,7 +14647,7 @@ function createAppleClientSecret(database, nowSeconds2 = Math.floor(Date.now() /
   })).toString("base64url");
   const signatureBytes = nodeCryptoModule3.sign(
     "sha256",
-    Buffer.from(`${header}.${claims}`),
+    Buffer.from(`${header2}.${claims}`),
     { key: signingKey, dsaEncoding: "ieee-p1363" }
   );
   if (signatureBytes.length !== 64) {
@@ -14616,7 +14657,7 @@ function createAppleClientSecret(database, nowSeconds2 = Math.floor(Date.now() /
       "OAUTH_CLIENT_CREDENTIAL_INVALID"
     );
   }
-  return `${header}.${claims}.${signatureBytes.toString("base64url")}`;
+  return `${header2}.${claims}.${signatureBytes.toString("base64url")}`;
 }
 function createFacebookOAuthProviderAdapter(database) {
   const facebook = database.authConfig.providers.facebook;
@@ -14917,15 +14958,15 @@ async function verifyGoogleIdentityToken(database, token, expectedNonce) {
   if (parts.length !== 3) {
     throw commandError("Google identity token was invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
-  let header;
+  let header2;
   let claims;
   try {
-    header = JSON.parse(decodeJwtPart(parts[0]).toString("utf8"));
+    header2 = JSON.parse(decodeJwtPart(parts[0]).toString("utf8"));
     claims = JSON.parse(decodeJwtPart(parts[1]).toString("utf8"));
   } catch {
     throw commandError("Google identity token was invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
-  if (header.alg !== "RS256" || typeof header.kid !== "string") {
+  if (header2.alg !== "RS256" || typeof header2.kid !== "string") {
     throw commandError("Google identity token used an unsupported signature.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
   const jwksUrl = oauthProviderTestEndpoint(
@@ -14953,7 +14994,7 @@ async function verifyGoogleIdentityToken(database, token, expectedNonce) {
   if (!keys) {
     throw commandError("Google signing keys were invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
   }
-  const jwk = keys.find((candidate) => isPlainJsonObject(candidate) && candidate.kid === header.kid && candidate.kty === "RSA" && typeof candidate.n === "string" && typeof candidate.e === "string");
+  const jwk = keys.find((candidate) => isPlainJsonObject(candidate) && candidate.kid === header2.kid && candidate.kty === "RSA" && typeof candidate.n === "string" && typeof candidate.e === "string");
   if (!jwk) {
     throw commandError("Google identity token signing key was not recognized.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
@@ -15253,11 +15294,11 @@ async function verifyMicrosoftIdentityToken(database, token, expectedNonce, disc
   if (parts.length !== 3 || parts.some((part) => part.length === 0)) {
     throw commandError("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
-  let header;
+  let header2;
   let claims;
   let signature;
   try {
-    header = parseMicrosoftJwtPart(parts[0], 2 * 1024);
+    header2 = parseMicrosoftJwtPart(parts[0], 2 * 1024);
     claims = parseMicrosoftJwtPart(parts[1], 12 * 1024);
     signature = decodeJwtPart(parts[2]);
     if (signature.length < 128 || signature.length > 1024) throw new Error("signature size");
@@ -15269,11 +15310,11 @@ async function verifyMicrosoftIdentityToken(database, token, expectedNonce, disc
   const numericDate = (value) => Number.isSafeInteger(value) && value >= 0;
   const optionalNumericDate = (value) => value === void 0 || numericDate(value);
   const optionalProfile = (value, max) => value === void 0 || value === null || typeof value === "string" && value.length <= max;
-  const structurallyValid = header.alg === "RS256" && visible(header.kid, 255) && visible(claims.iss, 2048) && validAudience && numericDate(claims.exp) && optionalNumericDate(claims.nbf) && optionalNumericDate(claims.iat) && visible(claims.nonce, 512) && typeof claims.tid === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(claims.tid) && visible(claims.sub, 255) && optionalProfile(claims.email, 1024) && optionalProfile(claims.name, 1024) && optionalProfile(claims.preferred_username, 1024);
+  const structurallyValid = header2.alg === "RS256" && visible(header2.kid, 255) && visible(claims.iss, 2048) && validAudience && numericDate(claims.exp) && optionalNumericDate(claims.nbf) && optionalNumericDate(claims.iat) && visible(claims.nonce, 512) && typeof claims.tid === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(claims.tid) && visible(claims.sub, 255) && optionalProfile(claims.email, 1024) && optionalProfile(claims.name, 1024) && optionalProfile(claims.preferred_username, 1024);
   if (!structurallyValid) {
     throw commandError("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
-  const jwk = await selectMicrosoftJwk(database, discovery, header.kid);
+  const jwk = await selectMicrosoftJwk(database, discovery, header2.kid);
   let signatureValid = false;
   let signatureCheckFailed = false;
   try {
@@ -15319,15 +15360,15 @@ async function verifyAppleIdentityToken(database, token, expectedNonce) {
   if (parts.length !== 3) {
     throw commandError("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
-  let header;
+  let header2;
   let claims;
   try {
-    header = parseBoundedJwtObject(parts[0]);
+    header2 = parseBoundedJwtObject(parts[0]);
     claims = parseBoundedJwtObject(parts[1]);
   } catch {
     throw commandError("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
-  if (header.alg !== "RS256" || typeof header.kid !== "string" || !/^[\x21-\x7e]{1,255}$/.test(header.kid) || header.typ !== void 0 && header.typ !== "JWT") {
+  if (header2.alg !== "RS256" || typeof header2.kid !== "string" || !/^[\x21-\x7e]{1,255}$/.test(header2.kid) || header2.typ !== void 0 && header2.typ !== "JWT") {
     throw commandError("Apple identity token used an unsupported signature.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
   const jwksUrl = oauthProviderTestEndpoint(
@@ -15355,7 +15396,7 @@ async function verifyAppleIdentityToken(database, token, expectedNonce) {
   if (!keys) {
     throw commandError("Apple signing keys were invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
   }
-  const jwk = keys.find((candidate) => isPlainJsonObject(candidate) && candidate.kid === header.kid && candidate.kty === "RSA" && candidate.use === "sig" && candidate.alg === "RS256" && typeof candidate.n === "string" && typeof candidate.e === "string");
+  const jwk = keys.find((candidate) => isPlainJsonObject(candidate) && candidate.kid === header2.kid && candidate.kty === "RSA" && candidate.use === "sig" && candidate.alg === "RS256" && typeof candidate.n === "string" && typeof candidate.e === "string");
   if (!jwk) {
     throw commandError("Apple identity token signing key was not recognized.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
@@ -18021,6 +18062,38 @@ function createSharedDatabaseAdapterMethods(dialect) {
         row.updatedAt
       );
     },
+    insertFileRowIfAbsent(row) {
+      return this.prepare(
+        sql(
+          "INSERT INTO [sporades_files] ([id], [ownerId], [bucketId], [bucketName], [path], [name], [type], [size], [version], [status], [createdAt], [updatedAt], [deletedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL) ON CONFLICT([id]) DO NOTHING"
+        )
+      ).run(row.id, row.ownerId, row.bucketId, row.bucketName, row.path, row.name, row.type, row.size, row.version, row.status, row.createdAt, row.updatedAt);
+    },
+    selectIngressByLease(leaseId) {
+      return this.prepare(sql("SELECT * FROM [sporades_file_ingress] WHERE [leaseId] = ?")).get(leaseId) ?? null;
+    },
+    lockIngressReceipts(leaseIds) {
+      const sorted = [...new Set(leaseIds.map(String))].sort();
+      if (sorted.length === 0) return { changes: 0 };
+      return this.prepare(sql(`UPDATE [sporades_file_ingress] SET [updatedAt] = [updatedAt] WHERE [leaseId] IN (${sorted.map(() => "?").join(", ")})`)).run(...sorted);
+    },
+    completeIngressClaim(row) {
+      const updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+      return thenIfPromise(
+        this.prepare(sql("UPDATE [sporades_file_ingress] SET [payload] = ?, [state] = ?, [updatedAt] = ? WHERE [leaseId] = ? AND [state] = ?")).run(JSON.stringify(row), "complete", updatedAt, row.leaseId, "leased"),
+        () => this.selectIngressByLease(row.leaseId)
+      );
+    },
+    selectIngressSweepCandidates(now2, limit) {
+      return this.prepare(sql("SELECT * FROM [sporades_file_ingress] WHERE [state] = 'sweeping' OR ([state] IN ('leased', 'staging') AND [expiresAt] <= ?) ORDER BY CASE WHEN [state] = 'sweeping' THEN 0 ELSE 1 END, [expiresAt], [key] LIMIT ?")).all(now2, limit);
+    },
+    markIngressReceiptSweeping(row, sweepToken, now2) {
+      const sweeping = { ...row, state: "sweeping", sweepToken };
+      return this.prepare(sql("UPDATE [sporades_file_ingress] SET [state] = 'sweeping', [sweepToken] = ?, [payload] = ?, [updatedAt] = ? WHERE [leaseId] = ? AND ([state] = 'sweeping' OR ([state] IN ('leased', 'staging') AND [expiresAt] <= ?))")).run(sweepToken, JSON.stringify(sweeping), now2, row.leaseId, now2);
+    },
+    deleteIngressSweepingReceipt(leaseId, sweepToken) {
+      return this.prepare(sql("DELETE FROM [sporades_file_ingress] WHERE [leaseId] = ? AND [state] = 'sweeping' AND [sweepToken] = ?")).run(leaseId, sweepToken);
+    },
     updatePendingFileRow(row) {
       return this.prepare(
         sql(
@@ -19063,7 +19136,7 @@ async function createPostgresDatabaseAdapter(options) {
 }
 async function createPostgresConnection(url) {
   const net = await import("node:net");
-  const crypto2 = await import("node:crypto");
+  const crypto3 = await import("node:crypto");
   const options = postgresUrlOptions(url);
   const socket = net.createConnection({ host: options.host, port: options.port });
   socket.setNoDelay(true);
@@ -19113,7 +19186,7 @@ async function createPostgresConnection(url) {
             "Use the Sporades-managed Postgres Capsule service, which authenticates with SCRAM-SHA-256."
           );
         }
-        scram = createPostgresScramSession(crypto2, options.password);
+        scram = createPostgresScramSession(crypto3, options.password);
         const clientFirst = Buffer.from(scram.clientFirstMessage, "utf8");
         socket.write(
           postgresPasswordMessage(
@@ -19237,8 +19310,8 @@ function postgresPasswordMessage(body) {
   const bodyBuffer = Buffer.isBuffer(body) ? body : Buffer.from(body);
   return Buffer.concat([Buffer.from("p"), postgresInt32(bodyBuffer.length + 4), bodyBuffer]);
 }
-function createPostgresScramSession(crypto2, password) {
-  const clientNonce = crypto2.randomBytes(18).toString("base64");
+function createPostgresScramSession(crypto3, password) {
+  const clientNonce = crypto3.randomBytes(18).toString("base64");
   const clientFirstBare = `n=,r=${clientNonce}`;
   let serverSignature = null;
   return {
@@ -19251,15 +19324,15 @@ function createPostgresScramSession(crypto2, password) {
       if (!serverNonce.startsWith(clientNonce) || salt.length === 0 || !Number.isInteger(iterations) || iterations <= 0) {
         throw new Error("Invalid Postgres SCRAM server-first message.");
       }
-      const saltedPassword = crypto2.pbkdf2Sync(password, salt, iterations, 32, "sha256");
-      const clientKey = crypto2.createHmac("sha256", saltedPassword).update("Client Key").digest();
-      const storedKey = crypto2.createHash("sha256").update(clientKey).digest();
+      const saltedPassword = crypto3.pbkdf2Sync(password, salt, iterations, 32, "sha256");
+      const clientKey = crypto3.createHmac("sha256", saltedPassword).update("Client Key").digest();
+      const storedKey = crypto3.createHash("sha256").update(clientKey).digest();
       const clientFinalWithoutProof = `c=biws,r=${serverNonce}`;
       const authMessage = `${clientFirstBare},${serverFirstMessage},${clientFinalWithoutProof}`;
-      const clientSignature = crypto2.createHmac("sha256", storedKey).update(authMessage).digest();
+      const clientSignature = crypto3.createHmac("sha256", storedKey).update(authMessage).digest();
       const clientProof = Buffer.from(clientKey.map((byte, index) => byte ^ clientSignature[index]));
-      const serverKey = crypto2.createHmac("sha256", saltedPassword).update("Server Key").digest();
-      serverSignature = crypto2.createHmac("sha256", serverKey).update(authMessage).digest("base64");
+      const serverKey = crypto3.createHmac("sha256", saltedPassword).update("Server Key").digest();
+      serverSignature = crypto3.createHmac("sha256", serverKey).update(authMessage).digest("base64");
       return `${clientFinalWithoutProof},p=${clientProof.toString("base64")}`;
     },
     verify(serverFinalMessage) {
@@ -20020,6 +20093,324 @@ function quoteIdentifier(identifier) {
   return `"${String(identifier).replaceAll('"', '""')}"`;
 }
 
+// src/file-ingress-runtime.ts
+var crypto2 = process.getBuiltinModule("node:crypto");
+var leaseTtlMs = 10 * 60 * 1e3;
+async function receipt(database, key) {
+  const sql = database.adapter.dialect.sql("SELECT [payload] FROM [sporades_file_ingress] WHERE [key] = ?");
+  const row = await database.adapter.prepare(sql).get(key);
+  return row ? JSON.parse(row.payload) : null;
+}
+async function receiptByLease(database, leaseId) {
+  const stored = await database.adapter.selectIngressByLease(leaseId);
+  return stored ? JSON.parse(stored.payload) : null;
+}
+async function saveReceipt(database, row) {
+  const sql = database.adapter.dialect.sql("UPDATE [sporades_file_ingress] SET [leaseId]=?, [state]=?, [actorId]=?, [authorityKind]=?, [authorityId]=?, [ownerId]=?, [principalNamespace]=?, [principalKeyDigest]=?, [endpointMethod]=?, [endpointPath]=?, [requestKey]=?, [partKey]=?, [expiresAt]=?, [sweepToken]=?, [payload]=?, [updatedAt]=? WHERE [key]=?");
+  await database.adapter.prepare(sql).run(row.leaseId, row.state, row.actorId, row.authorityKind, row.authorityId, row.ownerId, row.principalNamespace ?? null, row.principalKeyDigest ?? null, row.endpointMethod, row.endpointPath, row.requestKey, row.partKey, row.expiresAt, row.sweepToken ?? null, JSON.stringify(row), (/* @__PURE__ */ new Date()).toISOString(), row.key);
+}
+async function acquireReceipt(database, candidate) {
+  const sql = database.adapter.dialect.sql("INSERT INTO [sporades_file_ingress] ([key], [leaseId], [state], [actorId], [authorityKind], [authorityId], [ownerId], [principalNamespace], [principalKeyDigest], [endpointMethod], [endpointPath], [requestKey], [partKey], [expiresAt], [sweepToken], [payload], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT([key]) DO NOTHING");
+  const inserted = await database.adapter.prepare(sql).run(candidate.key, candidate.leaseId, candidate.state, candidate.actorId, candidate.authorityKind, candidate.authorityId, candidate.ownerId, candidate.principalNamespace ?? null, candidate.principalKeyDigest ?? null, candidate.endpointMethod, candidate.endpointPath, candidate.requestKey, candidate.partKey, candidate.expiresAt, null, JSON.stringify(candidate), (/* @__PURE__ */ new Date()).toISOString());
+  if (Number(inserted?.changes ?? 0) > 0) return { row: candidate, winner: true };
+  const row = await receipt(database, candidate.key);
+  if (!row) throw new Error("Ingress receipt acquisition did not return a winner.");
+  return { row, winner: false };
+}
+async function awaitCompletedStagingReceipt(database, key) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const row = await receipt(database, key);
+    if (!row || row.state !== "staging") return row;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(25, attempt + 1)));
+  }
+  throw Object.assign(new Error("Multipart ingress staging did not complete."), { code: "INGRESS_STAGING_INCOMPLETE" });
+}
+function header(headers, name) {
+  return headers[String(name).toLowerCase()];
+}
+function safeName(value) {
+  return String(value ?? "upload").replace(/[\\/\x00-\x1f]/g, "_").trim().slice(0, 255) || "upload";
+}
+function safeType(value) {
+  const type = String(value ?? "").split(";", 1)[0].trim().toLowerCase();
+  return /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(type) ? type : "application/octet-stream";
+}
+function keyFor(endpoint, requestKey, partKey, actor) {
+  return `${endpoint.options.method}:${endpoint.options.path}:${actor}:${requestKey}:${partKey}`;
+}
+function publicLease(row) {
+  return Object.freeze({ leaseId: row.leaseId, partId: row.partId, fieldName: row.fieldName, name: row.name, type: row.type, declaredSize: null, size: row.size, expiresAt: row.expiresAt });
+}
+function idempotencyConflict(message = "Ingress claim conflicts with the completed request.") {
+  return Object.assign(new Error(message), { code: "IDEMPOTENCY_CONFLICT" });
+}
+function ingressAuthorityDenied() {
+  return Object.assign(new Error("File ingress authority is unavailable."), { code: "INGRESS_AUTHORITY_DENIED" });
+}
+function sameFileDescriptor(left, right) {
+  return left?.id === right?.id && left?.ownerId === right?.ownerId && left?.path === right?.path && left?.name === right?.name && left?.type === right?.type && Number(left?.size) === Number(right?.size) && left?.version === right?.version;
+}
+function isUniqueConstraintError3(error) {
+  return /unique constraint|duplicate key|constraint failed/i.test(String(error?.message ?? error));
+}
+async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes) {
+  const boundary = Buffer.from(`--${boundaryText}`);
+  const marker = Buffer.from(`\r
+--${boundaryText}`);
+  let pending = Buffer.alloc(0);
+  let wire = 0;
+  let state = "preamble";
+  let rawHeaders = "";
+  let pieces = [];
+  let size = 0;
+  for await (const source of request) {
+    wire += source.byteLength;
+    if (wire > maxWireBytes) throw Object.assign(new Error("Multipart body exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+    pending = Buffer.concat([pending, Buffer.from(source)]);
+    while (true) {
+      if (state === "preamble") {
+        if (pending.length < boundary.length + 2) break;
+        if (!pending.subarray(0, boundary.length).equals(boundary) || pending.subarray(boundary.length, boundary.length + 2).toString() !== "\r\n") throw Object.assign(new Error("Malformed multipart request."), { code: "INVALID_MULTIPART" });
+        pending = pending.subarray(boundary.length + 2);
+        state = "headers";
+        continue;
+      }
+      if (state === "headers") {
+        const headerEnd = pending.indexOf("\r\n\r\n");
+        if (headerEnd < 0) {
+          if (pending.length > 16384) throw Object.assign(new Error("Multipart headers exceed limit."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+          break;
+        }
+        rawHeaders = pending.subarray(0, headerEnd).toString("latin1");
+        pending = pending.subarray(headerEnd + 4);
+        pieces = [];
+        size = 0;
+        state = "body";
+        continue;
+      }
+      if (state === "body") {
+        const at = pending.indexOf(marker);
+        if (at < 0) {
+          const take = Math.max(0, pending.length - marker.length + 1);
+          if (take) {
+            pieces.push(pending.subarray(0, take));
+            size += take;
+            if (size > maxPartBytes) throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+            pending = pending.subarray(take);
+          }
+          break;
+        }
+        if (at) {
+          pieces.push(pending.subarray(0, at));
+          size += at;
+        }
+        if (size > maxPartBytes) throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+        pending = pending.subarray(at + marker.length);
+        state = "separator";
+        continue;
+      }
+      if (pending.length < 2) break;
+      const separator = pending.subarray(0, 2).toString();
+      if (separator !== "\r\n" && separator !== "--") throw Object.assign(new Error("Malformed multipart request."), { code: "INVALID_MULTIPART" });
+      pending = pending.subarray(2);
+      yield { rawHeaders, body: Buffer.concat(pieces, size) };
+      if (separator === "--") return;
+      state = "headers";
+    }
+  }
+  throw Object.assign(new Error("Truncated multipart request."), { code: "INVALID_MULTIPART" });
+}
+async function stageMultipartIngress(database, endpoint, request, endpointRequest, actor, admittedAuthority) {
+  const policy = endpoint.options.body.multipart;
+  const contentType = String(endpointRequest.headers["content-type"] ?? "");
+  const match = /^multipart\/form-data\s*;\s*boundary=([^;\s]+)$/i.exec(contentType);
+  if (!match || match[1].length > 200) throw Object.assign(new Error("Invalid multipart request."), { code: "INVALID_MULTIPART" });
+  const requestKey = header(endpointRequest.headers, policy.requestKeyHeader);
+  if (typeof requestKey !== "string" || requestKey.length < 1 || requestKey.length > 200) throw Object.assign(new Error("Missing multipart idempotency key."), { code: "INVALID_MULTIPART_REQUEST_KEY" });
+  const maxBytes = Number(policy.maxTotalFileBytes) + Number(policy.maxTotalFieldBytes) + 65536;
+  const files = [];
+  const fields = {};
+  let fieldBytes = 0;
+  let fileBytes = 0;
+  const partKeys = /* @__PURE__ */ new Set();
+  for await (const part of multipartParts(request, match[1], maxBytes, Math.max(Number(policy.maxFileBytes), Number(policy.maxFieldBytes)))) {
+    const rawHeaders = part.rawHeaders;
+    const body = part.body;
+    if (rawHeaders.length > 16384) throw Object.assign(new Error("Multipart headers exceed limit."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+    const disposition = /^content-disposition:\s*form-data;\s*name="([^"]+)"(?:;\s*filename="([^"]*)")?/im.exec(rawHeaders);
+    if (!disposition) throw Object.assign(new Error("Malformed multipart part."), { code: "INVALID_MULTIPART" });
+    const fieldName = disposition[1];
+    const filename = disposition[2];
+    if (filename === void 0) {
+      fieldBytes += body.length;
+      if (body.length > policy.maxFieldBytes || fieldBytes > policy.maxTotalFieldBytes) throw Object.assign(new Error("Multipart field exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+      (fields[fieldName] ??= []).push(body.toString("utf8"));
+      continue;
+    }
+    fileBytes += body.length;
+    if (files.length >= policy.maxFiles || body.length > policy.maxFileBytes || fileBytes > policy.maxTotalFileBytes || body.length > database.fileMaxSizeBytes) throw Object.assign(new Error("Multipart file exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+    const partKey = /^content-id:\s*<?([^>\r\n]+)>?\s*$/im.exec(rawHeaders)?.[1];
+    if (policy.requireStablePartKeys && (!partKey || partKeys.has(partKey))) throw Object.assign(new Error("Multipart files require unique stable part keys."), { code: "INVALID_MULTIPART_PART_KEY" });
+    if (partKey) partKeys.add(partKey);
+    const type = safeType(/^content-type:\s*([^\r\n]+)/im.exec(rawHeaders)?.[1] ?? "");
+    if (policy.allowedMimeTypes && !policy.allowedMimeTypes.map(safeType).includes(type)) throw Object.assign(new Error("Multipart file type is not allowed."), { code: "MULTIPART_TYPE_DENIED" });
+    const stablePartKey = partKey ?? crypto2.createHash("sha256").update(`${fieldName}:${files.length}`).digest("hex");
+    const actorId = String(actor.userId ?? "");
+    const authority = admittedAuthority ?? { kind: "actor", actorId, ownerId: actorId };
+    const authorityId = authority.kind === "capsule-principal" ? `capsule:${authority.namespace}:${authority.keyDigest}` : `actor:${authority.actorId}`;
+    const key = keyFor(endpoint, requestKey, stablePartKey, authorityId);
+    const digest = crypto2.createHash("sha256").update(body).digest("hex");
+    const now2 = /* @__PURE__ */ new Date();
+    const candidate = { key, leaseId: crypto2.randomUUID(), partId: crypto2.createHash("sha256").update(key).digest("hex"), fieldName, name: safeName(filename), type, size: body.length, digest, fileId: crypto2.randomUUID(), version: crypto2.randomUUID(), state: "staging", actorId, authorityKind: authority.kind, authorityId, ownerId: authority.ownerId, ...authority.kind === "capsule-principal" ? { principalNamespace: authority.namespace, principalKeyDigest: authority.keyDigest } : {}, endpointMethod: String(endpoint.options.method), endpointPath: String(endpoint.options.path), requestKey, partKey: stablePartKey, expiresAt: new Date(now2.getTime() + leaseTtlMs).toISOString() };
+    const legacyActorKey = authority.kind === "actor" ? keyFor(endpoint, requestKey, stablePartKey, authority.actorId) : null;
+    const legacyActorRow = legacyActorKey && legacyActorKey !== key ? await receipt(database, legacyActorKey) : null;
+    const acquired = legacyActorRow?.authorityKind === "actor" && legacyActorRow.authorityId === authorityId && legacyActorRow.ownerId === authority.ownerId ? { row: legacyActorRow, winner: false } : await acquireReceipt(database, candidate);
+    let row = acquired.row;
+    if (row.digest !== digest || row.name !== candidate.name || row.type !== type || row.size !== body.length) throw Object.assign(new Error("Multipart retry descriptor conflicts with the original part."), { code: "INGRESS_DESCRIPTOR_CONFLICT" });
+    if (acquired.winner) {
+      await database.fileStorage.writeFileVersion({ fileId: row.fileId, version: row.version, bytes: body });
+      row.state = "leased";
+      await saveReceipt(database, row);
+    } else if (row.state === "staging") {
+      row = await awaitCompletedStagingReceipt(database, key);
+    }
+    if (!row || row.state === "staging") throw Object.assign(new Error("Multipart ingress staging did not complete."), { code: "INGRESS_STAGING_INCOMPLETE" });
+    files.push(publicLease(row));
+  }
+  return { body: null, bodyBytes: Object.freeze({ byteLength: 0, length: 0, at() {
+    return void 0;
+  }, toUint8Array() {
+    return new Uint8Array();
+  }, *[Symbol.iterator]() {
+  } }), multipart: Object.freeze({ files: Object.freeze(files), fields: Object.freeze(fields) }), __ingressRequestKey: requestKey, __ingressAuthority: admittedAuthority ?? Object.freeze({ kind: "actor", actorId: String(actor.userId ?? ""), ownerId: String(actor.userId ?? "") }) };
+}
+function createEndpointIngressApi(database, endpoint, endpointRequest, context) {
+  const policy = endpoint.options.body?.multipart;
+  const unavailable2 = () => {
+    throw Object.assign(new Error("File ingress was not declared for this endpoint."), { code: "FILE_INGRESS_UNAVAILABLE" });
+  };
+  if (!policy) return { claim: unavailable2, status: unavailable2 };
+  const actorId = String(context.auth?.userId ?? "");
+  const requestKey = endpointRequest.__ingressRequestKey;
+  const admittedAuthority = endpointRequest.__ingressAuthority ?? { kind: "actor", actorId, ownerId: actorId };
+  return {
+    async claim(lease, options) {
+      const row = await receiptByLease(database, lease?.leaseId);
+      if (!row) throw ingressAuthorityDenied();
+      const requestedAuthority = options?.authority ?? { kind: "actor" };
+      let claimAuthorityId;
+      if (row.authorityKind === "capsule-principal") {
+        if (requestedAuthority?.kind !== "capsule-principal" || admittedAuthority?.kind !== "capsule-principal" || typeof requestedAuthority.namespace !== "string" || typeof requestedAuthority.key !== "string") throw ingressAuthorityDenied();
+        const requestedDigest = crypto2.createHash("sha256").update(`${requestedAuthority.namespace}\0${requestedAuthority.key}`, "utf8").digest("hex");
+        if (requestedAuthority.namespace !== admittedAuthority.namespace || requestedDigest !== admittedAuthority.keyDigest || row.principalNamespace !== requestedAuthority.namespace || row.principalKeyDigest !== requestedDigest || row.ownerId !== database.capsuleIngressOwnerId) throw ingressAuthorityDenied();
+        claimAuthorityId = `capsule:${requestedAuthority.namespace}:${requestedDigest}`;
+      } else {
+        if (requestedAuthority?.kind !== "actor" || admittedAuthority?.kind !== "actor" || !context.auth?.isAuthenticated || context.auth?.isGuest || admittedAuthority.actorId !== actorId || row.ownerId !== actorId) throw ingressAuthorityDenied();
+        claimAuthorityId = `actor:${actorId}`;
+      }
+      const expectedLease = publicLease(row);
+      if (row.authorityId !== claimAuthorityId || row.endpointMethod !== String(endpoint.options.method) || row.endpointPath !== String(endpoint.options.path) || row.requestKey !== requestKey || expectedLease.leaseId !== lease?.leaseId || expectedLease.partId !== lease?.partId || expectedLease.fieldName !== lease?.fieldName || expectedLease.name !== lease?.name || expectedLease.type !== lease?.type || expectedLease.size !== lease?.size || expectedLease.expiresAt !== lease?.expiresAt) {
+        throw ingressAuthorityDenied();
+      }
+      const path12 = normalizeAbsoluteFilePath(options?.path);
+      if (!policy.allowedPathPrefixes.some((prefix) => path12 === prefix || path12.startsWith(`${prefix}/`))) throw Object.assign(new Error("File path is outside the endpoint ingress policy."), { code: "INGRESS_PATH_DENIED" });
+      const name = safeName(options?.name ?? row.name);
+      const type = safeType(options?.type ?? row.type);
+      const expectedFile = { id: row.fileId, ownerId: row.ownerId, path: path12, name, type, size: row.size, version: row.version };
+      if (row.state === "complete") {
+        if (!sameFileDescriptor(row.file, expectedFile)) throw idempotencyConflict();
+        return fileMetadataFromRow(row.file);
+      }
+      if (row.state === "expired" || Date.parse(row.expiresAt) <= Date.now()) throw Object.assign(new Error("File ingress lease has expired."), { code: "INGRESS_LEASE_EXPIRED" });
+      if (row.state !== "leased") throw idempotencyConflict("Ingress lease is not claimable.");
+      const now2 = (/* @__PURE__ */ new Date()).toISOString();
+      const bucket = await ensureFileBucket(database, row.ownerId, "default", now2);
+      const file = { id: row.fileId, ownerId: row.ownerId, bucketId: bucket.id, bucketName: bucket.name, path: path12, name: safeName(options?.name ?? row.name), type: safeType(options?.type ?? row.type), size: row.size, version: row.version, status: "uploaded", createdAt: now2, updatedAt: now2 };
+      try {
+        await database.adapter.insertFileRowIfAbsent(file);
+      } catch (error) {
+        if (isUniqueConstraintError3(error)) throw Object.assign(new Error("File path already exists."), { code: "FILE_PATH_EXISTS" });
+        throw error;
+      }
+      const storedFile = await database.adapter.selectFileById(file.id);
+      if (!storedFile || !sameFileDescriptor(storedFile, file)) throw idempotencyConflict("Ingress File metadata conflicts with an existing row.");
+      row.state = "complete";
+      row.file = storedFile;
+      const storedReceipt = await database.adapter.completeIngressClaim(row);
+      const completed = storedReceipt ? JSON.parse(storedReceipt.payload) : null;
+      if (!completed || completed.state !== "complete" || !sameFileDescriptor(completed.file, file)) throw idempotencyConflict("Ingress receipt completion conflicted with another claim.");
+      return fileMetadataFromRow(storedFile);
+    },
+    async status(statusRequestKey, partKey) {
+      const authorityId = admittedAuthority.kind === "capsule-principal" ? `capsule:${admittedAuthority.namespace}:${admittedAuthority.keyDigest}` : `actor:${actorId}`;
+      let row = await receipt(database, keyFor(endpoint, statusRequestKey, partKey, authorityId));
+      if (!row && admittedAuthority.kind === "actor") row = await receipt(database, keyFor(endpoint, statusRequestKey, partKey, actorId));
+      if (!row || row.authorityId !== authorityId || row.ownerId !== actorId) return { state: "missing" };
+      return row.state === "complete" ? { state: "complete", file: fileMetadataFromRow(row.file) } : { state: "leased", lease: publicLease(row) };
+    }
+  };
+}
+function finalizeEndpointIngressClaims(context, committed) {
+}
+async function armIngressSweep(database, candidate, now2, sweepToken) {
+  for (let attempt = 0; attempt <= 100; attempt += 1) {
+    let fenceAcquired = false;
+    try {
+      return await database.adapter.withTransaction(async (adapter) => {
+        await adapter.lockIngressReceipts([candidate.leaseId]);
+        fenceAcquired = true;
+        const stored = await adapter.selectIngressByLease(candidate.leaseId);
+        if (!stored || stored.state === "complete") return null;
+        let row;
+        try {
+          row = JSON.parse(stored.payload);
+        } catch {
+          throw Object.assign(new Error("Ingress receipt payload is invalid."), { code: "INGRESS_SWEEP_INVALID_RECEIPT" });
+        }
+        if (row.fileId && await adapter.selectFileById(row.fileId)) return null;
+        const armed = await adapter.markIngressReceiptSweeping(row, sweepToken, now2);
+        return Number(armed?.changes ?? 0) > 0 ? { ...row, state: "sweeping", sweepToken } : null;
+      });
+    } catch (error) {
+      if (fenceAcquired || database.adapter.engine !== "sqlite" || attempt >= 100 || !String(error?.message ?? "").includes("database is locked")) throw error;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(25, attempt + 1)));
+    }
+  }
+  return null;
+}
+async function sweepExpiredFileIngress(database, options = {}) {
+  const now2 = typeof options.now === "string" && Number.isFinite(Date.parse(options.now)) ? new Date(options.now).toISOString() : (/* @__PURE__ */ new Date()).toISOString();
+  const requestedLimit = Number(options.limit ?? 50);
+  const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(100, requestedLimit)) : 50;
+  let candidates;
+  try {
+    candidates = await database.adapter.selectIngressSweepCandidates(now2, limit);
+  } catch {
+    return Object.freeze({ scanned: 0, cleaned: Object.freeze([]), failures: Object.freeze([{ code: "INGRESS_SWEEP_STORAGE_FAILED" }]) });
+  }
+  const cleaned = [];
+  const failures = [];
+  for (const candidate of candidates) {
+    const leaseId = String(candidate.leaseId ?? "");
+    const sweepToken = crypto2.randomUUID();
+    try {
+      const armed = await armIngressSweep(database, candidate, now2, sweepToken);
+      if (!armed) continue;
+      try {
+        await database.fileStorage.deleteFileVersion({ fileId: armed.fileId, version: armed.version });
+      } catch {
+        failures.push(Object.freeze({ leaseId, code: "INGRESS_ORPHAN_CLEANUP_FAILED" }));
+        continue;
+      }
+      const deleted = await database.adapter.deleteIngressSweepingReceipt(leaseId, sweepToken);
+      if (Number(deleted?.changes ?? 0) > 0) cleaned.push(Object.freeze({ leaseId, requestKey: armed.requestKey, partKey: armed.partKey }));
+    } catch (error) {
+      failures.push(Object.freeze({ leaseId, code: error?.code === "INGRESS_SWEEP_INVALID_RECEIPT" ? "INGRESS_SWEEP_INVALID_RECEIPT" : "INGRESS_SWEEP_STORAGE_FAILED" }));
+    }
+  }
+  return Object.freeze({ scanned: candidates.length, cleaned: Object.freeze(cleaned), failures: Object.freeze(failures) });
+}
+
 // src/stripe-events-runtime.ts
 function deepFreezeVerifiedJson(value) {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
@@ -20040,7 +20431,7 @@ async function dispatchVerifiedStripeEvent(ctx, event, subscription) {
 
 // src/server-runtime-source.ts
 var mutationResultsWithWrites = /* @__PURE__ */ new WeakSet();
-var trustedReadPurposes = /* @__PURE__ */ new Set(["teams.join-admission", "team-billing.authority"]);
+var trustedReadPurposes = /* @__PURE__ */ new Set(["teams.join-admission", "team-billing.authority", "files.ingress-admission"]);
 var trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 var runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
 var atomicStripeEventDefinitionBrand2 = Symbol.for("sporades.stripeEvent.atomicDefinition");
@@ -20171,6 +20562,27 @@ function emitRuntimeReplacementWarning(database, event, message, error, fallback
   } catch {
   }
 }
+function endpointIngressClaimAuthority(endpoint) {
+  const declared = endpoint?.options?.body?.multipart?.claimAuthorities;
+  if (declared === void 0) return "actor";
+  if (!Array.isArray(declared) || declared.length !== 1 || !["actor", "capsule-principal"].includes(declared[0])) {
+    throw commandError("Invalid multipart claim authority.", "Declare exactly one of actor or capsule-principal for this endpoint.", "INVALID_FILE_INGRESS_AUTHORITY");
+  }
+  return declared[0];
+}
+function normalizeCapsuleFileIngressDefinition(files, endpoints) {
+  const usesCapsulePrincipal = endpoints.some((endpoint) => endpoint?.options?.body?.multipart && endpointIngressClaimAuthority(endpoint) === "capsule-principal");
+  if (!usesCapsulePrincipal) return null;
+  const ingress = files?.ingress;
+  const namespaces = ingress?.principalNamespaces;
+  if (!ingress || typeof ingress !== "object" || Array.isArray(ingress) || typeof ingress.admit !== "function" || !Array.isArray(namespaces) || namespaces.length === 0 || namespaces.length > 32 || namespaces.some((value) => typeof value !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(value)) || new Set(namespaces).size !== namespaces.length) {
+    throw commandError("Invalid Capsule File ingress admission.", "Declare files.ingress with unique principalNamespaces and an admit function.", "INVALID_FILE_INGRESS_ADMISSION");
+  }
+  if (typeof files?.acl?.read !== "function" || typeof files?.acl?.delete !== "function") {
+    throw commandError("Capsule-principal File ingress requires explicit File ACL rules.", "Declare files.acl.read and files.acl.delete before enabling capsule-principal claims.", "FILE_INGRESS_ACL_REQUIRED");
+  }
+  return Object.freeze({ principalNamespaces: Object.freeze([...namespaces]), admit: ingress.admit });
+}
 async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
   if (capsuleDefinition) {
     capsuleDefinition = normalizeCapsuleAuthDefinition(capsuleDefinition);
@@ -20228,6 +20640,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     }
   }
   const endpoints = [...capsuleEndpoints, ...providerEndpoints];
+  const fileIngressDefinition = normalizeCapsuleFileIngressDefinition(capsuleDefinition?.files, endpoints);
   const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
   const journeySessionInactivityMinutes = resolveJourneySessionInactivityMinutes(config);
   globalThis.requireAuth = requireAuth;
@@ -20309,6 +20722,8 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     securitySession: config.__sporadesSession ?? "container",
     clock,
     capsuleIdentity: String(config.name ?? "capsule"),
+    capsuleIngressOwnerId: capsuleIngressAuthUserId(config.name ?? capsuleDefinition?.name ?? "capsule"),
+    fileIngressDefinition,
     scheduleOccurrenceFault: options?.scheduleOccurrenceFault,
     scheduleReconciliationFault: options?.scheduleReconciliationFault,
     jobRecoveryFault: options?.jobRecoveryFault,
@@ -20682,6 +21097,10 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   await ensureScheduleStorage(sqlite, options?.scheduleStorageFault);
   await sqlite.ensureFileStorage();
   await sqlite.ensureLogStorage();
+  if (!options?.runtimeActionOnly) {
+    const ingressSweep = await sweepExpiredFileIngress(database);
+    if (ingressSweep.failures.length > 0) await database.log.emit({ category: "platform", event: "file.ingress.sweep_failed", level: "warn", message: "Multipart ingress cleanup left retryable orphan state", data: { code: ingressSweep.failures[0].code, failures: ingressSweep.failures.length, scanned: ingressSweep.scanned } });
+  }
   if (!options?.runtimeActionOnly) {
     await recoverInvalidRetainedJobState(database);
     await recoverExpiredJobLeases(database);
@@ -22032,6 +22451,9 @@ function endpointHandlersFromCapsuleDefinition(capsuleDefinition) {
     name,
     method: definition.options.method.toUpperCase(),
     path: definition.options.path,
+    // Keep declaration-time transport policy with the runtime route. It is security
+    // configuration, not handler-owned data, and must survive Capsule registration.
+    options: definition.options,
     handler: definition.handler
   }));
 }
@@ -22433,15 +22855,38 @@ async function routeEndpoint(database, request, response) {
   }
   return true;
 }
+async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, signal) {
+  const definition = database.fileIngressDefinition;
+  if (!definition) throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
+  const decision = await database.adapter.withTransaction((transaction) => withTrustedRead(database, {
+    transaction,
+    purpose: "files.ingress-admission",
+    subject: { method: endpoint.options.method, path: endpoint.options.path },
+    signal
+  }, (db) => definition.admit(Object.freeze({
+    db,
+    env: database.serverEnv,
+    signal,
+    request: Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) })
+  }), Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }))));
+  const namespace = decision?.principal?.namespace;
+  const key = decision?.principal?.key;
+  const serialized = (() => {
+    try {
+      return JSON.stringify(decision);
+    } catch {
+      return "";
+    }
+  })();
+  if (decision?.allow !== true || typeof namespace !== "string" || !definition.principalNamespaces.includes(namespace) || typeof key !== "string" || key.length === 0 || Buffer.byteLength(key, "utf8") > 256 || /[\x00-\x1f\x7f]/.test(key) || Buffer.byteLength(serialized, "utf8") > 4096) {
+    throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
+  }
+  return Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash8("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId });
+}
 async function runEndpoint(database, endpoint, requestUrl, request) {
   const handler = typeof endpoint.handler === "function" ? endpoint.handler : new Function(`return (${endpoint.handlerSource});`)();
   const runtimeOwnedProviderCallback = endpoint.runtimeOwnedEmailEvent || endpoint.runtimeOwnedStripeCallback;
-  const endpointRequest = await readEndpointRequest(
-    database,
-    requestUrl,
-    request,
-    !endpoint.runtimeOwnedStripeCallback
-  );
+  let endpointRequest = endpointRequestHead(requestUrl, request);
   const requirements = readAuthRequirements(handler);
   const hasAuthorization = requirements ? endpointHasAuthorization(request) : false;
   if (requirements) delete endpointRequest.headers.authorization;
@@ -22459,6 +22904,9 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
     request,
     readEndpointSessionToken(endpointRequest.headers, endpointRequest.query)
   ) : null;
+  if (!accessKeyAdmission && requirements && endpoint.options?.body?.multipart) {
+    admitCredentialHandler(handler, { auth: session?.auth, credential: { kind: "session" } }, "endpoint");
+  }
   if (accessKeyAdmission) {
     const admissionContext = {
       auth: accessKeyAdmission.auth,
@@ -22475,41 +22923,75 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
     emitAccessKeyAdmittedAudit(database, { ...admissionContext, kind: "endpoint" }, accessKeyAdmission.record);
     await recordAccessKeyUsage(database, accessKeyAdmission);
   }
+  if (endpoint.options?.body?.multipart) {
+    const claimAuthority = endpointIngressClaimAuthority(endpoint);
+    const admitted = accessKeyAdmission ?? session;
+    let ingressAuthority;
+    if (claimAuthority === "capsule-principal") {
+      ingressAuthority = await admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, request.signal);
+    } else {
+      if (!admitted?.auth?.isAuthenticated || admitted.auth.isGuest || isReservedAuthUserId(admitted.auth.userId)) throw commandError("Unauthenticated.", "Sign in with a linked human or service User and retry.", "UNAUTHENTICATED");
+      ingressAuthority = Object.freeze({ kind: "actor", actorId: String(admitted.auth.userId), ownerId: String(admitted.auth.userId) });
+    }
+    const payload = await stageMultipartIngress(database, endpoint, request, endpointRequest, admitted.auth, ingressAuthority);
+    endpointRequest = { ...endpointRequest, ...payload };
+  } else {
+    endpointRequest = await readEndpointRequest(database, requestUrl, request, !endpoint.runtimeOwnedStripeCallback);
+  }
   let context;
   try {
-    const result = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
-      const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
-      let handlerFailed = false;
+    let result;
+    let transactionAttempt = 0;
+    while (true) {
+      let ingressFenceAcquired = false;
       try {
-        const resolvedSession = accessKeyAdmission ?? session;
-        context = createEndpointContext(transactionDatabase, endpointRequest, resolvedSession, {
-          ordinaryCredential: !runtimeOwnedProviderCallback,
-          credential: accessKeyAdmission?.credential,
-          accessKeyGrants: accessKeyAdmission?.grants
+        context = void 0;
+        result = await database.adapter.withTransaction(async (transactionAdapter) => {
+          const ingressLeaseIds = (endpointRequest.multipart?.files ?? []).map((lease) => String(lease.leaseId));
+          if (ingressLeaseIds.length > 0) await transactionAdapter.lockIngressReceipts(ingressLeaseIds);
+          ingressFenceAcquired = true;
+          const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
+          let handlerFailed = false;
+          try {
+            const resolvedSession = accessKeyAdmission ?? session;
+            context = createEndpointContext(transactionDatabase, endpointRequest, resolvedSession, {
+              ordinaryCredential: !runtimeOwnedProviderCallback,
+              credential: accessKeyAdmission?.credential,
+              accessKeyGrants: accessKeyAdmission?.grants
+            });
+            context.files = createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context);
+            if (endpoint.runtimeOwnedStripeCallback) {
+              Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
+            }
+            if (!runtimeOwnedProviderCallback) {
+              if (!accessKeyAdmission) admitCredentialHandler(handler, context, "endpoint");
+              context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
+            }
+            const result2 = await handler(context);
+            if (accessKeySecretWasDisclosed(context)) request.__sporadesSecretDisclosed = true;
+            return result2;
+          } catch (error) {
+            handlerFailed = true;
+            throw error;
+          } finally {
+            await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
+          }
         });
-        if (endpoint.runtimeOwnedStripeCallback) {
-          Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
-        }
-        if (!runtimeOwnedProviderCallback) {
-          if (!accessKeyAdmission) admitCredentialHandler(handler, context, "endpoint");
-          context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
-        }
-        const result2 = await handler(context);
-        if (accessKeySecretWasDisclosed(context)) request.__sporadesSecretDisclosed = true;
-        return result2;
+        break;
       } catch (error) {
-        handlerFailed = true;
-        throw error;
-      } finally {
-        await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
+        if (ingressFenceAcquired || database.adapter.engine !== "sqlite" || transactionAttempt >= 100 || !String(error?.message ?? "").includes("database is locked")) throw error;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(25, transactionAttempt + 1)));
+        transactionAttempt += 1;
       }
-    });
+    }
+    finalizeEndpointIngressClaims(context ?? {}, true);
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     return result;
   } catch (error) {
+    finalizeEndpointIngressClaims(context ?? {}, false);
     dropPendingJobCancellationAborts(context);
     dropAccessKeyLifecycleAuditEvents(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
@@ -22720,6 +23202,11 @@ async function runAtomicStripeConsequence(database, parentContext, event, subscr
   throw new Error("Unreachable atomic Stripe consequence fence state.");
 }
 async function readEndpointRequest(database, requestUrl, request, parseJsonBody = true) {
+  const head = endpointRequestHead(requestUrl, request);
+  const payload = await readEndpointPayload(request, head.headers, database, parseJsonBody);
+  return { ...head, ...payload };
+}
+function endpointRequestHead(requestUrl, request) {
   const headers = Object.fromEntries(
     Object.entries(request.headers).map(([name, value]) => [
       name.toLowerCase(),
@@ -22727,13 +23214,11 @@ async function readEndpointRequest(database, requestUrl, request, parseJsonBody 
     ])
   );
   const query = endpointQueryFromUrl(requestUrl);
-  const payload = await readEndpointPayload(request, headers, database, parseJsonBody);
   return {
     method: request.method,
     path: requestUrl.pathname,
     headers,
-    query,
-    ...payload
+    query
   };
 }
 function createEndpointContext(database, endpointRequest, session, options = {}) {
@@ -22762,9 +23247,13 @@ function createEndpointContext(database, endpointRequest, session, options = {})
       headers: endpointRequest.headers,
       query: endpointRequest.query,
       body: endpointRequest.body,
-      bodyBytes: endpointRequest.bodyBytes
+      bodyBytes: endpointRequest.bodyBytes,
+      ...endpointRequest.multipart ? { multipart: endpointRequest.multipart } : {}
     }
   };
+  if (endpointRequest.__ingressAuthority?.kind === "capsule-principal") {
+    context.ingress = Object.freeze({ principal: Object.freeze({ namespace: endpointRequest.__ingressAuthority.namespace, key: endpointRequest.__ingressAuthority.key }) });
+  }
   if (credential?.kind === "session" && typeof session.token === "string") {
     bindAccessKeyOwnerSession(context, session.token);
   }
@@ -24614,21 +25103,21 @@ function closeWebSocketClient(client) {
 }
 function encodeWebSocketJson(message) {
   const payload = Buffer.from(JSON.stringify(message));
-  let header;
+  let header2;
   if (payload.length < 126) {
-    header = Buffer.from([129, payload.length]);
+    header2 = Buffer.from([129, payload.length]);
   } else if (payload.length < 65536) {
-    header = Buffer.alloc(4);
-    header[0] = 129;
-    header[1] = 126;
-    header.writeUInt16BE(payload.length, 2);
+    header2 = Buffer.alloc(4);
+    header2[0] = 129;
+    header2[1] = 126;
+    header2.writeUInt16BE(payload.length, 2);
   } else {
-    header = Buffer.alloc(10);
-    header[0] = 129;
-    header[1] = 127;
-    header.writeBigUInt64BE(BigInt(payload.length), 2);
+    header2 = Buffer.alloc(10);
+    header2[0] = 129;
+    header2[1] = 127;
+    header2.writeBigUInt64BE(BigInt(payload.length), 2);
   }
-  return Buffer.concat([header, payload]);
+  return Buffer.concat([header2, payload]);
 }
 function sendJson(client, message) {
   client.socket.write(encodeWebSocketJson(message));
@@ -34192,8 +34681,8 @@ function requireDevInspectionToken(request, response, expectedToken) {
   });
   return false;
 }
-function devInspectionTokenMatches(header, expectedToken) {
-  const actualToken = Array.isArray(header) ? header[0] : header;
+function devInspectionTokenMatches(header2, expectedToken) {
+  const actualToken = Array.isArray(header2) ? header2[0] : header2;
   if (typeof actualToken !== "string" || typeof expectedToken !== "string") {
     return false;
   }

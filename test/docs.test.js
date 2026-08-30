@@ -1250,6 +1250,22 @@ test("docs describe MinIO storage services and File reference boundaries", async
   assert.doesNotMatch(roadmap, /Allow uploaded bytes to live in S3-compatible object storage/i);
 });
 
+test("File reference docs define the trusted multipart ingress contract and operations", async () => {
+  const contents = await readProjectFile("docs/reference/files-and-realtime.md");
+  assert.match(contents, /claimAuthorities: \["capsule-principal"\]/);
+  assert.match(contents, /principalNamespaces/);
+  assert.match(contents, /files\.acl\.read/);
+  assert.match(contents, /before reading any body bytes/i);
+  assert.match(contents, /requestKeyHeader/);
+  assert.match(contents, /partKeyHeader/);
+  assert.match(contents, /INGRESS_AUTHORITY_DENIED/);
+  assert.match(contents, /Capsule startup automatically runs a bounded, deterministic\s+cleanup batch/i);
+  assert.match(contents, /There is no\s+public manual ingress-sweeper API/i);
+  assert.doesNotMatch(contents, /sweepExpiredFileIngress/);
+  assert.match(contents, /Local filesystem and\s+MinIO-backed/i);
+  assert.match(contents, /completed receipts remain replayable/i);
+});
+
 test("docs describe Host-generated Sealed Server env custody and lost-key recovery", async () => {
   const [userGuide, architecture, runtimeLayout] = await Promise.all([
     readProjectFile("docs/user-guide.md"),

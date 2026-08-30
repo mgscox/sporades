@@ -345,3 +345,114 @@ receiver-side filtering is deferred. Publication, reads, and subscriptions are
 client-only. Capsule server handlers and the Privileged server role cannot
 impersonate user activity, and transient client claims must not become
 authoritative server business-logic inputs.
+
+## Trusted endpoint multipart ingress
+
+A Custom endpoint should use trusted multipart ingress when an HTTP integration
+must send files directly to an endpoint. Browser and first-party app uploads
+should continue to use the normal `files.upload` flow. The endpoint declares
+hard request limits and stable retry keys:
+
+```ts
+const upload = endpoint({
+  method: "POST",
+  path: "/attachments",
+  body: { multipart: {
+    maxFiles: 4,
+    maxFileBytes: 10_000_000,
+    maxTotalFileBytes: 20_000_000,
+    maxFieldCount: 8,
+    maxFieldBytes: 8_192,
+    maxTotalFieldBytes: 32_768,
+    allowedMimeTypes: ["image/png", "application/pdf"],
+    allowedPathPrefixes: ["/attachments"],
+    requestKeyHeader: "idempotency-key",
+    partKeyHeader: "content-id",
+    requireStablePartKeys: true,
+  } },
+}, requireAuth(async (ctx) => {
+  const [lease] = ctx.request.multipart.files;
+  return await ctx.files.claim(lease, { path: `/attachments/${lease.partId}` });
+}));
+```
+
+Sporades admits the endpoint credential before reading any body bytes. It then
+parses the stream within the declared file, field, header, part, and aggregate
+limits. Fragmented multipart boundaries are supported; malformed or truncated
+streams fail without publishing a partial lease. Completed parts appear only
+as private, expiring leases in `ctx.request.multipart.files`. A lease has no
+File URL, File row, or ACL visibility.
+
+`requestKeyHeader` identifies the whole retry and `partKeyHeader` identifies a
+part independently of multipart ordering. Use sender-provided, stable,
+non-secret values. With `requireStablePartKeys`, missing or repeated part keys
+are rejected. Reusing a key with different bytes, name, media type, or size is
+an idempotency conflict rather than a new upload.
+
+By default, the authenticated human or Access-key service User is the actor and
+File owner. A scoped service User remains a normal non-session actor; do not
+create login-capable bot accounts merely to receive a file. For integrations
+whose external principal is admitted by Capsule code, declare the sole claim
+authority and a bounded pre-body admission function:
+
+```ts
+const definition = capsule({
+  files: {
+    ingress: {
+      principalNamespaces: ["application"],
+      admit: async (ctx, request) => {
+        const app = await ctx.db.integrations.where({ token: request.headers["x-app-token"] }).first();
+        return app
+          ? { allow: true, principal: { namespace: "application", key: app.id } }
+          : { allow: false };
+      },
+    },
+    acl: {
+      read: ({ ctx, file }) => canReadAttachment(ctx, file),
+      delete: ({ ctx, file }) => canDeleteAttachment(ctx, file),
+    },
+  },
+  endpoints: {
+    upload: endpoint({
+      method: "POST",
+      path: "/integration-upload",
+      body: { multipart: { ...limits, claimAuthorities: ["capsule-principal"] } },
+    }, async (ctx) => ctx.files.claim(ctx.request.multipart.files[0], {
+      path: "/attachments/integration.pdf",
+      authority: { kind: "capsule-principal", ...ctx.ingress.principal },
+    })),
+  },
+});
+```
+
+The namespace must be declared, the principal key is bounded, and only its
+digest is persisted. Capsule-principal ingress requires explicit
+`files.acl.read` and `files.acl.delete` rules because its deterministic runtime
+owner is reserved, cannot authenticate, cannot hold an Access key or Session,
+and must never gain implicit human-owner access. Anonymous, cross-user,
+cross-principal, and cross-Capsule claims all fail opaquely with
+`INGRESS_AUTHORITY_DENIED`; callers cannot use the error to discover whether a
+lease exists. Completed retries enforce the same authority.
+
+Trusted server code claims a lease inside the endpoint transaction with an
+application-chosen absolute path:
+
+```ts
+const file = await ctx.files.claim(lease, { path: `/attachments/${id}/source` });
+```
+
+The staged bytes must exist before the receipt is completed. The File row,
+receipt completion, bucket, and application writes then commit together. A
+lost response can replay the completed File even after the original lease
+expiry; expired unclaimed leases cannot be claimed. Local filesystem and
+MinIO-backed storage use identical policy, admission, lease, claim, ACL,
+idempotency, expiry, and cleanup semantics. This server-only surface never
+exposes filesystem paths, object keys, buckets, or storage credentials.
+
+Operationally, Capsule startup automatically runs a bounded, deterministic
+cleanup batch for expired unclaimed receipts. It deletes only staged bytes and
+never deletes a committed File. Interrupted cleanup state remains durable and
+is retried on a later startup; completed receipts remain replayable. There is no
+public manual ingress-sweeper API. Monitor the stable platform cleanup warning,
+but do not log authorization headers, principal keys, idempotency keys that
+contain secrets, or storage connection details.
