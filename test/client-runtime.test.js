@@ -386,6 +386,19 @@ test("every framework auth helper forwards RegistrationOptions to sign-up and si
   } finally { browser.cleanup(); }
 });
 
+test("Solid and Svelte auth adapters expose purpose-bound reauthentication", async () => {
+  const calls = []; const browser = installBrowserFakes(anonymousAuth, { handlers: { "auth.reauthenticate": async (message) => { calls.push(message); return { type: "auth.reauthenticate.result", data: { ok: true, purpose: message.purpose, expiresAt: "2026-08-30T12:00:00.000Z" }, error: null }; } } });
+  try {
+    const runtime = await importClientRuntime(); const signal = (initial) => { let value = initial; return [() => value, (next) => { value = typeof next === "function" ? next(value) : next; }]; };
+    const solid = runtime.createSolidPrimitives({ createSignal: signal, onCleanup() {} }).createAuth(); const svelte = runtime.createSvelteStores().authStore();
+    await solid.reauthenticate("email", { email: "solid@example.com", password: "password-123" }, "administrator-authority"); await svelte.reauthenticate("email", { email: "svelte@example.com", password: "password-123" }, "application-lifecycle");
+    assert.deepEqual(calls.map(({ type, provider, credentials, purpose }) => ({ type, provider, credentials, purpose })), [
+      { type: "auth.reauthenticate", provider: "email", credentials: { email: "solid@example.com", password: "password-123" }, purpose: "administrator-authority" },
+      { type: "auth.reauthenticate", provider: "email", credentials: { email: "svelte@example.com", password: "password-123" }, purpose: "application-lifecycle" },
+    ]);
+  } finally { browser.cleanup(); }
+});
+
 test("Vue composables expose complete reactive state and dispose shared subscriptions", async () => {
   const unsubscribes = [];
   const browser = installBrowserFakes(anonymousAuth, { handlers: {

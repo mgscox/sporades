@@ -170,6 +170,11 @@ await mutations.promote({ userId });
 
 The runtime stores the proof in its own database, bound to the User, exact
 Session, Capsule and purpose. Its maximum declared lifetime is 15 minutes.
+Minting and consumption re-read the exact Session from the database inside the
+same transaction, so sign-out, revocation or expiry in another tab takes effect
+even when a browser connection still holds cached auth state. A proof row may
+remain after Session revocation or expiry for bounded cleanup and audit, but it
+is unusable and cannot be consumed.
 Consumption is part of the guarded mutation transaction: a rejected command
 preserves the proof, one concurrent successful command wins, and commit makes
 it unusable even after restart. URLs, Capsule arguments and successful replies

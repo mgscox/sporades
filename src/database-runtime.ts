@@ -1362,7 +1362,7 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
       ]);
     },
     consumeReauthenticationProof(input: LooseRecord) {
-      return thenIfPromise(this.prepare(sql("SELECT [id] FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ? AND [userId] = ? AND [purpose] = ? AND [expiresAt] > ?")).get(input.sessionToken, input.userId, input.purpose, input.now), (row: LooseRecord | null | undefined) => {
+      return thenIfPromise(this.prepare(sql("SELECT [p].[id] FROM [sporades_auth_reauthentication_proofs] [p] JOIN [sporades_auth_sessions] [s] ON [s].[token] = [p].[sessionToken] WHERE [p].[sessionToken] = ? AND [p].[userId] = ? AND [p].[purpose] = ? AND [p].[expiresAt] > ? AND [s].[userId] = ? AND [s].[expiresAt] > ?")).get(input.sessionToken, input.userId, input.purpose, input.now, input.userId, input.now), (row: LooseRecord | null | undefined) => {
         if (!row) return false;
         return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [id] = ?")).run(row.id), (result: LooseRecord) => result.changes === 1);
       });

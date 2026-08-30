@@ -4564,8 +4564,9 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
                 if (credential?.userId === client.session.auth.userId && verifyEmailPassword(normalized.password, credential.passwordSalt, credential.passwordHash)) {
                     const now = database.clock.now();
                     expiresAt = new Date(now.getTime() + policy.maxAgeSeconds * 1000).toISOString();
-                    await database.adapter.withTransaction(async (tx) => { if (!await database.authorizeReauthentication(tx, client.session.auth, purpose))
-                        return; await tx.replaceReauthenticationProof({ id: randomUUID(), userId: client.session.auth.userId, sessionToken: client.session.token, purpose, createdAt: now.toISOString(), expiresAt }); ok = true; });
+                    await database.adapter.withTransaction(async (tx) => { const current = await tx.readAuthSessionWithUser(client.session.token); if (!current || current.token !== client.session.token || current.userId !== client.session.auth.userId || !current.isAuthenticated || current.isGuest || Date.parse(current.expiresAt) <= now.getTime())
+                        return; const currentAuth = { userId: current.userId, displayName: current.displayName, email: current.email, picture: current.picture, isAuthenticated: Boolean(current.isAuthenticated), isGuest: Boolean(current.isGuest), provider: current.provider }; if (!await database.authorizeReauthentication(tx, currentAuth, purpose))
+                        return; await tx.replaceReauthenticationProof({ id: randomUUID(), userId: current.userId, sessionToken: current.token, purpose, createdAt: now.toISOString(), expiresAt }); ok = true; });
                 }
             }
             if (!ok && authorized && message.provider !== "email" && oauthProviderAdapter(database, message.provider)?.enabled) {

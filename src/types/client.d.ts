@@ -410,6 +410,7 @@ export type UseAuthState = {
   isAuthenticated(): boolean;
   signUp: AuthApi["signUp"];
   signIn: AuthApi["signIn"];
+  reauthenticate: AuthApi["reauthenticate"];
   signOut: AuthApi["signOut"];
   setPassword: AuthApi["setPassword"];
 };
@@ -481,6 +482,7 @@ export type SolidAuth = {
   isAuthenticated(): boolean;
   signUp: AuthApi["signUp"];
   signIn: AuthApi["signIn"];
+  reauthenticate: AuthApi["reauthenticate"];
   signOut: AuthApi["signOut"];
   setPassword: AuthApi["setPassword"];
 };
@@ -558,9 +560,10 @@ export type SvelteMutationStore<Result = unknown> = SvelteReadable<Omit<Mutation
 };
 
 /** Svelte auth state and commands over one lazily observed auth subscription. */
-export type SvelteAuthStore = SvelteReadable<Omit<UseAuthState, "signUp" | "signIn" | "signOut">> & {
+export type SvelteAuthStore = SvelteReadable<Omit<UseAuthState, "signUp" | "signIn" | "reauthenticate" | "signOut">> & {
   signUp: AuthApi["signUp"];
   signIn: AuthApi["signIn"];
+  reauthenticate: AuthApi["reauthenticate"];
   signOut: AuthApi["signOut"];
   setPassword: AuthApi["setPassword"];
 };

@@ -14955,22 +14955,24 @@ async function routeSporadesAuth(database, request, response) {
       pkceVerifier: stateRow.pkceVerifier,
       parameters
     });
-    const session = await resolveAnonymousSession(database, stateRow.sessionToken);
     if (stateRow.reauthPurpose) {
       const subject = normalizeSimulatedText(profile?.subject ?? profile?.sub);
-      const identity = subject ? await database.adapter.findAuthIdentityByProviderSubject(provider, subject) : null;
       const policy = database.reauthenticationPolicy?.[stateRow.reauthPurpose];
-      if (!policy || !session.auth?.isAuthenticated || session.auth?.isGuest || session.auth.userId !== stateRow.reauthUserId || identity?.userId !== session.auth.userId) throw commandError("Reauthentication failed.", "Verify the current linked identity and retry.", "REAUTHENTICATION_FAILED");
       const now2 = database.clock.now();
       const authorized = await database.adapter.withTransaction(async (tx) => {
-        if (!await database.authorizeReauthentication(tx, session.auth, stateRow.reauthPurpose)) return false;
-        await tx.replaceReauthenticationProof({ id: nodeCryptoModule3.randomUUID(), userId: session.auth.userId, sessionToken: stateRow.sessionToken, purpose: stateRow.reauthPurpose, createdAt: now2.toISOString(), expiresAt: new Date(now2.getTime() + policy.maxAgeSeconds * 1e3).toISOString() });
+        const current = await tx.readAuthSessionWithUser(stateRow.sessionToken);
+        const identity = subject ? await tx.findAuthIdentityByProviderSubject(provider, subject) : null;
+        if (!policy || !current || current.token !== stateRow.sessionToken || current.userId !== stateRow.reauthUserId || !current.isAuthenticated || current.isGuest || Date.parse(current.expiresAt) <= now2.getTime() || identity?.userId !== current.userId) return false;
+        const currentAuth = sessionFromRow(current).auth;
+        if (!await database.authorizeReauthentication(tx, currentAuth, stateRow.reauthPurpose)) return false;
+        await tx.replaceReauthenticationProof({ id: nodeCryptoModule3.randomUUID(), userId: current.userId, sessionToken: stateRow.sessionToken, purpose: stateRow.reauthPurpose, createdAt: now2.toISOString(), expiresAt: new Date(now2.getTime() + policy.maxAgeSeconds * 1e3).toISOString() });
         return true;
       });
       if (!authorized) throw commandError("Reauthentication failed.", "Verify the current linked identity and retry.", "REAUTHENTICATION_FAILED");
       writeRedirect(response, stateRow.returnTo);
       return true;
     }
+    const session = await resolveAnonymousSession(database, stateRow.sessionToken);
     let result;
     try {
       result = await linkProviderIdentity(database, session, provider, profile, stateRow.registrationCiphertext ? stateRow : void 0);
@@ -18782,7 +18784,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
       ]);
     },
     consumeReauthenticationProof(input) {
-      return thenIfPromise(this.prepare(sql("SELECT [id] FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ? AND [userId] = ? AND [purpose] = ? AND [expiresAt] > ?")).get(input.sessionToken, input.userId, input.purpose, input.now), (row) => {
+      return thenIfPromise(this.prepare(sql("SELECT [p].[id] FROM [sporades_auth_reauthentication_proofs] [p] JOIN [sporades_auth_sessions] [s] ON [s].[token] = [p].[sessionToken] WHERE [p].[sessionToken] = ? AND [p].[userId] = ? AND [p].[purpose] = ? AND [p].[expiresAt] > ? AND [s].[userId] = ? AND [s].[expiresAt] > ?")).get(input.sessionToken, input.userId, input.purpose, input.now, input.userId, input.now), (row) => {
         if (!row) return false;
         return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [id] = ?")).run(row.id), (result) => result.changes === 1);
       });
@@ -24577,8 +24579,11 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
           const now2 = database.clock.now();
           expiresAt = new Date(now2.getTime() + policy.maxAgeSeconds * 1e3).toISOString();
           await database.adapter.withTransaction(async (tx) => {
-            if (!await database.authorizeReauthentication(tx, client.session.auth, purpose)) return;
-            await tx.replaceReauthenticationProof({ id: randomUUID7(), userId: client.session.auth.userId, sessionToken: client.session.token, purpose, createdAt: now2.toISOString(), expiresAt });
+            const current = await tx.readAuthSessionWithUser(client.session.token);
+            if (!current || current.token !== client.session.token || current.userId !== client.session.auth.userId || !current.isAuthenticated || current.isGuest || Date.parse(current.expiresAt) <= now2.getTime()) return;
+            const currentAuth = { userId: current.userId, displayName: current.displayName, email: current.email, picture: current.picture, isAuthenticated: Boolean(current.isAuthenticated), isGuest: Boolean(current.isGuest), provider: current.provider };
+            if (!await database.authorizeReauthentication(tx, currentAuth, purpose)) return;
+            await tx.replaceReauthenticationProof({ id: randomUUID7(), userId: current.userId, sessionToken: current.token, purpose, createdAt: now2.toISOString(), expiresAt });
             ok = true;
           });
         }
