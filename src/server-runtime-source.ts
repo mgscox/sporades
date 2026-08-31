@@ -6218,7 +6218,7 @@ async function runCustomMutation(database: LooseRecord, context: any, mutationNa
   const mutationHandler = resolvedHandler ?? materializeHandler(handler);
   let result;
   try {
-    result = await mutationHandler(context, ...args);
+    result = await invokeWithLifecycleInitiation(() => mutationHandler(context, ...args));
   } finally {
     await drainPendingAclWrites(context);
   }
@@ -6359,7 +6359,7 @@ function createMessageContext(database: LooseRecord, auth: any, sendAppMessage: 
 async function runMutationHook(hookSource: any, event: { name: any; args: any; ctx: any; result?: { ok: boolean; error: { message: any; hint: any; }; } | { ok: boolean; error: null; }; }) {
   const createHook = new Function(`return (${hookSource});`);
   const hook = createHook();
-  return await hook(event);
+  return await invokeWithLifecycleInitiation(() => hook(event));
 }
 
 async function runMutationHookAndDrainPendingAclWrites(hookSource: any, event: { name: any; args: any; ctx: any; result?: { ok: boolean; error: { message: any; hint: any; }; } | { ok: boolean; error: null; }; }, context: LooseRecord) {
@@ -6489,11 +6489,23 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
 function assertLiveMutationInvocation(options: LooseRecord, capability: "human-security" | "service-user" = "human-security") {
   if (options.serviceUserMutationAuthority !== serviceUserMutationAuthority
     || options.mutationInvocation?.active !== true
-    || mutationExecution.getStore() !== options.mutationInvocation) {
+    || mutationExecution.getStore() !== options.mutationInvocation
+    || options.mutationInvocation?.initiationOpen !== true) {
     if (capability === "service-user") {
       throw commandError("Service-User lifecycle changes require a Mutation.", "Call ctx.serviceUsers from the active Mutation invocation.", "SERVICE_USER_MUTATION_REQUIRED");
     }
     throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
+  }
+}
+
+function invokeWithLifecycleInitiation(operation: () => any) {
+  const invocation = mutationExecution.getStore();
+  if (!invocation) return operation();
+  invocation.initiationOpen = true;
+  try {
+    return operation();
+  } finally {
+    invocation.initiationOpen = false;
   }
 }
 

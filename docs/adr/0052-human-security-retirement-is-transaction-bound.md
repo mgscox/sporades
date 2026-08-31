@@ -20,3 +20,10 @@ This is intentionally deeper than combining public password-reset and
 Access-key APIs. Those operations have different authorization and lifecycle
 semantics and cannot guarantee one rollback boundary with app-owned suspension.
 Existing Capsules are unchanged unless they call the additive method.
+
+Lifecycle authority is structured rather than ambient. A handler or mutation
+hook must initiate the operation during its initial synchronous dispatch; the
+runtime then tracks the returned Promise through settlement. Authority closes
+when that dispatch returns its Promise, so post-`await` continuations, timers,
+microtasks, detached Promises, and retained aliases cannot initiate another
+retirement even while the owning mutation transaction is still open.

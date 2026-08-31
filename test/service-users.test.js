@@ -314,6 +314,7 @@ test("ACL and Privileged contexts cannot inherit human lifecycle capabilities", 
     }) },
     mutations: {
       proveConstrained: mutation(async (ctx) => {
+        const createdWork = ctx.serviceUsers.create({ displayName: "Allowed Parent Agent", accessKey: { name: "parent", grants: ["tickets:read"] } });
         const privileged = await ctx.privileged.run({ operation: "lifecycle-capability.inspect", targetResourceKind: "auth-lifecycle" }, async (serverCtx) => ({
           hasServiceUsers: "serviceUsers" in serverCtx,
           hasServerAuth: "serverAuth" in serverCtx,
@@ -322,7 +323,7 @@ test("ACL and Privileged contexts cannot inherit human lifecycle capabilities", 
           hasHumanLifecycleAlias: "humanLifecycleAlias" in serverCtx,
           hasHumanLifecycleClosure: "humanLifecycleClosure" in serverCtx,
         }));
-        const created = await ctx.serviceUsers.create({ displayName: "Allowed Parent Agent", accessKey: { name: "parent", grants: ["tickets:read"] } });
+        const created = await createdWork;
         return { privileged, created };
       }),
       aclAttempt: mutation((ctx, input) => ctx.db.effects.insert(input)),
@@ -531,11 +532,19 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
       invokeRetainedServiceUsers: mutation((_ctx, userId) => globalThis.__retainedServiceUsers.listAccessKeys(userId)),
       retainAwaitThenList: mutation(async (ctx, input) => {
         globalThis.__retainedServiceUsers = ctx.serviceUsers;
-        const before = await ctx.serviceUsers.listAccessKeys(input.legitimateUserId);
+        globalThis.__detachedServiceUserOutcomes = [];
+        const beforeWork = ctx.serviceUsers.listAccessKeys(input.legitimateUserId);
+        const detached = () => {
+          try { ctx.serviceUsers.disable(input.exploitUserId); globalThis.__detachedServiceUserOutcomes.push("allowed"); }
+          catch (error) { globalThis.__detachedServiceUserOutcomes.push(error?.code); }
+        };
+        setTimeout(detached, 0);
+        queueMicrotask(detached);
+        void Promise.resolve().then(detached);
         globalThis.__retainedServiceCapabilityReady?.();
         await new Promise((resolve) => setTimeout(resolve, input.delayMs));
-        const after = await ctx.serviceUsers.listAccessKeys(input.legitimateUserId);
-        return { before: before.totalCount, after: after.totalCount };
+        const before = await beforeWork;
+        return { before: before.totalCount };
       }),
     },
     queries: {
@@ -644,6 +653,7 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
     globalThis.__retainedServiceCapabilityReady = signalServiceOverlapReady;
     const activeServiceMutation = runMutation(database, "retainAwaitThenList", [{
       legitimateUserId: legitimateOverlap.data.serviceUser.id,
+      exploitUserId: created.data.serviceUser.id,
       delayMs: 120,
     }]);
     await serviceOverlapReady;
@@ -655,7 +665,8 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
     assert.equal(retainedEndpoint.body?.error?.code ?? retainedEndpoint.body?.code, "SERVICE_USER_MUTATION_REQUIRED");
     assert.equal((await runMutation(database, "invokeRetainedServiceUsers", [created.data.serviceUser.id])).error?.code,
       "SERVICE_USER_MUTATION_REQUIRED");
-    assert.deepEqual((await activeServiceMutation).data, { before: 1, after: 1 });
+    assert.deepEqual((await activeServiceMutation).data, { before: 1 });
+    assert.deepEqual(globalThis.__detachedServiceUserOutcomes.sort(), ["SERVICE_USER_MUTATION_REQUIRED", "SERVICE_USER_MUTATION_REQUIRED", "SERVICE_USER_MUTATION_REQUIRED"]);
     assert.deepEqual(await database.adapter.prepare(database.adapter.dialect.sql(
       "SELECT [operationRevision] FROM [sporades_auth_service_user_locks] WHERE [userId] = ?",
     )).get(created.data.serviceUser.id), exploitLockBefore);
@@ -1006,11 +1017,19 @@ async function proveRemoteEngineServiceUserLifecycle(serverEnv, config) {
       invokeRetainedServiceUsers: mutation((_ctx, userId) => globalThis.__retainedRemoteServiceUsers.listAccessKeys(userId)),
       retainAwaitThenList: mutation(async (ctx, input) => {
         globalThis.__retainedRemoteServiceUsers = ctx.serviceUsers;
-        const before = await ctx.serviceUsers.listAccessKeys(input.legitimateUserId);
+        globalThis.__detachedRemoteServiceOutcomes = [];
+        const beforeWork = ctx.serviceUsers.listAccessKeys(input.legitimateUserId);
+        const detached = () => {
+          try { ctx.serviceUsers.disable(input.exploitUserId); globalThis.__detachedRemoteServiceOutcomes.push("allowed"); }
+          catch (error) { globalThis.__detachedRemoteServiceOutcomes.push(error?.code); }
+        };
+        setTimeout(detached, 0);
+        queueMicrotask(detached);
+        void Promise.resolve().then(detached);
         globalThis.__retainedRemoteServiceReady?.();
         await new Promise((resolve) => setTimeout(resolve, input.delayMs));
-        const after = await ctx.serviceUsers.listAccessKeys(input.legitimateUserId);
-        return { before: before.totalCount, after: after.totalCount };
+        const before = await beforeWork;
+        return { before: before.totalCount };
       }),
     },
     queries: { invokeRetainedServiceUsers: query((_ctx, userId) => globalThis.__retainedRemoteServiceUsers.listAccessKeys(userId)) },
@@ -1051,7 +1070,7 @@ async function proveRemoteEngineServiceUserLifecycle(serverEnv, config) {
     let signalRemoteServiceReady;
     const remoteServiceReady = new Promise((resolve) => { signalRemoteServiceReady = resolve; });
     globalThis.__retainedRemoteServiceReady = signalRemoteServiceReady;
-    const activeRemoteServiceMutation = runMutation(first, "retainAwaitThenList", [{ legitimateUserId: overlapLegitimate.data.serviceUser.id, delayMs: 120 }]);
+    const activeRemoteServiceMutation = runMutation(first, "retainAwaitThenList", [{ legitimateUserId: overlapLegitimate.data.serviceUser.id, exploitUserId: created.data.serviceUser.id, delayMs: 120 }]);
     await remoteServiceReady;
     assert.throws(() => globalThis.__retainedRemoteServiceUsers.disable(created.data.serviceUser.id),
       (error) => error?.code === "SERVICE_USER_MUTATION_REQUIRED");
@@ -1060,7 +1079,8 @@ async function proveRemoteEngineServiceUserLifecycle(serverEnv, config) {
     assert.equal((await requestRetainedServiceEndpoint(first)).body?.error?.code, "SERVICE_USER_MUTATION_REQUIRED");
     assert.equal((await runMutation(first, "invokeRetainedServiceUsers", [created.data.serviceUser.id])).error?.code,
       "SERVICE_USER_MUTATION_REQUIRED");
-    assert.deepEqual((await activeRemoteServiceMutation).data, { before: 1, after: 1 });
+    assert.deepEqual((await activeRemoteServiceMutation).data, { before: 1 });
+    assert.deepEqual(globalThis.__detachedRemoteServiceOutcomes.sort(), ["SERVICE_USER_MUTATION_REQUIRED", "SERVICE_USER_MUTATION_REQUIRED", "SERVICE_USER_MUTATION_REQUIRED"]);
     assert.deepEqual(await first.adapter.prepare(first.adapter.dialect.sql(
       "SELECT [operationRevision] FROM [sporades_auth_service_user_locks] WHERE [userId] = ?",
     )).get(created.data.serviceUser.id), overlapLockBefore);

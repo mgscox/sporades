@@ -438,6 +438,11 @@ to be attributed and authorized as that human instead.
 
 Anonymous and guest Sessions, Access keys, Jobs, Schedules, lifecycle hooks,
 Queries, App messages, and Custom endpoints cannot manage Service Users.
+Service-User lifecycle work must also be initiated during the Mutation
+handler's initial synchronous dispatch, before its first `await`. Its returned
+Promise remains awaitable and transaction-drained, but timers, microtasks,
+detached Promises, and post-`await` continuations cannot start new lifecycle
+operations through a retained context reference.
 Existing human-owned Access keys and Session behavior are unchanged.
 
 An explicit `ctx.privileged.run(...)` callback receives a separate

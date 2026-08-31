@@ -630,7 +630,12 @@ authenticated, non-guest human, deletes all of their Sessions, retires their
 current Access keys, and returns only revocation counts. If the mutation later
 throws, both runtime and application writes roll back.
 
-The runtime registers this Promise with the Mutation's pending-work drain. A
+Initiate this operation during the mutation handler's initial synchronous
+dispatch, before its first `await`. The returned Promise may be awaited later
+or left for the runtime's pending-work drain. New lifecycle calls from a
+post-`await` continuation, timer, microtask, or detached Promise are denied;
+this structured boundary prevents escaped context capabilities from acting as
+ambient transaction authority. A
 missing `await` therefore cannot let revocation continue after commit or after
 the adapter closes: the Mutation waits for it, and a rejection rolls back the
 whole transaction. Await it when the returned counts are part of your result.

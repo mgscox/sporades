@@ -26100,7 +26100,7 @@ async function runCustomMutation(database, context, mutationName, args, resolved
   const mutationHandler = resolvedHandler ?? materializeHandler(handler);
   let result;
   try {
-    result = await mutationHandler(context, ...args);
+    result = await invokeWithLifecycleInitiation(() => mutationHandler(context, ...args));
   } finally {
     await drainPendingAclWrites(context);
   }
@@ -26230,7 +26230,7 @@ function createMessageContext(database, auth, sendAppMessage, sessionToken) {
 async function runMutationHook(hookSource, event) {
   const createHook = new Function(`return (${hookSource});`);
   const hook = createHook();
-  return await hook(event);
+  return await invokeWithLifecycleInitiation(() => hook(event));
 }
 async function runMutationHookAndDrainPendingAclWrites(hookSource, event, context) {
   try {
@@ -26347,11 +26347,21 @@ function createMutationContext(database, auth, options = {}) {
   return context;
 }
 function assertLiveMutationInvocation(options, capability = "human-security") {
-  if (options.serviceUserMutationAuthority !== serviceUserMutationAuthority || options.mutationInvocation?.active !== true || mutationExecution.getStore() !== options.mutationInvocation) {
+  if (options.serviceUserMutationAuthority !== serviceUserMutationAuthority || options.mutationInvocation?.active !== true || mutationExecution.getStore() !== options.mutationInvocation || options.mutationInvocation?.initiationOpen !== true) {
     if (capability === "service-user") {
       throw commandError("Service-User lifecycle changes require a Mutation.", "Call ctx.serviceUsers from the active Mutation invocation.", "SERVICE_USER_MUTATION_REQUIRED");
     }
     throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
+  }
+}
+function invokeWithLifecycleInitiation(operation) {
+  const invocation = mutationExecution.getStore();
+  if (!invocation) return operation();
+  invocation.initiationOpen = true;
+  try {
+    return operation();
+  } finally {
+    invocation.initiationOpen = false;
   }
 }
 function createTeamJoinAdmissionContext(database, auth, trustedDb, teamId, assertActive) {

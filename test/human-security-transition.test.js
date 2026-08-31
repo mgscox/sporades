@@ -19,9 +19,18 @@ const definition = capsule({ name: "human-security-transition", schema: { effect
   invokeRetainedServerAuth: mutation((_ctx, userId) => globalThis.__retainedServerAuth.revokeHumanSecurity(userId)),
   retainAwaitThenRevoke: mutation(async (ctx, input) => {
     globalThis.__retainedServerAuth = ctx.serverAuth;
+    globalThis.__detachedServerAuthOutcomes = [];
+    const legitimateWork = ctx.serverAuth.revokeHumanSecurity(input.legitimateTargetId);
+    const detached = () => {
+      try { ctx.serverAuth.revokeHumanSecurity(input.exploitTargetId); globalThis.__detachedServerAuthOutcomes.push("allowed"); }
+      catch (error) { globalThis.__detachedServerAuthOutcomes.push(error?.code); }
+    };
+    setTimeout(detached, 0);
+    queueMicrotask(detached);
+    void Promise.resolve().then(detached);
     globalThis.__retainedCapabilityReady?.();
     await new Promise((resolve) => setTimeout(resolve, input.delayMs));
-    return await ctx.serverAuth.revokeHumanSecurity(input.legitimateTargetId);
+    return await legitimateWork;
   }),
 }, messages: {
   revokeAwaited: message(async (ctx, userId) => await ctx.serverAuth.revokeHumanSecurity(userId)),
@@ -70,7 +79,7 @@ test("human security transition revokes Sessions and Access keys with the enclos
     let signalOverlapReady;
     const overlapReady = new Promise((resolve) => { signalOverlapReady = resolve; });
     globalThis.__retainedCapabilityReady = signalOverlapReady;
-    const activeMutation = runMutation(database, actor, "retainAwaitThenRevoke", [{ legitimateTargetId: overlapLegitimate, delayMs: 120 }], { sessionToken: "actor-session" });
+    const activeMutation = runMutation(database, actor, "retainAwaitThenRevoke", [{ legitimateTargetId: overlapLegitimate, exploitTargetId: overlapExploit, delayMs: 120 }], { sessionToken: "actor-session" });
     await overlapReady;
     assert.throws(() => globalThis.__retainedServerAuth.revokeHumanSecurity(overlapExploit),
       (error) => error?.code === "HUMAN_SECURITY_TRANSITION_DENIED");
@@ -81,6 +90,7 @@ test("human security transition revokes Sessions and Access keys with the enclos
     assert.equal((await runMutation(database, actor, "invokeRetainedServerAuth", [overlapExploit], { sessionToken: "actor-session" })).error?.code,
       "HUMAN_SECURITY_TRANSITION_DENIED");
     assert.equal((await activeMutation).error, null, "the owning mutation resumes with its authority after await");
+    assert.deepEqual(globalThis.__detachedServerAuthOutcomes.sort(), ["HUMAN_SECURITY_TRANSITION_DENIED", "HUMAN_SECURITY_TRANSITION_DENIED", "HUMAN_SECURITY_TRANSITION_DENIED"]);
     assert.ok(await database.adapter.readAuthSessionWithUser("session-overlap-exploit"));
     assert.equal(await database.adapter.readAuthSessionWithUser("session-overlap-legitimate"), null);
     assert.deepEqual(await database.adapter.prepare("SELECT lifecycleRevision, revokedAt FROM sporades_auth_access_keys WHERE id = ?").get("key-overlap-exploit"), overlapKeyBefore);
@@ -171,7 +181,7 @@ async function proveAppMessagesCannotRevokeHumanSecurity(serverEnv, config) {
     let signalOverlapReady;
     const overlapReady = new Promise((resolve) => { signalOverlapReady = resolve; });
     globalThis.__retainedCapabilityReady = signalOverlapReady;
-    const activeMutation = runMutation(database, actor, "retainAwaitThenRevoke", [{ legitimateTargetId: legitimateId, delayMs: 120 }], { sessionToken: "actor-session" });
+    const activeMutation = runMutation(database, actor, "retainAwaitThenRevoke", [{ legitimateTargetId: legitimateId, exploitTargetId: targetId, delayMs: 120 }], { sessionToken: "actor-session" });
     await overlapReady;
     assert.throws(() => globalThis.__retainedServerAuth.revokeHumanSecurity(targetId),
       (error) => error?.code === "HUMAN_SECURITY_TRANSITION_DENIED");
@@ -182,6 +192,7 @@ async function proveAppMessagesCannotRevokeHumanSecurity(serverEnv, config) {
     assert.equal((await runMutation(database, actor, "invokeRetainedServerAuth", [targetId], { sessionToken: "actor-session" })).error?.code,
       "HUMAN_SECURITY_TRANSITION_DENIED");
     assert.equal((await activeMutation).error, null);
+    assert.deepEqual(globalThis.__detachedServerAuthOutcomes.sort(), ["HUMAN_SECURITY_TRANSITION_DENIED", "HUMAN_SECURITY_TRANSITION_DENIED", "HUMAN_SECURITY_TRANSITION_DENIED"]);
     assert.ok(await database.adapter.readAuthSessionWithUser(`session-${targetId}`));
     assert.equal(await database.adapter.readAuthSessionWithUser(`session-${legitimateId}`), null);
     assert.deepEqual(await database.adapter.prepare(database.adapter.dialect.sql("SELECT [lifecycleRevision], [revokedAt] FROM [sporades_auth_access_keys] WHERE [id] = ?")).get(keyId), keyBefore);
