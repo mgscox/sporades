@@ -94,6 +94,22 @@ async function requestSessionEndpoint(database, operation) {
   return { status: response.status, body };
 }
 
+async function requestRetainedServiceEndpoint(database) {
+  const request = {
+    url: "/invoke-retained-service-users",
+    method: "POST",
+    headers: { "x-sporades-session-token": ADMIN_SESSION },
+    rawHeaders: ["x-sporades-session-token", ADMIN_SESSION],
+    socket: { remoteAddress: "127.0.0.1" },
+    async *[Symbol.asyncIterator]() {},
+  };
+  const response = {
+    status: null, body: "", setHeader() {}, writeHead(status) { this.status = status; }, end(body = "") { this.body = String(body); },
+  };
+  assert.equal(await routeEndpoint(database, request, response), true);
+  return { status: response.status, body: JSON.parse(response.body) };
+}
+
 test("authenticated custom endpoints cannot forge Service-User mutation authority or touch storage", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-service-user-endpoint-authority-"));
   const definition = capsule({
@@ -513,18 +529,29 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
       disableAgent: mutation((ctx, userId) => ctx.serviceUsers.disable(userId)),
       retainServiceUsers: mutation((ctx) => { globalThis.__retainedServiceUsers = ctx.serviceUsers; return null; }),
       invokeRetainedServiceUsers: mutation((_ctx, userId) => globalThis.__retainedServiceUsers.listAccessKeys(userId)),
+      retainAwaitThenList: mutation(async (ctx, input) => {
+        globalThis.__retainedServiceUsers = ctx.serviceUsers;
+        const before = await ctx.serviceUsers.listAccessKeys(input.legitimateUserId);
+        globalThis.__retainedServiceCapabilityReady?.();
+        await new Promise((resolve) => setTimeout(resolve, input.delayMs));
+        const after = await ctx.serviceUsers.listAccessKeys(input.legitimateUserId);
+        return { before: before.totalCount, after: after.totalCount };
+      }),
     },
     queries: {
       invalidQueryCreate: query((ctx) => ctx.serviceUsers.create({
         displayName: "Query Agent",
         accessKey: { name: "query", grants: ["tickets:read"] },
       })),
+      invokeRetainedServiceUsers: query((_ctx, userId) => globalThis.__retainedServiceUsers.listAccessKeys(userId)),
     },
     endpoints: {
       agent: endpoint({ method: "GET", path: "/agent" }, requireAuth({
         credentials: ["access-key"],
         scopes: ["tickets:read"],
       }, (ctx) => ({ body: { auth: ctx.auth, credential: ctx.credential } }))),
+      invokeRetainedServiceUsers: endpoint({ method: "POST", path: "/invoke-retained-service-users" },
+        () => globalThis.__retainedServiceUsers.listAccessKeys(globalThis.__retainedServiceExploitTarget)),
     },
   });
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: definition.name }, definition, {
@@ -603,6 +630,38 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
       (error) => error?.code === "SERVICE_USER_MUTATION_REQUIRED");
     const retainedDuringLaterMutation = await runMutation(database, "invokeRetainedServiceUsers", [created.data.serviceUser.id]);
     assert.equal(retainedDuringLaterMutation.error?.code, "SERVICE_USER_MUTATION_REQUIRED");
+    const legitimateOverlap = await runMutation(database, "createAgent", []);
+    assert.equal(legitimateOverlap.error, null, JSON.stringify(legitimateOverlap.error));
+    const exploitLockBefore = await database.adapter.prepare(database.adapter.dialect.sql(
+      "SELECT [operationRevision] FROM [sporades_auth_service_user_locks] WHERE [userId] = ?",
+    )).get(created.data.serviceUser.id);
+    const exploitKeyBefore = await database.adapter.prepare(database.adapter.dialect.sql(
+      "SELECT [lifecycleRevision], [revokedAt] FROM [sporades_auth_access_keys] WHERE [id] = ?",
+    )).get(created.data.accessKey.id);
+    globalThis.__retainedServiceExploitTarget = created.data.serviceUser.id;
+    let signalServiceOverlapReady;
+    const serviceOverlapReady = new Promise((resolve) => { signalServiceOverlapReady = resolve; });
+    globalThis.__retainedServiceCapabilityReady = signalServiceOverlapReady;
+    const activeServiceMutation = runMutation(database, "retainAwaitThenList", [{
+      legitimateUserId: legitimateOverlap.data.serviceUser.id,
+      delayMs: 120,
+    }]);
+    await serviceOverlapReady;
+    assert.throws(() => globalThis.__retainedServiceUsers.disable(created.data.serviceUser.id),
+      (error) => error?.code === "SERVICE_USER_MUTATION_REQUIRED");
+    assert.equal((await runRuntimeQuery(database, ADMIN_AUTH, "invokeRetainedServiceUsers", [created.data.serviceUser.id], { sessionToken: ADMIN_SESSION })).error?.code,
+      "SERVICE_USER_MUTATION_REQUIRED");
+    const retainedEndpoint = await requestRetainedServiceEndpoint(database);
+    assert.equal(retainedEndpoint.body?.error?.code ?? retainedEndpoint.body?.code, "SERVICE_USER_MUTATION_REQUIRED");
+    assert.equal((await runMutation(database, "invokeRetainedServiceUsers", [created.data.serviceUser.id])).error?.code,
+      "SERVICE_USER_MUTATION_REQUIRED");
+    assert.deepEqual((await activeServiceMutation).data, { before: 1, after: 1 });
+    assert.deepEqual(await database.adapter.prepare(database.adapter.dialect.sql(
+      "SELECT [operationRevision] FROM [sporades_auth_service_user_locks] WHERE [userId] = ?",
+    )).get(created.data.serviceUser.id), exploitLockBefore);
+    assert.deepEqual(await database.adapter.prepare(database.adapter.dialect.sql(
+      "SELECT [lifecycleRevision], [revokedAt] FROM [sporades_auth_access_keys] WHERE [id] = ?",
+    )).get(created.data.accessKey.id), exploitKeyBefore);
     assert.deepEqual(created.data.serviceUser, {
       id: created.data.serviceUser.id,
       displayName: "Triage Agent",
@@ -945,6 +1004,19 @@ async function proveRemoteEngineServiceUserLifecycle(serverEnv, config) {
       disableAgent: mutation((ctx, userId) => ctx.serviceUsers.disable(userId)),
       retainServiceUsers: mutation((ctx) => { globalThis.__retainedRemoteServiceUsers = ctx.serviceUsers; return null; }),
       invokeRetainedServiceUsers: mutation((_ctx, userId) => globalThis.__retainedRemoteServiceUsers.listAccessKeys(userId)),
+      retainAwaitThenList: mutation(async (ctx, input) => {
+        globalThis.__retainedRemoteServiceUsers = ctx.serviceUsers;
+        const before = await ctx.serviceUsers.listAccessKeys(input.legitimateUserId);
+        globalThis.__retainedRemoteServiceReady?.();
+        await new Promise((resolve) => setTimeout(resolve, input.delayMs));
+        const after = await ctx.serviceUsers.listAccessKeys(input.legitimateUserId);
+        return { before: before.totalCount, after: after.totalCount };
+      }),
+    },
+    queries: { invokeRetainedServiceUsers: query((_ctx, userId) => globalThis.__retainedRemoteServiceUsers.listAccessKeys(userId)) },
+    endpoints: {
+      invokeRetainedServiceUsers: endpoint({ method: "POST", path: "/invoke-retained-service-users" },
+        () => globalThis.__retainedRemoteServiceUsers.listAccessKeys(globalThis.__retainedServiceExploitTarget)),
     },
   });
   const first = await openDevDatabase("", "", serverEnv, config, definition);
@@ -970,6 +1042,28 @@ async function proveRemoteEngineServiceUserLifecycle(serverEnv, config) {
       (error) => error?.code === "SERVICE_USER_MUTATION_REQUIRED");
     assert.equal((await runMutation(first, "invokeRetainedServiceUsers", [created.data.serviceUser.id])).error?.code,
       "SERVICE_USER_MUTATION_REQUIRED");
+    const overlapLegitimate = await runMutation(first, "createAgent", []);
+    assert.equal(overlapLegitimate.error, null, JSON.stringify(overlapLegitimate.error));
+    const overlapLockBefore = await first.adapter.prepare(first.adapter.dialect.sql(
+      "SELECT [operationRevision] FROM [sporades_auth_service_user_locks] WHERE [userId] = ?",
+    )).get(created.data.serviceUser.id);
+    globalThis.__retainedServiceExploitTarget = created.data.serviceUser.id;
+    let signalRemoteServiceReady;
+    const remoteServiceReady = new Promise((resolve) => { signalRemoteServiceReady = resolve; });
+    globalThis.__retainedRemoteServiceReady = signalRemoteServiceReady;
+    const activeRemoteServiceMutation = runMutation(first, "retainAwaitThenList", [{ legitimateUserId: overlapLegitimate.data.serviceUser.id, delayMs: 120 }]);
+    await remoteServiceReady;
+    assert.throws(() => globalThis.__retainedRemoteServiceUsers.disable(created.data.serviceUser.id),
+      (error) => error?.code === "SERVICE_USER_MUTATION_REQUIRED");
+    assert.equal((await runRuntimeQuery(first, ADMIN_AUTH, "invokeRetainedServiceUsers", [created.data.serviceUser.id], { sessionToken: ADMIN_SESSION })).error?.code,
+      "SERVICE_USER_MUTATION_REQUIRED");
+    assert.equal((await requestRetainedServiceEndpoint(first)).body?.error?.code, "SERVICE_USER_MUTATION_REQUIRED");
+    assert.equal((await runMutation(first, "invokeRetainedServiceUsers", [created.data.serviceUser.id])).error?.code,
+      "SERVICE_USER_MUTATION_REQUIRED");
+    assert.deepEqual((await activeRemoteServiceMutation).data, { before: 1, after: 1 });
+    assert.deepEqual(await first.adapter.prepare(first.adapter.dialect.sql(
+      "SELECT [operationRevision] FROM [sporades_auth_service_user_locks] WHERE [userId] = ?",
+    )).get(created.data.serviceUser.id), overlapLockBefore);
     const secondKey = await runMutation(first, "issueAgentKey", [{
       userId: created.data.serviceUser.id,
       accessKey: { name: "secondary", grants: ["tickets:read"] },

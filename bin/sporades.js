@@ -23949,6 +23949,8 @@ function createContextHolder(context) {
 }
 var handlerContextByDatabase = /* @__PURE__ */ new WeakMap();
 var serviceUserMutationAuthority = Object.freeze({ kind: "service-user-mutation-authority" });
+var MutationExecutionStorage = process.getBuiltinModule("node:async_hooks").AsyncLocalStorage;
+var mutationExecution = new MutationExecutionStorage();
 function registerHandlerContextMapping(database, holder) {
   if (!database.__transactionActive) return;
   releaseHandlerContextMapping(database);
@@ -26020,48 +26022,50 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
     const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
       const mutationInvocation = { active: true };
-      let handlerFailed = false;
-      try {
-        context = createMutationContext(transactionDatabase, auth, {
-          sessionToken: options.sessionToken,
-          serviceUserMutationAuthority,
-          mutationInvocation
-        });
-        const customHandler = transactionDatabase.mutations.find((candidate) => candidate.name === mutationName);
-        const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
-        if (mutationHandler) admitCredentialHandler(mutationHandler, context, "mutation");
-        const reauthenticationPurpose = readAuthRequirements(mutationHandler)?.reauthentication;
-        if (reauthenticationPurpose) {
-          const consumed = typeof options.sessionToken === "string" && await transactionAdapter.consumeReauthenticationProof({ sessionToken: options.sessionToken, userId: auth.userId, purpose: reauthenticationPurpose, now: database.clock.now().toISOString() });
-          if (!consumed) throw commandError("Reauthentication required.", "Verify the current Session for this purpose and retry.", "REAUTHENTICATION_REQUIRED");
-        }
-        context = await applyContextMiddleware(transactionDatabase, context, "mutation");
-        for (const hookSource of database.mutationHooks.beforeMutation) {
-          await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
-        }
-        result = await runCustomMutation(transactionDatabase, context, mutationName, args, mutationHandler);
-        if (!result) {
-          result = mutationName.startsWith("update") ? await runUpdateMutation(transactionDatabase, context, mutationName, args) : await runInsertMutation(transactionDatabase, context, mutationName, args);
-        }
-        await drainPendingAclWrites(context);
-        if (result.ok) {
-          for (const hookSource of database.mutationHooks.afterMutation) {
-            await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context, result }, context);
+      return mutationExecution.run(mutationInvocation, async () => {
+        let handlerFailed = false;
+        try {
+          context = createMutationContext(transactionDatabase, auth, {
+            sessionToken: options.sessionToken,
+            serviceUserMutationAuthority,
+            mutationInvocation
+          });
+          const customHandler = transactionDatabase.mutations.find((candidate) => candidate.name === mutationName);
+          const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
+          if (mutationHandler) admitCredentialHandler(mutationHandler, context, "mutation");
+          const reauthenticationPurpose = readAuthRequirements(mutationHandler)?.reauthentication;
+          if (reauthenticationPurpose) {
+            const consumed = typeof options.sessionToken === "string" && await transactionAdapter.consumeReauthenticationProof({ sessionToken: options.sessionToken, userId: auth.userId, purpose: reauthenticationPurpose, now: database.clock.now().toISOString() });
+            if (!consumed) throw commandError("Reauthentication required.", "Verify the current Session for this purpose and retry.", "REAUTHENTICATION_REQUIRED");
+          }
+          context = await applyContextMiddleware(transactionDatabase, context, "mutation");
+          for (const hookSource of database.mutationHooks.beforeMutation) {
+            await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
+          }
+          result = await runCustomMutation(transactionDatabase, context, mutationName, args, mutationHandler);
+          if (!result) {
+            result = mutationName.startsWith("update") ? await runUpdateMutation(transactionDatabase, context, mutationName, args) : await runInsertMutation(transactionDatabase, context, mutationName, args);
           }
           await drainPendingAclWrites(context);
-          assertMutationSecretsReturned(context, result);
-        }
-        return result;
-      } catch (error) {
-        handlerFailed = true;
-        throw error;
-      } finally {
-        try {
-          await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed);
+          if (result.ok) {
+            for (const hookSource of database.mutationHooks.afterMutation) {
+              await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context, result }, context);
+            }
+            await drainPendingAclWrites(context);
+            assertMutationSecretsReturned(context, result);
+          }
+          return result;
+        } catch (error) {
+          handlerFailed = true;
+          throw error;
         } finally {
-          mutationInvocation.active = false;
+          try {
+            await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed);
+          } finally {
+            mutationInvocation.active = false;
+          }
         }
-      }
+      });
     });
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
@@ -26343,7 +26347,7 @@ function createMutationContext(database, auth, options = {}) {
   return context;
 }
 function assertLiveMutationInvocation(options, capability = "human-security") {
-  if (options.serviceUserMutationAuthority !== serviceUserMutationAuthority || options.mutationInvocation?.active !== true) {
+  if (options.serviceUserMutationAuthority !== serviceUserMutationAuthority || options.mutationInvocation?.active !== true || mutationExecution.getStore() !== options.mutationInvocation) {
     if (capability === "service-user") {
       throw commandError("Service-User lifecycle changes require a Mutation.", "Call ctx.serviceUsers from the active Mutation invocation.", "SERVICE_USER_MUTATION_REQUIRED");
     }

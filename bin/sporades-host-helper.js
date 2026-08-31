@@ -589,6 +589,8 @@ function capLogEnvelope(envelope, maxBytes) {
   return capped;
 }
 var serviceUserMutationAuthority = Object.freeze({ kind: "service-user-mutation-authority" });
+var MutationExecutionStorage = process.getBuiltinModule("node:async_hooks").AsyncLocalStorage;
+var mutationExecution = new MutationExecutionStorage();
 
 // src/cli/cli-support.ts
 function errorDetails(error) {

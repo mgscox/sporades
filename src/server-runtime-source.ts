@@ -3851,6 +3851,8 @@ const handlerContextByDatabase = new WeakMap<object, () => LooseRecord>();
 // Lexical runtime authority: Capsule input and context middleware can neither
 // construct nor recover this exact identity.
 const serviceUserMutationAuthority = Object.freeze({ kind: "service-user-mutation-authority" });
+const MutationExecutionStorage = process.getBuiltinModule("node:async_hooks").AsyncLocalStorage;
+const mutationExecution = new MutationExecutionStorage<LooseRecord>();
 
 function registerHandlerContextMapping(database: LooseRecord, holder: { current: LooseRecord; }) {
   if (!database.__transactionActive) return;
@@ -6130,8 +6132,9 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
     const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter: any) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
       const mutationInvocation = { active: true };
-      let handlerFailed = false;
-      try {
+      return mutationExecution.run(mutationInvocation, async () => {
+        let handlerFailed = false;
+        try {
         context = createMutationContext(transactionDatabase, auth, {
           sessionToken: options.sessionToken,
           serviceUserMutationAuthority,
@@ -6168,16 +6171,17 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
         }
 
         return result;
-      } catch (error) {
-        handlerFailed = true;
-        throw error;
-      } finally {
-        try {
-          await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed);
+        } catch (error) {
+          handlerFailed = true;
+          throw error;
         } finally {
-          mutationInvocation.active = false;
+          try {
+            await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed);
+          } finally {
+            mutationInvocation.active = false;
+          }
         }
-      }
+      });
     });
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
@@ -6483,7 +6487,9 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
 }
 
 function assertLiveMutationInvocation(options: LooseRecord, capability: "human-security" | "service-user" = "human-security") {
-  if (options.serviceUserMutationAuthority !== serviceUserMutationAuthority || options.mutationInvocation?.active !== true) {
+  if (options.serviceUserMutationAuthority !== serviceUserMutationAuthority
+    || options.mutationInvocation?.active !== true
+    || mutationExecution.getStore() !== options.mutationInvocation) {
     if (capability === "service-user") {
       throw commandError("Service-User lifecycle changes require a Mutation.", "Call ctx.serviceUsers from the active Mutation invocation.", "SERVICE_USER_MUTATION_REQUIRED");
     }
