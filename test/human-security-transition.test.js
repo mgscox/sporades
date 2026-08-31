@@ -17,6 +17,7 @@ test("human security transition revokes Sessions and Access keys with the enclos
   const now = new Date().toISOString(), expiry = new Date(Date.now() + 3600000).toISOString();
   const seed = async (suffix) => {
     const userId = `human-${suffix}`; await database.adapter.insertAuthUser({ id: userId, createdAt: now, displayName: userId, email: `${suffix}@example.test`, picture: null, isAuthenticated: 1, isGuest: 0, provider: "email" });
+    await database.adapter.insertEmailCredential({ email: `${suffix}@example.test`, userId, passwordHash: `hash-${suffix}`, passwordSalt: `salt-${suffix}`, createdAt: now });
     await database.adapter.insertAuthSession({ token: `session-${suffix}`, userId, provider: "email", createdAt: now, expiresAt: expiry });
     assert.deepEqual(await database.adapter.withTransaction((tx) => tx.issueAccessKeyRecord({ id: `key-${suffix}`, ownerUserId: userId, name: "human key", reservedName: "human key", grantsJson: "[]", secretVersion: 1, selector: `selector-${suffix}`, verifierDigest: `digest-${suffix}`, lifecycleRevision: 1, createdAt: now, expiresAt: null })), { status: "issued" }); return userId;
   };
