@@ -458,6 +458,8 @@ export async function resolveAccessKeyCredential(database, request, sessionToken
         failure = "expired";
     else if (Number(row.ownerIsAuthenticated) !== 1 || Number(row.ownerIsGuest) !== 0)
         failure = "owner-ineligible";
+    else if ((row.ownerUserKind ?? "human") === "service" && row.ownerLifecycleStatus !== "active")
+        failure = "owner-ineligible";
     if (failure) {
         recordAccessKeyFailure(database, "source", source, 60_000);
         recordAccessKeyFailure(database, "selector", selectorFingerprint, 5 * 60_000);
@@ -467,6 +469,7 @@ export async function resolveAccessKeyCredential(database, request, sessionToken
     return {
         auth: protectAccessKeyValue({
             userId: row.ownerUserId,
+            ...(row.ownerUserKind === "service" ? { userKind: "service" } : {}),
             displayName: row.ownerDisplayName,
             email: row.ownerEmail ?? null,
             picture: row.ownerPicture ?? null,
@@ -554,7 +557,7 @@ function requireOwnerSessionContext(context) {
     }
     return context;
 }
-function normalizeAccessKeyIssue(input, declaredScopes, now) {
+export function normalizeAccessKeyIssue(input, declaredScopes, now) {
     if (!isPlainObject(input) || Object.keys(input).some((key) => !["name", "grants", "expiresAt"].includes(key))) {
         throw commandError("Invalid Access-key issuance input.", "Pass name with optional grants and expiresAt.", "INVALID_ACCESS_KEY_NAME");
     }
@@ -594,7 +597,7 @@ function normalizeAccessKeyGrants(value, declaredScopes) {
         throw invalidAccessKeyGrantsError();
     return result;
 }
-function normalizeAccessKeyListOptions(value) {
+export function normalizeAccessKeyListOptions(value) {
     if (!isPlainObject(value) || Object.keys(value).some((key) => !["cursor", "limit", "status"].includes(key))) {
         throw commandError("Invalid Access-key list options.", "Use cursor, limit, and status only.", "INVALID_ACCESS_KEY_LIST_OPTIONS");
     }
@@ -619,7 +622,7 @@ function normalizeAccessKeyListOptions(value) {
     }
     return { cursor, limit, status: value.status ?? null };
 }
-function accessKeyListPage(rows, declaredScopes, now, options) {
+export function accessKeyListPage(rows, declaredScopes, now, options) {
     let summaries = rows.map((row) => accessKeySummary(row, declaredScopes, now.toISOString()));
     if (options.status)
         summaries = summaries.filter((summary) => summary.status === options.status);
@@ -637,7 +640,7 @@ function accessKeyListPage(rows, declaredScopes, now, options) {
         totalCount,
     };
 }
-function accessKeySummary(row, declaredScopes, now) {
+export function accessKeySummary(row, declaredScopes, now) {
     const grants = Array.isArray(row.grants) ? row.grants : JSON.parse(row.grantsJson);
     const status = row.revokedAt ? "revoked" : row.expiresAt && Date.parse(row.expiresAt) <= Date.parse(now) ? "expired" : "active";
     return {
@@ -658,7 +661,7 @@ function accessKeySummary(row, declaredScopes, now) {
 function privilegedAccessKeySummary(row, declaredScopes, now) {
     return { ...accessKeySummary(row, declaredScopes, now), ownerUserId: row.ownerUserId };
 }
-function withAccessKeyTransaction(database, operation) {
+export function withAccessKeyTransaction(database, operation) {
     return database.__transactionActive
         ? operation(database.adapter)
         : database.adapter.withTransaction(operation);
@@ -738,6 +741,9 @@ export function bindAccessKeyOwnerSession(context, sessionToken) {
 }
 export function accessKeySecretWasDisclosed(context) {
     return Boolean(context && accessKeySecretDisclosedContexts.has(context));
+}
+export function markAccessKeySecretDisclosed(context) {
+    accessKeySecretDisclosedContexts.add(context);
 }
 export async function emitAccessKeyOwnerTransitionAudits(database, input) {
     for (const record of input.records ?? []) {
@@ -838,7 +844,7 @@ function recordAccessKeyFailure(database, kind, key, windowMs) {
 function clearAccessKeyFailure(database, kind, key) {
     accessKeyLimiter(database, kind).delete(key);
 }
-function throwAccessKeyIssueError(status) {
+export function throwAccessKeyIssueError(status) {
     if (status === "invalid-expiry") {
         throw commandError("Invalid Access-key expiry.", "Pass an ISO instant later than issuance.", "INVALID_ACCESS_KEY_EXPIRY");
     }
@@ -856,7 +862,7 @@ function throwAccessKeyIssueError(status) {
 function throwAccessKeyOwnerSessionInactive(action) {
     throw commandError("Access-key owner Session is no longer active.", `Sign in again before ${action} Access keys.`, "UNAUTHENTICATED");
 }
-function accessKeyNotFoundError() {
+export function accessKeyNotFoundError() {
     return commandError("Access key not found.", "Refresh the current user's Access-key list.", "ACCESS_KEY_NOT_FOUND");
 }
 function invalidAccessKeyGrantsError() {

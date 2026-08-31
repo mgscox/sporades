@@ -185,11 +185,59 @@ export declare function createAccessKeySecret(): {
     token: string;
 };
 export declare function accessKeyVerifierDigest(selector: string, verifier: string): string;
+export declare function normalizeAccessKeyIssue(input: unknown, declaredScopes: readonly string[], now: Date): {
+    name: string;
+    grants: string[];
+    expiresAt: string | null;
+    createdAt: string;
+};
+export declare function normalizeAccessKeyListOptions(value: unknown): {
+    cursor: LooseRecord | null;
+    limit: any;
+    status: any;
+};
+export declare function accessKeyListPage(rows: LooseRecord[], declaredScopes: readonly string[], now: Date, options: LooseRecord): {
+    accessKeys: {
+        id: any;
+        name: any;
+        grants: any[];
+        effectiveScopes: string[];
+        status: string;
+        createdAt: any;
+        expiresAt: any;
+        rotatedAt: any;
+        revokedAt: any;
+        revocationCause: any;
+        lastUsedAt: any;
+        lifecycleRevision: number;
+    }[];
+    declaredScopes: string[];
+    nextCursor: string | null;
+    totalCount: number;
+};
+export declare function accessKeySummary(row: LooseRecord, declaredScopes: readonly string[], now: string): {
+    id: any;
+    name: any;
+    grants: any[];
+    effectiveScopes: string[];
+    status: string;
+    createdAt: any;
+    expiresAt: any;
+    rotatedAt: any;
+    revokedAt: any;
+    revocationCause: any;
+    lastUsedAt: any;
+    lifecycleRevision: number;
+};
+export declare function withAccessKeyTransaction(database: LooseRecord, operation: (adapter: LooseRecord) => any): any;
 export declare function flushAccessKeyLifecycleAuditEvents(database: LooseRecord, context: LooseRecord | undefined): Promise<void>;
 export declare function dropAccessKeyLifecycleAuditEvents(context: LooseRecord | undefined): void;
 export declare function transferAccessKeyRuntimeState(previousContext: LooseRecord, nextContext: LooseRecord): void;
 export declare function bindAccessKeyOwnerSession(context: LooseRecord, sessionToken: unknown): void;
 export declare function accessKeySecretWasDisclosed(context: LooseRecord | undefined): boolean;
+export declare function markAccessKeySecretDisclosed(context: LooseRecord): void;
 export declare function emitAccessKeyOwnerTransitionAudits(database: LooseRecord, input: LooseRecord): Promise<void>;
 export declare function runAccessKeyOwnerSecurityTransition(database: LooseRecord, input: LooseRecord, transition: (adapter: LooseRecord) => any): Promise<any>;
+export declare function throwAccessKeyIssueError(status: string): never;
+export declare function accessKeyNotFoundError(): import("./runtime-errors.js").HelperError;
 //# sourceMappingURL=access-keys-runtime.d.ts.map

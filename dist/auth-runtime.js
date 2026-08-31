@@ -2330,6 +2330,7 @@ function sessionFromRow(row) {
         token: row.token,
         auth: {
             userId: row.userId,
+            ...(row.userKind === "service" ? { userKind: "service" } : {}),
             displayName: row.displayName,
             email: row.email,
             picture: row.picture,
@@ -3372,8 +3373,14 @@ export function createAnonymousAuthTables(sqlite, _authConfig = null) {
             "[picture] TEXT, " +
             "[isAuthenticated] INTEGER NOT NULL, " +
             "[isGuest] INTEGER NOT NULL, " +
-            "[provider] TEXT NOT NULL" +
+            "[provider] TEXT NOT NULL, " +
+            "[userKind] TEXT NOT NULL DEFAULT 'human', " +
+            "[lifecycleStatus] TEXT NOT NULL DEFAULT 'active', " +
+            "[disabledAt] TEXT" +
             ")")),
+        () => ensureAuthUserKindColumns(sqlite),
+        () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_auth_service_user_locks] " +
+            "([userId] TEXT PRIMARY KEY, [operationRevision] INTEGER NOT NULL)")),
         () => createAccessKeyTables(sqlite),
         () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_auth_sessions] (" +
             "[token] TEXT PRIMARY KEY, " +
@@ -3422,6 +3429,16 @@ export function createAnonymousAuthTables(sqlite, _authConfig = null) {
             "[reauthUserId] TEXT" +
             ")")),
         () => ensureOAuthStateColumns(sqlite),
+    ]);
+}
+function ensureAuthUserKindColumns(sqlite) {
+    const sql = sqlite.dialect.sql;
+    return chainMaybePromise([
+        () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_users", "userKind", "TEXT"),
+        () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_users", "lifecycleStatus", "TEXT"),
+        () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_users", "disabledAt", "TEXT"),
+        () => sqlite.exec(sql("UPDATE [sporades_auth_users] SET [userKind] = 'human' WHERE [userKind] IS NULL")),
+        () => sqlite.exec(sql("UPDATE [sporades_auth_users] SET [lifecycleStatus] = 'active' WHERE [lifecycleStatus] IS NULL")),
     ]);
 }
 function ensureOAuthStateColumns(sqlite) {

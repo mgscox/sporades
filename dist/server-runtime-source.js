@@ -34,6 +34,7 @@ import { isPromiseLike, thenIfPromise } from "./maybe-promise.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import { accessKeyGrantsSatisfyScopes, normalizeCapsuleAuthDefinition, readAuthRequirements, validateCapsuleAuthRequirements, } from "./auth-admission.js";
 import { accessKeyCredentialLogAttribution, bindAccessKeyOwnerSession, createCurrentUserAccessKeysApi, createPrivilegedAccessKeysApi, emitAccessKeyAdmittedAudit, accessKeySecretWasDisclosed, dropAccessKeyLifecycleAuditEvents, flushAccessKeyLifecycleAuditEvents, grantPrivilegedAccessKeyAccess, publicAccessKeyManagementError, recordAccessKeyUsage, resolveAccessKeyCredential, transferAccessKeyRuntimeState, revokePrivilegedAccessKeyAccess, } from "./access-keys-runtime.js";
+import { createServiceUsersApi } from "./service-users-runtime.js";
 import { validateAccessKeyOperatorActionInput } from "./cli/access-key-operator-envelope.js";
 // Batch 9 left one engine-construction name here: `openDevDatabase` builds the Capsule's adapter
 // with it. Trusted policy reads now also ask that module whether the supplied adapter is an active
@@ -3439,7 +3440,7 @@ function endpointRequestHead(requestUrl, request) {
     };
 }
 function createEndpointContext(database, endpointRequest, session, options = {}) {
-    const auth = protectContextIdentity(session.auth);
+    const auth = protectContextIdentity(contextAuthIdentity(session.auth));
     const credential = options.ordinaryCredential === false
         ? null
         : protectContextIdentity(options.credential ?? { kind: "session" });
@@ -3493,6 +3494,7 @@ function createEndpointContext(database, endpointRequest, session, options = {})
     context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
     context.teamBilling = createCurrentUserTeamBillingErasureApi(database, auth, () => holder.current, (candidate) => handlerContextByDatabase.get(database)?.() === candidate);
     context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
+    context.serviceUsers = createServiceUsersApi(database, () => holder.current, credential?.kind === "session" && typeof session.token === "string" ? session.token : null);
     context.serverAuth = {
         async revokeHumanSecurity(_userId) {
             throw commandError("Human security transition is unavailable.", "Run this operation inside an authenticated Capsule mutation.", "HUMAN_SECURITY_TRANSITION_UNAVAILABLE");
@@ -3526,6 +3528,10 @@ function createEndpointContext(database, endpointRequest, session, options = {})
         },
     };
     return context;
+}
+function contextAuthIdentity(value) {
+    const { userKind, ...legacyIdentity } = value ?? {};
+    return userKind === "service" ? { ...legacyIdentity, userKind } : legacyIdentity;
 }
 function protectContextIdentity(value) {
     const target = Object.freeze({ ...value });
@@ -5891,7 +5897,7 @@ async function runMutationHookAndDrainPendingAclWrites(hookSource, event, contex
     }
 }
 function createMutationContext(database, auth, options = {}) {
-    auth = protectContextIdentity(auth);
+    auth = protectContextIdentity(contextAuthIdentity(auth));
     const credential = options.ordinaryCredential === false
         ? null
         : protectContextIdentity(options.credential ?? { kind: "session" });
@@ -5929,6 +5935,7 @@ function createMutationContext(database, auth, options = {}) {
         ? handlerContextByDatabase.get(database)?.() === candidate
         : holder.current === candidate);
     context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
+    context.serviceUsers = createServiceUsersApi(database, () => holder.current, credential?.kind === "session" && typeof options.sessionToken === "string" ? options.sessionToken : null);
     context.serverAuth = {
         async revokeHumanSecurity(userId) {
             if (!database.__transactionActive || !auth?.isAuthenticated || auth?.isGuest || auth?.userKind === "service" || typeof options.sessionToken !== "string" || typeof userId !== "string" || !userId || userId === "__privileged__") {

@@ -1341,6 +1341,30 @@ test("canonical docs publish the bounded Access-key operator surface", async () 
   }
 });
 
+test("canonical docs publish first-class Service Users without weakening application authority", async () => {
+  const [context, prd, readme, serverReference, decision, declarations] = await Promise.all([
+    readProjectFile("CONTEXT.md"),
+    readProjectFile("docs/PRD.md"),
+    readProjectFile("README.md"),
+    readProjectFile("docs/reference/server-runtime.md"),
+    readProjectFile("docs/adr/0051-service-users-are-first-class-runtime-principals.md"),
+    readProjectFile("src/types/server.d.ts"),
+  ]);
+  const canonical = [context, prd, readme, serverReference, decision].join("\n");
+  for (const required of [
+    "ctx.serviceUsers", "userKind", "Service User", "human Session",
+    "no email", "OAuth", "browser Session", "plaintext", "irreversible",
+    "Team membership", "resource policy", "intersection", "external secret store",
+  ]) assert.match(canonical, new RegExp(required, "i"));
+  assert.match(serverReference, /Only a Mutation[\s\S]*ctx\.serviceUsers/);
+  assert.match(serverReference, /Queries[\s\S]*Custom endpoints cannot manage Service Users/);
+  assert.match(decision, /Keep a human-owned Access key[\s\S]*inherit their identity/);
+  assert.match(declarations, /export type ServiceUsersApi/);
+  assert.match(declarations, /serviceUsers: ServiceUsersApi/);
+  assert.match(declarations, /userKind\?: "service"/);
+  assert.doesNotMatch(declarations.match(/export type PrivilegedContext[\s\S]*?};/)?.[0] ?? "", /serviceUsers: ServiceUsersApi/);
+});
+
 test("public docs agree on narrow Checkout, Customer Portal, callback admission, and Stripe event policy interfaces", async () => {
   const [context, prd, readme, projects, server, blankGuide, apiModule, apiCheckoutInput, apiPortalInput, apiWebhookInput, apiVerifiedEvent, apiStripeEvent, apiStripeEventHandler] = await Promise.all([
     readProjectFile("CONTEXT.md"),

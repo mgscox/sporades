@@ -5184,6 +5184,7 @@ async function resolveAccessKeyCredential(database, request, sessionToken) {
   else if (row.revokedAt) failure = "revoked";
   else if (row.expiresAt && Date.parse(row.expiresAt) <= now2.getTime()) failure = "expired";
   else if (Number(row.ownerIsAuthenticated) !== 1 || Number(row.ownerIsGuest) !== 0) failure = "owner-ineligible";
+  else if ((row.ownerUserKind ?? "human") === "service" && row.ownerLifecycleStatus !== "active") failure = "owner-ineligible";
   if (failure) {
     recordAccessKeyFailure(database, "source", source, 6e4);
     recordAccessKeyFailure(database, "selector", selectorFingerprint, 5 * 6e4);
@@ -5193,6 +5194,7 @@ async function resolveAccessKeyCredential(database, request, sessionToken) {
   return {
     auth: protectAccessKeyValue({
       userId: row.ownerUserId,
+      ...row.ownerUserKind === "service" ? { userKind: "service" } : {},
       displayName: row.ownerDisplayName,
       email: row.ownerEmail ?? null,
       picture: row.ownerPicture ?? null,
@@ -5446,6 +5448,9 @@ function bindAccessKeyOwnerSession(context, sessionToken) {
 }
 function accessKeySecretWasDisclosed(context) {
   return Boolean(context && accessKeySecretDisclosedContexts.has(context));
+}
+function markAccessKeySecretDisclosed(context) {
+  accessKeySecretDisclosedContexts.add(context);
 }
 async function emitAccessKeyOwnerTransitionAudits(database, input) {
   for (const record of input.records ?? []) {
@@ -14462,6 +14467,7 @@ function sessionFromRow(row) {
     token: row.token,
     auth: {
       userId: row.userId,
+      ...row.userKind === "service" ? { userKind: "service" } : {},
       displayName: row.displayName,
       email: row.email,
       picture: row.picture,
@@ -15317,9 +15323,13 @@ function createAnonymousAuthTables(sqlite, _authConfig = null) {
   return chainMaybePromise([
     () => sqlite.exec(
       sql(
-        "CREATE TABLE IF NOT EXISTS [sporades_auth_users] ([id] TEXT PRIMARY KEY, [createdAt] TEXT NOT NULL, [displayName] TEXT NOT NULL, [email] TEXT, [picture] TEXT, [isAuthenticated] INTEGER NOT NULL, [isGuest] INTEGER NOT NULL, [provider] TEXT NOT NULL)"
+        "CREATE TABLE IF NOT EXISTS [sporades_auth_users] ([id] TEXT PRIMARY KEY, [createdAt] TEXT NOT NULL, [displayName] TEXT NOT NULL, [email] TEXT, [picture] TEXT, [isAuthenticated] INTEGER NOT NULL, [isGuest] INTEGER NOT NULL, [provider] TEXT NOT NULL, [userKind] TEXT NOT NULL DEFAULT 'human', [lifecycleStatus] TEXT NOT NULL DEFAULT 'active', [disabledAt] TEXT)"
       )
     ),
+    () => ensureAuthUserKindColumns(sqlite),
+    () => sqlite.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_auth_service_user_locks] ([userId] TEXT PRIMARY KEY, [operationRevision] INTEGER NOT NULL)"
+    )),
     () => createAccessKeyTables(sqlite),
     () => sqlite.exec(
       sql(
@@ -15352,6 +15362,16 @@ function createAnonymousAuthTables(sqlite, _authConfig = null) {
       )
     ),
     () => ensureOAuthStateColumns(sqlite)
+  ]);
+}
+function ensureAuthUserKindColumns(sqlite) {
+  const sql = sqlite.dialect.sql;
+  return chainMaybePromise([
+    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_users", "userKind", "TEXT"),
+    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_users", "lifecycleStatus", "TEXT"),
+    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_users", "disabledAt", "TEXT"),
+    () => sqlite.exec(sql("UPDATE [sporades_auth_users] SET [userKind] = 'human' WHERE [userKind] IS NULL")),
+    () => sqlite.exec(sql("UPDATE [sporades_auth_users] SET [lifecycleStatus] = 'active' WHERE [lifecycleStatus] IS NULL"))
   ]);
 }
 function ensureOAuthStateColumns(sqlite) {
@@ -17122,6 +17142,230 @@ function createEmailEventEndpoints(mailConfig, serverEnv, subscription) {
   return endpoints;
 }
 
+// src/service-users-runtime.ts
+var SERVICE_USER_DISPLAY_NAME_BYTES = 160;
+function serviceUserError(code, message, hint) {
+  return commandError(message, hint, code);
+}
+function normalizeDisplayName(value) {
+  if (typeof value !== "string") {
+    throw serviceUserError("INVALID_SERVICE_USER", "Invalid service User.", "Provide a displayName and initial accessKey.");
+  }
+  const displayName = value.trim();
+  if (!displayName || Buffer.byteLength(displayName, "utf8") > SERVICE_USER_DISPLAY_NAME_BYTES || /[\u0000-\u001f\u007f]/.test(displayName)) {
+    throw serviceUserError("INVALID_SERVICE_USER", "Invalid service User.", "Use a bounded printable displayName.");
+  }
+  return displayName;
+}
+function serviceUserSummary(row) {
+  return {
+    id: row.id,
+    displayName: row.displayName,
+    status: row.lifecycleStatus,
+    createdAt: row.createdAt,
+    disabledAt: row.disabledAt ?? null
+  };
+}
+async function requireCurrentHumanSession(database, context, sessionToken) {
+  if (context?.credential?.kind !== "session" || typeof sessionToken !== "string" || !sessionToken) {
+    throw serviceUserError("FORBIDDEN", "Service-User management requires a human Session.", "Sign in with a linked human account.");
+  }
+  const adapter = database.adapter;
+  const sql = adapter.dialect.sql;
+  await adapter.prepare(sql(
+    "UPDATE [sporades_auth_sessions] SET [token] = [token] WHERE [token] = ? AND [userId] = ?"
+  )).run(sessionToken, context.auth?.userId);
+  const row = await adapter.prepare(sql(
+    "SELECT [s].[token] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[userKind] = 'human' AND [u].[lifecycleStatus] = 'active' AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0"
+  )).get(sessionToken, context.auth?.userId, database.clock.now().toISOString());
+  if (!row) {
+    throw serviceUserError("FORBIDDEN", "Service-User management requires a current human Session.", "Sign in again and retry.");
+  }
+}
+async function lockServiceUser(database, userId, requireActive = true) {
+  if (typeof userId !== "string" || !userId || Buffer.byteLength(userId, "utf8") > 256) {
+    throw serviceUserError("SERVICE_USER_NOT_FOUND", "Service User not found.", "Refresh the service-User list.");
+  }
+  const adapter = database.adapter;
+  const sql = adapter.dialect.sql;
+  const locked = await adapter.prepare(sql(
+    "UPDATE [sporades_auth_service_user_locks] SET [operationRevision] = [operationRevision] + 1 WHERE [userId] = ?"
+  )).run(userId);
+  if (Number(locked?.changes ?? 0) !== 1) {
+    throw serviceUserError("SERVICE_USER_NOT_FOUND", "Service User not found.", "Refresh the service-User list.");
+  }
+  const row = await adapter.prepare(sql(
+    "SELECT [id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind], [lifecycleStatus], [disabledAt] FROM [sporades_auth_users] WHERE [id] = ?"
+  )).get(userId);
+  if (!row || row.userKind !== "service" || requireActive && row.lifecycleStatus !== "active") {
+    throw serviceUserError(
+      requireActive ? "SERVICE_USER_NOT_ACTIVE" : "SERVICE_USER_NOT_FOUND",
+      requireActive ? "Service User is not active." : "Service User not found.",
+      requireActive ? "Use an active service User." : "Refresh the service-User list."
+    );
+  }
+  return row;
+}
+async function issueForOwner(database, context, ownerUserId, input) {
+  const normalized = normalizeAccessKeyIssue(input, database.accessKeyScopes ?? [], database.clock.now());
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const secret = createAccessKeySecret();
+    let issuedAt = normalized.createdAt;
+    const record = {
+      id: crypto.randomUUID(),
+      ownerUserId,
+      name: normalized.name,
+      reservedName: normalized.name,
+      grantsJson: JSON.stringify(normalized.grants),
+      secretVersion: 1,
+      selector: secret.selector,
+      verifierDigest: accessKeyVerifierDigest(secret.selector, secret.verifier),
+      lifecycleRevision: 1,
+      createdAt: normalized.createdAt,
+      expiresAt: normalized.expiresAt,
+      issuanceTime: () => {
+        issuedAt = database.clock.now().toISOString();
+        return issuedAt;
+      }
+    };
+    const outcome = await database.adapter.issueAccessKeyRecord(record);
+    if (outcome.status === "selector-conflict") continue;
+    if (outcome.status !== "issued") throwAccessKeyIssueError(outcome.status);
+    record.createdAt = issuedAt;
+    markAccessKeySecretDisclosed(context);
+    return {
+      accessKey: accessKeySummary(record, database.accessKeyScopes ?? [], issuedAt),
+      token: secret.token
+    };
+  }
+  throw serviceUserError("ACCESS_KEY_SECRET_CONFLICT", "Could not generate a unique Access key.", "Retry Access-key issuance.");
+}
+function createServiceUsersApi(database, contextGetter, sessionToken) {
+  const inContext = async (operation) => {
+    const context = contextGetter();
+    await requireCurrentHumanSession(database, context, sessionToken);
+    if (database.__transactionActive !== true) {
+      throw serviceUserError(
+        "SERVICE_USER_MUTATION_REQUIRED",
+        "Service-User lifecycle changes require a Mutation.",
+        "Call ctx.serviceUsers from a Mutation so User, key, and Capsule records commit atomically."
+      );
+    }
+    return operation(context);
+  };
+  return {
+    async create(input) {
+      return inContext(async (context) => {
+        if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some((key) => !["displayName", "accessKey"].includes(key))) {
+          throw serviceUserError("INVALID_SERVICE_USER", "Invalid service User.", "Provide a displayName and initial accessKey.");
+        }
+        const displayName = normalizeDisplayName(input.displayName);
+        const id = crypto.randomUUID();
+        const createdAt = database.clock.now().toISOString();
+        const sql = database.adapter.dialect.sql;
+        await database.adapter.prepare(sql(
+          "INSERT INTO [sporades_auth_users] ([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind], [lifecycleStatus], [disabledAt]) VALUES (?, ?, ?, NULL, NULL, 1, 0, 'service', 'service', 'active', NULL)"
+        )).run(id, createdAt, displayName);
+        await database.adapter.prepare(sql(
+          "INSERT INTO [sporades_auth_service_user_locks] ([userId], [operationRevision]) VALUES (?, 0)"
+        )).run(id);
+        const issued = await issueForOwner(database, context, id, input.accessKey);
+        return { serviceUser: serviceUserSummary({ id, displayName, lifecycleStatus: "active", createdAt, disabledAt: null }), ...issued };
+      });
+    },
+    async issueAccessKey(userId, input) {
+      return inContext(async (context) => {
+        const serviceUser = await lockServiceUser(database, userId, true);
+        return { serviceUser: serviceUserSummary(serviceUser), ...await issueForOwner(database, context, serviceUser.id, input) };
+      });
+    },
+    async listAccessKeys(userId, options = {}) {
+      return inContext(async () => {
+        const serviceUser = await lockServiceUser(database, userId, false);
+        const normalized = normalizeAccessKeyListOptions(options);
+        const rows = await database.adapter.listAccessKeyRecordsForOwner(serviceUser.id);
+        return { serviceUser: serviceUserSummary(serviceUser), ...accessKeyListPage(rows, database.accessKeyScopes ?? [], database.clock.now(), normalized) };
+      });
+    },
+    async rotateAccessKey(userId, id, options) {
+      return inContext(async (context) => {
+        const serviceUser = await lockServiceUser(database, userId, true);
+        if (typeof id !== "string" || !id) throw accessKeyNotFoundError();
+        if (!options || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some((key) => key !== "lifecycleRevision") || !Number.isInteger(options.lifecycleRevision) || options.lifecycleRevision < 1) {
+          throw serviceUserError("ACCESS_KEY_REVISION_CONFLICT", "Invalid Access-key lifecycle revision.", "Pass the lifecycleRevision returned by listAccessKeys().");
+        }
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+          const secret = createAccessKeySecret();
+          const outcome = await database.adapter.rotateAccessKeyRecord({
+            ownerUserId: serviceUser.id,
+            id,
+            lifecycleRevision: options.lifecycleRevision,
+            secretVersion: 1,
+            selector: secret.selector,
+            verifierDigest: accessKeyVerifierDigest(secret.selector, secret.verifier),
+            rotationTime: () => database.clock.now().toISOString()
+          });
+          if (outcome.status === "selector-conflict") continue;
+          if (outcome.status === "not-found") throw accessKeyNotFoundError();
+          if (outcome.status === "not-active") throw serviceUserError("ACCESS_KEY_NOT_ACTIVE", "Access key is not active.", "Issue a new Access key.");
+          if (outcome.status === "revision-conflict") throw serviceUserError("ACCESS_KEY_REVISION_CONFLICT", "Access-key revision changed.", "Refresh the key list and retry rotation.");
+          markAccessKeySecretDisclosed(context);
+          return {
+            serviceUser: serviceUserSummary(serviceUser),
+            accessKey: accessKeySummary(outcome.record, database.accessKeyScopes ?? [], outcome.rotatedAt),
+            token: secret.token
+          };
+        }
+        throw serviceUserError("ACCESS_KEY_SECRET_CONFLICT", "Could not generate a unique Access key.", "Retry Access-key rotation.");
+      });
+    },
+    async revokeAccessKey(userId, id) {
+      return inContext(async () => {
+        const serviceUser = await lockServiceUser(database, userId, false);
+        if (typeof id !== "string" || !id) throw accessKeyNotFoundError();
+        const outcome = await database.adapter.revokeAccessKeyRecord({
+          ownerUserId: serviceUser.id,
+          id,
+          revocationTime: () => database.clock.now().toISOString(),
+          revocationCause: "service-user-administrator"
+        });
+        if (!outcome) throw accessKeyNotFoundError();
+        return {
+          serviceUser: serviceUserSummary(serviceUser),
+          accessKey: accessKeySummary(outcome, database.accessKeyScopes ?? [], outcome.revokedAt ?? database.clock.now().toISOString())
+        };
+      });
+    },
+    async disable(userId) {
+      return inContext(async () => {
+        const serviceUser = await lockServiceUser(database, userId, true);
+        const revoked = await database.adapter.bulkRevokeAccessKeysForOwner({
+          ownerUserId: serviceUser.id,
+          revocationTime: () => database.clock.now().toISOString(),
+          revocationCause: "service-user-disabled"
+        });
+        const disabledAt = database.clock.now().toISOString();
+        const sql = database.adapter.dialect.sql;
+        const result = await database.adapter.prepare(sql(
+          "UPDATE [sporades_auth_users] SET [lifecycleStatus] = 'disabled', [disabledAt] = ?, [isAuthenticated] = 0 WHERE [id] = ? AND [userKind] = 'service' AND [lifecycleStatus] = 'active'"
+        )).run(disabledAt, serviceUser.id);
+        if (Number(result?.changes ?? 0) !== 1) {
+          throw serviceUserError("SERVICE_USER_NOT_ACTIVE", "Service User is not active.", "Refresh the service-User list.");
+        }
+        return {
+          serviceUser: serviceUserSummary({ ...serviceUser, lifecycleStatus: "disabled", disabledAt }),
+          revokedCount: revoked.revokedCount,
+          accessKeys: revoked.records.map((row) => accessKeySummary({
+            ...row,
+            revokedAt: revoked.revokedAt,
+            revocationCause: "service-user-disabled"
+          }, database.accessKeyScopes ?? [], revoked.revokedAt))
+        };
+      });
+    }
+  };
+}
+
 // src/cli/access-key-operator-envelope.ts
 import { createInterface } from "node:readline/promises";
 var ACCESS_KEY_OPERATOR_ACTIONS = [
@@ -18472,7 +18716,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
     findAccessKeyAuthenticationRecord(selector) {
       return this.prepare(
         sql(
-          "SELECT [k].*, [u].[displayName] AS [ownerDisplayName], [u].[email] AS [ownerEmail], [u].[picture] AS [ownerPicture], [u].[isAuthenticated] AS [ownerIsAuthenticated], [u].[isGuest] AS [ownerIsGuest] FROM [sporades_auth_access_keys] [k] LEFT JOIN [sporades_auth_users] [u] ON [u].[id] = [k].[ownerUserId] WHERE [k].[secretVersion] = ? AND [k].[selector] = ?"
+          "SELECT [k].*, [u].[displayName] AS [ownerDisplayName], [u].[email] AS [ownerEmail], [u].[picture] AS [ownerPicture], [u].[isAuthenticated] AS [ownerIsAuthenticated], [u].[isGuest] AS [ownerIsGuest], [u].[userKind] AS [ownerUserKind], [u].[lifecycleStatus] AS [ownerLifecycleStatus] FROM [sporades_auth_access_keys] [k] LEFT JOIN [sporades_auth_users] [u] ON [u].[id] = [k].[ownerUserId] WHERE [k].[secretVersion] = ? AND [k].[selector] = ?"
         )
       ).get(1, selector) ?? null;
     },
@@ -18700,9 +18944,9 @@ function createSharedDatabaseAdapterMethods(dialect) {
       assertNotReservedAuthUserId(row.id);
       return this.prepare(
         sql(
-          "INSERT INTO [sporades_auth_users] ([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider]) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+          "INSERT INTO [sporades_auth_users] ([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind], [lifecycleStatus], [disabledAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
-      ).run(row.id, row.createdAt, row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider);
+      ).run(row.id, row.createdAt, row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider, row.userKind ?? "human", row.lifecycleStatus ?? "active", row.disabledAt ?? null);
     },
     updateAuthUserProfile(row) {
       assertNotReservedAuthUserId(row.id);
@@ -18766,7 +19010,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
       return thenIfPromise(
         this.prepare(
           sql(
-            "SELECT [s].[token], [s].[expiresAt], [u].[id] AS [userId], [u].[displayName], [u].[email], [u].[picture], [u].[isAuthenticated], [u].[isGuest], [s].[provider] AS [provider] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ?"
+            "SELECT [s].[token], [s].[expiresAt], [u].[id] AS [userId], [u].[userKind], [u].[displayName], [u].[email], [u].[picture], [u].[isAuthenticated], [u].[isGuest], [s].[provider] AS [provider] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ?"
           )
         ).get(token),
         (row) => isReservedAuthUserId(row?.userId) ? null : row ?? null
@@ -23543,7 +23787,7 @@ function endpointRequestHead(requestUrl, request) {
   };
 }
 function createEndpointContext(database, endpointRequest, session, options = {}) {
-  const auth = protectContextIdentity(session.auth);
+  const auth = protectContextIdentity(contextAuthIdentity(session.auth));
   const credential = options.ordinaryCredential === false ? null : protectContextIdentity(options.credential ?? { kind: "session" });
   const context = {
     auth,
@@ -23600,6 +23844,11 @@ function createEndpointContext(database, endpointRequest, session, options = {})
     (candidate) => handlerContextByDatabase.get(database)?.() === candidate
   );
   context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
+  context.serviceUsers = createServiceUsersApi(
+    database,
+    () => holder.current,
+    credential?.kind === "session" && typeof session.token === "string" ? session.token : null
+  );
   context.serverAuth = {
     async revokeHumanSecurity(_userId) {
       throw commandError("Human security transition is unavailable.", "Run this operation inside an authenticated Capsule mutation.", "HUMAN_SECURITY_TRANSITION_UNAVAILABLE");
@@ -23628,6 +23877,10 @@ function createEndpointContext(database, endpointRequest, session, options = {})
     }
   };
   return context;
+}
+function contextAuthIdentity(value) {
+  const { userKind, ...legacyIdentity } = value ?? {};
+  return userKind === "service" ? { ...legacyIdentity, userKind } : legacyIdentity;
 }
 function protectContextIdentity(value) {
   const target = Object.freeze({ ...value });
@@ -25886,7 +26139,7 @@ async function runMutationHookAndDrainPendingAclWrites(hookSource, event, contex
   }
 }
 function createMutationContext(database, auth, options = {}) {
-  auth = protectContextIdentity(auth);
+  auth = protectContextIdentity(contextAuthIdentity(auth));
   const credential = options.ordinaryCredential === false ? null : protectContextIdentity(options.credential ?? { kind: "session" });
   const context = {
     auth,
@@ -25923,6 +26176,11 @@ function createMutationContext(database, auth, options = {}) {
     (candidate) => database.__transactionActive ? handlerContextByDatabase.get(database)?.() === candidate : holder.current === candidate
   );
   context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
+  context.serviceUsers = createServiceUsersApi(
+    database,
+    () => holder.current,
+    credential?.kind === "session" && typeof options.sessionToken === "string" ? options.sessionToken : null
+  );
   context.serverAuth = {
     async revokeHumanSecurity(userId) {
       if (!database.__transactionActive || !auth?.isAuthenticated || auth?.isGuest || auth?.userKind === "service" || typeof options.sessionToken !== "string" || typeof userId !== "string" || !userId || userId === "__privileged__") {

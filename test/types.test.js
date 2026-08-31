@@ -434,7 +434,7 @@ const app = capsule({
       const deleted = await ctx.accessKeys.delete(revoked.accessKey.id);
       deleted.deleted satisfies true;
       revoked.accessKey.lifecycleRevision.valueOf();
-      revoked.accessKey.revocationCause satisfies "owner" | "operator" | "password-reset" | "owner-unlinked" | "owner-deleted" | null;
+      revoked.accessKey.revocationCause satisfies "owner" | "operator" | "password-reset" | "owner-unlinked" | "owner-deleted" | "service-user-administrator" | "service-user-disabled" | null;
       // @ts-expect-error Access-key grants are immutable after issuance.
       ctx.accessKeys.update(issued.accessKey.id, { grants: ["todos:write"] });
       // @ts-expect-error Access-key status filters are a closed vocabulary.
@@ -496,6 +496,26 @@ const app = capsule({
     }),
   },
   mutations: {
+    manageServiceUsers: mutation(async (ctx) => {
+      const created = await ctx.serviceUsers.create({
+        displayName: "Typed service User",
+        accessKey: { name: "production", grants: ["todos:read"] },
+      });
+      created.serviceUser.status satisfies "active" | "disabled";
+      created.token.toUpperCase();
+      const issued = await ctx.serviceUsers.issueAccessKey(created.serviceUser.id, { name: "staging", grants: ["todos:read"] });
+      const listed = await ctx.serviceUsers.listAccessKeys(created.serviceUser.id, { status: "active" });
+      const rotated = await ctx.serviceUsers.rotateAccessKey(created.serviceUser.id, issued.accessKey.id, { lifecycleRevision: issued.accessKey.lifecycleRevision });
+      rotated.token.toUpperCase();
+      await ctx.serviceUsers.revokeAccessKey(created.serviceUser.id, issued.accessKey.id);
+      const disabled = await ctx.serviceUsers.disable(created.serviceUser.id);
+      disabled.revokedCount.valueOf();
+      // @ts-expect-error service Users always require an initial Access key.
+      await ctx.serviceUsers.create({ displayName: "Incomplete" });
+      // @ts-expect-error service-User identity fields cannot be supplied by Capsule code.
+      await ctx.serviceUsers.create({ displayName: "Forged", email: "bot@example.test", accessKey: { name: "bad" } });
+      return listed.totalCount;
+    }),
     addTodo: mutation(async (ctx, text) => {
       await Promise.resolve();
       const me = requireAuth(ctx);

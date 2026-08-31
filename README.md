@@ -220,9 +220,10 @@ Sporades currently includes:
 - Runtime-owned auth with anonymous sessions, email auth, Google OAuth,
   Microsoft OpenID Connect, Sign in with Apple, Facebook Login, and
   local identity simulation for tests and agents.
-- User-owned named Access keys with Capsule-declared scopes, explicit Custom
-  endpoint and private-File opt-in, one-time secret disclosure, Session-only
-  owner management, durable Job provenance, and audited operator retirement.
+- Human- and Service-User-owned named Access keys with Capsule-declared scopes,
+  explicit Custom endpoint and private-File opt-in, one-time secret disclosure,
+  exact actor/credential provenance, Session-only management, durable Job
+  provenance, and audited operator retirement.
 - Runtime-owned current-user preferences exposed through `sporades/client`
   without app preference tables. Preferences follow the Sporades user identity,
   survive Anonymous account linking, and notify same-user connected clients when

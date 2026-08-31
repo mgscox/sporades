@@ -764,7 +764,8 @@ export function createSharedDatabaseAdapterMethods(dialect) {
         findAccessKeyAuthenticationRecord(selector) {
             return this.prepare(sql("SELECT [k].*, [u].[displayName] AS [ownerDisplayName], [u].[email] AS [ownerEmail], " +
                 "[u].[picture] AS [ownerPicture], [u].[isAuthenticated] AS [ownerIsAuthenticated], " +
-                "[u].[isGuest] AS [ownerIsGuest] FROM [sporades_auth_access_keys] [k] " +
+                "[u].[isGuest] AS [ownerIsGuest], [u].[userKind] AS [ownerUserKind], " +
+                "[u].[lifecycleStatus] AS [ownerLifecycleStatus] FROM [sporades_auth_access_keys] [k] " +
                 "LEFT JOIN [sporades_auth_users] [u] ON [u].[id] = [k].[ownerUserId] " +
                 "WHERE [k].[secretVersion] = ? AND [k].[selector] = ?")).get(1, selector) ?? null;
         },
@@ -940,8 +941,8 @@ export function createSharedDatabaseAdapterMethods(dialect) {
         insertAuthUser(row) {
             assertNotReservedAuthUserId(row.id);
             return this.prepare(sql("INSERT INTO [sporades_auth_users] " +
-                "([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider]) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)")).run(row.id, row.createdAt, row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider);
+                "([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind], [lifecycleStatus], [disabledAt]) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")).run(row.id, row.createdAt, row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider, row.userKind ?? "human", row.lifecycleStatus ?? "active", row.disabledAt ?? null);
         },
         updateAuthUserProfile(row) {
             assertNotReservedAuthUserId(row.id);
@@ -977,7 +978,7 @@ export function createSharedDatabaseAdapterMethods(dialect) {
             });
         },
         readAuthSessionWithUser(token) {
-            return thenIfPromise(this.prepare(sql("SELECT [s].[token], [s].[expiresAt], [u].[id] AS [userId], [u].[displayName], [u].[email], [u].[picture], " +
+            return thenIfPromise(this.prepare(sql("SELECT [s].[token], [s].[expiresAt], [u].[id] AS [userId], [u].[userKind], [u].[displayName], [u].[email], [u].[picture], " +
                 "[u].[isAuthenticated], [u].[isGuest], [s].[provider] AS [provider] " +
                 "FROM [sporades_auth_sessions] [s] " +
                 "JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] " +

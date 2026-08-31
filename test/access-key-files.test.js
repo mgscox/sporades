@@ -5,10 +5,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { capsule } from "../dist/server.js";
+import { capsule, mutation } from "../dist/server.js";
 import { createPendingFileUpload } from "../dist/file-storage-runtime.js";
 import { handleFileHttpRoute } from "../dist/http-runtime.js";
-import { openDevDatabase, runClientAccessKeyOperation } from "../dist/server-runtime-source.js";
+import { openDevDatabase, runClientAccessKeyOperation, runMutation } from "../dist/server-runtime-source.js";
 
 function linkedAuth(userId, email = `${userId}@example.com`) {
   return {
@@ -214,6 +214,56 @@ test("private File Bearer admission is explicit, scoped, provenance-aware, and l
     assert.equal(denialLogs.some((event) => event.event === "auth.denied" && event.data?.handler?.kind === "file"), true);
     assert.equal(JSON.stringify(denialLogs).includes(allowed.token), false);
     assert.equal(JSON.stringify(denialLogs).includes(rotated.token), false);
+  } finally {
+    await server?.close();
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a service-owned Access key reuses private File ownership and ACL admission", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-service-user-files-"));
+  const observed = [];
+  let allowedServiceUserId = null;
+  const definition = capsule({
+    name: "service-user-files",
+    accessKeys: { scopes: ["files:read"] },
+    files: {
+      accessKeys: { read: { scopes: ["files:read"] } },
+      acl: { read: ({ ctx }) => { observed.push({ auth: ctx.auth, credential: ctx.credential }); return ctx.auth.userId === allowedServiceUserId; } },
+    },
+    mutations: {
+      createService: mutation((ctx) => ctx.serviceUsers.create({
+        displayName: "File Agent",
+        accessKey: { name: "file-reader", grants: ["files:read"] },
+      })),
+      disableService: mutation((ctx, userId) => ctx.serviceUsers.disable(userId)),
+    },
+  });
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+    name: definition.name,
+    files: { storagePath: path.join(dir, "files") },
+  }, definition);
+  const administrator = linkedAuth("service-file-administrator");
+  const sessionToken = "service-file-administrator-session";
+  let server;
+  try {
+    await seedUser(database, administrator, sessionToken);
+    server = await startFileServer(database);
+    const created = await runMutation(database, administrator, "createService", [], { sessionToken });
+    assert.equal(created.error, null, JSON.stringify(created.error));
+    allowedServiceUserId = created.data.serviceUser.id;
+    const file = await upload(database, server.baseUrl, administrator, "/private/service-canary.txt", "service canary");
+    const fileUrl = `${server.baseUrl}/__sporades/files/private/${file.id}?v=${encodeURIComponent(file.version)}`;
+    const admitted = await fetch(fileUrl, { headers: { authorization: `Bearer ${created.data.token}` } });
+    assert.equal(admitted.status, 200);
+    assert.equal(await admitted.text(), "service canary");
+    assert.equal(observed.at(-1).auth.userKind, "service");
+    assert.equal(observed.at(-1).auth.userId, created.data.serviceUser.id);
+    assert.deepEqual(observed.at(-1).credential, { kind: "access-key", id: created.data.accessKey.id, name: "file-reader" });
+    const disabled = await runMutation(database, administrator, "disableService", [created.data.serviceUser.id], { sessionToken });
+    assert.equal(disabled.error, null, JSON.stringify(disabled.error));
+    assert.equal((await fetch(fileUrl, { headers: { authorization: `Bearer ${created.data.token}` } })).status, 401);
   } finally {
     await server?.close();
     await database.close();

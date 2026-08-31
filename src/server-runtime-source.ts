@@ -112,6 +112,7 @@ import {
   publicAccessKeyManagementError, recordAccessKeyUsage, resolveAccessKeyCredential, transferAccessKeyRuntimeState,
   revokePrivilegedAccessKeyAccess,
 } from "./access-keys-runtime.js";
+import { createServiceUsersApi } from "./service-users-runtime.js";
 import { validateAccessKeyOperatorActionInput } from "./cli/access-key-operator-envelope.js";
 // Batch 9. The four names the shared Database adapter method set resolves in the Log index's
 // storage module — `ensureLogStorage()` and the three statements that write, prune and read the
@@ -3711,7 +3712,7 @@ function endpointRequestHead(requestUrl: URL, request: any) {
 }
 
 function createEndpointContext(database: LooseRecord, endpointRequest: LooseRecord, session: LooseRecord, options: LooseRecord = {}) {
-  const auth = protectContextIdentity(session.auth);
+  const auth = protectContextIdentity(contextAuthIdentity(session.auth));
   const credential = options.ordinaryCredential === false
     ? null
     : protectContextIdentity(options.credential ?? { kind: "session" });
@@ -3770,6 +3771,11 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
     (candidate) => handlerContextByDatabase.get(database)?.() === candidate,
   );
   context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
+  context.serviceUsers = createServiceUsersApi(
+    database,
+    () => holder.current,
+    credential?.kind === "session" && typeof session.token === "string" ? session.token : null,
+  );
   context.serverAuth = {
     async revokeHumanSecurity(_userId: string) {
       throw commandError("Human security transition is unavailable.", "Run this operation inside an authenticated Capsule mutation.", "HUMAN_SECURITY_TRANSITION_UNAVAILABLE");
@@ -3798,6 +3804,11 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
     },
   };
   return context;
+}
+
+function contextAuthIdentity(value: LooseRecord) {
+  const { userKind, ...legacyIdentity } = value ?? {};
+  return userKind === "service" ? { ...legacyIdentity, userKind } : legacyIdentity;
 }
 
 function protectContextIdentity(value: LooseRecord) {
@@ -6272,7 +6283,7 @@ async function runMutationHookAndDrainPendingAclWrites(hookSource: any, event: {
 }
 
 function createMutationContext(database: LooseRecord, auth: any, options: LooseRecord = {}) {
-  auth = protectContextIdentity(auth);
+  auth = protectContextIdentity(contextAuthIdentity(auth));
   const credential = options.ordinaryCredential === false
     ? null
     : protectContextIdentity(options.credential ?? { kind: "session" });
@@ -6315,6 +6326,11 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
       : holder.current === candidate,
   );
   context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
+  context.serviceUsers = createServiceUsersApi(
+    database,
+    () => holder.current,
+    credential?.kind === "session" && typeof options.sessionToken === "string" ? options.sessionToken : null,
+  );
   context.serverAuth = {
     async revokeHumanSecurity(userId: string) {
       if (!database.__transactionActive || !auth?.isAuthenticated || auth?.isGuest || auth?.userKind === "service" || typeof options.sessionToken !== "string" || typeof userId !== "string" || !userId || userId === "__privileged__") {

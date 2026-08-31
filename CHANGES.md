@@ -9,9 +9,16 @@ Changes since v0.9.7.
 - Add purpose-bound reauthentication proofs (c4ddd032).
 - Preserve provider-free headless Team Billing platform mechanics while Capsule UI remains app-owned.
 - Add transaction-bound human Session and Access-key retirement for administrative security transitions.
+- Add first-class Service Users and service-owned Access keys for named
+  automation, with atomic Session-authorized lifecycle management and exact
+  actor/credential provenance.
 
 ### 📝 Documentation
 
+- Preserve the provider-free, headless Team Billing boundary: Sporades owns
+  mechanics while Capsules render subscriber-visible product experience.
+- Document when to use Service Users, their authority intersection, and the
+  lifecycle and operational trade-offs.
 - Request Google signed reauthentication time (2fa291dc).
 - Verify OAuth reauthentication freshness (7a6c989a).
 - Persist and serialize email reauthentication (74ef1c50).
@@ -22,6 +29,8 @@ Changes since v0.9.7.
 
 ### 🧪 Tests
 
+- Cover Service-User rollback, lifecycle races, restart denial, provenance,
+  compatibility, and secret redaction.
 - Retire proofs during Session rotation (b1e25b48).
 - Harden reauthentication failure and ordering proof (8f933b91).
 - Require active User for proof consumption (465bf5a4).

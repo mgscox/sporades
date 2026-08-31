@@ -374,6 +374,55 @@ Access keys cannot manage Access keys. Neither can Anonymous or guest Sessions,
 Jobs, Schedules, or lifecycle hooks. A key authenticates its linked owner; it is
 not a synthetic user and grants never add authority the owner lacks.
 
+### Manage Service Users
+
+Use a Service User when automation must be a stable actor in its own right,
+rather than merely another credential owned by a human. A Service User cannot
+sign in: it has no email/password, OAuth identity, browser Session, or implicit
+human owner. Its Access keys resolve `ctx.auth.userKind` to `"service"` and keep
+the exact named key in `ctx.credential`.
+
+Only a Mutation running under a current linked human Session may use
+`ctx.serviceUsers`. This lets the runtime commit its User/key lifecycle in the
+same transaction as the Capsule's role, Team membership, and audit rows:
+
+```ts
+mutations: {
+  createTriageAgent: mutation(async (ctx) => {
+    const issued = await ctx.serviceUsers.create({
+      displayName: "Triage Agent",
+      accessKey: { name: "production", grants: ["tickets:read"] },
+    });
+    await ctx.db.insert("Agent", { userId: issued.serviceUser.id });
+    return issued; // issued.token is available exactly once, after commit
+  }),
+  rotateTriageAgent: mutation((ctx, userId: string, keyId: string, revision: number) =>
+    ctx.serviceUsers.rotateAccessKey(userId, keyId, { lifecycleRevision: revision })),
+  disableTriageAgent: mutation((ctx, userId: string) =>
+    ctx.serviceUsers.disable(userId)),
+},
+```
+
+`create()` always issues the initial named key atomically. Additional keys use
+`issueAccessKey()`. `listAccessKeys()`, `rotateAccessKey()`, and
+`revokeAccessKey()` take the stable Service User ID; rotation also compare-and-
+swaps the listed lifecycle revision. `disable()` is irreversible and revokes
+every current key while retaining safe identity and key metadata for historical
+attribution. Plaintext is returned only by a committed create, issue, or
+rotation and is never recoverable, so move it directly to an external secret
+store.
+
+Service identity and scopes do not grant application authority. The Capsule
+must still map the User ID to its own Team membership, role, and resource
+policy; effective authority is their intersection. This explicit mapping is
+the principal trade-off for avoiding fake human accounts and app-owned bearer
+credential tables. Keep a human-owned Access key when the work should continue
+to be attributed and authorized as that human instead.
+
+Anonymous and guest Sessions, Access keys, Jobs, Schedules, lifecycle hooks,
+Queries, and Custom endpoints cannot manage Service Users. Existing human-owned
+Access keys and Session behavior are unchanged.
+
 An explicit `ctx.privileged.run(...)` callback receives a separate
 `ctx.accessKeys` projection with only `list(ownerUserId, options?)`,
 `inspect(keyId)`, `revoke(keyId)`, `revokeAll(ownerUserId)`, and

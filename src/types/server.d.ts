@@ -294,6 +294,8 @@ export type ReadOnlyDatabaseFromSchema<Schema extends SchemaDefinition> = {
  */
 export type AuthContext = {
   userId: string;
+  /** Present only for non-human Service Users; absence preserves the legacy human/Anonymous shape. */
+  userKind?: "service";
   displayName: string;
   email: string | null;
   picture: string | null;
@@ -308,7 +310,7 @@ export type CredentialProvenance = SessionCredentialProvenance | AccessKeyCreden
 export type CredentialKind = CredentialProvenance["kind"];
 
 export type AccessKeyStatus = "active" | "expired" | "revoked";
-export type AccessKeyRevocationCause = "owner" | "operator" | "password-reset" | "owner-unlinked" | "owner-deleted";
+export type AccessKeyRevocationCause = "owner" | "operator" | "password-reset" | "owner-unlinked" | "owner-deleted" | "service-user-administrator" | "service-user-disabled";
 
 export type AccessKeySummary = {
   id: string;
@@ -352,6 +354,36 @@ export type CurrentUserAccessKeysApi = {
   }>;
   revoke(id: string): Promise<{ accessKey: AccessKeySummary }>;
   delete(id: string): Promise<{ id: string; deleted: true }>;
+};
+
+export type ServiceUserStatus = "active" | "disabled";
+export type ServiceUserSummary = {
+  id: string;
+  displayName: string;
+  status: ServiceUserStatus;
+  createdAt: string;
+  disabledAt: string | null;
+};
+
+export type CreateServiceUserInput = {
+  displayName: string;
+  /** Every service User starts with one independently named scoped credential. */
+  accessKey: IssueAccessKeyInput;
+};
+
+export type ServiceUsersApi = {
+  create(input: CreateServiceUserInput): Promise<{ serviceUser: ServiceUserSummary; accessKey: AccessKeySummary; token: string }>;
+  issueAccessKey(userId: string, input: IssueAccessKeyInput): Promise<{ serviceUser: ServiceUserSummary; accessKey: AccessKeySummary; token: string }>;
+  rotateAccessKey(userId: string, accessKeyId: string, options: RotateAccessKeyOptions): Promise<{ serviceUser: ServiceUserSummary; accessKey: AccessKeySummary; token: string }>;
+  listAccessKeys(userId: string, options?: ListAccessKeysOptions): Promise<{
+    serviceUser: ServiceUserSummary;
+    accessKeys: AccessKeySummary[];
+    declaredScopes: string[];
+    nextCursor: string | null;
+    totalCount: number;
+  }>;
+  revokeAccessKey(userId: string, accessKeyId: string): Promise<{ serviceUser: ServiceUserSummary; accessKey: AccessKeySummary }>;
+  disable(userId: string): Promise<{ serviceUser: ServiceUserSummary; revokedCount: number; accessKeys: AccessKeySummary[] }>;
 };
 
 export type PrivilegedAccessKeySummary = AccessKeySummary & { ownerUserId: string };
@@ -735,7 +767,7 @@ export type PrivilegedAuthContext = AuthContext & {
  * admin, Sporades user, session, team member, service account, or browser
  * credential.
  */
-export type PrivilegedContext<Schema extends SchemaDefinition = SchemaDefinition> = Omit<CapsuleContext<Schema>, "auth" | "credential" | "privileged" | "teams" | "accessKeys" | "teamBilling"> & {
+export type PrivilegedContext<Schema extends SchemaDefinition = SchemaDefinition> = Omit<CapsuleContext<Schema>, "auth" | "credential" | "privileged" | "teams" | "accessKeys" | "serviceUsers" | "teamBilling"> & {
   auth: PrivilegedAuthContext;
   signal: AbortSignal;
   files: PrivilegedFileApi;
@@ -793,6 +825,8 @@ export type CapsuleContext<
   teamBilling: CurrentUserTeamBillingApi;
   /** Runtime-owned Access keys issued and managed by the current linked Session owner. */
   accessKeys: CurrentUserAccessKeysApi;
+  /** Transaction-composable lifecycle for non-human Users and their scoped credentials. Human Session only. */
+  serviceUsers: ServiceUsersApi;
 };
 
 /** Immutable exact bytes from one bounded Custom endpoint request-body read. */

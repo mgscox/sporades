@@ -213,7 +213,7 @@ The repository currently includes:
   OAuth provider linking, local identity simulation helpers, connected-client
   auth targeting, and provider configuration through `sporades.json` plus
   Server env.
-- User-owned named Access keys for scoped programmatic access, with explicit
+- Human- and Service-User-owned named Access keys for scoped programmatic access, with explicit
   Custom-endpoint and private-File Bearer admission, Session-only owner
   management, immutable grants, one-time secret disclosure, atomic rotation and
   retirement, Credential provenance through durable Jobs, and metadata-only
@@ -647,9 +647,12 @@ Google, Microsoft, Apple, and Facebook sign-in refresh the current Session durin
 callback, preserving the redirect flow without exposing a token handoff in the
 browser.
 
-Linked users may create immutable, named, scoped Access keys for programmatic
-access without inventing a Bot user or email/OAuth login. Owner management is
-Session-only and exposes plaintext only on issuance or rotation. Explicit
+Linked human Users may create immutable, named, scoped Access keys for their own
+programmatic access. Capsules may also use `ctx.serviceUsers` to create a
+first-class non-human User with an initial key, then issue, rotate, revoke, list,
+or irreversibly disable it. A Service User has no email/password, OAuth identity,
+browser Session, or implicit human owner. Management is current-human-Session
+only and exposes plaintext only on a committed issuance or rotation. Explicit
 Privileged work and the `sporades access-keys` operator family may inspect
 bounded metadata and retire exact keys or one exact owner's current keys, but
 cannot issue, rotate, or receive bearer material. Operator actions use a
