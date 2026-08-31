@@ -3786,7 +3786,7 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
     { mutationSurface: false },
   );
   context.serverAuth = {
-    async revokeHumanSecurity(_userId: string) {
+    revokeHumanSecurity(_userId: string) {
       throw commandError("Human security transition is unavailable.", "Run this operation inside an authenticated Capsule mutation.", "HUMAN_SECURITY_TRANSITION_UNAVAILABLE");
     },
     async setEmailPassword(email: string, newPassword: string) {
@@ -6129,11 +6129,13 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
     }
     const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter: any) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
+      const mutationInvocation = { active: true };
       let handlerFailed = false;
       try {
         context = createMutationContext(transactionDatabase, auth, {
           sessionToken: options.sessionToken,
           serviceUserMutationAuthority,
+          mutationInvocation,
         });
         const customHandler = transactionDatabase.mutations.find((candidate: { name: any; }) => candidate.name === mutationName);
         const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
@@ -6170,7 +6172,11 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
         handlerFailed = true;
         throw error;
       } finally {
-        await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed);
+        try {
+          await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed);
+        } finally {
+          mutationInvocation.active = false;
+        }
       }
     });
     commitPendingJobCancellationAborts(context);
@@ -6414,15 +6420,16 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
     {
       mutationSurface: options.serviceUserMutationAuthority === serviceUserMutationAuthority,
       ...(options.serviceUserMutationAuthority === serviceUserMutationAuthority
-        ? { trackMutationWork: (promise: Promise<any>, requiresConsumption?: boolean) => trackMutationContextWork(context, promise, requiresConsumption) }
+        ? {
+            assertMutationInvocation: () => assertLiveMutationInvocation(options, "service-user"),
+            trackMutationWork: (promise: Promise<any>, requiresConsumption?: boolean) => trackMutationContextWork(context, promise, requiresConsumption),
+          }
         : {}),
     },
   );
   context.serverAuth = {
     revokeHumanSecurity(userId: string) {
-      if (options.serviceUserMutationAuthority !== serviceUserMutationAuthority) {
-        throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
-      }
+      assertLiveMutationInvocation(options);
       return trackMutationContextWork(context, (async () => {
       if (!database.__transactionActive || !auth?.isAuthenticated || auth?.isGuest || auth?.userKind === "service" || typeof options.sessionToken !== "string" || typeof userId !== "string" || !userId || userId === "__privileged__") {
         throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
@@ -6473,6 +6480,15 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
     },
   };
   return context;
+}
+
+function assertLiveMutationInvocation(options: LooseRecord, capability: "human-security" | "service-user" = "human-security") {
+  if (options.serviceUserMutationAuthority !== serviceUserMutationAuthority || options.mutationInvocation?.active !== true) {
+    if (capability === "service-user") {
+      throw commandError("Service-User lifecycle changes require a Mutation.", "Call ctx.serviceUsers from the active Mutation invocation.", "SERVICE_USER_MUTATION_REQUIRED");
+    }
+    throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
+  }
 }
 
 function createTeamJoinAdmissionContext(database: LooseRecord, auth: LooseRecord, trustedDb: LooseRecord, teamId: string, assertActive: () => void) {

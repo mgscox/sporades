@@ -17263,7 +17263,7 @@ async function issueForOwner(database, context, ownerUserId, input) {
   throw serviceUserError("ACCESS_KEY_SECRET_CONFLICT", "Could not generate a unique Access key.", "Retry Access-key issuance.");
 }
 function createServiceUsersApi(database, contextGetter, sessionToken, options = {}) {
-  const inContext = async (operation) => {
+  const inContext = (operation) => {
     if (options.mutationSurface !== true) {
       throw serviceUserError(
         "SERVICE_USER_MUTATION_REQUIRED",
@@ -17271,9 +17271,12 @@ function createServiceUsersApi(database, contextGetter, sessionToken, options = 
         "Call ctx.serviceUsers from a Mutation so User, key, and Capsule records commit atomically."
       );
     }
+    options.assertMutationInvocation?.();
     const context = contextGetter();
-    await requireCurrentHumanSession(database, context, sessionToken);
-    return operation(context);
+    return (async () => {
+      await requireCurrentHumanSession(database, context, sessionToken);
+      return operation(context);
+    })();
   };
   const tracked = (promise, requiresConsumption = false) => options.trackMutationWork ? options.trackMutationWork(promise, requiresConsumption) : promise;
   return {
@@ -23887,7 +23890,7 @@ function createEndpointContext(database, endpointRequest, session, options = {})
     { mutationSurface: false }
   );
   context.serverAuth = {
-    async revokeHumanSecurity(_userId) {
+    revokeHumanSecurity(_userId) {
       throw commandError("Human security transition is unavailable.", "Run this operation inside an authenticated Capsule mutation.", "HUMAN_SECURITY_TRANSITION_UNAVAILABLE");
     },
     async setEmailPassword(email, newPassword) {
@@ -26016,11 +26019,13 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
     }
     const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
+      const mutationInvocation = { active: true };
       let handlerFailed = false;
       try {
         context = createMutationContext(transactionDatabase, auth, {
           sessionToken: options.sessionToken,
-          serviceUserMutationAuthority
+          serviceUserMutationAuthority,
+          mutationInvocation
         });
         const customHandler = transactionDatabase.mutations.find((candidate) => candidate.name === mutationName);
         const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
@@ -26051,7 +26056,11 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
         handlerFailed = true;
         throw error;
       } finally {
-        await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed);
+        try {
+          await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed);
+        } finally {
+          mutationInvocation.active = false;
+        }
       }
     });
     commitPendingJobCancellationAborts(context);
@@ -26273,14 +26282,15 @@ function createMutationContext(database, auth, options = {}) {
     credential?.kind === "session" && typeof options.sessionToken === "string" ? options.sessionToken : null,
     {
       mutationSurface: options.serviceUserMutationAuthority === serviceUserMutationAuthority,
-      ...options.serviceUserMutationAuthority === serviceUserMutationAuthority ? { trackMutationWork: (promise, requiresConsumption) => trackMutationContextWork(context, promise, requiresConsumption) } : {}
+      ...options.serviceUserMutationAuthority === serviceUserMutationAuthority ? {
+        assertMutationInvocation: () => assertLiveMutationInvocation(options, "service-user"),
+        trackMutationWork: (promise, requiresConsumption) => trackMutationContextWork(context, promise, requiresConsumption)
+      } : {}
     }
   );
   context.serverAuth = {
     revokeHumanSecurity(userId) {
-      if (options.serviceUserMutationAuthority !== serviceUserMutationAuthority) {
-        throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
-      }
+      assertLiveMutationInvocation(options);
       return trackMutationContextWork(context, (async () => {
         if (!database.__transactionActive || !auth?.isAuthenticated || auth?.isGuest || auth?.userKind === "service" || typeof options.sessionToken !== "string" || typeof userId !== "string" || !userId || userId === "__privileged__") {
           throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
@@ -26331,6 +26341,14 @@ function createMutationContext(database, auth, options = {}) {
     }
   };
   return context;
+}
+function assertLiveMutationInvocation(options, capability = "human-security") {
+  if (options.serviceUserMutationAuthority !== serviceUserMutationAuthority || options.mutationInvocation?.active !== true) {
+    if (capability === "service-user") {
+      throw commandError("Service-User lifecycle changes require a Mutation.", "Call ctx.serviceUsers from the active Mutation invocation.", "SERVICE_USER_MUTATION_REQUIRED");
+    }
+    throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
+  }
 }
 function createTeamJoinAdmissionContext(database, auth, trustedDb, teamId, assertActive) {
   const context = {

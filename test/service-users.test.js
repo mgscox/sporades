@@ -511,6 +511,8 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
       }),
       listAgentKeys: mutation((ctx, userId) => ctx.serviceUsers.listAccessKeys(userId)),
       disableAgent: mutation((ctx, userId) => ctx.serviceUsers.disable(userId)),
+      retainServiceUsers: mutation((ctx) => { globalThis.__retainedServiceUsers = ctx.serviceUsers; return null; }),
+      invokeRetainedServiceUsers: mutation((_ctx, userId) => globalThis.__retainedServiceUsers.listAccessKeys(userId)),
     },
     queries: {
       invalidQueryCreate: query((ctx) => ctx.serviceUsers.create({
@@ -596,6 +598,11 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
 
     const created = await runMutation(database, "createAgent", []);
     assert.equal(created.error, null, JSON.stringify(created.error));
+    assert.equal((await runMutation(database, "retainServiceUsers", [])).error, null);
+    assert.throws(() => globalThis.__retainedServiceUsers.listAccessKeys(created.data.serviceUser.id),
+      (error) => error?.code === "SERVICE_USER_MUTATION_REQUIRED");
+    const retainedDuringLaterMutation = await runMutation(database, "invokeRetainedServiceUsers", [created.data.serviceUser.id]);
+    assert.equal(retainedDuringLaterMutation.error?.code, "SERVICE_USER_MUTATION_REQUIRED");
     assert.deepEqual(created.data.serviceUser, {
       id: created.data.serviceUser.id,
       displayName: "Triage Agent",
@@ -936,6 +943,8 @@ async function proveRemoteEngineServiceUserLifecycle(serverEnv, config) {
       issueAgentKey: mutation((ctx, input) => ctx.serviceUsers.issueAccessKey(input.userId, input.accessKey)),
       listAgentKeys: mutation((ctx, userId) => ctx.serviceUsers.listAccessKeys(userId)),
       disableAgent: mutation((ctx, userId) => ctx.serviceUsers.disable(userId)),
+      retainServiceUsers: mutation((ctx) => { globalThis.__retainedRemoteServiceUsers = ctx.serviceUsers; return null; }),
+      invokeRetainedServiceUsers: mutation((_ctx, userId) => globalThis.__retainedRemoteServiceUsers.listAccessKeys(userId)),
     },
   });
   const first = await openDevDatabase("", "", serverEnv, config, definition);
@@ -956,6 +965,11 @@ async function proveRemoteEngineServiceUserLifecycle(serverEnv, config) {
     )).get("Discarded Remote Agent")) ?? null, null);
     const created = await runMutation(first, "createAgent", []);
     assert.equal(created.error, null, JSON.stringify(created.error));
+    assert.equal((await runMutation(first, "retainServiceUsers", [])).error, null);
+    assert.throws(() => globalThis.__retainedRemoteServiceUsers.listAccessKeys(created.data.serviceUser.id),
+      (error) => error?.code === "SERVICE_USER_MUTATION_REQUIRED");
+    assert.equal((await runMutation(first, "invokeRetainedServiceUsers", [created.data.serviceUser.id])).error?.code,
+      "SERVICE_USER_MUTATION_REQUIRED");
     const secondKey = await runMutation(first, "issueAgentKey", [{
       userId: created.data.serviceUser.id,
       accessKey: { name: "secondary", grants: ["tickets:read"] },

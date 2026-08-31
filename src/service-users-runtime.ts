@@ -126,9 +126,9 @@ export function createServiceUsersApi(
   database: LooseRecord,
   contextGetter: () => LooseRecord,
   sessionToken: string | null,
-  options: { mutationSurface?: boolean; trackMutationWork?: (promise: Promise<any>, requiresConsumption?: boolean) => Promise<any> } = {},
+  options: { mutationSurface?: boolean; assertMutationInvocation?: () => void; trackMutationWork?: (promise: Promise<any>, requiresConsumption?: boolean) => Promise<any> } = {},
 ) {
-  const inContext = async (operation: (context: LooseRecord) => Promise<any>) => {
+  const inContext = (operation: (context: LooseRecord) => Promise<any>) => {
     // A transaction is a storage mechanism, not authority. Endpoints, Queries,
     // Messages, Jobs, and lifecycle handlers can all execute transactionally;
     // only the runtime's Mutation dispatcher may mint this surface.
@@ -139,9 +139,12 @@ export function createServiceUsersApi(
         "Call ctx.serviceUsers from a Mutation so User, key, and Capsule records commit atomically.",
       );
     }
+    options.assertMutationInvocation?.();
     const context = contextGetter();
-    await requireCurrentHumanSession(database, context, sessionToken);
-    return operation(context);
+    return (async () => {
+      await requireCurrentHumanSession(database, context, sessionToken);
+      return operation(context);
+    })();
   };
   const tracked = (promise: Promise<any>, requiresConsumption = false) =>
     options.trackMutationWork ? options.trackMutationWork(promise, requiresConsumption) : promise;

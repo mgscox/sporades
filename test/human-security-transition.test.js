@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
+import { Readable } from "node:stream";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { capsule, message, mutation, String as Text, table } from "../dist/server.js";
-import { openDevDatabase, runAppMessage, runMutation } from "../dist/server-runtime-source.js";
+import { capsule, endpoint, message, mutation, String as Text, table } from "../dist/server.js";
+import { openDevDatabase, runAppMessage, runEndpoint, runMutation } from "../dist/server-runtime-source.js";
 import { POSTGRES_SKIP_REASON, withLibsqlAdapter, withPostgresAdapter } from "./support/database-adapter-engines.js";
 
 const actor = { userId: "administrator", displayName: "Administrator", email: "admin@example.test", picture: null, isAuthenticated: true, isGuest: false, provider: "email" };
@@ -14,9 +15,14 @@ const definition = capsule({ name: "human-security-transition", schema: { effect
   rollback: mutation(async (ctx, userId) => { await ctx.serverAuth.revokeHumanSecurity(userId); await ctx.db.effects.insert({ value: "rolled-back" }); throw new Error("force rollback"); }),
   revokeWithoutAwait: mutation(async (ctx, userId) => { ctx.serverAuth.revokeHumanSecurity(userId); await ctx.db.effects.insert({ value: `unawaited:${userId}` }); return { queued: true }; }),
   rollbackWithoutAwait: mutation((ctx, userId) => { ctx.serverAuth.revokeHumanSecurity(userId); throw new Error("force unawaited rollback"); }),
+  retainServerAuth: mutation((ctx) => { globalThis.__retainedServerAuth = ctx.serverAuth; return null; }),
+  invokeRetainedServerAuth: mutation((_ctx, userId) => globalThis.__retainedServerAuth.revokeHumanSecurity(userId)),
 }, messages: {
   revokeAwaited: message(async (ctx, userId) => await ctx.serverAuth.revokeHumanSecurity(userId)),
   revokeWithoutAwait: message((ctx, userId) => { ctx.serverAuth.revokeHumanSecurity(userId); return { queued: true }; }),
+}, endpoints: {
+  revokeAwaited: endpoint({ method: "POST", path: "/revoke-awaited" }, async (ctx) => await ctx.serverAuth.revokeHumanSecurity("human-message")),
+  revokeWithoutAwait: endpoint({ method: "POST", path: "/revoke-unawaited" }, (ctx) => { ctx.serverAuth.revokeHumanSecurity("human-message"); return { queued: true }; }),
 } });
 
 test("human security transition revokes Sessions and Access keys with the enclosing mutation", async () => {
@@ -48,6 +54,30 @@ test("human security transition revokes Sessions and Access keys with the enclos
     assert.deepEqual(await database.adapter.prepare("SELECT lifecycleRevision, revokedAt FROM sporades_auth_access_keys WHERE id = ?").get("key-message"), messageKeyBefore);
     assert.deepEqual(await database.adapter.prepare("SELECT operationRevision, currentCount FROM sporades_auth_access_key_owners WHERE ownerUserId = ?").get(messageTarget), ownerBefore);
     assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM effects").get()).count, 0);
+    const endpointRequest = () => Object.assign(Readable.from([]), { method: "POST", headers: { cookie: "session=actor-session" } });
+    const awaitedEndpoint = database.endpoints.find((candidate) => candidate.options.path === "/revoke-awaited");
+    const unawaitedEndpoint = database.endpoints.find((candidate) => candidate.options.path === "/revoke-unawaited");
+    await assert.rejects(runEndpoint(database, awaitedEndpoint, new URL("http://capsule.test/revoke-awaited"), endpointRequest()),
+      (error) => error?.code === "HUMAN_SECURITY_TRANSITION_UNAVAILABLE");
+    const endpointUnhandled = [];
+    const onEndpointUnhandled = (reason) => endpointUnhandled.push(reason);
+    process.on("unhandledRejection", onEndpointUnhandled);
+    await assert.rejects(runEndpoint(database, unawaitedEndpoint, new URL("http://capsule.test/revoke-unawaited"), endpointRequest()),
+      (error) => error?.code === "HUMAN_SECURITY_TRANSITION_UNAVAILABLE");
+    await new Promise((resolve) => setImmediate(resolve));
+    process.off("unhandledRejection", onEndpointUnhandled);
+    assert.deepEqual(endpointUnhandled, []);
+    assert.ok(await database.adapter.readAuthSessionWithUser("session-message"));
+    assert.deepEqual(await database.adapter.prepare("SELECT lifecycleRevision, revokedAt FROM sporades_auth_access_keys WHERE id = ?").get("key-message"), messageKeyBefore);
+    assert.deepEqual(await database.adapter.prepare("SELECT operationRevision, currentCount FROM sporades_auth_access_key_owners WHERE ownerUserId = ?").get(messageTarget), ownerBefore);
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM effects").get()).count, 0);
+    assert.equal((await runMutation(database, actor, "retainServerAuth", [], { sessionToken: "actor-session" })).error, null);
+    assert.throws(() => globalThis.__retainedServerAuth.revokeHumanSecurity(messageTarget), (error) => error?.code === "HUMAN_SECURITY_TRANSITION_DENIED");
+    const retainedDuringLaterMutation = await runMutation(database, actor, "invokeRetainedServerAuth", [messageTarget], { sessionToken: "actor-session" });
+    assert.equal(retainedDuringLaterMutation.error?.code, "HUMAN_SECURITY_TRANSITION_DENIED");
+    assert.ok(await database.adapter.readAuthSessionWithUser("session-message"));
+    assert.deepEqual(await database.adapter.prepare("SELECT lifecycleRevision, revokedAt FROM sporades_auth_access_keys WHERE id = ?").get("key-message"), messageKeyBefore);
+    assert.deepEqual(await database.adapter.prepare("SELECT operationRevision, currentCount FROM sporades_auth_access_key_owners WHERE ownerUserId = ?").get(messageTarget), ownerBefore);
     const committed = await seed("commit"); const result = await runMutation(database, actor, "revoke", [committed], { sessionToken: "actor-session" }); assert.equal(result.error, null); assert.deepEqual(result.data, { userId: committed, revokedSessionCount: 1, revokedAccessKeyCount: 1 });
     assert.equal(await database.adapter.readAuthSessionWithUser("session-commit"), null); assert.ok(database.adapter.prepare("SELECT revokedAt FROM sporades_auth_access_keys WHERE id = ?").get("key-commit").revokedAt);
     const unawaited = await seed("unawaited"); const unawaitedResult = await runMutation(database, actor, "revokeWithoutAwait", [unawaited], { sessionToken: "actor-session" }); assert.equal(unawaitedResult.error, null); assert.deepEqual(unawaitedResult.data, { queued: true }); assert.equal(await database.adapter.readAuthSessionWithUser("session-unawaited"), null); assert.ok(database.adapter.prepare("SELECT revokedAt FROM sporades_auth_access_keys WHERE id = ?").get("key-unawaited").revokedAt);
@@ -81,6 +111,25 @@ async function proveAppMessagesCannotRevokeHumanSecurity(serverEnv, config) {
     await new Promise((resolve) => setImmediate(resolve));
     process.off("unhandledRejection", onUnhandled);
     assert.deepEqual(unhandled, []);
+    assert.ok(await database.adapter.readAuthSessionWithUser(`session-${targetId}`));
+    assert.deepEqual(await database.adapter.prepare(database.adapter.dialect.sql("SELECT [lifecycleRevision], [revokedAt] FROM [sporades_auth_access_keys] WHERE [id] = ?")).get(keyId), keyBefore);
+    assert.deepEqual(await database.adapter.prepare(database.adapter.dialect.sql("SELECT [operationRevision], [currentCount] FROM [sporades_auth_access_key_owners] WHERE [ownerUserId] = ?")).get(targetId), ownerBefore);
+    const endpointRequest = () => Object.assign(Readable.from([]), { method: "POST", headers: { cookie: "session=actor-session" } });
+    await assert.rejects(runEndpoint(database, database.endpoints.find((candidate) => candidate.options.path === "/revoke-awaited"), new URL("http://capsule.test/revoke-awaited"), endpointRequest()),
+      (error) => error?.code === "HUMAN_SECURITY_TRANSITION_UNAVAILABLE");
+    const endpointUnhandled = [];
+    const onEndpointUnhandled = (reason) => endpointUnhandled.push(reason);
+    process.on("unhandledRejection", onEndpointUnhandled);
+    await assert.rejects(runEndpoint(database, database.endpoints.find((candidate) => candidate.options.path === "/revoke-unawaited"), new URL("http://capsule.test/revoke-unawaited"), endpointRequest()),
+      (error) => error?.code === "HUMAN_SECURITY_TRANSITION_UNAVAILABLE");
+    await new Promise((resolve) => setImmediate(resolve));
+    process.off("unhandledRejection", onEndpointUnhandled);
+    assert.deepEqual(endpointUnhandled, []);
+    assert.equal((await runMutation(database, actor, "retainServerAuth", [], { sessionToken: "actor-session" })).error, null);
+    assert.throws(() => globalThis.__retainedServerAuth.revokeHumanSecurity(targetId),
+      (error) => error?.code === "HUMAN_SECURITY_TRANSITION_DENIED");
+    assert.equal((await runMutation(database, actor, "invokeRetainedServerAuth", [targetId], { sessionToken: "actor-session" })).error?.code,
+      "HUMAN_SECURITY_TRANSITION_DENIED");
     assert.ok(await database.adapter.readAuthSessionWithUser(`session-${targetId}`));
     assert.deepEqual(await database.adapter.prepare(database.adapter.dialect.sql("SELECT [lifecycleRevision], [revokedAt] FROM [sporades_auth_access_keys] WHERE [id] = ?")).get(keyId), keyBefore);
     assert.deepEqual(await database.adapter.prepare(database.adapter.dialect.sql("SELECT [operationRevision], [currentCount] FROM [sporades_auth_access_key_owners] WHERE [ownerUserId] = ?")).get(targetId), ownerBefore);
