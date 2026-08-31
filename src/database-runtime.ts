@@ -1255,7 +1255,7 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
       );
     },
     deleteAuthSession(token: any) {
-      return this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [token] = ?")).run(token);
+      return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ?")).run(token), () => this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [token] = ?")).run(token));
     },
     refreshAuthSession(token: any, expiresAt: any) {
       return this.prepare(sql("UPDATE [sporades_auth_sessions] SET [expiresAt] = ? WHERE [token] = ?")).run(expiresAt, token);
@@ -1265,7 +1265,7 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
     },
     rotateAuthSession(previousToken: any, row: { token: any; userId: any; provider: any; createdAt: any; expiresAt: any; }) {
       assertNotReservedAuthUserId(row.userId);
-      return this.prepare(
+      const rotated = this.prepare(
         sql(
           "UPDATE [sporades_auth_sessions] SET [token] = ?, [userId] = ?, [provider] = ?, [createdAt] = ?, " +
           "[expiresAt] = ? WHERE [token] = ?",
@@ -1278,6 +1278,10 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
         row.expiresAt,
         previousToken,
       );
+      return thenIfPromise(rotated, (result: LooseRecord) => {
+        if (result.changes !== 1 || previousToken === row.token) return result;
+        return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ?")).run(previousToken), () => result);
+      });
     },
     readAuthSessionWithUser(token: any) {
       return thenIfPromise(
@@ -1299,10 +1303,10 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
       return this.prepare(
         sql(
           "INSERT INTO [sporades_auth_oauth_states] " +
-          "([state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier], [registrationCiphertext]) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          "([state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier], [registrationCiphertext], [reauthPurpose], [reauthUserId]) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ),
-      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null, row.registrationCiphertext ?? null);
+      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null, row.registrationCiphertext ?? null, row.reauthPurpose ?? null, row.reauthUserId ?? null);
     },
     // One statement, not a SELECT followed by a DELETE. The two-statement form was correct on
     // SQLite and a race everywhere else: nothing ordered the delete after the read, so on an
@@ -1315,7 +1319,7 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
           sql(
             "DELETE FROM [sporades_auth_oauth_states] WHERE [state] = ? " +
             "RETURNING [state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], " +
-            "[nonce], [pkceVerifier], [registrationCiphertext]",
+            "[nonce], [pkceVerifier], [registrationCiphertext], [reauthPurpose], [reauthUserId]",
           ),
         ).get(state),
         (row: any) => row ?? null,
@@ -1355,8 +1359,44 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
         (row: any) => (isReservedAuthUserId(row?.userId) ? null : row ?? null),
       );
     },
+    replaceReauthenticationProof(row: LooseRecord) {
+      return chainMaybePromise([
+        () => this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ? AND [purpose] = ?")).run(row.sessionToken, row.purpose),
+        () => this.prepare(sql("INSERT INTO [sporades_auth_reauthentication_proofs] ([id], [userId], [sessionToken], [purpose], [createdAt], [expiresAt]) VALUES (?, ?, ?, ?, ?, ?)")).run(row.id, row.userId, row.sessionToken, row.purpose, row.createdAt, row.expiresAt),
+      ]);
+    },
+    async reserveEmailReauthenticationAttempt(input: LooseRecord) {
+      await this.prepare(sql("UPDATE [sporades_auth_reauthentication_throttle_fence] SET [version] = [version] + 1 WHERE [id] = 'email'")).run();
+      await this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_throttle] WHERE [resetAt] <= ?")).run(input.now);
+      const rows = await Promise.all(input.keys.map((key: string) => this.prepare(sql("SELECT [count], [resetAt] FROM [sporades_auth_reauthentication_throttle] WHERE [key] = ?")).get(key)));
+      if (rows.some((row: LooseRecord | null) => row && row.count >= input.limit)) return false;
+      const active = await this.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_auth_reauthentication_throttle]")).get();
+      const missing = rows.filter((row: LooseRecord | null) => !row).length;
+      if (Number(active?.count ?? 0) + missing > input.maxEntries) return false;
+      for (let index = 0; index < input.keys.length; index += 1) {
+        const key = input.keys[index]; const row = rows[index];
+        if (row) await this.prepare(sql("UPDATE [sporades_auth_reauthentication_throttle] SET [count] = [count] + 1 WHERE [key] = ?")).run(key);
+        else await this.prepare(sql("INSERT INTO [sporades_auth_reauthentication_throttle] ([key], [count], [resetAt]) VALUES (?, 1, ?)")).run(key, input.resetAt);
+      }
+      return true;
+    },
+    async clearEmailReauthenticationAttempts(keys: string[]) {
+      for (const key of keys) await this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_throttle] WHERE [key] = ?")).run(key);
+    },
+    claimEmailCredentialVersion(email: string, passwordHash: string, passwordSalt: string) {
+      return thenIfPromise(this.prepare(sql("UPDATE [sporades_auth_email_credentials] SET [passwordHash] = [passwordHash] WHERE [email] = ? AND [passwordHash] = ? AND [passwordSalt] = ?")).run(email, passwordHash, passwordSalt), (result: LooseRecord) => result.changes === 1);
+    },
+    deleteExpiredReauthenticationProofs(now: any) {
+      return this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [expiresAt] <= ?")).run(now);
+    },
+    consumeReauthenticationProof(input: LooseRecord) {
+      return thenIfPromise(this.prepare(sql("SELECT [p].[id] FROM [sporades_auth_reauthentication_proofs] [p] JOIN [sporades_auth_sessions] [s] ON [s].[token] = [p].[sessionToken] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [p].[sessionToken] = ? AND [p].[userId] = ? AND [p].[purpose] = ? AND [p].[expiresAt] > ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0")).get(input.sessionToken, input.userId, input.purpose, input.now, input.userId, input.now), (row: LooseRecord | null | undefined) => {
+        if (!row) return false;
+        return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [id] = ?")).run(row.id), (result: LooseRecord) => result.changes === 1);
+      });
+    },
     deleteAuthSessionsForUser(userId: any) {
-      return this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [userId] = ?")).run(userId);
+      return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [userId] = ?")).run(userId), () => this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [userId] = ?")).run(userId));
     },
     insertPasswordResetCode(row: LooseRecord) {
       assertNotReservedAuthUserId(row.userId);

@@ -177,8 +177,8 @@ function normalizeUserAuthOptions(options = {}) {
 }
 
 function normalizeGuardOptions(options = {}) {
-  if (!plainObject(options) || Object.keys(options).some((key) => !["linked", "credentials", "scopes"].includes(key))) {
-    throw authRequirementsError("Use only linked, credentials, and scopes in a declarative Auth requirement.");
+  if (!plainObject(options) || Object.keys(options).some((key) => !["linked", "credentials", "scopes", "reauthentication"].includes(key))) {
+    throw authRequirementsError("Use only linked, credentials, scopes, and reauthentication in a declarative Auth requirement.");
   }
   if ("linked" in options && typeof options.linked !== "boolean") throw authRequirementsError("linked must be a boolean when supplied.");
   const credentials = options.credentials === undefined ? ["session", "access-key"] : options.credentials;
@@ -189,7 +189,9 @@ function normalizeGuardOptions(options = {}) {
   if (!Array.isArray(scopes) || (options.scopes !== undefined && scopes.length === 0) || scopes.length > 1024 || scopes.some((scope) => typeof scope !== "string" || scope.length === 0 || scope.includes("*") || new TextEncoder().encode(scope).byteLength > 256) || new Set(scopes).size !== scopes.length) {
     throw authRequirementsError("Required scopes must be unique concrete strings declared by the Capsule.");
   }
-  return Object.freeze({ linked: options.linked === true, credentials: Object.freeze([...credentials]), scopes: Object.freeze([...scopes]) });
+  const reauthentication = options.reauthentication;
+  if (reauthentication !== undefined && (typeof reauthentication !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(reauthentication))) throw authRequirementsError("reauthentication must be a declared concrete purpose.");
+  return Object.freeze({ linked: options.linked === true, credentials: Object.freeze([...credentials]), scopes: Object.freeze([...scopes]), reauthentication: reauthentication ?? null });
 }
 
 function decorateAuth(options, handler) {

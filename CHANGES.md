@@ -6,6 +6,7 @@ Changes since v0.9.5.
 
 ### 🚀 Features
 
+- Add opt-in runtime-owned purpose-bound Reauthentication Proofs for sensitive Session mutations.
 - Persist encrypted OAuth registration admission (920f4a71).
 - Persist ingress receipts in runtime storage (015b03d0).
 - Stream bounded multipart ingress parts (3996fe29).
@@ -44,6 +45,7 @@ Changes since v0.9.5.
 
 ### 📝 Documentation
 
+- Clarify the provider-free headless Team Billing platform boundary: Sporades owns mechanics while Capsules render product UI.
 - Prove fragmented MinIO ingress cleanup (e4d9c7c6).
 - Complete trusted file ingress parity (dd50047f).
 - Fix registration admission option examples (a18f91e6).
@@ -107,5 +109,3 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
-
-

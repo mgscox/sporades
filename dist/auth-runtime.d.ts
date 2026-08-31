@@ -84,6 +84,7 @@ export declare function verifyGoogleIdentityToken(database: LooseRecord, token: 
     emailVerified: boolean;
     displayName: string;
     picture: string | null;
+    reauthenticatedAt: string | null;
 }>;
 export declare function discoverMicrosoftOpenIdConfiguration(database: LooseRecord, tenant: string): Promise<any>;
 export declare function fetchMicrosoftOidcJson(database: LooseRecord, url: string, request: LooseRecord, policy: LooseRecord): Promise<any>;
@@ -93,6 +94,7 @@ export declare function completeMicrosoftOAuth(database: LooseRecord, context: L
     emailVerified: null;
     displayName: string;
     picture: null;
+    reauthenticatedAt: string | null;
 }>;
 export declare function verifyMicrosoftIdentityToken(database: LooseRecord, token: string, expectedNonce: string, discovery: LooseRecord): Promise<{
     subject: string;
@@ -100,6 +102,7 @@ export declare function verifyMicrosoftIdentityToken(database: LooseRecord, toke
     emailVerified: null;
     displayName: string;
     picture: null;
+    reauthenticatedAt: string | null;
 }>;
 export declare function verifyAppleIdentityToken(database: LooseRecord, token: string, expectedNonce: string): Promise<{
     subject: any;

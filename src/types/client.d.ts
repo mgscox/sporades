@@ -108,6 +108,9 @@ export type AuthApi = {
   signUp(provider: string, credentials?: unknown, options?: RegistrationOptions): Promise<SporadesResult>;
   signIn(provider: "email", credentials: EmailCredentials, options?: RegistrationOptions): Promise<SporadesResult>;
   signIn(provider: string, credentials?: unknown, options?: RegistrationOptions): Promise<SporadesResult>;
+  /** Verify the current linked identity for one declared purpose. OAuth returns the observable redirect URL; neither form returns a bearer or proof handle. */
+  reauthenticate(provider: "email", credentials: EmailCredentials, purpose: string): Promise<SporadesResult<{ ok: true; purpose: string; expiresAt: string } | { url: string }>>;
+  reauthenticate(provider: string, credentials: unknown, purpose: string): Promise<SporadesResult<{ ok: true; purpose: string; expiresAt: string } | { url: string }>>;
   signOut(): Promise<SporadesResult<{ ok: boolean }>>;
   /** Change the signed-in email credential after verifying its current password. */
   setPassword(email: string, currentPassword: string, newPassword: string): Promise<SporadesResult<{ ok: boolean }>>;
@@ -407,6 +410,7 @@ export type UseAuthState = {
   isAuthenticated(): boolean;
   signUp: AuthApi["signUp"];
   signIn: AuthApi["signIn"];
+  reauthenticate: AuthApi["reauthenticate"];
   signOut: AuthApi["signOut"];
   setPassword: AuthApi["setPassword"];
 };
@@ -478,6 +482,7 @@ export type SolidAuth = {
   isAuthenticated(): boolean;
   signUp: AuthApi["signUp"];
   signIn: AuthApi["signIn"];
+  reauthenticate: AuthApi["reauthenticate"];
   signOut: AuthApi["signOut"];
   setPassword: AuthApi["setPassword"];
 };
@@ -516,6 +521,7 @@ export type LitAuthController = LitReactiveController & {
   isAuthenticated(): boolean;
   signUp: AuthApi["signUp"];
   signIn: AuthApi["signIn"];
+  reauthenticate: AuthApi["reauthenticate"];
   signOut: AuthApi["signOut"];
   setPassword: AuthApi["setPassword"];
 };
@@ -536,7 +542,7 @@ export type InfernoQueryAdapter<Data = unknown> = InfernoObservedAdapter & { sta
 /** Inferno mutation state with pending-counted latest-invocation behavior. */
 export type InfernoMutationAdapter<Result = unknown> = { state: SolidMutationState<Result>; run(...args: unknown[]): Promise<SporadesResult<Result>> };
 /** Inferno auth observation and direct auth commands. */
-export type InfernoAuthAdapter = InfernoObservedAdapter & { state: AuthObserverState; isAuthenticated(): boolean; signUp: AuthApi["signUp"]; signIn: AuthApi["signIn"]; signOut: AuthApi["signOut"] };
+export type InfernoAuthAdapter = InfernoObservedAdapter & { state: AuthObserverState; isAuthenticated(): boolean; signUp: AuthApi["signUp"]; signIn: AuthApi["signIn"]; reauthenticate: AuthApi["reauthenticate"]; signOut: AuthApi["signOut"] };
 /** Inferno-native lifecycle adapters over the shared framework-neutral client connection. */
 export type SporadesInfernoAdapters = {
   queryAdapter<Data = unknown>(host: InfernoAdapterHost, name: string, ...args: JsonValue[]): InfernoQueryAdapter<Data>;
@@ -555,9 +561,10 @@ export type SvelteMutationStore<Result = unknown> = SvelteReadable<Omit<Mutation
 };
 
 /** Svelte auth state and commands over one lazily observed auth subscription. */
-export type SvelteAuthStore = SvelteReadable<Omit<UseAuthState, "signUp" | "signIn" | "signOut">> & {
+export type SvelteAuthStore = SvelteReadable<Omit<UseAuthState, "signUp" | "signIn" | "reauthenticate" | "signOut">> & {
   signUp: AuthApi["signUp"];
   signIn: AuthApi["signIn"];
+  reauthenticate: AuthApi["reauthenticate"];
   signOut: AuthApi["signOut"];
   setPassword: AuthApi["setPassword"];
 };

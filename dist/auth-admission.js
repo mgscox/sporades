@@ -34,8 +34,8 @@ export function readAuthRequirements(handler) {
     return typeof handler === "function" ? handler[AUTH_REQUIREMENTS] ?? null : null;
 }
 export function normalizeAuthRequirements(options = {}) {
-    if (!isPlainObject(options) || Object.keys(options).some((key) => !["linked", "credentials", "scopes"].includes(key))) {
-        throw invalidAuthRequirements("Use only linked, credentials, and scopes in a declarative Auth requirement.");
+    if (!isPlainObject(options) || Object.keys(options).some((key) => !["linked", "credentials", "scopes", "reauthentication"].includes(key))) {
+        throw invalidAuthRequirements("Use only linked, credentials, scopes, and reauthentication in a declarative Auth requirement.");
     }
     if ("linked" in options && typeof options.linked !== "boolean") {
         throw invalidAuthRequirements("linked must be a boolean when supplied.");
@@ -46,10 +46,14 @@ export function normalizeAuthRequirements(options = {}) {
         code: "INVALID_AUTH_REQUIREMENTS",
         hint: "Required scopes must be unique concrete strings declared by the Capsule.",
     });
+    const reauthentication = options.reauthentication;
+    if (reauthentication !== undefined && (typeof reauthentication !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(reauthentication)))
+        throw invalidAuthRequirements("reauthentication must be a declared concrete purpose.");
     return Object.freeze({
         linked: options.linked === true,
         credentials: Object.freeze(credentials),
         scopes: Object.freeze(scopes),
+        reauthentication: reauthentication ?? null,
     });
 }
 export function normalizeCapsuleAuthDefinition(definition) {
@@ -71,12 +75,21 @@ export function normalizeCapsuleAuthDefinition(definition) {
     }
     if (Object.hasOwn(normalized, "auth") && normalized.auth !== undefined) {
         const registration = normalized.auth?.registration;
-        if (!isPlainObject(normalized.auth) || Object.keys(normalized.auth).some((key) => key !== "registration") || !isPlainObject(registration)
+        const reauthentication = normalized.auth?.reauthentication;
+        if (!isPlainObject(normalized.auth) || Object.keys(normalized.auth).some((key) => !["registration", "reauthentication"].includes(key)) || (registration !== undefined && (!isPlainObject(registration)
             || typeof registration.admit !== "function" || typeof registration.finalize !== "function"
-            || Object.keys(registration).some((key) => key !== "admit" && key !== "finalize")) {
+            || Object.keys(registration).some((key) => key !== "admit" && key !== "finalize")))) {
             throw commandError("Invalid Capsule Registration Admission declaration.", "Declare auth.registration with both admit and finalize server functions.", "INVALID_REGISTRATION_ADMISSION");
         }
-        normalized = { ...normalized, auth: Object.freeze({ registration: Object.freeze(registration) }) };
+        if (reauthentication !== undefined && (!isPlainObject(reauthentication) || Object.keys(reauthentication).some((key) => !["purposes", "authorize"].includes(key)) || (reauthentication.authorize !== undefined && typeof reauthentication.authorize !== "function") || !isPlainObject(reauthentication.purposes) || Object.keys(reauthentication.purposes).length < 1 || Object.entries(reauthentication.purposes).some(([purpose, policy]) => !/^[a-z][a-z0-9-]{0,63}$/.test(purpose) || !isPlainObject(policy) || Object.keys(policy).some((key) => key !== "maxAgeSeconds") || !Number.isInteger(policy.maxAgeSeconds) || policy.maxAgeSeconds < 1 || policy.maxAgeSeconds > 900)))
+            throw commandError("Invalid Reauthentication declaration.", "Declare concrete purposes with maxAgeSeconds from 1 through 900 and an optional authorize callback.", "INVALID_REAUTHENTICATION_DECLARATION");
+        normalized = { ...normalized, auth: Object.freeze({ ...(registration ? { registration: Object.freeze(registration) } : {}), ...(reauthentication ? { reauthentication: Object.freeze({ purposes: Object.freeze(Object.fromEntries(Object.entries(reauthentication.purposes).map(([purpose, policy]) => [purpose, Object.freeze({ maxAgeSeconds: policy.maxAgeSeconds })]))), ...(reauthentication.authorize ? { authorize: reauthentication.authorize } : {}) }) } : {}) }) };
+    }
+    const declaredPurposes = new Set(Object.keys(normalized.auth?.reauthentication?.purposes ?? {}));
+    for (const item of Object.values(normalized.mutations ?? {})) {
+        const purpose = readAuthRequirements(item?.handler)?.reauthentication;
+        if (purpose && !declaredPurposes.has(purpose))
+            throw invalidAuthRequirements("Every reauthentication purpose must be declared by the Capsule.");
     }
     return normalizeFileAccessKeyPolicy(normalized);
 }
@@ -112,11 +125,14 @@ function normalizeFileAccessKeyPolicy(definition) {
 }
 export function validateCapsuleAuthRequirements(definition) {
     const declaredScopes = new Set(definition.accessKeys?.scopes ?? []);
-    for (const collection of [definition.queries, definition.mutations, definition.endpoints, definition.messages]) {
+    for (const [kind, collection] of [["query", definition.queries], ["mutation", definition.mutations], ["endpoint", definition.endpoints], ["message", definition.messages]]) {
         for (const item of Object.values(collection ?? {})) {
             const requirements = readAuthRequirements(item?.handler);
             if (!requirements) {
                 continue;
+            }
+            if (requirements.reauthentication && kind !== "mutation") {
+                throw invalidAuthRequirements("Reauthentication proofs may only guard mutations.");
             }
             for (const scope of requirements.scopes) {
                 if (!declaredScopes.has(scope)) {

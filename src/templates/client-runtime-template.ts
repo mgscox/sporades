@@ -187,6 +187,9 @@ export const auth = {
   signIn(provider, credentials, options) {
     return connect().signIn(provider, credentials, options);
   },
+  reauthenticate(provider, credentials, purpose) {
+    return connect().reauthenticate(provider, credentials, purpose);
+  },
   signOut() {
     return connect().signOut();
   },
@@ -288,6 +291,9 @@ export function createHooks(primitives) {
       signIn(provider, credentials, options) {
         return connect().signIn(provider, credentials, options);
       },
+      reauthenticate(provider, credentials, purpose) {
+        return connect().reauthenticate(provider, credentials, purpose);
+      },
       signOut() {
         return connect().signOut();
       },
@@ -349,6 +355,7 @@ export function createVueComposables(primitives) {
     state.isAuthenticated = () => Boolean(state.auth?.isAuthenticated);
     state.signUp = (provider, credentials, options) => connect().signUp(provider, credentials, options);
     state.signIn = (provider, credentials, options) => connect().signIn(provider, credentials, options);
+    state.reauthenticate = (provider, credentials, purpose) => connect().reauthenticate(provider, credentials, purpose);
     state.signOut = () => connect().signOut();
     state.setPassword = (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword);
     return state;
@@ -402,6 +409,7 @@ export function createSolidPrimitives(primitives) {
       isAuthenticated: () => Boolean(state().auth?.isAuthenticated),
       signUp: (provider, credentials, options) => connect().signUp(provider, credentials, options),
       signIn: (provider, credentials, options) => connect().signIn(provider, credentials, options),
+      reauthenticate: (provider, credentials, purpose) => connect().reauthenticate(provider, credentials, purpose),
       signOut: () => connect().signOut(),
       setPassword: (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword),
     };
@@ -501,6 +509,7 @@ export function createLitControllers() {
     controller.isAuthenticated = () => Boolean(controller.state.auth?.isAuthenticated);
     controller.signUp = (provider, credentials, options) => connect().signUp(provider, credentials, options);
     controller.signIn = (provider, credentials, options) => connect().signIn(provider, credentials, options);
+    controller.reauthenticate = (provider, credentials, purpose) => connect().reauthenticate(provider, credentials, purpose);
     controller.signOut = () => connect().signOut();
     controller.setPassword = (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword);
     return controller;
@@ -577,6 +586,7 @@ export function createInfernoAdapters() {
     adapter.isAuthenticated = () => Boolean(adapter.state.auth?.isAuthenticated);
     adapter.signUp = (provider, credentials, options) => connect().signUp(provider, credentials, options);
     adapter.signIn = (provider, credentials, options) => connect().signIn(provider, credentials, options);
+    adapter.reauthenticate = (provider, credentials, purpose) => connect().reauthenticate(provider, credentials, purpose);
     adapter.signOut = () => connect().signOut();
     adapter.setPassword = (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword);
     return adapter;
@@ -628,6 +638,7 @@ export function createSvelteStores() {
       subscribe: store.subscribe,
       signUp: (provider, credentials, options) => connect().signUp(provider, credentials, options),
       signIn: (provider, credentials, options) => connect().signIn(provider, credentials, options),
+      reauthenticate: (provider, credentials, purpose) => connect().reauthenticate(provider, credentials, purpose),
       signOut: () => connect().signOut(),
       setPassword: (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword),
     };
@@ -1141,6 +1152,9 @@ function createConnection() {
         }
         return result;
       });
+    },
+    reauthenticate(provider, credentials, purpose) {
+      return request("auth.reauthenticate", { provider, credentials, purpose, returnTo: window.location.href }).then((result) => { if (result.data?.url) window.location.assign(result.data.url); return result; });
     },
     signOut() {
       return request("auth.signOut").then(async (result) => {

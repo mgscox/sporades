@@ -359,6 +359,9 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
   {
     name: "rotateAuthSession replaces the previous Session token and leaves the old token unreadable",
     async run(adapter) {
+      const sql = adapter.dialect.sql;
+      await adapter.replaceReauthenticationProof({ id: "proof-before-session-rotation", userId: SIGNED_IN_USER.id, sessionToken: "session-primary", purpose: "administrator-authority", createdAt: NOW, expiresAt: FAR_FUTURE });
+      await adapter.replaceReauthenticationProof({ id: "proof-for-bystander-session", userId: SIGNED_IN_USER.id, sessionToken: "session-provenance-bystander", purpose: "administrator-authority", createdAt: NOW, expiresAt: FAR_FUTURE });
       const rotated = await adapter.rotateAuthSession("session-primary", {
         token: "session-rotated",
         userId: SIGNED_IN_USER.id,
@@ -369,6 +372,8 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
       assert.equal(rotated.changes, 1);
 
       assert.equal(await adapter.readAuthSessionWithUser("session-primary"), null);
+      assert.equal((await adapter.prepare(sql("SELECT [id] FROM [sporades_auth_reauthentication_proofs] WHERE [id] = ?")).get("proof-before-session-rotation")) ?? null, null, "rotation removes the old token's proof immediately");
+      assert.ok(await adapter.prepare(sql("SELECT [id] FROM [sporades_auth_reauthentication_proofs] WHERE [id] = ?")).get("proof-for-bystander-session"), "rotation does not delete another Session's proof");
       assert.deepEqual(
         sessionFields(await adapter.readAuthSessionWithUser("session-rotated")),
         signedInSession({ token: "session-rotated", provider: "google", expiresAt: FAR_FUTURE }),

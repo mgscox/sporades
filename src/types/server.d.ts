@@ -1081,7 +1081,7 @@ export type ScheduleDefinition = {
  */
 export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition> = {
   name: string;
-  auth?: { registration: RegistrationAdmission<Schema> };
+  auth?: { registration?: RegistrationAdmission<Schema>; reauthentication?: { purposes: Record<string, { maxAgeSeconds: number }>; authorize?: (ctx: { db: ReadOnlyDatabaseFromSchema<Schema>; auth: AuthContext }, purpose: string) => MaybePromise<boolean> } };
   accessKeys?: { scopes: readonly string[] };
   schema?: Schema;
   queries?: Record<string, QueryDefinition<QueryHandler<Schema, any> | AuthGuardedHandler<(...args: any[]) => any>>>;
@@ -1137,6 +1137,8 @@ export type DeclarativeRequireAuthOptions = {
   linked?: boolean;
   credentials?: readonly CredentialKind[];
   scopes?: readonly string[];
+  /** Consume one current runtime-owned proof for this declared purpose in the mutation transaction. */
+  reauthentication?: string;
 };
 /** @internal */
 declare const authGuardedHandlerBrand: unique symbol;

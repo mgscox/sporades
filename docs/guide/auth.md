@@ -138,6 +138,92 @@ anonymous Session, callback URI, nonce, and expiry; it is consumed with the
 single-use OAuth state and is never added to redirects, provider traffic, or
 callback errors.
 
+### Purpose-bound reauthentication
+
+Use Reauthentication Proofs when an already signed-in human must freshly
+verify the identity behind the current Session before a high-risk mutation,
+such as administrator promotion or relinquishment. Do not use them for routine
+authorization: the Capsule must still recheck its own administrator, Team and
+resource rules inside the mutation.
+
+```ts
+export default capsule({
+  auth: { reauthentication: { purposes: {
+    "administrator-authority": { maxAgeSeconds: 900 },
+  } } },
+  mutations: {
+    promote: mutation(requireAuth({
+      credentials: ["session"],
+      reauthentication: "administrator-authority",
+    }, async (ctx, input) => promoteAdministrator(ctx, input))),
+  },
+});
+```
+
+The browser verifies the current linked identity without receiving proof
+material:
+
+```ts
+await auth.reauthenticate("email", { email, password }, "administrator-authority");
+await mutations.promote({ userId });
+```
+
+The runtime stores the proof in its own database, bound to the User, exact
+Session, Capsule and purpose. Its maximum declared lifetime is 15 minutes.
+Minting and consumption re-read the exact Session from the database inside the
+same transaction, so sign-out, revocation or expiry in another tab takes effect
+even when a browser connection still holds cached auth state. Sign-out removes
+proofs for that Session transactionally; expired and orphaned proofs are swept
+on startup, and expired proofs are also swept in an independent maintenance
+transaction before a guarded mutation begins. A later
+`REAUTHENTICATION_REQUIRED` or handler rollback therefore cannot undo expiry
+cleanup. Thus an
+abandoned proof is both immediately unusable and retained no longer than its
+declared lifetime plus the interval until the next startup or proof attempt.
+Consumption is part of the guarded mutation transaction: a rejected command
+preserves the proof, one concurrent successful command wins, and commit makes
+it unusable even after restart. URLs, Capsule arguments and successful replies
+contain no proof handle or bearer.
+
+The declarative `reauthentication` requirement is mutation-only. Sporades
+rejects Capsule startup when a query, endpoint, or app-message guard declares
+it, because those read/request surfaces do not provide an atomic consume-and-
+commit boundary. Email step-up also requires the Email provider to remain
+enabled. Its password checks use a dedicated bounded attempt throttle, separate
+from ordinary sign-in, password-change, and reset buckets. Those opaque hashed
+email and Session buckets are stored in the Capsule database, serialized by a
+runtime-owned fence, expire after the bounded window, and are never evicted to
+make room for attacker-created live buckets; therefore limits survive restart
+and are shared by separate runtime processes. Email reauthentication reads the current
+credential in the same database transaction as Session/User authorization and
+proof insertion. After the password KDF it claims the exact hash-and-salt row
+with a portable compare-and-swap update before inserting the proof, so a
+concurrent password rotation and stale-password proof cannot both commit.
+
+OAuth reauthentication is supported for Google and Microsoft. Google's
+authorization request uses supported `max_age=0` semantics and explicitly asks
+for the essential ID-token `auth_time` claim; it does not send the unsupported
+`prompt=login` value. Microsoft's request uses its supported fresh-login
+parameters. Proof creation additionally requires a signed ID-token `auth_time`
+bound to the stored flow nonce and no
+older than that server-created flow. Removing `prompt` or `max_age` from the
+browser-visible URL therefore cannot turn an existing SSO session into a
+proof: missing, stale or future freshness evidence fails closed. The current
+Apple and Facebook adapters cannot obtain equivalent server-verifiable
+freshness evidence, so they explicitly reject reauthentication while ordinary
+sign-in remains supported. A successful OAuth start returns an observable
+`{ url }` redirect result before navigation. A Capsule `authorize` callback may apply
+additional current application policy; if it throws or its database read fails,
+Sporades logs only safe provider/purpose attribution and returns the same opaque
+`REAUTHENTICATION_FAILED` response as any other failed verification.
+
+The advantage is a small, auditable step-up boundary with atomic consumption
+and no second client credential. The trade-offs are an extra identity-provider
+interaction, server-side proof state, and a deliberately narrow purpose list;
+it does not replace normal authorization, credential revocation, throttling or
+transactional domain invariants. Capsules that omit `auth.reauthentication`
+retain their existing authentication and mutation behavior.
+
 Use Registration Admission when a Capsule must make its first-user or invite
 decision from application state atomically with creating an identity. It is not
 an authorization hook for existing users: linking an existing identity bypasses

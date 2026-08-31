@@ -958,7 +958,7 @@ export function createSharedDatabaseAdapterMethods(dialect) {
                 "VALUES (?, ?, ?, ?, ?)")).run(row.token, row.userId, row.provider, row.createdAt, row.expiresAt);
         },
         deleteAuthSession(token) {
-            return this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [token] = ?")).run(token);
+            return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ?")).run(token), () => this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [token] = ?")).run(token));
         },
         refreshAuthSession(token, expiresAt) {
             return this.prepare(sql("UPDATE [sporades_auth_sessions] SET [expiresAt] = ? WHERE [token] = ?")).run(expiresAt, token);
@@ -968,8 +968,13 @@ export function createSharedDatabaseAdapterMethods(dialect) {
         },
         rotateAuthSession(previousToken, row) {
             assertNotReservedAuthUserId(row.userId);
-            return this.prepare(sql("UPDATE [sporades_auth_sessions] SET [token] = ?, [userId] = ?, [provider] = ?, [createdAt] = ?, " +
+            const rotated = this.prepare(sql("UPDATE [sporades_auth_sessions] SET [token] = ?, [userId] = ?, [provider] = ?, [createdAt] = ?, " +
                 "[expiresAt] = ? WHERE [token] = ?")).run(row.token, row.userId, row.provider, row.createdAt, row.expiresAt, previousToken);
+            return thenIfPromise(rotated, (result) => {
+                if (result.changes !== 1 || previousToken === row.token)
+                    return result;
+                return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ?")).run(previousToken), () => result);
+            });
         },
         readAuthSessionWithUser(token) {
             return thenIfPromise(this.prepare(sql("SELECT [s].[token], [s].[expiresAt], [u].[id] AS [userId], [u].[displayName], [u].[email], [u].[picture], " +
@@ -982,8 +987,8 @@ export function createSharedDatabaseAdapterMethods(dialect) {
             const provider = row.provider ?? "google";
             const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1000).toISOString();
             return this.prepare(sql("INSERT INTO [sporades_auth_oauth_states] " +
-                "([state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier], [registrationCiphertext]) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null, row.registrationCiphertext ?? null);
+                "([state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier], [registrationCiphertext], [reauthPurpose], [reauthUserId]) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null, row.registrationCiphertext ?? null, row.reauthPurpose ?? null, row.reauthUserId ?? null);
         },
         // One statement, not a SELECT followed by a DELETE. The two-statement form was correct on
         // SQLite and a race everywhere else: nothing ordered the delete after the read, so on an
@@ -993,7 +998,7 @@ export function createSharedDatabaseAdapterMethods(dialect) {
         consumeOAuthState(state) {
             return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_oauth_states] WHERE [state] = ? " +
                 "RETURNING [state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], " +
-                "[nonce], [pkceVerifier], [registrationCiphertext]")).get(state), (row) => row ?? null);
+                "[nonce], [pkceVerifier], [registrationCiphertext], [reauthPurpose], [reauthUserId]")).get(state), (row) => row ?? null);
         },
         emailCredentialExists(email) {
             return thenIfPromise(this.prepare(sql("SELECT [email] FROM [sporades_auth_email_credentials] WHERE [email] = ?")).get(email), (row) => Boolean(row));
@@ -1013,8 +1018,51 @@ export function createSharedDatabaseAdapterMethods(dialect) {
                 "JOIN [sporades_auth_users] [u] ON [u].[id] = [c].[userId] " +
                 "WHERE [c].[email] = ?")).get(email), (row) => (isReservedAuthUserId(row?.userId) ? null : row ?? null));
         },
+        replaceReauthenticationProof(row) {
+            return chainMaybePromise([
+                () => this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ? AND [purpose] = ?")).run(row.sessionToken, row.purpose),
+                () => this.prepare(sql("INSERT INTO [sporades_auth_reauthentication_proofs] ([id], [userId], [sessionToken], [purpose], [createdAt], [expiresAt]) VALUES (?, ?, ?, ?, ?, ?)")).run(row.id, row.userId, row.sessionToken, row.purpose, row.createdAt, row.expiresAt),
+            ]);
+        },
+        async reserveEmailReauthenticationAttempt(input) {
+            await this.prepare(sql("UPDATE [sporades_auth_reauthentication_throttle_fence] SET [version] = [version] + 1 WHERE [id] = 'email'")).run();
+            await this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_throttle] WHERE [resetAt] <= ?")).run(input.now);
+            const rows = await Promise.all(input.keys.map((key) => this.prepare(sql("SELECT [count], [resetAt] FROM [sporades_auth_reauthentication_throttle] WHERE [key] = ?")).get(key)));
+            if (rows.some((row) => row && row.count >= input.limit))
+                return false;
+            const active = await this.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_auth_reauthentication_throttle]")).get();
+            const missing = rows.filter((row) => !row).length;
+            if (Number(active?.count ?? 0) + missing > input.maxEntries)
+                return false;
+            for (let index = 0; index < input.keys.length; index += 1) {
+                const key = input.keys[index];
+                const row = rows[index];
+                if (row)
+                    await this.prepare(sql("UPDATE [sporades_auth_reauthentication_throttle] SET [count] = [count] + 1 WHERE [key] = ?")).run(key);
+                else
+                    await this.prepare(sql("INSERT INTO [sporades_auth_reauthentication_throttle] ([key], [count], [resetAt]) VALUES (?, 1, ?)")).run(key, input.resetAt);
+            }
+            return true;
+        },
+        async clearEmailReauthenticationAttempts(keys) {
+            for (const key of keys)
+                await this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_throttle] WHERE [key] = ?")).run(key);
+        },
+        claimEmailCredentialVersion(email, passwordHash, passwordSalt) {
+            return thenIfPromise(this.prepare(sql("UPDATE [sporades_auth_email_credentials] SET [passwordHash] = [passwordHash] WHERE [email] = ? AND [passwordHash] = ? AND [passwordSalt] = ?")).run(email, passwordHash, passwordSalt), (result) => result.changes === 1);
+        },
+        deleteExpiredReauthenticationProofs(now) {
+            return this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [expiresAt] <= ?")).run(now);
+        },
+        consumeReauthenticationProof(input) {
+            return thenIfPromise(this.prepare(sql("SELECT [p].[id] FROM [sporades_auth_reauthentication_proofs] [p] JOIN [sporades_auth_sessions] [s] ON [s].[token] = [p].[sessionToken] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [p].[sessionToken] = ? AND [p].[userId] = ? AND [p].[purpose] = ? AND [p].[expiresAt] > ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0")).get(input.sessionToken, input.userId, input.purpose, input.now, input.userId, input.now), (row) => {
+                if (!row)
+                    return false;
+                return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [id] = ?")).run(row.id), (result) => result.changes === 1);
+            });
+        },
         deleteAuthSessionsForUser(userId) {
-            return this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [userId] = ?")).run(userId);
+            return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [userId] = ?")).run(userId), () => this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [userId] = ?")).run(userId));
         },
         insertPasswordResetCode(row) {
             assertNotReservedAuthUserId(row.userId);
