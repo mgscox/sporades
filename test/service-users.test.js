@@ -174,19 +174,56 @@ test("ACL and Privileged contexts cannot inherit human lifecycle capabilities", 
   const definition = capsule({
     name: "service-user-constrained-contexts",
     accessKeys: { scopes: ["tickets:read"] },
-    schema: { effects: table({ value: StringField() }).acl({
-      insert: ({ ctx }) => !("serviceUsers" in ctx) && !("serverAuth" in ctx),
+    middleware: [(ctx) => ({
+      ...ctx,
+      lifecycleAlias: ctx.serviceUsers,
+      lifecycleClosure: () => ctx.serviceUsers,
+      humanLifecycleAlias: ctx.serverAuth,
+      humanLifecycleClosure: () => ctx.serverAuth,
+    })],
+    schema: { effects: table({ value: StringField(), targetId: StringField() }).acl({
+      insert: ({ ctx, next }) => {
+        const lifecycle = next.value === "service-alias"
+          ? ctx.lifecycleAlias
+          : next.value === "service-closure"
+            ? ctx.lifecycleClosure()
+            : next.value === "human-alias"
+              ? ctx.humanLifecycleAlias
+              : ctx.humanLifecycleClosure();
+        if (next.value.startsWith("service-")) lifecycle.disable(next.targetId);
+        else lifecycle.revokeHumanSecurity(next.targetId);
+        return true;
+      },
     }) },
     mutations: {
       proveConstrained: mutation(async (ctx) => {
-        await ctx.db.effects.insert({ value: "acl-safe" });
         const privileged = await ctx.privileged.run({ operation: "lifecycle-capability.inspect", targetResourceKind: "auth-lifecycle" }, async (serverCtx) => ({
           hasServiceUsers: "serviceUsers" in serverCtx,
           hasServerAuth: "serverAuth" in serverCtx,
+          hasLifecycleAlias: "lifecycleAlias" in serverCtx,
+          hasLifecycleClosure: "lifecycleClosure" in serverCtx,
+          hasHumanLifecycleAlias: "humanLifecycleAlias" in serverCtx,
+          hasHumanLifecycleClosure: "humanLifecycleClosure" in serverCtx,
         }));
         const created = await ctx.serviceUsers.create({ displayName: "Allowed Parent Agent", accessKey: { name: "parent", grants: ["tickets:read"] } });
         return { privileged, created };
       }),
+      aclAttempt: mutation((ctx, input) => ctx.db.effects.insert(input)),
+      privilegedAttempt: mutation((ctx, input) => ctx.privileged.run(
+        { operation: "lifecycle-capability.attempt", targetResourceKind: "auth-lifecycle" },
+        (serverCtx) => {
+          const lifecycle = input.variant === "service-alias"
+            ? serverCtx.lifecycleAlias
+            : input.variant === "service-closure"
+              ? serverCtx.lifecycleClosure()
+              : input.variant === "human-alias"
+                ? serverCtx.humanLifecycleAlias
+                : serverCtx.humanLifecycleClosure();
+          return input.variant.startsWith("service-")
+            ? lifecycle.disable(input.targetId)
+            : lifecycle.revokeHumanSecurity(input.targetId);
+        },
+      )),
     },
   });
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: definition.name }, definition);
@@ -194,13 +231,128 @@ test("ACL and Privileged contexts cannot inherit human lifecycle capabilities", 
     await seedAdministrator(database);
     const result = await runMutation(database, "proveConstrained", []);
     assert.equal(result.error, null, JSON.stringify(result.error));
-    assert.deepEqual(result.data.privileged, { hasServiceUsers: false, hasServerAuth: false });
+    assert.deepEqual(result.data.privileged, {
+      hasServiceUsers: false,
+      hasServerAuth: false,
+      hasLifecycleAlias: false,
+      hasLifecycleClosure: false,
+      hasHumanLifecycleAlias: false,
+      hasHumanLifecycleClosure: false,
+    });
     assert.match(result.data.created.token, /^spk_1_/);
-    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [effects]").get()).count, 1);
+    const now = new Date().toISOString();
+    const expiry = "2099-01-01T00:00:00.000Z";
+    for (const surface of ["aclAttempt", "privilegedAttempt"]) {
+      for (const variant of ["service-alias", "service-closure", "human-alias", "human-closure"]) {
+        let targetId;
+        if (variant.startsWith("service-")) {
+          const target = await runMutation(database, "proveConstrained", []);
+          assert.equal(target.error, null, JSON.stringify(target.error));
+          targetId = target.data.created.serviceUser.id;
+        } else {
+          targetId = `${surface}-${variant}`;
+          await database.adapter.insertAuthUser({ id: targetId, createdAt: now, displayName: targetId, email: `${targetId}@example.test`, picture: null, isAuthenticated: 1, isGuest: 0, provider: "email" });
+          await database.adapter.insertEmailCredential({ email: `${targetId}@example.test`, userId: targetId, passwordHash: "hash", passwordSalt: "salt", createdAt: now });
+          await database.adapter.insertAuthSession({ token: `session-${targetId}`, userId: targetId, provider: "email", createdAt: now, expiresAt: expiry });
+        }
+        const beforeEffects = Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [effects]").get()).count);
+        const beforeLocks = Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_auth_service_user_locks]").get()).count);
+        const attempted = await runMutation(database, surface, [{ value: variant, targetId, variant }]);
+        assert.ok(attempted.error, `${surface}/${variant} is denied`);
+        assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [effects]").get()).count), beforeEffects, `${surface}/${variant} writes no app row`);
+        assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_auth_service_user_locks]").get()).count), beforeLocks, `${surface}/${variant} acquires no lifecycle lock`);
+        if (variant.startsWith("service-")) {
+          assert.equal((await database.adapter.prepare("SELECT [disabledAt] FROM [sporades_auth_users] WHERE [id] = ?").get(targetId)).disabledAt, null, `${surface}/${variant} leaves the service User active`);
+        } else {
+          assert.ok(await database.adapter.readAuthSessionWithUser(`session-${targetId}`), `${surface}/${variant} leaves the human Session active`);
+        }
+      }
+    }
   } finally {
     await database.close();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+async function proveConstrainedLifecycleProjection(serverEnv, config) {
+  const definition = capsule({
+    name: config.name,
+    accessKeys: { scopes: ["tickets:read"] },
+    middleware: [(ctx) => ({ ...ctx,
+      lifecycleAlias: ctx.serviceUsers, lifecycleClosure: () => ctx.serviceUsers,
+      humanLifecycleAlias: ctx.serverAuth, humanLifecycleClosure: () => ctx.serverAuth,
+    })],
+    schema: { effects: table({ value: StringField(), targetId: StringField() }).acl({
+      insert: ({ ctx, next }) => {
+        const lifecycle = next.value === "service-alias" ? ctx.lifecycleAlias
+          : next.value === "service-closure" ? ctx.lifecycleClosure()
+            : next.value === "human-alias" ? ctx.humanLifecycleAlias : ctx.humanLifecycleClosure();
+        if (next.value.startsWith("service-")) lifecycle.disable(next.targetId);
+        else lifecycle.revokeHumanSecurity(next.targetId);
+        return true;
+      },
+    }) },
+    mutations: {
+      createTarget: mutation((ctx, name) => ctx.serviceUsers.create({ displayName: name, accessKey: { name: "initial", grants: ["tickets:read"] } })),
+      aclAttempt: mutation((ctx, input) => ctx.db.effects.insert(input)),
+      privilegedAttempt: mutation((ctx, input) => ctx.privileged.run({ operation: "lifecycle.attempt", targetResourceKind: "auth-lifecycle" }, (restricted) => {
+        const lifecycle = input.variant === "service-alias" ? restricted.lifecycleAlias
+          : input.variant === "service-closure" ? restricted.lifecycleClosure()
+            : input.variant === "human-alias" ? restricted.humanLifecycleAlias : restricted.humanLifecycleClosure();
+        return input.variant.startsWith("service-") ? lifecycle.disable(input.targetId) : lifecycle.revokeHumanSecurity(input.targetId);
+      })),
+    },
+  });
+  const database = await openDevDatabase("", "", serverEnv, config, definition);
+  try {
+    await seedAdministrator(database);
+    const now = new Date().toISOString();
+    for (const surface of ["aclAttempt", "privilegedAttempt"]) {
+      for (const variant of ["service-alias", "service-closure", "human-alias", "human-closure"]) {
+        let targetId;
+        if (variant.startsWith("service-")) {
+          const created = await runMutation(database, "createTarget", [`${surface}-${variant}`]);
+          assert.equal(created.error, null, JSON.stringify(created.error));
+          targetId = created.data.serviceUser.id;
+        } else {
+          targetId = `${config.name}-${surface}-${variant}`;
+          await database.adapter.insertAuthUser({ id: targetId, createdAt: now, displayName: targetId, email: `${targetId}@example.test`, picture: null, isAuthenticated: 1, isGuest: 0, provider: "email" });
+          await database.adapter.insertEmailCredential({ email: `${targetId}@example.test`, userId: targetId, passwordHash: "hash", passwordSalt: "salt", createdAt: now });
+          await database.adapter.insertAuthSession({ token: `session-${targetId}`, userId: targetId, provider: "email", createdAt: now, expiresAt: "2099-01-01T00:00:00.000Z" });
+        }
+        const beforeEffects = Number((await database.adapter.prepare(database.adapter.dialect.sql("SELECT COUNT(*) AS [count] FROM [effects]")).get()).count);
+        const beforeLocks = Number((await database.adapter.prepare(database.adapter.dialect.sql("SELECT COUNT(*) AS [count] FROM [sporades_auth_service_user_locks]")).get()).count);
+        const attempted = await runMutation(database, surface, [{ value: variant, targetId, variant }]);
+        assert.ok(attempted.error, `${surface}/${variant} is denied`);
+        assert.equal(Number((await database.adapter.prepare(database.adapter.dialect.sql("SELECT COUNT(*) AS [count] FROM [effects]")).get()).count), beforeEffects);
+        assert.equal(Number((await database.adapter.prepare(database.adapter.dialect.sql("SELECT COUNT(*) AS [count] FROM [sporades_auth_service_user_locks]")).get()).count), beforeLocks);
+        if (variant.startsWith("service-")) assert.equal((await database.adapter.prepare(database.adapter.dialect.sql("SELECT [disabledAt] FROM [sporades_auth_users] WHERE [id] = ?")).get(targetId)).disabledAt, null);
+        else assert.ok(await database.adapter.readAuthSessionWithUser(`session-${targetId}`));
+      }
+    }
+  } finally {
+    await database.close();
+  }
+}
+
+test("libSQL constrained contexts reject lifecycle aliases and closures", async () => {
+  await withLibsqlAdapter(async (_adapter, { url }) => {
+    const name = `service-user-constrained-libsql-${randomUUID()}`;
+    await proveConstrainedLifecycleProjection(
+      { SPORADES_SERVICE_DATABASE_ENGINE: "libsql", SPORADES_SERVICE_DATABASE_URL: url },
+      { name, services: { database: { engine: "libsql" } } },
+    );
+  }, { isolateProcess: true });
+});
+
+test("Postgres constrained contexts reject lifecycle aliases and closures", { skip: POSTGRES_SKIP_REASON }, async () => {
+  await withPostgresAdapter(async () => {
+    const name = `service-user-constrained-postgres-${randomUUID()}`;
+    await proveConstrainedLifecycleProjection(
+      { SPORADES_SERVICE_DATABASE_ENGINE: "postgres", SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL },
+      { name, services: { database: { engine: "postgres" } } },
+    );
+  }, { appTableNames: ["effects"] });
 });
 
 test("a human Session atomically creates, attributes, rotates, and disables a service User", async () => {

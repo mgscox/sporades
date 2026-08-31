@@ -2333,12 +2333,18 @@ function createContextPrivilegedApi(database: LooseRecord, contextGetter: () => 
   };
 }
 function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRecord, signal: any) {
+  // Privileged execution is a constrained projection, never a derived copy of
+  // Capsule middleware state. In particular, copying arbitrary fields would
+  // let middleware smuggle lifecycle APIs across this userless boundary under
+  // aliases or closures.
   const privilegedContext: LooseRecord = {
-    ...context,
+    env: context.env,
+    payments: context.payments,
+    log: context.log,
+    messages: context.messages,
     signal,
     __privilegedRunActive: true,
     __jobEnqueuedBy: context.auth?.userId ?? null,
-    __jobParentContext: context,
     auth: Object.freeze({
       userId: privilegedAuthUserId(),
       displayName: "Privileged server role",
@@ -2355,14 +2361,13 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
       enumerable: false,
     });
   }
-  // User-scoped and mutating Team operations remain unavailable. This is the
-  // separate userless inspection projection, not inherited Team authority.
-  delete privilegedContext.teams;
-  delete privilegedContext.accessKeys;
-  delete privilegedContext.credential;
-  delete privilegedContext.serviceUsers;
-  delete privilegedContext.serverAuth;
-  delete privilegedContext.__sporadesAccessKeyGrants;
+  // Runtime queue bookkeeping keeps the enclosing transaction identity on a
+  // non-enumerable internal slot. It is not copied into further projections.
+  Object.defineProperty(privilegedContext, "__jobParentContext", {
+    value: context,
+    enumerable: false,
+    configurable: false,
+  });
   const provenanceStore = (database.__rootDatabase ?? database).jobScheduleProvenanceByContext;
   const scheduleProvenance = provenanceStore?.get(context);
   if (scheduleProvenance) provenanceStore.set(privilegedContext, scheduleProvenance);

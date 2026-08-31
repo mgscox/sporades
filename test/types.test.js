@@ -448,6 +448,10 @@ const app = capsule({
         metadata: { reason: "type-test" },
         signal: new AbortController().signal,
       }, async (privilegedCtx) => {
+        // @ts-expect-error Privileged callbacks cannot mutate Service-User lifecycle state.
+        privilegedCtx.serviceUsers.disable("service-user-id");
+        // @ts-expect-error Privileged callbacks cannot revoke human security state.
+        privilegedCtx.serverAuth.revokeHumanSecurity("human-user-id");
         const privilegedMemberCount = await privilegedCtx.teams.countMembers("00000000-0000-4000-8000-000000000000");
         privilegedMemberCount.totalCount.valueOf();
         const privilegedMembers = await privilegedCtx.teams.listMembers("00000000-0000-4000-8000-000000000000", { limit: 25 });

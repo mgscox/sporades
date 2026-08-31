@@ -112,12 +112,18 @@ export type AclHelpers = {
   teams: AclTeamHelpers;
 };
 
-/** Runtime context available while evaluating table ACL rules. */
+/**
+ * Runtime context available while evaluating table ACL rules.
+ *
+ * This is an exact read-only security projection. Arbitrary fields added by
+ * Capsule context middleware are intentionally not forwarded into ACL rules;
+ * pass stable policy inputs through row data and use `ctx.acl` for runtime
+ * decisions.
+ */
 export type TableAclContext = {
   auth: AuthContext;
   credential: CredentialProvenance;
   acl: AclHelpers;
-  [key: string]: unknown;
 };
 
 /**
@@ -766,8 +772,10 @@ export type PrivilegedAuthContext = AuthContext & {
  * It is a server-only, userless execution actor. It is not a Capsule role, app
  * admin, Sporades user, session, team member, service account, or browser
  * credential.
+ * Arbitrary Capsule middleware fields are intentionally not inherited across
+ * this boundary, including aliases and closures over lifecycle capabilities.
  */
-export type PrivilegedContext<Schema extends SchemaDefinition = SchemaDefinition> = Omit<CapsuleContext<Schema>, "auth" | "credential" | "privileged" | "teams" | "accessKeys" | "serviceUsers" | "teamBilling"> & {
+export type PrivilegedContext<Schema extends SchemaDefinition = SchemaDefinition> = Omit<CapsuleContext<Schema>, "auth" | "credential" | "privileged" | "teams" | "accessKeys" | "serviceUsers" | "serverAuth" | "teamBilling"> & {
   auth: PrivilegedAuthContext;
   signal: AbortSignal;
   files: PrivilegedFileApi;

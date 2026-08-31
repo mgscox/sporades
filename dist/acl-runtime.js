@@ -136,7 +136,11 @@ export async function reindexPrivilegedAuditEventsAfterRollback(database, contex
     }
     for (const event of events) {
         try {
-            if (await privilegedAuditEventAlreadyIndexed(database, event)) {
+            // Access-key action audits are written by the transaction adapter and
+            // therefore cannot survive this rollback. Do not let an older,
+            // byte-identical action at the same injected clock instant masquerade as
+            // the rolled-back event that must now be restored.
+            if (event?.data?.metadata?.actionOwned !== true && await privilegedAuditEventAlreadyIndexed(database, event)) {
                 continue;
             }
             await database.adapter.insertLogIndexEvent(event);
@@ -484,9 +488,9 @@ export function createTableAclContext(context, database) {
     // ACL evaluation is deliberately read-only. Current-user Teams can lazily
     // bootstrap durable state, so policy callbacks receive only constrained
     // membership decisions rather than the normal Team management API.
-    const { db, privileged, jobs, mail, request, teams, serviceUsers, serverAuth, __sporadesContextHolder, ...aclContext } = context ?? {};
     return {
-        ...aclContext,
+        auth: context?.auth,
+        credential: context?.credential,
         acl: createAclHelpers(database, context),
     };
 }

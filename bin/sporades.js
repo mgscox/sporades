@@ -8989,7 +8989,7 @@ async function reindexPrivilegedAuditEventsAfterRollback(database, context) {
   }
   for (const event of events) {
     try {
-      if (await privilegedAuditEventAlreadyIndexed(database, event)) {
+      if (event?.data?.metadata?.actionOwned !== true && await privilegedAuditEventAlreadyIndexed(database, event)) {
         continue;
       }
       await database.adapter.insertLogIndexEvent(event);
@@ -9365,9 +9365,9 @@ function resolveEffectiveAclRule(aclRules, operation) {
   return aclRules[operation];
 }
 function createTableAclContext(context, database) {
-  const { db, privileged, jobs, mail, request, teams, serviceUsers, serverAuth, __sporadesContextHolder, ...aclContext } = context ?? {};
   return {
-    ...aclContext,
+    auth: context?.auth,
+    credential: context?.credential,
     acl: createAclHelpers(database, context)
   };
 }
@@ -22670,11 +22670,13 @@ function createContextPrivilegedApi(database, contextGetter) {
 }
 function createPrivilegedHandlerContext(database, context, signal) {
   const privilegedContext = {
-    ...context,
+    env: context.env,
+    payments: context.payments,
+    log: context.log,
+    messages: context.messages,
     signal,
     __privilegedRunActive: true,
     __jobEnqueuedBy: context.auth?.userId ?? null,
-    __jobParentContext: context,
     auth: Object.freeze({
       userId: privilegedAuthUserId(),
       displayName: "Privileged server role",
@@ -22691,12 +22693,11 @@ function createPrivilegedHandlerContext(database, context, signal) {
       enumerable: false
     });
   }
-  delete privilegedContext.teams;
-  delete privilegedContext.accessKeys;
-  delete privilegedContext.credential;
-  delete privilegedContext.serviceUsers;
-  delete privilegedContext.serverAuth;
-  delete privilegedContext.__sporadesAccessKeyGrants;
+  Object.defineProperty(privilegedContext, "__jobParentContext", {
+    value: context,
+    enumerable: false,
+    configurable: false
+  });
   const provenanceStore = (database.__rootDatabase ?? database).jobScheduleProvenanceByContext;
   const scheduleProvenance = provenanceStore?.get(context);
   if (scheduleProvenance) provenanceStore.set(privilegedContext, scheduleProvenance);
