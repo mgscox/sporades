@@ -464,7 +464,8 @@ transaction. Only the exact continuation returned by that Mutation is adopted;
 copies, unused or duplicate reservations, detached callbacks, other handlers,
 and calls after settlement cannot execute them. An array declares multiple
 approved lifecycle operations explicitly and any failure rolls all of them
-back. Sporades canonicalizes reservation arguments immediately, so later
+back. Operations execute sequentially in declared order, so a later operation
+observes every earlier lifecycle transition rather than racing it. Sporades canonicalizes reservation arguments immediately, so later
 mutation of caller-owned objects or arrays cannot retarget the operation, and
 the frozen public facades cannot be replaced. The TypeScript type uses a private
 required unique-symbol brand for compile-time opacity; the runtime still

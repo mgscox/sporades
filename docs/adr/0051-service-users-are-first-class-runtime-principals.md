@@ -30,7 +30,8 @@ creates no privileged state and can be adopted exactly once by returning
 opaque reservation to that transaction and rejects copies, duplicate use,
 detached descendants, cross-context transfer, and late use. Multiple operations
 must be declared as an explicit reservation array rather than inheriting a
-reusable ambient capability; one failure rolls the entire array back. The
+reusable ambient capability. Arrays execute sequentially in declared order and
+one failure rolls the entire array back. The
 runtime canonicalizes all mutable arguments at reservation time, captures
 immutable internal executors rather than public facade properties, and freezes
 the facade. A private required unique-symbol brand discourages TypeScript

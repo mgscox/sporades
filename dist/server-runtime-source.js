@@ -6157,8 +6157,11 @@ async function resolveValidatedLifecycleContinuation(value) {
     }
     for (const state of plan.states)
         state.consumed = true;
-    const pending = invokeWithLifecycleInitiation(() => plan.states.map((state) => state.execute()));
-    const outcomes = await Promise.all(pending);
+    const outcomes = [];
+    for (const state of plan.states) {
+        const pending = invokeWithLifecycleInitiation(() => state.execute());
+        outcomes.push(await pending);
+    }
     return await plan.continuation(plan.states.length === 1 ? outcomes[0] : outcomes);
 }
 function assertLiveMutationInvocation(options, capability = "human-security") {

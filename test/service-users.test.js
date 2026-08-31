@@ -518,6 +518,13 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
         await new Promise((resolve) => setImmediate(resolve));
         return ctx.lifecycle.continue([createOperation, failingOperation], (results) => results);
       }),
+      reservedOrderedLifecycle: mutation(async (ctx, input) => {
+        const disableOperation = ctx.serviceUsers.reserveDisable(input.userId);
+        const issueOperation = ctx.serviceUsers.reserveIssueAccessKey(input.userId, { name: input.name, grants: ["tickets:read"] });
+        await new Promise((resolve) => setImmediate(resolve));
+        const operations = input.order === "disable-issue" ? [disableOperation, issueOperation] : [issueOperation, disableOperation];
+        return ctx.lifecycle.continue(operations, (results) => ({ order: input.order, results }));
+      }),
       issueAgentKey: mutation((ctx, input) => ctx.serviceUsers.issueAccessKey(input.userId, input.accessKey)),
       discardIssueAgentKey: mutation((ctx, input) => { const work = ctx.serviceUsers.issueAccessKey(input.userId, input.accessKey); if (input.mode === "catch") work.catch(() => {}); else if (input.mode === "finally") work.finally(() => {}); else work.then(undefined, () => {}); return null; }),
       rotateAgentKey: mutation((ctx, input) => ctx.serviceUsers.rotateAccessKey(input.userId, input.accessKeyId, {
@@ -669,6 +676,18 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
     const reservedArrayFailure = await runMutation(database, "reservedArrayRollback", []);
     assert.ok(reservedArrayFailure.error);
     assert.equal((await database.adapter.prepare(database.adapter.dialect.sql("SELECT [id] FROM [sporades_auth_users] WHERE [displayName] = ?")).get("Rolled Back Reserved Agent")) ?? null, null, "a later reserved operation failure rolls the entire array back");
+    const disableThenIssue = await runMutation(database, "reservedOrderedLifecycle", [{ userId: created.data.serviceUser.id, name: "must-not-issue", order: "disable-issue" }]);
+    assert.ok(disableThenIssue.error, "disable then issue rejects because sequential issue observes the disabled User");
+    const disableThenIssueOwner = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [lifecycleStatus], [disabledAt] FROM [sporades_auth_users] WHERE [id] = ?")).get(created.data.serviceUser.id);
+    assert.equal(disableThenIssueOwner.lifecycleStatus, "active", "failure rolls disable back"); assert.equal(disableThenIssueOwner.disabledAt, null);
+    assert.equal((await database.adapter.prepare(database.adapter.dialect.sql("SELECT [id] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [name] = ?")).get(created.data.serviceUser.id, "must-not-issue")) ?? null, null);
+    const orderedOwner = await runMutation(database, "createAgent", []);
+    const issueThenDisable = await runMutation(database, "reservedOrderedLifecycle", [{ userId: orderedOwner.data.serviceUser.id, name: "issued-before-disable", order: "issue-disable" }]);
+    assert.equal(issueThenDisable.error, null, JSON.stringify(issueThenDisable.error));
+    assert.match(issueThenDisable.data.results[0].token, /^spk_1_/);
+    assert.equal(issueThenDisable.data.results[1].serviceUser.status, "disabled");
+    const orderedKey = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [revokedAt] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [name] = ?")).get(orderedOwner.data.serviceUser.id, "issued-before-disable");
+    assert.ok(orderedKey.revokedAt, "issue then disable deterministically revokes the newly issued key");
     assert.equal((await runMutation(database, "retainServiceUsers", [])).error, null);
     assert.throws(() => globalThis.__retainedServiceUsers.listAccessKeys(created.data.serviceUser.id),
       (error) => error?.code === "SERVICE_USER_MUTATION_REQUIRED");
