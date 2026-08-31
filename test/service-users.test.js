@@ -503,6 +503,21 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
       reservedCreate: mutation(async (ctx, displayName) => { const operation = ctx.serviceUsers.reserveCreate({ displayName, accessKey: { name: "reserved", grants: ["tickets:read"] } }); await new Promise((resolve) => setImmediate(resolve)); return ctx.lifecycle.continue(operation, (created) => created); }),
       unusedReservedCreate: mutation(async (ctx) => { ctx.serviceUsers.reserveCreate({ displayName: "Unused Reserved Agent", accessKey: { name: "unused-reserved", grants: ["tickets:read"] } }); await new Promise((resolve) => setImmediate(resolve)); return { validated: false }; }),
       duplicateReservedCreate: mutation(async (ctx) => { const operation = ctx.serviceUsers.reserveCreate({ displayName: "Duplicate Reserved Agent", accessKey: { name: "duplicate-reserved", grants: ["tickets:read"] } }); await new Promise((resolve) => setImmediate(resolve)); return ctx.lifecycle.continue([operation, operation], () => null); }),
+      mutableReservedCreate: mutation(async (ctx) => {
+        const input = { displayName: "Snapshotted Agent", accessKey: { name: "snapshotted", grants: ["tickets:read"] } };
+        const operation = ctx.serviceUsers.reserveCreate(input);
+        input.displayName = "Retargeted Agent"; input.accessKey.name = "retargeted"; input.accessKey.grants[0] = "tickets:write";
+        let replacementDenied = false;
+        try { ctx.serviceUsers.create = () => ctx.serviceUsers.disable(globalThis.__serviceRetargetUserId); } catch { replacementDenied = true; }
+        await new Promise((resolve) => setImmediate(resolve));
+        return ctx.lifecycle.continue(operation, (created) => ({ ...created, replacementDenied }));
+      }),
+      reservedArrayRollback: mutation(async (ctx) => {
+        const createOperation = ctx.serviceUsers.reserveCreate({ displayName: "Rolled Back Reserved Agent", accessKey: { name: "rolled-back-reserved", grants: ["tickets:read"] } });
+        const failingOperation = ctx.serviceUsers.reserveDisable("missing-service-user");
+        await new Promise((resolve) => setImmediate(resolve));
+        return ctx.lifecycle.continue([createOperation, failingOperation], (results) => results);
+      }),
       issueAgentKey: mutation((ctx, input) => ctx.serviceUsers.issueAccessKey(input.userId, input.accessKey)),
       discardIssueAgentKey: mutation((ctx, input) => { const work = ctx.serviceUsers.issueAccessKey(input.userId, input.accessKey); if (input.mode === "catch") work.catch(() => {}); else if (input.mode === "finally") work.finally(() => {}); else work.then(undefined, () => {}); return null; }),
       rotateAgentKey: mutation((ctx, input) => ctx.serviceUsers.rotateAccessKey(input.userId, input.accessKeyId, {
@@ -644,6 +659,16 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
     const reservedCreated = await runMutation(database, "reservedCreate", ["Validated Reserved Agent"]);
     assert.equal(reservedCreated.error, null, JSON.stringify(reservedCreated.error));
     assert.match(reservedCreated.data.token, /^spk_1_/);
+    globalThis.__serviceRetargetUserId = created.data.serviceUser.id;
+    const mutableReserved = await runMutation(database, "mutableReservedCreate", []);
+    assert.equal(mutableReserved.error, null, JSON.stringify(mutableReserved.error));
+    assert.equal(mutableReserved.data.serviceUser.displayName, "Snapshotted Agent");
+    assert.equal(mutableReserved.data.accessKey.name, "snapshotted");
+    assert.deepEqual(mutableReserved.data.accessKey.grants, ["tickets:read"]);
+    assert.equal(mutableReserved.data.replacementDenied, true);
+    const reservedArrayFailure = await runMutation(database, "reservedArrayRollback", []);
+    assert.ok(reservedArrayFailure.error);
+    assert.equal((await database.adapter.prepare(database.adapter.dialect.sql("SELECT [id] FROM [sporades_auth_users] WHERE [displayName] = ?")).get("Rolled Back Reserved Agent")) ?? null, null, "a later reserved operation failure rolls the entire array back");
     assert.equal((await runMutation(database, "retainServiceUsers", [])).error, null);
     assert.throws(() => globalThis.__retainedServiceUsers.listAccessKeys(created.data.serviceUser.id),
       (error) => error?.code === "SERVICE_USER_MUTATION_REQUIRED");

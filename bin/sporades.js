@@ -26295,6 +26295,10 @@ function createMutationContext(database, auth, options = {}) {
       } : {}
     }
   );
+  const serviceUserExecutors = {};
+  for (const operationName of ["create", "issueAccessKey", "listAccessKeys", "rotateAccessKey", "revokeAccessKey", "disable"]) {
+    serviceUserExecutors[operationName] = context.serviceUsers[operationName].bind(context.serviceUsers);
+  }
   for (const [reserveName, operationName] of [
     ["reserveCreate", "create"],
     ["reserveIssueAccessKey", "issueAccessKey"],
@@ -26303,11 +26307,10 @@ function createMutationContext(database, auth, options = {}) {
     ["reserveRevokeAccessKey", "revokeAccessKey"],
     ["reserveDisable", "disable"]
   ]) {
-    context.serviceUsers[reserveName] = (...args) => reserveValidatedLifecycle(
-      options,
-      "service-user",
-      () => context.serviceUsers[operationName](...args)
-    );
+    context.serviceUsers[reserveName] = (...args) => {
+      const snapshot = assertJsonCompatible(args);
+      return reserveValidatedLifecycle(options, "service-user", () => serviceUserExecutors[operationName](...snapshot));
+    };
   }
   context.serverAuth = {
     revokeHumanSecurity(userId) {
@@ -26361,11 +26364,11 @@ function createMutationContext(database, auth, options = {}) {
       if (!result.ok) throw serverAuthError(result.error, "Could not complete the password reset.");
     }
   };
-  context.serverAuth.reserveRevokeHumanSecurity = (userId) => reserveValidatedLifecycle(
-    options,
-    "human-security",
-    () => context.serverAuth.revokeHumanSecurity(userId)
-  );
+  const revokeHumanSecurityExecutor = context.serverAuth.revokeHumanSecurity.bind(context.serverAuth);
+  context.serverAuth.reserveRevokeHumanSecurity = (userId) => {
+    const [targetUserId] = assertJsonCompatible([userId]);
+    return reserveValidatedLifecycle(options, "human-security", () => revokeHumanSecurityExecutor(targetUserId));
+  };
   context.lifecycle = {
     continue(operations, continuation) {
       const list = Array.isArray(operations) ? operations : [operations];
@@ -26388,6 +26391,9 @@ function createMutationContext(database, auth, options = {}) {
       return wrapper;
     }
   };
+  Object.freeze(context.serviceUsers);
+  Object.freeze(context.serverAuth);
+  Object.freeze(context.lifecycle);
   return context;
 }
 function reserveValidatedLifecycle(options, capability, execute) {

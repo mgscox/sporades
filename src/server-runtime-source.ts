@@ -6434,6 +6434,10 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
         : {}),
     },
   );
+  const serviceUserExecutors: LooseRecord = {};
+  for (const operationName of ["create", "issueAccessKey", "listAccessKeys", "rotateAccessKey", "revokeAccessKey", "disable"]) {
+    serviceUserExecutors[operationName] = context.serviceUsers[operationName].bind(context.serviceUsers);
+  }
   for (const [reserveName, operationName] of [
     ["reserveCreate", "create"],
     ["reserveIssueAccessKey", "issueAccessKey"],
@@ -6442,11 +6446,10 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
     ["reserveRevokeAccessKey", "revokeAccessKey"],
     ["reserveDisable", "disable"],
   ]) {
-    context.serviceUsers[reserveName] = (...args: any[]) => reserveValidatedLifecycle(
-      options,
-      "service-user",
-      () => context.serviceUsers[operationName](...args),
-    );
+    context.serviceUsers[reserveName] = (...args: any[]) => {
+      const snapshot = assertJsonCompatible(args);
+      return reserveValidatedLifecycle(options, "service-user", () => serviceUserExecutors[operationName](...snapshot));
+    };
   }
   context.serverAuth = {
     revokeHumanSecurity(userId: string) {
@@ -6500,11 +6503,11 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
       if (!result.ok) throw serverAuthError(result.error, "Could not complete the password reset.");
     },
   };
-  context.serverAuth.reserveRevokeHumanSecurity = (userId: string) => reserveValidatedLifecycle(
-    options,
-    "human-security",
-    () => context.serverAuth.revokeHumanSecurity(userId),
-  );
+  const revokeHumanSecurityExecutor = context.serverAuth.revokeHumanSecurity.bind(context.serverAuth);
+  context.serverAuth.reserveRevokeHumanSecurity = (userId: string) => {
+    const [targetUserId] = assertJsonCompatible([userId]);
+    return reserveValidatedLifecycle(options, "human-security", () => revokeHumanSecurityExecutor(targetUserId));
+  };
   context.lifecycle = {
     continue(operations: any, continuation: any) {
       const list = Array.isArray(operations) ? operations : [operations];
@@ -6527,6 +6530,9 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
       return wrapper;
     },
   };
+  Object.freeze(context.serviceUsers);
+  Object.freeze(context.serverAuth);
+  Object.freeze(context.lifecycle);
   return context;
 }
 

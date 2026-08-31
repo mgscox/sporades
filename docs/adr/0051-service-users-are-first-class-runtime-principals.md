@@ -30,7 +30,11 @@ creates no privileged state and can be adopted exactly once by returning
 opaque reservation to that transaction and rejects copies, duplicate use,
 detached descendants, cross-context transfer, and late use. Multiple operations
 must be declared as an explicit reservation array rather than inheriting a
-reusable ambient capability.
+reusable ambient capability; one failure rolls the entire array back. The
+runtime canonicalizes all mutable arguments at reservation time, captures
+immutable internal executors rather than public facade properties, and freezes
+the facade. A private required unique-symbol brand discourages TypeScript
+forgery while runtime WeakMap identity remains authoritative.
 Plaintext leaves the runtime only after a successful issue or rotation commits.
 Every lifecycle Promise joins the Mutation's pending-work drain. Every plaintext
 token produced by create, issue, or rotation must additionally occur in the

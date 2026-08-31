@@ -18,6 +18,15 @@ const definition = capsule({ name: "human-security-transition", schema: { effect
   reservedRevoke: mutation(async (ctx, userId) => { const operation = ctx.serverAuth.reserveRevokeHumanSecurity(userId); await new Promise((resolve) => setImmediate(resolve)); return ctx.lifecycle.continue(operation, async (result) => { await ctx.db.effects.insert({ value: `reserved:${userId}` }); return result; }); }),
   unusedReservedRevoke: mutation(async (ctx, userId) => { ctx.serverAuth.reserveRevokeHumanSecurity(userId); await new Promise((resolve) => setImmediate(resolve)); return { validated: false }; }),
   duplicateReservedRevoke: mutation(async (ctx, userId) => { const operation = ctx.serverAuth.reserveRevokeHumanSecurity(userId); await new Promise((resolve) => setImmediate(resolve)); return ctx.lifecycle.continue([operation, operation], () => null); }),
+  retargetReservedRevoke: mutation(async (ctx, input) => {
+    const operation = ctx.serverAuth.reserveRevokeHumanSecurity(input.approvedUserId);
+    let replacementDenied = false;
+    try { ctx.serverAuth.revokeHumanSecurity = () => ctx.serverAuth.revokeHumanSecurity(input.redirectUserId); }
+    catch { replacementDenied = true; }
+    input.approvedUserId = input.redirectUserId;
+    await new Promise((resolve) => setImmediate(resolve));
+    return ctx.lifecycle.continue(operation, (result) => ({ ...result, replacementDenied }));
+  }),
   retainServerAuth: mutation((ctx) => { globalThis.__retainedServerAuth = ctx.serverAuth; return null; }),
   invokeRetainedServerAuth: mutation((_ctx, userId) => globalThis.__retainedServerAuth.revokeHumanSecurity(userId)),
   retainAwaitThenRevoke: mutation(async (ctx, input) => {
@@ -110,6 +119,14 @@ test("human security transition revokes Sessions and Access keys with the enclos
     assert.equal(validReservedResult.error, null, JSON.stringify(validReservedResult.error));
     assert.equal(validReservedResult.data.userId, validReserved);
     assert.equal(await database.adapter.readAuthSessionWithUser("session-reserved-valid"), null, "validated continuation executes after asynchronous app checks");
+    const retargetApproved = await seed("retarget-approved"); const retargetRedirect = await seed("retarget-redirect");
+    const retargetInput = { approvedUserId: retargetApproved, redirectUserId: retargetRedirect };
+    const retargetResult = await runMutation(database, actor, "retargetReservedRevoke", [retargetInput], { sessionToken: "actor-session" });
+    assert.equal(retargetResult.error, null, JSON.stringify(retargetResult.error));
+    assert.equal(retargetResult.data.userId, retargetApproved, "reservation retains its original approved target");
+    assert.equal(retargetResult.data.replacementDenied, true, "the public facade is frozen");
+    assert.equal(await database.adapter.readAuthSessionWithUser("session-retarget-approved"), null);
+    assert.ok(await database.adapter.readAuthSessionWithUser("session-retarget-redirect"), "facade replacement and caller mutation cannot retarget revocation");
     const awaitedEndpoint = database.endpoints.find((candidate) => candidate.options.path === "/revoke-awaited");
     const unawaitedEndpoint = database.endpoints.find((candidate) => candidate.options.path === "/revoke-unawaited");
     await assert.rejects(runEndpoint(database, awaitedEndpoint, new URL("http://capsule.test/revoke-awaited"), endpointRequest()),

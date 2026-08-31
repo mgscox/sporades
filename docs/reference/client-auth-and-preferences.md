@@ -656,7 +656,9 @@ perform those async checks, then return
 runtime performs the revocation and then the callback atomically only when that
 exact one-shot continuation is returned by the owning Mutation. Unused,
 duplicated, copied, detached, cross-handler, and post-settlement reservations
-cannot act. Prefer the direct API for simple flows; use the validated
+cannot act. Arguments are canonicalized when reserved and public lifecycle
+facades are frozen, so later object mutation or method replacement cannot
+redirect the approved target. Prefer the direct API for simple flows; use the validated
 continuation when authorization genuinely depends on async application state.
 
 ### Simulate Local Identities

@@ -377,8 +377,9 @@ export type CreateServiceUserInput = {
   accessKey: IssueAccessKeyInput;
 };
 
+declare const validatedLifecycleOperationBrand: unique symbol;
 /** Opaque, transaction-bound lifecycle work reserved during initial Mutation dispatch. */
-export type ValidatedLifecycleOperation<Result> = Readonly<{ readonly __validatedLifecycleResult?: Result }>;
+export type ValidatedLifecycleOperation<Result> = Readonly<{ readonly [validatedLifecycleOperationBrand]: Result }>;
 
 export type LifecycleContinuationApi = {
   continue<Result, Output>(
@@ -889,7 +890,7 @@ export type EndpointFileIngressApi = { claim(lease: EndpointFileIngressLease, op
 export type EndpointContext<
   Schema extends SchemaDefinition = SchemaDefinition,
   Credential extends CredentialProvenance = CredentialProvenance,
-> = CapsuleContext<Schema, Credential> & {
+> = Omit<CapsuleContext<Schema, Credential>, "lifecycle"> & {
   request: EndpointRequest;
   /** Available only while handling a declared multipart ingress endpoint. */
   files: EndpointFileIngressApi;

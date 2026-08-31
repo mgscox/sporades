@@ -463,7 +463,12 @@ Reservations are opaque, write-free, one-shot, and bound to the owning Mutation
 transaction. Only the exact continuation returned by that Mutation is adopted;
 copies, unused or duplicate reservations, detached callbacks, other handlers,
 and calls after settlement cannot execute them. An array declares multiple
-approved lifecycle operations explicitly. This costs a little ceremony but
+approved lifecycle operations explicitly and any failure rolls all of them
+back. Sporades canonicalizes reservation arguments immediately, so later
+mutation of caller-owned objects or arrays cannot retarget the operation, and
+the frozen public facades cannot be replaced. The TypeScript type uses a private
+required unique-symbol brand for compile-time opacity; the runtime still
+validates exact WeakMap identity rather than trusting types. This costs a little ceremony but
 allows async application validation without reopening ambient authority.
 
 An explicit `ctx.privileged.run(...)` callback receives a separate
