@@ -23953,22 +23953,20 @@ async function cleanupTransactionHandler(database, context, preservePrimaryError
 function trackMutationContextWork(context, promise, requiresConsumption = false) {
   const entry = { promise: Promise.resolve(promise), requiresConsumption, consumed: false };
   context.__pendingAclWrites.push(entry);
-  const thenable = {
+  const wrap = (chain) => ({
     then(onFulfilled, onRejected) {
-      entry.consumed = true;
-      return entry.promise.then(onFulfilled, onRejected);
+      if (typeof onFulfilled === "function") entry.consumed = true;
+      return wrap(chain.then(onFulfilled, onRejected));
     },
     catch(onRejected) {
-      entry.consumed = true;
-      return entry.promise.catch(onRejected);
+      return wrap(chain.catch(onRejected));
     },
     finally(onFinally) {
-      entry.consumed = true;
-      return entry.promise.finally(onFinally);
+      return wrap(chain.finally(onFinally));
     },
     [Symbol.toStringTag]: "Promise"
-  };
-  return thenable;
+  });
+  return wrap(entry.promise);
 }
 async function drainPendingLogWrites(database) {
   const pending = database.__pendingLogWrites;

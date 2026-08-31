@@ -3886,22 +3886,20 @@ async function cleanupTransactionHandler(
 function trackMutationContextWork(context: LooseRecord, promise: Promise<any>, requiresConsumption = false) {
   const entry = { promise: Promise.resolve(promise), requiresConsumption, consumed: false };
   context.__pendingAclWrites.push(entry);
-  const thenable = {
+  const wrap = (chain: Promise<any>): Promise<any> => ({
     then(onFulfilled: any, onRejected: any) {
-      entry.consumed = true;
-      return entry.promise.then(onFulfilled, onRejected);
+      if (typeof onFulfilled === "function") entry.consumed = true;
+      return wrap(chain.then(onFulfilled, onRejected));
     },
     catch(onRejected: any) {
-      entry.consumed = true;
-      return entry.promise.catch(onRejected);
+      return wrap(chain.catch(onRejected));
     },
     finally(onFinally: any) {
-      entry.consumed = true;
-      return entry.promise.finally(onFinally);
+      return wrap(chain.finally(onFinally));
     },
     [Symbol.toStringTag]: "Promise",
-  };
-  return thenable as Promise<any>;
+  } as Promise<any>);
+  return wrap(entry.promise);
 }
 
 async function drainPendingLogWrites(database: LooseRecord) {

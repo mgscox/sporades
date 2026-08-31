@@ -191,10 +191,15 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
         });
         return { returned: true };
       }),
+      createWithDiscardedCatch: mutation((ctx) => { ctx.serviceUsers.create({ displayName: "Caught Secret Agent", accessKey: { name: "caught", grants: ["tickets:read"] } }).catch(() => {}); return null; }),
+      createWithDiscardedFinally: mutation((ctx) => { ctx.serviceUsers.create({ displayName: "Finally Secret Agent", accessKey: { name: "finally", grants: ["tickets:read"] } }).finally(() => {}); return null; }),
+      createWithDiscardedRejectionThen: mutation((ctx) => { ctx.serviceUsers.create({ displayName: "Then Secret Agent", accessKey: { name: "then", grants: ["tickets:read"] } }).then(undefined, () => {}); return null; }),
       issueAgentKey: mutation((ctx, input) => ctx.serviceUsers.issueAccessKey(input.userId, input.accessKey)),
+      discardIssueAgentKey: mutation((ctx, input) => { const work = ctx.serviceUsers.issueAccessKey(input.userId, input.accessKey); if (input.mode === "catch") work.catch(() => {}); else if (input.mode === "finally") work.finally(() => {}); else work.then(undefined, () => {}); return null; }),
       rotateAgentKey: mutation((ctx, input) => ctx.serviceUsers.rotateAccessKey(input.userId, input.accessKeyId, {
         lifecycleRevision: input.lifecycleRevision,
       })),
+      discardRotateAgentKey: mutation((ctx, input) => { const work = ctx.serviceUsers.rotateAccessKey(input.userId, input.accessKeyId, { lifecycleRevision: input.lifecycleRevision }); if (input.mode === "catch") work.catch(() => {}); else if (input.mode === "finally") work.finally(() => {}); else work.then(undefined, () => {}); return null; }),
       listAgentKeys: mutation((ctx, userId) => ctx.serviceUsers.listAccessKeys(userId)),
       disableAgent: mutation((ctx, userId) => ctx.serviceUsers.disable(userId)),
     },
@@ -235,6 +240,11 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
     assert.equal((await database.adapter.prepare(database.adapter.dialect.sql(
       "SELECT [id] FROM [sporades_auth_users] WHERE [displayName] = ?",
     )).get("Discarded Secret Agent")) ?? null, null);
+    for (const [mutationName, displayName] of [["createWithDiscardedCatch", "Caught Secret Agent"], ["createWithDiscardedFinally", "Finally Secret Agent"], ["createWithDiscardedRejectionThen", "Then Secret Agent"]]) {
+      const response = await runMutation(database, mutationName, []);
+      assert.equal(response.error?.code, "ACCESS_KEY_SECRET_NOT_CONSUMED");
+      assert.equal((await database.adapter.prepare(database.adapter.dialect.sql("SELECT [id] FROM [sporades_auth_users] WHERE [displayName] = ?")).get(displayName)) ?? null, null);
+    }
 
     const created = await runMutation(database, "createAgent", []);
     assert.equal(created.error, null, JSON.stringify(created.error));
@@ -246,6 +256,17 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
       disabledAt: null,
     });
     assert.match(created.data.token, /^spk_1_[A-Za-z0-9_-]{22}_[A-Za-z0-9_-]{43}$/);
+    const originalCredential = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [lifecycleRevision], [selector] FROM [sporades_auth_access_keys] WHERE [id] = ?")).get(created.data.accessKey.id);
+    for (const mode of ["catch", "finally", "then"]) {
+      const issued = await runMutation(database, "discardIssueAgentKey", [{ userId: created.data.serviceUser.id, accessKey: { name: `discarded-${mode}`, grants: ["tickets:read"] }, mode }]);
+      assert.equal(issued.error?.code, "ACCESS_KEY_SECRET_NOT_CONSUMED");
+      assert.equal((await database.adapter.prepare(database.adapter.dialect.sql("SELECT [id] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [name] = ?")).get(created.data.serviceUser.id, `discarded-${mode}`)) ?? null, null);
+      const rotated = await runMutation(database, "discardRotateAgentKey", [{ userId: created.data.serviceUser.id, accessKeyId: created.data.accessKey.id, lifecycleRevision: created.data.accessKey.lifecycleRevision, mode }]);
+      assert.equal(rotated.error?.code, "ACCESS_KEY_SECRET_NOT_CONSUMED");
+      const unchanged = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [lifecycleRevision], [selector] FROM [sporades_auth_access_keys] WHERE [id] = ?")).get(created.data.accessKey.id);
+      assert.equal(unchanged.lifecycleRevision, created.data.accessKey.lifecycleRevision);
+      assert.equal(unchanged.selector, originalCredential.selector);
+    }
     assert.equal(created.data.accessKey.lifecycleRevision, 1);
 
     const admitted = await requestEndpoint(database, created.data.token);
@@ -425,9 +446,12 @@ async function proveRemoteEngineServiceUserLifecycle(serverEnv, config) {
         ctx.serviceUsers.create({ displayName: "Discarded Remote Agent", accessKey: { name: "discarded", grants: ["tickets:read"] } });
         return { returned: true };
       }),
+      discardCreate: mutation((ctx, mode) => { const work = ctx.serviceUsers.create({ displayName: `Discarded Remote ${mode}`, accessKey: { name: `discarded-${mode}`, grants: ["tickets:read"] } }); if (mode === "catch") work.catch(() => {}); else if (mode === "finally") work.finally(() => {}); else work.then(undefined, () => {}); return null; }),
+      discardIssue: mutation((ctx, input) => { const work = ctx.serviceUsers.issueAccessKey(input.userId, { name: `discarded-${input.mode}`, grants: ["tickets:read"] }); if (input.mode === "catch") work.catch(() => {}); else if (input.mode === "finally") work.finally(() => {}); else work.then(undefined, () => {}); return null; }),
       rotateAgentKey: mutation((ctx, input) => ctx.serviceUsers.rotateAccessKey(input.userId, input.accessKeyId, {
         lifecycleRevision: input.lifecycleRevision,
       })),
+      discardRotate: mutation((ctx, input) => { const work = ctx.serviceUsers.rotateAccessKey(input.userId, input.accessKeyId, { lifecycleRevision: input.lifecycleRevision }); if (input.mode === "catch") work.catch(() => {}); else if (input.mode === "finally") work.finally(() => {}); else work.then(undefined, () => {}); return null; }),
       disableAgent: mutation((ctx, userId) => ctx.serviceUsers.disable(userId)),
     },
   });
@@ -442,6 +466,15 @@ async function proveRemoteEngineServiceUserLifecycle(serverEnv, config) {
     )).get("Discarded Remote Agent")) ?? null, null);
     const created = await runMutation(first, "createAgent", []);
     assert.equal(created.error, null, JSON.stringify(created.error));
+    const original = await first.adapter.prepare(first.adapter.dialect.sql("SELECT [lifecycleRevision], [selector] FROM [sporades_auth_access_keys] WHERE [id] = ?")).get(created.data.accessKey.id);
+    for (const mode of ["catch", "finally", "then"]) {
+      assert.equal((await runMutation(first, "discardCreate", [mode])).error?.code, "ACCESS_KEY_SECRET_NOT_CONSUMED");
+      assert.equal((await runMutation(first, "discardIssue", [{ userId: created.data.serviceUser.id, mode }])).error?.code, "ACCESS_KEY_SECRET_NOT_CONSUMED");
+      assert.equal((await runMutation(first, "discardRotate", [{ userId: created.data.serviceUser.id, accessKeyId: created.data.accessKey.id, lifecycleRevision: created.data.accessKey.lifecycleRevision, mode }])).error?.code, "ACCESS_KEY_SECRET_NOT_CONSUMED");
+      assert.equal((await first.adapter.prepare(first.adapter.dialect.sql("SELECT [id] FROM [sporades_auth_users] WHERE [displayName] = ?")).get(`Discarded Remote ${mode}`)) ?? null, null);
+      assert.equal((await first.adapter.prepare(first.adapter.dialect.sql("SELECT [id] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [name] = ?")).get(created.data.serviceUser.id, `discarded-${mode}`)) ?? null, null);
+      assert.deepEqual(await first.adapter.prepare(first.adapter.dialect.sql("SELECT [lifecycleRevision], [selector] FROM [sporades_auth_access_keys] WHERE [id] = ?")).get(created.data.accessKey.id), original);
+    }
     second = await openDevDatabase("", "", serverEnv, config, definition);
     const [rotated, disabled] = await Promise.all([
       runMutation(first, "rotateAgentKey", [{
