@@ -17381,7 +17381,15 @@ var ACCESS_KEY_OPERATOR_ACTIONS = [
 ];
 var ACTIONS = new Set(ACCESS_KEY_OPERATOR_ACTIONS);
 var STATUSES = /* @__PURE__ */ new Set(["active", "expired", "revoked"]);
-var REVOCATION_CAUSES = /* @__PURE__ */ new Set(["owner", "operator", "password-reset", "owner-unlinked", "owner-deleted"]);
+var REVOCATION_CAUSES = /* @__PURE__ */ new Set([
+  "owner",
+  "operator",
+  "password-reset",
+  "owner-unlinked",
+  "owner-deleted",
+  "service-user-administrator",
+  "service-user-disabled"
+]);
 var ACCESS_KEY_OPERATOR_LIST_PAGE_LIMIT = 100;
 var JSON_STRING_MAX_BYTE_EXPANSION = 6;
 var ACCESS_KEY_OPERATOR_ENVELOPE_STRUCTURAL_HEADROOM = 8 * 1024 * 1024;

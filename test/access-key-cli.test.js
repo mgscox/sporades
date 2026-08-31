@@ -38,7 +38,18 @@ const revokedEnvelope = {
   },
   error: null,
 };
-const inspectedEnvelope = { ok: true, data: { capsule: { name: "keys" }, accessKey: envelope.data.accessKeys[0] }, error: null };
+const serviceUserListEnvelope = {
+  ...envelope,
+  data: {
+    ...envelope.data,
+    accessKeys: [{ ...envelope.data.accessKeys[0], status: "revoked", revokedAt: "2026-08-20T12:05:00.000Z", revocationCause: "service-user-administrator" }],
+  },
+};
+const inspectedEnvelope = {
+  ok: true,
+  data: { capsule: { name: "keys" }, accessKey: { ...envelope.data.accessKeys[0], status: "revoked", revokedAt: "2026-08-20T12:06:00.000Z", revocationCause: "service-user-disabled" } },
+  error: null,
+};
 const run = (args, cwd, env = {}) => spawnSync(process.execPath, [cli, ...args], {
   cwd, env: { ...process.env, ...env }, encoding: "utf8",
 });
@@ -79,11 +90,11 @@ test("Access-key CLI invokes the generated Bundle for a running Dev session", as
     await writeFile(path.join(dir, ".sporades", "dev-session.json"), JSON.stringify({ pid: process.pid }));
     await writeFile(path.join(dir, ".sporades", "build", "server.mjs"), `
 const args=process.argv.slice(2);if(args[0]!=="--sporades-action"||args[1]!=="access-keys.list"||args[2]!=="--sporades-action-input")process.exit(8);
-const input=JSON.parse(Buffer.from(args[3],"base64url"));if(input.userId!=="user-1"||"executionSource" in input||input.options.status!=="active")process.exit(9);
-console.log(${JSON.stringify(JSON.stringify(envelope))});`);
-    const result = run(["access-keys", "list", "--user-id", "user-1", "--status", "active", "--json"], dir);
+const input=JSON.parse(Buffer.from(args[3],"base64url"));if(input.userId!=="user-1"||"executionSource" in input||input.options.status!=="revoked")process.exit(9);
+console.log(${JSON.stringify(JSON.stringify(serviceUserListEnvelope))});`);
+    const result = run(["access-keys", "list", "--user-id", "user-1", "--status", "revoked", "--json"], dir);
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.deepEqual(JSON.parse(result.stdout), envelope);
+    assert.deepEqual(JSON.parse(result.stdout), serviceUserListEnvelope);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -129,7 +140,7 @@ test("Access-key operator schemas reject aliases, nesting, error extras, and mis
   assert.equal(maximumCardinality.data.accessKeys[0].grants.length, 128);
   assert.equal(maximumCardinality.data.accessKeys[0].effectiveScopes.length, 1024);
   assert.equal(maximumCardinality.data.declaredScopes.length, 1024);
-  for (const revocationCause of ["owner", "operator", "password-reset", "owner-unlinked", "owner-deleted"]) {
+  for (const revocationCause of ["owner", "operator", "password-reset", "owner-unlinked", "owner-deleted", "service-user-administrator", "service-user-disabled"]) {
     const idempotent = {
       ...revokedEnvelope,
       data: { ...revokedEnvelope.data, accessKey: { ...revokedEnvelope.data.accessKey, revocationCause } },
@@ -201,6 +212,7 @@ test("Access-key CLI routes Container and Hosted actions through existing runtim
       PATH: `${bin}${path.delimiter}${process.env.PATH}`, SPORADES_CONFIG_DIR: config,
     });
     assert.equal(hosted.status, 0, hosted.stderr || hosted.stdout);
+    assert.equal(JSON.parse(hosted.stdout).data.accessKey.revocationCause, "service-user-disabled");
     const request = JSON.parse(await readFile(requestLog, "utf8"));
     assert.equal(request.action, "access-keys.inspect");
     assert.equal(request.accessKeys.keyId, "key-1");
