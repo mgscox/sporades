@@ -2243,6 +2243,8 @@ function createPrivilegedHandlerContext(database, context, signal) {
     delete privilegedContext.teams;
     delete privilegedContext.accessKeys;
     delete privilegedContext.credential;
+    delete privilegedContext.serviceUsers;
+    delete privilegedContext.serverAuth;
     delete privilegedContext.__sporadesAccessKeyGrants;
     const provenanceStore = (database.__rootDatabase ?? database).jobScheduleProvenanceByContext;
     const scheduleProvenance = provenanceStore?.get(context);

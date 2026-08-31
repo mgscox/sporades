@@ -9365,7 +9365,7 @@ function resolveEffectiveAclRule(aclRules, operation) {
   return aclRules[operation];
 }
 function createTableAclContext(context, database) {
-  const { db, privileged, jobs, mail, request, teams, __sporadesContextHolder, ...aclContext } = context ?? {};
+  const { db, privileged, jobs, mail, request, teams, serviceUsers, serverAuth, __sporadesContextHolder, ...aclContext } = context ?? {};
   return {
     ...aclContext,
     acl: createAclHelpers(database, context)
@@ -22694,6 +22694,8 @@ function createPrivilegedHandlerContext(database, context, signal) {
   delete privilegedContext.teams;
   delete privilegedContext.accessKeys;
   delete privilegedContext.credential;
+  delete privilegedContext.serviceUsers;
+  delete privilegedContext.serverAuth;
   delete privilegedContext.__sporadesAccessKeyGrants;
   const provenanceStore = (database.__rootDatabase ?? database).jobScheduleProvenanceByContext;
   const scheduleProvenance = provenanceStore?.get(context);

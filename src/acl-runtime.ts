@@ -571,7 +571,7 @@ export function createTableAclContext(context: any, database: any) {
   // ACL evaluation is deliberately read-only. Current-user Teams can lazily
   // bootstrap durable state, so policy callbacks receive only constrained
   // membership decisions rather than the normal Team management API.
-  const { db, privileged, jobs, mail, request, teams, __sporadesContextHolder, ...aclContext } = context ?? {};
+  const { db, privileged, jobs, mail, request, teams, serviceUsers, serverAuth, __sporadesContextHolder, ...aclContext } = context ?? {};
   return {
     ...aclContext,
     acl: createAclHelpers(database, context),

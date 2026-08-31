@@ -2360,6 +2360,8 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
   delete privilegedContext.teams;
   delete privilegedContext.accessKeys;
   delete privilegedContext.credential;
+  delete privilegedContext.serviceUsers;
+  delete privilegedContext.serverAuth;
   delete privilegedContext.__sporadesAccessKeyGrants;
   const provenanceStore = (database.__rootDatabase ?? database).jobScheduleProvenanceByContext;
   const scheduleProvenance = provenanceStore?.get(context);

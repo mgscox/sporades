@@ -169,6 +169,40 @@ test("authenticated custom endpoints cannot forge Service-User mutation authorit
   }
 });
 
+test("ACL and Privileged contexts cannot inherit human lifecycle capabilities", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-service-user-constrained-contexts-"));
+  const definition = capsule({
+    name: "service-user-constrained-contexts",
+    accessKeys: { scopes: ["tickets:read"] },
+    schema: { effects: table({ value: StringField() }).acl({
+      insert: ({ ctx }) => !("serviceUsers" in ctx) && !("serverAuth" in ctx),
+    }) },
+    mutations: {
+      proveConstrained: mutation(async (ctx) => {
+        await ctx.db.effects.insert({ value: "acl-safe" });
+        const privileged = await ctx.privileged.run({ operation: "lifecycle-capability.inspect", targetResourceKind: "auth-lifecycle" }, async (serverCtx) => ({
+          hasServiceUsers: "serviceUsers" in serverCtx,
+          hasServerAuth: "serverAuth" in serverCtx,
+        }));
+        const created = await ctx.serviceUsers.create({ displayName: "Allowed Parent Agent", accessKey: { name: "parent", grants: ["tickets:read"] } });
+        return { privileged, created };
+      }),
+    },
+  });
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: definition.name }, definition);
+  try {
+    await seedAdministrator(database);
+    const result = await runMutation(database, "proveConstrained", []);
+    assert.equal(result.error, null, JSON.stringify(result.error));
+    assert.deepEqual(result.data.privileged, { hasServiceUsers: false, hasServerAuth: false });
+    assert.match(result.data.created.token, /^spk_1_/);
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [effects]").get()).count, 1);
+  } finally {
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a human Session atomically creates, attributes, rotates, and disables a service User", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-service-users-"));
   const definition = capsule({
