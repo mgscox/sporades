@@ -712,7 +712,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         readTeamBillingActorAuth: async (transaction, userId) => {
             if (typeof userId !== "string")
                 return null;
-            const actor = await transaction.prepare(transaction.dialect.sql("SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider] FROM [sporades_auth_users] WHERE [id] = ?")).get(userId);
+            const actor = await transaction.prepare(transaction.dialect.sql("SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind] FROM [sporades_auth_users] WHERE [id] = ?")).get(userId);
             return actor ? Object.freeze({
                 userId: actor.id,
                 displayName: actor.displayName,
@@ -721,6 +721,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 isAuthenticated: Boolean(actor.isAuthenticated),
                 isGuest: Boolean(actor.isGuest),
                 provider: actor.provider,
+                ...(actor.userKind === "service" ? { userKind: "service" } : {}),
             }) : null;
         },
         updateTeamBillingSubscription: async (context, input) => {

@@ -6799,7 +6799,7 @@ async function performTeamBillingCheckout(database, context, payload, attempt = 
       if (!operation || !["queued", "running", "retrying"].includes(operation.status)) return null;
       await assertTeamBillingErasureInactive(database, transaction, operation.teamId);
       const actor = await transaction.prepare(sql(
-        "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider] FROM [sporades_auth_users] WHERE [id] = ?"
+        "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind] FROM [sporades_auth_users] WHERE [id] = ?"
       )).get(operation.actorUserId);
       if (!actor) throw teamBillingDenied();
       const auth = {
@@ -6809,7 +6809,8 @@ async function performTeamBillingCheckout(database, context, payload, attempt = 
         picture: actor.picture,
         isAuthenticated: Boolean(actor.isAuthenticated),
         isGuest: Boolean(actor.isGuest),
-        provider: actor.provider
+        provider: actor.provider,
+        ...actor.userKind === "service" ? { userKind: "service" } : {}
       };
       await admitTeamBillingActor(database, transaction, auth, { operation: "checkout", teamId: operation.teamId, productKey: operation.productKey });
       const desired = await checkoutDesiredState(database, transaction, operation.teamId, operation.productKey);
@@ -7280,7 +7281,7 @@ async function readPortalOperation(transaction, operationId) {
 }
 async function reauthorizePortalOperation(database, transaction, operation) {
   const actor = await transaction.prepare(transaction.dialect.sql(
-    "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider] FROM [sporades_auth_users] WHERE [id] = ?"
+    "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind] FROM [sporades_auth_users] WHERE [id] = ?"
   )).get(operation.actorUserId);
   if (!actor) throw teamBillingDenied();
   const auth = {
@@ -7290,7 +7291,8 @@ async function reauthorizePortalOperation(database, transaction, operation) {
     picture: actor.picture,
     isAuthenticated: Boolean(actor.isAuthenticated),
     isGuest: Boolean(actor.isGuest),
-    provider: actor.provider
+    provider: actor.provider,
+    ...actor.userKind === "service" ? { userKind: "service" } : {}
   };
   await admitTeamBillingActor(database, transaction, auth, { operation: "portal", teamId: operation.teamId });
   return portalDesiredState(database, transaction, operation.teamId);
@@ -21337,7 +21339,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     readTeamBillingActorAuth: async (transaction, userId) => {
       if (typeof userId !== "string") return null;
       const actor = await transaction.prepare(transaction.dialect.sql(
-        "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider] FROM [sporades_auth_users] WHERE [id] = ?"
+        "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind] FROM [sporades_auth_users] WHERE [id] = ?"
       )).get(userId);
       return actor ? Object.freeze({
         userId: actor.id,
@@ -21346,7 +21348,8 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
         picture: actor.picture,
         isAuthenticated: Boolean(actor.isAuthenticated),
         isGuest: Boolean(actor.isGuest),
-        provider: actor.provider
+        provider: actor.provider,
+        ...actor.userKind === "service" ? { userKind: "service" } : {}
       }) : null;
     },
     updateTeamBillingSubscription: async (context, input) => {

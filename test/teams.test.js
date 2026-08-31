@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { createWebSocketHub, handleFileHttpRoute, openDevDatabase, recoverExpiredJobLeases, routeEndpoint, runAtomicStripeConsequence, runMutation, runQuery } from "../dist/server-runtime-source.js";
 import { Number as NumberField, String as StringField, endpoint, job, mutation, query, table } from "../dist/server.js";
 import { createAdditionalTeam, joinCurrentUserTeam } from "../dist/teams-runtime.js";
-import { applyVerifiedTeamBillingCheckoutObservation, expireTeamBillingCheckout, expireTeamBillingPortal, readCurrentUserTeamBilling } from "../dist/team-billing-runtime.js";
+import { applyVerifiedTeamBillingCheckoutObservation, expireTeamBillingCheckout, expireTeamBillingPortal, performTeamBillingCheckout, readCurrentUserTeamBilling, startTeamBillingCheckout } from "../dist/team-billing-runtime.js";
 import { applyVerifiedTeamBillingObservation } from "../dist/team-billing-convergence.js";
 import { createStripeCallbackEndpoint } from "../dist/stripe-webhook-runtime.js";
 import { withPostgresAdapter } from "./support/database-adapter-engines.js";
@@ -143,6 +143,7 @@ const admissionCapsule = {
 let capturedBillingPolicyTable = null;
 let capturedBillingPolicyCountMembers = null;
 const billingPolicyChecks = [];
+let denyServiceBillingActor = false;
 const billingCapsule = {
   ...capsule,
   name: "team-billing-test",
@@ -189,11 +190,12 @@ const billingCapsule = {
       billingPolicyChecks.push({
         input,
         actorUserId: ctx.auth.userId,
+        actorUserKind: ctx.auth.userKind,
         memberCount,
         contextKeys: Object.keys(ctx).sort(),
         tableKeys: Object.keys(ctx.db.billingHolders).sort(),
       });
-      return { allow: holder?.userId === ctx.auth.userId };
+      return { allow: holder?.userId === ctx.auth.userId && !(denyServiceBillingActor && ctx.auth.userKind === "service") };
     },
   },
 };
@@ -2294,6 +2296,48 @@ test("headless Team Checkout durably deduplicates work and exposes only an autho
     owner?.close();
     nextHolder?.close();
     quantityMember?.close();
+    await runtime.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("queued Team Checkout reauthorization preserves a Service User actor before provider work", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-billing-service-actor-"));
+  const providerInputs = [];
+  const runtime = await startRuntime(path.join(dir, "data.db"), billingCapsule, {
+    serverEnv: { STRIPE_SECRET_KEY: "sk_test_service_actor", STRIPE_WEBHOOK_SECRET: "whsec_service_actor" },
+    config: { payments: { stripe: {
+      enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
+      publicOrigin: "https://checkout.example.test", callbackPath: "/stripe/webhook",
+      apiVersion: "2026-07-29.dahlia", livemode: false, requestTimeoutMs: 10_000,
+    } } },
+    runtimeOptions: { createStripeCallbackEndpoint, createStripeTeamBillingProvider: () => ({
+      async create(input) { providerInputs.push(input); return { ok: true }; },
+    }) },
+  });
+  const teamId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa10";
+  const userId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbb10";
+  const requestId = "cccccccc-cccc-4ccc-8ccc-cccccccccc10";
+  try {
+    await runtime.database.init();
+    runtime.database.scheduleTeamBillingJobDispatch = () => {};
+    const now = new Date().toISOString();
+    await runtime.database.adapter.prepare("INSERT INTO [sporades_auth_users] ([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind], [lifecycleStatus]) VALUES (?, ?, 'Billing Agent', NULL, NULL, 1, 0, 'service', 'service', 'active')").run(userId, now);
+    await runtime.database.adapter.prepare("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, 'Service billing', ?, ?)").run(teamId, now, userId);
+    await runtime.database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)").run(teamId, userId, now);
+    await runtime.database.adapter.prepare("INSERT INTO [billingHolders] ([id], [createdAt], [updatedAt], [teamId], [userId]) VALUES (?, ?, ?, ?, ?)").run("dddddddd-dddd-4ddd-8ddd-dddddddddd10", now, now, teamId, userId);
+    const auth = { userId, userKind: "service", displayName: "Billing Agent", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "access-key" };
+    denyServiceBillingActor = false;
+    assert.equal((await startTeamBillingCheckout(runtime.database, auth, teamId, requestId, "studio")).state, "pending");
+    assert.equal(billingPolicyChecks.at(-1).actorUserKind, "service", "initial policy receives the explicit Service User discriminator");
+    const operation = await runtime.database.adapter.prepare("SELECT [id] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?").get(teamId, requestId);
+    denyServiceBillingActor = true;
+    await assert.rejects(performTeamBillingCheckout(runtime.database, {}, { operationId: operation.id }), (error) => error?.code === "TEAM_BILLING_CHECKOUT_UNAVAILABLE");
+    assert.equal(billingPolicyChecks.at(-1).actorUserKind, "service", "queued reauthorization retains the Service User discriminator");
+    assert.equal(providerInputs.length, 0, "tightened policy denies before any provider side effect");
+    assert.deepEqual({ ...(await runtime.database.adapter.prepare("SELECT [status], [safeFailureCode] FROM [sporades_team_billing_operations] WHERE [id] = ?").get(operation.id)) }, { status: "failed", safeFailureCode: "AUTHORITY_CHANGED" });
+  } finally {
+    denyServiceBillingActor = false;
     await runtime.close();
     await rm(dir, { recursive: true, force: true });
   }

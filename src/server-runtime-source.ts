@@ -849,7 +849,7 @@ export async function openDevDatabase(
     readTeamBillingActorAuth: async (transaction: LooseRecord, userId: string) => {
       if (typeof userId !== "string") return null;
       const actor = await transaction.prepare(transaction.dialect.sql(
-        "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider] FROM [sporades_auth_users] WHERE [id] = ?",
+        "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind] FROM [sporades_auth_users] WHERE [id] = ?",
       )).get(userId);
       return actor ? Object.freeze({
         userId: actor.id,
@@ -859,6 +859,7 @@ export async function openDevDatabase(
         isAuthenticated: Boolean(actor.isAuthenticated),
         isGuest: Boolean(actor.isGuest),
         provider: actor.provider,
+        ...(actor.userKind === "service" ? { userKind: "service" } : {}),
       }) : null;
     },
     updateTeamBillingSubscription: async (context: LooseRecord, input: LooseRecord) => {
