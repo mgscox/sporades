@@ -3620,6 +3620,11 @@ function trackMutationContextWork(context, promise, requiresConsumption = false)
             return value;
         })
         : operation;
+    // Registration happens before the handler necessarily yields back to the
+    // mutation runtime. Observe rejection immediately so an early failure never
+    // reaches Node's unhandled-rejection/fatal policy; the original tracked
+    // promise remains in the drain ledger and still carries the exact reason.
+    void tracked.then(undefined, () => undefined);
     const entry = { promise: tracked };
     trackPendingAclWrite(context, entry);
     return operation;

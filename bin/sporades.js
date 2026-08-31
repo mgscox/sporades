@@ -23989,6 +23989,7 @@ function trackMutationContextWork(context, promise, requiresConsumption = false)
     mutationSecretState(context).tokens.push(token);
     return value;
   }) : operation;
+  void tracked.then(void 0, () => void 0);
   const entry = { promise: tracked };
   trackPendingAclWrite(context, entry);
   return operation;

@@ -169,6 +169,107 @@ test("authenticated custom endpoints cannot forge Service-User mutation authorit
   }
 });
 
+function earlyRejectionDefinition(name) {
+  return capsule({
+    name,
+    accessKeys: { scopes: ["tickets:read"] },
+    schema: { effects: table({ value: StringField() }) },
+    mutations: {
+      rejectLater: mutation(async (ctx, operation) => {
+        if (operation === "create") ctx.serviceUsers.create({ displayName: "", accessKey: { name: "bad", grants: ["tickets:read"] } });
+        if (operation === "issue") ctx.serviceUsers.issueAccessKey("missing-service-user", { name: "bad", grants: ["tickets:read"] });
+        if (operation === "rotate") ctx.serviceUsers.rotateAccessKey("missing-service-user", "missing-key", { lifecycleRevision: 1 });
+        if (operation === "revoke") ctx.serviceUsers.revokeAccessKey("missing-service-user", "missing-key");
+        if (operation === "disable") ctx.serviceUsers.disable("missing-service-user");
+        if (operation === "human") ctx.serverAuth.revokeHumanSecurity("missing-human-user");
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        await ctx.db.effects.insert({ value: operation });
+        return { reachedHandlerEnd: true };
+      }),
+    },
+  });
+}
+
+test("unawaited lifecycle rejection is observed immediately and drained transactionally", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-service-user-early-rejection-"));
+  const definition = earlyRejectionDefinition("service-user-early-rejection");
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: definition.name }, definition);
+  const fatalEvents = [];
+  const onUnhandledRejection = (reason) => fatalEvents.push({ event: "unhandledRejection", reason });
+  const onUncaughtException = (error) => fatalEvents.push({ event: "uncaughtException", reason: error });
+  process.on("unhandledRejection", onUnhandledRejection);
+  process.on("uncaughtException", onUncaughtException);
+  try {
+    await seedAdministrator(database);
+    const before = {
+      users: Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_auth_users]").get()).count),
+      keys: Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_auth_access_keys]").get()).count),
+      sessions: Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_auth_sessions]").get()).count),
+    };
+    for (const operation of ["create", "issue", "rotate", "revoke", "disable", "human"]) {
+      const result = await runMutation(database, "rejectLater", [operation]);
+      assert.ok(result.error, `${operation} rejection reaches the mutation result`);
+      assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [effects]").get()).count), 0, `${operation} rolls back the delayed handler write`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(fatalEvents, [], "registered lifecycle work never reaches Node fatal-event policy");
+    assert.deepEqual({
+      users: Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_auth_users]").get()).count),
+      keys: Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_auth_access_keys]").get()).count),
+      sessions: Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_auth_sessions]").get()).count),
+    }, before);
+  } finally {
+    process.off("unhandledRejection", onUnhandledRejection);
+    process.off("uncaughtException", onUncaughtException);
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+async function proveRemoteEarlyLifecycleRejection(serverEnv, config) {
+  const database = await openDevDatabase("", "", serverEnv, config, earlyRejectionDefinition(config.name));
+  const fatalEvents = [];
+  const onUnhandledRejection = (reason) => fatalEvents.push({ event: "unhandledRejection", reason });
+  const onUncaughtException = (error) => fatalEvents.push({ event: "uncaughtException", reason: error });
+  process.on("unhandledRejection", onUnhandledRejection);
+  process.on("uncaughtException", onUncaughtException);
+  try {
+    await seedAdministrator(database);
+    for (const operation of ["create", "issue", "rotate", "revoke", "disable", "human"]) {
+      const result = await runMutation(database, "rejectLater", [operation]);
+      assert.ok(result.error, `${operation} rejection reaches the mutation result`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(fatalEvents, []);
+    assert.equal(Number((await database.adapter.prepare(database.adapter.dialect.sql("SELECT COUNT(*) AS [count] FROM [effects]")).get()).count), 0);
+    assert.equal(Number((await database.adapter.prepare(database.adapter.dialect.sql("SELECT COUNT(*) AS [count] FROM [sporades_auth_access_keys]")).get()).count), 0);
+  } finally {
+    process.off("unhandledRejection", onUnhandledRejection);
+    process.off("uncaughtException", onUncaughtException);
+    await database.close();
+  }
+}
+
+test("libSQL observes early unawaited lifecycle rejection before transaction drain", async () => {
+  await withLibsqlAdapter(async (_adapter, { url }) => {
+    const name = `service-user-early-rejection-libsql-${randomUUID()}`;
+    await proveRemoteEarlyLifecycleRejection(
+      { SPORADES_SERVICE_DATABASE_ENGINE: "libsql", SPORADES_SERVICE_DATABASE_URL: url },
+      { name, services: { database: { engine: "libsql" } } },
+    );
+  }, { isolateProcess: true });
+});
+
+test("Postgres observes early unawaited lifecycle rejection before transaction drain", { skip: POSTGRES_SKIP_REASON }, async () => {
+  await withPostgresAdapter(async () => {
+    const name = `service-user-early-rejection-postgres-${randomUUID()}`;
+    await proveRemoteEarlyLifecycleRejection(
+      { SPORADES_SERVICE_DATABASE_ENGINE: "postgres", SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL },
+      { name, services: { database: { engine: "postgres" } } },
+    );
+  }, { appTableNames: ["effects"] });
+});
+
 test("ACL and Privileged contexts cannot inherit human lifecycle capabilities", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-service-user-constrained-contexts-"));
   const definition = capsule({
