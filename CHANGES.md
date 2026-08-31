@@ -1,8 +1,8 @@
 # Changes
 
-## Unreleased - 2026-08-31
+## v0.9.10 - 2026-08-31
 
-Changes since v0.9.7.
+Changes since v0.9.9.
 
 ### 🚀 Features
 

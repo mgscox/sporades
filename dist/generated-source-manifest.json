@@ -64,6 +64,7 @@
       "src/sealed-server-env.ts",
       "src/server-runtime-source.ts",
       "src/server.ts",
+      "src/service-users-runtime.ts",
       "src/stored-value-coding.ts",
       "src/stripe-events-runtime.ts",
       "src/stripe-payment-config.ts",
@@ -90,7 +91,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "76e2b23679a347e10291f4cb2a1329fbb7d8c69bc7f6842ddcbea0c693bd3f26"
+    "digest": "dd56455e508193a3a313bbe91b2a296a93923d31674bd3a2e424536658bb2715"
   },
   "outputs": {
     "files": [
@@ -316,6 +317,10 @@
       "dist/server.d.ts.map",
       "dist/server.js",
       "dist/server.js.map",
+      "dist/service-users-runtime.d.ts",
+      "dist/service-users-runtime.d.ts.map",
+      "dist/service-users-runtime.js",
+      "dist/service-users-runtime.js.map",
       "dist/stored-row-decoding.d.ts",
       "dist/stored-row-decoding.d.ts.map",
       "dist/stored-row-decoding.js",
@@ -393,6 +398,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "d18e89a83bf1d3d988ce504a1b8ed33b0e4a5b45e574a0e12a27f2e586600d66"
+    "digest": "cff258ccb67d922b393a51551117d7c16997773ae959ddbe5eb899bbfb7a12df"
   }
 }
