@@ -685,10 +685,27 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
     assert.equal((await requestEndpoint(database, second.data.token)).status, 401);
     assert.equal((await requestEndpoint(database, rotated.data.token)).status, 200);
 
+    const beforeDisable = await runMutation(database, "listAgentKeys", [created.data.serviceUser.id]);
+    assert.equal(beforeDisable.error, null, JSON.stringify(beforeDisable.error));
     const disabled = await runMutation(database, "disableAgent", [created.data.serviceUser.id]);
     assert.equal(disabled.error, null, JSON.stringify(disabled.error));
     assert.equal(disabled.data.serviceUser.status, "disabled");
     assert.equal(disabled.data.revokedCount, 6);
+    const afterDisable = await runMutation(database, "listAgentKeys", [created.data.serviceUser.id]);
+    assert.equal(afterDisable.error, null, JSON.stringify(afterDisable.error));
+    assert.deepEqual(disabled.data.accessKeys, afterDisable.data.accessKeys,
+      "disable returns the exact post-write Access-key summaries");
+    const beforeRevisions = new Map(beforeDisable.data.accessKeys.map((key) => [key.id, key.lifecycleRevision]));
+    assert.equal(disabled.data.accessKeys.every((key) =>
+      key.status === "revoked"
+      && key.revocationCause === "service-user-disabled"
+      && key.revokedAt === "2026-08-31T12:00:00.000Z"
+      && key.lifecycleRevision === beforeRevisions.get(key.id) + 1), true);
+    const replay = await runMutation(database, "disableAgent", [created.data.serviceUser.id]);
+    assert.equal(replay.error?.code, "SERVICE_USER_NOT_ACTIVE");
+    const afterReplay = await runMutation(database, "listAgentKeys", [created.data.serviceUser.id]);
+    assert.deepEqual(afterReplay.data.accessKeys, afterDisable.data.accessKeys,
+      "replaying disable does not revise already disabled credentials");
     assert.equal((await requestEndpoint(database, created.data.token)).status, 401);
     assert.equal((await requestEndpoint(database, rotated.data.token)).status, 401);
 
@@ -916,6 +933,8 @@ async function proveRemoteEngineServiceUserLifecycle(serverEnv, config) {
         if (input.mode === "throw") return { toJSON() { throw new Error("hostile serialization"); }, token: issued.token };
         return Object.defineProperty({ toJSON() { return { token: null }; } }, "token", { enumerable: true, get() { return issued.token; } });
       }),
+      issueAgentKey: mutation((ctx, input) => ctx.serviceUsers.issueAccessKey(input.userId, input.accessKey)),
+      listAgentKeys: mutation((ctx, userId) => ctx.serviceUsers.listAccessKeys(userId)),
       disableAgent: mutation((ctx, userId) => ctx.serviceUsers.disable(userId)),
     },
   });
@@ -937,6 +956,11 @@ async function proveRemoteEngineServiceUserLifecycle(serverEnv, config) {
     )).get("Discarded Remote Agent")) ?? null, null);
     const created = await runMutation(first, "createAgent", []);
     assert.equal(created.error, null, JSON.stringify(created.error));
+    const secondKey = await runMutation(first, "issueAgentKey", [{
+      userId: created.data.serviceUser.id,
+      accessKey: { name: "secondary", grants: ["tickets:read"] },
+    }]);
+    assert.equal(secondKey.error, null, JSON.stringify(secondKey.error));
     const original = await first.adapter.prepare(first.adapter.dialect.sql("SELECT [lifecycleRevision], [selector] FROM [sporades_auth_access_keys] WHERE [id] = ?")).get(created.data.accessKey.id);
     for (const aggregate of ["all", "allSettled", "race", "any"]) {
       const returned = await runMutation(first, "aggregateSecret", [{ operation: "issue", aggregate, returned: true, userId: created.data.serviceUser.id, name: `remote-returned-${aggregate}` }]);
@@ -971,6 +995,31 @@ async function proveRemoteEngineServiceUserLifecycle(serverEnv, config) {
       assert.equal((await first.adapter.prepare(first.adapter.dialect.sql("SELECT [id] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [name] = ?")).get(created.data.serviceUser.id, `discarded-${mode}`)) ?? null, null);
       assert.deepEqual(await first.adapter.prepare(first.adapter.dialect.sql("SELECT [lifecycleRevision], [selector] FROM [sporades_auth_access_keys] WHERE [id] = ?")).get(created.data.accessKey.id), original);
     }
+    const projectionAgent = await runMutation(first, "createAgent", []);
+    assert.equal(projectionAgent.error, null, JSON.stringify(projectionAgent.error));
+    const projectionSecondKey = await runMutation(first, "issueAgentKey", [{
+      userId: projectionAgent.data.serviceUser.id,
+      accessKey: { name: "secondary", grants: ["tickets:read"] },
+    }]);
+    assert.equal(projectionSecondKey.error, null, JSON.stringify(projectionSecondKey.error));
+    const projectionBefore = await runMutation(first, "listAgentKeys", [projectionAgent.data.serviceUser.id]);
+    const projectionDisabled = await runMutation(first, "disableAgent", [projectionAgent.data.serviceUser.id]);
+    const projectionAfter = await runMutation(first, "listAgentKeys", [projectionAgent.data.serviceUser.id]);
+    assert.equal(projectionDisabled.error, null, JSON.stringify(projectionDisabled.error));
+    assert.deepEqual(projectionDisabled.data.accessKeys, projectionAfter.data.accessKeys,
+      `${config.name} disable returns authoritative post-write summaries`);
+    const projectionRevisions = new Map(projectionBefore.data.accessKeys.map((key) => [key.id, key.lifecycleRevision]));
+    assert.equal(projectionDisabled.data.accessKeys.length, 2);
+    assert.equal(projectionDisabled.data.accessKeys.every((key) =>
+      key.status === "revoked"
+      && key.revocationCause === "service-user-disabled"
+      && key.revokedAt
+      && key.lifecycleRevision === projectionRevisions.get(key.id) + 1), true);
+    const projectionReplay = await runMutation(first, "disableAgent", [projectionAgent.data.serviceUser.id]);
+    assert.equal(projectionReplay.error?.code, "SERVICE_USER_NOT_ACTIVE");
+    assert.deepEqual((await runMutation(first, "listAgentKeys", [projectionAgent.data.serviceUser.id])).data.accessKeys,
+      projectionAfter.data.accessKeys);
+
     second = await openDevDatabase("", "", serverEnv, config, definition);
     const [rotated, disabled] = await Promise.all([
       runMutation(first, "rotateAgentKey", [{
@@ -982,6 +1031,18 @@ async function proveRemoteEngineServiceUserLifecycle(serverEnv, config) {
     ]);
     assert.equal(disabled.error, null, JSON.stringify(disabled.error));
     assert.equal(rotated.error === null || rotated.error.code === "SERVICE_USER_NOT_ACTIVE", true, JSON.stringify(rotated.error));
+    const afterDisable = await runMutation(first, "listAgentKeys", [created.data.serviceUser.id]);
+    assert.equal(afterDisable.error, null, JSON.stringify(afterDisable.error));
+    assert.deepEqual(disabled.data.accessKeys, afterDisable.data.accessKeys,
+      `${config.name} concurrent disable returns authoritative post-write summaries`);
+    assert.equal(disabled.data.accessKeys.every((key) =>
+      key.status === "revoked"
+      && key.revocationCause === "service-user-disabled"
+      && key.revokedAt), true);
+    const replay = await runMutation(first, "disableAgent", [created.data.serviceUser.id]);
+    assert.equal(replay.error?.code, "SERVICE_USER_NOT_ACTIVE");
+    const afterReplay = await runMutation(first, "listAgentKeys", [created.data.serviceUser.id]);
+    assert.deepEqual(afterReplay.data.accessKeys, afterDisable.data.accessKeys);
     const stored = await first.adapter.prepare(first.adapter.dialect.sql(
       "SELECT [lifecycleStatus], [disabledAt] FROM [sporades_auth_users] WHERE [id] = ?",
     )).get(created.data.serviceUser.id);
@@ -990,7 +1051,7 @@ async function proveRemoteEngineServiceUserLifecycle(serverEnv, config) {
     const current = await first.adapter.prepare(first.adapter.dialect.sql(
       "SELECT [revokedAt], [selector], [verifierDigest] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ?",
     )).all(created.data.serviceUser.id);
-    assert.equal(current.length, 5);
+    assert.equal(current.length, 6);
     assert.equal(current.every((key) => key.revokedAt && key.selector === null && key.verifierDigest === null), true);
   } finally {
     await second?.close();

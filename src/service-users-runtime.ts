@@ -256,14 +256,15 @@ export function createServiceUsersApi(
         if (Number(result?.changes ?? 0) !== 1) {
           throw serviceUserError("SERVICE_USER_NOT_ACTIVE", "Service User is not active.", "Refresh the service-User list.");
         }
+        const accessKeyRows = await database.adapter.listAccessKeyRecordsForOwner(serviceUser.id);
         return {
           serviceUser: serviceUserSummary({ ...serviceUser, lifecycleStatus: "disabled", disabledAt }),
           revokedCount: revoked.revokedCount,
-          accessKeys: revoked.records.map((row: LooseRecord) => accessKeySummary({
-            ...row,
-            revokedAt: revoked.revokedAt,
-            revocationCause: "service-user-disabled",
-          }, database.accessKeyScopes ?? [], revoked.revokedAt)),
+          accessKeys: accessKeyRows.map((row: LooseRecord) => accessKeySummary(
+            row,
+            database.accessKeyScopes ?? [],
+            disabledAt,
+          )),
         };
       }));
     },
