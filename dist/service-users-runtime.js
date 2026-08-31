@@ -104,9 +104,10 @@ export function createServiceUsersApi(database, contextGetter, sessionToken, opt
         await requireCurrentHumanSession(database, context, sessionToken);
         return operation(context);
     };
+    const tracked = (promise, requiresConsumption = false) => options.trackMutationWork ? options.trackMutationWork(promise, requiresConsumption) : promise;
     return {
-        async create(input) {
-            return inContext(async (context) => {
+        create(input) {
+            return tracked(inContext(async (context) => {
                 if (!input || typeof input !== "object" || Array.isArray(input)
                     || Object.keys(input).some((key) => !["displayName", "accessKey"].includes(key))) {
                     throw serviceUserError("INVALID_SERVICE_USER", "Invalid service User.", "Provide a displayName and initial accessKey.");
@@ -121,24 +122,24 @@ export function createServiceUsersApi(database, contextGetter, sessionToken, opt
                 await database.adapter.prepare(sql("INSERT INTO [sporades_auth_service_user_locks] ([userId], [operationRevision]) VALUES (?, 0)")).run(id);
                 const issued = await issueForOwner(database, context, id, input.accessKey);
                 return { serviceUser: serviceUserSummary({ id, displayName, lifecycleStatus: "active", createdAt, disabledAt: null }), ...issued };
-            });
+            }), true);
         },
-        async issueAccessKey(userId, input) {
-            return inContext(async (context) => {
+        issueAccessKey(userId, input) {
+            return tracked(inContext(async (context) => {
                 const serviceUser = await lockServiceUser(database, userId, true);
                 return { serviceUser: serviceUserSummary(serviceUser), ...await issueForOwner(database, context, serviceUser.id, input) };
-            });
+            }), true);
         },
-        async listAccessKeys(userId, options = {}) {
-            return inContext(async () => {
+        listAccessKeys(userId, options = {}) {
+            return tracked(inContext(async () => {
                 const serviceUser = await lockServiceUser(database, userId, false);
                 const normalized = normalizeAccessKeyListOptions(options);
                 const rows = await database.adapter.listAccessKeyRecordsForOwner(serviceUser.id);
                 return { serviceUser: serviceUserSummary(serviceUser), ...accessKeyListPage(rows, database.accessKeyScopes ?? [], database.clock.now(), normalized) };
-            });
+            }));
         },
-        async rotateAccessKey(userId, id, options) {
-            return inContext(async (context) => {
+        rotateAccessKey(userId, id, options) {
+            return tracked(inContext(async (context) => {
                 const serviceUser = await lockServiceUser(database, userId, true);
                 if (typeof id !== "string" || !id)
                     throw accessKeyNotFoundError();
@@ -175,10 +176,10 @@ export function createServiceUsersApi(database, contextGetter, sessionToken, opt
                     };
                 }
                 throw serviceUserError("ACCESS_KEY_SECRET_CONFLICT", "Could not generate a unique Access key.", "Retry Access-key rotation.");
-            });
+            }), true);
         },
-        async revokeAccessKey(userId, id) {
-            return inContext(async () => {
+        revokeAccessKey(userId, id) {
+            return tracked(inContext(async () => {
                 const serviceUser = await lockServiceUser(database, userId, false);
                 if (typeof id !== "string" || !id)
                     throw accessKeyNotFoundError();
@@ -194,10 +195,10 @@ export function createServiceUsersApi(database, contextGetter, sessionToken, opt
                     serviceUser: serviceUserSummary(serviceUser),
                     accessKey: accessKeySummary(outcome, database.accessKeyScopes ?? [], outcome.revokedAt ?? database.clock.now().toISOString()),
                 };
-            });
+            }));
         },
-        async disable(userId) {
-            return inContext(async () => {
+        disable(userId) {
+            return tracked(inContext(async () => {
                 const serviceUser = await lockServiceUser(database, userId, true);
                 const revoked = await database.adapter.bulkRevokeAccessKeysForOwner({
                     ownerUserId: serviceUser.id,
@@ -220,7 +221,7 @@ export function createServiceUsersApi(database, contextGetter, sessionToken, opt
                         revocationCause: "service-user-disabled",
                     }, database.accessKeyScopes ?? [], revoked.revokedAt)),
                 };
-            });
+            }));
         },
     };
 }

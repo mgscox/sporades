@@ -3597,6 +3597,26 @@ async function cleanupTransactionHandler(database, context, preservePrimaryError
         }
     }
 }
+function trackMutationContextWork(context, promise, requiresConsumption = false) {
+    const entry = { promise: Promise.resolve(promise), requiresConsumption, consumed: false };
+    context.__pendingAclWrites.push(entry);
+    const thenable = {
+        then(onFulfilled, onRejected) {
+            entry.consumed = true;
+            return entry.promise.then(onFulfilled, onRejected);
+        },
+        catch(onRejected) {
+            entry.consumed = true;
+            return entry.promise.catch(onRejected);
+        },
+        finally(onFinally) {
+            entry.consumed = true;
+            return entry.promise.finally(onFinally);
+        },
+        [Symbol.toStringTag]: "Promise",
+    };
+    return thenable;
+}
 async function drainPendingLogWrites(database) {
     const pending = database.__pendingLogWrites;
     while (pending?.length > 0) {
@@ -5941,27 +5961,32 @@ function createMutationContext(database, auth, options = {}) {
         ? handlerContextByDatabase.get(database)?.() === candidate
         : holder.current === candidate);
     context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
-    context.serviceUsers = createServiceUsersApi(database, () => holder.current, credential?.kind === "session" && typeof options.sessionToken === "string" ? options.sessionToken : null, { mutationSurface: options.serviceUserMutationAuthority === serviceUserMutationAuthority });
+    context.serviceUsers = createServiceUsersApi(database, () => holder.current, credential?.kind === "session" && typeof options.sessionToken === "string" ? options.sessionToken : null, {
+        mutationSurface: options.serviceUserMutationAuthority === serviceUserMutationAuthority,
+        trackMutationWork: (promise, requiresConsumption) => trackMutationContextWork(context, promise, requiresConsumption),
+    });
     context.serverAuth = {
-        async revokeHumanSecurity(userId) {
-            if (!database.__transactionActive || !auth?.isAuthenticated || auth?.isGuest || auth?.userKind === "service" || typeof options.sessionToken !== "string" || typeof userId !== "string" || !userId || userId === "__privileged__") {
-                throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
-            }
-            const actorSession = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [s].[token] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0")).get(options.sessionToken, auth.userId, database.clock.now().toISOString());
-            if (!actorSession)
-                throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
-            const target = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [u].[id] FROM [sporades_auth_users] [u] WHERE [u].[id] = ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0 AND (EXISTS (SELECT 1 FROM [sporades_auth_email_credentials] [c] WHERE [c].[userId] = [u].[id]) OR EXISTS (SELECT 1 FROM [sporades_auth_identities] [i] WHERE [i].[userId] = [u].[id]))")).get(userId);
-            if (!target) {
-                throw commandError("Human security transition denied.", "Select one existing active human user.", "HUMAN_SECURITY_TRANSITION_DENIED");
-            }
-            const sessions = await database.adapter.prepare(database.adapter.dialect.sql("SELECT COUNT(*) AS [count] FROM [sporades_auth_sessions] WHERE [userId] = ?")).get(userId);
-            await database.adapter.deleteAuthSessionsForUser(userId);
-            const revoked = await database.adapter.bulkRevokeAccessKeysForOwner({
-                ownerUserId: userId,
-                revocationTime: () => database.clock.now().toISOString(),
-                revocationCause: "operator",
-            });
-            return { userId, revokedSessionCount: Number(sessions?.count ?? 0), revokedAccessKeyCount: Number(revoked?.records?.length ?? 0) };
+        revokeHumanSecurity(userId) {
+            return trackMutationContextWork(context, (async () => {
+                if (!database.__transactionActive || !auth?.isAuthenticated || auth?.isGuest || auth?.userKind === "service" || typeof options.sessionToken !== "string" || typeof userId !== "string" || !userId || userId === "__privileged__") {
+                    throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
+                }
+                const actorSession = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [s].[token] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0")).get(options.sessionToken, auth.userId, database.clock.now().toISOString());
+                if (!actorSession)
+                    throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
+                const target = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [u].[id] FROM [sporades_auth_users] [u] WHERE [u].[id] = ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0 AND (EXISTS (SELECT 1 FROM [sporades_auth_email_credentials] [c] WHERE [c].[userId] = [u].[id]) OR EXISTS (SELECT 1 FROM [sporades_auth_identities] [i] WHERE [i].[userId] = [u].[id]))")).get(userId);
+                if (!target) {
+                    throw commandError("Human security transition denied.", "Select one existing active human user.", "HUMAN_SECURITY_TRANSITION_DENIED");
+                }
+                const sessions = await database.adapter.prepare(database.adapter.dialect.sql("SELECT COUNT(*) AS [count] FROM [sporades_auth_sessions] WHERE [userId] = ?")).get(userId);
+                await database.adapter.deleteAuthSessionsForUser(userId);
+                const revoked = await database.adapter.bulkRevokeAccessKeysForOwner({
+                    ownerUserId: userId,
+                    revocationTime: () => database.clock.now().toISOString(),
+                    revocationCause: "operator",
+                });
+                return { userId, revokedSessionCount: Number(sessions?.count ?? 0), revokedAccessKeyCount: Number(revoked?.records?.length ?? 0) };
+            })());
         },
         async setEmailPassword(email, newPassword) {
             const result = await setEmailPassword(database, { auth }, email, newPassword);

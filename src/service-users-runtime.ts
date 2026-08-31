@@ -126,7 +126,7 @@ export function createServiceUsersApi(
   database: LooseRecord,
   contextGetter: () => LooseRecord,
   sessionToken: string | null,
-  options: { mutationSurface?: boolean } = {},
+  options: { mutationSurface?: boolean; trackMutationWork?: (promise: Promise<any>, requiresConsumption?: boolean) => Promise<any> } = {},
 ) {
   const inContext = async (operation: (context: LooseRecord) => Promise<any>) => {
     // A transaction is a storage mechanism, not authority. Endpoints, Queries,
@@ -143,9 +143,11 @@ export function createServiceUsersApi(
     await requireCurrentHumanSession(database, context, sessionToken);
     return operation(context);
   };
+  const tracked = (promise: Promise<any>, requiresConsumption = false) =>
+    options.trackMutationWork ? options.trackMutationWork(promise, requiresConsumption) : promise;
   return {
-    async create(input: unknown) {
-      return inContext(async (context) => {
+    create(input: unknown) {
+      return tracked(inContext(async (context) => {
         if (!input || typeof input !== "object" || Array.isArray(input)
           || Object.keys(input).some((key) => !["displayName", "accessKey"].includes(key))) {
           throw serviceUserError("INVALID_SERVICE_USER", "Invalid service User.", "Provide a displayName and initial accessKey.");
@@ -164,27 +166,27 @@ export function createServiceUsersApi(
         )).run(id);
         const issued = await issueForOwner(database, context, id, (input as LooseRecord).accessKey);
         return { serviceUser: serviceUserSummary({ id, displayName, lifecycleStatus: "active", createdAt, disabledAt: null }), ...issued };
-      });
+      }), true);
     },
 
-    async issueAccessKey(userId: unknown, input: unknown) {
-      return inContext(async (context) => {
+    issueAccessKey(userId: unknown, input: unknown) {
+      return tracked(inContext(async (context) => {
         const serviceUser = await lockServiceUser(database, userId, true);
         return { serviceUser: serviceUserSummary(serviceUser), ...await issueForOwner(database, context, serviceUser.id, input) };
-      });
+      }), true);
     },
 
-    async listAccessKeys(userId: unknown, options: unknown = {}) {
-      return inContext(async () => {
+    listAccessKeys(userId: unknown, options: unknown = {}) {
+      return tracked(inContext(async () => {
         const serviceUser = await lockServiceUser(database, userId, false);
         const normalized = normalizeAccessKeyListOptions(options);
         const rows = await database.adapter.listAccessKeyRecordsForOwner(serviceUser.id);
         return { serviceUser: serviceUserSummary(serviceUser), ...accessKeyListPage(rows, database.accessKeyScopes ?? [], database.clock.now(), normalized) };
-      });
+      }));
     },
 
-    async rotateAccessKey(userId: unknown, id: unknown, options: unknown) {
-      return inContext(async (context) => {
+    rotateAccessKey(userId: unknown, id: unknown, options: unknown) {
+      return tracked(inContext(async (context) => {
         const serviceUser = await lockServiceUser(database, userId, true);
         if (typeof id !== "string" || !id) throw accessKeyNotFoundError();
         if (!options || typeof options !== "object" || Array.isArray(options)
@@ -216,11 +218,11 @@ export function createServiceUsersApi(
           };
         }
         throw serviceUserError("ACCESS_KEY_SECRET_CONFLICT", "Could not generate a unique Access key.", "Retry Access-key rotation.");
-      });
+      }), true);
     },
 
-    async revokeAccessKey(userId: unknown, id: unknown) {
-      return inContext(async () => {
+    revokeAccessKey(userId: unknown, id: unknown) {
+      return tracked(inContext(async () => {
         const serviceUser = await lockServiceUser(database, userId, false);
         if (typeof id !== "string" || !id) throw accessKeyNotFoundError();
         const outcome = await database.adapter.revokeAccessKeyRecord({
@@ -234,11 +236,11 @@ export function createServiceUsersApi(
           serviceUser: serviceUserSummary(serviceUser),
           accessKey: accessKeySummary(outcome, database.accessKeyScopes ?? [], outcome.revokedAt ?? database.clock.now().toISOString()),
         };
-      });
+      }));
     },
 
-    async disable(userId: unknown) {
-      return inContext(async () => {
+    disable(userId: unknown) {
+      return tracked(inContext(async () => {
         const serviceUser = await lockServiceUser(database, userId, true);
         const revoked = await database.adapter.bulkRevokeAccessKeysForOwner({
           ownerUserId: serviceUser.id,
@@ -263,7 +265,7 @@ export function createServiceUsersApi(
             revocationCause: "service-user-disabled",
           }, database.accessKeyScopes ?? [], revoked.revokedAt)),
         };
-      });
+      }));
     },
   };
 }

@@ -630,6 +630,11 @@ authenticated, non-guest human, deletes all of their Sessions, retires their
 current Access keys, and returns only revocation counts. If the mutation later
 throws, both runtime and application writes roll back.
 
+The runtime registers this Promise with the Mutation's pending-work drain. A
+missing `await` therefore cannot let revocation continue after commit or after
+the adapter closes: the Mutation waits for it, and a rejection rolls back the
+whole transaction. Await it when the returned counts are part of your result.
+
 This method is intentionally unavailable to queries, endpoints, messages,
 Jobs, and unauthenticated mutations. It does not suspend or delete identity,
 change application roles, or affect service/Agent credentials. The Capsule

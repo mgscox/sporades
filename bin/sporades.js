@@ -9783,10 +9783,18 @@ async function drainPendingAclWrites(context) {
   let firstError = null;
   while (context?.__pendingAclWrites?.length > 0) {
     const pending = context.__pendingAclWrites.splice(0);
-    const results = await Promise.allSettled(pending);
-    for (const result of results) {
+    const results = await Promise.allSettled(pending.map((entry) => entry?.promise ?? entry));
+    for (let index = 0; index < results.length; index += 1) {
+      const result = results[index];
       if (result.status === "rejected" && !firstError) {
         firstError = result.reason;
+      }
+      const entry = pending[index];
+      if (!firstError && entry?.requiresConsumption && !entry.consumed) {
+        firstError = Object.assign(new Error("One-time credential result was not consumed."), {
+          code: "ACCESS_KEY_SECRET_NOT_CONSUMED",
+          hint: "Await and return the Service-User credential result from the Mutation."
+        });
       }
     }
   }
@@ -17253,9 +17261,10 @@ function createServiceUsersApi(database, contextGetter, sessionToken, options = 
     await requireCurrentHumanSession(database, context, sessionToken);
     return operation(context);
   };
+  const tracked = (promise, requiresConsumption = false) => options.trackMutationWork ? options.trackMutationWork(promise, requiresConsumption) : promise;
   return {
-    async create(input) {
-      return inContext(async (context) => {
+    create(input) {
+      return tracked(inContext(async (context) => {
         if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some((key) => !["displayName", "accessKey"].includes(key))) {
           throw serviceUserError("INVALID_SERVICE_USER", "Invalid service User.", "Provide a displayName and initial accessKey.");
         }
@@ -17271,24 +17280,24 @@ function createServiceUsersApi(database, contextGetter, sessionToken, options = 
         )).run(id);
         const issued = await issueForOwner(database, context, id, input.accessKey);
         return { serviceUser: serviceUserSummary({ id, displayName, lifecycleStatus: "active", createdAt, disabledAt: null }), ...issued };
-      });
+      }), true);
     },
-    async issueAccessKey(userId, input) {
-      return inContext(async (context) => {
+    issueAccessKey(userId, input) {
+      return tracked(inContext(async (context) => {
         const serviceUser = await lockServiceUser(database, userId, true);
         return { serviceUser: serviceUserSummary(serviceUser), ...await issueForOwner(database, context, serviceUser.id, input) };
-      });
+      }), true);
     },
-    async listAccessKeys(userId, options2 = {}) {
-      return inContext(async () => {
+    listAccessKeys(userId, options2 = {}) {
+      return tracked(inContext(async () => {
         const serviceUser = await lockServiceUser(database, userId, false);
         const normalized = normalizeAccessKeyListOptions(options2);
         const rows = await database.adapter.listAccessKeyRecordsForOwner(serviceUser.id);
         return { serviceUser: serviceUserSummary(serviceUser), ...accessKeyListPage(rows, database.accessKeyScopes ?? [], database.clock.now(), normalized) };
-      });
+      }));
     },
-    async rotateAccessKey(userId, id, options2) {
-      return inContext(async (context) => {
+    rotateAccessKey(userId, id, options2) {
+      return tracked(inContext(async (context) => {
         const serviceUser = await lockServiceUser(database, userId, true);
         if (typeof id !== "string" || !id) throw accessKeyNotFoundError();
         if (!options2 || typeof options2 !== "object" || Array.isArray(options2) || Object.keys(options2).some((key) => key !== "lifecycleRevision") || !Number.isInteger(options2.lifecycleRevision) || options2.lifecycleRevision < 1) {
@@ -17317,10 +17326,10 @@ function createServiceUsersApi(database, contextGetter, sessionToken, options = 
           };
         }
         throw serviceUserError("ACCESS_KEY_SECRET_CONFLICT", "Could not generate a unique Access key.", "Retry Access-key rotation.");
-      });
+      }), true);
     },
-    async revokeAccessKey(userId, id) {
-      return inContext(async () => {
+    revokeAccessKey(userId, id) {
+      return tracked(inContext(async () => {
         const serviceUser = await lockServiceUser(database, userId, false);
         if (typeof id !== "string" || !id) throw accessKeyNotFoundError();
         const outcome = await database.adapter.revokeAccessKeyRecord({
@@ -17334,10 +17343,10 @@ function createServiceUsersApi(database, contextGetter, sessionToken, options = 
           serviceUser: serviceUserSummary(serviceUser),
           accessKey: accessKeySummary(outcome, database.accessKeyScopes ?? [], outcome.revokedAt ?? database.clock.now().toISOString())
         };
-      });
+      }));
     },
-    async disable(userId) {
-      return inContext(async () => {
+    disable(userId) {
+      return tracked(inContext(async () => {
         const serviceUser = await lockServiceUser(database, userId, true);
         const revoked = await database.adapter.bulkRevokeAccessKeysForOwner({
           ownerUserId: serviceUser.id,
@@ -17361,7 +17370,7 @@ function createServiceUsersApi(database, contextGetter, sessionToken, options = 
             revocationCause: "service-user-disabled"
           }, database.accessKeyScopes ?? [], revoked.revokedAt))
         };
-      });
+      }));
     }
   };
 }
@@ -23941,6 +23950,26 @@ async function cleanupTransactionHandler(database, context, preservePrimaryError
     }
   }
 }
+function trackMutationContextWork(context, promise, requiresConsumption = false) {
+  const entry = { promise: Promise.resolve(promise), requiresConsumption, consumed: false };
+  context.__pendingAclWrites.push(entry);
+  const thenable = {
+    then(onFulfilled, onRejected) {
+      entry.consumed = true;
+      return entry.promise.then(onFulfilled, onRejected);
+    },
+    catch(onRejected) {
+      entry.consumed = true;
+      return entry.promise.catch(onRejected);
+    },
+    finally(onFinally) {
+      entry.consumed = true;
+      return entry.promise.finally(onFinally);
+    },
+    [Symbol.toStringTag]: "Promise"
+  };
+  return thenable;
+}
 async function drainPendingLogWrites(database) {
   const pending = database.__pendingLogWrites;
   while (pending?.length > 0) {
@@ -26185,33 +26214,38 @@ function createMutationContext(database, auth, options = {}) {
     database,
     () => holder.current,
     credential?.kind === "session" && typeof options.sessionToken === "string" ? options.sessionToken : null,
-    { mutationSurface: options.serviceUserMutationAuthority === serviceUserMutationAuthority }
+    {
+      mutationSurface: options.serviceUserMutationAuthority === serviceUserMutationAuthority,
+      trackMutationWork: (promise, requiresConsumption) => trackMutationContextWork(context, promise, requiresConsumption)
+    }
   );
   context.serverAuth = {
-    async revokeHumanSecurity(userId) {
-      if (!database.__transactionActive || !auth?.isAuthenticated || auth?.isGuest || auth?.userKind === "service" || typeof options.sessionToken !== "string" || typeof userId !== "string" || !userId || userId === "__privileged__") {
-        throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
-      }
-      const actorSession = await database.adapter.prepare(database.adapter.dialect.sql(
-        "SELECT [s].[token] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0"
-      )).get(options.sessionToken, auth.userId, database.clock.now().toISOString());
-      if (!actorSession) throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
-      const target = await database.adapter.prepare(database.adapter.dialect.sql(
-        "SELECT [u].[id] FROM [sporades_auth_users] [u] WHERE [u].[id] = ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0 AND (EXISTS (SELECT 1 FROM [sporades_auth_email_credentials] [c] WHERE [c].[userId] = [u].[id]) OR EXISTS (SELECT 1 FROM [sporades_auth_identities] [i] WHERE [i].[userId] = [u].[id]))"
-      )).get(userId);
-      if (!target) {
-        throw commandError("Human security transition denied.", "Select one existing active human user.", "HUMAN_SECURITY_TRANSITION_DENIED");
-      }
-      const sessions = await database.adapter.prepare(database.adapter.dialect.sql(
-        "SELECT COUNT(*) AS [count] FROM [sporades_auth_sessions] WHERE [userId] = ?"
-      )).get(userId);
-      await database.adapter.deleteAuthSessionsForUser(userId);
-      const revoked = await database.adapter.bulkRevokeAccessKeysForOwner({
-        ownerUserId: userId,
-        revocationTime: () => database.clock.now().toISOString(),
-        revocationCause: "operator"
-      });
-      return { userId, revokedSessionCount: Number(sessions?.count ?? 0), revokedAccessKeyCount: Number(revoked?.records?.length ?? 0) };
+    revokeHumanSecurity(userId) {
+      return trackMutationContextWork(context, (async () => {
+        if (!database.__transactionActive || !auth?.isAuthenticated || auth?.isGuest || auth?.userKind === "service" || typeof options.sessionToken !== "string" || typeof userId !== "string" || !userId || userId === "__privileged__") {
+          throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
+        }
+        const actorSession = await database.adapter.prepare(database.adapter.dialect.sql(
+          "SELECT [s].[token] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0"
+        )).get(options.sessionToken, auth.userId, database.clock.now().toISOString());
+        if (!actorSession) throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
+        const target = await database.adapter.prepare(database.adapter.dialect.sql(
+          "SELECT [u].[id] FROM [sporades_auth_users] [u] WHERE [u].[id] = ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0 AND (EXISTS (SELECT 1 FROM [sporades_auth_email_credentials] [c] WHERE [c].[userId] = [u].[id]) OR EXISTS (SELECT 1 FROM [sporades_auth_identities] [i] WHERE [i].[userId] = [u].[id]))"
+        )).get(userId);
+        if (!target) {
+          throw commandError("Human security transition denied.", "Select one existing active human user.", "HUMAN_SECURITY_TRANSITION_DENIED");
+        }
+        const sessions = await database.adapter.prepare(database.adapter.dialect.sql(
+          "SELECT COUNT(*) AS [count] FROM [sporades_auth_sessions] WHERE [userId] = ?"
+        )).get(userId);
+        await database.adapter.deleteAuthSessionsForUser(userId);
+        const revoked = await database.adapter.bulkRevokeAccessKeysForOwner({
+          ownerUserId: userId,
+          revocationTime: () => database.clock.now().toISOString(),
+          revocationCause: "operator"
+        });
+        return { userId, revokedSessionCount: Number(sessions?.count ?? 0), revokedAccessKeyCount: Number(revoked?.records?.length ?? 0) };
+      })());
     },
     async setEmailPassword(email, newPassword) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);

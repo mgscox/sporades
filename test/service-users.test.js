@@ -184,6 +184,13 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
         });
         throw new Error("roll back service User");
       }),
+      createWithoutAwait: mutation((ctx) => {
+        ctx.serviceUsers.create({
+          displayName: "Discarded Secret Agent",
+          accessKey: { name: "discarded", grants: ["tickets:read"] },
+        });
+        return { returned: true };
+      }),
       issueAgentKey: mutation((ctx, input) => ctx.serviceUsers.issueAccessKey(input.userId, input.accessKey)),
       rotateAgentKey: mutation((ctx, input) => ctx.serviceUsers.rotateAccessKey(input.userId, input.accessKeyId, {
         lifecycleRevision: input.lifecycleRevision,
@@ -222,6 +229,12 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
     assert.equal((await database.adapter.prepare(database.adapter.dialect.sql(
       "SELECT [id] FROM [sporades_auth_users] WHERE [displayName] = ?",
     )).get("Rolled Back Agent")) ?? null, null);
+
+    const discarded = await runMutation(database, "createWithoutAwait", []);
+    assert.equal(discarded.error?.code, "ACCESS_KEY_SECRET_NOT_CONSUMED");
+    assert.equal((await database.adapter.prepare(database.adapter.dialect.sql(
+      "SELECT [id] FROM [sporades_auth_users] WHERE [displayName] = ?",
+    )).get("Discarded Secret Agent")) ?? null, null);
 
     const created = await runMutation(database, "createAgent", []);
     assert.equal(created.error, null, JSON.stringify(created.error));
@@ -408,6 +421,10 @@ async function proveRemoteEngineServiceUserLifecycle(serverEnv, config) {
         displayName: "Remote Agent",
         accessKey: { name: "production", grants: ["tickets:read"] },
       })),
+      createWithoutAwait: mutation((ctx) => {
+        ctx.serviceUsers.create({ displayName: "Discarded Remote Agent", accessKey: { name: "discarded", grants: ["tickets:read"] } });
+        return { returned: true };
+      }),
       rotateAgentKey: mutation((ctx, input) => ctx.serviceUsers.rotateAccessKey(input.userId, input.accessKeyId, {
         lifecycleRevision: input.lifecycleRevision,
       })),
@@ -418,6 +435,11 @@ async function proveRemoteEngineServiceUserLifecycle(serverEnv, config) {
   let second;
   try {
     await seedAdministrator(first);
+    const discarded = await runMutation(first, "createWithoutAwait", []);
+    assert.equal(discarded.error?.code, "ACCESS_KEY_SECRET_NOT_CONSUMED");
+    assert.equal((await first.adapter.prepare(first.adapter.dialect.sql(
+      "SELECT [id] FROM [sporades_auth_users] WHERE [displayName] = ?",
+    )).get("Discarded Remote Agent")) ?? null, null);
     const created = await runMutation(first, "createAgent", []);
     assert.equal(created.error, null, JSON.stringify(created.error));
     second = await openDevDatabase("", "", serverEnv, config, definition);

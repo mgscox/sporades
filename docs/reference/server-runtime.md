@@ -417,7 +417,12 @@ swaps the listed lifecycle revision. `disable()` is irreversible and revokes
 every current key while retaining safe identity and key metadata for historical
 attribution. Plaintext is returned only by a committed create, issue, or
 rotation and is never recoverable, so move it directly to an external secret
-store.
+store. Mutation work is drained before commit even if Capsule code forgets to
+await it. For `create()`, `issueAccessKey()`, and `rotateAccessKey()`, however,
+the Mutation must await or return the Promise: otherwise Sporades rolls the
+transaction back rather than silently commit a credential whose one-time
+plaintext result was discarded. Non-secret lifecycle operations are still
+drained, and any rejected operation rolls the whole Mutation back.
 
 Service identity and scopes do not grant application authority. The Capsule
 must still map the User ID to its own Team membership, role, and resource

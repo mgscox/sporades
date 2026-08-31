@@ -3883,6 +3883,27 @@ async function cleanupTransactionHandler(
   }
 }
 
+function trackMutationContextWork(context: LooseRecord, promise: Promise<any>, requiresConsumption = false) {
+  const entry = { promise: Promise.resolve(promise), requiresConsumption, consumed: false };
+  context.__pendingAclWrites.push(entry);
+  const thenable = {
+    then(onFulfilled: any, onRejected: any) {
+      entry.consumed = true;
+      return entry.promise.then(onFulfilled, onRejected);
+    },
+    catch(onRejected: any) {
+      entry.consumed = true;
+      return entry.promise.catch(onRejected);
+    },
+    finally(onFinally: any) {
+      entry.consumed = true;
+      return entry.promise.finally(onFinally);
+    },
+    [Symbol.toStringTag]: "Promise",
+  };
+  return thenable as Promise<any>;
+}
+
 async function drainPendingLogWrites(database: LooseRecord) {
   const pending = database.__pendingLogWrites;
   while (pending?.length > 0) {
@@ -6337,10 +6358,14 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
     database,
     () => holder.current,
     credential?.kind === "session" && typeof options.sessionToken === "string" ? options.sessionToken : null,
-    { mutationSurface: options.serviceUserMutationAuthority === serviceUserMutationAuthority },
+    {
+      mutationSurface: options.serviceUserMutationAuthority === serviceUserMutationAuthority,
+      trackMutationWork: (promise, requiresConsumption) => trackMutationContextWork(context, promise, requiresConsumption),
+    },
   );
   context.serverAuth = {
-    async revokeHumanSecurity(userId: string) {
+    revokeHumanSecurity(userId: string) {
+      return trackMutationContextWork(context, (async () => {
       if (!database.__transactionActive || !auth?.isAuthenticated || auth?.isGuest || auth?.userKind === "service" || typeof options.sessionToken !== "string" || typeof userId !== "string" || !userId || userId === "__privileged__") {
         throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
       }
@@ -6364,6 +6389,7 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
         revocationCause: "operator",
       });
       return { userId, revokedSessionCount: Number(sessions?.count ?? 0), revokedAccessKeyCount: Number(revoked?.records?.length ?? 0) };
+      })());
     },
     async setEmailPassword(email: string, newPassword: string) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);
