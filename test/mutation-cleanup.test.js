@@ -27,9 +27,6 @@ test("a throwing mutation drains pending ACL writes and clears cache without mas
     aclStarted();
     return await aclGate;
   };
-  globalThis.__captureMutationCleanupContext = (context) => {
-    globalThis.__mutationCleanupContext = context;
-  };
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "mutation-cleanup" }, {
     schema: {
       records: table({ key: String() }).unique("key").acl({
@@ -45,7 +42,6 @@ test("a throwing mutation drains pending ACL writes and clears cache without mas
       `async (ctx) => {
         if (ctx.kind === "mutation" && !globalThis.__skipMutationCleanupFailure) {
           ctx.db.records.insertOrIgnore({ key: "pending" }, "key");
-          globalThis.__captureMutationCleanupContext(ctx);
           throw new Error("primary mutation failure");
         }
         return ctx;
@@ -60,16 +56,11 @@ test("a throwing mutation drains pending ACL writes and clears cache without mas
     await started;
     await Promise.resolve();
     const settledBeforeCleanup = settled;
-    const failedContext = globalThis.__mutationCleanupContext;
-    assert.ok(failedContext.__pendingAclWrites.length > 0, "the fixture must leave an ACL write pending when the handler throws");
-    for (const pending of failedContext.__pendingAclWrites) pending.catch(() => {});
-
     releaseAcl(false);
     const failed = await resultPromise;
     assert.equal(settledBeforeCleanup, false, "the mutation must not settle before pending ACL cleanup completes");
     assert.equal(failed.ok, false);
     assert.equal(failed.error.message, "primary mutation failure", "cleanup denial must not mask the handler error");
-    assert.equal(failedContext.__pendingAclWrites.length, 0, "completed cleanup must not retain pending ACL promises");
     assert.equal(database.rowCache.size, 0, "the failed transaction clears shared row-cache state");
 
     globalThis.__skipMutationCleanupFailure = true;
@@ -79,8 +70,6 @@ test("a throwing mutation drains pending ACL writes and clears cache without mas
   } finally {
     releaseAcl(true);
     delete globalThis.__mutationCleanupAcl;
-    delete globalThis.__captureMutationCleanupContext;
-    delete globalThis.__mutationCleanupContext;
     delete globalThis.__skipMutationCleanupFailure;
     await database.close();
     await rm(dir, { recursive: true, force: true });

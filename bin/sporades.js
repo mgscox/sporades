@@ -9363,11 +9363,27 @@ function resolveEffectiveAclRule(aclRules, operation) {
   return aclRules[operation];
 }
 function createTableAclContext(context, database) {
-  const { db, privileged, jobs, mail, request, teams, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
+  const { db, privileged, jobs, mail, request, teams, __sporadesContextHolder, ...aclContext } = context ?? {};
   return {
     ...aclContext,
     acl: createAclHelpers(database, context)
   };
+}
+var pendingAclWritesByContext = /* @__PURE__ */ new WeakMap();
+function bindPendingAclWrites(context, sourceContext) {
+  if (!context || typeof context !== "object") return context;
+  const shared = sourceContext && typeof sourceContext === "object" ? pendingAclWritesByContext.get(sourceContext) : void 0;
+  if (sourceContext && !shared) return context;
+  pendingAclWritesByContext.set(context, shared ?? []);
+  return context;
+}
+function trackPendingAclWrite(context, pending) {
+  const entries = context && typeof context === "object" ? pendingAclWritesByContext.get(context) : void 0;
+  if (entries) entries.push(pending);
+  return pending;
+}
+function pendingAclWrites(context) {
+  return context && typeof context === "object" ? pendingAclWritesByContext.get(context) : void 0;
 }
 function createFileAclContext(auth, database, credential = { kind: "session" }) {
   const context = {
@@ -9442,7 +9458,7 @@ function runTableWriteWithAcl(database, table, operation, previous, next, contex
     next
   });
   const deny = () => {
-    if (!context?.__pendingAclWrites) {
+    if (!pendingAclWrites(context)) {
       emitAclDeniedLog(database, { data: denialLogData });
     }
     throw createAclDeniedError(denialLogData);
@@ -9467,7 +9483,7 @@ function runTableWriteWithAcl(database, table, operation, previous, next, contex
     }
     return write();
   });
-  context?.__pendingAclWrites?.push(pending);
+  trackPendingAclWrite(context, pending);
   return pending;
 }
 function applyReadAcl(database, table, row, context) {
@@ -9784,8 +9800,9 @@ function assertActivePrivilegedJobAccess(contextGetter) {
 }
 async function drainPendingAclWrites(context) {
   let firstError = null;
-  while (context?.__pendingAclWrites?.length > 0) {
-    const pending = context.__pendingAclWrites.splice(0);
+  const entries = pendingAclWrites(context);
+  while (entries && entries.length > 0) {
+    const pending = entries.splice(0);
     const results = await Promise.allSettled(pending.map((entry) => entry?.promise ?? entry));
     for (const result of results) {
       if (result.status === "rejected" && !firstError) {
@@ -23680,9 +23697,9 @@ function createAtomicStripeConsequenceContext(database, parent) {
     signal: parent.signal,
     log: createEndpointLogger(database),
     __privilegedRunActive: true,
-    __jobEnqueuedBy: parent.__jobEnqueuedBy ?? null,
-    __pendingAclWrites: []
+    __jobEnqueuedBy: parent.__jobEnqueuedBy ?? null
   };
+  bindPendingAclWrites(context);
   grantPrivilegedDbAccess(context);
   const holder = createContextHolder(context);
   registerHandlerContextMapping(database, holder);
@@ -23963,11 +23980,11 @@ function trackMutationContextWork(context, promise, requiresConsumption = false)
         hint: "Return the complete Service-User credential result from the Mutation."
       });
     }
-    context.__pendingMutationSecrets.push(token);
+    mutationSecretState(context).tokens.push(token);
     return value;
   }) : operation;
   const entry = { promise: tracked };
-  context.__pendingAclWrites.push(entry);
+  trackPendingAclWrite(context, entry);
   return operation;
 }
 function resultContainsMutationSecret(value, token) {
@@ -23977,7 +23994,7 @@ function resultContainsMutationSecret(value, token) {
   return Object.values(value).some((entry) => resultContainsMutationSecret(entry, token));
 }
 function assertMutationSecretsReturned(context, result) {
-  for (const token of context.__pendingMutationSecrets ?? []) {
+  for (const token of mutationSecretState(context).tokens) {
     if (!resultContainsMutationSecret(result?.data, token)) {
       throw Object.assign(new Error("One-time credential result was not returned."), {
         code: "ACCESS_KEY_SECRET_NOT_CONSUMED",
@@ -23985,6 +24002,17 @@ function assertMutationSecretsReturned(context, result) {
       });
     }
   }
+}
+var mutationSecretsByContext = /* @__PURE__ */ new WeakMap();
+function bindMutationSecretState(context, sourceContext) {
+  const shared = sourceContext ? mutationSecretsByContext.get(sourceContext) : void 0;
+  if (sourceContext && !shared) return;
+  mutationSecretsByContext.set(context, shared ?? { tokens: [] });
+}
+function mutationSecretState(context) {
+  const state = mutationSecretsByContext.get(context);
+  if (!state) throw new Error("Mutation secret state is unavailable.");
+  return state;
 }
 async function drainPendingLogWrites(database) {
   const pending = database.__pendingLogWrites;
@@ -24001,6 +24029,8 @@ async function applyContextMiddleware(database, baseContext, kind) {
     ...baseContext,
     kind
   };
+  bindPendingAclWrites(context, baseContext);
+  bindMutationSecretState(context, baseContext);
   transferAccessKeyRuntimeState(baseContext, context);
   const holder = baseContext.__sporadesContextHolder ?? createContextHolder(context);
   holder.current = context;
@@ -24036,9 +24066,8 @@ async function applyContextMiddleware(database, baseContext, kind) {
         configurable: true
       });
     }
-    if (previousContext.__pendingAclWrites && !context.__pendingAclWrites) {
-      context.__pendingAclWrites = previousContext.__pendingAclWrites;
-    }
+    bindPendingAclWrites(context, previousContext);
+    bindMutationSecretState(context, previousContext);
     transferAccessKeyRuntimeState(previousContext, context);
   }
   return context;
@@ -24230,7 +24259,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       };
       const operation = fieldValues.some(isPromiseLike) ? Promise.all(fieldValues).then(finish) : finish(fieldValues);
       if (isPromiseLike(operation)) {
-        contextGetter?.()?.__pendingAclWrites?.push(operation);
+        trackPendingAclWrite(contextGetter?.(), operation);
       }
       return operation;
     },
@@ -24276,7 +24305,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       };
       const operation = fieldValues.some(isPromiseLike) ? Promise.all(fieldValues).then(finish) : finish(fieldValues);
       if (isPromiseLike(operation)) {
-        contextGetter?.()?.__pendingAclWrites?.push(operation);
+        trackPendingAclWrite(contextGetter?.(), operation);
       }
       return operation;
     },
@@ -24318,7 +24347,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       const selected = database.adapter.selectAppRowById(table, id);
       const operation = thenIfPromise(selected, finishExisting);
       if (isPromiseLike(operation)) {
-        contextGetter?.()?.__pendingAclWrites?.push(operation);
+        trackPendingAclWrite(contextGetter?.(), operation);
       }
       return operation;
     },
@@ -24336,7 +24365,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       };
       const operation = thenIfPromise(database.adapter.selectAppRowById(table, id), finish);
       if (isPromiseLike(operation)) {
-        contextGetter?.()?.__pendingAclWrites?.push(operation);
+        trackPendingAclWrite(contextGetter?.(), operation);
       }
       return operation;
     },
@@ -26202,10 +26231,12 @@ function createMutationContext(database, auth, options = {}) {
         actor: { userId: auth.userId },
         credential: credential.kind === "access-key" ? { kind: credential.kind, id: credential.id, name: credential.name } : { kind: "session" }
       }
-    } : {}),
-    __pendingAclWrites: [],
-    __pendingMutationSecrets: []
+    } : {})
   };
+  if (options.serviceUserMutationAuthority === serviceUserMutationAuthority) {
+    bindPendingAclWrites(context);
+    bindMutationSecretState(context);
+  }
   if (typeof options.sessionToken === "string") {
     bindAccessKeyOwnerSession(context, options.sessionToken);
   }

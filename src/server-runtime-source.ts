@@ -134,13 +134,13 @@ import { deserializeFieldValue, deserializeRow, normalizeDateValue, serializeFie
 // `test/mail.test.js` — and reach them through the `export *` below rather than through a binding
 // here, so importing them would declare a name nothing in this file reads.
 import {
-  applyReadAcl, assertActivePrivilegedJobAccess, createPrivilegedAuditEmitter,
+  applyReadAcl, assertActivePrivilegedJobAccess, bindPendingAclWrites, createPrivilegedAuditEmitter,
   createPrivilegedAuditEmissionPublicError, createPrivilegedFileApi, createPrivilegedRunAbortError,
   createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi,
   drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit,
   filterRowsByReadAcl, grantPrivilegedDbAccess, isPrivilegedAuditEmissionPublicError,
   normalizeFileAcl, normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback,
-  revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode,
+  revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode, trackPendingAclWrite,
 } from "./acl-runtime.js";
 import {
   checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, createFileStorageTables,
@@ -3578,8 +3578,8 @@ function createAtomicStripeConsequenceContext(database: LooseRecord, parent: Loo
     log: createEndpointLogger(database),
     __privilegedRunActive: true,
     __jobEnqueuedBy: parent.__jobEnqueuedBy ?? null,
-    __pendingAclWrites: [],
   };
+  bindPendingAclWrites(context);
   grantPrivilegedDbAccess(context);
   const holder = createContextHolder(context);
   registerHandlerContextMapping(database, holder);
@@ -3894,12 +3894,12 @@ function trackMutationContextWork(context: LooseRecord, promise: Promise<any>, r
             hint: "Return the complete Service-User credential result from the Mutation.",
           });
         }
-        context.__pendingMutationSecrets.push(token);
+        mutationSecretState(context).tokens.push(token);
         return value;
       })
     : operation;
   const entry = { promise: tracked };
-  context.__pendingAclWrites.push(entry);
+  trackPendingAclWrite(context, entry);
   return operation;
 }
 
@@ -3911,7 +3911,7 @@ function resultContainsMutationSecret(value: any, token: string): boolean {
 }
 
 function assertMutationSecretsReturned(context: LooseRecord, result: LooseRecord) {
-  for (const token of context.__pendingMutationSecrets ?? []) {
+  for (const token of mutationSecretState(context).tokens) {
     if (!resultContainsMutationSecret(result?.data, token)) {
       throw Object.assign(new Error("One-time credential result was not returned."), {
         code: "ACCESS_KEY_SECRET_NOT_CONSUMED",
@@ -3919,6 +3919,21 @@ function assertMutationSecretsReturned(context: LooseRecord, result: LooseRecord
       });
     }
   }
+}
+
+type MutationSecretState = { tokens: string[] };
+const mutationSecretsByContext = new WeakMap<object, MutationSecretState>();
+
+function bindMutationSecretState(context: LooseRecord, sourceContext?: LooseRecord) {
+  const shared = sourceContext ? mutationSecretsByContext.get(sourceContext) : undefined;
+  if (sourceContext && !shared) return;
+  mutationSecretsByContext.set(context, shared ?? { tokens: [] });
+}
+
+function mutationSecretState(context: LooseRecord) {
+  const state = mutationSecretsByContext.get(context);
+  if (!state) throw new Error("Mutation secret state is unavailable.");
+  return state;
 }
 
 async function drainPendingLogWrites(database: LooseRecord) {
@@ -3937,6 +3952,8 @@ async function applyContextMiddleware(database: LooseRecord, baseContext: LooseR
     ...baseContext,
     kind,
   };
+  bindPendingAclWrites(context, baseContext);
+  bindMutationSecretState(context, baseContext);
   transferAccessKeyRuntimeState(baseContext, context);
   const holder = baseContext.__sporadesContextHolder ?? createContextHolder(context);
   holder.current = context;
@@ -3972,9 +3989,8 @@ async function applyContextMiddleware(database: LooseRecord, baseContext: LooseR
         configurable: true,
       });
     }
-    if (previousContext.__pendingAclWrites && !context.__pendingAclWrites) {
-      context.__pendingAclWrites = previousContext.__pendingAclWrites;
-    }
+    bindPendingAclWrites(context, previousContext);
+    bindMutationSecretState(context, previousContext);
     transferAccessKeyRuntimeState(previousContext, context);
   }
   return context;
@@ -4177,7 +4193,7 @@ function createEndpointTableApi(database: LooseRecord, table: LooseRecord, query
       };
       const operation = fieldValues.some(isPromiseLike) ? Promise.all(fieldValues).then(finish) : finish(fieldValues);
       if (isPromiseLike(operation)) {
-        contextGetter?.()?.__pendingAclWrites?.push(operation);
+        trackPendingAclWrite(contextGetter?.(), operation);
       }
       return operation;
     },
@@ -4227,7 +4243,7 @@ function createEndpointTableApi(database: LooseRecord, table: LooseRecord, query
       };
       const operation = fieldValues.some(isPromiseLike) ? Promise.all(fieldValues).then(finish) : finish(fieldValues);
       if (isPromiseLike(operation)) {
-        contextGetter?.()?.__pendingAclWrites?.push(operation);
+        trackPendingAclWrite(contextGetter?.(), operation);
       }
       return operation;
     },
@@ -4270,7 +4286,7 @@ function createEndpointTableApi(database: LooseRecord, table: LooseRecord, query
       const selected = database.adapter.selectAppRowById(table, id);
       const operation = thenIfPromise(selected, finishExisting);
       if (isPromiseLike(operation)) {
-        contextGetter?.()?.__pendingAclWrites?.push(operation);
+        trackPendingAclWrite(contextGetter?.(), operation);
       }
       return operation;
     },
@@ -4288,7 +4304,7 @@ function createEndpointTableApi(database: LooseRecord, table: LooseRecord, query
       };
       const operation = thenIfPromise(database.adapter.selectAppRowById(table, id), finish);
       if (isPromiseLike(operation)) {
-        contextGetter?.()?.__pendingAclWrites?.push(operation);
+        trackPendingAclWrite(contextGetter?.(), operation);
       }
       return operation;
     },
@@ -6349,9 +6365,11 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
           : { kind: "session" },
       },
     } : {}),
-    __pendingAclWrites: [],
-    __pendingMutationSecrets: [],
   };
+  if (options.serviceUserMutationAuthority === serviceUserMutationAuthority) {
+    bindPendingAclWrites(context);
+    bindMutationSecretState(context);
+  }
   if (typeof options.sessionToken === "string") {
     bindAccessKeyOwnerSession(context, options.sessionToken);
   }

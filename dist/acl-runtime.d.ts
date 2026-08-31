@@ -95,6 +95,8 @@ export declare function safePrivilegedAuditErrorCode(value: any, outcome?: strin
 export declare function normalizeTableAcl(tableName: any, aclRules: LooseRecord | undefined): LooseRecord;
 export declare function normalizeFileAcl(aclRules: LooseRecord | undefined): LooseRecord;
 export declare function createTableAclContext(context: any, database: any): any;
+export declare function bindPendingAclWrites(context: any, sourceContext?: any): any;
+export declare function trackPendingAclWrite(context: any, pending: any): any;
 export declare function createFileAclContext(auth: LooseRecord, database: LooseRecord, credential?: LooseRecord): Readonly<{
     auth: Readonly<{
         [x: string]: any;

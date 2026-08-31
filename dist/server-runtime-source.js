@@ -48,7 +48,7 @@ import { deserializeFieldValue, deserializeRow, normalizeDateValue, serializeFie
 // both are exported from `acl-runtime.js` for consumers outside this file — the constant probe and
 // `test/mail.test.js` — and reach them through the `export *` below rather than through a binding
 // here, so importing them would declare a name nothing in this file reads.
-import { applyReadAcl, assertActivePrivilegedJobAccess, createPrivilegedAuditEmitter, createPrivilegedAuditEmissionPublicError, createPrivilegedFileApi, createPrivilegedRunAbortError, createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi, drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit, filterRowsByReadAcl, grantPrivilegedDbAccess, isPrivilegedAuditEmissionPublicError, normalizeFileAcl, normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback, revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode, } from "./acl-runtime.js";
+import { applyReadAcl, assertActivePrivilegedJobAccess, bindPendingAclWrites, createPrivilegedAuditEmitter, createPrivilegedAuditEmissionPublicError, createPrivilegedFileApi, createPrivilegedRunAbortError, createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi, drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit, filterRowsByReadAcl, grantPrivilegedDbAccess, isPrivilegedAuditEmissionPublicError, normalizeFileAcl, normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback, revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode, trackPendingAclWrite, } from "./acl-runtime.js";
 import { createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter, deletePrivateFile, getPrivateFileUrl, revokePublicFileUrl, } from "./file-storage-runtime.js";
 import { createEndpointIngressApi, finalizeEndpointIngressClaims, stageMultipartIngress, sweepExpiredFileIngress, validateMultipartIngressPolicy } from "./file-ingress-runtime.js";
 import { abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob, canonicalJobCredentialProvenance, captureJobAuthSnapshot, commitPendingJobCancellationAborts, createRuntimeClock, decodeJobCursor, dropPendingJobCancellationAborts, encodeJobCursor, ensureJobStorage, ensureScheduleStorage, finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence, normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, readJobAuthSnapshot, readJobCredentialProvenance, resolveSchedulePayload, RESERVED_JOB_NAME_PREFIX, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure, scheduleStripeEventPayloadCleanup, startStripeEventPayloadCleanup, stopStripeEventPayloadCleanup, STRIPE_EVENT_JOB, stripeEventPayloadRetentionStorageValue, scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduledOccurrenceIdentity, } from "./jobs-runtime.js";
@@ -3317,8 +3317,8 @@ function createAtomicStripeConsequenceContext(database, parent) {
         log: createEndpointLogger(database),
         __privilegedRunActive: true,
         __jobEnqueuedBy: parent.__jobEnqueuedBy ?? null,
-        __pendingAclWrites: [],
     };
+    bindPendingAclWrites(context);
     grantPrivilegedDbAccess(context);
     const holder = createContextHolder(context);
     registerHandlerContextMapping(database, holder);
@@ -3608,12 +3608,12 @@ function trackMutationContextWork(context, promise, requiresConsumption = false)
                     hint: "Return the complete Service-User credential result from the Mutation.",
                 });
             }
-            context.__pendingMutationSecrets.push(token);
+            mutationSecretState(context).tokens.push(token);
             return value;
         })
         : operation;
     const entry = { promise: tracked };
-    context.__pendingAclWrites.push(entry);
+    trackPendingAclWrite(context, entry);
     return operation;
 }
 function resultContainsMutationSecret(value, token) {
@@ -3626,7 +3626,7 @@ function resultContainsMutationSecret(value, token) {
     return Object.values(value).some((entry) => resultContainsMutationSecret(entry, token));
 }
 function assertMutationSecretsReturned(context, result) {
-    for (const token of context.__pendingMutationSecrets ?? []) {
+    for (const token of mutationSecretState(context).tokens) {
         if (!resultContainsMutationSecret(result?.data, token)) {
             throw Object.assign(new Error("One-time credential result was not returned."), {
                 code: "ACCESS_KEY_SECRET_NOT_CONSUMED",
@@ -3634,6 +3634,19 @@ function assertMutationSecretsReturned(context, result) {
             });
         }
     }
+}
+const mutationSecretsByContext = new WeakMap();
+function bindMutationSecretState(context, sourceContext) {
+    const shared = sourceContext ? mutationSecretsByContext.get(sourceContext) : undefined;
+    if (sourceContext && !shared)
+        return;
+    mutationSecretsByContext.set(context, shared ?? { tokens: [] });
+}
+function mutationSecretState(context) {
+    const state = mutationSecretsByContext.get(context);
+    if (!state)
+        throw new Error("Mutation secret state is unavailable.");
+    return state;
 }
 async function drainPendingLogWrites(database) {
     const pending = database.__pendingLogWrites;
@@ -3651,6 +3664,8 @@ async function applyContextMiddleware(database, baseContext, kind) {
         ...baseContext,
         kind,
     };
+    bindPendingAclWrites(context, baseContext);
+    bindMutationSecretState(context, baseContext);
     transferAccessKeyRuntimeState(baseContext, context);
     const holder = baseContext.__sporadesContextHolder ?? createContextHolder(context);
     holder.current = context;
@@ -3683,9 +3698,8 @@ async function applyContextMiddleware(database, baseContext, kind) {
                 configurable: true,
             });
         }
-        if (previousContext.__pendingAclWrites && !context.__pendingAclWrites) {
-            context.__pendingAclWrites = previousContext.__pendingAclWrites;
-        }
+        bindPendingAclWrites(context, previousContext);
+        bindMutationSecretState(context, previousContext);
         transferAccessKeyRuntimeState(previousContext, context);
     }
     return context;
@@ -3849,7 +3863,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
             };
             const operation = fieldValues.some(isPromiseLike) ? Promise.all(fieldValues).then(finish) : finish(fieldValues);
             if (isPromiseLike(operation)) {
-                contextGetter?.()?.__pendingAclWrites?.push(operation);
+                trackPendingAclWrite(contextGetter?.(), operation);
             }
             return operation;
         },
@@ -3884,7 +3898,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
             };
             const operation = fieldValues.some(isPromiseLike) ? Promise.all(fieldValues).then(finish) : finish(fieldValues);
             if (isPromiseLike(operation)) {
-                contextGetter?.()?.__pendingAclWrites?.push(operation);
+                trackPendingAclWrite(contextGetter?.(), operation);
             }
             return operation;
         },
@@ -3926,7 +3940,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
             const selected = database.adapter.selectAppRowById(table, id);
             const operation = thenIfPromise(selected, finishExisting);
             if (isPromiseLike(operation)) {
-                contextGetter?.()?.__pendingAclWrites?.push(operation);
+                trackPendingAclWrite(contextGetter?.(), operation);
             }
             return operation;
         },
@@ -3944,7 +3958,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
             };
             const operation = thenIfPromise(database.adapter.selectAppRowById(table, id), finish);
             if (isPromiseLike(operation)) {
-                contextGetter?.()?.__pendingAclWrites?.push(operation);
+                trackPendingAclWrite(contextGetter?.(), operation);
             }
             return operation;
         },
@@ -5962,9 +5976,11 @@ function createMutationContext(database, auth, options = {}) {
                     : { kind: "session" },
             },
         } : {}),
-        __pendingAclWrites: [],
-        __pendingMutationSecrets: [],
     };
+    if (options.serviceUserMutationAuthority === serviceUserMutationAuthority) {
+        bindPendingAclWrites(context);
+        bindMutationSecretState(context);
+    }
     if (typeof options.sessionToken === "string") {
         bindAccessKeyOwnerSession(context, options.sessionToken);
     }

@@ -571,11 +571,33 @@ export function createTableAclContext(context: any, database: any) {
   // ACL evaluation is deliberately read-only. Current-user Teams can lazily
   // bootstrap durable state, so policy callbacks receive only constrained
   // membership decisions rather than the normal Team management API.
-  const { db, privileged, jobs, mail, request, teams, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
+  const { db, privileged, jobs, mail, request, teams, __sporadesContextHolder, ...aclContext } = context ?? {};
   return {
     ...aclContext,
     acl: createAclHelpers(database, context),
   };
+}
+
+const pendingAclWritesByContext = new WeakMap<object, any[]>();
+
+export function bindPendingAclWrites(context: any, sourceContext?: any) {
+  if (!context || typeof context !== "object") return context;
+  const shared = sourceContext && typeof sourceContext === "object"
+    ? pendingAclWritesByContext.get(sourceContext)
+    : undefined;
+  if (sourceContext && !shared) return context;
+  pendingAclWritesByContext.set(context, shared ?? []);
+  return context;
+}
+
+export function trackPendingAclWrite(context: any, pending: any) {
+  const entries = context && typeof context === "object" ? pendingAclWritesByContext.get(context) : undefined;
+  if (entries) entries.push(pending);
+  return pending;
+}
+
+function pendingAclWrites(context: any) {
+  return context && typeof context === "object" ? pendingAclWritesByContext.get(context) : undefined;
 }
 
 export function createFileAclContext(auth: LooseRecord, database: LooseRecord, credential: LooseRecord = { kind: "session" }) {
@@ -661,7 +683,7 @@ export function runTableWriteWithAcl(database: any, table: LooseRecord, operatio
     next,
   });
   const deny = () => {
-    if (!context?.__pendingAclWrites) {
+    if (!pendingAclWrites(context)) {
       emitAclDeniedLog(database, { data: denialLogData });
     }
     throw createAclDeniedError(denialLogData);
@@ -686,7 +708,7 @@ export function runTableWriteWithAcl(database: any, table: LooseRecord, operatio
     }
     return write();
   });
-  context?.__pendingAclWrites?.push(pending);
+  trackPendingAclWrite(context, pending);
   return pending;
 }
 
@@ -1059,8 +1081,9 @@ export function assertActivePrivilegedJobAccess(contextGetter: () => LooseRecord
 
 export async function drainPendingAclWrites(context: LooseRecord) {
   let firstError: any = null;
-  while (context?.__pendingAclWrites?.length > 0) {
-    const pending = context.__pendingAclWrites.splice(0);
+  const entries = pendingAclWrites(context);
+  while (entries && entries.length > 0) {
+    const pending = entries.splice(0);
     const results = await Promise.allSettled(pending.map((entry: any) => entry?.promise ?? entry));
     for (const result of results) {
       if (result.status === "rejected" && !firstError) {

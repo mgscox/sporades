@@ -484,11 +484,32 @@ export function createTableAclContext(context, database) {
     // ACL evaluation is deliberately read-only. Current-user Teams can lazily
     // bootstrap durable state, so policy callbacks receive only constrained
     // membership decisions rather than the normal Team management API.
-    const { db, privileged, jobs, mail, request, teams, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
+    const { db, privileged, jobs, mail, request, teams, __sporadesContextHolder, ...aclContext } = context ?? {};
     return {
         ...aclContext,
         acl: createAclHelpers(database, context),
     };
+}
+const pendingAclWritesByContext = new WeakMap();
+export function bindPendingAclWrites(context, sourceContext) {
+    if (!context || typeof context !== "object")
+        return context;
+    const shared = sourceContext && typeof sourceContext === "object"
+        ? pendingAclWritesByContext.get(sourceContext)
+        : undefined;
+    if (sourceContext && !shared)
+        return context;
+    pendingAclWritesByContext.set(context, shared ?? []);
+    return context;
+}
+export function trackPendingAclWrite(context, pending) {
+    const entries = context && typeof context === "object" ? pendingAclWritesByContext.get(context) : undefined;
+    if (entries)
+        entries.push(pending);
+    return pending;
+}
+function pendingAclWrites(context) {
+    return context && typeof context === "object" ? pendingAclWritesByContext.get(context) : undefined;
 }
 export function createFileAclContext(auth, database, credential = { kind: "session" }) {
     // A File request has no trusted Capsule handler context. Its policy gets the
@@ -568,7 +589,7 @@ export function runTableWriteWithAcl(database, table, operation, previous, next,
         next,
     });
     const deny = () => {
-        if (!context?.__pendingAclWrites) {
+        if (!pendingAclWrites(context)) {
             emitAclDeniedLog(database, { data: denialLogData });
         }
         throw createAclDeniedError(denialLogData);
@@ -593,7 +614,7 @@ export function runTableWriteWithAcl(database, table, operation, previous, next,
         }
         return write();
     });
-    context?.__pendingAclWrites?.push(pending);
+    trackPendingAclWrite(context, pending);
     return pending;
 }
 export function applyReadAcl(database, table, row, context) {
@@ -943,8 +964,9 @@ export function assertActivePrivilegedJobAccess(contextGetter) {
 }
 export async function drainPendingAclWrites(context) {
     let firstError = null;
-    while (context?.__pendingAclWrites?.length > 0) {
-        const pending = context.__pendingAclWrites.splice(0);
+    const entries = pendingAclWrites(context);
+    while (entries && entries.length > 0) {
+        const pending = entries.splice(0);
         const results = await Promise.allSettled(pending.map((entry) => entry?.promise ?? entry));
         for (const result of results) {
             if (result.status === "rejected" && !firstError) {

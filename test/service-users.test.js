@@ -244,6 +244,45 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
   try {
     await seedAdministrator(database);
 
+    database.contextMiddleware = [`(ctx) => ({
+      auth: ctx.auth,
+      credential: ctx.credential,
+      serviceUsers: ctx.serviceUsers,
+      __pendingAclWrites: [],
+      __pendingMutationSecrets: []
+    })`];
+    const reducedDiscarded = await runMutation(database, "createWithoutAwait", []);
+    assert.equal(reducedDiscarded.error?.code, "ACCESS_KEY_SECRET_NOT_CONSUMED");
+    assert.equal((await database.adapter.prepare(database.adapter.dialect.sql(
+      "SELECT [id] FROM [sporades_auth_users] WHERE [displayName] = ?",
+    )).get("Discarded Secret Agent")) ?? null, null, "replacement middleware cannot erase the runtime secret ledger");
+    const reducedReturned = await runMutation(database, "createAgent", []);
+    assert.equal(reducedReturned.error, null, JSON.stringify(reducedReturned.error));
+    assert.match(reducedReturned.data.token, /^spk_1_/);
+    const reducedOriginal = await database.adapter.prepare(database.adapter.dialect.sql(
+      "SELECT [lifecycleRevision], [selector] FROM [sporades_auth_access_keys] WHERE [id] = ?",
+    )).get(reducedReturned.data.accessKey.id);
+    const reducedIssue = await runMutation(database, "discardIssueAgentKey", [{
+      userId: reducedReturned.data.serviceUser.id,
+      accessKey: { name: "reduced-discarded", grants: ["tickets:read"] },
+      mode: "catch",
+    }]);
+    assert.equal(reducedIssue.error?.code, "ACCESS_KEY_SECRET_NOT_CONSUMED");
+    assert.equal((await database.adapter.prepare(database.adapter.dialect.sql(
+      "SELECT [id] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [name] = ?",
+    )).get(reducedReturned.data.serviceUser.id, "reduced-discarded")) ?? null, null);
+    const reducedRotate = await runMutation(database, "discardRotateAgentKey", [{
+      userId: reducedReturned.data.serviceUser.id,
+      accessKeyId: reducedReturned.data.accessKey.id,
+      lifecycleRevision: reducedReturned.data.accessKey.lifecycleRevision,
+      mode: "finally",
+    }]);
+    assert.equal(reducedRotate.error?.code, "ACCESS_KEY_SECRET_NOT_CONSUMED");
+    assert.deepEqual(await database.adapter.prepare(database.adapter.dialect.sql(
+      "SELECT [lifecycleRevision], [selector] FROM [sporades_auth_access_keys] WHERE [id] = ?",
+    )).get(reducedReturned.data.accessKey.id), reducedOriginal, "discarded rotation rolls back through replacement middleware");
+    database.contextMiddleware = [];
+
     const nonTransactional = await runRuntimeQuery(database, ADMIN_AUTH, "invalidQueryCreate", [], { sessionToken: ADMIN_SESSION });
     assert.equal(nonTransactional.error?.code, "SERVICE_USER_MUTATION_REQUIRED");
     assert.equal((await database.adapter.prepare(database.adapter.dialect.sql(
@@ -597,6 +636,13 @@ async function proveRemoteEngineServiceUserLifecycle(serverEnv, config) {
   let second;
   try {
     await seedAdministrator(first);
+    first.contextMiddleware = [`(ctx) => ({
+      auth: ctx.auth,
+      credential: ctx.credential,
+      serviceUsers: ctx.serviceUsers,
+      __pendingAclWrites: [],
+      __pendingMutationSecrets: []
+    })`];
     const discarded = await runMutation(first, "createWithoutAwait", []);
     assert.equal(discarded.error?.code, "ACCESS_KEY_SECRET_NOT_CONSUMED");
     assert.equal((await first.adapter.prepare(first.adapter.dialect.sql(
