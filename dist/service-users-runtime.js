@@ -92,13 +92,16 @@ async function issueForOwner(database, context, ownerUserId, input) {
     }
     throw serviceUserError("ACCESS_KEY_SECRET_CONFLICT", "Could not generate a unique Access key.", "Retry Access-key issuance.");
 }
-export function createServiceUsersApi(database, contextGetter, sessionToken) {
+export function createServiceUsersApi(database, contextGetter, sessionToken, options = {}) {
     const inContext = async (operation) => {
-        const context = contextGetter();
-        await requireCurrentHumanSession(database, context, sessionToken);
-        if (database.__transactionActive !== true) {
+        // A transaction is a storage mechanism, not authority. Endpoints, Queries,
+        // Messages, Jobs, and lifecycle handlers can all execute transactionally;
+        // only the runtime's Mutation dispatcher may mint this surface.
+        if (options.mutationSurface !== true) {
             throw serviceUserError("SERVICE_USER_MUTATION_REQUIRED", "Service-User lifecycle changes require a Mutation.", "Call ctx.serviceUsers from a Mutation so User, key, and Capsule records commit atomically.");
         }
+        const context = contextGetter();
+        await requireCurrentHumanSession(database, context, sessionToken);
         return operation(context);
     };
     return {

@@ -1357,6 +1357,7 @@ test("canonical docs publish first-class Service Users without weakening applica
     "Team membership", "resource policy", "intersection", "external secret store",
   ]) assert.match(canonical, new RegExp(required, "i"));
   assert.match(serverReference, /Only a Mutation[\s\S]*ctx\.serviceUsers/);
+  assert.match(serverReference, /transaction is a storage mechanism, not authority/i);
   assert.match(serverReference, /Queries[\s\S]*Custom endpoints cannot manage Service Users/);
   assert.match(decision, /Keep a human-owned Access key[\s\S]*inherit their identity/);
   assert.match(declarations, /export type ServiceUsersApi/);

@@ -384,7 +384,14 @@ the exact named key in `ctx.credential`.
 
 Only a Mutation running under a current linked human Session may use
 `ctx.serviceUsers`. This lets the runtime commit its User/key lifecycle in the
-same transaction as the Capsule's role, Team membership, and audit rows:
+same transaction as the Capsule's role, Team membership, and audit rows.
+
+A transaction is a storage mechanism, not authority. Custom endpoints and
+other runtime surfaces may execute transactionally, but only the Mutation
+dispatcher receives the runtime-owned Service-User capability. Capsule input,
+middleware, and context properties cannot mint or forward that capability.
+
+For example:
 
 ```ts
 mutations: {
@@ -420,8 +427,8 @@ credential tables. Keep a human-owned Access key when the work should continue
 to be attributed and authorized as that human instead.
 
 Anonymous and guest Sessions, Access keys, Jobs, Schedules, lifecycle hooks,
-Queries, and Custom endpoints cannot manage Service Users. Existing human-owned
-Access keys and Session behavior are unchanged.
+Queries, App messages, and Custom endpoints cannot manage Service Users.
+Existing human-owned Access keys and Session behavior are unchanged.
 
 An explicit `ctx.privileged.run(...)` callback receives a separate
 `ctx.accessKeys` projection with only `list(ownerUserId, options?)`,

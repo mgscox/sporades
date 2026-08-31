@@ -17240,17 +17240,17 @@ async function issueForOwner(database, context, ownerUserId, input) {
   }
   throw serviceUserError("ACCESS_KEY_SECRET_CONFLICT", "Could not generate a unique Access key.", "Retry Access-key issuance.");
 }
-function createServiceUsersApi(database, contextGetter, sessionToken) {
+function createServiceUsersApi(database, contextGetter, sessionToken, options = {}) {
   const inContext = async (operation) => {
-    const context = contextGetter();
-    await requireCurrentHumanSession(database, context, sessionToken);
-    if (database.__transactionActive !== true) {
+    if (options.mutationSurface !== true) {
       throw serviceUserError(
         "SERVICE_USER_MUTATION_REQUIRED",
         "Service-User lifecycle changes require a Mutation.",
         "Call ctx.serviceUsers from a Mutation so User, key, and Capsule records commit atomically."
       );
     }
+    const context = contextGetter();
+    await requireCurrentHumanSession(database, context, sessionToken);
     return operation(context);
   };
   return {
@@ -17279,19 +17279,19 @@ function createServiceUsersApi(database, contextGetter, sessionToken) {
         return { serviceUser: serviceUserSummary(serviceUser), ...await issueForOwner(database, context, serviceUser.id, input) };
       });
     },
-    async listAccessKeys(userId, options = {}) {
+    async listAccessKeys(userId, options2 = {}) {
       return inContext(async () => {
         const serviceUser = await lockServiceUser(database, userId, false);
-        const normalized = normalizeAccessKeyListOptions(options);
+        const normalized = normalizeAccessKeyListOptions(options2);
         const rows = await database.adapter.listAccessKeyRecordsForOwner(serviceUser.id);
         return { serviceUser: serviceUserSummary(serviceUser), ...accessKeyListPage(rows, database.accessKeyScopes ?? [], database.clock.now(), normalized) };
       });
     },
-    async rotateAccessKey(userId, id, options) {
+    async rotateAccessKey(userId, id, options2) {
       return inContext(async (context) => {
         const serviceUser = await lockServiceUser(database, userId, true);
         if (typeof id !== "string" || !id) throw accessKeyNotFoundError();
-        if (!options || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some((key) => key !== "lifecycleRevision") || !Number.isInteger(options.lifecycleRevision) || options.lifecycleRevision < 1) {
+        if (!options2 || typeof options2 !== "object" || Array.isArray(options2) || Object.keys(options2).some((key) => key !== "lifecycleRevision") || !Number.isInteger(options2.lifecycleRevision) || options2.lifecycleRevision < 1) {
           throw serviceUserError("ACCESS_KEY_REVISION_CONFLICT", "Invalid Access-key lifecycle revision.", "Pass the lifecycleRevision returned by listAccessKeys().");
         }
         for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -17299,7 +17299,7 @@ function createServiceUsersApi(database, contextGetter, sessionToken) {
           const outcome = await database.adapter.rotateAccessKeyRecord({
             ownerUserId: serviceUser.id,
             id,
-            lifecycleRevision: options.lifecycleRevision,
+            lifecycleRevision: options2.lifecycleRevision,
             secretVersion: 1,
             selector: secret.selector,
             verifierDigest: accessKeyVerifierDigest(secret.selector, secret.verifier),
@@ -23847,7 +23847,8 @@ function createEndpointContext(database, endpointRequest, session, options = {})
   context.serviceUsers = createServiceUsersApi(
     database,
     () => holder.current,
-    credential?.kind === "session" && typeof session.token === "string" ? session.token : null
+    credential?.kind === "session" && typeof session.token === "string" ? session.token : null,
+    { mutationSurface: false }
   );
   context.serverAuth = {
     async revokeHumanSecurity(_userId) {
@@ -23908,6 +23909,7 @@ function createContextHolder(context) {
   return holder;
 }
 var handlerContextByDatabase = /* @__PURE__ */ new WeakMap();
+var serviceUserMutationAuthority = Object.freeze({ kind: "service-user-mutation-authority" });
 function registerHandlerContextMapping(database, holder) {
   if (!database.__transactionActive) return;
   releaseHandlerContextMapping(database);
@@ -25934,7 +25936,10 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
       let handlerFailed = false;
       try {
-        context = createMutationContext(transactionDatabase, auth, { sessionToken: options.sessionToken });
+        context = createMutationContext(transactionDatabase, auth, {
+          sessionToken: options.sessionToken,
+          serviceUserMutationAuthority
+        });
         const customHandler = transactionDatabase.mutations.find((candidate) => candidate.name === mutationName);
         const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
         if (mutationHandler) admitCredentialHandler(mutationHandler, context, "mutation");
@@ -26179,7 +26184,8 @@ function createMutationContext(database, auth, options = {}) {
   context.serviceUsers = createServiceUsersApi(
     database,
     () => holder.current,
-    credential?.kind === "session" && typeof options.sessionToken === "string" ? options.sessionToken : null
+    credential?.kind === "session" && typeof options.sessionToken === "string" ? options.sessionToken : null,
+    { mutationSurface: options.serviceUserMutationAuthority === serviceUserMutationAuthority }
   );
   context.serverAuth = {
     async revokeHumanSecurity(userId) {

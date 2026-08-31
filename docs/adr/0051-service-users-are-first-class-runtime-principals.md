@@ -15,14 +15,17 @@ Session. Access-key admission exposes the Service User as `ctx.auth` with
 Anonymous contexts retain their legacy shape, where an absent `userKind` means
 human.
 
-A trusted Capsule handler uses `ctx.serviceUsers` to create a Service User with
-an initial key, issue additional named keys, rotate or revoke an exact key, list
+A Mutation handler uses `ctx.serviceUsers` to create a Service User with an
+initial key, issue additional named keys, rotate or revoke an exact key, list
 safe metadata, or irreversibly disable the User. Every call requires and
-transactionally rechecks a current linked human Session. Access keys, Jobs,
-Schedules, lifecycle hooks, Anonymous sessions, and guest sessions cannot use
-the interface. Plaintext leaves the runtime only after a successful issue or
-rotation commits. Disabling retires every current key and prevents future
-admission while retaining bounded User and key metadata for historical audit.
+transactionally rechecks a current linked human Session. Transaction state is
+not authority: the Mutation dispatcher binds a runtime-owned capability that
+Capsule input and middleware cannot forge. Access keys, endpoints, Queries,
+App messages, Jobs, Schedules, lifecycle hooks, Anonymous sessions, and guest
+sessions cannot use the interface even when their work is transactional.
+Plaintext leaves the runtime only after a successful issue or rotation commits.
+Disabling retires every current key and prevents future admission while
+retaining bounded User and key metadata for historical audit.
 
 Use a Service User when the autonomous actor itself must be named and governed:
 for example a ticket-triage agent with application Team memberships and roles.

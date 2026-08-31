@@ -3494,7 +3494,7 @@ function createEndpointContext(database, endpointRequest, session, options = {})
     context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
     context.teamBilling = createCurrentUserTeamBillingErasureApi(database, auth, () => holder.current, (candidate) => handlerContextByDatabase.get(database)?.() === candidate);
     context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
-    context.serviceUsers = createServiceUsersApi(database, () => holder.current, credential?.kind === "session" && typeof session.token === "string" ? session.token : null);
+    context.serviceUsers = createServiceUsersApi(database, () => holder.current, credential?.kind === "session" && typeof session.token === "string" ? session.token : null, { mutationSurface: false });
     context.serverAuth = {
         async revokeHumanSecurity(_userId) {
             throw commandError("Human security transition is unavailable.", "Run this operation inside an authenticated Capsule mutation.", "HUMAN_SECURITY_TRANSITION_UNAVAILABLE");
@@ -3555,6 +3555,9 @@ function createContextHolder(context) {
     return holder;
 }
 const handlerContextByDatabase = new WeakMap();
+// Lexical runtime authority: Capsule input and context middleware can neither
+// construct nor recover this exact identity.
+const serviceUserMutationAuthority = Object.freeze({ kind: "service-user-mutation-authority" });
 function registerHandlerContextMapping(database, holder) {
     if (!database.__transactionActive)
         return;
@@ -5688,7 +5691,10 @@ export async function runMutation(database, auth, mutationName, args, options = 
             const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
             let handlerFailed = false;
             try {
-                context = createMutationContext(transactionDatabase, auth, { sessionToken: options.sessionToken });
+                context = createMutationContext(transactionDatabase, auth, {
+                    sessionToken: options.sessionToken,
+                    serviceUserMutationAuthority,
+                });
                 const customHandler = transactionDatabase.mutations.find((candidate) => candidate.name === mutationName);
                 const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
                 if (mutationHandler)
@@ -5935,7 +5941,7 @@ function createMutationContext(database, auth, options = {}) {
         ? handlerContextByDatabase.get(database)?.() === candidate
         : holder.current === candidate);
     context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
-    context.serviceUsers = createServiceUsersApi(database, () => holder.current, credential?.kind === "session" && typeof options.sessionToken === "string" ? options.sessionToken : null);
+    context.serviceUsers = createServiceUsersApi(database, () => holder.current, credential?.kind === "session" && typeof options.sessionToken === "string" ? options.sessionToken : null, { mutationSurface: options.serviceUserMutationAuthority === serviceUserMutationAuthority });
     context.serverAuth = {
         async revokeHumanSecurity(userId) {
             if (!database.__transactionActive || !auth?.isAuthenticated || auth?.isGuest || auth?.userKind === "service" || typeof options.sessionToken !== "string" || typeof userId !== "string" || !userId || userId === "__privileged__") {

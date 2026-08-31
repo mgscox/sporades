@@ -580,6 +580,7 @@ function capLogEnvelope(envelope, maxBytes) {
   capped.message = capped.message.slice(0, 256);
   return capped;
 }
+var serviceUserMutationAuthority = Object.freeze({ kind: "service-user-mutation-authority" });
 
 // src/cli/cli-support.ts
 function errorDetails(error) {

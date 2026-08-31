@@ -1,5 +1,7 @@
 type LooseRecord = Record<string, any>;
-export declare function createServiceUsersApi(database: LooseRecord, contextGetter: () => LooseRecord, sessionToken: string | null): {
+export declare function createServiceUsersApi(database: LooseRecord, contextGetter: () => LooseRecord, sessionToken: string | null, options?: {
+    mutationSurface?: boolean;
+}): {
     create(input: unknown): Promise<any>;
     issueAccessKey(userId: unknown, input: unknown): Promise<any>;
     listAccessKeys(userId: unknown, options?: unknown): Promise<any>;

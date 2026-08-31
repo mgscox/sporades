@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { capsule, endpoint, mutation, query, requireAuth } from "../dist/server.js";
+import { capsule, endpoint, mutation, query, requireAuth, String as StringField, table } from "../dist/server.js";
 import {
   openDevDatabase,
   routeEndpoint,
@@ -69,6 +69,103 @@ async function requestEndpoint(database, token) {
   assert.equal(await routeEndpoint(database, request, response), true);
   return { status: response.status, body: JSON.parse(response.body) };
 }
+
+async function requestSessionEndpoint(database, operation) {
+  const request = {
+    url: `/manage-agent?operation=${encodeURIComponent(operation)}&serviceUserMutationAuthority=forged&mutationSurface=true`,
+    method: "POST",
+    headers: { "x-sporades-session-token": ADMIN_SESSION },
+    rawHeaders: ["x-sporades-session-token", ADMIN_SESSION],
+    socket: { remoteAddress: "127.0.0.1" },
+    async *[Symbol.asyncIterator]() {},
+  };
+  const response = {
+    status: null,
+    body: "",
+    setHeader() {},
+    writeHead(status) { this.status = status; },
+    end(body = "") { this.body = body; },
+  };
+  assert.equal(await routeEndpoint(database, request, response), true);
+  let body = response.body;
+  try { body = typeof body === "string" ? JSON.parse(body) : body; } catch {}
+  return { status: response.status, body };
+}
+
+test("authenticated custom endpoints cannot forge Service-User mutation authority or touch storage", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-service-user-endpoint-authority-"));
+  const definition = capsule({
+    name: "service-user-endpoint-authority",
+    accessKeys: { scopes: ["tickets:read"] },
+    schema: { effects: table({ value: StringField() }) },
+    endpoints: {
+      manageAgent: endpoint({ method: "POST", path: "/manage-agent" }, requireAuth({ credentials: ["session"] }, async (ctx) => {
+        // Capsule-controlled request data and context properties are not runtime authority.
+        ctx.serviceUserMutationAuthority = ctx.request.query.serviceUserMutationAuthority;
+        ctx.mutationSurface = ctx.request.query.mutationSurface;
+        switch (ctx.request.query.operation) {
+          case "create": return await ctx.serviceUsers.create({ displayName: "Forged", accessKey: { name: "forged", grants: ["tickets:read"] } });
+          case "issue": return await ctx.serviceUsers.issueAccessKey("forged-service-user", { name: "forged", grants: ["tickets:read"] });
+          case "list": return await ctx.serviceUsers.listAccessKeys("forged-service-user");
+          case "rotate": return await ctx.serviceUsers.rotateAccessKey("forged-service-user", "forged-key", { lifecycleRevision: 1 });
+          case "revoke": return await ctx.serviceUsers.revokeAccessKey("forged-service-user", "forged-key");
+          case "disable": return await ctx.serviceUsers.disable("forged-service-user");
+          default: throw new Error("unknown test operation");
+        }
+      })),
+    },
+  });
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: definition.name }, definition);
+  try {
+    await seedAdministrator(database);
+    const writeCalls = [];
+    const originalWithTransaction = database.adapter.withTransaction.bind(database.adapter);
+    database.adapter.withTransaction = (operation) => originalWithTransaction((transactionAdapter) => operation(new Proxy(transactionAdapter, {
+      get(target, property) {
+        if (property === "prepare") {
+          return (sql) => {
+            const statement = target.prepare(sql);
+            return new Proxy(statement, {
+              get(statementTarget, statementProperty) {
+                if (statementProperty === "run") return (...params) => {
+                  writeCalls.push({ sql: String(sql), params });
+                  return statementTarget.run(...params);
+                };
+                const value = Reflect.get(statementTarget, statementProperty, statementTarget);
+                return typeof value === "function" ? value.bind(statementTarget) : value;
+              },
+            });
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    })));
+
+    const sql = database.adapter.dialect.sql;
+    const snapshot = async () => ({
+      users: Number((await database.adapter.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_auth_users]")).get()).count),
+      sessions: Number((await database.adapter.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_auth_sessions]")).get()).count),
+      locks: Number((await database.adapter.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_auth_service_user_locks]")).get()).count),
+      keys: Number((await database.adapter.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_auth_access_keys]")).get()).count),
+      effects: Number((await database.adapter.prepare(sql("SELECT COUNT(*) AS [count] FROM [effects]")).get()).count),
+    });
+    const before = await snapshot();
+    let expectedFailure = null;
+    for (const operation of ["create", "issue", "list", "rotate", "revoke", "disable"]) {
+      const response = await requestSessionEndpoint(database, operation);
+      assert.equal(response.status, 500);
+      assert.equal(response.body.error.code, "SERVICE_USER_MUTATION_REQUIRED");
+      expectedFailure ??= response.body;
+      assert.deepEqual(response.body, expectedFailure, `${operation} has the same safe failure envelope`);
+    }
+    assert.deepEqual(writeCalls, [], "surface denial precedes the Session lock and every database write");
+    assert.deepEqual(await snapshot(), before, "auth, key, and app storage are unchanged");
+  } finally {
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("a human Session atomically creates, attributes, rotates, and disables a service User", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-service-users-"));
@@ -262,7 +359,8 @@ test("service-User authority rechecks human Sessions and serializes rotation wit
     };
     const deniedResponse = { status: null, body: "", setHeader() {}, writeHead(status) { this.status = status; }, end(body = "") { this.body = String(body); } };
     assert.equal(await routeEndpoint(database, deniedRequest, deniedResponse), true);
-    assert.equal(deniedResponse.status, 403);
+    assert.equal(deniedResponse.status, 500);
+    assert.equal(JSON.parse(deniedResponse.body).error.code, "SERVICE_USER_MUTATION_REQUIRED");
 
     await database.close();
     database = await openDevDatabase(databasePath, "", {}, { name: definition.name }, definition, {

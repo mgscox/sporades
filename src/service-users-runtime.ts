@@ -126,17 +126,21 @@ export function createServiceUsersApi(
   database: LooseRecord,
   contextGetter: () => LooseRecord,
   sessionToken: string | null,
+  options: { mutationSurface?: boolean } = {},
 ) {
   const inContext = async (operation: (context: LooseRecord) => Promise<any>) => {
-    const context = contextGetter();
-    await requireCurrentHumanSession(database, context, sessionToken);
-    if (database.__transactionActive !== true) {
+    // A transaction is a storage mechanism, not authority. Endpoints, Queries,
+    // Messages, Jobs, and lifecycle handlers can all execute transactionally;
+    // only the runtime's Mutation dispatcher may mint this surface.
+    if (options.mutationSurface !== true) {
       throw serviceUserError(
         "SERVICE_USER_MUTATION_REQUIRED",
         "Service-User lifecycle changes require a Mutation.",
         "Call ctx.serviceUsers from a Mutation so User, key, and Capsule records commit atomically.",
       );
     }
+    const context = contextGetter();
+    await requireCurrentHumanSession(database, context, sessionToken);
     return operation(context);
   };
   return {

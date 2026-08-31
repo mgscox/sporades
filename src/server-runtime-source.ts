@@ -3775,6 +3775,7 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
     database,
     () => holder.current,
     credential?.kind === "session" && typeof session.token === "string" ? session.token : null,
+    { mutationSurface: false },
   );
   context.serverAuth = {
     async revokeHumanSecurity(_userId: string) {
@@ -3839,6 +3840,9 @@ function createContextHolder(context: LooseRecord) {
 }
 
 const handlerContextByDatabase = new WeakMap<object, () => LooseRecord>();
+// Lexical runtime authority: Capsule input and context middleware can neither
+// construct nor recover this exact identity.
+const serviceUserMutationAuthority = Object.freeze({ kind: "service-user-mutation-authority" });
 
 function registerHandlerContextMapping(database: LooseRecord, holder: { current: LooseRecord; }) {
   if (!database.__transactionActive) return;
@@ -6060,7 +6064,10 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
       let handlerFailed = false;
       try {
-        context = createMutationContext(transactionDatabase, auth, { sessionToken: options.sessionToken });
+        context = createMutationContext(transactionDatabase, auth, {
+          sessionToken: options.sessionToken,
+          serviceUserMutationAuthority,
+        });
         const customHandler = transactionDatabase.mutations.find((candidate: { name: any; }) => candidate.name === mutationName);
         const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
         if (mutationHandler) admitCredentialHandler(mutationHandler, context, "mutation");
@@ -6330,6 +6337,7 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
     database,
     () => holder.current,
     credential?.kind === "session" && typeof options.sessionToken === "string" ? options.sessionToken : null,
+    { mutationSurface: options.serviceUserMutationAuthority === serviceUserMutationAuthority },
   );
   context.serverAuth = {
     async revokeHumanSecurity(userId: string) {
