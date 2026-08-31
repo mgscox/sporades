@@ -6325,9 +6325,9 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
       )).get(options.sessionToken, auth.userId, database.clock.now().toISOString());
       if (!actorSession) throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
       const target = await database.adapter.prepare(database.adapter.dialect.sql(
-        "SELECT [id], [isAuthenticated], [isGuest], [provider] FROM [sporades_auth_users] WHERE [id] = ?",
+        "SELECT [u].[id] FROM [sporades_auth_users] [u] WHERE [u].[id] = ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0 AND (EXISTS (SELECT 1 FROM [sporades_auth_email_credentials] [c] WHERE [c].[userId] = [u].[id]) OR EXISTS (SELECT 1 FROM [sporades_auth_identities] [i] WHERE [i].[userId] = [u].[id]))",
       )).get(userId);
-      if (!target || Number(target.isAuthenticated) !== 1 || Number(target.isGuest) !== 0 || ["anonymous", "guest", "operator", "privileged-server-role", "service"].includes(target.provider)) {
+      if (!target) {
         throw commandError("Human security transition denied.", "Select one existing active human user.", "HUMAN_SECURITY_TRANSITION_DENIED");
       }
       const sessions = await database.adapter.prepare(database.adapter.dialect.sql(
