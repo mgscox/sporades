@@ -429,6 +429,12 @@ export type MailApi = {
  * internal auth database.
  */
 export type ServerAuthApi = {
+  /**
+   * Atomically retire every Session and current Access key owned by one exact
+   * existing human user. Available only during an authenticated Capsule
+   * mutation transaction; never changes identity or app-owned authority.
+   */
+  revokeHumanSecurity(userId: string): Promise<{ userId: string; revokedSessionCount: number; revokedAccessKeyCount: number }>;
   /** Update the password for an existing email credential. Throws if the email is not registered. */
   setEmailPassword(email: string, newPassword: string): Promise<void>;
   /**

@@ -620,6 +620,25 @@ resetPassword: mutation(async (ctx, token: string, newPassword: string) => {
 password is shorter than 8 characters. Wrap it in a try/catch if you want to
 return a user-facing error instead of throwing.
 
+### Retire a Human's Runtime Credentials Atomically
+
+An authenticated Capsule mutation may call
+`ctx.serverAuth.revokeHumanSecurity(userId)` when an application-level
+administrative transition must remove one human's runtime credentials in the
+same transaction as its own authority rows. Sporades validates one existing
+authenticated, non-guest human, deletes all of their Sessions, retires their
+current Access keys, and returns only revocation counts. If the mutation later
+throws, both runtime and application writes roll back.
+
+This method is intentionally unavailable to queries, endpoints, messages,
+Jobs, and unauthenticated mutations. It does not suspend or delete identity,
+change application roles, or affect service/Agent credentials. The Capsule
+must separately authorize its administrator, normally require a purpose-bound
+reauthentication proof, update its own domain state, and record its audit event.
+Use it for atomic suspension or comparable high-risk human security
+transitions; do not use it as sign-out, password reset, or generic auth-table
+administration.
+
 ### Simulate Local Identities
 
 For local browser testing, start a Dev session, then run:

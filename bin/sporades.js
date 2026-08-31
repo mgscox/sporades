@@ -23601,6 +23601,9 @@ function createEndpointContext(database, endpointRequest, session, options = {})
   );
   context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
   context.serverAuth = {
+    async revokeHumanSecurity(_userId) {
+      throw commandError("Human security transition is unavailable.", "Run this operation inside an authenticated Capsule mutation.", "HUMAN_SECURITY_TRANSITION_UNAVAILABLE");
+    },
     async setEmailPassword(email, newPassword) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);
       if (!result.ok) throw new Error(result.error?.message ?? "Could not set password.");
@@ -25921,6 +25924,31 @@ function createMutationContext(database, auth, options = {}) {
   );
   context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
   context.serverAuth = {
+    async revokeHumanSecurity(userId) {
+      if (!database.__transactionActive || !auth?.isAuthenticated || auth?.isGuest || auth?.userKind === "service" || typeof options.sessionToken !== "string" || typeof userId !== "string" || !userId || userId === "__privileged__") {
+        throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
+      }
+      const actorSession = await database.adapter.prepare(database.adapter.dialect.sql(
+        "SELECT [s].[token] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0"
+      )).get(options.sessionToken, auth.userId, database.clock.now().toISOString());
+      if (!actorSession) throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
+      const target = await database.adapter.prepare(database.adapter.dialect.sql(
+        "SELECT [id], [isAuthenticated], [isGuest], [provider] FROM [sporades_auth_users] WHERE [id] = ?"
+      )).get(userId);
+      if (!target || Number(target.isAuthenticated) !== 1 || Number(target.isGuest) !== 0 || ["anonymous", "guest", "operator", "privileged-server-role", "service"].includes(target.provider)) {
+        throw commandError("Human security transition denied.", "Select one existing active human user.", "HUMAN_SECURITY_TRANSITION_DENIED");
+      }
+      const sessions = await database.adapter.prepare(database.adapter.dialect.sql(
+        "SELECT COUNT(*) AS [count] FROM [sporades_auth_sessions] WHERE [userId] = ?"
+      )).get(userId);
+      await database.adapter.deleteAuthSessionsForUser(userId);
+      const revoked = await database.adapter.bulkRevokeAccessKeysForOwner({
+        ownerUserId: userId,
+        revocationTime: () => database.clock.now().toISOString(),
+        revocationCause: "operator"
+      });
+      return { userId, revokedSessionCount: Number(sessions?.count ?? 0), revokedAccessKeyCount: Number(revoked?.records?.length ?? 0) };
+    },
     async setEmailPassword(email, newPassword) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);
       if (!result.ok) throw new Error(result.error?.message ?? "Could not set password.");
@@ -32695,7 +32723,7 @@ jobs:
 }
 
 // src/cli/cli-version.ts
-var CLI_VERSION = "0.9.9";
+var CLI_VERSION = "0.9.10";
 
 // src/cli/sporades.ts
 var SUPPORTED_TEMPLATES = new Set(CLIENT_TEMPLATES);
