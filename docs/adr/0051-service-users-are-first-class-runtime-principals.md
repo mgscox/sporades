@@ -24,10 +24,13 @@ Capsule input and middleware cannot forge. Access keys, endpoints, Queries,
 App messages, Jobs, Schedules, lifecycle hooks, Anonymous sessions, and guest
 sessions cannot use the interface even when their work is transactional.
 Plaintext leaves the runtime only after a successful issue or rotation commits.
-Every lifecycle Promise joins the Mutation's pending-work drain. Secret-returning
-create, issue, and rotation calls must additionally be awaited or returned; an
-unconsumed result rolls back instead of silently creating an unrecoverable
-credential. Rejected drained work rolls back the complete Mutation.
+Every lifecycle Promise joins the Mutation's pending-work drain. Every plaintext
+token produced by create, issue, or rotation must additionally occur in the
+Mutation's returned JSON data; otherwise the whole transaction rolls back instead
+of silently creating an unrecoverable credential. This rule remains exact through
+returned `Promise.all`, `allSettled`, `race`, and `any` results and cannot be
+satisfied merely by attaching a fulfillment, rejection, or cleanup observer.
+Rejected drained work rolls back the complete Mutation.
 Disabling retires every current key and prevents future admission while
 retaining bounded User and key metadata for historical audit.
 

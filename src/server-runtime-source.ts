@@ -3884,22 +3884,41 @@ async function cleanupTransactionHandler(
 }
 
 function trackMutationContextWork(context: LooseRecord, promise: Promise<any>, requiresConsumption = false) {
-  const entry = { promise: Promise.resolve(promise), requiresConsumption, consumed: false };
+  const operation = Promise.resolve(promise);
+  const tracked = requiresConsumption
+    ? operation.then((value) => {
+        const token = value?.token;
+        if (typeof token !== "string" || token.length === 0) {
+          throw Object.assign(new Error("One-time credential result was invalid."), {
+            code: "ACCESS_KEY_SECRET_NOT_CONSUMED",
+            hint: "Return the complete Service-User credential result from the Mutation.",
+          });
+        }
+        context.__pendingMutationSecrets.push(token);
+        return value;
+      })
+    : operation;
+  const entry = { promise: tracked };
   context.__pendingAclWrites.push(entry);
-  const wrap = (chain: Promise<any>): Promise<any> => ({
-    then(onFulfilled: any, onRejected: any) {
-      if (typeof onFulfilled === "function") entry.consumed = true;
-      return wrap(chain.then(onFulfilled, onRejected));
-    },
-    catch(onRejected: any) {
-      return wrap(chain.catch(onRejected));
-    },
-    finally(onFinally: any) {
-      return wrap(chain.finally(onFinally));
-    },
-    [Symbol.toStringTag]: "Promise",
-  } as Promise<any>);
-  return wrap(entry.promise);
+  return operation;
+}
+
+function resultContainsMutationSecret(value: any, token: string): boolean {
+  if (value === token) return true;
+  if (!value || typeof value !== "object") return false;
+  if (Array.isArray(value)) return value.some((entry) => resultContainsMutationSecret(entry, token));
+  return Object.values(value).some((entry) => resultContainsMutationSecret(entry, token));
+}
+
+function assertMutationSecretsReturned(context: LooseRecord, result: LooseRecord) {
+  for (const token of context.__pendingMutationSecrets ?? []) {
+    if (!resultContainsMutationSecret(result?.data, token)) {
+      throw Object.assign(new Error("One-time credential result was not returned."), {
+        code: "ACCESS_KEY_SECRET_NOT_CONSUMED",
+        hint: "Return the complete Service-User credential result from the Mutation.",
+      });
+    }
+  }
 }
 
 async function drainPendingLogWrites(database: LooseRecord) {
@@ -6114,6 +6133,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
             await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context, result }, context);
           }
           await drainPendingAclWrites(context);
+          assertMutationSecretsReturned(context, result);
         }
 
         return result;
@@ -6327,6 +6347,7 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
       },
     } : {}),
     __pendingAclWrites: [],
+    __pendingMutationSecrets: [],
   };
   if (typeof options.sessionToken === "string") {
     bindAccessKeyOwnerSession(context, options.sessionToken);
@@ -6358,7 +6379,9 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
     credential?.kind === "session" && typeof options.sessionToken === "string" ? options.sessionToken : null,
     {
       mutationSurface: options.serviceUserMutationAuthority === serviceUserMutationAuthority,
-      trackMutationWork: (promise, requiresConsumption) => trackMutationContextWork(context, promise, requiresConsumption),
+      ...(options.serviceUserMutationAuthority === serviceUserMutationAuthority
+        ? { trackMutationWork: (promise: Promise<any>, requiresConsumption?: boolean) => trackMutationContextWork(context, promise, requiresConsumption) }
+        : {}),
     },
   );
   context.serverAuth = {

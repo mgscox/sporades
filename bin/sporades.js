@@ -8580,7 +8580,7 @@ function boundedJobIdentityString(value, field, maximum, nullable = false) {
   return value;
 }
 function canonicalJobAuthSnapshot(auth) {
-  const snapshot = {
+  const baseSnapshot = {
     userId: boundedJobIdentityString(auth?.userId, "userId", 256),
     displayName: boundedJobIdentityString(auth?.displayName, "displayName", 512),
     email: boundedJobIdentityString(auth?.email, "email", 320, true),
@@ -8589,9 +8589,13 @@ function canonicalJobAuthSnapshot(auth) {
     isGuest: auth?.isGuest,
     provider: boundedJobIdentityString(auth?.provider, "provider", 64)
   };
-  if (typeof snapshot.isAuthenticated !== "boolean" || typeof snapshot.isGuest !== "boolean") {
+  if (typeof baseSnapshot.isAuthenticated !== "boolean" || typeof baseSnapshot.isGuest !== "boolean") {
     throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is invalid.", "Use a runtime-issued AuthContext when enqueueing a Job.");
   }
+  if (auth?.userKind !== void 0 && auth.userKind !== "service") {
+    throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is invalid.", "Use a runtime-issued AuthContext when enqueueing a Job.");
+  }
+  const snapshot = auth?.userKind === "service" ? { ...baseSnapshot, userKind: "service" } : baseSnapshot;
   const serialized = JSON.stringify(snapshot);
   if (Buffer.byteLength(serialized, "utf8") > JOB_AUTH_SNAPSHOT_MAX_BYTES) {
     throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is too large.", "Reduce bounded profile metadata before enqueueing the Job.");
@@ -9784,17 +9788,9 @@ async function drainPendingAclWrites(context) {
   while (context?.__pendingAclWrites?.length > 0) {
     const pending = context.__pendingAclWrites.splice(0);
     const results = await Promise.allSettled(pending.map((entry) => entry?.promise ?? entry));
-    for (let index = 0; index < results.length; index += 1) {
-      const result = results[index];
+    for (const result of results) {
       if (result.status === "rejected" && !firstError) {
         firstError = result.reason;
-      }
-      const entry = pending[index];
-      if (!firstError && entry?.requiresConsumption && !entry.consumed) {
-        firstError = Object.assign(new Error("One-time credential result was not consumed."), {
-          code: "ACCESS_KEY_SECRET_NOT_CONSUMED",
-          hint: "Await and return the Service-User credential result from the Mutation."
-        });
       }
     }
   }
@@ -23951,22 +23947,37 @@ async function cleanupTransactionHandler(database, context, preservePrimaryError
   }
 }
 function trackMutationContextWork(context, promise, requiresConsumption = false) {
-  const entry = { promise: Promise.resolve(promise), requiresConsumption, consumed: false };
+  const operation = Promise.resolve(promise);
+  const tracked = requiresConsumption ? operation.then((value) => {
+    const token = value?.token;
+    if (typeof token !== "string" || token.length === 0) {
+      throw Object.assign(new Error("One-time credential result was invalid."), {
+        code: "ACCESS_KEY_SECRET_NOT_CONSUMED",
+        hint: "Return the complete Service-User credential result from the Mutation."
+      });
+    }
+    context.__pendingMutationSecrets.push(token);
+    return value;
+  }) : operation;
+  const entry = { promise: tracked };
   context.__pendingAclWrites.push(entry);
-  const wrap = (chain) => ({
-    then(onFulfilled, onRejected) {
-      if (typeof onFulfilled === "function") entry.consumed = true;
-      return wrap(chain.then(onFulfilled, onRejected));
-    },
-    catch(onRejected) {
-      return wrap(chain.catch(onRejected));
-    },
-    finally(onFinally) {
-      return wrap(chain.finally(onFinally));
-    },
-    [Symbol.toStringTag]: "Promise"
-  });
-  return wrap(entry.promise);
+  return operation;
+}
+function resultContainsMutationSecret(value, token) {
+  if (value === token) return true;
+  if (!value || typeof value !== "object") return false;
+  if (Array.isArray(value)) return value.some((entry) => resultContainsMutationSecret(entry, token));
+  return Object.values(value).some((entry) => resultContainsMutationSecret(entry, token));
+}
+function assertMutationSecretsReturned(context, result) {
+  for (const token of context.__pendingMutationSecrets ?? []) {
+    if (!resultContainsMutationSecret(result?.data, token)) {
+      throw Object.assign(new Error("One-time credential result was not returned."), {
+        code: "ACCESS_KEY_SECRET_NOT_CONSUMED",
+        hint: "Return the complete Service-User credential result from the Mutation."
+      });
+    }
+  }
 }
 async function drainPendingLogWrites(database) {
   const pending = database.__pendingLogWrites;
@@ -25989,6 +26000,7 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
             await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context, result }, context);
           }
           await drainPendingAclWrites(context);
+          assertMutationSecretsReturned(context, result);
         }
         return result;
       } catch (error) {
@@ -26184,7 +26196,8 @@ function createMutationContext(database, auth, options = {}) {
         credential: credential.kind === "access-key" ? { kind: credential.kind, id: credential.id, name: credential.name } : { kind: "session" }
       }
     } : {}),
-    __pendingAclWrites: []
+    __pendingAclWrites: [],
+    __pendingMutationSecrets: []
   };
   if (typeof options.sessionToken === "string") {
     bindAccessKeyOwnerSession(context, options.sessionToken);
@@ -26214,7 +26227,7 @@ function createMutationContext(database, auth, options = {}) {
     credential?.kind === "session" && typeof options.sessionToken === "string" ? options.sessionToken : null,
     {
       mutationSurface: options.serviceUserMutationAuthority === serviceUserMutationAuthority,
-      trackMutationWork: (promise, requiresConsumption) => trackMutationContextWork(context, promise, requiresConsumption)
+      ...options.serviceUserMutationAuthority === serviceUserMutationAuthority ? { trackMutationWork: (promise, requiresConsumption) => trackMutationContextWork(context, promise, requiresConsumption) } : {}
     }
   );
   context.serverAuth = {

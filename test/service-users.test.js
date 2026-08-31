@@ -5,13 +5,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { capsule, endpoint, mutation, query, requireAuth, String as StringField, table } from "../dist/server.js";
+import { capsule, endpoint, job, mutation, query, requireAuth, String as StringField, table } from "../dist/server.js";
 import {
   openDevDatabase,
   routeEndpoint,
+  runCurrentUserJobWorker,
   runQuery as runRuntimeQuery,
   runMutation as runRuntimeMutation,
 } from "../dist/server-runtime-source.js";
+import { readJobAuthSnapshot } from "../dist/jobs-runtime.js";
 import { POSTGRES_SKIP_REASON, withLibsqlAdapter, withPostgresAdapter } from "./support/database-adapter-engines.js";
 
 const ADMIN_AUTH = Object.freeze({
@@ -200,6 +202,15 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
         lifecycleRevision: input.lifecycleRevision,
       })),
       discardRotateAgentKey: mutation((ctx, input) => { const work = ctx.serviceUsers.rotateAccessKey(input.userId, input.accessKeyId, { lifecycleRevision: input.lifecycleRevision }); if (input.mode === "catch") work.catch(() => {}); else if (input.mode === "finally") work.finally(() => {}); else work.then(undefined, () => {}); return null; }),
+      aggregateAgentSecret: mutation((ctx, input) => {
+        const work = input.operation === "create"
+          ? ctx.serviceUsers.create({ displayName: input.displayName, accessKey: { name: input.name, grants: ["tickets:read"] } })
+          : input.operation === "issue"
+            ? ctx.serviceUsers.issueAccessKey(input.userId, { name: input.name, grants: ["tickets:read"] })
+            : ctx.serviceUsers.rotateAccessKey(input.userId, input.accessKeyId, { lifecycleRevision: input.lifecycleRevision });
+        const aggregate = Promise[input.aggregate]([work]);
+        return input.returned ? aggregate : null;
+      }),
       listAgentKeys: mutation((ctx, userId) => ctx.serviceUsers.listAccessKeys(userId)),
       disableAgent: mutation((ctx, userId) => ctx.serviceUsers.disable(userId)),
     },
@@ -269,6 +280,23 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
     }
     assert.equal(created.data.accessKey.lifecycleRevision, 1);
 
+    for (const aggregate of ["all", "allSettled", "race", "any"]) {
+      const returned = await runMutation(database, "aggregateAgentSecret", [{ operation: "issue", aggregate, returned: true, userId: created.data.serviceUser.id, name: `returned-${aggregate}` }]);
+      assert.equal(returned.error, null, JSON.stringify(returned.error));
+      const returnedToken = aggregate === "allSettled" ? returned.data[0].value.token : returned.data[0]?.token ?? returned.data.token;
+      assert.match(returnedToken, /^spk_/);
+    }
+    for (const operation of ["create", "issue", "rotate"]) {
+      for (const aggregate of ["all", "allSettled", "race", "any"]) {
+        const name = `discarded-${operation}-${aggregate}`;
+        const response = await runMutation(database, "aggregateAgentSecret", [{ operation, aggregate, returned: false, displayName: name, name, userId: created.data.serviceUser.id, accessKeyId: created.data.accessKey.id, lifecycleRevision: created.data.accessKey.lifecycleRevision }]);
+        assert.equal(response.error?.code, "ACCESS_KEY_SECRET_NOT_CONSUMED", `${operation} via discarded Promise.${aggregate}`);
+        if (operation === "create") assert.equal((await database.adapter.prepare(database.adapter.dialect.sql("SELECT [id] FROM [sporades_auth_users] WHERE [displayName] = ?")).get(name)) ?? null, null);
+        if (operation === "issue") assert.equal((await database.adapter.prepare(database.adapter.dialect.sql("SELECT [id] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [name] = ?")).get(created.data.serviceUser.id, name)) ?? null, null);
+        if (operation === "rotate") assert.deepEqual(await database.adapter.prepare(database.adapter.dialect.sql("SELECT [lifecycleRevision], [selector] FROM [sporades_auth_access_keys] WHERE [id] = ?")).get(created.data.accessKey.id), originalCredential);
+      }
+    }
+
     const admitted = await requestEndpoint(database, created.data.token);
     assert.equal(admitted.status, 200);
     assert.deepEqual(admitted.body.auth, {
@@ -296,7 +324,7 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
     assert.equal(second.data.accessKey.lifecycleRevision, 1);
     const listed = await runMutation(database, "listAgentKeys", [created.data.serviceUser.id]);
     assert.equal(listed.error, null, JSON.stringify(listed.error));
-    assert.deepEqual(listed.data.accessKeys.map(({ name }) => name).sort(), ["production", "staging"]);
+    assert.deepEqual(listed.data.accessKeys.map(({ name }) => name).sort(), ["production", "returned-all", "returned-allSettled", "returned-any", "returned-race", "staging"]);
     assert.equal(JSON.stringify(listed.data).includes(second.data.token), false);
 
     const rotated = await runMutation(database, "rotateAgentKey", [{
@@ -312,7 +340,7 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
     const disabled = await runMutation(database, "disableAgent", [created.data.serviceUser.id]);
     assert.equal(disabled.error, null, JSON.stringify(disabled.error));
     assert.equal(disabled.data.serviceUser.status, "disabled");
-    assert.equal(disabled.data.revokedCount, 2);
+    assert.equal(disabled.data.revokedCount, 6);
     assert.equal((await requestEndpoint(database, created.data.token)).status, 401);
     assert.equal((await requestEndpoint(database, rotated.data.token)).status, 401);
 
@@ -344,6 +372,76 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
     )).get(stored.id)) ?? null, null);
   } finally {
     await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("durable Jobs preserve service actor kind while legacy snapshots remain human-compatible", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-service-user-job-"));
+  const databasePath = path.join(dir, "data.db");
+  const definition = capsule({
+    name: "service-user-job",
+    accessKeys: { scopes: ["jobs:enqueue"] },
+    schema: {
+      serviceJobAudit: table({ actorId: StringField(), actorKind: StringField() }).acl({
+        insert: ({ ctx }) => ctx.auth.userKind === "service",
+      }),
+    },
+    mutations: {
+      createAgent: mutation((ctx) => ctx.serviceUsers.create({
+        displayName: "Durable Job Agent",
+        accessKey: { name: "job-runner", grants: ["jobs:enqueue"] },
+      })),
+    },
+    jobs: {
+      recordActor: job((ctx) => ctx.db.serviceJobAudit.insert({
+        actorId: ctx.auth.userId,
+        actorKind: ctx.auth.userKind ?? "legacy-human",
+      })),
+    },
+    endpoints: {
+      enqueue: endpoint({ method: "POST", path: "/enqueue" }, requireAuth({
+        credentials: ["access-key"], scopes: ["jobs:enqueue"],
+      }, async (ctx) => ({ body: await ctx.jobs.enqueue("recordActor", null, { availableAt: "2999-01-01T00:00:00.000Z" }) }))),
+    },
+  });
+  let database = await openDevDatabase(databasePath, "", {}, { name: definition.name }, definition);
+  try {
+    await seedAdministrator(database);
+    const created = await runMutation(database, "createAgent", []);
+    assert.equal(created.error, null, JSON.stringify(created.error));
+    const request = {
+      url: "/enqueue", method: "POST",
+      headers: { authorization: `Bearer ${created.data.token}` },
+      rawHeaders: ["Authorization", `Bearer ${created.data.token}`],
+      socket: { remoteAddress: "127.0.0.1" }, async *[Symbol.asyncIterator]() {},
+    };
+    const response = { status: null, body: "", setHeader() {}, writeHead(status) { this.status = status; }, end(body = "") { this.body = body; } };
+    assert.equal(await routeEndpoint(database, request, response), true);
+    assert.equal(response.status, 200);
+    const queued = typeof response.body === "string" ? JSON.parse(response.body) : response.body;
+    const stored = await database.adapter.prepare("SELECT authSnapshotJson FROM sporades_jobs WHERE id = ?").get(queued.id);
+    assert.equal(JSON.parse(stored.authSnapshotJson).userKind, "service");
+    await database.adapter.prepare("UPDATE sporades_jobs SET availableAt = '2000-01-01T00:00:00.000Z', status = 'queued' WHERE id = ?").run(queued.id);
+    await database.close();
+    database = await openDevDatabase(databasePath, "", {}, { name: definition.name }, definition);
+    await database.init();
+    await runCurrentUserJobWorker(database);
+    let audit;
+    for (let attempt = 0; attempt < 100 && !audit; attempt += 1) {
+      audit = await database.adapter.prepare("SELECT actorId, actorKind FROM serviceJobAudit").get();
+      if (!audit) await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const settledJob = await database.adapter.prepare("SELECT status, failure, authSnapshotJson FROM sporades_jobs WHERE id = ?").get(queued.id);
+    assert.deepEqual({ ...audit }, { actorId: created.data.serviceUser.id, actorKind: "service" }, JSON.stringify(settledJob));
+
+    const legacy = readJobAuthSnapshot({
+      actorUserId: "legacy-human", actorProvider: "email",
+      authSnapshotJson: JSON.stringify({ userId: "legacy-human", displayName: "Legacy Human", email: "legacy@example.com", picture: null, isAuthenticated: true, isGuest: false, provider: "email" }),
+    });
+    assert.equal(Object.hasOwn(legacy, "userKind"), false);
+  } finally {
+    await database?.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -452,6 +550,15 @@ async function proveRemoteEngineServiceUserLifecycle(serverEnv, config) {
         lifecycleRevision: input.lifecycleRevision,
       })),
       discardRotate: mutation((ctx, input) => { const work = ctx.serviceUsers.rotateAccessKey(input.userId, input.accessKeyId, { lifecycleRevision: input.lifecycleRevision }); if (input.mode === "catch") work.catch(() => {}); else if (input.mode === "finally") work.finally(() => {}); else work.then(undefined, () => {}); return null; }),
+      aggregateSecret: mutation((ctx, input) => {
+        const work = input.operation === "create"
+          ? ctx.serviceUsers.create({ displayName: input.displayName, accessKey: { name: input.name, grants: ["tickets:read"] } })
+          : input.operation === "issue"
+            ? ctx.serviceUsers.issueAccessKey(input.userId, { name: input.name, grants: ["tickets:read"] })
+            : ctx.serviceUsers.rotateAccessKey(input.userId, input.accessKeyId, { lifecycleRevision: input.lifecycleRevision });
+        const aggregate = Promise[input.aggregate]([work]);
+        return input.returned ? aggregate : null;
+      }),
       disableAgent: mutation((ctx, userId) => ctx.serviceUsers.disable(userId)),
     },
   });
@@ -467,6 +574,20 @@ async function proveRemoteEngineServiceUserLifecycle(serverEnv, config) {
     const created = await runMutation(first, "createAgent", []);
     assert.equal(created.error, null, JSON.stringify(created.error));
     const original = await first.adapter.prepare(first.adapter.dialect.sql("SELECT [lifecycleRevision], [selector] FROM [sporades_auth_access_keys] WHERE [id] = ?")).get(created.data.accessKey.id);
+    for (const aggregate of ["all", "allSettled", "race", "any"]) {
+      const returned = await runMutation(first, "aggregateSecret", [{ operation: "issue", aggregate, returned: true, userId: created.data.serviceUser.id, name: `remote-returned-${aggregate}` }]);
+      assert.equal(returned.error, null, JSON.stringify(returned.error));
+    }
+    for (const operation of ["create", "issue", "rotate"]) {
+      for (const aggregate of ["all", "allSettled", "race", "any"]) {
+        const name = `remote-discarded-${operation}-${aggregate}`;
+        const response = await runMutation(first, "aggregateSecret", [{ operation, aggregate, returned: false, displayName: name, name, userId: created.data.serviceUser.id, accessKeyId: created.data.accessKey.id, lifecycleRevision: created.data.accessKey.lifecycleRevision }]);
+        assert.equal(response.error?.code, "ACCESS_KEY_SECRET_NOT_CONSUMED", `${operation} via discarded Promise.${aggregate}`);
+        if (operation === "create") assert.equal((await first.adapter.prepare(first.adapter.dialect.sql("SELECT [id] FROM [sporades_auth_users] WHERE [displayName] = ?")).get(name)) ?? null, null);
+        if (operation === "issue") assert.equal((await first.adapter.prepare(first.adapter.dialect.sql("SELECT [id] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [name] = ?")).get(created.data.serviceUser.id, name)) ?? null, null);
+        if (operation === "rotate") assert.deepEqual(await first.adapter.prepare(first.adapter.dialect.sql("SELECT [lifecycleRevision], [selector] FROM [sporades_auth_access_keys] WHERE [id] = ?")).get(created.data.accessKey.id), original);
+      }
+    }
     for (const mode of ["catch", "finally", "then"]) {
       assert.equal((await runMutation(first, "discardCreate", [mode])).error?.code, "ACCESS_KEY_SECRET_NOT_CONSUMED");
       assert.equal((await runMutation(first, "discardIssue", [{ userId: created.data.serviceUser.id, mode }])).error?.code, "ACCESS_KEY_SECRET_NOT_CONSUMED");
@@ -494,7 +615,7 @@ async function proveRemoteEngineServiceUserLifecycle(serverEnv, config) {
     const current = await first.adapter.prepare(first.adapter.dialect.sql(
       "SELECT [revokedAt], [selector], [verifierDigest] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ?",
     )).all(created.data.serviceUser.id);
-    assert.equal(current.length, 1);
+    assert.equal(current.length, 5);
     assert.equal(current.every((key) => key.revokedAt && key.selector === null && key.verifierDigest === null), true);
   } finally {
     await second?.close();

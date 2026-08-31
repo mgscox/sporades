@@ -419,9 +419,11 @@ attribution. Plaintext is returned only by a committed create, issue, or
 rotation and is never recoverable, so move it directly to an external secret
 store. Mutation work is drained before commit even if Capsule code forgets to
 await it. For `create()`, `issueAccessKey()`, and `rotateAccessKey()`, however,
-the Mutation must await or return the Promise: otherwise Sporades rolls the
-transaction back rather than silently commit a credential whose one-time
-plaintext result was discarded. Non-secret lifecycle operations are still
+every produced token must occur in the Mutation's returned JSON data. Returning
+an aggregate from `Promise.all`, `allSettled`, `race`, or `any` works when it
+contains the token; merely observing or discarding that aggregate rolls the
+transaction back rather than silently committing a credential whose one-time
+plaintext result was lost. Non-secret lifecycle operations are still
 drained, and any rejected operation rolls the whole Mutation back.
 
 Service identity and scopes do not grant application authority. The Capsule

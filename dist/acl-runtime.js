@@ -946,17 +946,9 @@ export async function drainPendingAclWrites(context) {
     while (context?.__pendingAclWrites?.length > 0) {
         const pending = context.__pendingAclWrites.splice(0);
         const results = await Promise.allSettled(pending.map((entry) => entry?.promise ?? entry));
-        for (let index = 0; index < results.length; index += 1) {
-            const result = results[index];
+        for (const result of results) {
             if (result.status === "rejected" && !firstError) {
                 firstError = result.reason;
-            }
-            const entry = pending[index];
-            if (!firstError && entry?.requiresConsumption && !entry.consumed) {
-                firstError = Object.assign(new Error("One-time credential result was not consumed."), {
-                    code: "ACCESS_KEY_SECRET_NOT_CONSUMED",
-                    hint: "Await and return the Service-User credential result from the Mutation.",
-                });
             }
         }
     }
