@@ -23951,6 +23951,8 @@ var handlerContextByDatabase = /* @__PURE__ */ new WeakMap();
 var serviceUserMutationAuthority = Object.freeze({ kind: "service-user-mutation-authority" });
 var MutationExecutionStorage = process.getBuiltinModule("node:async_hooks").AsyncLocalStorage;
 var mutationExecution = new MutationExecutionStorage();
+var validatedLifecycleReservations = /* @__PURE__ */ new WeakMap();
+var validatedLifecycleContinuations = /* @__PURE__ */ new WeakMap();
 function registerHandlerContextMapping(database, holder) {
   if (!database.__transactionActive) return;
   releaseHandlerContextMapping(database);
@@ -26101,6 +26103,7 @@ async function runCustomMutation(database, context, mutationName, args, resolved
   let result;
   try {
     result = await invokeWithLifecycleInitiation(() => mutationHandler(context, ...args));
+    result = await resolveValidatedLifecycleContinuation(result);
   } finally {
     await drainPendingAclWrites(context);
   }
@@ -26292,6 +26295,20 @@ function createMutationContext(database, auth, options = {}) {
       } : {}
     }
   );
+  for (const [reserveName, operationName] of [
+    ["reserveCreate", "create"],
+    ["reserveIssueAccessKey", "issueAccessKey"],
+    ["reserveListAccessKeys", "listAccessKeys"],
+    ["reserveRotateAccessKey", "rotateAccessKey"],
+    ["reserveRevokeAccessKey", "revokeAccessKey"],
+    ["reserveDisable", "disable"]
+  ]) {
+    context.serviceUsers[reserveName] = (...args) => reserveValidatedLifecycle(
+      options,
+      "service-user",
+      () => context.serviceUsers[operationName](...args)
+    );
+  }
   context.serverAuth = {
     revokeHumanSecurity(userId) {
       assertLiveMutationInvocation(options);
@@ -26344,7 +26361,56 @@ function createMutationContext(database, auth, options = {}) {
       if (!result.ok) throw serverAuthError(result.error, "Could not complete the password reset.");
     }
   };
+  context.serverAuth.reserveRevokeHumanSecurity = (userId) => reserveValidatedLifecycle(
+    options,
+    "human-security",
+    () => context.serverAuth.revokeHumanSecurity(userId)
+  );
+  context.lifecycle = {
+    continue(operations, continuation) {
+      const list = Array.isArray(operations) ? operations : [operations];
+      if (list.length === 0 || typeof continuation !== "function") {
+        throw commandError("Invalid lifecycle continuation.", "Return one or more reserved lifecycle operations with a continuation callback.", "INVALID_LIFECYCLE_CONTINUATION");
+      }
+      const states = list.map((operation) => validatedLifecycleReservations.get(operation));
+      if (states.some((state) => !state)) {
+        throw commandError("Invalid lifecycle continuation.", "Use reservations created by this Mutation context.", "INVALID_LIFECYCLE_CONTINUATION");
+      }
+      const invocation = mutationExecution.getStore();
+      if (!invocation || invocation.active !== true || states.some((state) => state?.invocation !== invocation || state?.consumed)) {
+        throw commandError("Lifecycle continuation denied.", "Return fresh reservations from the owning Mutation exactly once.", "LIFECYCLE_CONTINUATION_DENIED");
+      }
+      if (new Set(states).size !== states.length) {
+        throw commandError("Lifecycle continuation denied.", "Each reserved lifecycle operation may appear exactly once.", "LIFECYCLE_CONTINUATION_DENIED");
+      }
+      const wrapper = Object.freeze({});
+      validatedLifecycleContinuations.set(wrapper, { states, continuation });
+      return wrapper;
+    }
+  };
   return context;
+}
+function reserveValidatedLifecycle(options, capability, execute) {
+  assertLiveMutationInvocation(options, capability);
+  const reservation = Object.freeze({});
+  validatedLifecycleReservations.set(reservation, {
+    invocation: options.mutationInvocation,
+    execute,
+    consumed: false
+  });
+  return reservation;
+}
+async function resolveValidatedLifecycleContinuation(value) {
+  const plan = value && typeof value === "object" ? validatedLifecycleContinuations.get(value) : void 0;
+  if (!plan) return value;
+  const invocation = mutationExecution.getStore();
+  if (!invocation || invocation.active !== true || plan.states.some((state) => state.invocation !== invocation || state.consumed) || new Set(plan.states).size !== plan.states.length) {
+    throw commandError("Lifecycle continuation denied.", "Return fresh reservations from the owning Mutation exactly once.", "LIFECYCLE_CONTINUATION_DENIED");
+  }
+  for (const state of plan.states) state.consumed = true;
+  const pending = invokeWithLifecycleInitiation(() => plan.states.map((state) => state.execute()));
+  const outcomes = await Promise.all(pending);
+  return await plan.continuation(plan.states.length === 1 ? outcomes[0] : outcomes);
 }
 function assertLiveMutationInvocation(options, capability = "human-security") {
   if (options.serviceUserMutationAuthority !== serviceUserMutationAuthority || options.mutationInvocation?.active !== true || mutationExecution.getStore() !== options.mutationInvocation || options.mutationInvocation?.initiationOpen !== true) {

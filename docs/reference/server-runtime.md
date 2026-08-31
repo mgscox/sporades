@@ -445,6 +445,27 @@ detached Promises, and post-`await` continuations cannot start new lifecycle
 operations through a retained context reference.
 Existing human-owned Access keys and Session behavior are unchanged.
 
+When application authorization or idempotency checks require database reads
+before lifecycle work, reserve the write-free operation during initial dispatch
+and return a validated continuation after those checks:
+
+```ts
+const operation = ctx.serviceUsers.reserveDisable(userId);
+const membership = await ctx.db.agentMemberships.where("userId", userId).first();
+if (!membership || !mayAdminister(ctx.auth.userId, membership)) throw new Error("Denied");
+return ctx.lifecycle.continue(operation, async (disabled) => {
+  await ctx.db.agentMemberships.update(membership.id, { status: "removed" });
+  return disabled;
+});
+```
+
+Reservations are opaque, write-free, one-shot, and bound to the owning Mutation
+transaction. Only the exact continuation returned by that Mutation is adopted;
+copies, unused or duplicate reservations, detached callbacks, other handlers,
+and calls after settlement cannot execute them. An array declares multiple
+approved lifecycle operations explicitly. This costs a little ceremony but
+allows async application validation without reopening ambient authority.
+
 An explicit `ctx.privileged.run(...)` callback receives a separate
 `ctx.accessKeys` projection with only `list(ownerUserId, options?)`,
 `inspect(keyId)`, `revoke(keyId)`, `revokeAll(ownerUserId)`, and

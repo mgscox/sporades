@@ -649,6 +649,16 @@ Use it for atomic suspension or comparable high-risk human security
 transitions; do not use it as sign-out, password reset, or generic auth-table
 administration.
 
+If administrator, replay, or target checks must query application tables first,
+call `ctx.serverAuth.reserveRevokeHumanSecurity(userId)` during initial dispatch,
+perform those async checks, then return
+`ctx.lifecycle.continue(reservation, callback)`. Reservation is write-free; the
+runtime performs the revocation and then the callback atomically only when that
+exact one-shot continuation is returned by the owning Mutation. Unused,
+duplicated, copied, detached, cross-handler, and post-settlement reservations
+cannot act. Prefer the direct API for simple flows; use the validated
+continuation when authorization genuinely depends on async application state.
+
 ### Simulate Local Identities
 
 For local browser testing, start a Dev session, then run:

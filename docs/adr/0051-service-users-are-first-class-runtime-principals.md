@@ -23,6 +23,14 @@ not authority: the Mutation dispatcher binds a runtime-owned capability that
 Capsule input and middleware cannot forge. Access keys, endpoints, Queries,
 App messages, Jobs, Schedules, lifecycle hooks, Anonymous sessions, and guest
 sessions cannot use the interface even when their work is transactional.
+For application flows that require asynchronous role, resource, replay, or
+target validation, each lifecycle method has a `reserve...` counterpart. It
+creates no privileged state and can be adopted exactly once by returning
+`ctx.lifecycle.continue(...)` from the owning Mutation. The runtime binds the
+opaque reservation to that transaction and rejects copies, duplicate use,
+detached descendants, cross-context transfer, and late use. Multiple operations
+must be declared as an explicit reservation array rather than inheriting a
+reusable ambient capability.
 Plaintext leaves the runtime only after a successful issue or rotation commits.
 Every lifecycle Promise joins the Mutation's pending-work drain. Every plaintext
 token produced by create, issue, or rotation must additionally occur in the

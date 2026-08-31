@@ -27,3 +27,13 @@ runtime then tracks the returned Promise through settlement. Authority closes
 when that dispatch returns its Promise, so post-`await` continuations, timers,
 microtasks, detached Promises, and retained aliases cannot initiate another
 retirement even while the owning mutation transaction is still open.
+
+An application that must first await its own administrator, idempotency, or
+target checks uses the additive validated-continuation form: reserve the
+write-free revocation synchronously, then return `ctx.lifecycle.continue(...)`
+after validation. The reservation is one-shot and transaction-bound; only the
+owning Mutation's returned opaque continuation can consume it. This preserves
+atomic app/runtime updates without allowing a retained capability to become
+ambient authority. The trade-off is an explicit two-stage API for complex
+flows; uncomplicated handlers should continue using the direct synchronous-
+initiation form.

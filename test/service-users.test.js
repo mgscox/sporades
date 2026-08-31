@@ -500,6 +500,9 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
       createWithDiscardedCatch: mutation((ctx) => { ctx.serviceUsers.create({ displayName: "Caught Secret Agent", accessKey: { name: "caught", grants: ["tickets:read"] } }).catch(() => {}); return null; }),
       createWithDiscardedFinally: mutation((ctx) => { ctx.serviceUsers.create({ displayName: "Finally Secret Agent", accessKey: { name: "finally", grants: ["tickets:read"] } }).finally(() => {}); return null; }),
       createWithDiscardedRejectionThen: mutation((ctx) => { ctx.serviceUsers.create({ displayName: "Then Secret Agent", accessKey: { name: "then", grants: ["tickets:read"] } }).then(undefined, () => {}); return null; }),
+      reservedCreate: mutation(async (ctx, displayName) => { const operation = ctx.serviceUsers.reserveCreate({ displayName, accessKey: { name: "reserved", grants: ["tickets:read"] } }); await new Promise((resolve) => setImmediate(resolve)); return ctx.lifecycle.continue(operation, (created) => created); }),
+      unusedReservedCreate: mutation(async (ctx) => { ctx.serviceUsers.reserveCreate({ displayName: "Unused Reserved Agent", accessKey: { name: "unused-reserved", grants: ["tickets:read"] } }); await new Promise((resolve) => setImmediate(resolve)); return { validated: false }; }),
+      duplicateReservedCreate: mutation(async (ctx) => { const operation = ctx.serviceUsers.reserveCreate({ displayName: "Duplicate Reserved Agent", accessKey: { name: "duplicate-reserved", grants: ["tickets:read"] } }); await new Promise((resolve) => setImmediate(resolve)); return ctx.lifecycle.continue([operation, operation], () => null); }),
       issueAgentKey: mutation((ctx, input) => ctx.serviceUsers.issueAccessKey(input.userId, input.accessKey)),
       discardIssueAgentKey: mutation((ctx, input) => { const work = ctx.serviceUsers.issueAccessKey(input.userId, input.accessKey); if (input.mode === "catch") work.catch(() => {}); else if (input.mode === "finally") work.finally(() => {}); else work.then(undefined, () => {}); return null; }),
       rotateAgentKey: mutation((ctx, input) => ctx.serviceUsers.rotateAccessKey(input.userId, input.accessKeyId, {
@@ -634,6 +637,13 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
 
     const created = await runMutation(database, "createAgent", []);
     assert.equal(created.error, null, JSON.stringify(created.error));
+    assert.deepEqual((await runMutation(database, "unusedReservedCreate", [])).data, { validated: false });
+    assert.equal((await database.adapter.prepare(database.adapter.dialect.sql("SELECT [id] FROM [sporades_auth_users] WHERE [displayName] = ?")).get("Unused Reserved Agent")) ?? null, null);
+    assert.equal((await runMutation(database, "duplicateReservedCreate", [])).error?.code, "LIFECYCLE_CONTINUATION_DENIED");
+    assert.equal((await database.adapter.prepare(database.adapter.dialect.sql("SELECT [id] FROM [sporades_auth_users] WHERE [displayName] = ?")).get("Duplicate Reserved Agent")) ?? null, null);
+    const reservedCreated = await runMutation(database, "reservedCreate", ["Validated Reserved Agent"]);
+    assert.equal(reservedCreated.error, null, JSON.stringify(reservedCreated.error));
+    assert.match(reservedCreated.data.token, /^spk_1_/);
     assert.equal((await runMutation(database, "retainServiceUsers", [])).error, null);
     assert.throws(() => globalThis.__retainedServiceUsers.listAccessKeys(created.data.serviceUser.id),
       (error) => error?.code === "SERVICE_USER_MUTATION_REQUIRED");

@@ -15,6 +15,9 @@ const definition = capsule({ name: "human-security-transition", schema: { effect
   rollback: mutation(async (ctx, userId) => { await ctx.serverAuth.revokeHumanSecurity(userId); await ctx.db.effects.insert({ value: "rolled-back" }); throw new Error("force rollback"); }),
   revokeWithoutAwait: mutation(async (ctx, userId) => { ctx.serverAuth.revokeHumanSecurity(userId); await ctx.db.effects.insert({ value: `unawaited:${userId}` }); return { queued: true }; }),
   rollbackWithoutAwait: mutation((ctx, userId) => { ctx.serverAuth.revokeHumanSecurity(userId); throw new Error("force unawaited rollback"); }),
+  reservedRevoke: mutation(async (ctx, userId) => { const operation = ctx.serverAuth.reserveRevokeHumanSecurity(userId); await new Promise((resolve) => setImmediate(resolve)); return ctx.lifecycle.continue(operation, async (result) => { await ctx.db.effects.insert({ value: `reserved:${userId}` }); return result; }); }),
+  unusedReservedRevoke: mutation(async (ctx, userId) => { ctx.serverAuth.reserveRevokeHumanSecurity(userId); await new Promise((resolve) => setImmediate(resolve)); return { validated: false }; }),
+  duplicateReservedRevoke: mutation(async (ctx, userId) => { const operation = ctx.serverAuth.reserveRevokeHumanSecurity(userId); await new Promise((resolve) => setImmediate(resolve)); return ctx.lifecycle.continue([operation, operation], () => null); }),
   retainServerAuth: mutation((ctx) => { globalThis.__retainedServerAuth = ctx.serverAuth; return null; }),
   invokeRetainedServerAuth: mutation((_ctx, userId) => globalThis.__retainedServerAuth.revokeHumanSecurity(userId)),
   retainAwaitThenRevoke: mutation(async (ctx, input) => {
@@ -96,6 +99,17 @@ test("human security transition revokes Sessions and Access keys with the enclos
     assert.deepEqual(await database.adapter.prepare("SELECT lifecycleRevision, revokedAt FROM sporades_auth_access_keys WHERE id = ?").get("key-overlap-exploit"), overlapKeyBefore);
     assert.deepEqual(await database.adapter.prepare("SELECT operationRevision, currentCount FROM sporades_auth_access_key_owners WHERE ownerUserId = ?").get(overlapExploit), overlapOwnerBefore);
     assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM effects").get()).count, 0);
+    const unusedReserved = await seed("reserved-unused");
+    assert.deepEqual((await runMutation(database, actor, "unusedReservedRevoke", [unusedReserved], { sessionToken: "actor-session" })).data, { validated: false });
+    assert.ok(await database.adapter.readAuthSessionWithUser("session-reserved-unused"), "an unused reservation is write-free");
+    const duplicateReserved = await seed("reserved-duplicate");
+    assert.equal((await runMutation(database, actor, "duplicateReservedRevoke", [duplicateReserved], { sessionToken: "actor-session" })).error?.code, "LIFECYCLE_CONTINUATION_DENIED");
+    assert.ok(await database.adapter.readAuthSessionWithUser("session-reserved-duplicate"), "duplicate consumption rolls back without lifecycle writes");
+    const validReserved = await seed("reserved-valid");
+    const validReservedResult = await runMutation(database, actor, "reservedRevoke", [validReserved], { sessionToken: "actor-session" });
+    assert.equal(validReservedResult.error, null, JSON.stringify(validReservedResult.error));
+    assert.equal(validReservedResult.data.userId, validReserved);
+    assert.equal(await database.adapter.readAuthSessionWithUser("session-reserved-valid"), null, "validated continuation executes after asynchronous app checks");
     const awaitedEndpoint = database.endpoints.find((candidate) => candidate.options.path === "/revoke-awaited");
     const unawaitedEndpoint = database.endpoints.find((candidate) => candidate.options.path === "/revoke-unawaited");
     await assert.rejects(runEndpoint(database, awaitedEndpoint, new URL("http://capsule.test/revoke-awaited"), endpointRequest()),
@@ -111,7 +125,8 @@ test("human security transition revokes Sessions and Access keys with the enclos
     assert.ok(await database.adapter.readAuthSessionWithUser("session-message"));
     assert.deepEqual(await database.adapter.prepare("SELECT lifecycleRevision, revokedAt FROM sporades_auth_access_keys WHERE id = ?").get("key-message"), messageKeyBefore);
     assert.deepEqual(await database.adapter.prepare("SELECT operationRevision, currentCount FROM sporades_auth_access_key_owners WHERE ownerUserId = ?").get(messageTarget), ownerBefore);
-    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM effects").get()).count, 0);
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM effects").get()).count, 1);
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM effects WHERE value = ?").get(`reserved:${validReserved}`)).count, 1);
     assert.equal((await runMutation(database, actor, "retainServerAuth", [], { sessionToken: "actor-session" })).error, null);
     assert.throws(() => globalThis.__retainedServerAuth.revokeHumanSecurity(messageTarget), (error) => error?.code === "HUMAN_SECURITY_TRANSITION_DENIED");
     const retainedDuringLaterMutation = await runMutation(database, actor, "invokeRetainedServerAuth", [messageTarget], { sessionToken: "actor-session" });
