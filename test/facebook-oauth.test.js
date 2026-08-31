@@ -102,6 +102,8 @@ test("Facebook adapter uses the supported versioned code and Graph profile flow 
       reauthentication: true,
     }).url);
     assert.equal(reauthenticationUrl.searchParams.get("auth_type"), "reauthorize", "Facebook reauthentication must not silently reuse SSO");
+    const session = await resolveAnonymousSession(database, null); const unsupported = await beginOAuthSignIn(database, session, "facebook", { origin: "https://capsule.example", reauthentication: { purpose: "administrator-authority", userId: session.auth.userId } });
+    assert.equal(unsupported.ok, false); assert.equal(unsupported.error.code, "REAUTHENTICATION_FAILED", "Facebook fails closed because the callback has no signed freshness evidence");
 
     const requests = [];
     const originalFetch = globalThis.fetch;

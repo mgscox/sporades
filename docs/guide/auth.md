@@ -200,10 +200,16 @@ proof insertion. After the password KDF it claims the exact hash-and-salt row
 with a portable compare-and-swap update before inserting the proof, so a
 concurrent password rotation and stale-password proof cannot both commit.
 
-OAuth reauthentication is explicitly marked as step-up authentication when the
-runtime invokes Google, Microsoft, Apple or Facebook. Their authorization
-requests force a fresh login or provider reauthorization instead of silently
-accepting an existing SSO session. A Capsule `authorize` callback may apply
+OAuth reauthentication is supported for Google and Microsoft. Their
+authorization requests ask for a fresh login, and proof creation additionally
+requires a signed ID-token `auth_time` bound to the stored flow nonce and no
+older than that server-created flow. Removing `prompt` or `max_age` from the
+browser-visible URL therefore cannot turn an existing SSO session into a
+proof: missing, stale or future freshness evidence fails closed. The current
+Apple and Facebook adapters cannot obtain equivalent server-verifiable
+freshness evidence, so they explicitly reject reauthentication while ordinary
+sign-in remains supported. A successful OAuth start returns an observable
+`{ url }` redirect result before navigation. A Capsule `authorize` callback may apply
 additional current application policy; if it throws or its database read fails,
 Sporades logs only safe provider/purpose attribution and returns the same opaque
 `REAUTHENTICATION_FAILED` response as any other failed verification.

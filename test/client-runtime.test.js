@@ -1723,6 +1723,12 @@ test("client auth.signIn starts a full-page provider redirect and preserves the 
   }
 });
 
+test("client auth.reauthenticate returns and follows the observable OAuth redirect", async () => {
+  const url = "https://accounts.google.com/o/oauth2/v2/auth?state=reauth-state"; const browser = installBrowserFakes({ ...anonymousAuth, isAuthenticated: true, isGuest: false }, { href: "http://localhost:4000/admin", handlers: { "auth.reauthenticate": async () => ({ type: "auth.redirect", data: { url }, error: null }) } });
+  try { const runtime = await importClientRuntime(); const result = await runtime.auth.reauthenticate("google", undefined, "administrator-authority"); assert.deepEqual(result.data, { url }); assert.equal(browser.storage.get("assignedLocation"), url); }
+  finally { browser.cleanup(); }
+});
+
 test("client auth.signIn sends email credentials without starting a redirect", async () => {
   const emailAuth = {
     userId: "email-user",

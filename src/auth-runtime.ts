@@ -614,6 +614,7 @@ function createGoogleOAuthProviderAdapter(database: LooseRecord) {
     provider: "google",
     responseMode: "query",
     enabled: configured,
+    reauthenticationFreshness: "signed-auth-time",
     begin(context: LooseRecord) {
       const clientId = database.serverEnv[google.clientIdEnv];
       const params = new URLSearchParams({
@@ -666,6 +667,7 @@ function createAppleOAuthProviderAdapter(database: LooseRecord) {
     provider: "apple",
     responseMode: "form_post",
     enabled: configured,
+    reauthenticationFreshness: null,
     begin(context: LooseRecord) {
       if (!appleOAuthOriginEligible(new URL(context.redirectUri).origin)) {
         throw commandError(
@@ -819,6 +821,7 @@ function createFacebookOAuthProviderAdapter(database: LooseRecord) {
     provider: "facebook",
     responseMode: "query",
     enabled: configured,
+    reauthenticationFreshness: null,
     begin(context: LooseRecord) {
       const clientId = database.serverEnv[facebook.clientIdEnv];
       if (typeof clientId !== "string" || clientId.length < 1 || clientId.length > 4096) {
@@ -1251,6 +1254,7 @@ export async function verifyGoogleIdentityToken(database: LooseRecord, token: st
     emailVerified: claims.email_verified === true,
     displayName: normalizeSimulatedText(claims.name) ?? normalizeSimulatedText(claims.email) ?? "Google user",
     picture: normalizeSimulatedText(claims.picture),
+    reauthenticatedAt: Number.isSafeInteger(claims.auth_time) && claims.auth_time >= 0 ? new Date(claims.auth_time * 1000).toISOString() : null,
   };
 }
 
@@ -1261,6 +1265,7 @@ function createMicrosoftOAuthProviderAdapter(database: LooseRecord) {
     provider: "microsoft",
     responseMode: "query",
     enabled: configured,
+    reauthenticationFreshness: "signed-auth-time",
     async begin(context: LooseRecord) {
       const discovery = await discoverMicrosoftOpenIdConfiguration(database, microsoft.tenant);
       const clientId = database.serverEnv[microsoft.clientIdEnv];
@@ -1595,6 +1600,7 @@ export async function verifyMicrosoftIdentityToken(
     numericDate(claims.exp) &&
     optionalNumericDate(claims.nbf) &&
     optionalNumericDate(claims.iat) &&
+    optionalNumericDate(claims.auth_time) &&
     visible(claims.nonce, 512) &&
     typeof claims.tid === "string" &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(claims.tid) &&
@@ -1651,6 +1657,7 @@ export async function verifyMicrosoftIdentityToken(
     emailVerified: null,
     displayName: normalizeSimulatedText(claims.name) ?? normalizeSimulatedText(claims.preferred_username) ?? email ?? "Microsoft user",
     picture: null,
+    reauthenticatedAt: Number.isSafeInteger(claims.auth_time) && claims.auth_time >= 0 ? new Date(claims.auth_time * 1000).toISOString() : null,
   };
 }
 
@@ -3241,12 +3248,15 @@ export async function routeSporadesAuth(database: LooseRecord, request: Incoming
       nonce: stateRow.nonce,
       pkceVerifier: stateRow.pkceVerifier,
       parameters,
+      reauthentication: Boolean(stateRow.reauthPurpose),
     });
     if (stateRow.reauthPurpose) {
       const subject = normalizeSimulatedText(profile?.subject ?? profile?.sub); const policy = database.reauthenticationPolicy?.[stateRow.reauthPurpose]; const now = database.clock.now();
+      const authenticatedAt = typeof profile?.reauthenticatedAt === "string" ? Date.parse(profile.reauthenticatedAt) : NaN; const flowStartedAt = Date.parse(stateRow.createdAt);
+      const freshnessVerified = adapter.reauthenticationFreshness === "signed-auth-time" && Number.isFinite(authenticatedAt) && Number.isFinite(flowStartedAt) && authenticatedAt >= flowStartedAt - 1000 && authenticatedAt <= now.getTime() + 60_000;
       let authorized = false;
       try {
-        authorized = await database.adapter.withTransaction(async (tx: LooseRecord) => { const current = await tx.readAuthSessionWithUser(stateRow.sessionToken); const identity = subject ? await tx.findAuthIdentityByProviderSubject(provider, subject) : null; if (!policy || !current || current.token !== stateRow.sessionToken || current.userId !== stateRow.reauthUserId || !current.isAuthenticated || current.isGuest || Date.parse(current.expiresAt) <= now.getTime() || identity?.userId !== current.userId) return false; const currentAuth = sessionFromRow(current).auth; if (!await database.authorizeReauthentication(tx, currentAuth, stateRow.reauthPurpose)) return false; await tx.replaceReauthenticationProof({ id: nodeCryptoModule.randomUUID(), userId: current.userId, sessionToken: stateRow.sessionToken, purpose: stateRow.reauthPurpose, createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + policy.maxAgeSeconds * 1000).toISOString() }); return true; });
+        authorized = await database.adapter.withTransaction(async (tx: LooseRecord) => { const current = await tx.readAuthSessionWithUser(stateRow.sessionToken); const identity = subject ? await tx.findAuthIdentityByProviderSubject(provider, subject) : null; if (!freshnessVerified || !policy || !current || current.token !== stateRow.sessionToken || current.userId !== stateRow.reauthUserId || !current.isAuthenticated || current.isGuest || Date.parse(current.expiresAt) <= now.getTime() || identity?.userId !== current.userId) return false; const currentAuth = sessionFromRow(current).auth; if (!await database.authorizeReauthentication(tx, currentAuth, stateRow.reauthPurpose)) return false; await tx.replaceReauthenticationProof({ id: nodeCryptoModule.randomUUID(), userId: current.userId, sessionToken: stateRow.sessionToken, purpose: stateRow.reauthPurpose, createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + policy.maxAgeSeconds * 1000).toISOString() }); return true; });
       } catch {
         try { await database.log?.emit?.({ category: "platform", event: "auth.reauthentication.authorization_failed", level: "error", message: "Reauthentication authorization policy failed.", data: { provider, purpose: stateRow.reauthPurpose } }); } catch {}
         throw commandError("Reauthentication failed.", "Verify the current linked identity and retry.", "REAUTHENTICATION_FAILED");
@@ -3347,6 +3357,7 @@ export async function beginOAuthSignIn(database: LooseRecord, session: LooseReco
   if (admission === invalidRegistrationAdmission) return registrationDenied();
   const registrationCiphertext = admission === undefined ? null : await sealOAuthRegistration(database, admission, { provider, sessionToken: session.token, redirectUri, nonce, expiresAt });
   const reauthentication = options.reauthentication;
+  if (reauthentication?.purpose && adapter.reauthenticationFreshness !== "signed-auth-time") return { ok: false, error: { code: "REAUTHENTICATION_FAILED", message: "Reauthentication failed.", hint: "Verify the current linked identity and retry." } };
   let started;
   try {
     started = await adapter.begin({

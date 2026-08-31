@@ -108,9 +108,9 @@ export type AuthApi = {
   signUp(provider: string, credentials?: unknown, options?: RegistrationOptions): Promise<SporadesResult>;
   signIn(provider: "email", credentials: EmailCredentials, options?: RegistrationOptions): Promise<SporadesResult>;
   signIn(provider: string, credentials?: unknown, options?: RegistrationOptions): Promise<SporadesResult>;
-  /** Verify the current linked identity for one declared purpose. Returns no bearer or proof handle. */
-  reauthenticate(provider: "email", credentials: EmailCredentials, purpose: string): Promise<SporadesResult<{ ok: true; purpose: string; expiresAt: string }>>;
-  reauthenticate(provider: string, credentials: unknown, purpose: string): Promise<SporadesResult<{ ok: true; purpose: string; expiresAt: string }>>;
+  /** Verify the current linked identity for one declared purpose. OAuth returns the observable redirect URL; neither form returns a bearer or proof handle. */
+  reauthenticate(provider: "email", credentials: EmailCredentials, purpose: string): Promise<SporadesResult<{ ok: true; purpose: string; expiresAt: string } | { url: string }>>;
+  reauthenticate(provider: string, credentials: unknown, purpose: string): Promise<SporadesResult<{ ok: true; purpose: string; expiresAt: string } | { url: string }>>;
   signOut(): Promise<SporadesResult<{ ok: boolean }>>;
   /** Change the signed-in email credential after verifying its current password. */
   setPassword(email: string, currentPassword: string, newPassword: string): Promise<SporadesResult<{ ok: boolean }>>;

@@ -813,6 +813,7 @@ test("runtime OAuth provider seam completes query and form-post callbacks with p
         provider: "query",
         responseMode: "query",
         enabled: true,
+        reauthenticationFreshness: "signed-auth-time",
         begin(context) {
           return { url: `https://provider.example/authorize?state=${context.state}` };
         },
@@ -824,6 +825,7 @@ test("runtime OAuth provider seam completes query and form-post callbacks with p
             emailVerified: null,
             displayName: "Query User",
             picture: null,
+            reauthenticatedAt: context.reauthentication ? new Date().toISOString() : null,
           };
         },
       },
@@ -881,6 +883,15 @@ test("runtime OAuth provider seam completes query and form-post callbacks with p
     database.reauthenticationPolicy = { "administrator-authority": { maxAgeSeconds: 900 } };
     let authorizationAllowed = true;
     database.authorizeReauthentication = async (_transaction, auth, purpose) => authorizationAllowed && auth.userId === linkedSession.userId && purpose === "administrator-authority";
+    const completeWithFreshness = database.__oauthProviderAdapters.query.complete;
+    for (const [label, reauthenticatedAt] of [["missing", null], ["stale", new Date(Date.now() - 60_000).toISOString()], ["future", new Date(Date.now() + 120_000).toISOString()]]) {
+      database.__oauthProviderAdapters.query.complete = async (context) => ({ ...(await completeWithFreshness(context)), reauthenticatedAt });
+      const freshnessStart = await beginOAuthSignIn(database, querySession, "query", { origin: "http://127.0.0.1:4000", reauthentication: { purpose: "administrator-authority", userId: linkedSession.userId } });
+      assert.equal(new URL(freshnessStart.url).searchParams.has("max_age"), false, "browser-visible URL parameters are not freshness evidence"); const freshnessState = new URL(freshnessStart.url).searchParams.get("state"); const freshnessResponse = responseRecorder();
+      await routeSporadesAuth(database, { method: "GET", url: `/__sporades/auth/query/callback?state=${freshnessState}&code=query-code`, headers: {} }, freshnessResponse);
+      assert.equal(freshnessResponse.statusCode, 500, `${label} server-verified freshness evidence must fail closed`); assert.equal(database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_reauthentication_proofs").get().count, 0);
+    }
+    database.__oauthProviderAdapters.query.complete = completeWithFreshness;
     const deniedStart = await beginOAuthSignIn(database, querySession, "query", {
       origin: "http://127.0.0.1:4000",
       reauthentication: { purpose: "administrator-authority", userId: linkedSession.userId },
@@ -941,7 +952,7 @@ test("runtime OAuth provider seam completes query and form-post callbacks with p
     assert.equal(formResponse.statusCode, 302, formResponse.body);
     assert.equal(formResponse.headers.location, "http://127.0.0.1:4000/after");
     assert.equal(database.adapter.readAuthSessionWithUser(formSession.token).provider, "form");
-    assert.equal(completions.length, 6);
+    assert.equal(completions.length, 9);
     assert.equal(completions[0].provider, "query");
     assert.ok(completions[0].nonce);
     assert.ok(completions[0].pkceVerifier);
@@ -1221,6 +1232,7 @@ test("Google identity tokens require signature, issuer, audience, expiry, nonce,
       email: "person@example.com",
       email_verified: true,
       name: "Person",
+      auth_time: Math.floor(Date.now() / 1000),
     };
     try {
       const identity = await verifyGoogleIdentityToken(
@@ -1234,6 +1246,7 @@ test("Google identity tokens require signature, issuer, audience, expiry, nonce,
         emailVerified: true,
         displayName: "Person",
         picture: null,
+        reauthenticatedAt: new Date(baseClaims.auth_time * 1000).toISOString(),
       });
 
       const invalidCases = [
@@ -2222,6 +2235,7 @@ test("Microsoft identity tokens require signed issuer, audience, expiry, nonce, 
       tid: tenantId,
       sub: "same-subject-in-every-tenant",
       name: "Microsoft Person",
+      auth_time: Math.floor(Date.now() / 1000),
     };
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async (url) => {
@@ -2244,6 +2258,7 @@ test("Microsoft identity tokens require signed issuer, audience, expiry, nonce, 
         emailVerified: null,
         displayName: "Microsoft Person",
         picture: null,
+        reauthenticatedAt: new Date(baseClaims.auth_time * 1000).toISOString(),
       });
 
       const invalidCases = [
@@ -2366,7 +2381,9 @@ test("Apple only starts on eligible HTTPS domain origins and sends the exact web
     const origin = "https://capsule.example.test";
     assert.equal(appleOAuthOriginEligible(origin), true);
     const session = await resolveAnonymousSession(database, null);
-    const result = await beginOAuthSignIn(database, session, "apple", { origin, returnTo: `${origin}/after`, reauthentication: { purpose: "administrator-authority", userId: session.auth.userId } });
+    const unsupported = await beginOAuthSignIn(database, session, "apple", { origin, returnTo: `${origin}/after`, reauthentication: { purpose: "administrator-authority", userId: session.auth.userId } });
+    assert.equal(unsupported.ok, false); assert.equal(unsupported.error.code, "REAUTHENTICATION_FAILED", "Apple fails closed because this adapter cannot verify callback freshness");
+    const result = await beginOAuthSignIn(database, session, "apple", { origin, returnTo: `${origin}/after` });
     assert.equal(result.ok, true);
     const authorization = new URL(result.url);
     assert.equal(authorization.origin, "https://appleid.apple.com");
@@ -2378,7 +2395,7 @@ test("Apple only starts on eligible HTTPS domain origins and sends the exact web
     assert.equal(authorization.searchParams.get("scope"), "name email");
     assert.ok(authorization.searchParams.get("state"));
     assert.ok(authorization.searchParams.get("nonce"));
-    assert.equal(authorization.searchParams.get("prompt"), "login");
+    assert.equal(authorization.searchParams.has("prompt"), false, "ordinary Apple sign-in is unchanged; Apple reauthentication is rejected before redirect");
     assert.equal(authorization.searchParams.has("code_challenge"), false);
 
     database.serverEnv.APPLE_PRIVATE_KEY = "not-a-private-key";
