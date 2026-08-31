@@ -26278,6 +26278,9 @@ function createMutationContext(database, auth, options = {}) {
   );
   context.serverAuth = {
     revokeHumanSecurity(userId) {
+      if (options.serviceUserMutationAuthority !== serviceUserMutationAuthority) {
+        throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
+      }
       return trackMutationContextWork(context, (async () => {
         if (!database.__transactionActive || !auth?.isAuthenticated || auth?.isGuest || auth?.userKind === "service" || typeof options.sessionToken !== "string" || typeof userId !== "string" || !userId || userId === "__privileged__") {
           throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
