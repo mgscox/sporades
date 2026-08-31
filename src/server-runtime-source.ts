@@ -6184,7 +6184,10 @@ async function runCustomMutation(database: LooseRecord, context: any, mutationNa
     await drainPendingAclWrites(context);
   }
   if (result !== undefined) {
-    assertJsonCompatible(result);
+    // This inert snapshot is the single source of truth for both one-time-secret
+    // reachability and the value returned across the public boundary. Never read
+    // Capsule-owned getters or proxies again after this point.
+    result = assertJsonCompatible(result);
   }
   return { ok: true, data: result ?? null, error: null as any };
 }

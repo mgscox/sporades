@@ -423,7 +423,10 @@ every produced token must occur in the Mutation's returned JSON data. Returning
 an aggregate from `Promise.all`, `allSettled`, `race`, or `any` works when it
 contains the token; merely observing or discarding that aggregate rolls the
 transaction back rather than silently committing a credential whose one-time
-plaintext result was lost. Non-secret lifecycle operations are still
+plaintext result was lost. Sporades canonicalizes the Mutation result exactly
+once and uses that inert JSON snapshot for both this check and the public result;
+stateful getters, proxies, or `toJSON` hooks cannot create a check/transport gap.
+Non-secret lifecycle operations are still
 drained, and any rejected operation rolls the whole Mutation back.
 
 Service identity and scopes do not grant application authority. The Capsule

@@ -211,6 +211,17 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
         const aggregate = Promise[input.aggregate]([work]);
         return input.returned ? aggregate : null;
       }),
+      hostileAgentSecret: mutation(async (ctx, input) => {
+        const issued = input.operation === "create"
+          ? await ctx.serviceUsers.create({ displayName: input.displayName, accessKey: { name: input.name, grants: ["tickets:read"] } })
+          : input.operation === "issue"
+            ? await ctx.serviceUsers.issueAccessKey(input.userId, { name: input.name, grants: ["tickets:read"] })
+            : await ctx.serviceUsers.rotateAccessKey(input.userId, input.accessKeyId, { lifecycleRevision: input.lifecycleRevision });
+        if (input.mode === "throw") return { toJSON() { throw new Error("hostile serialization"); }, token: issued.token };
+        return Object.defineProperty({ toJSON() { return { token: null }; } }, "token", {
+          enumerable: true, get() { return issued.token; },
+        });
+      }),
       listAgentKeys: mutation((ctx, userId) => ctx.serviceUsers.listAccessKeys(userId)),
       disableAgent: mutation((ctx, userId) => ctx.serviceUsers.disable(userId)),
     },
@@ -291,6 +302,17 @@ test("a human Session atomically creates, attributes, rotates, and disables a se
         const name = `discarded-${operation}-${aggregate}`;
         const response = await runMutation(database, "aggregateAgentSecret", [{ operation, aggregate, returned: false, displayName: name, name, userId: created.data.serviceUser.id, accessKeyId: created.data.accessKey.id, lifecycleRevision: created.data.accessKey.lifecycleRevision }]);
         assert.equal(response.error?.code, "ACCESS_KEY_SECRET_NOT_CONSUMED", `${operation} via discarded Promise.${aggregate}`);
+        if (operation === "create") assert.equal((await database.adapter.prepare(database.adapter.dialect.sql("SELECT [id] FROM [sporades_auth_users] WHERE [displayName] = ?")).get(name)) ?? null, null);
+        if (operation === "issue") assert.equal((await database.adapter.prepare(database.adapter.dialect.sql("SELECT [id] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [name] = ?")).get(created.data.serviceUser.id, name)) ?? null, null);
+        if (operation === "rotate") assert.deepEqual(await database.adapter.prepare(database.adapter.dialect.sql("SELECT [lifecycleRevision], [selector] FROM [sporades_auth_access_keys] WHERE [id] = ?")).get(created.data.accessKey.id), originalCredential);
+      }
+    }
+    for (const operation of ["create", "issue", "rotate"]) {
+      for (const mode of ["masked", "throw"]) {
+        const name = `hostile-${operation}-${mode}`;
+        const response = await runMutation(database, "hostileAgentSecret", [{ operation, mode, displayName: name, name, userId: created.data.serviceUser.id, accessKeyId: created.data.accessKey.id, lifecycleRevision: created.data.accessKey.lifecycleRevision }]);
+        if (mode === "masked") assert.equal(response.error?.code, "ACCESS_KEY_SECRET_NOT_CONSUMED");
+        else assert.match(response.error?.message ?? "", /Invalid JSON field value/);
         if (operation === "create") assert.equal((await database.adapter.prepare(database.adapter.dialect.sql("SELECT [id] FROM [sporades_auth_users] WHERE [displayName] = ?")).get(name)) ?? null, null);
         if (operation === "issue") assert.equal((await database.adapter.prepare(database.adapter.dialect.sql("SELECT [id] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [name] = ?")).get(created.data.serviceUser.id, name)) ?? null, null);
         if (operation === "rotate") assert.deepEqual(await database.adapter.prepare(database.adapter.dialect.sql("SELECT [lifecycleRevision], [selector] FROM [sporades_auth_access_keys] WHERE [id] = ?")).get(created.data.accessKey.id), originalCredential);
@@ -559,6 +581,15 @@ async function proveRemoteEngineServiceUserLifecycle(serverEnv, config) {
         const aggregate = Promise[input.aggregate]([work]);
         return input.returned ? aggregate : null;
       }),
+      hostileSecret: mutation(async (ctx, input) => {
+        const issued = input.operation === "create"
+          ? await ctx.serviceUsers.create({ displayName: input.displayName, accessKey: { name: input.name, grants: ["tickets:read"] } })
+          : input.operation === "issue"
+            ? await ctx.serviceUsers.issueAccessKey(input.userId, { name: input.name, grants: ["tickets:read"] })
+            : await ctx.serviceUsers.rotateAccessKey(input.userId, input.accessKeyId, { lifecycleRevision: input.lifecycleRevision });
+        if (input.mode === "throw") return { toJSON() { throw new Error("hostile serialization"); }, token: issued.token };
+        return Object.defineProperty({ toJSON() { return { token: null }; } }, "token", { enumerable: true, get() { return issued.token; } });
+      }),
       disableAgent: mutation((ctx, userId) => ctx.serviceUsers.disable(userId)),
     },
   });
@@ -583,6 +614,17 @@ async function proveRemoteEngineServiceUserLifecycle(serverEnv, config) {
         const name = `remote-discarded-${operation}-${aggregate}`;
         const response = await runMutation(first, "aggregateSecret", [{ operation, aggregate, returned: false, displayName: name, name, userId: created.data.serviceUser.id, accessKeyId: created.data.accessKey.id, lifecycleRevision: created.data.accessKey.lifecycleRevision }]);
         assert.equal(response.error?.code, "ACCESS_KEY_SECRET_NOT_CONSUMED", `${operation} via discarded Promise.${aggregate}`);
+        if (operation === "create") assert.equal((await first.adapter.prepare(first.adapter.dialect.sql("SELECT [id] FROM [sporades_auth_users] WHERE [displayName] = ?")).get(name)) ?? null, null);
+        if (operation === "issue") assert.equal((await first.adapter.prepare(first.adapter.dialect.sql("SELECT [id] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [name] = ?")).get(created.data.serviceUser.id, name)) ?? null, null);
+        if (operation === "rotate") assert.deepEqual(await first.adapter.prepare(first.adapter.dialect.sql("SELECT [lifecycleRevision], [selector] FROM [sporades_auth_access_keys] WHERE [id] = ?")).get(created.data.accessKey.id), original);
+      }
+    }
+    for (const operation of ["create", "issue", "rotate"]) {
+      for (const mode of ["masked", "throw"]) {
+        const name = `remote-hostile-${operation}-${mode}`;
+        const response = await runMutation(first, "hostileSecret", [{ operation, mode, displayName: name, name, userId: created.data.serviceUser.id, accessKeyId: created.data.accessKey.id, lifecycleRevision: created.data.accessKey.lifecycleRevision }]);
+        if (mode === "masked") assert.equal(response.error?.code, "ACCESS_KEY_SECRET_NOT_CONSUMED");
+        else assert.match(response.error?.message ?? "", /Invalid JSON field value/);
         if (operation === "create") assert.equal((await first.adapter.prepare(first.adapter.dialect.sql("SELECT [id] FROM [sporades_auth_users] WHERE [displayName] = ?")).get(name)) ?? null, null);
         if (operation === "issue") assert.equal((await first.adapter.prepare(first.adapter.dialect.sql("SELECT [id] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [name] = ?")).get(created.data.serviceUser.id, name)) ?? null, null);
         if (operation === "rotate") assert.deepEqual(await first.adapter.prepare(first.adapter.dialect.sql("SELECT [lifecycleRevision], [selector] FROM [sporades_auth_access_keys] WHERE [id] = ?")).get(created.data.accessKey.id), original);

@@ -2236,13 +2236,12 @@ function commandError(message, hint, code = null) {
   return error;
 }
 function assertJsonCompatible(value) {
-  let context;
   try {
     const serialized = JSON.stringify(value);
     if (serialized === void 0) {
       throw invalidJsonFieldValueError();
     }
-    JSON.parse(serialized);
+    return JSON.parse(serialized);
   } catch (error) {
     if (error?.hint) {
       throw error;
@@ -26048,7 +26047,7 @@ async function runCustomMutation(database, context, mutationName, args, resolved
     await drainPendingAclWrites(context);
   }
   if (result !== void 0) {
-    assertJsonCompatible(result);
+    result = assertJsonCompatible(result);
   }
   return { ok: true, data: result ?? null, error: null };
 }

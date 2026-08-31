@@ -30,6 +30,9 @@ Mutation's returned JSON data; otherwise the whole transaction rolls back instea
 of silently creating an unrecoverable credential. This rule remains exact through
 returned `Promise.all`, `allSettled`, `race`, and `any` results and cannot be
 satisfied merely by attaching a fulfillment, rejection, or cleanup observer.
+The runtime canonicalizes returned data once into an inert JSON snapshot; both
+token reachability and public transport use that identical snapshot, so mutable
+getters, proxies, and `toJSON` hooks cannot change the committed disclosure.
 Rejected drained work rolls back the complete Mutation.
 Disabling retires every current key and prevents future admission while
 retaining bounded User and key metadata for historical audit.

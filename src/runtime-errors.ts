@@ -61,13 +61,12 @@ export function commandError(message: string | undefined, hint: string, code: st
 // *and* listed there is declared twice at the top level of an ES module, which is a load-time
 // `SyntaxError` in a deployed Capsule.
 export function assertJsonCompatible(value: any) {
-  let context: LooseRecord | undefined;
   try {
     const serialized = JSON.stringify(value);
     if (serialized === undefined) {
       throw invalidJsonFieldValueError();
     }
-    JSON.parse(serialized);
+    return JSON.parse(serialized);
   } catch (error: any) {
     if ((error as any)?.hint) {
       throw error;
