@@ -4566,7 +4566,16 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
                     `session:${createHash("sha256").update(client.session.token).digest("base64url")}`,
                 ];
                 const throttleNow = database.clock.now();
-                const reserved = await database.adapter.withTransaction((tx) => tx.reserveEmailReauthenticationAttempt({ keys: reauthenticationThrottleKeys, now: throttleNow.toISOString(), resetAt: new Date(throttleNow.getTime() + EMAIL_SIGN_IN_THROTTLE_WINDOW_MS).toISOString(), limit: EMAIL_SIGN_IN_FAILURE_LIMIT, maxEntries: EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES }));
+                let reserved = false;
+                try {
+                    reserved = await database.adapter.withTransaction((tx) => tx.reserveEmailReauthenticationAttempt({ keys: reauthenticationThrottleKeys, now: throttleNow.toISOString(), resetAt: new Date(throttleNow.getTime() + EMAIL_SIGN_IN_THROTTLE_WINDOW_MS).toISOString(), limit: EMAIL_SIGN_IN_FAILURE_LIMIT, maxEntries: EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES }));
+                }
+                catch {
+                    try {
+                        await database.log?.emit?.({ category: "platform", event: "auth.reauthentication.throttle_failed", level: "error", message: "Reauthentication attempt reservation failed.", data: { provider: "email", purpose } });
+                    }
+                    catch { }
+                }
                 if (reserved) {
                     const now = database.clock.now();
                     expiresAt = new Date(now.getTime() + policy.maxAgeSeconds * 1000).toISOString();
