@@ -1274,14 +1274,17 @@ test("Google identity tokens require signature, issuer, audience, expiry, nonce,
   });
 });
 
-test("Google reauthentication forces a fresh provider login", async () => {
+test("Google reauthentication requests a signed auth_time with supported OIDC parameters", async () => {
   await withTempDatabase(async (database) => {
     database.authConfig.providers.google = { ...database.authConfig.providers.google, enabled: true, configured: true, clientIdEnv: "GOOGLE_CLIENT_ID", clientSecretEnv: "GOOGLE_CLIENT_SECRET" };
     database.serverEnv.GOOGLE_CLIENT_ID = "google-client-id";
     const adapter = oauthProviderAdapter(database, "google");
     const authorization = new URL(adapter.begin({ state: "state", nonce: "nonce", redirectUri: "https://capsule.example.test/__sporades/auth/google/callback", pkceChallenge: "challenge", reauthentication: true }).url);
-    assert.equal(authorization.searchParams.get("prompt"), "login");
+    assert.equal(authorization.searchParams.has("prompt"), false, "Google's unsupported login prompt is never sent");
     assert.equal(authorization.searchParams.get("max_age"), "0");
+    assert.deepEqual(JSON.parse(authorization.searchParams.get("claims")), { id_token: { auth_time: { essential: true } } });
+    const ordinary = new URL(adapter.begin({ state: "ordinary-state", nonce: "ordinary-nonce", redirectUri: "https://capsule.example.test/__sporades/auth/google/callback", pkceChallenge: "ordinary-challenge", reauthentication: false }).url);
+    assert.equal(ordinary.searchParams.has("prompt"), false); assert.equal(ordinary.searchParams.has("max_age"), false); assert.equal(ordinary.searchParams.has("claims"), false, "ordinary Google sign-in remains unchanged");
   });
 });
 

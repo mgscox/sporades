@@ -628,8 +628,8 @@ function createGoogleOAuthProviderAdapter(database: LooseRecord) {
         code_challenge_method: "S256",
       });
       if (context.reauthentication) {
-        params.set("prompt", "login");
         params.set("max_age", "0");
+        params.set("claims", JSON.stringify({ id_token: { auth_time: { essential: true } } }));
       }
       return { url: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}` };
     },

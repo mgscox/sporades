@@ -200,9 +200,12 @@ proof insertion. After the password KDF it claims the exact hash-and-salt row
 with a portable compare-and-swap update before inserting the proof, so a
 concurrent password rotation and stale-password proof cannot both commit.
 
-OAuth reauthentication is supported for Google and Microsoft. Their
-authorization requests ask for a fresh login, and proof creation additionally
-requires a signed ID-token `auth_time` bound to the stored flow nonce and no
+OAuth reauthentication is supported for Google and Microsoft. Google's
+authorization request uses supported `max_age=0` semantics and explicitly asks
+for the essential ID-token `auth_time` claim; it does not send the unsupported
+`prompt=login` value. Microsoft's request uses its supported fresh-login
+parameters. Proof creation additionally requires a signed ID-token `auth_time`
+bound to the stored flow nonce and no
 older than that server-created flow. Removing `prompt` or `max_age` from the
 browser-visible URL therefore cannot turn an existing SSO session into a
 proof: missing, stale or future freshness evidence fails closed. The current
