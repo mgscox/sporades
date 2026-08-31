@@ -958,10 +958,7 @@ export function createSharedDatabaseAdapterMethods(dialect) {
                 "VALUES (?, ?, ?, ?, ?)")).run(row.token, row.userId, row.provider, row.createdAt, row.expiresAt);
         },
         deleteAuthSession(token) {
-            return chainMaybePromise([
-                () => this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ?")).run(token),
-                () => this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [token] = ?")).run(token),
-            ]);
+            return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ?")).run(token), () => this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [token] = ?")).run(token));
         },
         refreshAuthSession(token, expiresAt) {
             return this.prepare(sql("UPDATE [sporades_auth_sessions] SET [expiresAt] = ? WHERE [token] = ?")).run(expiresAt, token);
@@ -971,8 +968,13 @@ export function createSharedDatabaseAdapterMethods(dialect) {
         },
         rotateAuthSession(previousToken, row) {
             assertNotReservedAuthUserId(row.userId);
-            return this.prepare(sql("UPDATE [sporades_auth_sessions] SET [token] = ?, [userId] = ?, [provider] = ?, [createdAt] = ?, " +
+            const rotated = this.prepare(sql("UPDATE [sporades_auth_sessions] SET [token] = ?, [userId] = ?, [provider] = ?, [createdAt] = ?, " +
                 "[expiresAt] = ? WHERE [token] = ?")).run(row.token, row.userId, row.provider, row.createdAt, row.expiresAt, previousToken);
+            return thenIfPromise(rotated, (result) => {
+                if (result.changes !== 1 || previousToken === row.token)
+                    return result;
+                return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ?")).run(previousToken), () => result);
+            });
         },
         readAuthSessionWithUser(token) {
             return thenIfPromise(this.prepare(sql("SELECT [s].[token], [s].[expiresAt], [u].[id] AS [userId], [u].[displayName], [u].[email], [u].[picture], " +
@@ -1060,10 +1062,7 @@ export function createSharedDatabaseAdapterMethods(dialect) {
             });
         },
         deleteAuthSessionsForUser(userId) {
-            return chainMaybePromise([
-                () => this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [userId] = ?")).run(userId),
-                () => this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [userId] = ?")).run(userId),
-            ]);
+            return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [userId] = ?")).run(userId), () => this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [userId] = ?")).run(userId));
         },
         insertPasswordResetCode(row) {
             assertNotReservedAuthUserId(row.userId);

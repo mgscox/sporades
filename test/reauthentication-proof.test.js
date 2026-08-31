@@ -56,6 +56,23 @@ test("persisted email reauthentication reservations share one limit across separ
   } finally { await second.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("Session rotation removes only old-token proofs transactionally without long-running growth", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "sporades-reauth-rotation-")); const file = path.join(dir, "data.db"); const database = await openDevDatabase(file, "", {}, { name: definition.name }, definition);
+  try {
+    const now = new Date(); const userId = "rotation-user"; await database.adapter.insertAuthUser({ id: userId, createdAt: now.toISOString(), displayName: "Rotation", email: "rotation@example.test", picture: null, isAuthenticated: 1, isGuest: 0, provider: "email" });
+    await database.adapter.insertAuthSession({ token: "rotating-0", userId, provider: "email", createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + 3600000).toISOString() }); await database.adapter.insertAuthSession({ token: "other-session", userId, provider: "email", createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + 3600000).toISOString() });
+    await database.adapter.replaceReauthenticationProof({ id: "other-proof", userId, sessionToken: "other-session", purpose: "administrator-authority", createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + 900000).toISOString() });
+    for (let index = 0; index < 6; index += 1) {
+      const previousToken = `rotating-${index}`, token = `rotating-${index + 1}`; await database.adapter.replaceReauthenticationProof({ id: `rotating-proof-${index}`, userId, sessionToken: previousToken, purpose: "administrator-authority", createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + 900000).toISOString() });
+      await database.adapter.withTransaction((tx) => tx.rotateAuthSession(previousToken, { token, userId, provider: "email", createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + 3600000).toISOString() }));
+      assert.equal(database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_reauthentication_proofs WHERE sessionToken LIKE 'rotating-%'").get().count, 0, "old-token proof is removed immediately on each committed rotation"); assert.ok(database.adapter.prepare("SELECT id FROM sporades_auth_reauthentication_proofs WHERE id = ?").get("other-proof"), "another Session's proof is retained");
+    }
+    await database.adapter.replaceReauthenticationProof({ id: "rollback-proof", userId, sessionToken: "rotating-6", purpose: "administrator-authority", createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + 900000).toISOString() });
+    await assert.rejects(() => database.adapter.withTransaction(async (tx) => { await tx.rotateAuthSession("rotating-6", { token: "rotating-rollback", userId, provider: "email", createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + 3600000).toISOString() }); throw new Error("force rotation rollback"); }), /force rotation rollback/);
+    assert.ok(await database.adapter.readAuthSessionWithUser("rotating-6")); assert.equal(await database.adapter.readAuthSessionWithUser("rotating-rollback"), null); assert.ok(database.adapter.prepare("SELECT id FROM sporades_auth_reauthentication_proofs WHERE id = ?").get("rollback-proof"), "failed rotation rolls proof cleanup back");
+  } finally { await database.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("email reauthentication reservation failures are opaque and stop before proof issuance", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "sporades-reauth-reservation-failure-")); const file = path.join(dir, "data.db");
   const database = await openDevDatabase(file, "", {}, { name: definition.name, auth: { providers: { anonymous: true, email: true } } }, definition);

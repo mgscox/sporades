@@ -1255,10 +1255,7 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
       );
     },
     deleteAuthSession(token: any) {
-      return chainMaybePromise([
-        () => this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ?")).run(token),
-        () => this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [token] = ?")).run(token),
-      ]);
+      return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ?")).run(token), () => this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [token] = ?")).run(token));
     },
     refreshAuthSession(token: any, expiresAt: any) {
       return this.prepare(sql("UPDATE [sporades_auth_sessions] SET [expiresAt] = ? WHERE [token] = ?")).run(expiresAt, token);
@@ -1268,7 +1265,7 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
     },
     rotateAuthSession(previousToken: any, row: { token: any; userId: any; provider: any; createdAt: any; expiresAt: any; }) {
       assertNotReservedAuthUserId(row.userId);
-      return this.prepare(
+      const rotated = this.prepare(
         sql(
           "UPDATE [sporades_auth_sessions] SET [token] = ?, [userId] = ?, [provider] = ?, [createdAt] = ?, " +
           "[expiresAt] = ? WHERE [token] = ?",
@@ -1281,6 +1278,10 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
         row.expiresAt,
         previousToken,
       );
+      return thenIfPromise(rotated, (result: LooseRecord) => {
+        if (result.changes !== 1 || previousToken === row.token) return result;
+        return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ?")).run(previousToken), () => result);
+      });
     },
     readAuthSessionWithUser(token: any) {
       return thenIfPromise(
@@ -1395,10 +1396,7 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
       });
     },
     deleteAuthSessionsForUser(userId: any) {
-      return chainMaybePromise([
-        () => this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [userId] = ?")).run(userId),
-        () => this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [userId] = ?")).run(userId),
-      ]);
+      return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [userId] = ?")).run(userId), () => this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [userId] = ?")).run(userId));
     },
     insertPasswordResetCode(row: LooseRecord) {
       assertNotReservedAuthUserId(row.userId);
