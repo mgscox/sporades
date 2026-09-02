@@ -13,23 +13,12 @@ export type Capsule<Definition extends CapsuleDefinition = CapsuleDefinition> = 
   kind: "capsule";
 };
 
-/** A runtime-owned inspector declaration. Endpoint handlers never receive lease bytes. */
-export type FileIngressInspector = Readonly<{ name: string; kind: "fixture" }>;
 export type FileIngressInspection = Readonly<{
   policyRevision: string;
   maxVerdictAgeMs?: number;
-  inspectors: readonly FileIngressInspector[];
+  /** Runtime-owned inspector names; Capsule code cannot supply verdicts. */
+  requiredInspectors: readonly "content-policy-v1"[];
 }>;
-export type FileIngressInspectionFixtureOptions = Readonly<{ name: string; verdict: "clean" | "infected" | "inconclusive" }>;
-const fileIngressInspectionBrand = Symbol.for("sporades.file-ingress-inspection");
-
-/**
- * Creates a deterministic inspector for tests and local acceptance fixtures.
- * It receives no uploaded bytes and must never be enabled as a production policy.
- */
-export function fileIngressInspectionFixture(options: FileIngressInspectionFixtureOptions): FileIngressInspector {
-  return Object.freeze({ name: options?.name, kind: "fixture", [fileIngressInspectionBrand]: Object.freeze({ verdict: options?.verdict }) }) as FileIngressInspector;
-}
 
 export type EndpointOptions = {
   method: string;

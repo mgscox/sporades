@@ -71,7 +71,6 @@ function unsupportedMultipartPartEncoding(rawHeaders: string) {
 }
 function safeName(value: string) { return String(value ?? "upload").replace(/[\\/\x00-\x1f]/g, "_").trim().slice(0, 255) || "upload"; }
 function safeType(value: string) { const type = String(value ?? "").split(";", 1)[0].trim().toLowerCase(); return /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(type) ? type : "application/octet-stream"; }
-const inspectionBrand = Symbol.for("sporades.file-ingress-inspection");
 const maximumInspectionAgeMs = 24 * 60 * 60 * 1000;
 function inspectionRequiredError() { return Object.assign(new Error("File ingress inspection is not clean."), { code: "INGRESS_INSPECTION_REQUIRED" }); }
 function normalizedInspectionPolicy(value: any) {
@@ -79,30 +78,44 @@ function normalizedInspectionPolicy(value: any) {
   const invalid = () => { throw Object.assign(new Error("Invalid file ingress inspection policy."), { code: "INVALID_MULTIPART_POLICY" }); };
   if (!value || typeof value !== "object" || Array.isArray(value) || typeof value.policyRevision !== "string" || value.policyRevision.length < 1 || Buffer.byteLength(value.policyRevision, "utf8") > 128 || /[\x00-\x1f\x7f]/.test(value.policyRevision)) invalid();
   const maxVerdictAgeMs = value.maxVerdictAgeMs ?? maximumInspectionAgeMs;
-  if (!Number.isInteger(maxVerdictAgeMs) || maxVerdictAgeMs < 1 || maxVerdictAgeMs > maximumInspectionAgeMs || !Array.isArray(value.inspectors) || value.inspectors.length < 1 || value.inspectors.length > 8) invalid();
+  if (!Number.isInteger(maxVerdictAgeMs) || maxVerdictAgeMs < 1 || maxVerdictAgeMs > maximumInspectionAgeMs || !Array.isArray(value.requiredInspectors) || value.requiredInspectors.length < 1 || value.requiredInspectors.length > 8) invalid();
   const names = new Set<string>();
-  for (const inspector of value.inspectors) {
-    const brand = inspector?.[inspectionBrand];
-    if (!inspector || typeof inspector !== "object" || inspector.kind !== "fixture" || typeof inspector.name !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(inspector.name) || names.has(inspector.name) || !brand || typeof brand !== "object" || !["clean", "infected", "inconclusive"].includes(brand.verdict)) invalid();
-    names.add(inspector.name);
+  for (const inspector of value.requiredInspectors) {
+    if (inspector !== "content-policy-v1" || names.has(inspector)) invalid();
+    names.add(inspector);
   }
-  return { policyRevision: value.policyRevision, maxVerdictAgeMs, inspectors: value.inspectors };
+  return { policyRevision: value.policyRevision, maxVerdictAgeMs, requiredInspectors: value.requiredInspectors };
 }
-function inspectIngressLease(policy: RecordLike | null, row: RecordLike) {
+function contentPolicyOutcome(row: RecordLike, bytes: Buffer) {
+  const name = String(row.name).toLowerCase(); const type = String(row.type).toLowerCase();
+  if (bytes.length === 0 || /\.(zip|gz|rar|7z|tar|docx?|xlsx?|pptx?|exe|dmg|app|js|mjs|sh|bat|cmd|ps1|svg|html?|xml)$/i.test(name) || bytes.subarray(0, 2).toString("hex") === "4d5a" || bytes.subarray(0, 2).toString("hex") === "504b" || bytes.subarray(0, 6).toString("ascii") === "Rar!\x1a\x07" || bytes.subarray(0, 6).toString("ascii") === "7z\xbc\xaf\x27\x1c") return "rejected";
+  const jpeg = bytes.length >= 4 && bytes.subarray(0, 3).toString("hex") === "ffd8ff" && bytes.subarray(-2).toString("hex") === "ffd9";
+  const png = bytes.length >= 24 && bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) && bytes.subarray(12, 16).toString("ascii") === "IHDR";
+  const pdf = bytes.length >= 9 && bytes.subarray(0, 5).toString("ascii") === "%PDF-" && bytes.includes(Buffer.from("%%EOF")) && !bytes.includes(Buffer.from("/Encrypt"));
+  const decoded = new TextDecoder("utf-8", { fatal: true }); let text = ""; try { text = decoded.decode(bytes); } catch {}
+  const utf8 = text.length > 0 && !/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text) && !/^\s*(?:<!doctype|<html|<svg|<\?xml)/i.test(text) && !/^#!/.test(text);
+  const candidates = [jpeg, png, pdf, utf8].filter(Boolean).length;
+  if (candidates !== 1) return "inconclusive";
+  if (jpeg) return /\.(jpg|jpeg)$/.test(name) && type === "image/jpeg" ? "clean" : "rejected";
+  if (png) return /\.png$/.test(name) && type === "image/png" ? "clean" : "rejected";
+  if (pdf) return /\.pdf$/.test(name) && type === "application/pdf" ? "clean" : "rejected";
+  return /\.txt$/.test(name) && type === "text/plain" ? "clean" : "rejected";
+}
+function inspectIngressLease(policy: RecordLike | null, row: RecordLike, bytes: Buffer) {
   if (!policy) return undefined;
   const inspectedAt = new Date().toISOString();
-  const verdicts = policy.inspectors.map((inspector: RecordLike) => Object.freeze({ inspector: inspector.name, outcome: (inspector as any)[inspectionBrand].verdict, leaseId: row.leaseId, size: row.size, digest: row.digest, policyRevision: policy.policyRevision, inspectedAt }));
+  const verdicts = policy.requiredInspectors.map((inspector: string) => Object.freeze({ inspector, outcome: contentPolicyOutcome(row, bytes), leaseId: row.leaseId, size: row.size, digest: row.digest, version: row.version, policyRevision: policy.policyRevision, engine: "sporades-content-policy", signatureVersion: "content-policy-v1", inspectedAt }));
   return Object.freeze({ policyRevision: policy.policyRevision, maxVerdictAgeMs: policy.maxVerdictAgeMs, verdicts: Object.freeze(verdicts) });
 }
 function inspectionEvidenceIsCurrent(row: RecordLike, policy: RecordLike | null) {
   if (!policy) return true;
   const inspection = row.inspection;
-  if (!inspection || inspection.policyRevision !== policy.policyRevision || !Array.isArray(inspection.verdicts) || inspection.verdicts.length !== policy.inspectors.length) return false;
+  if (!inspection || inspection.policyRevision !== policy.policyRevision || !Array.isArray(inspection.verdicts) || inspection.verdicts.length !== policy.requiredInspectors.length) return false;
   const now = Date.now();
-  return policy.inspectors.every((inspector: RecordLike) => {
-    const verdict = inspection.verdicts.find((candidate: RecordLike) => candidate?.inspector === inspector.name);
+  return policy.requiredInspectors.every((inspector: string) => {
+    const verdict = inspection.verdicts.find((candidate: RecordLike) => candidate?.inspector === inspector);
     const inspectedAt = Date.parse(verdict?.inspectedAt);
-    return verdict?.outcome === "clean" && verdict?.leaseId === row.leaseId && verdict?.size === row.size && verdict?.digest === row.digest && verdict?.policyRevision === policy.policyRevision && Number.isFinite(inspectedAt) && inspectedAt <= now && now - inspectedAt <= policy.maxVerdictAgeMs;
+    return verdict?.outcome === "clean" && verdict?.leaseId === row.leaseId && verdict?.size === row.size && verdict?.digest === row.digest && verdict?.version === row.version && verdict?.policyRevision === policy.policyRevision && verdict?.engine === "sporades-content-policy" && verdict?.signatureVersion === "content-policy-v1" && Number.isFinite(inspectedAt) && inspectedAt <= now && now - inspectedAt <= policy.maxVerdictAgeMs;
   });
 }
 function framedIngressKey(parts: string[]) {
@@ -197,7 +210,7 @@ export async function stageMultipartIngress(database: RecordLike, endpoint: Reco
     const key = keyFor(endpoint, requestKey, stablePartKey, authorityId);
     const digest = crypto.createHash("sha256").update(body).digest("hex");
     const now = new Date(); const candidate = { key, leaseId: crypto.randomUUID(), partId: crypto.createHash("sha256").update(key).digest("hex"), fieldName, name: safeName(filename), type, size: body.length, digest, fileId: crypto.randomUUID(), version: crypto.randomUUID(), state: "staging", actorId, authorityKind: authority.kind, authorityId, ownerId: authority.ownerId, ...(authority.kind === "capsule-principal" ? { principalNamespace: authority.namespace, principalKeyDigest: authority.keyDigest } : {}), endpointMethod: String(endpoint.options.method), endpointPath: String(endpoint.options.path), requestKey, partKey: stablePartKey, expiresAt: new Date(now.getTime() + leaseTtlMs).toISOString() };
-    const inspection = inspectIngressLease(policy.inspection, candidate);
+    const inspection = inspectIngressLease(policy.inspection, candidate, body);
     if (inspection) Object.assign(candidate, { inspection });
     // Pre-authority receipts used the raw actor ID in their durable key. Keep that key and
     // its derived part/object identities intact: renaming only the key would strand retries,
@@ -269,7 +282,7 @@ export function createEndpointIngressApi(database: RecordLike, endpoint: RecordL
   // available without requiring a synthetic declaration object.
   const policy = endpoint.options?.body?.multipart;
   const unavailable = () => { throw Object.assign(new Error("File ingress was not declared for this endpoint."), { code: "FILE_INGRESS_UNAVAILABLE" }); };
-  if (!policy) return { claim: unavailable, status: unavailable };
+  if (!policy) return { claim: unavailable, inspection: unavailable, status: unavailable };
   const inspectionPolicy = normalizedInspectionPolicy(policy.inspection);
   const actorId = String(context.auth?.userId ?? ""); const requestKey = endpointRequest.__ingressRequestKey; const admittedAuthority = endpointRequest.__ingressAuthority ?? { kind: "actor", actorId, ownerId: actorId };
   return {
@@ -324,6 +337,15 @@ export function createEndpointIngressApi(database: RecordLike, endpoint: RecordL
         await emitIngressAudit(database, code === "INGRESS_AUTHORITY_DENIED" || code === "INGRESS_PATH_DENIED" ? "denied" : "failed", { outcome: code === "INGRESS_AUTHORITY_DENIED" || code === "INGRESS_PATH_DENIED" ? "denied" : "failed", code });
         throw error;
       }
+    },
+    async inspection(lease: RecordLike) {
+      const row = await receiptByLease(database, lease?.leaseId);
+      const allowed = admittedAuthority.kind === "capsule-principal"
+        ? row?.authorityKind === "capsule-principal" && row.authorityId === `capsule:${admittedAuthority.namespace}:${admittedAuthority.keyDigest}` && row.ownerId === admittedAuthority.ownerId
+        : row?.authorityKind === "actor" && row.ownerId === actorId;
+      if (!allowed || row.endpointMethod !== String(endpoint.options.method) || row.endpointPath !== String(endpoint.options.path) || row.leaseId !== lease?.leaseId) throw ingressAuthorityDenied();
+      if (!row.inspection) return null;
+      return Object.freeze({ policyRevision: row.inspection.policyRevision, verdicts: Object.freeze(row.inspection.verdicts.map((verdict: RecordLike) => Object.freeze({ inspector: verdict.inspector, outcome: verdict.outcome, digest: verdict.digest, size: verdict.size, version: verdict.version, engine: verdict.engine, signatureVersion: verdict.signatureVersion, inspectedAt: verdict.inspectedAt }))) });
     },
     async status(statusRequestKey: string, partKey: string) {
       const capsulePrincipal = admittedAuthority.kind === "capsule-principal";

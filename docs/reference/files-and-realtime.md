@@ -471,7 +471,7 @@ existing trusted-ingress handlers retain their established behaviour:
 const inspection = {
   policyRevision: "support-attachments-v1",
   maxVerdictAgeMs: 60 * 60 * 1000,
-  inspectors: [fileIngressInspectionFixture({ name: "local-fixture", verdict: "clean" })],
+  requiredInspectors: ["content-policy-v1"],
 };
 
 endpoint({ method: "POST", path: "/attachments", body: {
@@ -481,12 +481,17 @@ endpoint({ method: "POST", path: "/attachments", body: {
 }));
 ```
 
-The fixture is only for deterministic tests and local acceptance checks. It
-does not inspect bytes and must not be used as a production control. Production
-scanner transport is deliberately a runtime-owned integration rather than an
-endpoint-handler callback: no endpoint handler, Capsule policy, caller, or
-lease API receives the staged bytes. This prevents a convenient inspection hook
-from becoming a second File-download capability. An isolated scanner adapter
+`content-policy-v1` is runtime-owned. It accepts only JPEG, PNG, unencrypted
+PDF, and strict UTF-8 text when filename extension, declared MIME type,
+detected signature, and bounded parser checks agree. It rejects archives,
+encrypted containers, SVG/HTML/XML, Office formats, executables, scripts,
+empty/polyglot/ambiguous content, and malformed or oversized input. Endpoint
+handlers cannot supply verdict-producing objects or receive lease bytes.
+Production malware-scanner transport is deliberately a runtime-owned
+integration rather than an endpoint-handler callback: no endpoint handler,
+Capsule policy, caller, or lease API receives the staged bytes. This prevents a
+convenient inspection hook from becoming a second File-download capability. An
+isolated scanner adapter
 must impose its own destination allow-list, byte cap, timeout, response cap,
 and fail-closed handling before a Capsule may use it.
 For ClamAV specifically, its [INSTREAM protocol](https://docs.clamav.net/manual/Usage/ClamdProtocol.html)

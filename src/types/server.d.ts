@@ -179,12 +179,8 @@ export type FileAclRule = (input: FileAclRuleInput) => MaybePromise<boolean>;
 export type FileAclRules = Partial<Record<FileAclOperation, FileAclRule>>;
 
 export type FileIngressPrincipal = Readonly<{ namespace: string; key: string }>;
-/** A runtime-owned inspector declaration. Endpoint handlers never receive lease bytes. */
-export type FileIngressInspector = Readonly<{ name: string; kind: "fixture" }>;
-export type FileIngressInspection = Readonly<{ policyRevision: string; maxVerdictAgeMs?: number; inspectors: readonly FileIngressInspector[] }>;
-export type FileIngressInspectionFixtureOptions = Readonly<{ name: string; verdict: "clean" | "infected" | "inconclusive" }>;
-/** Creates a deterministic no-byte inspector for tests and local acceptance fixtures. */
-export function fileIngressInspectionFixture(options: FileIngressInspectionFixtureOptions): FileIngressInspector;
+/** Runtime-owned inspector names; Capsule code cannot supply verdicts. */
+export type FileIngressInspection = Readonly<{ policyRevision: string; maxVerdictAgeMs?: number; requiredInspectors: readonly "content-policy-v1"[] }>;
 export type FileIngressAdmissionDecision = Readonly<{ allow: false } | { allow: true; principal: FileIngressPrincipal }>;
 export type FileIngressAdmissionRequest = Readonly<{ method: string; path: string; headers: Readonly<Record<string, string>>; query: Readonly<Record<string, string>> }>;
 export type FileIngressAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
@@ -889,6 +885,8 @@ export type EndpointRequest = {
 };
 
 export type EndpointFileIngressLease = Readonly<{ leaseId: string; partId: string; fieldName: string; name: string; type: string; declaredSize: number | null; size: number; expiresAt: string }>;
+/** Bounded audit evidence; it never contains bytes, storage paths, handles, or scanner topology. */
+export type EndpointFileIngressInspection = Readonly<{ policyRevision: string; verdicts: readonly Readonly<{ inspector: string; outcome: "clean" | "rejected" | "inconclusive"; digest: string; size: number; version: string; engine: string; signatureVersion: string; inspectedAt: string }>[] }>;
 export type EndpointFileMetadata = Readonly<{ id: string; bucket: string; size: number; type: string; name: string; path: string; version: string }>;
 export type FileIngressOptions = Readonly<{ path: string; name?: string; type?: string; authority?: { kind: "actor" } | ({ kind: "capsule-principal" } & FileIngressPrincipal) }>;
 /** Exact immutable File identity accepted by endpoint attachment responses. */
@@ -897,7 +895,7 @@ export type EndpointFileAttachmentReference = Readonly<Pick<EndpointFileMetadata
 export type EndpointFileAttachmentOptions = Readonly<{ filename: string }>;
 /** Runtime-created opaque endpoint result. It can only be returned from an endpoint handler. */
 export type EndpointFileAttachmentResponse = object;
-export type EndpointFileIngressApi = { claim(lease: EndpointFileIngressLease, options: FileIngressOptions): Promise<EndpointFileMetadata>; status(requestKey: string, partKey: string): Promise<{ state: "missing" } | { state: "leased"; lease: EndpointFileIngressLease } | { state: "complete"; file: EndpointFileMetadata } | { state: "failed"; retryable: boolean }>; };
+export type EndpointFileIngressApi = { claim(lease: EndpointFileIngressLease, options: FileIngressOptions): Promise<EndpointFileMetadata>; inspection(lease: EndpointFileIngressLease): Promise<EndpointFileIngressInspection | null>; status(requestKey: string, partKey: string): Promise<{ state: "missing" } | { state: "leased"; lease: EndpointFileIngressLease } | { state: "complete"; file: EndpointFileMetadata } | { state: "failed"; retryable: boolean }>; };
 export type EndpointFileAttachmentApi = { attachment(file: EndpointFileAttachmentReference, options: EndpointFileAttachmentOptions): EndpointFileAttachmentResponse };
 
 export type EndpointContext<

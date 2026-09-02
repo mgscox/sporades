@@ -38,6 +38,10 @@ export declare function createEndpointIngressApi(database: RecordLike, endpoint:
         path: any;
         version: any;
     }>;
+    inspection(lease: RecordLike): Promise<Readonly<{
+        policyRevision: any;
+        verdicts: any;
+    }> | null>;
     status(statusRequestKey: string, partKey: string): Promise<{
         state: "missing";
         file?: undefined;

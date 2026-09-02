@@ -470,7 +470,6 @@ var transactionBeforeCommitChecks2 = Symbol.for("sporades.database.transactionBe
 var crypto2 = process.getBuiltinModule("node:crypto");
 var leaseTtlMs = 10 * 60 * 1e3;
 var ingressClaimAuditRetentionMs = 24 * 60 * 60 * 1e3;
-var inspectionBrand = Symbol.for("sporades.file-ingress-inspection");
 var maximumInspectionAgeMs = 24 * 60 * 60 * 1e3;
 
 // src/server-runtime-source.ts
