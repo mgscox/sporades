@@ -715,6 +715,11 @@ export async function openDevDatabase(
     }
   }
   const endpoints = [...capsuleEndpoints, ...providerEndpoints];
+  // A declared multipart endpoint needs live maintenance. Keep maintenance
+  // enabled when File storage remains configured as well, so removing the last
+  // endpoint cannot strand durable leases from the preceding release.
+  const fileIngressEnabled = config.files !== undefined
+    || endpoints.some((endpoint: LooseRecord) => endpoint?.options?.body?.multipart !== undefined);
   const fileIngressDefinition = normalizeCapsuleFileIngressDefinition(capsuleDefinition?.files, endpoints);
   const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
   const journeySessionInactivityMinutes = resolveJourneySessionInactivityMinutes(config);
@@ -811,6 +816,7 @@ export async function openDevDatabase(
     capsuleIdentity: String(config.name ?? "capsule"),
     capsuleIngressOwnerId: capsuleIngressAuthUserId(config.name ?? capsuleDefinition?.name ?? "capsule"),
     fileIngressDefinition,
+    fileIngressEnabled,
     scheduleOccurrenceFault: options?.scheduleOccurrenceFault,
     scheduleReconciliationFault: options?.scheduleReconciliationFault,
     jobRecoveryFault: options?.jobRecoveryFault,
@@ -1084,8 +1090,8 @@ export async function openDevDatabase(
       database.__scheduleRecoveryDueAt = null;
       database.__scheduleRecoveryPromise = null;
       database.__scheduleLegacyDiscoveryTimer = null;
-      database.__ingressAuditRecoveryPending = true;
-      await runIngressAuditOutboxDrain(database);
+      database.__ingressAuditRecoveryPending = database.fileIngressEnabled;
+      if (database.fileIngressEnabled) await runIngressAuditOutboxDrain(database);
       // Recovery may classify durable state while the candidate is stopped,
       // but it returns the retained wake instead of arming it. Publication is
       // the single boundary that releases both Job and Schedule work.
@@ -1095,9 +1101,11 @@ export async function openDevDatabase(
       const reconciled = await reconcileSchedules(database);
       database.__scheduleStopped = false;
       startStaticSchedules(database, reconciled.timerPlans);
-      await runPeriodicIngressSweep(database);
-      startPeriodicIngressSweep(database);
-      startPeriodicIngressAuditOutboxDrain(database);
+      if (database.fileIngressEnabled) {
+        await runPeriodicIngressSweep(database);
+        startPeriodicIngressSweep(database);
+        startPeriodicIngressAuditOutboxDrain(database);
+      }
       if (!database.__jobActivationDeferred) {
         // Orderly shutdown deliberately retains queued and delayed Jobs. A
         // fresh runtime has no inherited worker/wake timer, so activation
@@ -1117,7 +1125,7 @@ export async function openDevDatabase(
       database.__scheduleRecoveryTimer = null;
       database.__scheduleRecoveryDueAt = null;
       database.__scheduleLegacyDiscoveryTimer = null;
-      const settlements = [stopCurrentUserJobWorker(database), settleActiveScheduleWork(database)]
+      const settlements = [stopCurrentUserJobWorker(database), settleActiveScheduleWork(database), shutdownClamavRuntime(database)]
         .filter(Boolean)
         .map((pending) => Promise.resolve(pending));
       const cleanup = await Promise.allSettled(settlements);

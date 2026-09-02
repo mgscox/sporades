@@ -576,7 +576,8 @@ function boundedBuildMessage(error: unknown, projectRoots: string[] = []) {
 function canonicalDiagnosticRoots(projectRoots: string[]) {
   return [...new Set(projectRoots.flatMap((projectRoot) => {
     const resolved = path.resolve(projectRoot);
-    return [projectRoot, resolved];
+    const relative = path.relative(process.cwd(), resolved);
+    return [projectRoot, resolved, relative, relative.split(path.sep).join("/")];
   }).filter(Boolean))].sort((left, right) => right.length - left.length);
 }
 

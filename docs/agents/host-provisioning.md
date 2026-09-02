@@ -103,7 +103,7 @@ scratch notes that includes:
 2. Check the current tool environment for a provider MCP. If present, use it
    only when it can satisfy the provider adapter contract above.
 3. Confirm the local machine has the selected provider CLI when no MCP is used,
-   plus `ssh`, `scp`, `tar`, Node.js 22+, npm, and a checked-out Sporades repo.
+   plus `ssh`, `scp`, `tar`, Node.js `>=22.13 <23` or `>=24`, npm, and a checked-out Sporades repo.
 4. Run exactly one provider creation script or MCP adapter below.
 5. Create or update DNS:
    - `example.com A <server-ip>`
@@ -644,7 +644,7 @@ packages the Host-encrypted envelope for the Hosted Capsule release.
 
 ## Verification checklist
 
-- `ssh "$SPORADES_SSH_TARGET" "node --version"` returns Node.js 22+.
+- `ssh "$SPORADES_SSH_TARGET" "node --version"` returns Node.js `>=22.13 <23` or `>=24`.
 - `ssh "$SPORADES_SSH_TARGET" "docker --version && caddy version"` succeeds.
 - `ssh "$SPORADES_SSH_TARGET" "fail2ban-client status sshd"` succeeds.
 - `<remote-root>/bin/sporades-host-helper` exists and is executable.

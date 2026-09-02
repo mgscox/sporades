@@ -44,11 +44,12 @@
     "package": "node ./scripts/package.mjs",
     "typecheck": "tsc --project tsconfig.json --noEmit && tsc --project tsconfig.runtime.json",
     "pretest": "npm run build && node ./scripts/check-generated-bin.mjs",
-    "test": "node --test --test-concurrency=1",
+    "test": "node --test --test-concurrency=1 test/*.test.js",
     "test:access-key-release": "node ./scripts/verify-access-key-release.mjs",
     "test:docs": "node --test --test-concurrency=1 test/docs.test.js test/docs-llms.test.js",
     "test:real-vite-container": "SPORADES_REAL_VITE_CONTAINER=1 node --test --test-concurrency=1 test/real-vite-container.test.js",
     "test:real-clamav-container": "SPORADES_REAL_CLAMAV_DOCKER=1 node --test --test-concurrency=1 test/clamav-docker.acceptance.test.js",
+    "test:real-clamav-dev": "SPORADES_REAL_CLAMAV_DEV=1 node --test --test-concurrency=1 test/clamav-dev.acceptance.test.js",
     "prototype:require-auth-interface": "node ./.scratch/scoped-access-keys/prototypes/require-auth-interface/cli.mjs",
     "prepublishOnly": "npm test"
   },

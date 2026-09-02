@@ -16678,14 +16678,14 @@ var require_svgPath = __commonJS({
       ["Z", 0],
       ["z", 0]
     ]);
-    var parse = function(path12) {
+    var parse = function(path13) {
       var cmd;
       var ret = [];
       var args = [];
       var curArg = "";
       var foundDecimal = false;
       var params = 0;
-      for (var _i = 0, path_1 = path12; _i < path_1.length; _i++) {
+      for (var _i = 0, path_1 = path13; _i < path_1.length; _i++) {
         var c = path_1[_i];
         if (parameters.has(c)) {
           params = parameters.get(c);
@@ -16999,8 +16999,8 @@ var require_svgPath = __commonJS({
       ];
       return result;
     };
-    exports.svgPathToOperators = function(path12) {
-      return apply(parse(path12));
+    exports.svgPathToOperators = function(path13) {
+      return apply(parse(path13));
     };
   }
 });
@@ -17183,7 +17183,7 @@ var require_operations = __commonJS({
         operators_1.popGraphicsState()
       ]).filter(Boolean);
     };
-    exports.drawSvgPath = function(path12, options) {
+    exports.drawSvgPath = function(path13, options) {
       var _a, _b, _c;
       return tslib_1.__spreadArrays([
         operators_1.pushGraphicsState(),
@@ -17197,7 +17197,7 @@ var require_operations = __commonJS({
         options.borderWidth && operators_1.setLineWidth(options.borderWidth),
         options.borderLineCap && operators_1.setLineCap(options.borderLineCap),
         operators_1.setDashPattern((_b = options.borderDashArray) !== null && _b !== void 0 ? _b : [], (_c = options.borderDashPhase) !== null && _c !== void 0 ? _c : 0)
-      ], svgPath_1.svgPathToOperators(path12), [
+      ], svgPath_1.svgPathToOperators(path13), [
         // prettier-ignore
         options.color && options.borderWidth ? operators_1.fillAndStroke() : options.color ? operators_1.fill() : options.borderColor ? operators_1.stroke() : operators_1.closePath(),
         operators_1.popGraphicsState()
@@ -21495,12 +21495,12 @@ var require_PDFPage = __commonJS({
             graphicsState: graphicsStateKey
           }));
         };
-        PDFPage2.prototype.drawSvgPath = function(path12, options) {
+        PDFPage2.prototype.drawSvgPath = function(path13, options) {
           var _a, _b, _c, _d, _e, _f, _g, _h, _j;
           if (options === void 0) {
             options = {};
           }
-          utils_1.assertIs(path12, "path", ["string"]);
+          utils_1.assertIs(path13, "path", ["string"]);
           utils_1.assertOrUndefined(options.x, "options.x", ["number"]);
           utils_1.assertOrUndefined(options.y, "options.y", ["number"]);
           utils_1.assertOrUndefined(options.scale, "options.scale", ["number"]);
@@ -21529,7 +21529,7 @@ var require_PDFPage = __commonJS({
             options.borderColor = colors_1.rgb(0, 0, 0);
           }
           var contentStream = this.getContentStream();
-          contentStream.push.apply(contentStream, operations_1.drawSvgPath(path12, {
+          contentStream.push.apply(contentStream, operations_1.drawSvgPath(path13, {
             x: (_a = options.x) !== null && _a !== void 0 ? _a : this.x,
             y: (_b = options.y) !== null && _b !== void 0 ? _b : this.y,
             scale: options.scale,
@@ -23605,9 +23605,9 @@ var require_decoder = __commonJS({
         return a < 0 ? 0 : a > 255 ? 255 : a;
       }
       constructor.prototype = {
-        load: function load(path12) {
+        load: function load(path13) {
           var xhr = new XMLHttpRequest();
-          xhr.open("GET", path12, true);
+          xhr.open("GET", path13, true);
           xhr.responseType = "arraybuffer";
           xhr.onload = (function() {
             var data = new Uint8Array(xhr.response || xhr.mozResponseArrayBuffer);
@@ -26263,11 +26263,11 @@ var require_png2 = __commonJS({
 
 // src/cli/sporades.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { createHash as createHash10, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes7, timingSafeEqual as timingSafeEqual4 } from "node:crypto";
+import { createHash as createHash11, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes8, timingSafeEqual as timingSafeEqual4 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
-import { createServer } from "node:http";
-import { appendFile, chmod as chmod2, cp, lstat as lstat7, mkdir as mkdir6, readdir as readdir2, readFile as readFile9, rename as rename5, rm as rm6, writeFile as writeFile7 } from "node:fs/promises";
-import path11 from "node:path";
+import { createServer as createServer2 } from "node:http";
+import { appendFile, chmod as chmod2, cp, lstat as lstat7, mkdir as mkdir7, readdir as readdir2, readFile as readFile9, rename as rename5, rm as rm7, writeFile as writeFile7 } from "node:fs/promises";
+import path12 from "node:path";
 import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL2 } from "node:url";
 
 // src/bundle-pipeline.ts
@@ -28225,7 +28225,8 @@ function boundedBuildMessage(error, projectRoots = []) {
 function canonicalDiagnosticRoots(projectRoots) {
   return [...new Set(projectRoots.flatMap((projectRoot) => {
     const resolved = path.resolve(projectRoot);
-    return [projectRoot, resolved];
+    const relative = path.relative(process.cwd(), resolved);
+    return [projectRoot, resolved, relative, relative.split(path.sep).join("/")];
   }).filter(Boolean))].sort((left, right) => right.length - left.length);
 }
 function clientToolchainError(message, hint, diagnostics) {
@@ -35914,13 +35915,13 @@ function createAclStorageHelpers(database, state) {
 function resolveAclStorageFileReference(database, state, reference) {
   const value = String(reference ?? "");
   if (isAbsoluteFilePath(value)) {
-    let path12;
+    let path13;
     try {
-      path12 = normalizeAbsoluteFilePath(value);
+      path13 = normalizeAbsoluteFilePath(value);
     } catch {
       return null;
     }
-    const selected2 = database.adapter.selectLiveFileByPath(path12);
+    const selected2 = database.adapter.selectLiveFileByPath(path13);
     if (markAsyncAclHelperRead(state, selected2)) {
       return null;
     }
@@ -36081,7 +36082,7 @@ async function drainPendingAclWrites(context) {
 // src/file-storage-runtime.ts
 var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
 async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serviceEnv = {} }) {
-  const path12 = await import("node:path");
+  const path13 = await import("node:path");
   if (config.services?.storage?.engine === "minio" && serviceEnv.SPORADES_SERVICE_STORAGE_ENGINE === "minio") {
     return createS3CompatibleFileStorageAdapter({
       endpoint: serviceEnv.SPORADES_SERVICE_STORAGE_ENDPOINT ?? "",
@@ -36093,7 +36094,7 @@ async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serv
     });
   }
   return createLocalFileStorageAdapter({
-    storagePath: config.files?.storagePath ?? path12.join(path12.dirname(databasePath), "files")
+    storagePath: config.files?.storagePath ?? path13.join(path13.dirname(databasePath), "files")
   });
 }
 function createLocalFileStorageAdapter({ storagePath }) {
@@ -36104,8 +36105,8 @@ function createLocalFileStorageAdapter({ storagePath }) {
     engine: "local",
     storagePath,
     async writeFileVersion({ fileId, version: version2, bytes }) {
-      const { mkdir: mkdir7, writeFile: writeFile8 } = await import("node:fs/promises");
-      await mkdir7(localFileStoragePath(storagePath, fileId), { recursive: true });
+      const { mkdir: mkdir8, writeFile: writeFile8 } = await import("node:fs/promises");
+      await mkdir8(localFileStoragePath(storagePath, fileId), { recursive: true });
       await writeFile8(localFileVersionPath(storagePath, fileId, version2), bytes);
     },
     async readFileVersion({ fileId, version: version2 }) {
@@ -36135,21 +36136,21 @@ function createLocalFileStorageAdapter({ storagePath }) {
       return stream;
     },
     async deleteFileVersion({ fileId, version: version2 }) {
-      const { rm: rm7 } = await import("node:fs/promises");
-      await rm7(localFileVersionPath(storagePath, fileId, version2), { force: true });
+      const { rm: rm8 } = await import("node:fs/promises");
+      await rm8(localFileVersionPath(storagePath, fileId, version2), { force: true });
     },
     async checkHealth() {
-      const { mkdir: mkdir7, rm: rm7, writeFile: writeFile8 } = await import("node:fs/promises");
-      const path12 = await import("node:path");
-      const probeDirectory = path12.join(storagePath, ".sporades-health");
-      const probeFile = path12.join(probeDirectory, `${nodeCryptoModule2.randomUUID()}.tmp`);
+      const { mkdir: mkdir8, rm: rm8, writeFile: writeFile8 } = await import("node:fs/promises");
+      const path13 = await import("node:path");
+      const probeDirectory = path13.join(storagePath, ".sporades-health");
+      const probeFile = path13.join(probeDirectory, `${nodeCryptoModule2.randomUUID()}.tmp`);
       try {
-        await mkdir7(probeDirectory, { recursive: true });
+        await mkdir8(probeDirectory, { recursive: true });
         await writeFile8(probeFile, "");
-        await rm7(probeFile, { force: true });
+        await rm8(probeFile, { force: true });
         return { ok: true };
       } catch {
-        await rm7(probeFile, { force: true }).catch(() => {
+        await rm8(probeFile, { force: true }).catch(() => {
         });
         return { ok: false };
       }
@@ -36421,6 +36422,9 @@ function s3ObjectNotFoundError() {
   const error = new Error("S3-compatible file object not found.");
   error.code = "ENOENT";
   return error;
+}
+async function checkRuntimeFileStorage(database) {
+  return await database.fileStorage.checkHealth();
 }
 function createFileStorageTables(sqlite) {
   const sql = sqlite.dialect.sql;
@@ -36865,9 +36869,9 @@ function fileMetadataFromUpload(upload) {
     version: upload.version
   };
 }
-async function withFileUploadPathLock(path12, fn) {
+async function withFileUploadPathLock(path13, fn) {
   const fileUploadPathLocks = globalThis.__sporadesFileUploadPathLocks ??= /* @__PURE__ */ new Map();
-  const key = String(path12);
+  const key = String(path13);
   const previous = fileUploadPathLocks.get(key) ?? Promise.resolve();
   let release;
   const current = new Promise((resolve) => {
@@ -36888,11 +36892,11 @@ async function withFileUploadPathLock(path12, fn) {
 }
 async function resolveFileWriteTarget(database, ownerId, input, now2) {
   const explicitPath = input.path === void 0 || input.path === null ? null : normalizeAbsoluteFilePath(input.path);
-  const path12 = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
-  const firstSegment = path12.split("/").filter(Boolean)[0] ?? "default";
+  const path13 = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
+  const firstSegment = path13.split("/").filter(Boolean)[0] ?? "default";
   const existingBucket = await database.adapter.findFileBucket(ownerId, firstSegment);
   const bucket = existingBucket ?? await ensureFileBucket(database, ownerId, "default", now2);
-  return { bucket, path: path12 };
+  return { bucket, path: path13 };
 }
 async function ensureFileBucket(database, ownerId, name, now2) {
   const existing = await database.adapter.findFileBucket(ownerId, name);
@@ -36931,13 +36935,13 @@ function isAbsoluteFilePath(value) {
 async function resolveLiveFileReference(database, ownerId, reference) {
   const value = String(reference ?? "");
   if (isAbsoluteFilePath(value)) {
-    let path12;
+    let path13;
     try {
-      path12 = normalizeAbsoluteFilePath(value);
+      path13 = normalizeAbsoluteFilePath(value);
     } catch {
       return { ok: true, row: null };
     }
-    const resolved = await singleLiveFileRowByPath(database, path12);
+    const resolved = await singleLiveFileRowByPath(database, path13);
     if (resolved?.ambiguous) {
       return ambiguousFileReferenceError(value);
     }
@@ -36955,13 +36959,13 @@ async function resolveAccessibleFileReference(database, auth, reference, operati
 async function resolvePrivilegedLiveFileReference(database, reference) {
   const value = String(reference ?? "");
   if (isAbsoluteFilePath(value)) {
-    let path12;
+    let path13;
     try {
-      path12 = normalizeAbsoluteFilePath(value);
+      path13 = normalizeAbsoluteFilePath(value);
     } catch {
       return { ok: true, row: null };
     }
-    const resolved = await singleLiveFileRowByPath(database, path12);
+    const resolved = await singleLiveFileRowByPath(database, path13);
     if (resolved?.ambiguous) {
       return ambiguousFileReferenceError(value);
     }
@@ -36973,14 +36977,14 @@ async function resolvePrivilegedLiveFileReference(database, reference) {
   }
   return { ok: true, row };
 }
-function singleLiveFileRowByPath(database, path12) {
-  return thenIfPromise(database.adapter.selectLiveFileByPath(path12), (rows) => {
+function singleLiveFileRowByPath(database, path13) {
+  return thenIfPromise(database.adapter.selectLiveFileByPath(path13), (rows) => {
     if (rows.length > 1) return { ambiguous: true };
     return rows[0] ?? null;
   });
 }
-function singleActiveFileRowByPath(database, path12) {
-  return thenIfPromise(database.adapter.selectActiveFileByPath(path12), (rows) => {
+function singleActiveFileRowByPath(database, path13) {
+  return thenIfPromise(database.adapter.selectActiveFileByPath(path13), (rows) => {
     if (rows.length > 1) return { ambiguous: true };
     return rows[0] ?? null;
   });
@@ -43044,33 +43048,33 @@ function renderRichText({
   container.append(fragment);
 }
 function makePathFromDrawOPS(data) {
-  const path12 = new Path2D();
+  const path13 = new Path2D();
   if (!data) {
-    return path12;
+    return path13;
   }
   for (let i = 0, ii = data.length; i < ii; ) {
     switch (data[i++]) {
       case DrawOPS.moveTo:
-        path12.moveTo(data[i++], data[i++]);
+        path13.moveTo(data[i++], data[i++]);
         break;
       case DrawOPS.lineTo:
-        path12.lineTo(data[i++], data[i++]);
+        path13.lineTo(data[i++], data[i++]);
         break;
       case DrawOPS.curveTo:
-        path12.bezierCurveTo(data[i++], data[i++], data[i++], data[i++], data[i++], data[i++]);
+        path13.bezierCurveTo(data[i++], data[i++], data[i++], data[i++], data[i++], data[i++]);
         break;
       case DrawOPS.quadraticCurveTo:
-        path12.quadraticCurveTo(data[i++], data[i++], data[i++], data[i++]);
+        path13.quadraticCurveTo(data[i++], data[i++], data[i++], data[i++]);
         break;
       case DrawOPS.closePath:
-        path12.closePath();
+        path13.closePath();
         break;
       default:
         warn(`Unrecognized drawing path operator: ${data[i - 1]}`);
         break;
     }
   }
-  return path12;
+  return path13;
 }
 var es_iterator_take = __webpack_require__(4972);
 var es_weak_map_get_or_insert = __webpack_require__(8454);
@@ -49460,11 +49464,11 @@ var FontFaceObject = class {
     } catch (ex) {
       warn(`getPathGenerator - ignoring character: "${ex}".`);
     }
-    const path12 = makePathFromDrawOPS(cmds?.path);
+    const path13 = makePathFromDrawOPS(cmds?.path);
     if (!this.fontExtraProperties) {
       objs.delete(objId);
     }
-    return this.compiledGlyphs[character] = path12;
+    return this.compiledGlyphs[character] = path13;
   }
   get black() {
     return this.#fontData.black;
@@ -51658,7 +51662,7 @@ var TilingPattern = class _TilingPattern {
     Util.singularValueDecompose2dScale(this.baseTransform, scale);
     return [matrixScaleX * scale[0], matrixScaleY * scale[1]];
   }
-  drawPattern(owner, path12, useEOFill = false, [n, m], opIdx) {
+  drawPattern(owner, path13, useEOFill = false, [n, m], opIdx) {
     const [x0, y0, x1, y1] = this.bbox;
     const dependencyTracker = owner.dependencyTracker;
     if (dependencyTracker) {
@@ -51666,9 +51670,9 @@ var TilingPattern = class _TilingPattern {
     }
     owner.save();
     if (useEOFill) {
-      owner.ctx.clip(path12, "evenodd");
+      owner.ctx.clip(path13, "evenodd");
     } else {
-      owner.ctx.clip(path12);
+      owner.ctx.clip(path13);
     }
     owner.ctx.setTransform(...this.patternBaseMatrix);
     owner.ctx.translate(n * this.xstep, m * this.ystep);
@@ -52946,15 +52950,15 @@ var CanvasGraphics = class _CanvasGraphics {
     if (hasInnerCutout && maskX0 === layerOffsetX && maskY0 === layerOffsetY && maskX1 === layerOffsetX + layerWidth && maskY1 === layerOffsetY + layerHeight) {
       return;
     }
-    const path12 = new Path2D();
-    path12.rect(layerOffsetX, layerOffsetY, layerWidth, layerHeight);
+    const path13 = new Path2D();
+    path13.rect(layerOffsetX, layerOffsetY, layerWidth, layerHeight);
     if (hasInnerCutout) {
-      path12.rect(maskX0, maskY0, maskX1 - maskX0, maskY1 - maskY0);
+      path13.rect(maskX0, maskY0, maskX1 - maskX0, maskY1 - maskY0);
     }
     layerCtx.save();
     layerCtx.globalAlpha = alpha / 255;
     layerCtx.setTransform(1, 0, 0, 1, 0, 0);
-    layerCtx.clip(path12, "evenodd");
+    layerCtx.clip(path13, "evenodd");
     layerCtx.globalCompositeOperation = "destination-in";
     layerCtx.fillStyle = "#000000";
     layerCtx.fillRect(layerOffsetX, layerOffsetY, layerWidth, layerHeight);
@@ -53012,21 +53016,21 @@ var CanvasGraphics = class _CanvasGraphics {
     this._cachedGetSinglePixelWidth = null;
   }
   constructPath(opIdx, op, data, minMax) {
-    let [path12] = data;
+    let [path13] = data;
     if (!minMax) {
-      path12 ||= data[0] = new Path2D();
+      path13 ||= data[0] = new Path2D();
       if (op !== OPS.stroke && op !== OPS.closeStroke) {
         this.current.tilingPatternDims = null;
       }
-      this[op](opIdx, path12);
+      this[op](opIdx, path13);
       return;
     }
     if (this.dependencyTracker !== null) {
       const outerExtraSize = op === OPS.stroke ? this.current.lineWidth / 2 : 0;
       this.dependencyTracker.resetBBox(opIdx).recordBBox(opIdx, this.ctx, minMax[0] - outerExtraSize, minMax[2] + outerExtraSize, minMax[1] - outerExtraSize, minMax[3] + outerExtraSize).recordDependencies(opIdx, ["transform"]);
     }
-    if (!(path12 instanceof Path2D)) {
-      path12 = data[0] = makePathFromDrawOPS(path12);
+    if (!(path13 instanceof Path2D)) {
+      path13 = data[0] = makePathFromDrawOPS(path13);
     }
     Util.axialAlignedBoundingBox(minMax, getCurrentTransform(this.ctx), this.current.minMax);
     const tilingDims = this.current.tilingPatternDims;
@@ -53038,13 +53042,13 @@ var CanvasGraphics = class _CanvasGraphics {
         this.current.fillColor.updatePatternDims(clippedBBox, tilingDims);
       }
     }
-    this[op](opIdx, path12);
+    this[op](opIdx, path13);
     this._pathStartIdx = opIdx;
   }
   closePath(opIdx) {
     this.ctx.closePath();
   }
-  stroke(opIdx, path12, consumePath = true) {
+  stroke(opIdx, path13, consumePath = true) {
     const started = consumePath && this.#beginKnockoutElement(this.current.strokeAlpha);
     const ctx = this.ctx;
     const strokeColor = this.current.strokeColor;
@@ -53056,26 +53060,26 @@ var CanvasGraphics = class _CanvasGraphics {
         ctx.strokeStyle = strokeColor.getPattern(ctx, this, getCurrentTransformInverse(ctx), PathType.STROKE, opIdx);
         if (baseTransform) {
           const newPath = new Path2D();
-          newPath.addPath(path12, ctx.getTransform().invertSelf().multiplySelf(baseTransform));
-          path12 = newPath;
+          newPath.addPath(path13, ctx.getTransform().invertSelf().multiplySelf(baseTransform));
+          path13 = newPath;
         }
-        this.rescaleAndStroke(path12, false);
+        this.rescaleAndStroke(path13, false);
         ctx.restore();
       } else {
-        this.rescaleAndStroke(path12, true);
+        this.rescaleAndStroke(path13, true);
       }
     }
     this.dependencyTracker?.recordDependencies(opIdx, Dependencies.stroke);
     if (consumePath) {
-      this.consumePath(opIdx, path12, this.current.getClippedPathBoundingBox(PathType.STROKE, getCurrentTransform(this.ctx)));
+      this.consumePath(opIdx, path13, this.current.getClippedPathBoundingBox(PathType.STROKE, getCurrentTransform(this.ctx)));
     }
     ctx.globalAlpha = this.current.fillAlpha;
     this.#endKnockoutElement(started);
   }
-  closeStroke(opIdx, path12) {
-    this.stroke(opIdx, path12);
+  closeStroke(opIdx, path13) {
+    this.stroke(opIdx, path13);
   }
-  fill(opIdx, path12, consumePath = true) {
+  fill(opIdx, path13, consumePath = true) {
     const started = consumePath && this.#beginKnockoutElement(this.current.fillAlpha);
     const ctx = this.ctx;
     const fillColor = this.current.fillColor;
@@ -53087,10 +53091,10 @@ var CanvasGraphics = class _CanvasGraphics {
       const dims = this.current.tilingPatternDims;
       const tileIdx = dims && fillColor.canSkipPatternCanvas(dims);
       if (tileIdx) {
-        fillColor.drawPattern(this, path12, this.pendingEOFill, tileIdx, opIdx);
+        fillColor.drawPattern(this, path13, this.pendingEOFill, tileIdx, opIdx);
         this.pendingEOFill = false;
         if (consumePath) {
-          this.consumePath(opIdx, path12, intersect);
+          this.consumePath(opIdx, path13, intersect);
         }
         this.current.tilingPatternDims = null;
         this.#endKnockoutElement(started);
@@ -53102,17 +53106,17 @@ var CanvasGraphics = class _CanvasGraphics {
       ctx.fillStyle = fillColor.getPattern(ctx, this, getCurrentTransformInverse(ctx), PathType.FILL, opIdx);
       if (baseTransform) {
         const newPath = new Path2D();
-        newPath.addPath(path12, ctx.getTransform().invertSelf().multiplySelf(baseTransform));
-        path12 = newPath;
+        newPath.addPath(path13, ctx.getTransform().invertSelf().multiplySelf(baseTransform));
+        path13 = newPath;
       }
       needRestore = true;
     }
     if (this.contentVisible && intersect !== null) {
       if (this.pendingEOFill) {
-        ctx.fill(path12, "evenodd");
+        ctx.fill(path13, "evenodd");
         this.pendingEOFill = false;
       } else {
-        ctx.fill(path12);
+        ctx.fill(path13);
       }
     }
     if (needRestore) {
@@ -53120,38 +53124,38 @@ var CanvasGraphics = class _CanvasGraphics {
       this.dependencyTracker?.restore(opIdx);
     }
     if (consumePath) {
-      this.consumePath(opIdx, path12, intersect);
+      this.consumePath(opIdx, path13, intersect);
     }
     this.#endKnockoutElement(started);
   }
-  eoFill(opIdx, path12) {
+  eoFill(opIdx, path13) {
     this.pendingEOFill = true;
-    this.fill(opIdx, path12);
+    this.fill(opIdx, path13);
   }
-  fillStroke(opIdx, path12) {
+  fillStroke(opIdx, path13) {
     const started = this.#beginKnockoutElement(Math.min(this.current.fillAlpha, this.current.strokeAlpha));
-    this.fill(opIdx, path12, false);
-    this.stroke(opIdx, path12, false);
-    this.consumePath(opIdx, path12);
+    this.fill(opIdx, path13, false);
+    this.stroke(opIdx, path13, false);
+    this.consumePath(opIdx, path13);
     this.#endKnockoutElement(started);
   }
-  eoFillStroke(opIdx, path12) {
+  eoFillStroke(opIdx, path13) {
     this.pendingEOFill = true;
-    this.fillStroke(opIdx, path12);
+    this.fillStroke(opIdx, path13);
   }
-  closeFillStroke(opIdx, path12) {
-    this.fillStroke(opIdx, path12);
+  closeFillStroke(opIdx, path13) {
+    this.fillStroke(opIdx, path13);
   }
-  closeEOFillStroke(opIdx, path12) {
+  closeEOFillStroke(opIdx, path13) {
     this.pendingEOFill = true;
-    this.fillStroke(opIdx, path12);
+    this.fillStroke(opIdx, path13);
   }
-  endPath(opIdx, path12) {
-    this.consumePath(opIdx, path12);
+  endPath(opIdx, path13) {
+    this.consumePath(opIdx, path13);
   }
-  rawFillPath(opIdx, path12) {
+  rawFillPath(opIdx, path13) {
     const started = this.#beginKnockoutElement(this.current.fillAlpha);
-    this.ctx.fill(path12);
+    this.ctx.fill(path13);
     this.dependencyTracker?.recordDependencies(opIdx, Dependencies.rawFillPath).recordOperation(opIdx);
     this.#endKnockoutElement(started);
   }
@@ -53190,12 +53194,12 @@ var CanvasGraphics = class _CanvasGraphics {
         x,
         y,
         fontSize,
-        path: path12
+        path: path13
       } of paths) {
-        if (!path12) {
+        if (!path13) {
           continue;
         }
-        newPath.addPath(path12, new DOMMatrix(transform).preMultiplySelf(invTransf).translate(x, y).scale(fontSize, -fontSize));
+        newPath.addPath(path13, new DOMMatrix(transform).preMultiplySelf(invTransf).translate(x, y).scale(fontSize, -fontSize));
       }
       ctx.clip(newPath);
     }
@@ -53283,9 +53287,9 @@ var CanvasGraphics = class _CanvasGraphics {
     this.moveText(opIdx, 0, this.current.leading);
     this.dependencyTracker?.recordIncrementalData("moveText", this.dependencyTracker.getSimpleIndex("leading") ?? opIdx);
   }
-  #getScaledPath(path12, currentTransform, transform) {
+  #getScaledPath(path13, currentTransform, transform) {
     const newPath = new Path2D();
-    newPath.addPath(path12, new DOMMatrix(transform).invertSelf().multiplySelf(currentTransform));
+    newPath.addPath(path13, new DOMMatrix(transform).invertSelf().multiplySelf(currentTransform));
     return newPath;
   }
   paintChar(opIdx, character, x, y, patternFillTransform, patternStrokeTransform) {
@@ -53298,11 +53302,11 @@ var CanvasGraphics = class _CanvasGraphics {
     const isAddToPathSet = !!(textRenderingMode & TextRenderingMode.ADD_TO_PATH_FLAG);
     const patternFill = current.patternFill && !font.missingFile;
     const patternStroke = current.patternStroke && !font.missingFile;
-    let path12;
+    let path13;
     if ((font.disableFontFace || isAddToPathSet || patternFill || patternStroke) && !font.missingFile) {
-      path12 = font.getPathGenerator(this.commonObjs, character);
+      path13 = font.getPathGenerator(this.commonObjs, character);
     }
-    if (path12 && (font.disableFontFace || patternFill || patternStroke)) {
+    if (path13 && (font.disableFontFace || patternFill || patternStroke)) {
       ctx.save();
       ctx.translate(x, y);
       ctx.scale(fontSize, -fontSize);
@@ -53312,10 +53316,10 @@ var CanvasGraphics = class _CanvasGraphics {
         if (patternFillTransform) {
           currentTransform = ctx.getTransform();
           ctx.setTransform(...patternFillTransform);
-          const scaledPath = this.#getScaledPath(path12, currentTransform, patternFillTransform);
+          const scaledPath = this.#getScaledPath(path13, currentTransform, patternFillTransform);
           ctx.fill(scaledPath);
         } else {
-          ctx.fill(path12);
+          ctx.fill(path13);
         }
       }
       if (fillStrokeMode === TextRenderingMode.STROKE || fillStrokeMode === TextRenderingMode.FILL_STROKE) {
@@ -53332,10 +53336,10 @@ var CanvasGraphics = class _CanvasGraphics {
           const transf = Util.transform([a, b, c, d, 0, 0], invPatternTransform);
           Util.singularValueDecompose2dScale(transf, XY);
           ctx.lineWidth *= Math.max(XY[0], XY[1]) / fontSize;
-          ctx.stroke(this.#getScaledPath(path12, currentTransform, patternStrokeTransform));
+          ctx.stroke(this.#getScaledPath(path13, currentTransform, patternStrokeTransform));
         } else {
           ctx.lineWidth /= fontSize;
-          ctx.stroke(path12);
+          ctx.stroke(path13);
         }
       }
       ctx.restore();
@@ -53358,7 +53362,7 @@ var CanvasGraphics = class _CanvasGraphics {
         x,
         y,
         fontSize,
-        path: path12
+        path: path13
       });
       this.dependencyTracker?.recordCharacterBBox(opIdx, ctx, font, fontSize, x, y);
     }
@@ -53748,9 +53752,9 @@ var CanvasGraphics = class _CanvasGraphics {
         const [x0, y0, x1, y1] = group.bbox;
         clip.rect(x0, y0, x1 - x0, y1 - y0);
         if (group.matrix) {
-          const path12 = new Path2D();
-          path12.addPath(clip, new DOMMatrix(group.matrix));
-          clip = path12;
+          const path13 = new Path2D();
+          path13.addPath(clip, new DOMMatrix(group.matrix));
+          clip = path13;
         }
         currentCtx.clip(clip);
       }
@@ -53809,9 +53813,9 @@ var CanvasGraphics = class _CanvasGraphics {
       const [x0, y0, x1, y1] = group.bbox;
       clip.rect(x0, y0, x1 - x0, y1 - y0);
       if (group.matrix) {
-        const path12 = new Path2D();
-        path12.addPath(clip, new DOMMatrix(group.matrix));
-        clip = path12;
+        const path13 = new Path2D();
+        path13.addPath(clip, new DOMMatrix(group.matrix));
+        clip = path13;
       }
       groupCtx.clip(clip);
     }
@@ -54333,7 +54337,7 @@ var CanvasGraphics = class _CanvasGraphics {
   }
   endCompat(opIdx) {
   }
-  consumePath(opIdx, path12, clipBox) {
+  consumePath(opIdx, path13, clipBox) {
     const isEmpty = this.current.isEmptyClip();
     if (this.pendingClip) {
       this.current.updateClipFromPath();
@@ -54345,9 +54349,9 @@ var CanvasGraphics = class _CanvasGraphics {
     if (this.pendingClip) {
       if (!isEmpty) {
         if (this.pendingClip === EO_CLIP) {
-          ctx.clip(path12, "evenodd");
+          ctx.clip(path13, "evenodd");
         } else {
-          ctx.clip(path12);
+          ctx.clip(path13);
         }
       }
       this.pendingClip = null;
@@ -54420,7 +54424,7 @@ var CanvasGraphics = class _CanvasGraphics {
     }
     return this._cachedScaleForStroking;
   }
-  rescaleAndStroke(path12, saveRestore) {
+  rescaleAndStroke(path13, saveRestore) {
     const {
       ctx,
       current: {
@@ -54430,7 +54434,7 @@ var CanvasGraphics = class _CanvasGraphics {
     const [scaleX, scaleY] = this.getScaleForStroking();
     if (scaleX === scaleY) {
       ctx.lineWidth = (lineWidth || 1) * scaleX;
-      ctx.stroke(path12);
+      ctx.stroke(path13);
       return;
     }
     const SCALE_MATRIX = _CanvasGraphics.#SCALE_MATRIX ??= new DOMMatrix();
@@ -54442,7 +54446,7 @@ var CanvasGraphics = class _CanvasGraphics {
     SCALE_MATRIX.a = 1 / scaleX;
     SCALE_MATRIX.d = 1 / scaleY;
     const newPath = new Path2D();
-    newPath.addPath(path12, SCALE_MATRIX);
+    newPath.addPath(path13, SCALE_MATRIX);
     if (dashes.length > 0) {
       const scale = Math.max(scaleX, scaleY);
       ctx.setLineDash(dashes.map((x) => x / scale));
@@ -66101,11 +66105,11 @@ var InkEditor = class _InkEditor extends DrawingEditor {
 };
 var ContourDrawOutline = class extends InkDrawOutline {
   toSVGPath() {
-    let path12 = super.toSVGPath();
-    if (!path12.endsWith("Z")) {
-      path12 += "Z";
+    let path13 = super.toSVGPath();
+    if (!path13.endsWith("Z")) {
+      path13 += "Z";
     }
-    return path12;
+    return path13;
   }
 };
 var es_uint8_array_from_base64 = __webpack_require__(5213);
@@ -68846,7 +68850,7 @@ var DrawLayer = class _DrawLayer {
       }
       const drawLayer = textLayerData.drawLayer;
       let div = textLayerData.selectionDiv;
-      let path12 = textLayerData.path;
+      let path13 = textLayerData.path;
       if (!div) {
         const clipPathId = `clip_selection_${_DrawLayer.#selectionId++}`;
         div = document.createElement("div");
@@ -68865,18 +68869,18 @@ var DrawLayer = class _DrawLayer {
         const clipPath = _DrawLayer._svgFactory.createElement("clipPath");
         clipPath.setAttribute("id", clipPathId);
         clipPath.setAttribute("clipPathUnits", "objectBoundingBox");
-        path12 = _DrawLayer._svgFactory.createElement("path");
-        clipPath.append(path12);
+        path13 = _DrawLayer._svgFactory.createElement("path");
+        clipPath.append(path13);
         svg.append(clipPath);
         div.append(svg);
-        textLayerData.path = path12;
+        textLayerData.path = path13;
         textLayerData.selectionDiv = div;
       }
       if (drawLayer.#parent && div.parentNode !== drawLayer.#parent) {
         drawLayer.#parent.append(div);
         this.#selections.add(div);
       }
-      path12.setAttribute("d", boxes.join(" "));
+      path13.setAttribute("d", boxes.join(" "));
     }
   }
   static get _svgFactory() {
@@ -68923,13 +68927,13 @@ var DrawLayer = class _DrawLayer {
     const root = this.#createSVG();
     const defs = _DrawLayer._svgFactory.createElement("defs");
     root.append(defs);
-    const path12 = _DrawLayer._svgFactory.createElement("path");
-    defs.append(path12);
+    const path13 = _DrawLayer._svgFactory.createElement("path");
+    defs.append(path13);
     const pathId = `path_${id}`;
-    path12.setAttribute("id", pathId);
-    path12.setAttribute("vector-effect", "non-scaling-stroke");
+    path13.setAttribute("id", pathId);
+    path13.setAttribute("vector-effect", "non-scaling-stroke");
     if (isPathUpdatable) {
-      this.#toUpdate.set(id, path12);
+      this.#toUpdate.set(id, path13);
     }
     const clipPathId = hasClip ? this.#createClipPath(defs, pathId) : null;
     const use = _DrawLayer._svgFactory.createElement("use");
@@ -68947,11 +68951,11 @@ var DrawLayer = class _DrawLayer {
     const root = this.#createSVG();
     const defs = _DrawLayer._svgFactory.createElement("defs");
     root.append(defs);
-    const path12 = _DrawLayer._svgFactory.createElement("path");
-    defs.append(path12);
+    const path13 = _DrawLayer._svgFactory.createElement("path");
+    defs.append(path13);
     const pathId = `path_${id}`;
-    path12.setAttribute("id", pathId);
-    path12.setAttribute("vector-effect", "non-scaling-stroke");
+    path13.setAttribute("id", pathId);
+    path13.setAttribute("vector-effect", "non-scaling-stroke");
     let maskId;
     if (mustRemoveSelfIntersections) {
       const mask = _DrawLayer._svgFactory.createElement("mask");
@@ -68998,7 +69002,7 @@ var DrawLayer = class _DrawLayer {
       root,
       bbox,
       rootClass,
-      path: path12
+      path: path13
     } = properties;
     const element = typeof elementOrId === "number" ? this.#mapping.get(elementOrId) : elementOrId;
     if (!element) {
@@ -69018,10 +69022,10 @@ var DrawLayer = class _DrawLayer {
         classList.toggle(className, value);
       }
     }
-    if (path12) {
+    if (path13) {
       const defs = element.firstElementChild;
       const pathElement = defs.firstElementChild;
-      this.#updateProperties(pathElement, path12);
+      this.#updateProperties(pathElement, path13);
     }
   }
   updateParent(id, layer) {
@@ -69592,9 +69596,10 @@ function boundedTool(child, timeoutMs, maximumBytes = 8192) {
 }
 async function verifiedClamavSignature(database) {
   if (database.__clamavTest?.signature) return database.__clamavTest.signature;
-  for (const path12 of ["/app/data/clamav/daily.cld", "/app/data/clamav/daily.cvd"]) {
-    if (!fs.existsSync(path12)) continue;
-    const child = childProcess.spawn("/usr/bin/sigtool", ["--info", path12], { stdio: ["ignore", "pipe", "ignore"] });
+  const sidecar = database.__clamavDevSidecar;
+  for (const path13 of ["/app/data/clamav/daily.cld", "/app/data/clamav/daily.cvd"]) {
+    if (!sidecar && !fs.existsSync(path13)) continue;
+    const child = sidecar ? childProcess.spawn("docker", ["exec", sidecar.containerName, "/usr/bin/sigtool", "--info", path13], { stdio: ["ignore", "pipe", "ignore"] }) : childProcess.spawn("/usr/bin/sigtool", ["--info", path13], { stdio: ["ignore", "pipe", "ignore"] });
     const result = await boundedTool(child, 5e3);
     if (!result.ok) {
       await terminateChild(child);
@@ -69609,7 +69614,7 @@ async function verifiedClamavSignature(database) {
   return null;
 }
 function clamavSocketCommand(database, command, maximumReplyBytes = 4096, timeoutMs = 2e3) {
-  const socketPath = database.__clamavTest?.socketPath ?? "/tmp/sporades-clamd.sock";
+  const socketPath = database.__clamavTest?.socketPath ?? database.__clamavDevSidecar?.socketPath ?? "/tmp/sporades-clamd.sock";
   return new Promise((resolve) => {
     let settled = false;
     let response = Buffer.alloc(0);
@@ -69638,7 +69643,7 @@ async function clamavInstream(database, bytes) {
   const signature = await currentLoadedClamavSignature(database);
   if (!signature) return { outcome: "inconclusive", signatureVersion: "unavailable" };
   if (bytes.length > clamavMaximumStreamBytes) return { outcome: "inconclusive", signatureVersion: String(signature.version).slice(0, 128) };
-  const socketPath = database.__clamavTest?.socketPath ?? "/tmp/sporades-clamd.sock";
+  const socketPath = database.__clamavTest?.socketPath ?? database.__clamavDevSidecar?.socketPath ?? "/tmp/sporades-clamd.sock";
   const timeoutMs = database.__clamavTest?.timeoutMs ?? 1e4;
   return await new Promise((resolve) => {
     let settled = false;
@@ -69732,6 +69737,17 @@ async function initializeClamavRuntime(database) {
     database.clamavReady = Boolean(await currentLoadedClamavSignature(database));
     return database.clamavReady;
   }
+  if (database.__clamavDevSidecar) {
+    for (let attempt = 0; attempt < 1200; attempt += 1) {
+      if (database.__clamavDevSidecar.process?.exitCode !== null) break;
+      if (fs.existsSync(database.__clamavDevSidecar.socketPath) && await currentLoadedClamavSignature(database) && await clamavSocketCommand(database, Buffer.from("zPING\0"), 16, 500) === "PONG") {
+        database.clamavReady = true;
+        return true;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return false;
+  }
   if (process.env.SPORADES_CLAMAV_MANAGED !== "1") return false;
   try {
     fs.mkdirSync("/app/data/clamav", { recursive: true });
@@ -69775,9 +69791,20 @@ async function initializeClamavRuntime(database) {
 }
 async function shutdownClamavRuntime(database) {
   database.clamavReady = false;
-  await Promise.all([terminateChild(database.__clamavProcess, clamavTerminateTimeout(database)), terminateChild(database.__clamavUpdateProcess, clamavTerminateTimeout(database))]);
+  if (!database.__clamavDevSidecar?.externallyManaged) await Promise.all([terminateChild(database.__clamavProcess, clamavTerminateTimeout(database)), terminateChild(database.__clamavUpdateProcess, clamavTerminateTimeout(database))]);
   database.__clamavProcess = null;
   database.__clamavUpdateProcess = null;
+}
+async function checkClamavRuntime(database) {
+  if (!database.clamavRequired) return { ok: true };
+  if (database.__clamavDevSidecar?.process && database.__clamavDevSidecar.process.exitCode !== null || database.__clamavProcess && database.__clamavProcess.exitCode !== null || database.__clamavUpdateProcess && database.__clamavUpdateProcess.exitCode !== null) {
+    database.clamavReady = false;
+    return { ok: false };
+  }
+  const current = await currentLoadedClamavSignature(database);
+  const pong = current ? await clamavSocketCommand(database, Buffer.from("zPING\0"), 16, 500) : null;
+  database.clamavReady = pong === "PONG";
+  return { ok: database.clamavReady };
 }
 async function inspectIngressLease(database, policy, row, bytes) {
   if (!policy) return void 0;
@@ -70132,11 +70159,11 @@ function createEndpointIngressApi(database, endpoint, endpointRequest, context) 
         if (row.authorityId !== claimAuthorityId || row.endpointMethod !== String(endpoint.options.method) || row.endpointPath !== String(endpoint.options.path) || row.requestKey !== requestKey || expectedLease.leaseId !== lease?.leaseId || expectedLease.partId !== lease?.partId || expectedLease.fieldName !== lease?.fieldName || expectedLease.name !== lease?.name || expectedLease.type !== lease?.type || expectedLease.size !== lease?.size || expectedLease.expiresAt !== lease?.expiresAt) {
           throw ingressAuthorityDenied();
         }
-        const path12 = normalizeAbsoluteFilePath(options?.path);
-        if (!policy.allowedPathPrefixes.some((prefix) => path12 === prefix || path12.startsWith(`${prefix}/`))) throw Object.assign(new Error("File path is outside the endpoint ingress policy."), { code: "INGRESS_PATH_DENIED" });
+        const path13 = normalizeAbsoluteFilePath(options?.path);
+        if (!policy.allowedPathPrefixes.some((prefix) => path13 === prefix || path13.startsWith(`${prefix}/`))) throw Object.assign(new Error("File path is outside the endpoint ingress policy."), { code: "INGRESS_PATH_DENIED" });
         const name = safeName(options?.name ?? row.name);
         const type = safeType(options?.type ?? row.type);
-        const expectedFile = { id: row.fileId, ownerId: row.ownerId, path: path12, name, type, size: row.size, version: row.version };
+        const expectedFile = { id: row.fileId, ownerId: row.ownerId, path: path13, name, type, size: row.size, version: row.version };
         if (row.state === "complete") {
           if (!sameFileDescriptor(row.file, expectedFile)) throw idempotencyConflict();
           return fileMetadataFromRow(row.file);
@@ -70146,7 +70173,7 @@ function createEndpointIngressApi(database, endpoint, endpointRequest, context) 
         if (row.state !== "leased") throw idempotencyConflict("Ingress lease is not claimable.");
         const now2 = (/* @__PURE__ */ new Date()).toISOString();
         const bucket = await ensureFileBucket(database, row.ownerId, "default", now2);
-        const file = { id: row.fileId, ownerId: row.ownerId, bucketId: bucket.id, bucketName: bucket.name, path: path12, name: safeName(options?.name ?? row.name), type: safeType(options?.type ?? row.type), size: row.size, version: row.version, status: "uploaded", createdAt: now2, updatedAt: now2 };
+        const file = { id: row.fileId, ownerId: row.ownerId, bucketId: bucket.id, bucketName: bucket.name, path: path13, name: safeName(options?.name ?? row.name), type: safeType(options?.type ?? row.type), size: row.size, version: row.version, status: "uploaded", createdAt: now2, updatedAt: now2 };
         try {
           await database.adapter.insertFileRowIfAbsent(file);
         } catch (error) {
@@ -70775,6 +70802,42 @@ async function handleFileHttpRoute(database, request, response, websocketHub = n
     return true;
   }
   return false;
+}
+async function routeRuntimeHealth(database, request, response) {
+  const requestUrl = new URL(request.url, "http://127.0.0.1");
+  if (request.method !== "GET" || requestUrl.pathname !== "/__sporades/health/runtime") {
+    return false;
+  }
+  const probe = request.headers["x-sporades-host-probe"];
+  if (typeof probe !== "string" || probe.length === 0) {
+    writeNotFound(response);
+    return true;
+  }
+  const result = await createRuntimeHealthResult(database);
+  writeJsonHttpResponse(response, result.ok ? 200 : 503, result);
+  return true;
+}
+async function createRuntimeHealthResult(database) {
+  const checks = {
+    sqlite: await checkRuntimeSqlite(database),
+    fileStorage: await checkRuntimeFileStorage(database),
+    fileInspection: await checkClamavRuntime(database)
+  };
+  const ready = checks.sqlite.ok && checks.fileStorage.ok && checks.fileInspection.ok;
+  return {
+    ok: ready,
+    data: {
+      runtime: { ready },
+      checks
+    },
+    error: ready ? null : {
+      message: "Sporades runtime is not ready.",
+      hint: "Check Hosted Capsule logs and data volume permissions."
+    }
+  };
+}
+async function checkRuntimeSqlite(database) {
+  return await (database.adapter ?? database.adapter).checkHealth();
 }
 function writeJsonHttpResponse(response, status, result) {
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
@@ -75307,12 +75370,12 @@ function validateEmailWebhooksConfig(webhooks) {
       `Configure \`mail.webhooks.${provider}\` with optional enabled, path, and secretEnv values.`
     );
     const enabled = data.get("enabled") ?? true;
-    const path12 = data.get("path") ?? defaultPath;
+    const path13 = data.get("path") ?? defaultPath;
     const secretEnv = data.get("secretEnv") ?? defaultSecretEnv;
     if (typeof enabled !== "boolean") {
       invalidMailConfig(`Invalid ${provider} webhook enabled flag.`, `Set \`mail.webhooks.${provider}.enabled\` to true or false.`);
     }
-    if (!sameOriginWebhookPath(path12) || runtimeOwnedHttpPath(path12)) {
+    if (!sameOriginWebhookPath(path13) || runtimeOwnedHttpPath(path13)) {
       invalidMailConfig(
         `Invalid ${provider} webhook path.`,
         `Set \`mail.webhooks.${provider}.path\` to a same-origin absolute path outside Sporades runtime-owned HTTP namespaces.`
@@ -75324,7 +75387,7 @@ function validateEmailWebhooksConfig(webhooks) {
         `Set \`mail.webhooks.${provider}.secretEnv\` to an uppercase Server env key without the reserved \`SPORADES_\` prefix.`
       );
     }
-    result[provider] = { enabled, path: path12, secretEnv };
+    result[provider] = { enabled, path: path13, secretEnv };
   }
   return result;
 }
@@ -76055,26 +76118,26 @@ function normalizeMailgunProvider(provider) {
 }
 function serializeMailgunJson(value, label, maximumBytes) {
   const seen = /* @__PURE__ */ new Set();
-  const normalize = (candidate, path12) => {
+  const normalize = (candidate, path13) => {
     if (candidate === null || typeof candidate === "string" || typeof candidate === "boolean") return candidate;
     if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
     if (Array.isArray(candidate)) {
-      if (seen.has(candidate)) throw new Error(`${path12} is cyclic`);
+      if (seen.has(candidate)) throw new Error(`${path13} is cyclic`);
       seen.add(candidate);
-      const result = captureMailProviderDataArray(candidate, path12).map((entry, index) => normalize(entry, `${path12}[${index}]`));
+      const result = captureMailProviderDataArray(candidate, path13).map((entry, index) => normalize(entry, `${path13}[${index}]`));
       seen.delete(candidate);
       return result;
     }
     if (candidate && typeof candidate === "object") {
-      if (seen.has(candidate)) throw new Error(`${path12} is cyclic`);
+      if (seen.has(candidate)) throw new Error(`${path13} is cyclic`);
       seen.add(candidate);
-      const entries = captureMailProviderDataObject(candidate, path12, "Mailgun").sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+      const entries = captureMailProviderDataObject(candidate, path13, "Mailgun").sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
       const result = /* @__PURE__ */ Object.create(null);
-      for (const [key, entry] of entries) result[key] = normalize(entry, `${path12}.${key}`);
+      for (const [key, entry] of entries) result[key] = normalize(entry, `${path13}.${key}`);
       seen.delete(candidate);
       return result;
     }
-    throw new Error(`${path12} is not JSON-compatible`);
+    throw new Error(`${path13} is not JSON-compatible`);
   };
   let json;
   try {
@@ -78235,24 +78298,24 @@ function createSharedDatabaseAdapterMethods(dialect) {
     selectFileById(fileId) {
       return this.prepare(sql("SELECT * FROM [sporades_files] WHERE [id] = ?")).get(fileId) ?? null;
     },
-    selectLiveFileByPath(path12) {
+    selectLiveFileByPath(path13) {
       return this.prepare(
         sql("SELECT * FROM [sporades_files] WHERE [path] = ? AND [deletedAt] IS NULL AND [status] = ?")
-      ).all(path12, "uploaded");
+      ).all(path13, "uploaded");
     },
-    selectActiveFileByPath(path12) {
+    selectActiveFileByPath(path13) {
       return this.prepare(
         sql("SELECT * FROM [sporades_files] WHERE [path] = ? AND [deletedAt] IS NULL AND [status] IN (?, ?)")
       ).all(
-        path12,
+        path13,
         "pending",
         "uploaded"
       );
     },
-    selectPendingFileUploadByPath(path12) {
+    selectPendingFileUploadByPath(path13) {
       return this.prepare(
         sql("SELECT * FROM [sporades_file_uploads] WHERE [path] = ? ORDER BY [createdAt] DESC, [id] DESC LIMIT 1")
-      ).get(path12) ?? null;
+      ).get(path13) ?? null;
     },
     selectFileUpload(uploadId) {
       return this.prepare(sql("SELECT * FROM [sporades_file_uploads] WHERE [id] = ?")).get(uploadId) ?? null;
@@ -78308,8 +78371,8 @@ function createSharedDatabaseAdapterMethods(dialect) {
         }
       );
     },
-    deleteFileUploadsForPath(path12) {
-      return this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [path] = ?")).run(path12);
+    deleteFileUploadsForPath(path13) {
+      return this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [path] = ?")).run(path13);
     },
     deleteFileUploadsForFile(ownerId, fileId) {
       return this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [ownerId] = ? AND [fileId] = ?")).run(ownerId, fileId);
@@ -79058,8 +79121,8 @@ function createSharedDatabaseAdapterMethods(dialect) {
 }
 async function createSqliteDatabaseAdapter(databasePath, options = {}) {
   const { DatabaseSync } = await import("node:sqlite");
-  const path12 = await import("node:path");
-  if (!options.readOnly) nodeFsModule.mkdirSync(path12.dirname(String(databasePath)), { recursive: true });
+  const path13 = await import("node:path");
+  if (!options.readOnly) nodeFsModule.mkdirSync(path13.dirname(String(databasePath)), { recursive: true });
   const connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
   const dialect = sqliteDatabaseDialect();
   const connectionGate = createConnectionTransactionGate();
@@ -80447,7 +80510,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     throw commandError("Invalid Capsule Files declaration.", "Declare files as { acl?: { read?, publicUrl?, delete? } }.", "INVALID_FILE_ACL");
   }
   const fileAcl = normalizeFileAcl(capsuleDefinition?.files?.acl);
-  const path12 = await import("node:path");
+  const path13 = await import("node:path");
   const mailConfig = validateMailConfig(config.mail);
   let mailLogSink;
   const mail = createMailRuntime(mailConfig, serverEnv, {
@@ -80486,6 +80549,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     }
   }
   const endpoints = [...capsuleEndpoints, ...providerEndpoints];
+  const fileIngressEnabled = config.files !== void 0 || endpoints.some((endpoint) => endpoint?.options?.body?.multipart !== void 0);
   const fileIngressDefinition = normalizeCapsuleFileIngressDefinition(capsuleDefinition?.files, endpoints);
   const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
   const journeySessionInactivityMinutes = resolveJourneySessionInactivityMinutes(config);
@@ -80570,6 +80634,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     capsuleIdentity: String(config.name ?? "capsule"),
     capsuleIngressOwnerId: capsuleIngressAuthUserId(config.name ?? capsuleDefinition?.name ?? "capsule"),
     fileIngressDefinition,
+    fileIngressEnabled,
     scheduleOccurrenceFault: options?.scheduleOccurrenceFault,
     scheduleReconciliationFault: options?.scheduleReconciliationFault,
     jobRecoveryFault: options?.jobRecoveryFault,
@@ -80867,17 +80932,19 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       database.__scheduleRecoveryDueAt = null;
       database.__scheduleRecoveryPromise = null;
       database.__scheduleLegacyDiscoveryTimer = null;
-      database.__ingressAuditRecoveryPending = true;
-      await runIngressAuditOutboxDrain(database);
+      database.__ingressAuditRecoveryPending = database.fileIngressEnabled;
+      if (database.fileIngressEnabled) await runIngressAuditOutboxDrain(database);
       const earliestFutureLeaseAt = await recoverExpiredJobLeases(database);
       await recoverPendingScheduleOccurrences(database, { validateOnly: true });
       preflightStaticScheduleTimers(database);
       const reconciled = await reconcileSchedules(database);
       database.__scheduleStopped = false;
       startStaticSchedules(database, reconciled.timerPlans);
-      await runPeriodicIngressSweep(database);
-      startPeriodicIngressSweep(database);
-      startPeriodicIngressAuditOutboxDrain(database);
+      if (database.fileIngressEnabled) {
+        await runPeriodicIngressSweep(database);
+        startPeriodicIngressSweep(database);
+        startPeriodicIngressAuditOutboxDrain(database);
+      }
       if (!database.__jobActivationDeferred) {
         activateCurrentUserJobExecution(database, earliestFutureLeaseAt);
       }
@@ -80892,7 +80959,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       database.__scheduleRecoveryTimer = null;
       database.__scheduleRecoveryDueAt = null;
       database.__scheduleLegacyDiscoveryTimer = null;
-      const settlements = [stopCurrentUserJobWorker(database), settleActiveScheduleWork(database)].filter(Boolean).map((pending) => Promise.resolve(pending));
+      const settlements = [stopCurrentUserJobWorker(database), settleActiveScheduleWork(database), shutdownClamavRuntime(database)].filter(Boolean).map((pending) => Promise.resolve(pending));
       const cleanup = await Promise.allSettled(settlements);
       database.__runtimeInitialized = false;
       const cleanupFailures = cleanup.filter((result) => result.status === "rejected").map((result) => result.reason);
@@ -80949,7 +81016,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     database: sqlite,
     config,
     serverEnv,
-    dataDir: path12.dirname(databasePath)
+    dataDir: path13.dirname(databasePath)
   });
   mailLogSink = database.log;
   database.audit = createPrivilegedAuditEmitter(database.log);
@@ -81859,9 +81926,9 @@ function logRedactedValue() {
 }
 var transactionPendingLogWrites = Symbol("sporades.transactionPendingLogWrites");
 function createRuntimeLogSink(options) {
-  const path12 = requirePathModule();
-  const logPath = options.config.logs?.jsonlPath ?? options.config.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path12.join(options.dataDir, "logs", "events.jsonl");
-  mkdirSync(path12.dirname(logPath), { recursive: true });
+  const path13 = requirePathModule();
+  const logPath = options.config.logs?.jsonlPath ?? options.config.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path13.join(options.dataDir, "logs", "events.jsonl");
+  mkdirSync(path13.dirname(logPath), { recursive: true });
   return {
     path: logPath,
     withDatabase(database) {
@@ -89661,10 +89728,210 @@ function escapeHtml(value) {
   return value.replace(/[&<>"']/g, (char) => replacements[char] ?? char);
 }
 
-// src/capsule-services.ts
-import { randomBytes as randomBytes6 } from "node:crypto";
-import { mkdir as mkdir4, readFile as readFile6, rm as rm5, writeFile as writeFile5 } from "node:fs/promises";
+// src/dev-clamav-sidecar.ts
+import { spawn } from "node:child_process";
+import { createHash as createHash9, randomBytes as randomBytes6 } from "node:crypto";
+import { mkdir as mkdir4, mkdtemp, rm as rm5 } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { createServer } from "node:net";
 import path8 from "node:path";
+function commandResult(command, args, timeoutMs) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const append = (current, chunk) => (current + chunk.toString("utf8")).slice(-8192);
+    child.stdout.on("data", (chunk) => {
+      stdout = append(stdout, chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr = append(stderr, chunk);
+    });
+    const finish = (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ code, stdout, stderr });
+    };
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+      }
+      finish(null);
+    }, timeoutMs);
+    child.once("close", finish);
+    child.once("error", () => finish(null));
+  });
+}
+async function ensureBaseImage(dockerCommand, dockerfile, buildContext) {
+  if ((await commandResult(dockerCommand, ["image", "inspect", SPORADES_BASE_IMAGE.image], 3e4)).code === 0) return;
+  if ((await commandResult(dockerCommand, ["pull", SPORADES_BASE_IMAGE.image], 5 * 6e4)).code === 0) return;
+  const built = await commandResult(dockerCommand, ["build", "-f", dockerfile, "-t", SPORADES_BASE_IMAGE.image, buildContext], 10 * 6e4);
+  if (built.code !== 0) throw Object.assign(new Error("Required Dev File inspection image is unavailable."), { code: "FILE_INSPECTION_UNAVAILABLE" });
+}
+function waitForExit(child, timeoutMs) {
+  if (!child || child.exitCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    child.once("close", () => finish(true));
+    child.once("error", () => finish(true));
+  });
+}
+async function startDevClamavSidecar(options) {
+  const dataRoot = path8.join(options.projectDir, ".sporades", "clamav");
+  await mkdir4(path8.join(dataRoot, "clamav"), { recursive: true });
+  const socketDir = await mkdtemp(path8.join(tmpdir(), "sporades-dev-clamav-"));
+  const identity = createHash9("sha256").update(`${path8.resolve(options.projectDir)}\0${process.pid}\0${randomBytes6(8).toString("hex")}`).digest("hex").slice(0, 20);
+  const containerName = `sporades-dev-clamav-${identity}`;
+  const socketPath = path8.join(socketDir, "clamd.sock");
+  let child;
+  let proxy;
+  const bridges = /* @__PURE__ */ new Set();
+  const proxySockets = /* @__PURE__ */ new Set();
+  let stopped = false;
+  let output = "";
+  try {
+    const dockerCommand = options.dockerCommand ?? "docker";
+    await ensureBaseImage(dockerCommand, options.dockerfile, options.buildContext);
+    const uid = process.getuid?.() ?? 10001;
+    const gid = process.getgid?.() ?? 10001;
+    const script = [
+      "set -eu",
+      "/usr/bin/freshclam --config-file=/etc/clamav/freshclam.conf",
+      "/usr/bin/freshclam --daemon --foreground=true --config-file=/etc/clamav/freshclam.conf >/tmp/freshclam.log 2>&1 & updater=$!",
+      "/usr/sbin/clamd --foreground --config-file=/etc/clamav/clamd.conf >/tmp/clamd.log 2>&1 & daemon=$!",
+      `trap 'kill -TERM "$daemon" "$updater" 2>/dev/null || true; wait "$daemon" "$updater" 2>/dev/null || true' EXIT INT TERM`,
+      'while kill -0 "$daemon" 2>/dev/null && kill -0 "$updater" 2>/dev/null; do sleep 1; done',
+      "cat /tmp/clamd.log /tmp/freshclam.log >&2 || true",
+      "exit 1"
+    ].join("\n");
+    child = spawn(dockerCommand, ["run", "--rm", "--name", containerName, "--label", `com.sporades.dev-task=${identity}`, "--user", `${uid}:${gid}`, "--volume", `${dataRoot}:/app/data`, "--entrypoint", "/bin/sh", SPORADES_BASE_IMAGE.image, "-ec", script], { stdio: ["ignore", "pipe", "pipe"] });
+    const retain = (chunk) => {
+      output = (output + chunk.toString("utf8")).slice(-8192);
+    };
+    child.stdout.on("data", retain);
+    child.stderr.on("data", retain);
+    await new Promise((resolve, reject) => {
+      child.once("spawn", resolve);
+      child.once("error", reject);
+    });
+    const bridgeSource = "const net=require('node:net');const socket=net.createConnection('/tmp/sporades-clamd.sock');process.stdin.pipe(socket);socket.pipe(process.stdout);socket.on('error',()=>process.exit(1));";
+    proxy = (options.proxyServerFactory ?? createServer)((socket) => {
+      proxySockets.add(socket);
+      const bridge = spawn(dockerCommand, ["exec", "-i", containerName, "node", "-e", bridgeSource], { stdio: ["pipe", "pipe", "ignore"] });
+      bridges.add(bridge);
+      socket.pipe(bridge.stdin);
+      bridge.stdout.pipe(socket);
+      const close = () => {
+        bridges.delete(bridge);
+        proxySockets.delete(socket);
+        socket.destroy();
+      };
+      bridge.once("close", close);
+      bridge.once("error", close);
+      socket.once("error", () => {
+        try {
+          bridge.kill("SIGTERM");
+        } catch {
+        }
+      });
+    });
+    await new Promise((resolve, reject) => {
+      proxy.once("error", reject);
+      proxy.listen(socketPath, resolve);
+    });
+  } catch (error) {
+    const failures = [];
+    for (const socket of proxySockets) socket.destroy();
+    for (const bridge of bridges) {
+      try {
+        bridge.kill("SIGTERM");
+      } catch {
+      }
+    }
+    if (proxy) await new Promise((resolve) => {
+      try {
+        proxy.close(() => resolve());
+      } catch {
+        resolve();
+      }
+    });
+    if (child) {
+      const removed = await commandResult(options.dockerCommand ?? "docker", ["rm", "-f", containerName], 3e4);
+      if (removed.code !== 0 && !/No such container/i.test(`${removed.stdout}
+${removed.stderr}`)) failures.push(new Error("Dev File inspection container cleanup failed."));
+      if (!await waitForExit(child, 5e3)) {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+        }
+        if (!await waitForExit(child, 5e3)) failures.push(new Error("Dev File inspection process did not exit."));
+      }
+    }
+    try {
+      await rm5(socketDir, { recursive: true, force: true });
+    } catch (cleanupError) {
+      failures.push(cleanupError);
+    }
+    if (failures.length) throw new AggregateError([error, ...failures], "Dev File inspection startup and cleanup both failed.");
+    throw error;
+  }
+  const descriptor = { containerName, socketPath, process: child, externallyManaged: true, diagnosticOutput: () => output };
+  return {
+    descriptor,
+    attach(database) {
+      database.__clamavDevSidecar = descriptor;
+    },
+    async stop() {
+      if (stopped) return;
+      stopped = true;
+      const failures = [];
+      for (const socket of proxySockets) socket.destroy();
+      proxySockets.clear();
+      if (proxy) await new Promise((resolve) => proxy.close(() => resolve()));
+      for (const bridge of bridges) {
+        try {
+          bridge.kill("SIGTERM");
+        } catch {
+        }
+      }
+      bridges.clear();
+      const removed = await commandResult(options.dockerCommand ?? "docker", ["rm", "-f", containerName], 3e4);
+      if (removed.code !== 0 && !/No such container/i.test(`${removed.stdout}
+${removed.stderr}`)) failures.push(new Error("Dev File inspection container cleanup failed."));
+      if (!await waitForExit(child, 5e3)) {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+        }
+        if (!await waitForExit(child, 5e3)) failures.push(new Error("Dev File inspection process did not exit."));
+      }
+      try {
+        await rm5(socketDir, { recursive: true, force: true });
+      } catch (error) {
+        failures.push(error);
+      }
+      const residue = await commandResult(options.dockerCommand ?? "docker", ["container", "inspect", containerName], 3e4);
+      if (residue.code === 0) failures.push(new Error("Dev File inspection container remained after cleanup."));
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "Dev File inspection cleanup failed.");
+    }
+  };
+}
+
+// src/capsule-services.ts
+import { randomBytes as randomBytes7 } from "node:crypto";
+import { mkdir as mkdir5, readFile as readFile6, rm as rm6, writeFile as writeFile5 } from "node:fs/promises";
+import path9 from "node:path";
 var SUPPORTED_SERVICE_KEYS = /* @__PURE__ */ new Set(["database", "storage"]);
 var SUPPORTED_DATABASE_ENGINES = /* @__PURE__ */ new Set(["libsql", "postgres"]);
 var SUPPORTED_STORAGE_ENGINES = /* @__PURE__ */ new Set(["minio"]);
@@ -89676,9 +89943,9 @@ var MINIO_IMAGE = "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z";
 var MINIO_ROOT_USER = "sporades";
 var MINIO_BUCKET = "sporades-files";
 var MINIO_REGION = "us-east-1";
-var CAPSULE_SERVICES_COMPOSE_FILE = path8.join(".sporades", "compose", "capsule-services.compose.yml");
-var CAPSULE_SERVICES_STATE_DIR = path8.join(".sporades", "services");
-var CAPSULE_SERVICES_CREDENTIALS_FILE = path8.join(".sporades", "services", "credentials.json");
+var CAPSULE_SERVICES_COMPOSE_FILE = path9.join(".sporades", "compose", "capsule-services.compose.yml");
+var CAPSULE_SERVICES_STATE_DIR = path9.join(".sporades", "services");
+var CAPSULE_SERVICES_CREDENTIALS_FILE = path9.join(".sporades", "services", "credentials.json");
 function validateCapsuleServicesConfig(services) {
   if (services === void 0) {
     return null;
@@ -89703,19 +89970,19 @@ function validateCapsuleServicesConfig(services) {
   return services;
 }
 async function writeCapsuleServicesCompose(projectDir, config, options = {}) {
-  const composePath = path8.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
+  const composePath = path9.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
   if (!hasDeclaredCapsuleServices(config)) {
-    await rm5(composePath, { force: true });
+    await rm6(composePath, { force: true });
     return null;
   }
   validateCapsuleServicesConfig(config.services);
-  await mkdir4(path8.dirname(composePath), { recursive: true });
+  await mkdir5(path9.dirname(composePath), { recursive: true });
   const credentials = await loadOrCreateCapsuleServiceCredentials(projectDir);
   const model = capsuleServicesComposeModel(config, projectDir, {
     credentials,
     publishPorts: options.publishPorts === true
   });
-  await Promise.all(Object.values(model.services).map((service) => mkdir4(service.stateDir, { recursive: true })));
+  await Promise.all(Object.values(model.services).map((service) => mkdir5(service.stateDir, { recursive: true })));
   const source = renderCapsuleServicesCompose(model);
   await writeFile5(composePath, source);
   return {
@@ -89725,7 +89992,7 @@ async function writeCapsuleServicesCompose(projectDir, config, options = {}) {
   };
 }
 async function loadOrCreateCapsuleServiceCredentials(projectDir) {
-  const credentialsPath = path8.join(projectDir, CAPSULE_SERVICES_CREDENTIALS_FILE);
+  const credentialsPath = path9.join(projectDir, CAPSULE_SERVICES_CREDENTIALS_FILE);
   let existing = {};
   try {
     const parsed = JSON.parse(await readFile6(credentialsPath, "utf8"));
@@ -89736,12 +90003,12 @@ async function loadOrCreateCapsuleServiceCredentials(projectDir) {
   }
   const credentials = {
     databaseUser: typeof existing.databaseUser === "string" && existing.databaseUser ? existing.databaseUser : POSTGRES_USER,
-    databasePassword: typeof existing.databasePassword === "string" && existing.databasePassword ? existing.databasePassword : randomBytes6(24).toString("base64url"),
+    databasePassword: typeof existing.databasePassword === "string" && existing.databasePassword ? existing.databasePassword : randomBytes7(24).toString("base64url"),
     storageAccessKey: typeof existing.storageAccessKey === "string" && existing.storageAccessKey ? existing.storageAccessKey : MINIO_ROOT_USER,
-    storageSecretKey: typeof existing.storageSecretKey === "string" && existing.storageSecretKey ? existing.storageSecretKey : randomBytes6(24).toString("base64url")
+    storageSecretKey: typeof existing.storageSecretKey === "string" && existing.storageSecretKey ? existing.storageSecretKey : randomBytes7(24).toString("base64url")
   };
   if (credentials.databaseUser !== existing.databaseUser || credentials.databasePassword !== existing.databasePassword || credentials.storageAccessKey !== existing.storageAccessKey || credentials.storageSecretKey !== existing.storageSecretKey) {
-    await mkdir4(path8.dirname(credentialsPath), { recursive: true });
+    await mkdir5(path9.dirname(credentialsPath), { recursive: true });
     await writeFile5(credentialsPath, `${JSON.stringify(credentials, null, 2)}
 `, { mode: 384 });
   }
@@ -89789,7 +90056,7 @@ function capsuleServicesComposeModel(config, projectDir = process.cwd(), options
       name: `sporades-${projectSlug}-database`,
       engine: engineModel.engine,
       image: engineModel.image,
-      stateDir: path8.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "database"),
+      stateDir: path9.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "database"),
       targetPort: engineModel.targetPort,
       volumeTarget: engineModel.volumeTarget,
       environment: engineModel.environment,
@@ -89807,7 +90074,7 @@ function capsuleServicesComposeModel(config, projectDir = process.cwd(), options
       name: `sporades-${projectSlug}-storage`,
       engine: "minio",
       image: MINIO_IMAGE,
-      stateDir: path8.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "storage"),
+      stateDir: path9.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "storage"),
       targetPort: 9e3,
       volumeTarget: "/data",
       environment: {
@@ -90576,10 +90843,10 @@ function sanitizeScheduleInspectionEnvelope(envelope, invalid) {
 }
 
 // src/cli/doctor.ts
-import { spawn, spawnSync } from "node:child_process";
+import { spawn as spawn2, spawnSync } from "node:child_process";
 import { lstat as lstat6, readFile as readFile8, realpath as realpath2 } from "node:fs/promises";
 import { connect } from "node:net";
-import path10 from "node:path";
+import path11 from "node:path";
 
 // src/cli/cli-support.ts
 function errorDetails3(error) {
@@ -90616,9 +90883,9 @@ function writeResult(result, failed = false) {
 }
 
 // src/cli/project-config.ts
-import { createHash as createHash9 } from "node:crypto";
-import { chmod, mkdir as mkdir5, readFile as readFile7, writeFile as writeFile6 } from "node:fs/promises";
-import path9 from "node:path";
+import { createHash as createHash10 } from "node:crypto";
+import { chmod, mkdir as mkdir6, readFile as readFile7, writeFile as writeFile6 } from "node:fs/promises";
+import path10 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
 var DEFAULT_CSP_DIRECTIVES = {
   "default-src": ["'self'"],
@@ -90654,7 +90921,7 @@ var SUPPORTED_PROJECT_KEYS = /* @__PURE__ */ new Set([
   "teams"
 ]);
 async function readProjectConfig(projectDir) {
-  const configPath = path9.join(projectDir, "sporades.json");
+  const configPath = path10.join(projectDir, "sporades.json");
   const raw = await readRequiredFile2(
     configPath,
     "Missing project configuration: sporades.json",
@@ -90851,9 +91118,9 @@ async function resolveLocalContainerSshAccess(config, projectDir) {
   if (lines.length === 0) {
     return { enabled: false, authorizedKeysPath: null, keyCount: 0 };
   }
-  const sshDir = path9.join(projectDir, ".sporades", "ssh");
-  const authorizedKeysPath = path9.join(sshDir, "authorized_keys");
-  await mkdir5(sshDir, { recursive: true });
+  const sshDir = path10.join(projectDir, ".sporades", "ssh");
+  const authorizedKeysPath = path10.join(sshDir, "authorized_keys");
+  await mkdir6(sshDir, { recursive: true });
   await writeFile6(authorizedKeysPath, `${lines.join("\n")}
 `, { mode: 420 });
   await chmod(authorizedKeysPath, 420);
@@ -90905,7 +91172,7 @@ async function resolveAuthorizedKeyLines(ssh, projectDir) {
 function authorizedKeyFingerprint(line) {
   const parts = line.split(/\s+/);
   const keyTypeIndex = parts.findIndex((part) => isOpenSshPublicKeyType(part));
-  const digest = createHash9("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
+  const digest = createHash10("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
   return `SHA256:${digest}`;
 }
 function withRuntimeSecuritySession(config, session) {
@@ -90941,13 +91208,13 @@ function resolveProjectFileReference(filePath, projectDir) {
   if (filePath.startsWith("~/")) {
     const home = process.env.HOME;
     if (home) {
-      return path9.join(home, filePath.slice(2));
+      return path10.join(home, filePath.slice(2));
     }
   }
-  if (path9.isAbsolute(filePath)) {
+  if (path10.isAbsolute(filePath)) {
     return filePath;
   }
-  return path9.join(projectDir, filePath);
+  return path10.join(projectDir, filePath);
 }
 function normaliseAuthorizedKeyMaterial(material, source) {
   if (looksLikePrivateKey(material)) {
@@ -91205,7 +91472,7 @@ async function publicDevPostureCheck(options) {
 }
 async function readRunningPublicDevSession(projectDir) {
   try {
-    const session = JSON.parse(await readFile8(path10.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
+    const session = JSON.parse(await readFile8(path11.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
     return Boolean(session.publicDev || session.public || session.security?.cors?.publicDev);
   } catch {
     return false;
@@ -91261,7 +91528,7 @@ async function sshFollowUpCommand(options) {
 }
 async function capsuleAuthoringAclPostureCheck(options) {
   const projectDir = typeof options.projectDir === "string" ? options.projectDir : process.cwd();
-  const serverEntry = path10.join(projectDir, "server", "index.ts");
+  const serverEntry = path11.join(projectDir, "server", "index.ts");
   try {
     const serverSource = await readFile8(serverEntry, "utf8");
     const serverModuleSource = await bundleServerCapsuleModule({
@@ -91453,7 +91720,7 @@ async function resolveHostedDoctorTarget(options) {
 }
 async function readDoctorRemoteBinding(projectDir) {
   try {
-    const binding = JSON.parse(await readFile8(path10.join(projectDir, ".sporades", "remote-binding.json"), "utf8"));
+    const binding = JSON.parse(await readFile8(path11.join(projectDir, ".sporades", "remote-binding.json"), "utf8"));
     return binding && typeof binding === "object" && !Array.isArray(binding) ? binding : null;
   } catch {
     return null;
@@ -91696,7 +91963,7 @@ function hostedSshStateCheck(result, commands) {
 }
 async function runHostJsonCommand(args, projectDir) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [process.argv[1], ...args], {
+    const child = spawn2(process.execPath, [process.argv[1], ...args], {
       cwd: projectDir,
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"]
@@ -91727,7 +91994,7 @@ async function runHostJsonCommand(args, projectDir) {
   });
 }
 async function devSessionChecks(options) {
-  const session = await readOptionalJsonFile(path10.join(options.projectDir, ".sporades", "dev-session.json"));
+  const session = await readOptionalJsonFile(path11.join(options.projectDir, ".sporades", "dev-session.json"));
   if (!session) {
     return [
       {
@@ -91740,7 +92007,7 @@ async function devSessionChecks(options) {
         hint: "Run `sporades dev status` to inspect Dev session state, or start one with `sporades dev`.",
         commands: ["sporades dev status"],
         details: {
-          bindingPath: path10.join(".sporades", "dev-session.json"),
+          bindingPath: path11.join(".sporades", "dev-session.json"),
           exists: false
         }
       },
@@ -91769,7 +92036,7 @@ async function devSessionChecks(options) {
       hint: bindingValid ? "Inspect live Dev state with `sporades dev status`." : "Restart the Dev session with `sporades dev`.",
       commands: ["sporades dev status"],
       details: {
-        bindingPath: path10.join(".sporades", "dev-session.json"),
+        bindingPath: path11.join(".sporades", "dev-session.json"),
         exists: true,
         port: bindingValid ? port : null,
         pid: session.pid ?? null,
@@ -91794,7 +92061,7 @@ async function devSessionChecks(options) {
   ];
 }
 async function localContainerChecks(options) {
-  const bindingPath = path10.join(options.projectDir, ".sporades", "binding.json");
+  const bindingPath = path11.join(options.projectDir, ".sporades", "binding.json");
   const binding = await readOptionalJsonFile(bindingPath);
   if (!binding?.containerId) {
     return [
@@ -91808,7 +92075,7 @@ async function localContainerChecks(options) {
         hint: "Run `sporades deploy status` to inspect local Container session state, or start one with `sporades deploy`.",
         commands: ["sporades deploy status"],
         details: {
-          bindingPath: path10.join(".sporades", "binding.json"),
+          bindingPath: path11.join(".sporades", "binding.json"),
           exists: false
         }
       }
@@ -91825,7 +92092,7 @@ async function localContainerChecks(options) {
       hint: "Inspect local Container state with `sporades deploy status`.",
       commands: ["sporades deploy status"],
       details: {
-        bindingPath: path10.join(".sporades", "binding.json"),
+        bindingPath: path11.join(".sporades", "binding.json"),
         exists: true,
         containerId: binding.containerId,
         containerName: binding.containerName ?? null
@@ -91940,7 +92207,7 @@ async function containerClientReleaseCheck(container, binding, projectDir) {
       details: { framework: null, toolchain: null, htmlEntry: null, public: null }
     };
   }
-  const consumer = await readPublicTreeConsumer(path10.join(projectDir, ".sporades", "build"), "container").catch(() => null);
+  const consumer = await readPublicTreeConsumer(path11.join(projectDir, ".sporades", "build"), "container").catch(() => null);
   if (!consumer || consumer.tree !== release.publicTree || consumer.token !== release.consumerToken || consumer.identity !== binding.containerId) {
     return {
       id: "doctor.container.client-release",
@@ -91969,7 +92236,7 @@ async function containerClientReleaseCheck(container, binding, projectDir) {
   }
   const source = publicMount.Source ?? publicMount.SourcePath;
   try {
-    const expected = path10.join(projectDir, ".sporades", "build", ".public-trees", release.publicTree);
+    const expected = path11.join(projectDir, ".sporades", "build", ".public-trees", release.publicTree);
     const [actualRoot, expectedRoot, sourceStats, expectedStats] = await Promise.all([
       realpath2(source),
       realpath2(expected),
@@ -92086,13 +92353,13 @@ function localCapsuleServicesFromConfig(config, projectDir) {
     return null;
   }
   return {
-    path: path10.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
+    path: path11.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
     relativePath: CAPSULE_SERVICES_COMPOSE_FILE,
     ...capsuleServicesComposeModel(config, projectDir)
   };
 }
 async function generatedComposeCheck(capsuleServices, projectDir, scope) {
-  const composePath = path10.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
+  const composePath = path11.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
   let raw = "";
   try {
     raw = await readFile8(composePath, "utf8");
@@ -92146,7 +92413,7 @@ async function capsuleServicesRuntimeStateCheck(capsuleServices, projectDir, sco
       },
       volume: {
         type: "bind",
-        path: path10.join(CAPSULE_SERVICES_STATE_DIR, name),
+        path: path11.join(CAPSULE_SERVICES_STATE_DIR, name),
         exists: volumeExists
       },
       containerName: service.name,
@@ -92251,7 +92518,7 @@ async function readOptionalJsonFile(filePath) {
       return null;
     }
     if (error instanceof SyntaxError) {
-      throw commandError4(`Invalid Runtime metadata: ${path10.basename(filePath)}`, `Delete or fix ${path10.relative(process.cwd(), filePath)}, then rerun \`sporades doctor\`.`);
+      throw commandError4(`Invalid Runtime metadata: ${path11.basename(filePath)}`, `Delete or fix ${path11.relative(process.cwd(), filePath)}, then rerun \`sporades doctor\`.`);
     }
     throw error;
   }
@@ -92564,11 +92831,11 @@ var CLI_VERSION = "0.9.12";
 
 // src/cli/sporades.ts
 var SUPPORTED_TEMPLATES = new Set(CLIENT_TEMPLATES);
-var DEV_SESSION_FILE = path11.join(".sporades", "dev-session.json");
-var DEV_DATABASE_ENV_FILE = path11.join(".sporades", "dev-database-env.json");
+var DEV_SESSION_FILE = path12.join(".sporades", "dev-session.json");
+var DEV_DATABASE_ENV_FILE = path12.join(".sporades", "dev-database-env.json");
 var DEV_INSPECTION_TOKEN_HEADER = "x-sporades-inspection-token";
-var CONTAINER_BINDING_FILE = path11.join(".sporades", "binding.json");
-var REMOTE_BINDING_FILE = path11.join(".sporades", "remote-binding.json");
+var CONTAINER_BINDING_FILE = path12.join(".sporades", "binding.json");
+var REMOTE_BINDING_FILE = path12.join(".sporades", "remote-binding.json");
 var DEV_REBUILD_DEBOUNCE_MS = 100;
 var DEV_WATCH_SIGNATURE_POLL_MS = 250;
 var DEFAULT_HOST_SCHEME = "https";
@@ -92580,7 +92847,7 @@ var MAX_HOST_LOG_LINES = 1e4;
 var HOST_LOG_SOURCES = /* @__PURE__ */ new Set(["http", "stdout", "stderr"]);
 var HOST_HEALTH_PATH = "/__sporades/health";
 var DEFAULT_GITHUB_AUTODEPLOY_WORKFLOW = ".github/workflows/sporades-autodeploy.yml";
-var CLI_ROOT = path11.resolve(path11.dirname(fileURLToPath2(import.meta.url)), "..");
+var CLI_ROOT = path12.resolve(path12.dirname(fileURLToPath2(import.meta.url)), "..");
 main().catch((error) => {
   writeResult(
     {
@@ -92811,7 +93078,7 @@ function parseCreateArgs(args) {
     const details = clientCapabilityError(framework, toolchain);
     throw commandError4(details.message, details.hint);
   }
-  const localTemplateDir = isLocalTemplateReference(template) ? path11.resolve(process.cwd(), template) : null;
+  const localTemplateDir = isLocalTemplateReference(template) ? path12.resolve(process.cwd(), template) : null;
   if (!SUPPORTED_TEMPLATES.has(template) && !localTemplateDir) {
     throw commandError4(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");
   }
@@ -92824,11 +93091,11 @@ function parseCreateArgs(args) {
     install,
     git,
     json,
-    projectDir: path11.resolve(process.cwd(), name)
+    projectDir: path12.resolve(process.cwd(), name)
   };
 }
 function isLocalTemplateReference(value) {
-  return path11.isAbsolute(value) || value.startsWith("./") || value.startsWith("../") || /[\\/]/.test(value);
+  return path12.isAbsolute(value) || value.startsWith("./") || value.startsWith("../") || /[\\/]/.test(value);
 }
 function parseDevArgs(args) {
   const lifecycleCommands = /* @__PURE__ */ new Set(["status", "stop", "reset"]);
@@ -93072,12 +93339,12 @@ async function manageOperatorAccessKeys(options) {
       throw commandError4("No running Sporades dev session found.", "Start one with `sporades dev`, then retry the Access-key operation.");
     }
     const serviceEnv = await readActiveDevDatabaseServiceEnv(options.projectDir, "access-keys");
-    const bundle = path11.join(options.projectDir, ".sporades", "build", "server.mjs");
+    const bundle = path12.join(options.projectDir, ".sporades", "build", "server.mjs");
     const result = spawnSync2(process.execPath, [bundle, ...accessKeyActionArgs(options)], {
       cwd: options.projectDir,
       encoding: "utf8",
       maxBuffer: ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER,
-      env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path11.join(options.projectDir, ".sporades", "data.db") }
+      env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path12.join(options.projectDir, ".sporades", "data.db") }
     });
     envelope = parseAccessKeyOperatorProcess(result, options, "Restart `sporades dev` to refresh the generated Bundle, then retry the Access-key operation.");
   } else if (options.session === "container") {
@@ -93786,7 +94053,7 @@ function parseHostArgs(args) {
   }
 }
 function readProviderClientCredentials(provider, clientJsonPath, projectDir) {
-  const resolvedPath = path11.resolve(projectDir, clientJsonPath);
+  const resolvedPath = path12.resolve(projectDir, clientJsonPath);
   let raw;
   try {
     raw = readFileSync2(resolvedPath, "utf8");
@@ -93956,15 +94223,15 @@ async function createProject(options) {
     await createProjectFromLocalTemplate(options);
     return;
   }
-  await mkdir6(options.projectDir, { recursive: false });
+  await mkdir7(options.projectDir, { recursive: false });
   const files = scaffoldFiles({
     ...options,
     sporadesDependency: defaultSporadesDependency()
   });
   await Promise.all(
     Object.entries(files).map(async ([relativePath, contents]) => {
-      const filePath = path11.join(options.projectDir, relativePath);
-      await mkdir6(path11.dirname(filePath), { recursive: true });
+      const filePath = path12.join(options.projectDir, relativePath);
+      await mkdir7(path12.dirname(filePath), { recursive: true });
       await writeFile7(filePath, contents);
     })
   );
@@ -93976,8 +94243,8 @@ async function createProject(options) {
   }
 }
 async function createProjectFromLocalTemplate(options) {
-  const sourceDir = path11.resolve(options.localTemplateDir);
-  const projectDir = path11.resolve(options.projectDir);
+  const sourceDir = path12.resolve(options.localTemplateDir);
+  const projectDir = path12.resolve(options.projectDir);
   let sourceStat;
   try {
     sourceStat = await lstat7(sourceDir);
@@ -93987,12 +94254,12 @@ async function createProjectFromLocalTemplate(options) {
   if (!sourceStat.isDirectory()) {
     throw commandError4(`Local template is not a directory: ${options.template}`, "Pass a readable template directory.");
   }
-  const relativeDestination = path11.relative(sourceDir, projectDir);
-  if (!relativeDestination || !relativeDestination.startsWith("..") && !path11.isAbsolute(relativeDestination)) {
+  const relativeDestination = path12.relative(sourceDir, projectDir);
+  if (!relativeDestination || !relativeDestination.startsWith("..") && !path12.isAbsolute(relativeDestination)) {
     throw commandError4("The scaffold destination cannot be inside the local template.", "Choose a project name outside the template directory.");
   }
   const ignoreRules = await readLocalTemplateIgnoreRules(sourceDir);
-  await mkdir6(projectDir, { recursive: false });
+  await mkdir7(projectDir, { recursive: false });
   try {
     await cp(sourceDir, projectDir, {
       recursive: true,
@@ -94006,14 +94273,14 @@ async function createProjectFromLocalTemplate(options) {
       run("git", ["init"], projectDir, "Git initialization failed.", "Run `git init` inside the scaffold.");
     }
   } catch (error) {
-    await rm6(projectDir, { recursive: true, force: true });
+    await rm7(projectDir, { recursive: true, force: true });
     throw error;
   }
 }
 async function readLocalTemplateIgnoreRules(sourceDir) {
   let contents = "";
   try {
-    contents = await readFile9(path11.join(sourceDir, ".gitignore"), "utf8");
+    contents = await readFile9(path12.join(sourceDir, ".gitignore"), "utf8");
   } catch {
     return [];
   }
@@ -94028,7 +94295,7 @@ async function readLocalTemplateIgnoreRules(sourceDir) {
   });
 }
 function shouldCopyLocalTemplatePath(sourceDir, sourcePath, rules) {
-  const relative = path11.relative(sourceDir, sourcePath).split(path11.sep).join("/");
+  const relative = path12.relative(sourceDir, sourcePath).split(path12.sep).join("/");
   if (!relative) return true;
   const first = relative.split("/")[0];
   if (first === ".git" || first === "node_modules" || first === ".sporades") return false;
@@ -94040,8 +94307,8 @@ function shouldCopyLocalTemplatePath(sourceDir, sourcePath, rules) {
   return !ignored;
 }
 async function finalizeLocalTemplateProject(options, projectDir) {
-  const packagePath = path11.join(projectDir, "package.json");
-  const configPath = path11.join(projectDir, "sporades.json");
+  const packagePath = path12.join(projectDir, "package.json");
+  const configPath = path12.join(projectDir, "sporades.json");
   let packageJson;
   let projectConfig;
   try {
@@ -94101,7 +94368,7 @@ async function runDoctor(options) {
   }
 }
 function defaultSporadesDependency() {
-  const packageJsonPath = path11.join(CLI_ROOT, "package.json");
+  const packageJsonPath = path12.join(CLI_ROOT, "package.json");
   try {
     const packageJson = JSON.parse(readFileSync2(packageJsonPath, "utf8"));
     if (typeof packageJson.version === "string" && packageJson.version.trim()) {
@@ -94203,11 +94470,11 @@ async function inspectDevJobs(options) {
     throw commandError4("No running Sporades dev session found.", "Start one with `sporades dev` from this project, then retry `sporades jobs`.");
   }
   const serviceEnv = await readActiveDevDatabaseServiceEnv(options.projectDir);
-  const bundle = path11.join(options.projectDir, ".sporades", "build", "server.mjs");
+  const bundle = path12.join(options.projectDir, ".sporades", "build", "server.mjs");
   const result = spawnSync2(process.execPath, [bundle, "--sporades-action", "jobs.inspect"], {
     cwd: options.projectDir,
     encoding: "utf8",
-    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path11.join(options.projectDir, ".sporades", "data.db") }
+    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path12.join(options.projectDir, ".sporades", "data.db") }
   });
   parseInspectionProcess(result, "Restart `sporades dev` to refresh the generated Bundle, then retry `sporades jobs`.");
 }
@@ -94219,17 +94486,17 @@ async function inspectDevSchedules(options) {
     throw commandError4("No running Sporades dev session found.", "Start one with `sporades dev` from this project, then retry `sporades schedules`.");
   }
   const serviceEnv = await readActiveDevDatabaseServiceEnv(options.projectDir, "schedules");
-  const bundle = path11.join(options.projectDir, ".sporades", "build", "server.mjs");
+  const bundle = path12.join(options.projectDir, ".sporades", "build", "server.mjs");
   const result = spawnSync2(process.execPath, [bundle, "--sporades-action", "schedules.inspect"], {
     cwd: options.projectDir,
     encoding: "utf8",
-    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path11.join(options.projectDir, ".sporades", "data.db") }
+    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path12.join(options.projectDir, ".sporades", "data.db") }
   });
   parseInspectionProcess(result, "Restart `sporades dev` to refresh the generated Bundle, then retry `sporades schedules`.");
 }
 async function readActiveDevDatabaseServiceEnv(projectDir, command = "jobs") {
   try {
-    return JSON.parse(await readFile9(path11.join(projectDir, DEV_DATABASE_ENV_FILE), "utf8"));
+    return JSON.parse(await readFile9(path12.join(projectDir, DEV_DATABASE_ENV_FILE), "utf8"));
   } catch (error) {
     if (errorDetails3(error).code !== "ENOENT") throw commandError4("Invalid active Dev database adapter metadata.", `Restart \`sporades dev\`, then retry \`sporades ${command}\`.`);
   }
@@ -94242,8 +94509,8 @@ async function readActiveDevDatabaseServiceEnv(projectDir, command = "jobs") {
 }
 async function writeActiveDevDatabaseServiceEnv(projectDir, serviceEnv) {
   const databaseEnv = Object.fromEntries(Object.entries(serviceEnv).filter(([key, value]) => key.startsWith("SPORADES_SERVICE_DATABASE_") && typeof value === "string"));
-  const filePath = path11.join(projectDir, DEV_DATABASE_ENV_FILE);
-  await mkdir6(path11.dirname(filePath), { recursive: true });
+  const filePath = path12.join(projectDir, DEV_DATABASE_ENV_FILE);
+  await mkdir7(path12.dirname(filePath), { recursive: true });
   const previous = await readFile9(filePath).catch((error) => {
     if (errorDetails3(error).code === "ENOENT") return null;
     throw error;
@@ -94251,7 +94518,7 @@ async function writeActiveDevDatabaseServiceEnv(projectDir, serviceEnv) {
   await replaceFileAtomically(filePath, `${JSON.stringify(databaseEnv)}
 `);
   return async () => {
-    if (previous === null) await rm6(filePath, { force: true });
+    if (previous === null) await rm7(filePath, { force: true });
     else await replaceFileAtomically(filePath, previous);
   };
 }
@@ -94261,7 +94528,7 @@ async function replaceFileAtomically(filePath, contents) {
     await writeFile7(temporaryPath, contents, { mode: 384 });
     await rename5(temporaryPath, filePath);
   } finally {
-    await rm6(temporaryPath, { force: true });
+    await rm7(temporaryPath, { force: true });
   }
 }
 async function inspectContainerJobs(options) {
@@ -94382,9 +94649,10 @@ async function startDevSession(options) {
   });
   let runtimeServiceEnv = capsuleServiceEnv;
   const inspectionToken = createDevInspectionToken();
-  const sessionFilePath = path11.join(options.projectDir, DEV_SESSION_FILE);
-  const databasePath = path11.join(options.projectDir, ".sporades", "data.db");
+  const sessionFilePath = path12.join(options.projectDir, DEV_SESSION_FILE);
+  const databasePath = path12.join(options.projectDir, ".sporades", "data.db");
   const runtime = await createDevRuntime({
+    projectDir: options.projectDir,
     databasePath,
     serverSource: bundle.serverRuntime.source,
     serverEnv: bundle.serverRuntime.env,
@@ -94402,7 +94670,7 @@ async function startDevSession(options) {
   });
   const devRefresh = createDevRefreshController();
   const websocketHub = createWebSocketHub(() => runtime.database, devRefresh.transport);
-  const server = createServer(async (request, response) => {
+  const server = createServer2(async (request, response) => {
     try {
       const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
       if (prepareHttpSecurity(runtime.database, request, response)) {
@@ -94518,7 +94786,7 @@ async function startDevSession(options) {
           });
           return;
       }
-      if (await routeSporadesAuth(runtime.database, request, response) || await handleFileHttpRoute(runtime.database, request, response, websocketHub) || await routeEndpoint(runtime.database, request, response)) {
+      if (await routeRuntimeHealth(runtime.database, request, response) || await routeSporadesAuth(runtime.database, request, response) || await handleFileHttpRoute(runtime.database, request, response, websocketHub) || await routeEndpoint(runtime.database, request, response)) {
         return;
       }
       const rawPublicPathname = (request.url ?? "/").split("?", 1)[0];
@@ -94820,7 +95088,7 @@ async function startDevSession(options) {
     for (const watcher of watchers) {
       watcher.close();
     }
-    rm6(path11.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {
+    rm7(path12.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {
     });
     websocketHub.disconnectAll();
     let shutdownError;
@@ -94829,7 +95097,7 @@ async function startDevSession(options) {
     } catch (error) {
       shutdownError = error;
     }
-    await rm6(sessionFilePath, { force: true });
+    await rm7(sessionFilePath, { force: true });
     process.off("unhandledRejection", onUnhandledRejection);
     process.off("uncaughtException", onUncaughtException);
     if (shutdownError) process.stderr.write(`${errorDetails3(shutdownError).message}
@@ -94881,18 +95149,25 @@ var stripeTeamBillingProviderFactoryPromise;
 async function stripeCallbackFactory(config) {
   if (!config.payments?.stripe?.enabled) return void 0;
   stripeCallbackFactoryPromise ??= import(pathToFileURL2(
-    path11.join(resolveSporadesPackageRoot(), "dist", "stripe-webhook-runtime.js")
+    path12.join(resolveSporadesPackageRoot(), "dist", "stripe-webhook-runtime.js")
   ).href).then((module) => module.createStripeCallbackEndpoint);
   return await stripeCallbackFactoryPromise;
 }
 async function stripeTeamBillingProviderFactory(config) {
   if (!config.payments?.stripe?.enabled) return void 0;
   stripeTeamBillingProviderFactoryPromise ??= import(pathToFileURL2(
-    path11.join(resolveSporadesPackageRoot(), "dist", "stripe-team-billing-provider.js")
+    path12.join(resolveSporadesPackageRoot(), "dist", "stripe-team-billing-provider.js")
   ).href).then((module) => module.createStripeTeamBillingProvider);
   return await stripeTeamBillingProviderFactoryPromise;
 }
 async function createDevRuntime(options) {
+  let clamavSidecar;
+  const attachRequiredSidecar = async (candidate) => {
+    if (!candidate.endpoints?.some((item) => item?.options?.body?.multipart?.inspection?.requiredInspectors?.includes("clamav"))) return false;
+    if (!clamavSidecar) clamavSidecar = await startDevClamavSidecar({ projectDir: options.projectDir, dockerfile: path12.join(resolveSporadesPackageRoot(), "Dockerfile.base"), buildContext: resolveSporadesPackageRoot() });
+    clamavSidecar.attach(candidate);
+    return true;
+  };
   let database = await openDevDatabase(
     options.databasePath,
     options.serverSource,
@@ -94905,7 +95180,15 @@ async function createDevRuntime(options) {
       createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(options.config)
     }
   );
-  await database.init();
+  try {
+    await attachRequiredSidecar(database);
+    await database.init();
+  } catch (error) {
+    const cleanup = await Promise.allSettled([Promise.resolve().then(() => database.close()), clamavSidecar?.stop?.()].filter(Boolean));
+    const failures = cleanup.filter((item) => item.status === "rejected").map((item) => item.reason);
+    if (failures.length) throw new AggregateError([error, ...failures], "Dev runtime startup and scanner cleanup both failed.");
+    throw error;
+  }
   return {
     get database() {
       return database;
@@ -94923,15 +95206,33 @@ async function createDevRuntime(options) {
           createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(config)
         }
       );
-      database = await replaceRuntimeDatabase(database, nextDatabase);
+      const sidecarWasAbsent = !clamavSidecar;
+      await attachRequiredSidecar(nextDatabase);
+      try {
+        database = await replaceRuntimeDatabase(database, nextDatabase);
+      } catch (error) {
+        if (sidecarWasAbsent && clamavSidecar) {
+          const candidateSidecar = clamavSidecar;
+          clamavSidecar = void 0;
+          try {
+            await candidateSidecar.stop();
+          } catch (cleanupError) {
+            throw new AggregateError([error, cleanupError], "Dev runtime replacement and scanner cleanup both failed.");
+          }
+        }
+        throw error;
+      }
     },
     async shutdown() {
-      await shutdownAndCloseDatabase(database);
+      const settled = await Promise.allSettled([shutdownAndCloseDatabase(database), clamavSidecar?.stop?.()].filter(Boolean));
+      const failures = settled.filter((item) => item.status === "rejected").map((item) => item.reason);
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "Dev runtime and scanner shutdown both failed.");
     }
   };
 }
 function createDevInspectionToken() {
-  return randomBytes7(32).toString("hex");
+  return randomBytes8(32).toString("hex");
 }
 function requireDevInspectionToken(request, response, expectedToken) {
   if (devInspectionTokenMatches(request.headers[DEV_INSPECTION_TOKEN_HEADER], expectedToken)) {
@@ -94963,11 +95264,11 @@ async function importCapsuleDefinition(moduleSource) {
 }
 function watchDevInputs(projectDir, onChange) {
   const watchedPaths = [
-    { path: path11.join(projectDir, "server"), affectsServerRuntime: true },
-    { path: path11.join(projectDir, "client"), affectsServerRuntime: false },
-    { path: path11.join(projectDir, "shared"), affectsServerRuntime: true },
-    { path: path11.join(projectDir, "index.html"), affectsServerRuntime: false },
-    { path: path11.join(projectDir, "sporades.json"), affectsServerRuntime: false, configChanged: true }
+    { path: path12.join(projectDir, "server"), affectsServerRuntime: true },
+    { path: path12.join(projectDir, "client"), affectsServerRuntime: false },
+    { path: path12.join(projectDir, "shared"), affectsServerRuntime: true },
+    { path: path12.join(projectDir, "index.html"), affectsServerRuntime: false },
+    { path: path12.join(projectDir, "sporades.json"), affectsServerRuntime: false, configChanged: true }
   ];
   const watchers = [];
   let debounceTimer = null;
@@ -95066,7 +95367,7 @@ function collectPathSignature(filePath, entries) {
       return;
     }
     for (const child of children) {
-      collectPathSignature(path11.join(filePath, child), entries);
+      collectPathSignature(path12.join(filePath, child), entries);
     }
     return;
   }
@@ -95130,7 +95431,7 @@ async function manageAuth(options) {
   switch (options.subcommand) {
     case "status": {
       const config2 = await readProjectConfig(options.projectDir);
-      const envPath2 = path11.join(options.projectDir, ".env.sporades.server");
+      const envPath2 = path12.join(options.projectDir, ".env.sporades.server");
       const serverEnv = parseServerEnv(await readServerEnvFile(envPath2));
       const status2 = authStatus(config2, serverEnv);
       if (options.json) {
@@ -95194,7 +95495,7 @@ async function manageAuth(options) {
     default:
       break;
   }
-  const configPath = path11.join(options.projectDir, "sporades.json");
+  const configPath = path12.join(options.projectDir, "sporades.json");
   const config = await readProjectConfig(options.projectDir);
   const existingAuth = config.auth && typeof config.auth === "object" ? config.auth : {};
   const existingProviders = existingAuth.providers && typeof existingAuth.providers === "object" ? { ...existingAuth.providers } : {};
@@ -95235,7 +95536,7 @@ async function manageAuth(options) {
     mode: options.disable && existingAuth.mode === options.provider ? enabledSibling ?? "anonymous" : options.disable ? existingAuth.mode ?? "anonymous" : options.provider,
     providers: existingProviders
   };
-  const envPath = path11.join(options.projectDir, ".env.sporades.server");
+  const envPath = path12.join(options.projectDir, ".env.sporades.server");
   await writeAuthConfiguration(configPath, envPath, config, envValues);
   const status = authStatus(config, parseServerEnv(await readServerEnvFile(envPath)));
   if (options.json) {
@@ -95285,7 +95586,7 @@ async function manageEnv(options) {
           }
           values = unsealServerEnv(existingEnvelope, keyPair.privateKey);
         } else {
-          values = parseServerEnv(await readServerEnvFile(path11.join(options.projectDir, ".env.sporades.server")));
+          values = parseServerEnv(await readServerEnvFile(path12.join(options.projectDir, ".env.sporades.server")));
           keyPair = await ensureSealedServerEnvKeyPair(paths);
         }
         values[options.name] = value;
@@ -95309,7 +95610,7 @@ async function manageEnv(options) {
     case "has": {
       const envelope = await readSealedServerEnv(paths);
       const defined = envelope ? Object.hasOwn(envelope.entries, options.name) : Object.hasOwn(
-        parseServerEnv(await readServerEnvFile(path11.join(options.projectDir, ".env.sporades.server"))),
+        parseServerEnv(await readServerEnvFile(path12.join(options.projectDir, ".env.sporades.server"))),
         options.name
       );
       if (options.json) {
@@ -95337,7 +95638,7 @@ async function manageEnv(options) {
     }
     case "import": {
       await withSealedServerEnvMutationLock(paths, async () => {
-        const envPath = path11.resolve(options.projectDir, options.file ?? ".env.sporades.server");
+        const envPath = path12.resolve(options.projectDir, options.file ?? ".env.sporades.server");
         if (options.sealed) {
           const envelope2 = await readPortableSealedServerEnvEnvelope(envPath);
           await writeSealedServerEnv(paths, envelope2);
@@ -95345,20 +95646,20 @@ async function manageEnv(options) {
             ...envelopeSummary(envelope2, paths),
             imported: true,
             sealed: true,
-            source: normalisePathForOutput(path11.relative(options.projectDir, envPath) || envPath)
+            source: normalisePathForOutput(path12.relative(options.projectDir, envPath) || envPath)
           });
           return;
         }
         const env = parseServerEnv(await readServerEnvFile(envPath));
         const keyPair = await ensureSealedServerEnvKeyPair(paths);
         const envelope = sealServerEnv(env, keyPair.publicKey, {
-          source: normalisePathForOutput(path11.relative(options.projectDir, envPath) || envPath)
+          source: normalisePathForOutput(path12.relative(options.projectDir, envPath) || envPath)
         });
         await writeSealedServerEnv(paths, envelope);
         await writeEnvResult(options, {
           ...envelopeSummary(envelope, paths),
           imported: true,
-          source: normalisePathForOutput(path11.relative(options.projectDir, envPath) || envPath),
+          source: normalisePathForOutput(path12.relative(options.projectDir, envPath) || envPath),
           privateKeyConfigured: true
         });
       });
@@ -95370,7 +95671,7 @@ async function manageEnv(options) {
       await writeEnvResult(options, {
         ...envelopeSummary(envelope, paths),
         privateKeyConfigured: Boolean(keyPair?.privateKey),
-        legacyServerEnvFilePresent: (await readServerEnvFile(path11.join(options.projectDir, ".env.sporades.server"))).exists
+        legacyServerEnvFilePresent: (await readServerEnvFile(path12.join(options.projectDir, ".env.sporades.server"))).exists
       });
       return;
     }
@@ -95381,15 +95682,15 @@ async function manageEnv(options) {
       }
       const exported = exportedEnvelope(envelope);
       if (options.output) {
-        const outputPath = path11.resolve(options.projectDir, options.output);
-        await mkdir6(path11.dirname(outputPath), { recursive: true });
+        const outputPath = path12.resolve(options.projectDir, options.output);
+        await mkdir7(path12.dirname(outputPath), { recursive: true });
         await writeFile7(outputPath, `${JSON.stringify(exported, null, 2)}
 `, { mode: 384 });
       }
       await writeEnvResult(options, {
         ...envelopeSummary(envelope, paths),
         exported: true,
-        outputPath: options.output ? path11.resolve(options.projectDir, options.output) : null,
+        outputPath: options.output ? path12.resolve(options.projectDir, options.output) : null,
         envelope: options.output ? null : exported
       });
       return;
@@ -95413,11 +95714,11 @@ async function manageEnv(options) {
         hostDomain: profile.domain,
         ...options.subname ? { subname: options.subname } : {}
       });
-      const hostEnvelopePath = path11.join(
+      const hostEnvelopePath = path12.join(
         paths.hosts,
         options.subname ? `${options.hostAlias}.${options.subname}.server-env.sealed.json` : `${options.hostAlias}.server-env.sealed.json`
       );
-      await mkdir6(path11.dirname(hostEnvelopePath), { recursive: true, mode: 448 });
+      await mkdir7(path12.dirname(hostEnvelopePath), { recursive: true, mode: 448 });
       await writeFile7(hostEnvelopePath, `${JSON.stringify(hostEnvelope, null, 2)}
 `, { mode: 384 });
       if (!options.subname) {
@@ -95492,7 +95793,7 @@ async function ensureHostProfileEnvKey(config, alias) {
   const hostKey = {
     publicKey,
     privateKey,
-    publicKeyFingerprint: createHash10("sha256").update(publicKey).digest("hex").slice(0, 16)
+    publicKeyFingerprint: createHash11("sha256").update(publicKey).digest("hex").slice(0, 16)
   };
   config.profiles[alias].sealedServerEnv = hostKey;
   return hostKey;
@@ -95611,8 +95912,8 @@ async function manageHost(options) {
       const config = await readHostConfig();
       const resolved = resolveHostProfile(config, options.hostAlias);
       const binding = createRemoteBinding(resolved.alias, resolved.profile, options.subname);
-      const bindingPath = path11.join(options.projectDir, REMOTE_BINDING_FILE);
-      await mkdir6(path11.dirname(bindingPath), { recursive: true });
+      const bindingPath = path12.join(options.projectDir, REMOTE_BINDING_FILE);
+      await mkdir7(path12.dirname(bindingPath), { recursive: true });
       await writeFile7(bindingPath, `${JSON.stringify(binding, null, 2)}
 `);
       if (options.json) {
@@ -95644,8 +95945,8 @@ async function manageHost(options) {
         }
         throw commandError4(result.error.message, result.error.hint);
       }
-      const bindingPath = path11.join(options.projectDir, REMOTE_BINDING_FILE);
-      await mkdir6(path11.dirname(bindingPath), { recursive: true });
+      const bindingPath = path12.join(options.projectDir, REMOTE_BINDING_FILE);
+      await mkdir7(path12.dirname(bindingPath), { recursive: true });
       await writeFile7(bindingPath, `${JSON.stringify(binding, null, 2)}
 `);
       const data = {
@@ -96108,7 +96409,7 @@ async function resolveLocalContainerSshAccessForAudit(config, projectDir, surfac
 }
 async function emitCliSshAuditEvent(config, projectDir, details) {
   const logPath = projectLogPath(config, projectDir);
-  await mkdir6(path11.dirname(logPath), { recursive: true });
+  await mkdir7(path12.dirname(logPath), { recursive: true });
   const input = createPrivilegedAuditLogInput({
     actorKind: "platform",
     source: "cli",
@@ -96141,27 +96442,27 @@ function explicitSshConfigured(config) {
   return Boolean(config && typeof config === "object" && Object.hasOwn(config, "ssh"));
 }
 function projectLogPath(config, projectDir) {
-  return config?.logs?.jsonlPath ?? config?.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path11.join(projectDir, ".sporades", "data", "logs", "events.jsonl");
+  return config?.logs?.jsonlPath ?? config?.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path12.join(projectDir, ".sporades", "data", "logs", "events.jsonl");
 }
 function readProjectConfigSync(projectDir) {
-  const raw = readFileSync2(path11.join(projectDir, "sporades.json"), "utf8");
+  const raw = readFileSync2(path12.join(projectDir, "sporades.json"), "utf8");
   return JSON.parse(raw);
 }
 async function startContainerSession(options) {
   const config = await readProjectConfig(options.projectDir);
   const port = options.port ?? config.deploy?.port ?? 4e3;
-  const runtimeDir = path11.join(options.projectDir, ".sporades");
-  const containerName = `sporades-${config.name ?? path11.basename(options.projectDir)}`;
-  const bindingPath = path11.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const runtimeDir = path12.join(options.projectDir, ".sporades");
+  const containerName = `sporades-${config.name ?? path12.basename(options.projectDir)}`;
+  const bindingPath = path12.join(options.projectDir, CONTAINER_BINDING_FILE);
   const existingBinding = await readContainerBinding(bindingPath);
-  const previousConsumer = await readPublicTreeConsumer(path11.join(runtimeDir, "build"), "container");
+  const previousConsumer = await readPublicTreeConsumer(path12.join(runtimeDir, "build"), "container");
   verifyContainerReplacementOwnership(existingBinding, previousConsumer, containerName);
   const sshAccess = await resolveLocalContainerSshAccessForAudit(config, options.projectDir, "sporades/deploy", "container-ssh-config");
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
   const bundle = await createBundle(options.projectDir, config, { publishLegacy: false });
-  const dataDir = path11.join(runtimeDir, "data");
+  const dataDir = path12.join(runtimeDir, "data");
   const runtimeUser = sshAccess.enabled ? baseImageRuntimeUser() : localContainerRuntimeUser();
-  await mkdir6(dataDir, { recursive: true });
+  await mkdir7(dataDir, { recursive: true });
   await prepareRuntimeDataPath(dataDir);
   const updatePolicyMode = readBaseImageUpdatePolicy(config);
   const containerCapsuleServices = await startCapsuleServices(capsuleServices, options.projectDir, {
@@ -96173,7 +96474,7 @@ async function startContainerSession(options) {
     clientRelease = {
       framework: config.client?.framework ?? "react",
       toolchain: configuredClientToolchain(config),
-      publicTree: path11.basename(bundle.staticFiles.publicDir),
+      publicTree: path12.basename(bundle.staticFiles.publicDir),
       ...await summarizePublicTree(bundle.staticFiles.publicDir)
     };
   } catch (error) {
@@ -96223,7 +96524,7 @@ async function startContainerSession(options) {
     "127.0.0.1::22"
   ] : [];
   const bundleMountArgs = bundle.containerMounts.files.flatMap((mount) => ["--volume", formatMount(mount)]);
-  const containerTransactionToken = randomBytes7(16).toString("hex");
+  const containerTransactionToken = randomBytes8(16).toString("hex");
   const capsuleServicesNetworkArgs = capsuleServices ? ["--network", capsuleServices.networks.services] : [];
   const capsuleServicesEnvArgs = Object.entries(containerCapsuleServices.env ?? {}).flatMap(([key, value]) => [
     "--env",
@@ -96269,7 +96570,7 @@ async function startContainerSession(options) {
     SPORADES_BASE_IMAGE.image,
     ...sshAccess.enabled ? ["/usr/local/bin/sporades-start"] : ["node", "/app/server.mjs"]
   ];
-  const rollbackName = `${containerName}-rollback-${process.pid}-${randomBytes7(4).toString("hex")}`;
+  const rollbackName = `${containerName}-rollback-${process.pid}-${randomBytes8(4).toString("hex")}`;
   const oldName = String(existingContainer?.Name ?? existingBinding?.containerName ?? containerName).replace(/^\//, "");
   const oldWasRunning = Boolean(existingContainer?.State?.Running);
   let oldRenamed = false;
@@ -96363,7 +96664,7 @@ async function startContainerSession(options) {
     }
     try {
       if (existingBinding) await replaceContainerBinding(bindingPath, existingBinding);
-      else await rm6(bindingPath, { force: true });
+      else await rm7(bindingPath, { force: true });
     } catch {
       rollbackFailures.push("binding");
     }
@@ -96436,7 +96737,7 @@ async function startContainerSession(options) {
 }
 async function inspectLocalContainerSsh(options) {
   const config = await readProjectConfig(options.projectDir);
-  const bindingPath = path11.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path12.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
     const data2 = localContainerSshState({
@@ -96616,7 +96917,7 @@ async function fetchInspectionDatabase(options) {
   ) ?? inspectContainerDatabase(options);
 }
 async function readDevSession(projectDir) {
-  const sessionPath = path11.join(projectDir, DEV_SESSION_FILE);
+  const sessionPath = path12.join(projectDir, DEV_SESSION_FILE);
   const raw = await readRequiredFile3(
     sessionPath,
     "No running Sporades dev session found.",
@@ -96770,8 +97071,8 @@ async function inspectContainerDatabase(options) {
 function resolveLocalContainerDatabasePath(options) {
   const container = resolveLocalContainerTarget(options);
   const mount = container.mounts.find((entry) => entry.Destination === "/app/data");
-  const dataDir = mount?.Source ?? path11.join(options.projectDir, ".sporades", "data");
-  return path11.join(dataDir, "data.db");
+  const dataDir = mount?.Source ?? path12.join(options.projectDir, ".sporades", "data");
+  return path12.join(dataDir, "data.db");
 }
 function resolveLocalContainerTarget(options) {
   if (options.port) {
@@ -96784,7 +97085,7 @@ function resolveLocalContainerTarget(options) {
       return { containerId, mounts: inspectDockerMounts(options.projectDir, containerId) };
     }
   }
-  const bindingPath = path11.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path12.join(options.projectDir, CONTAINER_BINDING_FILE);
   let binding = null;
   try {
     binding = JSON.parse(readFileSync2(bindingPath, "utf8"));
@@ -96957,7 +97258,7 @@ async function readContainerBinding(bindingPath) {
 }
 async function readRemoteBinding(projectDir) {
   try {
-    return JSON.parse(await readFile9(path11.join(projectDir, REMOTE_BINDING_FILE), "utf8"));
+    return JSON.parse(await readFile9(path12.join(projectDir, REMOTE_BINDING_FILE), "utf8"));
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
       return null;
@@ -97004,13 +97305,13 @@ async function readHostConfig() {
 }
 async function writeHostConfig(config) {
   const filePath = hostConfigPath();
-  await mkdir6(path11.dirname(filePath), { recursive: true });
+  await mkdir7(path12.dirname(filePath), { recursive: true });
   await writeFile7(filePath, `${JSON.stringify(normaliseHostConfig(config), null, 2)}
 `);
 }
 function hostConfigPath() {
-  const configDir = process.env.SPORADES_CONFIG_DIR ?? path11.join(process.env.XDG_CONFIG_HOME ?? path11.join(process.env.HOME ?? process.cwd(), ".config"), "sporades");
-  return path11.join(configDir, "hosts.json");
+  const configDir = process.env.SPORADES_CONFIG_DIR ?? path12.join(process.env.XDG_CONFIG_HOME ?? path12.join(process.env.HOME ?? process.cwd(), ".config"), "sporades");
+  return path12.join(configDir, "hosts.json");
 }
 function normaliseHostConfig(value = {}) {
   return {
@@ -97140,7 +97441,7 @@ async function prepareHostPushSealedServerEnv(options) {
   const paths = sealedServerEnvPaths(options.projectDir);
   const envelope = await readSealedServerEnv(paths);
   if (!envelope) {
-    const legacyEnvFile = await readServerEnvFile(path11.join(options.projectDir, ".env.sporades.server"));
+    const legacyEnvFile = await readServerEnvFile(path12.join(options.projectDir, ".env.sporades.server"));
     const legacyValues = legacyEnvFile.exists ? parseServerEnv(legacyEnvFile) : {};
     if (Object.keys(legacyValues).length > 0) {
       throw commandError4(
@@ -97157,7 +97458,7 @@ async function prepareHostPushSealedServerEnv(options) {
     return null;
   }
   const keyPair = await readKeyPair(paths);
-  const legacyServerEnvFilePresent = (await readServerEnvFile(path11.join(options.projectDir, ".env.sporades.server"))).exists;
+  const legacyServerEnvFilePresent = (await readServerEnvFile(path12.join(options.projectDir, ".env.sporades.server"))).exists;
   if (!keyPair?.privateKey) {
     throw missingLocalSealedServerEnvSourceError({
       localPrivateKeyConfigured: false,
@@ -97240,10 +97541,10 @@ async function readHostedCapsuleSealedEnvPublicKey(alias, profile, subname, proj
 }
 async function createHostReleaseArchive(options) {
   const releaseId = createHostReleaseId();
-  const hostPushDir = path11.join(options.projectDir, ".sporades", "host-push");
-  await mkdir6(hostPushDir, { recursive: true });
-  const localArchive = path11.join(hostPushDir, `${releaseId}.tar.gz`);
-  const packageDir = path11.join(hostPushDir, `${releaseId}-files`);
+  const hostPushDir = path12.join(options.projectDir, ".sporades", "host-push");
+  await mkdir7(hostPushDir, { recursive: true });
+  const localArchive = path12.join(hostPushDir, `${releaseId}.tar.gz`);
+  const packageDir = path12.join(hostPushDir, `${releaseId}-files`);
   const remoteArchive = posixJoin2(options.profile.remoteRoot, "incoming", `${releaseId}.tar.gz`);
   const sealedServerEnv = await createHostReleaseSealedServerEnv(options);
   const publicFiles = await listHostedPublicFiles(options.bundle.staticFiles.publicDir);
@@ -97261,28 +97562,28 @@ async function createHostReleaseArchive(options) {
     updatePolicyMode: readBaseImageUpdatePolicy(options.projectConfig),
     publicFiles
   });
-  await rm6(packageDir, { recursive: true, force: true });
-  await mkdir6(path11.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true });
-  await mkdir6(path11.join(packageDir, ".sporades", "ssh"), { recursive: true });
-  await cp(options.bundle.staticFiles.publicDir, path11.join(packageDir, "public"), { recursive: true, errorOnExist: true });
+  await rm7(packageDir, { recursive: true, force: true });
+  await mkdir7(path12.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true });
+  await mkdir7(path12.join(packageDir, ".sporades", "ssh"), { recursive: true });
+  await cp(options.bundle.staticFiles.publicDir, path12.join(packageDir, "public"), { recursive: true, errorOnExist: true });
   const releaseConfig = sanitizeHostedReleaseConfig(options.projectConfig, options.sshAccess);
   await Promise.all([
-    writeFile7(path11.join(packageDir, "server.mjs"), await readFile9(path11.join(options.bundle.buildDir, "server.mjs"), "utf8")),
-    writeFile7(path11.join(packageDir, "sporades.json"), `${JSON.stringify(releaseConfig, null, 2)}
+    writeFile7(path12.join(packageDir, "server.mjs"), await readFile9(path12.join(options.bundle.buildDir, "server.mjs"), "utf8")),
+    writeFile7(path12.join(packageDir, "sporades.json"), `${JSON.stringify(releaseConfig, null, 2)}
 `)
   ]);
   if (options.bundle.containerMounts.serverEnv) {
-    await writeFile7(path11.join(packageDir, ".env.sporades.server"), await readFile9(options.bundle.containerMounts.serverEnv.host, "utf8"));
+    await writeFile7(path12.join(packageDir, ".env.sporades.server"), await readFile9(options.bundle.containerMounts.serverEnv.host, "utf8"));
   }
   if (sealedServerEnv) {
     await writeFile7(
-      path11.join(packageDir, ".sporades", "sealed-server-env", "server-env.sealed.json"),
+      path12.join(packageDir, ".sporades", "sealed-server-env", "server-env.sealed.json"),
       `${JSON.stringify(sealedServerEnv.envelope, null, 2)}
 `
     );
   }
   if (options.sshAccess?.enabled) {
-    const authorizedKeysPath = path11.join(packageDir, ".sporades", "ssh", "authorized_keys");
+    const authorizedKeysPath = path12.join(packageDir, ".sporades", "ssh", "authorized_keys");
     await writeFile7(authorizedKeysPath, `${options.sshAccess.lines.join("\n")}
 `, { mode: 420 });
     await chmod2(authorizedKeysPath, 420);
@@ -97324,9 +97625,9 @@ async function createHostReleaseArchive(options) {
 async function listHostedPublicFiles(root, directory = root) {
   const files = [];
   for (const entry of await readdir2(directory, { withFileTypes: true })) {
-    const entryPath = path11.join(directory, entry.name);
+    const entryPath = path12.join(directory, entry.name);
     if (entry.isDirectory()) files.push(...await listHostedPublicFiles(root, entryPath));
-    else if (entry.isFile()) files.push(`public/${path11.relative(root, entryPath).split(path11.sep).join("/")}`);
+    else if (entry.isFile()) files.push(`public/${path12.relative(root, entryPath).split(path12.sep).join("/")}`);
     else throw commandError4("Invalid Hosted Capsule public tree.", "Rebuild a normalized public tree containing regular files only.");
   }
   return files.sort();
@@ -97417,7 +97718,7 @@ function uploadHostReleaseArchive(options) {
 }
 function createHostReleaseId(now2 = /* @__PURE__ */ new Date()) {
   const timestamp = now2.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
-  return `${timestamp}-${randomBytes7(4).toString("hex")}`;
+  return `${timestamp}-${randomBytes8(4).toString("hex")}`;
 }
 function normaliseHostLogEntries(data) {
   if (!Array.isArray(data?.entries)) {
@@ -97617,18 +97918,18 @@ function remoteHostHelperPath(profile) {
   return `${profile.remoteRoot}/bin/sporades-host-helper`;
 }
 function localHostHelperPath() {
-  return path11.join(path11.dirname(fileURLToPath2(import.meta.url)), "sporades-host-helper.js");
+  return path12.join(path12.dirname(fileURLToPath2(import.meta.url)), "sporades-host-helper.js");
 }
 function upgradeHostHelper(options) {
   const localHelper = localHostHelperPath();
   const remoteHelper = remoteHostHelperPath(options.profile);
-  const remoteBin = path11.posix.dirname(remoteHelper);
+  const remoteBin = path12.posix.dirname(remoteHelper);
   let helperChecksum;
   try {
     if (!statSync(localHelper).isFile()) {
       throw new Error("not a file");
     }
-    helperChecksum = createHash10("sha256").update(readFileSync2(localHelper)).digest("hex");
+    helperChecksum = createHash11("sha256").update(readFileSync2(localHelper)).digest("hex");
   } catch {
     throw commandError4(
       "Local Host helper file was not found.",
@@ -97690,9 +97991,9 @@ async function writeGithubAutodeployWorkflow(options) {
     subname: options.subname,
     branch: options.branch
   });
-  const outputPath = path11.resolve(options.projectDir, options.file);
-  const relativeFile = path11.relative(options.projectDir, outputPath) || options.file;
-  if (relativeFile === ".." || relativeFile.startsWith(`..${path11.sep}`) || path11.isAbsolute(relativeFile)) {
+  const outputPath = path12.resolve(options.projectDir, options.file);
+  const relativeFile = path12.relative(options.projectDir, outputPath) || options.file;
+  if (relativeFile === ".." || relativeFile.startsWith(`..${path12.sep}`) || path12.isAbsolute(relativeFile)) {
     throw commandError4(
       "Invalid GitHub workflow file path.",
       "Pass a relative path inside the project, such as `.github/workflows/sporades-autodeploy.yml`."
@@ -97731,7 +98032,7 @@ async function writeGithubAutodeployWorkflow(options) {
       throw error;
     }
   }
-  await mkdir6(path11.dirname(outputPath), { recursive: true });
+  await mkdir7(path12.dirname(outputPath), { recursive: true });
   await writeFile7(outputPath, workflow);
   return {
     ok: true,
@@ -97745,7 +98046,7 @@ async function writeGithubAutodeployWorkflow(options) {
   };
 }
 function normalisePathForOutput(filePath) {
-  return filePath.split(path11.sep).join("/");
+  return filePath.split(path12.sep).join("/");
 }
 function posixJoin2(...segments) {
   return segments.map((segment, index) => {
@@ -97848,7 +98149,7 @@ function validateGithubWorkflowBranch(branch) {
   }
 }
 function validateGithubWorkflowFile(filePath) {
-  if (!filePath || path11.isAbsolute(filePath) || filePath.includes("\0")) {
+  if (!filePath || path12.isAbsolute(filePath) || filePath.includes("\0")) {
     throw commandError4("Invalid GitHub workflow file path.", "Pass a relative path such as `.github/workflows/sporades-autodeploy.yml`.");
   }
 }
@@ -97890,7 +98191,7 @@ function runDocker(args, cwd, message, hint) {
 async function printLocalCapsuleServiceStatus(options, surface) {
   const config = await readProjectConfig(options.projectDir);
   const capsuleServices = localCapsuleServicesFromConfig2(config, options.projectDir);
-  const binding = surface === "deploy" ? await readContainerBinding(path11.join(options.projectDir, CONTAINER_BINDING_FILE)) : null;
+  const binding = surface === "deploy" ? await readContainerBinding(path12.join(options.projectDir, CONTAINER_BINDING_FILE)) : null;
   const data = {
     ...binding?.containerId ? {
       container: {
@@ -97917,7 +98218,7 @@ function localCapsuleServicesFromConfig2(config, projectDir) {
   }
   validateCapsuleServicesConfig(config.services);
   return {
-    path: path11.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
+    path: path12.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
     relativePath: CAPSULE_SERVICES_COMPOSE_FILE,
     ...capsuleServicesComposeModel(config, projectDir)
   };
@@ -97926,7 +98227,7 @@ function hasDeclaredLocalCapsuleServices(config) {
   return Boolean(config.services?.database || config.services?.storage);
 }
 async function requireLocalContainerBinding(options, action) {
-  const bindingPath = path11.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path12.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
     throw commandError4(
@@ -97981,7 +98282,7 @@ async function restartLocalContainerSession(options) {
   }
 }
 async function removeLocalContainerSession(options) {
-  const bindingPath = path11.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path12.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
     if (options.missingOk) {
@@ -97992,7 +98293,7 @@ async function removeLocalContainerSession(options) {
       "Run `sporades deploy` before `sporades deploy remove`."
     );
   }
-  const buildDir = path11.join(options.projectDir, ".sporades", "build");
+  const buildDir = path12.join(options.projectDir, ".sporades", "build");
   const currentConsumer = await readPublicTreeConsumer(buildDir, "container");
   const bindingExpectation = binding.clientRelease?.consumerToken ? { token: binding.clientRelease.consumerToken, identity: binding.containerId } : null;
   let claimedConsumer = null;
@@ -98003,7 +98304,7 @@ async function removeLocalContainerSession(options) {
     claimedConsumer = await writePublicTreeConsumer(
       buildDir,
       "container",
-      path11.join(buildDir, ".public-trees", currentConsumer.tree),
+      path12.join(buildDir, ".public-trees", currentConsumer.tree),
       currentConsumer.identity,
       bindingExpectation
     );
@@ -98033,7 +98334,7 @@ async function removeLocalContainerSession(options) {
     "container",
     claimedConsumer ? { token: claimedConsumer.token, identity: claimedConsumer.identity } : null
   );
-  await rm6(bindingPath, { force: true });
+  await rm7(bindingPath, { force: true });
   const services = options.stopServices === false ? {} : await stopLocalCapsuleServices({ ...options, silent: true });
   const container = containerLifecycleSummary("removed", binding);
   if (options.silent) {
@@ -98083,7 +98384,7 @@ async function resetLocalCapsuleServices(options) {
     );
     await Promise.all(
       Object.values(capsuleServices.services).map(
-        (service) => rm6(service.stateDir, { recursive: true, force: true })
+        (service) => rm7(service.stateDir, { recursive: true, force: true })
       )
     );
     const removedImages = removeSporadesOwnedCapsuleImages(capsuleServices, options.projectDir);
@@ -98130,7 +98431,7 @@ async function localCapsuleServicesStatus(capsuleServices, projectDir) {
       },
       volume: {
         type: "bind",
-        path: path11.join(CAPSULE_SERVICES_STATE_DIR, name),
+        path: path12.join(CAPSULE_SERVICES_STATE_DIR, name),
         exists: await pathExists2(service.stateDir)
       },
       containerName: service.name,
@@ -98200,7 +98501,7 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
       service: name,
       status: "starting",
       engine: service.engine,
-      statePath: path11.join(CAPSULE_SERVICES_STATE_DIR, name)
+      statePath: path12.join(CAPSULE_SERVICES_STATE_DIR, name)
     });
   }
   try {
@@ -98251,7 +98552,7 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
       service: name,
       status: "ready",
       engine: service.engine,
-      statePath: path11.join(CAPSULE_SERVICES_STATE_DIR, name),
+      statePath: path12.join(CAPSULE_SERVICES_STATE_DIR, name),
       host: connection.host,
       port: connection.port
     });
@@ -98313,7 +98614,7 @@ function capsuleServicesJsonSummary(capsuleServices, status) {
         engine: service.engine,
         network: capsuleServices.networks.services,
         containerName: service.name,
-        statePath: path11.join(CAPSULE_SERVICES_STATE_DIR, name)
+        statePath: path12.join(CAPSULE_SERVICES_STATE_DIR, name)
       }
     ])
   );
@@ -98558,7 +98859,7 @@ function ensureLocalBaseImage(cwd) {
   if (pull.status === 0) {
     return;
   }
-  const dockerfilePath = path11.join(CLI_ROOT, "Dockerfile.base");
+  const dockerfilePath = path12.join(CLI_ROOT, "Dockerfile.base");
   try {
     const stats = statSync(dockerfilePath);
     if (!stats.isFile()) {
@@ -98592,13 +98893,13 @@ function runDockerCleanup(args, cwd, message, hint, force = false) {
   throw commandError4(message, hint);
 }
 async function replaceContainerBinding(bindingPath, binding) {
-  const temporaryPath = `${bindingPath}.${process.pid}-${randomBytes7(8).toString("hex")}.tmp`;
+  const temporaryPath = `${bindingPath}.${process.pid}-${randomBytes8(8).toString("hex")}.tmp`;
   try {
     await writeFile7(temporaryPath, `${JSON.stringify(binding, null, 2)}
 `, { flag: "wx" });
     await rename5(temporaryPath, bindingPath);
   } finally {
-    await rm6(temporaryPath, { force: true });
+    await rm7(temporaryPath, { force: true });
   }
 }
 function verifyContainerReplacementOwnership(binding, consumer, expectedContainerName) {
@@ -98614,19 +98915,19 @@ function verifyContainerReplacementOwnership(binding, consumer, expectedContaine
   }
 }
 async function acquireContainerLifecycleLock(projectDir) {
-  const lockDir = path11.join(projectDir, ".sporades", ".container-lifecycle-lock");
-  await mkdir6(path11.dirname(lockDir), { recursive: true });
-  const token = randomBytes7(16).toString("hex");
-  const ownerPath = path11.join(lockDir, "owner.json");
+  const lockDir = path12.join(projectDir, ".sporades", ".container-lifecycle-lock");
+  await mkdir7(path12.dirname(lockDir), { recursive: true });
+  const token = randomBytes8(16).toString("hex");
+  const ownerPath = path12.join(lockDir, "owner.json");
   for (let attempt = 0; attempt < 500; attempt += 1) {
     try {
-      await mkdir6(lockDir);
+      await mkdir7(lockDir);
       await writeFile7(ownerPath, `${JSON.stringify({ pid: process.pid, processStart: await getProcessStartIdentity(process.pid), token })}
 `);
       return async () => {
         const owner = await readFile9(ownerPath, "utf8").then(JSON.parse).catch(() => null);
         if (owner?.token !== token) throw commandError4("Container lifecycle lock ownership changed.", "Preserve the successor lifecycle lock.");
-        await rm6(lockDir, { recursive: true, force: true });
+        await rm7(lockDir, { recursive: true, force: true });
       };
     } catch (error) {
       if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
@@ -98643,7 +98944,7 @@ async function acquireContainerLifecycleLock(projectDir) {
         owner && Number.isInteger(owner.pid) && owner.pid > 0 && typeof owner.token === "string" && (actualStart !== null && owner.processStart === actualStart || actualStart === null && processIsLiveForContainerLock(owner.pid))
       );
       if (!live) {
-        await rm6(lockDir, { recursive: true, force: true });
+        await rm7(lockDir, { recursive: true, force: true });
         continue;
       }
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -98687,7 +98988,7 @@ async function prepareRuntimeDataPath(targetPath) {
     await chmod2(targetPath, 448);
     const entries = await readdir2(targetPath, { withFileTypes: true });
     for (const entry of entries) {
-      await prepareRuntimeDataPath(path11.join(targetPath, entry.name));
+      await prepareRuntimeDataPath(path12.join(targetPath, entry.name));
     }
     return;
   }

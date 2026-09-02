@@ -61,6 +61,7 @@ import {
   prepareHttpSecurity,
   readJsonRequest,
   routeEndpoint,
+  routeRuntimeHealth,
   routeSporadesAuth,
   runReadOnlyQuery,
   shutdownHttpServerAndRuntime,
@@ -73,6 +74,7 @@ import {
 } from "../server-runtime-source.js";
 import { scaffoldFiles } from "../templates/scaffold-template.js";
 import { resolveSporadesPackageRoot } from "../package-root.js";
+import { startDevClamavSidecar } from "../dev-clamav-sidecar.js";
 import {
   CAPSULE_SERVICES_COMPOSE_FILE,
   CAPSULE_SERVICES_STATE_DIR,
@@ -2137,6 +2139,7 @@ async function startDevSession(options: LooseRecord) {
   const sessionFilePath = path.join(options.projectDir, DEV_SESSION_FILE);
   const databasePath = path.join(options.projectDir, ".sporades", "data.db");
   const runtime: any = await createDevRuntime({
+    projectDir: options.projectDir,
     databasePath,
     serverSource: bundle.serverRuntime.source,
     serverEnv: bundle.serverRuntime.env,
@@ -2283,7 +2286,8 @@ async function startDevSession(options: LooseRecord) {
       }
 
       if (
-        (await routeSporadesAuth(runtime.database, request, response))
+        (await routeRuntimeHealth(runtime.database, request as any, response))
+        || (await routeSporadesAuth(runtime.database, request, response))
         || (await handleFileHttpRoute(runtime.database, request, response, websocketHub as any))
         || (await routeEndpoint(runtime.database, request, response))
       ) {
@@ -2687,6 +2691,12 @@ async function stripeTeamBillingProviderFactory(config: LooseRecord) {
 }
 
 async function createDevRuntime(options: LooseRecord): Promise<any> {
+  let clamavSidecar: any;
+  const attachRequiredSidecar = async (candidate: any) => {
+    if (!candidate.endpoints?.some((item: any) => item?.options?.body?.multipart?.inspection?.requiredInspectors?.includes("clamav"))) return false;
+    if (!clamavSidecar) clamavSidecar = await startDevClamavSidecar({ projectDir: options.projectDir, dockerfile: path.join(resolveSporadesPackageRoot(), "Dockerfile.base"), buildContext: resolveSporadesPackageRoot() });
+    clamavSidecar.attach(candidate); return true;
+  };
   let database: any = await openDevDatabase(
     options.databasePath,
     options.serverSource,
@@ -2699,7 +2709,12 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
       createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(options.config),
     },
   );
-  await database.init();
+  try { await attachRequiredSidecar(database); await database.init(); }
+  catch (error) {
+    const cleanup = await Promise.allSettled([Promise.resolve().then(() => database.close()), clamavSidecar?.stop?.()].filter(Boolean));
+    const failures = cleanup.filter((item) => item.status === "rejected").map((item: any) => item.reason);
+    if (failures.length) throw new AggregateError([error, ...failures], "Dev runtime startup and scanner cleanup both failed."); throw error;
+  }
 
   return {
     get database() {
@@ -2718,10 +2733,12 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
           createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(config),
         },
       );
-      database = await replaceRuntimeDatabase(database, nextDatabase);
+      const sidecarWasAbsent = !clamavSidecar; await attachRequiredSidecar(nextDatabase);
+      try { database = await replaceRuntimeDatabase(database, nextDatabase); }
+      catch (error) { if (sidecarWasAbsent && clamavSidecar) { const candidateSidecar = clamavSidecar; clamavSidecar = undefined; try { await candidateSidecar.stop(); } catch (cleanupError) { throw new AggregateError([error, cleanupError], "Dev runtime replacement and scanner cleanup both failed."); } } throw error; }
     },
     async shutdown() {
-      await shutdownAndCloseDatabase(database);
+      const settled = await Promise.allSettled([shutdownAndCloseDatabase(database), clamavSidecar?.stop?.()].filter(Boolean)); const failures = settled.filter((item) => item.status === "rejected").map((item: any) => item.reason); if (failures.length === 1) throw failures[0]; if (failures.length > 1) throw new AggregateError(failures, "Dev runtime and scanner shutdown both failed.");
     },
   };
 }

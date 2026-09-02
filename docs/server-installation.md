@@ -24,7 +24,7 @@ Host profile if you want a different path from the outset.
 Local machine:
 
 - A checked-out Sporades repo or installed `sporades` CLI.
-- Node.js 22+ and npm.
+- Node.js `>=22.13 <23` or `>=24`, plus npm.
 - `tar`, `scp`, and `ssh` available on `PATH`.
 - SSH key access (i.e. no SSH password) to the Host server, for example `ssh root@example.com`.
 - Optional: Docker for deployment of packaged capsules on local host
@@ -32,7 +32,7 @@ Local machine:
 Host server:
 
 - Linux server reachable over SSH.
-- Node.js 22+ to run the Sporades Host helper.
+- Node.js `>=22.13 <23` or `>=24` to run the Sporades Host helper.
 - Docker available to run Hosted Capsule containers.
 - Caddy available to serve and reload generated routes.
 - `tar` available to extract pushed Capsule releases.
@@ -150,7 +150,8 @@ not the audit source of truth for Capsule SSH sessions. Any later Capsule-level
 Fail2ban activity should be treated as hardening-adjacent telemetry; normalized
 Sporades audit events remain the user-facing record for SSH access facts.
 
-Node 22+ is recommended because the Host helper is an ESM Node script.
+Node.js `>=22.13 <23` or `>=24` is required because the Host helper and carried
+File-inspection runtime share Sporades' declared Node contract.
 
 ## 3. Install the Server Helper Runtime
 

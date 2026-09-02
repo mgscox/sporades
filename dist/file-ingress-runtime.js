@@ -394,10 +394,13 @@ function boundedTool(child, timeoutMs, maximumBytes = 8192) { return new Promise
 async function verifiedClamavSignature(database) {
     if (database.__clamavTest?.signature)
         return database.__clamavTest.signature;
+    const sidecar = database.__clamavDevSidecar;
     for (const path of ["/app/data/clamav/daily.cld", "/app/data/clamav/daily.cvd"]) {
-        if (!fs.existsSync(path))
+        if (!sidecar && !fs.existsSync(path))
             continue;
-        const child = childProcess.spawn("/usr/bin/sigtool", ["--info", path], { stdio: ["ignore", "pipe", "ignore"] });
+        const child = sidecar
+            ? childProcess.spawn("docker", ["exec", sidecar.containerName, "/usr/bin/sigtool", "--info", path], { stdio: ["ignore", "pipe", "ignore"] })
+            : childProcess.spawn("/usr/bin/sigtool", ["--info", path], { stdio: ["ignore", "pipe", "ignore"] });
         const result = await boundedTool(child, 5_000);
         if (!result.ok) {
             await terminateChild(child);
@@ -413,7 +416,7 @@ async function verifiedClamavSignature(database) {
     return null;
 }
 function clamavSocketCommand(database, command, maximumReplyBytes = 4096, timeoutMs = 2_000) {
-    const socketPath = database.__clamavTest?.socketPath ?? "/tmp/sporades-clamd.sock";
+    const socketPath = database.__clamavTest?.socketPath ?? database.__clamavDevSidecar?.socketPath ?? "/tmp/sporades-clamd.sock";
     return new Promise((resolve) => {
         let settled = false;
         let response = Buffer.alloc(0);
@@ -436,7 +439,7 @@ async function clamavInstream(database, bytes) {
         return { outcome: "inconclusive", signatureVersion: "unavailable" };
     if (bytes.length > clamavMaximumStreamBytes)
         return { outcome: "inconclusive", signatureVersion: String(signature.version).slice(0, 128) };
-    const socketPath = database.__clamavTest?.socketPath ?? "/tmp/sporades-clamd.sock";
+    const socketPath = database.__clamavTest?.socketPath ?? database.__clamavDevSidecar?.socketPath ?? "/tmp/sporades-clamd.sock";
     const timeoutMs = database.__clamavTest?.timeoutMs ?? 10_000;
     return await new Promise((resolve) => {
         let settled = false;
@@ -510,6 +513,18 @@ export async function initializeClamavRuntime(database) {
         database.clamavReady = Boolean(await currentLoadedClamavSignature(database));
         return database.clamavReady;
     }
+    if (database.__clamavDevSidecar) {
+        for (let attempt = 0; attempt < 1_200; attempt += 1) {
+            if (database.__clamavDevSidecar.process?.exitCode !== null)
+                break;
+            if (fs.existsSync(database.__clamavDevSidecar.socketPath) && await currentLoadedClamavSignature(database) && await clamavSocketCommand(database, Buffer.from("zPING\0"), 16, 500) === "PONG") {
+                database.clamavReady = true;
+                return true;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        return false;
+    }
     if (process.env.SPORADES_CLAMAV_MANAGED !== "1")
         return false;
     try {
@@ -548,9 +563,10 @@ export async function initializeClamavRuntime(database) {
     await Promise.all([terminateChild(daemon, clamavTerminateTimeout(database)), terminateChild(database.__clamavUpdateProcess, clamavTerminateTimeout(database))]);
     return false;
 }
-export async function shutdownClamavRuntime(database) { database.clamavReady = false; await Promise.all([terminateChild(database.__clamavProcess, clamavTerminateTimeout(database)), terminateChild(database.__clamavUpdateProcess, clamavTerminateTimeout(database))]); database.__clamavProcess = null; database.__clamavUpdateProcess = null; }
+export async function shutdownClamavRuntime(database) { database.clamavReady = false; if (!database.__clamavDevSidecar?.externallyManaged)
+    await Promise.all([terminateChild(database.__clamavProcess, clamavTerminateTimeout(database)), terminateChild(database.__clamavUpdateProcess, clamavTerminateTimeout(database))]); database.__clamavProcess = null; database.__clamavUpdateProcess = null; }
 export async function checkClamavRuntime(database) { if (!database.clamavRequired)
-    return { ok: true }; if (database.__clamavProcess?.exitCode !== null || database.__clamavUpdateProcess?.exitCode !== null) {
+    return { ok: true }; if ((database.__clamavDevSidecar?.process && database.__clamavDevSidecar.process.exitCode !== null) || (database.__clamavProcess && database.__clamavProcess.exitCode !== null) || (database.__clamavUpdateProcess && database.__clamavUpdateProcess.exitCode !== null)) {
     database.clamavReady = false;
     return { ok: false };
 } const current = await currentLoadedClamavSignature(database); const pong = current ? await clamavSocketCommand(database, Buffer.from("zPING\0"), 16, 500) : null; database.clamavReady = pong === "PONG"; return { ok: database.clamavReady }; }

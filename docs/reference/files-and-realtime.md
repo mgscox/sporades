@@ -537,6 +537,23 @@ selected for the Capsule; neither configuration switches to the image's
 fallback `sporades` identity. The data bind mount and private `/tmp` socket are
 therefore owned and accessible by that invoking identity without widening the
 socket mode. Hosted Capsules retain the image's non-root `10001:10001` default.
+For a normal Dev session that declares `clamav`, Sporades automatically starts
+one task-scoped sidecar from the exact current Base image. The sidecar runs as
+the invoking host UID/GID, persists official signatures beneath
+`.sporades/clamav`, and exposes only a unique host-owned Unix socket. On Docker
+Desktop, a task-owned local proxy bridges that socket to the exact named
+container's private clamd Unix socket; this avoids bind-mounted socket mode
+changes that the virtual filesystem cannot safely preserve. It publishes no
+port: customer bytes cross only the two Unix-socket endpoints and the exact
+container process bridge, while the container's network access is used solely
+by `freshclam` for public signatures. Hot runtime
+replacement reuses the same session-owned sidecar and signature data. Dev
+shutdown, signals, failed startup, and a failed first clamav-requiring rebuild
+remove only that exact labelled container and temporary socket directory;
+another Dev session is never selected by prefix or global process cleanup.
+Capsules that do not declare `clamav` start no sidecar and retain the legacy Dev
+path. Docker must therefore be available when a Dev Capsule explicitly requires
+malware inspection.
 Freshness is derived from ClamAV `sigtool --info` verification of the signed
 database and its embedded build timestamp, never its filesystem modification
 time. Runtime health and every scan also require clamd's bounded `VERSION`

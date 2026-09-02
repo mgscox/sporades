@@ -297,6 +297,10 @@ const MIGRATED_RUNTIME_MODULES = [
   // replay from a conflicting claim, so it must remain visible to the deployed
   // module census even though Capsule code cannot import it.
   { file: "file-ingress-runtime.js", atLeast: 10, sentinel: "sameFileDescriptor" },
+  // Attachment responses are carried as a sealed runtime module. Its private
+  // identifier validator is the boundary that prevents Capsule-controlled
+  // values from becoming unbounded File selectors.
+  { file: "endpoint-file-response.js", atLeast: 5, sentinel: "exactIdentifier" },
   // Batch 7's two non-domain modules, each holding two functions, so each floor is 1 — a floor only
   // ever asserts that the parse returned something, and for a module this size "something" is both.
   // Both sentinels are exported, as `mail-config`'s and `maybe-promise`'s are, because the monolith

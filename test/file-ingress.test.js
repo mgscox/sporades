@@ -1092,7 +1092,21 @@ test("ClamAV health requires a bounded PING and shutdown awaits both managed chi
   try {
     const clamd = child(); const updater = child(true); const database = { clamavRequired: true, clamavReady: true, __clamavProcess: clamd, __clamavUpdateProcess: updater, __clamavTest: { socketPath, loadedSignature: "daily:1", terminateTimeoutMs: 5, signature: { version: "daily:1", updatedAt: new Date().toISOString() } } };
     assert.deepEqual(await checkClamavRuntime(database), { ok: false }); assert.equal(database.clamavReady, false); assert.deepEqual(await checkClamavRuntime(database), { ok: true }); assert.equal(commands, 2); await shutdownClamavRuntime(database); assert.deepEqual(clamd.signals, ["SIGTERM"]); assert.deepEqual(updater.signals, ["SIGTERM", "SIGKILL"]); assert.equal(database.clamavReady, false); assert.equal(database.__clamavProcess, null); assert.equal(database.__clamavUpdateProcess, null);
+    const external = { clamavRequired: true, clamavReady: true, __clamavDevSidecar: { process: child(), externallyManaged: true }, __clamavTest: { socketPath, loadedSignature: "daily:1", signature: { version: "daily:1", updatedAt: new Date().toISOString() } } }; assert.deepEqual(await checkClamavRuntime(external), { ok: true }); assert.equal(commands, 3);
   } finally { await new Promise((resolve) => server.close(resolve)); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("runtime init failure shuts down a started ClamAV before a collision-free retry", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-clamav-init-rollback-")); let database; let attempts = 0;
+  const child = () => { const listeners = new Map(); const signals = []; return { exitCode: null, signals, once(name, handler) { listeners.set(name, handler); }, kill(signal) { signals.push(signal); this.exitCode = 0; queueMicrotask(() => listeners.get("exit")?.(0)); } }; };
+  const inspection = { policyRevision: "init-rollback-v1", requiredInspectors: ["clamav"] };
+  const definition = capsule({ name: "clamav-init-rollback", hooks: { init() { attempts += 1; if (attempts === 1) throw new Error("later init hook failed"); } }, endpoints: { upload: endpoint({ method: "POST", path: "/upload", body: { multipart: { ...ingressPolicy(), inspection } } }, () => ({ ok: true })) } });
+  try {
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: definition.name }, definition); database.__clamavTest = { loadedSignature: "daily:1", signature: { version: "daily:1", updatedAt: new Date().toISOString() } };
+    const firstClamd = child(); const firstUpdater = child(); database.__clamavProcess = firstClamd; database.__clamavUpdateProcess = firstUpdater;
+    await assert.rejects(database.init(), /later init hook failed/); assert.deepEqual(firstClamd.signals, ["SIGTERM"]); assert.deepEqual(firstUpdater.signals, ["SIGTERM"]); assert.equal(database.clamavReady, false); assert.equal(database.__clamavProcess, null); assert.equal(database.__clamavUpdateProcess, null);
+    const retryClamd = child(); const retryUpdater = child(); database.__clamavProcess = retryClamd; database.__clamavUpdateProcess = retryUpdater; await database.init(); assert.equal(database.clamavReady, true); await database.shutdown(); assert.deepEqual(retryClamd.signals, ["SIGTERM"]); assert.deepEqual(retryUpdater.signals, ["SIGTERM"]);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
 test("ClamAV refuses bytes above its exact 10 MB stream cap before opening a socket", async () => {
