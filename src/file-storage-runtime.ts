@@ -173,6 +173,21 @@ export function createLocalFileStorageAdapter({ storagePath }: { storagePath: st
       const { readFile } = await import("node:fs/promises");
       return await readFile(localFileVersionPath(storagePath, fileId, version));
     },
+    async openFileVersionStream({ fileId, version }: { fileId: string; version: string | number }) {
+      const { createReadStream } = await import("node:fs");
+      const stream = createReadStream(localFileVersionPath(storagePath, fileId, version));
+      await new Promise<void>((resolve, reject) => {
+        const cleanup = () => {
+          stream.removeListener("open", opened);
+          stream.removeListener("error", failed);
+        };
+        const opened = () => { cleanup(); resolve(); };
+        const failed = (error: unknown) => { cleanup(); stream.destroy(); reject(error); };
+        stream.once("open", opened);
+        stream.once("error", failed);
+      });
+      return stream;
+    },
     async deleteFileVersion({ fileId, version }: { fileId: string; version: string | number }) {
       const { rm } = await import("node:fs/promises");
       await rm(localFileVersionPath(storagePath, fileId, version), { force: true });
@@ -282,6 +297,21 @@ export function createS3CompatibleFileStorageAdapter({
       }
       return result.body;
     },
+    async openFileVersionStream({ fileId, version }: { fileId: string; version: string | number }) {
+      const response = await s3RequestStream(config, {
+        method: "GET",
+        key: s3ObjectKey(isolatedNamespace, fileId, version),
+      });
+      if (response.statusCode === 404) {
+        response.resume();
+        throw s3ObjectNotFoundError();
+      }
+      if ((response.statusCode ?? 0) < 200 || (response.statusCode ?? 0) >= 300) {
+        response.resume();
+        throw new Error(`S3-compatible file read failed with HTTP ${response.statusCode ?? 0}.`);
+      }
+      return response;
+    },
     async deleteFileVersion({ fileId, version }: { fileId: string; version: string | number }) {
       const result = await s3Request(config, {
         method: "DELETE",
@@ -369,6 +399,27 @@ async function s3Request(
     if (payload.length > 0) {
       request.write(payload);
     }
+    request.end();
+  });
+}
+
+async function s3RequestStream(
+  config: { endpoint: string; bucket: string; region: string; accessKey: string; secretKey: string },
+  { method, key = null }: { method: string; key: string | null },
+): Promise<IncomingMessage> {
+  const endpoint = new URL(config.endpoint);
+  const isHttps = endpoint.protocol === "https:";
+  const transport = await import(isHttps ? "node:https" : "node:http");
+  const payload = Buffer.alloc(0);
+  const amzDate = s3AmzDate(new Date());
+  const date = amzDate.slice(0, 8);
+  const pathname = s3CanonicalPath(endpoint.pathname, config.bucket, key);
+  const payloadHash = s3Sha256Hex(payload);
+  const headers = s3SignedHeaders({ "host": endpoint.host, "x-amz-content-sha256": payloadHash, "x-amz-date": amzDate });
+  headers.authorization = s3Signature({ method, pathname, query: "", headers, payloadHash, accessKey: config.accessKey, secretKey: config.secretKey, region: config.region, date, amzDate });
+  return await new Promise<IncomingMessage>((resolve, reject) => {
+    const request = transport.request({ protocol: endpoint.protocol, hostname: endpoint.hostname, port: endpoint.port || undefined, method, path: `${pathname}${endpoint.search}`, headers: { ...headers, "content-length": 0 } }, resolve);
+    request.on("error", reject);
     request.end();
   });
 }

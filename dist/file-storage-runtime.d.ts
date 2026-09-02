@@ -1,3 +1,4 @@
+import type { IncomingMessage } from "node:http";
 type LooseRecord = Record<string, any>;
 type RuntimeConfig = LooseRecord;
 type RuntimeEnv = Record<string, string | undefined>;
@@ -21,6 +22,10 @@ export declare function createRuntimeFileStorageAdapter({ config, databasePath, 
         fileId: string;
         version: string | number;
     }): Promise<Buffer<ArrayBufferLike>>;
+    openFileVersionStream({ fileId, version }: {
+        fileId: string;
+        version: string | number;
+    }): Promise<IncomingMessage>;
     deleteFileVersion({ fileId, version }: {
         fileId: string;
         version: string | number;
@@ -42,6 +47,10 @@ export declare function createRuntimeFileStorageAdapter({ config, databasePath, 
         fileId: string;
         version: string | number;
     }): Promise<NonSharedBuffer>;
+    openFileVersionStream({ fileId, version }: {
+        fileId: string;
+        version: string | number;
+    }): Promise<import("fs").ReadStream>;
     deleteFileVersion({ fileId, version }: {
         fileId: string;
         version: string | number;
@@ -65,6 +74,10 @@ export declare function createLocalFileStorageAdapter({ storagePath }: {
         fileId: string;
         version: string | number;
     }): Promise<NonSharedBuffer>;
+    openFileVersionStream({ fileId, version }: {
+        fileId: string;
+        version: string | number;
+    }): Promise<import("fs").ReadStream>;
     deleteFileVersion({ fileId, version }: {
         fileId: string;
         version: string | number;
@@ -97,6 +110,10 @@ export declare function createS3CompatibleFileStorageAdapter({ endpoint, bucket,
         fileId: string;
         version: string | number;
     }): Promise<Buffer<ArrayBufferLike>>;
+    openFileVersionStream({ fileId, version }: {
+        fileId: string;
+        version: string | number;
+    }): Promise<IncomingMessage>;
     deleteFileVersion({ fileId, version }: {
         fileId: string;
         version: string | number;

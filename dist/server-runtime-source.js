@@ -51,6 +51,7 @@ import { deserializeFieldValue, deserializeRow, normalizeDateValue, serializeFie
 import { applyReadAcl, assertActivePrivilegedJobAccess, bindPendingAclWrites, createPrivilegedAuditEmitter, createPrivilegedAuditEmissionPublicError, createPrivilegedFileApi, createPrivilegedRunAbortError, createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi, drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit, filterRowsByReadAcl, grantPrivilegedDbAccess, isPrivilegedAuditEmissionPublicError, normalizeFileAcl, normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback, revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode, trackPendingAclWrite, } from "./acl-runtime.js";
 import { createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter, deletePrivateFile, getPrivateFileUrl, revokePublicFileUrl, } from "./file-storage-runtime.js";
 import { createEndpointIngressApi, drainIngressClaimAuditOutbox, finalizeEndpointIngressClaims, recoverIngressClaimAuditOutbox, stageMultipartIngress, sweepExpiredFileIngress, validateMultipartIngressPolicy } from "./file-ingress-runtime.js";
+import { createEndpointFileResponseApi } from "./endpoint-file-response.js";
 import { abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob, canonicalJobCredentialProvenance, captureJobAuthSnapshot, commitPendingJobCancellationAborts, createRuntimeClock, decodeJobCursor, dropPendingJobCancellationAborts, encodeJobCursor, ensureJobStorage, ensureScheduleStorage, finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence, normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, readJobAuthSnapshot, readJobCredentialProvenance, resolveSchedulePayload, RESERVED_JOB_NAME_PREFIX, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure, scheduleStripeEventPayloadCleanup, startStripeEventPayloadCleanup, stopStripeEventPayloadCleanup, STRIPE_EVENT_JOB, stripeEventPayloadRetentionStorageValue, scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduledOccurrenceIdentity, } from "./jobs-runtime.js";
 import { dispatchVerifiedStripeEvent } from "./stripe-events-runtime.js";
 const mutationResultsWithWrites = new WeakSet();
@@ -502,6 +503,16 @@ function endpointIngressClaimAuthority(endpoint) {
     }
     return declared[0];
 }
+function validateEndpointResponseDeclarations(capsuleDefinition) {
+    for (const definition of Object.values(capsuleDefinition?.endpoints ?? {})) {
+        const response = definition?.options?.response;
+        if (response === undefined)
+            continue;
+        if (!response || typeof response !== "object" || Array.isArray(response) || Object.keys(response).length !== 1 || response.fileAttachment !== true) {
+            throw commandError("Invalid endpoint response declaration.", "Declare response: { fileAttachment: true } only on endpoints whose trusted handler performs current domain authorization.", "INVALID_ENDPOINT_RESPONSE_DECLARATION");
+        }
+    }
+}
 function normalizeCapsuleFileIngressDefinition(files, endpoints) {
     const usesCapsulePrincipal = endpoints.some((endpoint) => endpoint?.options?.body?.multipart && endpointIngressClaimAuthority(endpoint) === "capsule-principal");
     if (!usesCapsulePrincipal)
@@ -521,6 +532,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         capsuleDefinition = normalizeCapsuleAuthDefinition(capsuleDefinition);
         validateCapsuleAuthRequirements(capsuleDefinition);
         validateStripeEventSubscription(capsuleDefinition.stripeEvents);
+        validateEndpointResponseDeclarations(capsuleDefinition);
     }
     const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
     if (capsuleDefinition?.teams !== undefined && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
@@ -3118,7 +3130,9 @@ export async function routeEndpoint(database, request, response) {
             || request.__sporadesSecretDisclosed
             ? { "cache-control": "private, no-store", pragma: "no-cache" }
             : undefined;
-        writeEndpointResult(response, result, sensitiveResponseHeaders);
+        if (!await writeEndpointResult(database, response, result, sensitiveResponseHeaders)) {
+            return true;
+        }
     }
     catch (error) {
         if (error?.sporadesAuthDenialLogData) {
@@ -3257,6 +3271,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
     try {
         let result;
         let transactionAttempt = 0;
+        let sealCommittedAttachmentResult = (value) => value;
         while (true) {
             let ingressFenceAcquired = false;
             try {
@@ -3278,7 +3293,8 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                             credential: accessKeyAdmission?.credential,
                             accessKeyGrants: accessKeyAdmission?.grants,
                         });
-                        context.files = createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context);
+                        const endpointIngressApi = createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context);
+                        context.files = endpointIngressApi;
                         if (endpoint.runtimeOwnedStripeCallback) {
                             Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
                         }
@@ -3287,6 +3303,9 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                                 admitCredentialHandler(handler, context, "endpoint");
                             context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
                         }
+                        const attachmentResponse = createEndpointFileResponseApi(endpointIngressApi, endpoint.options?.response?.fileAttachment === true);
+                        context.files = attachmentResponse.files;
+                        sealCommittedAttachmentResult = attachmentResponse.sealCommittedResult;
                         const result = await handler(context);
                         if (accessKeySecretWasDisclosed(context))
                             request.__sporadesSecretDisclosed = true;
@@ -3315,7 +3334,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
         await flushAccessKeyLifecycleAuditEvents(database, context);
         flushTeamSecurityEvents(database, context);
         await dispatchPendingJobs(context);
-        return result;
+        return sealCommittedAttachmentResult(result);
     }
     catch (error) {
         if (endpointRequest.multipart) {

@@ -16,6 +16,8 @@ export type Capsule<Definition extends CapsuleDefinition = CapsuleDefinition> = 
 export type EndpointOptions = {
   method: string;
   path: string;
+  /** Explicitly delegates exact-version attachment authorization to this trusted endpoint handler. */
+  response?: { fileAttachment: true };
   /** Runtime-owned bounded multipart ingress for a trusted Custom endpoint. */
   body?: { multipart: {
     maxFiles: number;
@@ -205,10 +207,23 @@ export function requireAuth(first: RequireAuthContext | Handler | UnknownRecord,
 export function capsule<const Definition extends CapsuleDefinition>(definition: Definition): Capsule<Definition> {
   const normalized = normalizeCapsuleAuthDefinition(definition);
   validateCapsuleAuthRequirements(normalized);
+  validateEndpointResponseDeclarations(normalized);
   return {
     kind: "capsule",
     ...normalized,
   };
+}
+
+function validateEndpointResponseDeclarations(definition: UnknownRecord) {
+  for (const endpointDefinition of Object.values((definition.endpoints as UnknownRecord | undefined) ?? {})) {
+    const response = (endpointDefinition as any)?.options?.response;
+    if (response === undefined) continue;
+    if (!response || typeof response !== "object" || Array.isArray(response) || Object.keys(response).length !== 1 || response.fileAttachment !== true) {
+      const error: any = new Error("Invalid endpoint response declaration.");
+      error.code = "INVALID_ENDPOINT_RESPONSE_DECLARATION";
+      throw error;
+    }
+  }
 }
 
 export function endpoint<const HandlerType extends Handler>(

@@ -34,10 +34,23 @@ export function requireAuth(first, second) {
 export function capsule(definition) {
     const normalized = normalizeCapsuleAuthDefinition(definition);
     validateCapsuleAuthRequirements(normalized);
+    validateEndpointResponseDeclarations(normalized);
     return {
         kind: "capsule",
         ...normalized,
     };
+}
+function validateEndpointResponseDeclarations(definition) {
+    for (const endpointDefinition of Object.values(definition.endpoints ?? {})) {
+        const response = endpointDefinition?.options?.response;
+        if (response === undefined)
+            continue;
+        if (!response || typeof response !== "object" || Array.isArray(response) || Object.keys(response).length !== 1 || response.fileAttachment !== true) {
+            const error = new Error("Invalid endpoint response declaration.");
+            error.code = "INVALID_ENDPOINT_RESPONSE_DECLARATION";
+            throw error;
+        }
+    }
 }
 export function endpoint(options, handler) {
     return {

@@ -76,6 +76,52 @@ provenance for either kind. Access-key downloads are `private, no-store`, and a
 revocation affects the next admission without interrupting bytes whose
 admission already completed.
 
+### Endpoint attachment responses
+
+An endpoint that has already authorized a download can return one exact File
+version as an attachment without exposing a private File URL, File bytes,
+storage path, object key, stream, or storage credentials to Capsule code:
+
+```ts
+endpoint({
+  method: "GET",
+  path: "/tickets/export",
+  response: { fileAttachment: true },
+}, async (ctx) => {
+  const exportFile = await ctx.db.exports.where({ ticketId: ctx.request.query.ticket }).first();
+  if (!exportFile) return { status: 404, body: "Not found" };
+  return ctx.files.attachment(
+    { id: exportFile.fileId, version: exportFile.fileVersion },
+    { filename: "ticket-export.pdf" },
+  );
+});
+```
+
+The `response: { fileAttachment: true }` declaration is an explicit authority
+boundary: it delegates attachment-response authorization to this trusted
+endpoint's server code. Undeclared endpoints do not receive
+`ctx.files.attachment`. This path deliberately does **not** apply ordinary File
+ownership or `files.acl` rules, because external customer Grants and similar
+application capabilities may not be Sporades Users. The handler must derive the
+exact File from current domain authorization, retention, and safety state. Do
+not accept an arbitrary request-supplied File ID and pass it through.
+
+`ctx.files.attachment()` creates an opaque, runtime-only endpoint result. It
+accepts only the exact File `id` and `version` plus a presentation filename;
+plain objects that resemble it are ordinary endpoint values and cannot cause a
+File read. Each descriptor belongs to the single declared endpoint invocation
+that minted it and is consumed once. Replaying it from a later request, another
+endpoint, a middleware context, or an abandoned transaction attempt cannot
+reach File lookup or storage. Sporades resolves the descriptor only after the
+endpoint transaction
+commits, rereads the current File row, and denies a deleted, replaced, missing,
+or unreadable version with the same opaque no-store response. The result always
+uses `application/octet-stream`, `Content-Disposition: attachment` with an
+ASCII fallback and UTF-8 filename parameter, `nosniff`, `sandbox`, same-origin
+resource policy, and private no-store caching. Presentation names are bounded
+basenames; control characters, paths, traversal, bidirectional controls,
+reserved device names, and overlong values become `download`.
+
 File operations that identify an existing file accept a File reference: either
 the stable File ID or the absolute File path. By default, the reference must
 resolve to one live file owned by the current user. A Capsule may deliberately

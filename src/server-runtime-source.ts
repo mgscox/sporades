@@ -150,6 +150,7 @@ import {
   revokePublicFileUrl,
 } from "./file-storage-runtime.js";
 import { createEndpointIngressApi, drainIngressClaimAuditOutbox, finalizeEndpointIngressClaims, recoverIngressClaimAuditOutbox, stageMultipartIngress, sweepExpiredFileIngress, validateMultipartIngressPolicy } from "./file-ingress-runtime.js";
+import { createEndpointFileResponseApi } from "./endpoint-file-response.js";
 import {
   abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob,
   canonicalJobAuthSnapshot, canonicalJobCredentialProvenance, captureJobAuthSnapshot,
@@ -616,6 +617,16 @@ function endpointIngressClaimAuthority(endpoint: LooseRecord) {
   return declared[0];
 }
 
+function validateEndpointResponseDeclarations(capsuleDefinition: LooseRecord | null) {
+  for (const definition of Object.values(capsuleDefinition?.endpoints ?? {}) as LooseRecord[]) {
+    const response = definition?.options?.response;
+    if (response === undefined) continue;
+    if (!response || typeof response !== "object" || Array.isArray(response) || Object.keys(response).length !== 1 || response.fileAttachment !== true) {
+      throw commandError("Invalid endpoint response declaration.", "Declare response: { fileAttachment: true } only on endpoints whose trusted handler performs current domain authorization.", "INVALID_ENDPOINT_RESPONSE_DECLARATION");
+    }
+  }
+}
+
 function normalizeCapsuleFileIngressDefinition(files: LooseRecord | undefined, endpoints: LooseRecord[]) {
   const usesCapsulePrincipal = endpoints.some((endpoint) => endpoint?.options?.body?.multipart && endpointIngressClaimAuthority(endpoint) === "capsule-principal");
   if (!usesCapsulePrincipal) return null;
@@ -642,6 +653,7 @@ export async function openDevDatabase(
     capsuleDefinition = normalizeCapsuleAuthDefinition(capsuleDefinition);
     validateCapsuleAuthRequirements(capsuleDefinition);
     validateStripeEventSubscription(capsuleDefinition.stripeEvents);
+    validateEndpointResponseDeclarations(capsuleDefinition);
   }
   const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
   if (capsuleDefinition?.teams !== undefined && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
@@ -3338,7 +3350,9 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
       || (request as LooseRecord).__sporadesSecretDisclosed
       ? { "cache-control": "private, no-store", pragma: "no-cache" }
       : undefined;
-    writeEndpointResult(response, result, sensitiveResponseHeaders);
+    if (!await writeEndpointResult(database as LooseRecord, response, result, sensitiveResponseHeaders)) {
+      return true;
+    }
   } catch (error: any) {
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database as LooseRecord, { data: error.sporadesAuthDenialLogData });
@@ -3490,6 +3504,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
   let context: LooseRecord | undefined;
   try {
     let result: any; let transactionAttempt = 0;
+    let sealCommittedAttachmentResult = (value: unknown) => value;
     while (true) {
       let ingressFenceAcquired = false;
       try {
@@ -3510,7 +3525,8 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
               credential: accessKeyAdmission?.credential,
               accessKeyGrants: accessKeyAdmission?.grants,
             });
-            context.files = createEndpointIngressApi(transactionDatabase, endpoint as LooseRecord, endpointRequest, context);
+            const endpointIngressApi = createEndpointIngressApi(transactionDatabase, endpoint as LooseRecord, endpointRequest, context);
+            context.files = endpointIngressApi;
             if ((endpoint as LooseRecord).runtimeOwnedStripeCallback) {
               Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
             }
@@ -3518,6 +3534,12 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
               if (!accessKeyAdmission) admitCredentialHandler(handler, context, "endpoint");
               context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
             }
+            const attachmentResponse = createEndpointFileResponseApi(
+              endpointIngressApi,
+              (endpoint as LooseRecord).options?.response?.fileAttachment === true,
+            );
+            context.files = attachmentResponse.files;
+            sealCommittedAttachmentResult = attachmentResponse.sealCommittedResult;
             const result = await handler(context);
             if (accessKeySecretWasDisclosed(context)) (request as LooseRecord).__sporadesSecretDisclosed = true;
             return result;
@@ -3541,7 +3563,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
-    return result;
+    return sealCommittedAttachmentResult(result);
   } catch (error) {
     if ((endpointRequest as LooseRecord).multipart) {
       try { await database.log.emit({ category: "platform", event: "file.ingress.failed", level: "warn", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "failed", code: "INGRESS_ROLLBACK" } }); } catch {}

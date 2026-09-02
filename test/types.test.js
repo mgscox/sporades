@@ -573,6 +573,12 @@ const app = capsule({
       status: 200,
       body: ctx.request.method + ":" + ctx.credential.kind,
     }))),
+    attachment: endpoint({ method: "GET", path: "/attachment", response: { fileAttachment: true } }, (ctx) =>
+      ctx.files.attachment({ id: "file-id", version: "exact-version" }, { filename: "report.pdf" })),
+    undeclaredAttachment: endpoint({ method: "GET", path: "/undeclared-attachment" }, (ctx) => {
+      // @ts-expect-error attachment responses require the explicit endpoint response declaration.
+      return ctx.files.attachment({ id: "file-id", version: "exact-version" }, { filename: "report.pdf" });
+    }),
   },
   messages: {
     typing: message(async (ctx, data) => {
