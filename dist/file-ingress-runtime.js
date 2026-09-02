@@ -1,8 +1,12 @@
 // Runtime-owned endpoint multipart ingress. Leases deliberately have no File row, URL or ACL
 // visibility: only claim() creates an ordinary File in the handler transaction.
+/// <reference path="./vendor-decoders.d.ts" />
 import { ensureFileBucket, fileMetadataFromRow, normalizeAbsoluteFilePath } from "./file-storage-runtime.js";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
+import jpeg from "jpeg-js";
+import { PNG } from "pngjs";
 const crypto = process.getBuiltinModule("node:crypto");
+const zlib = process.getBuiltinModule("node:zlib");
 const leaseTtlMs = 10 * 60 * 1000;
 const ingressClaimAuditRetentionMs = 24 * 60 * 60 * 1000;
 const ingressClaimAuditPruneLimit = 50;
@@ -112,6 +116,13 @@ function validPng(bytes) {
     let offset = 8;
     let index = 0;
     let sawIdat = false;
+    let idatEnded = false;
+    let sawPlte = false;
+    let colorType = -1;
+    let width = 0;
+    let height = 0;
+    let rowBytes = 0;
+    const idatChunks = [];
     while (offset + 12 <= bytes.length) {
         const length = bytes.readUInt32BE(offset);
         if (length > bytes.length - offset - 12)
@@ -124,14 +135,51 @@ function validPng(bytes) {
         if (index === 0) {
             if (type !== "IHDR" || length !== 13 || data.readUInt32BE(0) === 0 || data.readUInt32BE(4) === 0 || data[10] !== 0 || data[11] !== 0 || data[12] !== 0)
                 return false;
+            width = data.readUInt32BE(0);
+            height = data.readUInt32BE(4);
+            colorType = data[9];
+            if (width > 10_000 || height > 10_000 || width * height > 25_000_000)
+                return false;
             const allowed = new Set(["0:1", "0:2", "0:4", "0:8", "0:16", "2:8", "2:16", "3:1", "3:2", "3:4", "3:8", "4:8", "4:16", "6:8", "6:16"]);
-            if (!allowed.has(`${data[9]}:${data[8]}`))
+            if (!allowed.has(`${colorType}:${data[8]}`))
+                return false;
+            const channels = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 }[colorType];
+            rowBytes = Math.ceil(width * channels * data[8] / 8);
+            if ((rowBytes + 1) * height > 100_000_000)
                 return false;
         }
-        if (type === "IDAT")
+        if (type === "PLTE") {
+            if (sawIdat || sawPlte || length === 0 || length % 3 !== 0 || length > 768 || [0, 4].includes(colorType))
+                return false;
+            sawPlte = true;
+        }
+        if (type === "IDAT") {
+            if (idatEnded || (colorType === 3 && !sawPlte))
+                return false;
             sawIdat = true;
-        if (type === "IEND")
-            return length === 0 && sawIdat && offset + 12 === bytes.length;
+            idatChunks.push(data);
+        }
+        else if (sawIdat && type !== "IEND")
+            idatEnded = true;
+        if (/^[A-Z]/.test(type[0]) && !["IHDR", "PLTE", "IDAT", "IEND"].includes(type))
+            return false;
+        if (type === "IEND") {
+            if (!(length === 0 && sawIdat && offset + 12 === bytes.length))
+                return false;
+            try {
+                const inflated = zlib.inflateSync(Buffer.concat(idatChunks), { maxOutputLength: (rowBytes + 1) * height });
+                if (inflated.length !== (rowBytes + 1) * height)
+                    return false;
+                for (let row = 0; row < height; row += 1)
+                    if (inflated[row * (rowBytes + 1)] > 4)
+                        return false;
+                const decoded = PNG.sync.read(bytes, { checkCRC: true });
+                return decoded.width === width && decoded.height === height && decoded.data.length === width * height * 4;
+            }
+            catch {
+                return false;
+            }
+        }
         if (type === "IHDR" && index !== 0)
             return false;
         offset += 12 + length;
@@ -153,8 +201,17 @@ function validJpeg(bytes) {
         if (offset >= bytes.length)
             return false;
         const marker = bytes[offset++];
-        if (marker === 0xd9)
-            return sawScan && offset === bytes.length;
+        if (marker === 0xd9) {
+            if (!sawScan || offset !== bytes.length)
+                return false;
+            try {
+                const decoded = jpeg.decode(bytes, { useTArray: true, maxResolutionInMP: 25, maxMemoryUsageInMB: 64 });
+                return decoded.width > 0 && decoded.height > 0 && decoded.width * decoded.height <= 25_000_000 && decoded.data.length === decoded.width * decoded.height * 4;
+            }
+            catch {
+                return false;
+            }
+        }
         if (marker === 0x00 || marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7))
             return false;
         if (offset + 2 > bytes.length)
@@ -190,19 +247,23 @@ function validJpeg(bytes) {
     }
     return false;
 }
-async function validPdf(bytes) {
+export async function validatePdfIngress(bytes, options = {}) {
     if (bytes.length < 16 || bytes.subarray(0, 5).toString("ascii") !== "%PDF-" || bytes.includes(Buffer.from("/Encrypt")))
         return false;
     let task;
     let timer;
+    const timeoutMs = Number.isInteger(options.timeoutMs) ? Math.max(1, Math.min(2_000, options.timeoutMs)) : 2_000;
     try {
         task = getDocument({ data: new Uint8Array(bytes), useWorkerFetch: false, disableFontFace: true });
-        const document = await Promise.race([task.promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("PDF inspection timeout")), 2_000); })]);
-        if (document.numPages < 1 || document.numPages > 100)
-            return false;
-        for (let page = 1; page <= document.numPages; page += 1)
+        const workflow = (async () => { const document = await task.promise; if (document.numPages < 1 || document.numPages > 100)
+            return false; for (let page = 1; page <= document.numPages; page += 1) {
+            await options.beforeOperatorList?.(page);
             await (await document.getPage(page)).getOperatorList();
-        return true;
+        } return true; })();
+        return await Promise.race([workflow, new Promise((_, reject) => { timer = setTimeout(() => { try {
+                task?.destroy?.();
+            }
+            catch { } reject(new Error("PDF inspection timeout")); }, timeoutMs); })]);
     }
     catch {
         return false;
@@ -224,9 +285,11 @@ function safeUntrustedText(bytes) {
     catch {
         return false;
     }
-    if (!text || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text) || /<\s*(?:!doctype|\?xml|html\b|head\b|body\b|script\b|svg\b|[a-z][\w:-]*\s+[^>]*>)/i.test(text))
+    if (!text || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text) || /<\s*(?:!doctype|\?xml|html\b|head\b|body\b|script\b|svg\b|[a-z][\w:-]*\s+[^>]*>)/i.test(text) || /<\s*([a-z][\w:-]*)\b[^>]*>[\s\S]*<\/\s*\1\s*>/i.test(text))
         return false;
-    if (/(?:^|\n)\s*(?:#!|sudo\b|rm\s+-|curl\b|wget\b|bash\b|sh\b|python\b|node\b|chmod\b|eval\b|exec\b|export\s+\w+=|set\s+-[eux]|if\s+\[|for\s+\w+\s+in\b)/im.test(text))
+    if (/(?:^|\n)\s*(?:#!|sudo\b|rm\s+-|curl\b|wget\b|bash\b|sh\b|python\b|node\b|chmod\b|eval\b|exec\b|echo\b|source\b|\.\s+[^\s]+|export\s+\w+=|set\s+-[eux]|if\s+\[|for\s+\w+\s+in\b)/im.test(text))
+        return false;
+    if (/\b(?:print|open|compile|__import__|subprocess\.(?:run|call|Popen)|os\.system)\s*\(/.test(text))
         return false;
     if (/(?:\b(?:const|let|var|function|class|import|export)\b|=>|\brequire\s*\(|\bprocess\.)/.test(text)) {
         try {
@@ -247,7 +310,7 @@ async function contentPolicyOutcome(row, bytes) {
     if (bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])))
         return validPng(bytes) && /\.png$/.test(name) && type === "image/png" ? "clean" : "rejected";
     if (bytes.subarray(0, 5).toString("ascii") === "%PDF-")
-        return await validPdf(bytes) && /\.pdf$/.test(name) && type === "application/pdf" ? "clean" : "rejected";
+        return await validatePdfIngress(bytes) && /\.pdf$/.test(name) && type === "application/pdf" ? "clean" : "rejected";
     return safeUntrustedText(bytes) && /\.txt$/.test(name) && type === "text/plain" ? "clean" : "rejected";
 }
 async function inspectIngressLease(policy, row, bytes) {

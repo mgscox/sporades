@@ -1,4 +1,5 @@
 type RecordLike = Record<string, any>;
+export declare function validatePdfIngress(bytes: Buffer, options?: RecordLike): Promise<boolean>;
 export declare function multipartParts(request: AsyncIterable<Uint8Array>, boundaryText: string, maxWireBytes: number, maxPartBytes: number | {
     file: number;
     field: number;

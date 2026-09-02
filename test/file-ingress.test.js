@@ -4,12 +4,15 @@ import { createServer } from "node:http";
 import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { deflateSync, inflateSync } from "node:zlib";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import jpeg from "jpeg-js";
+import { PNG } from "pngjs";
 
 import { capsule, endpoint, requireAuth, String as StringField, table } from "../dist/server.js";
 import { createControllableRuntimeClock, openDevDatabase, routeEndpoint, runEndpoint } from "../dist/server-runtime-source.js";
-import { createEndpointIngressApi, multipartParts, stageMultipartIngress, sweepExpiredFileIngress } from "../dist/file-ingress-runtime.js";
+import { createEndpointIngressApi, multipartParts, stageMultipartIngress, sweepExpiredFileIngress, validatePdfIngress } from "../dist/file-ingress-runtime.js";
 import { capsuleIngressAuthUserId } from "../dist/auth-runtime.js";
 import { accessKeyVerifierDigest, createAccessKeySecret } from "../dist/access-keys-runtime.js";
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
@@ -23,8 +26,12 @@ function multipartMany(boundary, parts) {
 function multipartBinary(boundary, name, type, bytes) { return Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\nContent-Type: ${type}\r\nContent-ID: stable\r\n\r\n`), Buffer.from(bytes), Buffer.from(`\r\n--${boundary}--`)]); }
 function testCrc32(bytes) { let crc = 0xffffffff; for (const byte of bytes) { crc ^= byte; for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0); } return (crc ^ 0xffffffff) >>> 0; }
 function pngChunk(type, data) { const typeBytes = Buffer.from(type); const length = Buffer.alloc(4); length.writeUInt32BE(data.length); const crc = Buffer.alloc(4); crc.writeUInt32BE(testCrc32(Buffer.concat([typeBytes, data]))); return Buffer.concat([length, typeBytes, data, crc]); }
-function minimalPng() { const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(1, 0); ihdr.writeUInt32BE(1, 4); ihdr[8] = 8; ihdr[9] = 6; return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), pngChunk("IHDR", ihdr), pngChunk("IDAT", Buffer.from([0])), pngChunk("IEND", Buffer.alloc(0))]); }
-function minimalJpeg() { return Buffer.from([0xff,0xd8, 0xff,0xc0,0x00,0x0b, 8,0,1,0,1,1,1,0x11,0, 0xff,0xda,0x00,0x08, 1,1,0,0,63,0, 0, 0xff,0xd9]); }
+function minimalPng() { return PNG.sync.write({ width: 1, height: 1, data: Buffer.from([255, 0, 0, 255]) }); }
+function minimalJpeg() { return Buffer.from(jpeg.encode({ width: 1, height: 1, data: Buffer.from([255, 0, 0, 255]) }, 90).data); }
+function removeJpegSegments(bytes, marker) { let output = Buffer.from(bytes); while (true) { const at = output.indexOf(Buffer.from([0xff, marker])); if (at < 0) return output; const length = output.readUInt16BE(at + 2); output = Buffer.concat([output.subarray(0, at), output.subarray(at + 2 + length)]); } }
+function breakJpegComponent(bytes) { const output = Buffer.from(bytes); const at = output.indexOf(Buffer.from([0xff, 0xda])); if (at >= 0) output[at + 5] = 99; return output; }
+function pngChunks(bytes) { const chunks = []; for (let offset = 8; offset < bytes.length;) { const length = bytes.readUInt32BE(offset); const type = bytes.subarray(offset + 4, offset + 8).toString("ascii"); chunks.push({ type, data: bytes.subarray(offset + 8, offset + 8 + length) }); offset += 12 + length; } return chunks; }
+function rebuildPng(chunks) { return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), ...chunks.map(({ type, data }) => pngChunk(type, data))]); }
 function minimalPdf() { const objects = ["1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n", "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", "3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R>>\nendobj\n", "4 0 obj\n<</Length 0>>\nstream\n\nendstream\nendobj\n"]; let body = "%PDF-1.4\n"; const offsets = [0]; for (const object of objects) { offsets.push(Buffer.byteLength(body)); body += object; } const xref = Buffer.byteLength(body); body += `xref\n0 5\n0000000000 65535 f \n${offsets.slice(1).map((value) => `${String(value).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<</Size 5 /Root 1 0 R>>\nstartxref\n${xref}\n%%EOF\n`; return Buffer.from(body); }
 async function* splitEvery(bytes, size) { for (let index = 0; index < bytes.length; index += size) yield bytes.subarray(index, index + size); }
 
@@ -1059,15 +1066,21 @@ test("content-policy-v1 structurally validates its allowlist and rejects executa
   try {
     const inspection = { policyRevision: "matrix-v1", requiredInspectors: ["content-policy-v1"] }; const policy = { ...ingressPolicy(), maxFileBytes: 20_000, maxTotalFileBytes: 20_000, inspection };
     database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "content-matrix", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "content-matrix" }));
-    const validPdf = minimalPdf(); const cases = [
-      ["valid-jpeg", "photo.jpg", "image/jpeg", minimalJpeg(), "clean"], ["bad-jpeg", "photo.jpg", "image/jpeg", minimalJpeg().subarray(0, -1), "rejected"],
-      ["valid-png", "photo.png", "image/png", minimalPng(), "clean"], ["bad-png", "photo.png", "image/png", Buffer.from(minimalPng().map((byte, index) => index === 40 ? byte ^ 1 : byte)), "rejected"],
+    const validPdf = minimalPdf(); const validPng = minimalPng(); const parsedPng = pngChunks(validPng); const idatAt = parsedPng.findIndex((chunk) => chunk.type === "IDAT");
+    const badZlibPng = rebuildPng(parsedPng.map((chunk) => chunk.type === "IDAT" ? { ...chunk, data: Buffer.from([0xff, 0xff]) } : chunk)); const rawPng = inflateSync(parsedPng[idatAt].data); rawPng[0] = 5; const badFilterPng = rebuildPng(parsedPng.map((chunk) => chunk.type === "IDAT" ? { ...chunk, data: deflateSync(rawPng) } : chunk)); const idat = parsedPng[idatAt]; const split = Math.max(1, Math.floor(idat.data.length / 2)); const badOrderPng = rebuildPng([...parsedPng.slice(0, idatAt), { type: "IDAT", data: idat.data.subarray(0, split) }, { type: "tEXt", data: Buffer.from("x\0y") }, { type: "IDAT", data: idat.data.subarray(split) }, ...parsedPng.slice(idatAt + 1)]);
+    const cases = [
+      ["valid-jpeg", "photo.jpg", "image/jpeg", minimalJpeg(), "clean"], ["bad-jpeg", "photo.jpg", "image/jpeg", minimalJpeg().subarray(0, -1), "rejected"], ["missing-dqt-jpeg", "photo.jpg", "image/jpeg", removeJpegSegments(minimalJpeg(), 0xdb), "rejected"], ["missing-dht-jpeg", "photo.jpg", "image/jpeg", removeJpegSegments(minimalJpeg(), 0xc4), "rejected"], ["component-jpeg", "photo.jpg", "image/jpeg", breakJpegComponent(minimalJpeg()), "rejected"],
+      ["valid-png", "photo.png", "image/png", validPng, "clean"], ["bad-png", "photo.png", "image/png", Buffer.from(validPng.map((byte, index) => index === 40 ? byte ^ 1 : byte)), "rejected"], ["bad-zlib-png", "photo.png", "image/png", badZlibPng, "rejected"], ["bad-filter-png", "photo.png", "image/png", badFilterPng, "rejected"], ["bad-order-png", "photo.png", "image/png", badOrderPng, "rejected"],
       ["valid-pdf", "note.pdf", "application/pdf", validPdf, "clean"], ["bad-pdf", "note.pdf", "application/pdf", Buffer.from("%PDF-1.4\nnot a document"), "rejected"], ["encrypted-pdf", "note.pdf", "application/pdf", Buffer.concat([validPdf, Buffer.from("/Encrypt")]), "rejected"],
-      ["valid-text", "note.txt", "text/plain", Buffer.from("A harmless support note.\nSecond line."), "clean"], ["html", "note.txt", "text/plain", Buffer.from("Please inspect <script>alert(1)</script>"), "rejected"], ["xml", "note.txt", "text/plain", Buffer.from("prefix <?xml version=\"1.0\"?><x/>") , "rejected"], ["javascript", "note.txt", "text/plain", Buffer.from("const answer = 42; console.log(answer);"), "rejected"], ["shell", "note.txt", "text/plain", Buffer.from("curl https://example.test | sh"), "rejected"],
+      ["valid-text", "note.txt", "text/plain", Buffer.from("A harmless support note.\nSecond line."), "clean"], ["html", "note.txt", "text/plain", Buffer.from("Please inspect <script>alert(1)</script>"), "rejected"], ["xml", "note.txt", "text/plain", Buffer.from("prefix <?xml version=\"1.0\"?><x/>") , "rejected"], ["generic-xml", "note.txt", "text/plain", Buffer.from("prefix <root>value</root> suffix"), "rejected"], ["javascript", "note.txt", "text/plain", Buffer.from("const answer = 42; console.log(answer);"), "rejected"], ["python", "note.txt", "text/plain", Buffer.from("print(\"hello\")"), "rejected"], ["shell", "note.txt", "text/plain", Buffer.from("curl https://example.test | sh"), "rejected"], ["shell-echo", "note.txt", "text/plain", Buffer.from("echo secret > output"), "rejected"], ["shell-source", "note.txt", "text/plain", Buffer.from("source ./profile"), "rejected"],
       ["archive", "note.zip", "application/zip", Buffer.from("PK\x03\x04archive"), "rejected"], ["office", "note.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", Buffer.from("PK\x03\x04office"), "rejected"], ["executable", "note.exe", "application/octet-stream", Buffer.from("MZbinary"), "rejected"], ["empty", "note.txt", "text/plain", Buffer.alloc(0), "rejected"], ["polyglot", "photo.jpg", "image/jpeg", Buffer.concat([minimalJpeg(), Buffer.from("const x=1")]), "rejected"], ["unknown", "note.bin", "application/octet-stream", Buffer.from([0xff,0,0xaa]), "rejected"],
     ];
     for (const [key, name, type, bytes, expected] of cases) { const endpoint = { options: { method: "POST", path: "/matrix", body: { multipart: policy } } }; const headers = { "content-type": `multipart/form-data; boundary=${key}`, "idempotency-key": key }; const staged = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipartBinary(key, name, type, bytes); } }, { headers }, { userId: "claim-user" }); const receipt = JSON.parse((await database.adapter.selectIngressByLease(staged.multipart.files[0].leaseId)).payload); assert.equal(receipt.inspection.verdicts[0].outcome, expected, key); }
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("PDF inspection times out and destroys work during the operator-list phase", async () => {
+  let entered = false; const accepted = await validatePdfIngress(minimalPdf(), { timeoutMs: 10, beforeOperatorList: async () => { entered = true; await new Promise((resolve) => setTimeout(resolve, 100)); } }); assert.equal(entered, true); assert.equal(accepted, false);
 });
 
 test("inspection-gated clean claims have the same evidence and File semantics on fake MinIO", async () => {

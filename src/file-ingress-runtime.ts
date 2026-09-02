@@ -1,10 +1,14 @@
 // Runtime-owned endpoint multipart ingress. Leases deliberately have no File row, URL or ACL
 // visibility: only claim() creates an ordinary File in the handler transaction.
+/// <reference path="./vendor-decoders.d.ts" />
 import { ensureFileBucket, fileMetadataFromRow, normalizeAbsoluteFilePath } from "./file-storage-runtime.js";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
+import jpeg from "jpeg-js";
+import { PNG } from "pngjs";
 
 type RecordLike = Record<string, any>;
 const crypto = process.getBuiltinModule("node:crypto");
+const zlib = process.getBuiltinModule("node:zlib");
 const leaseTtlMs = 10 * 60 * 1000;
 const ingressClaimAuditRetentionMs = 24 * 60 * 60 * 1000;
 const ingressClaimAuditPruneLimit = 50;
@@ -90,14 +94,17 @@ function normalizedInspectionPolicy(value: any) {
 function crc32(bytes: Buffer) { let crc = 0xffffffff; for (const byte of bytes) { crc ^= byte; for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0); } return (crc ^ 0xffffffff) >>> 0; }
 function validPng(bytes: Buffer) {
   if (bytes.length < 45 || !bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) return false;
-  let offset = 8; let index = 0; let sawIdat = false;
+  let offset = 8; let index = 0; let sawIdat = false; let idatEnded = false; let sawPlte = false; let colorType = -1; let width = 0; let height = 0; let rowBytes = 0; const idatChunks: Buffer[] = [];
   while (offset + 12 <= bytes.length) {
     const length = bytes.readUInt32BE(offset); if (length > bytes.length - offset - 12) return false;
     const type = bytes.subarray(offset + 4, offset + 8).toString("ascii"); const data = bytes.subarray(offset + 8, offset + 8 + length); const storedCrc = bytes.readUInt32BE(offset + 8 + length);
     if (crc32(bytes.subarray(offset + 4, offset + 8 + length)) !== storedCrc) return false;
-    if (index === 0) { if (type !== "IHDR" || length !== 13 || data.readUInt32BE(0) === 0 || data.readUInt32BE(4) === 0 || data[10] !== 0 || data[11] !== 0 || data[12] !== 0) return false; const allowed = new Set(["0:1","0:2","0:4","0:8","0:16","2:8","2:16","3:1","3:2","3:4","3:8","4:8","4:16","6:8","6:16"]); if (!allowed.has(`${data[9]}:${data[8]}`)) return false; }
-    if (type === "IDAT") sawIdat = true;
-    if (type === "IEND") return length === 0 && sawIdat && offset + 12 === bytes.length;
+    if (index === 0) { if (type !== "IHDR" || length !== 13 || data.readUInt32BE(0) === 0 || data.readUInt32BE(4) === 0 || data[10] !== 0 || data[11] !== 0 || data[12] !== 0) return false; width = data.readUInt32BE(0); height = data.readUInt32BE(4); colorType = data[9]; if (width > 10_000 || height > 10_000 || width * height > 25_000_000) return false; const allowed = new Set(["0:1","0:2","0:4","0:8","0:16","2:8","2:16","3:1","3:2","3:4","3:8","4:8","4:16","6:8","6:16"]); if (!allowed.has(`${colorType}:${data[8]}`)) return false; const channels = ({0:1,2:3,3:1,4:2,6:4} as Record<number, number>)[colorType]; rowBytes = Math.ceil(width * channels * data[8] / 8); if ((rowBytes + 1) * height > 100_000_000) return false; }
+    if (type === "PLTE") { if (sawIdat || sawPlte || length === 0 || length % 3 !== 0 || length > 768 || [0,4].includes(colorType)) return false; sawPlte = true; }
+    if (type === "IDAT") { if (idatEnded || (colorType === 3 && !sawPlte)) return false; sawIdat = true; idatChunks.push(data); }
+    else if (sawIdat && type !== "IEND") idatEnded = true;
+    if (/^[A-Z]/.test(type[0]) && !["IHDR","PLTE","IDAT","IEND"].includes(type)) return false;
+    if (type === "IEND") { if (!(length === 0 && sawIdat && offset + 12 === bytes.length)) return false; try { const inflated = zlib.inflateSync(Buffer.concat(idatChunks), { maxOutputLength: (rowBytes + 1) * height }); if (inflated.length !== (rowBytes + 1) * height) return false; for (let row = 0; row < height; row += 1) if (inflated[row * (rowBytes + 1)] > 4) return false; const decoded = PNG.sync.read(bytes, { checkCRC: true }); return decoded.width === width && decoded.height === height && decoded.data.length === width * height * 4; } catch { return false; } }
     if (type === "IHDR" && index !== 0) return false;
     offset += 12 + length; index += 1;
   }
@@ -107,7 +114,7 @@ function validJpeg(bytes: Buffer) {
   if (bytes.length < 8 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return false; let offset = 2; let sawFrame = false; let sawScan = false;
   while (offset < bytes.length) {
     if (bytes[offset++] !== 0xff) return false; while (offset < bytes.length && bytes[offset] === 0xff) offset += 1; if (offset >= bytes.length) return false; const marker = bytes[offset++];
-    if (marker === 0xd9) return sawScan && offset === bytes.length;
+    if (marker === 0xd9) { if (!sawScan || offset !== bytes.length) return false; try { const decoded = jpeg.decode(bytes, { useTArray: true, maxResolutionInMP: 25, maxMemoryUsageInMB: 64 }); return decoded.width > 0 && decoded.height > 0 && decoded.width * decoded.height <= 25_000_000 && decoded.data.length === decoded.width * decoded.height * 4; } catch { return false; } }
     if (marker === 0x00 || marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) return false;
     if (offset + 2 > bytes.length) return false; const length = bytes.readUInt16BE(offset); if (length < 2 || offset + length > bytes.length) return false; const data = bytes.subarray(offset + 2, offset + length); offset += length;
     if ([0xc0, 0xc1, 0xc2].includes(marker)) { if (data.length < 6 || data[0] !== 8 || data.readUInt16BE(1) === 0 || data.readUInt16BE(3) === 0 || data[5] < 1 || data.length !== 6 + data[5] * 3) return false; sawFrame = true; }
@@ -115,21 +122,20 @@ function validJpeg(bytes: Buffer) {
   }
   return false;
 }
-async function validPdf(bytes: Buffer) {
+export async function validatePdfIngress(bytes: Buffer, options: RecordLike = {}) {
   if (bytes.length < 16 || bytes.subarray(0, 5).toString("ascii") !== "%PDF-" || bytes.includes(Buffer.from("/Encrypt"))) return false;
-  let task: any; let timer: any;
+  let task: any; let timer: any; const timeoutMs = Number.isInteger(options.timeoutMs) ? Math.max(1, Math.min(2_000, options.timeoutMs)) : 2_000;
   try {
     task = getDocument({ data: new Uint8Array(bytes), useWorkerFetch: false, disableFontFace: true });
-    const document = await Promise.race([task.promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("PDF inspection timeout")), 2_000); })]);
-    if ((document as any).numPages < 1 || (document as any).numPages > 100) return false;
-    for (let page = 1; page <= (document as any).numPages; page += 1) await (await (document as any).getPage(page)).getOperatorList();
-    return true;
+    const workflow = (async () => { const document = await task.promise; if ((document as any).numPages < 1 || (document as any).numPages > 100) return false; for (let page = 1; page <= (document as any).numPages; page += 1) { await options.beforeOperatorList?.(page); await (await (document as any).getPage(page)).getOperatorList(); } return true; })();
+    return await Promise.race([workflow, new Promise<boolean>((_, reject) => { timer = setTimeout(() => { try { task?.destroy?.(); } catch {} reject(new Error("PDF inspection timeout")); }, timeoutMs); })]);
   } catch { return false; } finally { clearTimeout(timer); try { await task?.destroy?.(); } catch {} }
 }
 function safeUntrustedText(bytes: Buffer) {
   const decoder = new TextDecoder("utf-8", { fatal: true }); let text = ""; try { text = decoder.decode(bytes); } catch { return false; }
-  if (!text || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text) || /<\s*(?:!doctype|\?xml|html\b|head\b|body\b|script\b|svg\b|[a-z][\w:-]*\s+[^>]*>)/i.test(text)) return false;
-  if (/(?:^|\n)\s*(?:#!|sudo\b|rm\s+-|curl\b|wget\b|bash\b|sh\b|python\b|node\b|chmod\b|eval\b|exec\b|export\s+\w+=|set\s+-[eux]|if\s+\[|for\s+\w+\s+in\b)/im.test(text)) return false;
+  if (!text || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text) || /<\s*(?:!doctype|\?xml|html\b|head\b|body\b|script\b|svg\b|[a-z][\w:-]*\s+[^>]*>)/i.test(text) || /<\s*([a-z][\w:-]*)\b[^>]*>[\s\S]*<\/\s*\1\s*>/i.test(text)) return false;
+  if (/(?:^|\n)\s*(?:#!|sudo\b|rm\s+-|curl\b|wget\b|bash\b|sh\b|python\b|node\b|chmod\b|eval\b|exec\b|echo\b|source\b|\.\s+[^\s]+|export\s+\w+=|set\s+-[eux]|if\s+\[|for\s+\w+\s+in\b)/im.test(text)) return false;
+  if (/\b(?:print|open|compile|__import__|subprocess\.(?:run|call|Popen)|os\.system)\s*\(/.test(text)) return false;
   if (/(?:\b(?:const|let|var|function|class|import|export)\b|=>|\brequire\s*\(|\bprocess\.)/.test(text)) { try { new Function(text); return false; } catch {} }
   return true;
 }
@@ -138,7 +144,7 @@ async function contentPolicyOutcome(row: RecordLike, bytes: Buffer) {
   if (bytes.length === 0 || /\.(zip|gz|rar|7z|tar|docx?|xlsx?|pptx?|exe|dmg|app|js|mjs|sh|bat|cmd|ps1|svg|html?|xml)$/i.test(name) || bytes.subarray(0, 2).toString("hex") === "4d5a" || bytes.subarray(0, 2).toString("hex") === "504b" || bytes.subarray(0, 6).toString("ascii") === "Rar!\x1a\x07" || bytes.subarray(0, 6).toString("ascii") === "7z\xbc\xaf\x27\x1c") return "rejected";
   if (bytes.subarray(0, 3).toString("hex") === "ffd8ff") return validJpeg(bytes) && /\.(jpg|jpeg)$/.test(name) && type === "image/jpeg" ? "clean" : "rejected";
   if (bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) return validPng(bytes) && /\.png$/.test(name) && type === "image/png" ? "clean" : "rejected";
-  if (bytes.subarray(0, 5).toString("ascii") === "%PDF-") return await validPdf(bytes) && /\.pdf$/.test(name) && type === "application/pdf" ? "clean" : "rejected";
+  if (bytes.subarray(0, 5).toString("ascii") === "%PDF-") return await validatePdfIngress(bytes) && /\.pdf$/.test(name) && type === "application/pdf" ? "clean" : "rejected";
   return safeUntrustedText(bytes) && /\.txt$/.test(name) && type === "text/plain" ? "clean" : "rejected";
 }
 async function inspectIngressLease(policy: RecordLike | null, row: RecordLike, bytes: Buffer) {

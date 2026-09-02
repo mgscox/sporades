@@ -488,13 +488,17 @@ encrypted containers, SVG/HTML/XML, Office formats, executables, scripts,
 empty/polyglot/ambiguous content, and malformed or oversized input. Endpoint
 handlers cannot supply verdict-producing objects or receive lease bytes.
 JPEG validation walks bounded segment and entropy structure through the exact
-EOI. PNG validation checks chunk bounds and order, IHDR constraints, every CRC,
-and an exact IEND. PDF validation uses the pinned maintained server-side
+EOI, then decodes under the pinned `jpeg-js@0.4.4` resolution and memory caps.
+PNG validation pre-bounds dimensions, pixels, and expected decoded storage,
+checks chunk bounds/order, PLTE and contiguous-IDAT rules, IHDR constraints,
+every CRC and exact IEND, then uses pinned `pngjs@7.0.0` to inflate and decode
+the exact scanline/filter stream. PDF validation uses the pinned maintained server-side
 `pdfjs-dist@6.3.289` parser, forces bounded page/operator parsing, rejects
 encrypted input, caps pages, and enforces a short inspection timeout; the
 production dependency audit must remain clean when it is upgraded. Text is a
 particularly conservative untrusted-evidence lane: strict UTF-8 is rejected
 when it resembles markup, JavaScript, shell, or common script/source forms.
+This includes generic XML and common JavaScript, Python, and shell source forms.
 That deliberately creates false positives for support notes containing code;
 such material should be pasted as quoted ticket text or explicitly handled by
 a future reviewed evidence policy, never treated as an executable channel.
