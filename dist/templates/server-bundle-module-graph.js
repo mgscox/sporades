@@ -69,6 +69,7 @@ export async function createServerBundleModuleSource(options) {
             write: false,
             metafile: true,
             logLevel: "silent",
+            banner: { js: "import { createRequire as __sporadesCreateRequire } from 'node:module'; const require = __sporadesCreateRequire(import.meta.url);" },
             // esbuild labels every inlined module with its path relative to the working directory. Pinned
             // to the package root so those labels read `dist/templates/…` instead of wherever the CLI
             // happens to have been invoked from: otherwise the person's absolute filesystem path is

@@ -8,8 +8,7 @@ const enabled = process.env.SPORADES_REAL_CLAMAV_DOCKER === "1";
 test("real Capsule image acquires signatures and scans only over its local Unix socket", { skip: !enabled }, () => {
   const image = `sporades-clamav-acceptance:${process.pid}`;
   const volume = `sporades-clamav-acceptance-${process.pid}`;
-  const build = spawnSync("docker", ["build", "-f", "Dockerfile.base", "-t", image, "."], { encoding: "utf8", timeout: 10 * 60_000 });
-  assert.equal(build.status, 0, `${build.stdout}\n${build.stderr}`);
+  let primaryFailure;
   const script = String.raw`
 set -eu
 test ! -e /tmp/sporades-clamav/clamd.sock
@@ -41,12 +40,17 @@ trap - EXIT INT TERM
 ! kill -0 "$clamd_pid" 2>/dev/null
 ! kill -0 "$freshclam_pid" 2>/dev/null
 `;
-  const run = spawnSync("docker", ["run", "--rm", "--entrypoint", "/bin/sh", image, "-ec", script], { encoding: "utf8", timeout: 10 * 60_000 });
-  assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
-  for (let restart = 0; restart < 2; restart += 1) {
-    const lifecycle = spawnSync("docker", ["run", "--rm", "-e", "SPORADES_CLAMAV_MANAGED=1", ...(restart === 1 ? ["-e", "SPORADES_SMOKE_REPLACEMENT=1"] : []), "-v", `${volume}:/app/data`, "-v", `${path.resolve()}:/src:ro`, "--entrypoint", "node", image, "/src/test/fixtures/clamav-runtime-smoke.mjs"], { encoding: "utf8", timeout: 10 * 60_000 });
-    assert.equal(lifecycle.status, 0, `${lifecycle.stdout}\n${lifecycle.stderr}`);
+  try {
+    const build = spawnSync("docker", ["build", "-f", "Dockerfile.base", "-t", image, "."], { encoding: "utf8", timeout: 10 * 60_000 }); assert.equal(build.status, 0, `${build.stdout}\n${build.stderr}`);
+    const run = spawnSync("docker", ["run", "--rm", "--entrypoint", "/bin/sh", image, "-ec", script], { encoding: "utf8", timeout: 10 * 60_000 }); assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
+    for (let restart = 0; restart < 2; restart += 1) { const lifecycle = spawnSync("docker", ["run", "--rm", "-e", "SPORADES_CLAMAV_MANAGED=1", ...(restart === 1 ? ["-e", "SPORADES_SMOKE_REPLACEMENT=1"] : []), "-v", `${volume}:/app/data`, "-v", `${path.resolve()}:/src:ro`, "--entrypoint", "node", image, "/src/test/fixtures/clamav-runtime-smoke.mjs"], { encoding: "utf8", timeout: 10 * 60_000 }); assert.equal(lifecycle.status, 0, `${lifecycle.stdout}\n${lifecycle.stderr}`); }
+  } catch (error) {
+    primaryFailure = error;
+  } finally {
+    const cleanupFailures = [];
+    for (const [kind, name] of [["volume", volume], ["image", image]]) { const removed = spawnSync("docker", [kind, "rm", "-f", name], { encoding: "utf8", timeout: 30_000 }); if (removed.status !== 0 && !/No such/i.test(`${removed.stdout}\n${removed.stderr}`)) cleanupFailures.push(new Error(`Failed to remove Docker ${kind} ${name}: ${removed.stderr || removed.stdout}`)); const inspect = spawnSync("docker", [kind, "inspect", name], { encoding: "utf8", timeout: 30_000 }); if (inspect.status === 0) cleanupFailures.push(new Error(`Docker ${kind} ${name} remained after cleanup.`)); }
+    if (primaryFailure && cleanupFailures.length > 0) throw new AggregateError([primaryFailure, ...cleanupFailures], "ClamAV acceptance and Docker cleanup both failed.");
+    if (primaryFailure) throw primaryFailure;
+    if (cleanupFailures.length > 0) throw new AggregateError(cleanupFailures, "ClamAV Docker cleanup failed.");
   }
-  spawnSync("docker", ["volume", "rm", "-f", volume], { encoding: "utf8" });
-  spawnSync("docker", ["image", "rm", "-f", image], { encoding: "utf8" });
 });

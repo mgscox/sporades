@@ -7785,6 +7785,7 @@ test("Sporades runtime health rejects unauthenticated probes and returns safe re
           checks: {
             sqlite: { ok: true },
             fileStorage: { ok: true },
+            fileInspection: { ok: true },
           },
         },
         error: null,
