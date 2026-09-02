@@ -141,7 +141,7 @@ export declare function createPrivilegedTeamBillingApi(database: LooseRecord, co
         quarantines: readonly Readonly<{
             teamId: string | null;
             associatedTeam: boolean;
-            mode: "live" | "sandbox";
+            mode: "sandbox" | "live";
             eventType: string;
             occurredAt: string | null;
             reason: "provider-state-ambiguous" | "catalogue-mismatch";

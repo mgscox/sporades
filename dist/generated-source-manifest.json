@@ -43,6 +43,7 @@
       "src/database-runtime.ts",
       "src/email-events-config.ts",
       "src/email-events-runtime.ts",
+      "src/endpoint-file-response.ts",
       "src/file-ingress-runtime.ts",
       "src/file-storage-runtime.ts",
       "src/file-transaction.ts",
@@ -91,7 +92,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "68fc3a1503e0e38dca9746d418aa91eb5eed6e583ade697b027a07433b98ff04"
+    "digest": "69ae2d91dfaa4ec7e687b75edb9e7052dc40f37352444f4ae5dc2e96b23cc98a"
   },
   "outputs": {
     "files": [
@@ -233,6 +234,10 @@
       "dist/email-events-runtime.d.ts.map",
       "dist/email-events-runtime.js",
       "dist/email-events-runtime.js.map",
+      "dist/endpoint-file-response.d.ts",
+      "dist/endpoint-file-response.d.ts.map",
+      "dist/endpoint-file-response.js",
+      "dist/endpoint-file-response.js.map",
       "dist/file-ingress-runtime.d.ts",
       "dist/file-ingress-runtime.d.ts.map",
       "dist/file-ingress-runtime.js",
@@ -398,6 +403,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "6c8e9f1ba101bfba920f5f360a5b5732eb20eed72de0d6935469d4104567329b"
+    "digest": "2046fc8e4de06564b11b69dbc484fcf84ee290048a71e424b2429759e200392e"
   }
 }

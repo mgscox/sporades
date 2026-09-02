@@ -76,6 +76,35 @@ provenance for either kind. Access-key downloads are `private, no-store`, and a
 revocation affects the next admission without interrupting bytes whose
 admission already completed.
 
+### Endpoint attachment responses
+
+An endpoint that has already authorized a download can return one exact File
+version as an attachment without exposing a private File URL, File bytes,
+storage path, object key, stream, or storage credentials to Capsule code:
+
+```ts
+endpoint({ method: "GET", path: "/tickets/export" }, async (ctx) => {
+  const exportFile = await ctx.db.exports.where({ ticketId: ctx.request.query.ticket }).first();
+  if (!exportFile) return { status: 404, body: "Not found" };
+  return ctx.files.attachment(
+    { id: exportFile.fileId, version: exportFile.fileVersion },
+    { filename: "ticket-export.pdf" },
+  );
+});
+```
+
+`ctx.files.attachment()` creates an opaque, runtime-only endpoint result. It
+accepts only the exact File `id` and `version` plus a presentation filename;
+plain objects that resemble it are ordinary endpoint values and cannot cause a
+File read. Sporades resolves the descriptor only after the endpoint transaction
+commits, rereads the current File row, and denies a deleted, replaced, missing,
+or unreadable version with the same opaque no-store response. The result always
+uses `application/octet-stream`, `Content-Disposition: attachment` with an
+ASCII fallback and UTF-8 filename parameter, `nosniff`, `sandbox`, same-origin
+resource policy, and private no-store caching. Presentation names are bounded
+basenames; control characters, paths, traversal, bidirectional controls,
+reserved device names, and overlong values become `download`.
+
 File operations that identify an existing file accept a File reference: either
 the stable File ID or the absolute File path. By default, the reference must
 resolve to one live file owned by the current user. A Capsule may deliberately

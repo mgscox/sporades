@@ -885,7 +885,13 @@ export type EndpointRequest = {
 export type EndpointFileIngressLease = Readonly<{ leaseId: string; partId: string; fieldName: string; name: string; type: string; declaredSize: number | null; size: number; expiresAt: string }>;
 export type EndpointFileMetadata = Readonly<{ id: string; bucket: string; size: number; type: string; name: string; path: string; version: string }>;
 export type FileIngressOptions = Readonly<{ path: string; name?: string; type?: string; authority?: { kind: "actor" } | ({ kind: "capsule-principal" } & FileIngressPrincipal) }>;
-export type EndpointFileIngressApi = { claim(lease: EndpointFileIngressLease, options: FileIngressOptions): Promise<EndpointFileMetadata>; status(requestKey: string, partKey: string): Promise<{ state: "missing" } | { state: "leased"; lease: EndpointFileIngressLease } | { state: "complete"; file: EndpointFileMetadata } | { state: "failed"; retryable: boolean }>; };
+/** Exact immutable File identity accepted by endpoint attachment responses. */
+export type EndpointFileAttachmentReference = Readonly<Pick<EndpointFileMetadata, "id" | "version">>;
+/** A browser presentation name only; bytes, paths, streams, object keys, and credentials are never accepted. */
+export type EndpointFileAttachmentOptions = Readonly<{ filename: string }>;
+/** Runtime-created opaque endpoint result. It can only be returned from an endpoint handler. */
+export type EndpointFileAttachmentResponse = object;
+export type EndpointFileIngressApi = { claim(lease: EndpointFileIngressLease, options: FileIngressOptions): Promise<EndpointFileMetadata>; status(requestKey: string, partKey: string): Promise<{ state: "missing" } | { state: "leased"; lease: EndpointFileIngressLease } | { state: "complete"; file: EndpointFileMetadata } | { state: "failed"; retryable: boolean }>; attachment(file: EndpointFileAttachmentReference, options: EndpointFileAttachmentOptions): EndpointFileAttachmentResponse; };
 
 export type EndpointContext<
   Schema extends SchemaDefinition = SchemaDefinition,

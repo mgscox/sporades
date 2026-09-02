@@ -109,6 +109,7 @@ import {
   checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, fileRowForActor,
 } from "./file-storage-runtime.js";
 import { commandError } from "./runtime-errors.js";
+import { attachmentContentDisposition, endpointFileAttachmentDetails } from "./endpoint-file-response.js";
 
 // Redeclared rather than imported, as every migrated module redeclares them: they are erased by
 // tsc, so they create no top-level binding for esbuild to rename and cannot collide with the
@@ -632,7 +633,12 @@ async function sendFileHttpResponse(database: LooseRecord, response: any, row: L
   }
 }
 
-export function writeEndpointResult(response: any, result: any, runtimeHeaders: LooseRecord = {}) {
+export async function writeEndpointResult(database: LooseRecord, response: any, result: any, runtimeHeaders: LooseRecord = {}) {
+  const attachment = endpointFileAttachmentDetails(result);
+  if (attachment) {
+    await sendEndpointFileAttachmentResponse(database, response, attachment);
+    return false;
+  }
   if (result && typeof result === "object" && !Buffer.isBuffer(result) && "body" in result) {
     const status = result.status ?? 200;
     if (!Number.isInteger(status) || status < 100 || status > 599) {
@@ -656,12 +662,12 @@ export function writeEndpointResult(response: any, result: any, runtimeHeaders: 
       }
       response.writeHead(status, headers);
       response.end(payload);
-      return;
+      return true;
     }
     headers["content-type"] ??= "text/plain; charset=utf-8";
     response.writeHead(status, headers);
     response.end(String(body ?? ""));
-    return;
+    return true;
   }
 
   response.writeHead(200, mergeEndpointResponseHeaders(
@@ -669,6 +675,55 @@ export function writeEndpointResult(response: any, result: any, runtimeHeaders: 
     runtimeHeaders,
   ));
   response.end(String(result ?? ""));
+  return true;
+}
+
+async function sendEndpointFileAttachmentResponse(database: LooseRecord, response: any, attachment: { fileId: string; version: string; filename: string }) {
+  try {
+    // The handler's descriptor can be created before commit, but it is deliberately resolved only
+    // here, after runEndpoint's transaction has committed. Re-read the current row so replacement
+    // and deletion invalidate a stale descriptor rather than serving an adjacent version.
+    const row = await database.adapter.selectFileById(attachment.fileId);
+    if (!row || row.deletedAt !== null || row.status !== "uploaded" || String(row.version) !== attachment.version) {
+      writeOpaqueAttachmentDenial(response);
+      return;
+    }
+    const stream = await database.fileStorage.openFileVersionStream({ fileId: row.id, version: row.version });
+    response.removeHeader?.("access-control-allow-origin");
+    response.removeHeader?.("access-control-allow-credentials");
+    response.removeHeader?.("access-control-expose-headers");
+    response.writeHead(200, {
+      "content-type": "application/octet-stream",
+      "content-disposition": attachmentContentDisposition(attachment.filename),
+      "cache-control": "private, no-store",
+      pragma: "no-cache",
+      "x-content-type-options": "nosniff",
+      "content-security-policy": "sandbox",
+      "cross-origin-resource-policy": "same-origin",
+    });
+    const { pipeline } = await import("node:stream/promises");
+    await pipeline(stream, response);
+  } catch {
+    // A post-header client disconnect cannot be replaced by a second response. The File stream is
+    // owned by pipeline, which destroys it on disconnect and propagates backpressure throughout.
+    if (!response.headersSent && !response.writableEnded) writeOpaqueAttachmentDenial(response);
+    else response.destroy?.();
+  }
+}
+
+function writeOpaqueAttachmentDenial(response: any) {
+  response.removeHeader?.("access-control-allow-origin");
+  response.removeHeader?.("access-control-allow-credentials");
+  response.removeHeader?.("access-control-expose-headers");
+  response.writeHead(404, {
+    "content-type": "text/plain; charset=utf-8",
+    "cache-control": "private, no-store",
+    pragma: "no-cache",
+    "x-content-type-options": "nosniff",
+    "content-security-policy": "sandbox",
+    "cross-origin-resource-policy": "same-origin",
+  });
+  response.end("Not found");
 }
 
 function mergeEndpointResponseHeaders(handlerHeaders: LooseRecord, runtimeHeaders: LooseRecord) {

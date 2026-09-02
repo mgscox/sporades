@@ -9851,6 +9851,10 @@ function createLocalFileStorageAdapter({ storagePath }) {
       const { readFile: readFile10 } = await import("node:fs/promises");
       return await readFile10(localFileVersionPath(storagePath, fileId, version));
     },
+    async openFileVersionStream({ fileId, version }) {
+      const { createReadStream } = await import("node:fs");
+      return createReadStream(localFileVersionPath(storagePath, fileId, version));
+    },
     async deleteFileVersion({ fileId, version }) {
       const { rm: rm7 } = await import("node:fs/promises");
       await rm7(localFileVersionPath(storagePath, fileId, version), { force: true });
@@ -9950,6 +9954,21 @@ function createS3CompatibleFileStorageAdapter({
       }
       return result.body;
     },
+    async openFileVersionStream({ fileId, version }) {
+      const response = await s3RequestStream(config, {
+        method: "GET",
+        key: s3ObjectKey(isolatedNamespace, fileId, version)
+      });
+      if (response.statusCode === 404) {
+        response.resume();
+        throw s3ObjectNotFoundError();
+      }
+      if ((response.statusCode ?? 0) < 200 || (response.statusCode ?? 0) >= 300) {
+        response.resume();
+        throw new Error(`S3-compatible file read failed with HTTP ${response.statusCode ?? 0}.`);
+      }
+      return response;
+    },
     async deleteFileVersion({ fileId, version }) {
       const result = await s3Request(config, {
         method: "DELETE",
@@ -10032,6 +10051,23 @@ async function s3Request(config, { method, key = null, body = null }) {
     if (payload.length > 0) {
       request.write(payload);
     }
+    request.end();
+  });
+}
+async function s3RequestStream(config, { method, key = null }) {
+  const endpoint = new URL(config.endpoint);
+  const isHttps = endpoint.protocol === "https:";
+  const transport = await (isHttps ? import("node:https") : import("node:http"));
+  const payload = Buffer.alloc(0);
+  const amzDate = s3AmzDate(/* @__PURE__ */ new Date());
+  const date = amzDate.slice(0, 8);
+  const pathname = s3CanonicalPath(endpoint.pathname, config.bucket, key);
+  const payloadHash = s3Sha256Hex(payload);
+  const headers = s3SignedHeaders({ "host": endpoint.host, "x-amz-content-sha256": payloadHash, "x-amz-date": amzDate });
+  headers.authorization = s3Signature({ method, pathname, query: "", headers, payloadHash, accessKey: config.accessKey, secretKey: config.secretKey, region: config.region, date, amzDate });
+  return await new Promise((resolve, reject) => {
+    const request = transport.request({ protocol: endpoint.protocol, hostname: endpoint.hostname, port: endpoint.port || void 0, method, path: `${pathname}${endpoint.search}`, headers: { ...headers, "content-length": 0 } }, resolve);
+    request.on("error", reject);
     request.end();
   });
 }
@@ -10753,6 +10789,48 @@ async function removeFileVersionBestEffort(database, fileId, version) {
   });
 }
 
+// src/endpoint-file-response.ts
+var attachmentResponseDetails = /* @__PURE__ */ new WeakMap();
+function createEndpointFileResponseApi(ingressApi) {
+  return Object.freeze({
+    ...ingressApi,
+    attachment(reference, options) {
+      const fileId = exactIdentifier(reference?.id);
+      const version = exactIdentifier(reference?.version);
+      const filename = safePresentationFilename(options?.filename);
+      if (!fileId || !version || !filename) {
+        const error = new Error("Invalid endpoint File attachment response.");
+        error.code = "INVALID_ENDPOINT_FILE_ATTACHMENT";
+        throw error;
+      }
+      const response = Object.freeze({});
+      attachmentResponseDetails.set(response, Object.freeze({ fileId, version, filename }));
+      return response;
+    }
+  });
+}
+function endpointFileAttachmentDetails(value) {
+  return value !== null && typeof value === "object" ? attachmentResponseDetails.get(value) ?? null : null;
+}
+function exactIdentifier(value) {
+  if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > 512 || /[\x00-\x1f\x7f]/.test(value)) return null;
+  return value;
+}
+function safePresentationFilename(value) {
+  if (typeof value !== "string") return null;
+  const filename = value.normalize("NFKC").trim();
+  if (!filename || Buffer.byteLength(filename, "utf8") > 120) return "download";
+  if (/[\x00-\x1f\x7f\\/]|[\u202a-\u202e\u2066-\u2069]/u.test(filename) || filename === "." || filename === ".." || filename.includes("..")) return "download";
+  const stem = filename.split(".")[0]?.trim().toUpperCase();
+  if (["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"].includes(stem)) return "download";
+  return filename;
+}
+function attachmentContentDisposition(filename) {
+  const ascii = filename.replace(/[^\x20-\x7e]|["\\]/g, "_").replace(/[\x00-\x1f\x7f]/g, "_") || "download";
+  const encoded = encodeURIComponent(filename).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
+
 // src/http-runtime.ts
 var CLIENT_REQUEST_ERROR_CODES = /* @__PURE__ */ new Set([
   "INVALID_JSON_REQUEST",
@@ -11151,7 +11229,12 @@ async function sendFileHttpResponse(database, response, row, options = {}) {
     writeNotFound(response);
   }
 }
-function writeEndpointResult(response, result, runtimeHeaders = {}) {
+async function writeEndpointResult(database, response, result, runtimeHeaders = {}) {
+  const attachment = endpointFileAttachmentDetails(result);
+  if (attachment) {
+    await sendEndpointFileAttachmentResponse(database, response, attachment);
+    return false;
+  }
   if (result && typeof result === "object" && !Buffer.isBuffer(result) && "body" in result) {
     const status = result.status ?? 200;
     if (!Number.isInteger(status) || status < 100 || status > 599) {
@@ -11172,18 +11255,60 @@ function writeEndpointResult(response, result, runtimeHeaders = {}) {
       }
       response.writeHead(status, headers);
       response.end(payload);
-      return;
+      return true;
     }
     headers["content-type"] ??= "text/plain; charset=utf-8";
     response.writeHead(status, headers);
     response.end(String(body ?? ""));
-    return;
+    return true;
   }
   response.writeHead(200, mergeEndpointResponseHeaders(
     { "content-type": "text/plain; charset=utf-8" },
     runtimeHeaders
   ));
   response.end(String(result ?? ""));
+  return true;
+}
+async function sendEndpointFileAttachmentResponse(database, response, attachment) {
+  try {
+    const row = await database.adapter.selectFileById(attachment.fileId);
+    if (!row || row.deletedAt !== null || row.status !== "uploaded" || String(row.version) !== attachment.version) {
+      writeOpaqueAttachmentDenial(response);
+      return;
+    }
+    const stream = await database.fileStorage.openFileVersionStream({ fileId: row.id, version: row.version });
+    response.removeHeader?.("access-control-allow-origin");
+    response.removeHeader?.("access-control-allow-credentials");
+    response.removeHeader?.("access-control-expose-headers");
+    response.writeHead(200, {
+      "content-type": "application/octet-stream",
+      "content-disposition": attachmentContentDisposition(attachment.filename),
+      "cache-control": "private, no-store",
+      pragma: "no-cache",
+      "x-content-type-options": "nosniff",
+      "content-security-policy": "sandbox",
+      "cross-origin-resource-policy": "same-origin"
+    });
+    const { pipeline } = await import("node:stream/promises");
+    await pipeline(stream, response);
+  } catch {
+    if (!response.headersSent && !response.writableEnded) writeOpaqueAttachmentDenial(response);
+    else response.destroy?.();
+  }
+}
+function writeOpaqueAttachmentDenial(response) {
+  response.removeHeader?.("access-control-allow-origin");
+  response.removeHeader?.("access-control-allow-credentials");
+  response.removeHeader?.("access-control-expose-headers");
+  response.writeHead(404, {
+    "content-type": "text/plain; charset=utf-8",
+    "cache-control": "private, no-store",
+    pragma: "no-cache",
+    "x-content-type-options": "nosniff",
+    "content-security-policy": "sandbox",
+    "cross-origin-resource-policy": "same-origin"
+  });
+  response.end("Not found");
 }
 function mergeEndpointResponseHeaders(handlerHeaders, runtimeHeaders) {
   const headers = { ...handlerHeaders };
@@ -23661,7 +23786,9 @@ async function routeEndpoint(database, request, response) {
   try {
     const result = await runEndpoint(database, endpoint, requestUrl, request);
     const sensitiveResponseHeaders = request.__sporadesAccessKeyAdmitted || request.__sporadesSecretDisclosed ? { "cache-control": "private, no-store", pragma: "no-cache" } : void 0;
-    writeEndpointResult(response, result, sensitiveResponseHeaders);
+    if (!await writeEndpointResult(database, response, result, sensitiveResponseHeaders)) {
+      return true;
+    }
   } catch (error) {
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
@@ -23797,7 +23924,7 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
               credential: accessKeyAdmission?.credential,
               accessKeyGrants: accessKeyAdmission?.grants
             });
-            context.files = createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context);
+            context.files = createEndpointFileResponseApi(createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context));
             if (endpoint.runtimeOwnedStripeCallback) {
               Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
             }

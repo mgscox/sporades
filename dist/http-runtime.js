@@ -101,6 +101,7 @@ import { accessKeyGrantsSatisfyScopes } from "./auth-admission.js";
 import { accessKeyAuthenticationError, emitAccessKeyAdmittedAudit, recordAccessKeyUsage, resolveAccessKeyCredential, } from "./access-keys-runtime.js";
 import { checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, fileRowForActor, } from "./file-storage-runtime.js";
 import { commandError } from "./runtime-errors.js";
+import { attachmentContentDisposition, endpointFileAttachmentDetails } from "./endpoint-file-response.js";
 const CLIENT_REQUEST_ERROR_CODES = new Set([
     "INVALID_JSON_REQUEST",
     "OAUTH_INVALID_CALLBACK",
@@ -563,7 +564,12 @@ async function sendFileHttpResponse(database, response, row, options = {}) {
         writeNotFound(response);
     }
 }
-export function writeEndpointResult(response, result, runtimeHeaders = {}) {
+export async function writeEndpointResult(database, response, result, runtimeHeaders = {}) {
+    const attachment = endpointFileAttachmentDetails(result);
+    if (attachment) {
+        await sendEndpointFileAttachmentResponse(database, response, attachment);
+        return false;
+    }
     if (result && typeof result === "object" && !Buffer.isBuffer(result) && "body" in result) {
         const status = result.status ?? 200;
         if (!Number.isInteger(status) || status < 100 || status > 599) {
@@ -586,15 +592,65 @@ export function writeEndpointResult(response, result, runtimeHeaders = {}) {
             }
             response.writeHead(status, headers);
             response.end(payload);
-            return;
+            return true;
         }
         headers["content-type"] ??= "text/plain; charset=utf-8";
         response.writeHead(status, headers);
         response.end(String(body ?? ""));
-        return;
+        return true;
     }
     response.writeHead(200, mergeEndpointResponseHeaders({ "content-type": "text/plain; charset=utf-8" }, runtimeHeaders));
     response.end(String(result ?? ""));
+    return true;
+}
+async function sendEndpointFileAttachmentResponse(database, response, attachment) {
+    try {
+        // The handler's descriptor can be created before commit, but it is deliberately resolved only
+        // here, after runEndpoint's transaction has committed. Re-read the current row so replacement
+        // and deletion invalidate a stale descriptor rather than serving an adjacent version.
+        const row = await database.adapter.selectFileById(attachment.fileId);
+        if (!row || row.deletedAt !== null || row.status !== "uploaded" || String(row.version) !== attachment.version) {
+            writeOpaqueAttachmentDenial(response);
+            return;
+        }
+        const stream = await database.fileStorage.openFileVersionStream({ fileId: row.id, version: row.version });
+        response.removeHeader?.("access-control-allow-origin");
+        response.removeHeader?.("access-control-allow-credentials");
+        response.removeHeader?.("access-control-expose-headers");
+        response.writeHead(200, {
+            "content-type": "application/octet-stream",
+            "content-disposition": attachmentContentDisposition(attachment.filename),
+            "cache-control": "private, no-store",
+            pragma: "no-cache",
+            "x-content-type-options": "nosniff",
+            "content-security-policy": "sandbox",
+            "cross-origin-resource-policy": "same-origin",
+        });
+        const { pipeline } = await import("node:stream/promises");
+        await pipeline(stream, response);
+    }
+    catch {
+        // A post-header client disconnect cannot be replaced by a second response. The File stream is
+        // owned by pipeline, which destroys it on disconnect and propagates backpressure throughout.
+        if (!response.headersSent && !response.writableEnded)
+            writeOpaqueAttachmentDenial(response);
+        else
+            response.destroy?.();
+    }
+}
+function writeOpaqueAttachmentDenial(response) {
+    response.removeHeader?.("access-control-allow-origin");
+    response.removeHeader?.("access-control-allow-credentials");
+    response.removeHeader?.("access-control-expose-headers");
+    response.writeHead(404, {
+        "content-type": "text/plain; charset=utf-8",
+        "cache-control": "private, no-store",
+        pragma: "no-cache",
+        "x-content-type-options": "nosniff",
+        "content-security-policy": "sandbox",
+        "cross-origin-resource-policy": "same-origin",
+    });
+    response.end("Not found");
 }
 function mergeEndpointResponseHeaders(handlerHeaders, runtimeHeaders) {
     const headers = { ...handlerHeaders };

@@ -150,6 +150,7 @@ import {
   revokePublicFileUrl,
 } from "./file-storage-runtime.js";
 import { createEndpointIngressApi, drainIngressClaimAuditOutbox, finalizeEndpointIngressClaims, recoverIngressClaimAuditOutbox, stageMultipartIngress, sweepExpiredFileIngress, validateMultipartIngressPolicy } from "./file-ingress-runtime.js";
+import { createEndpointFileResponseApi } from "./endpoint-file-response.js";
 import {
   abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob,
   canonicalJobAuthSnapshot, canonicalJobCredentialProvenance, captureJobAuthSnapshot,
@@ -3338,7 +3339,9 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
       || (request as LooseRecord).__sporadesSecretDisclosed
       ? { "cache-control": "private, no-store", pragma: "no-cache" }
       : undefined;
-    writeEndpointResult(response, result, sensitiveResponseHeaders);
+    if (!await writeEndpointResult(database as LooseRecord, response, result, sensitiveResponseHeaders)) {
+      return true;
+    }
   } catch (error: any) {
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database as LooseRecord, { data: error.sporadesAuthDenialLogData });
@@ -3510,7 +3513,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
               credential: accessKeyAdmission?.credential,
               accessKeyGrants: accessKeyAdmission?.grants,
             });
-            context.files = createEndpointIngressApi(transactionDatabase, endpoint as LooseRecord, endpointRequest, context);
+            context.files = createEndpointFileResponseApi(createEndpointIngressApi(transactionDatabase, endpoint as LooseRecord, endpointRequest, context));
             if ((endpoint as LooseRecord).runtimeOwnedStripeCallback) {
               Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
             }
