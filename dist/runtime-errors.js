@@ -45,13 +45,12 @@ export function commandError(message, hint, code = null) {
 // *and* listed there is declared twice at the top level of an ES module, which is a load-time
 // `SyntaxError` in a deployed Capsule.
 export function assertJsonCompatible(value) {
-    let context;
     try {
         const serialized = JSON.stringify(value);
         if (serialized === undefined) {
             throw invalidJsonFieldValueError();
         }
-        JSON.parse(serialized);
+        return JSON.parse(serialized);
     }
     catch (error) {
         if (error?.hint) {

@@ -129,6 +129,8 @@ export type CapsuleTableDefinition<Fields extends UnknownRecord> = Omit<TableDef
 };
 export type AuthContext = {
     userId: string;
+    /** Present only for non-human Service Users; absence preserves the legacy human/Anonymous shape. */
+    userKind?: "service";
     displayName: string;
     email: string | null;
     picture: string | null;

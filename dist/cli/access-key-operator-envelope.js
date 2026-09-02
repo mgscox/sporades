@@ -6,7 +6,10 @@ export const ACCESS_KEY_OPERATOR_ACTIONS = [
 ];
 const ACTIONS = new Set(ACCESS_KEY_OPERATOR_ACTIONS);
 const STATUSES = new Set(["active", "expired", "revoked"]);
-const REVOCATION_CAUSES = new Set(["owner", "operator", "password-reset", "owner-unlinked", "owner-deleted"]);
+const REVOCATION_CAUSES = new Set([
+    "owner", "operator", "password-reset", "owner-unlinked", "owner-deleted",
+    "service-user-administrator", "service-user-disabled",
+]);
 const ACCESS_KEY_OPERATOR_LIST_PAGE_LIMIT = 100;
 const JSON_STRING_MAX_BYTE_EXPANSION = 6;
 const ACCESS_KEY_OPERATOR_ENVELOPE_STRUCTURAL_HEADROOM = 8 * 1024 * 1024;

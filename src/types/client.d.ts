@@ -577,7 +577,7 @@ export type SporadesSvelteStores = {
 };
 
 export type AccessKeyStatus = "active" | "expired" | "revoked";
-export type AccessKeyRevocationCause = "owner" | "operator" | "password-reset" | "owner-unlinked" | "owner-deleted";
+export type AccessKeyRevocationCause = "owner" | "operator" | "password-reset" | "owner-unlinked" | "owner-deleted" | "service-user-administrator" | "service-user-disabled";
 export type AccessKeyErrorCode =
   | "UNAUTHENTICATED"
   | "FORBIDDEN"

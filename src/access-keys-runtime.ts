@@ -468,6 +468,7 @@ export async function resolveAccessKeyCredential(database: LooseRecord, request:
   else if (row.revokedAt) failure = "revoked";
   else if (row.expiresAt && Date.parse(row.expiresAt) <= now.getTime()) failure = "expired";
   else if (Number(row.ownerIsAuthenticated) !== 1 || Number(row.ownerIsGuest) !== 0) failure = "owner-ineligible";
+  else if ((row.ownerUserKind ?? "human") === "service" && row.ownerLifecycleStatus !== "active") failure = "owner-ineligible";
   if (failure) {
     recordAccessKeyFailure(database, "source", source, 60_000);
     recordAccessKeyFailure(database, "selector", selectorFingerprint, 5 * 60_000);
@@ -477,6 +478,7 @@ export async function resolveAccessKeyCredential(database: LooseRecord, request:
   return {
     auth: protectAccessKeyValue({
       userId: row.ownerUserId,
+      ...(row.ownerUserKind === "service" ? { userKind: "service" } : {}),
       displayName: row.ownerDisplayName,
       email: row.ownerEmail ?? null,
       picture: row.ownerPicture ?? null,
@@ -577,7 +579,7 @@ function requireOwnerSessionContext(context: LooseRecord) {
   return context;
 }
 
-function normalizeAccessKeyIssue(input: unknown, declaredScopes: readonly string[], now: Date) {
+export function normalizeAccessKeyIssue(input: unknown, declaredScopes: readonly string[], now: Date) {
   if (!isPlainObject(input) || Object.keys(input).some((key) => !["name", "grants", "expiresAt"].includes(key))) {
     throw commandError("Invalid Access-key issuance input.", "Pass name with optional grants and expiresAt.", "INVALID_ACCESS_KEY_NAME");
   }
@@ -620,7 +622,7 @@ function normalizeAccessKeyGrants(value: unknown, declaredScopes: readonly strin
   return result;
 }
 
-function normalizeAccessKeyListOptions(value: unknown) {
+export function normalizeAccessKeyListOptions(value: unknown) {
   if (!isPlainObject(value) || Object.keys(value).some((key) => !["cursor", "limit", "status"].includes(key))) {
     throw commandError("Invalid Access-key list options.", "Use cursor, limit, and status only.", "INVALID_ACCESS_KEY_LIST_OPTIONS");
   }
@@ -645,7 +647,7 @@ function normalizeAccessKeyListOptions(value: unknown) {
   return { cursor, limit, status: value.status ?? null };
 }
 
-function accessKeyListPage(rows: LooseRecord[], declaredScopes: readonly string[], now: Date, options: LooseRecord) {
+export function accessKeyListPage(rows: LooseRecord[], declaredScopes: readonly string[], now: Date, options: LooseRecord) {
   let summaries = rows.map((row) => accessKeySummary(row, declaredScopes, now.toISOString()));
   if (options.status) summaries = summaries.filter((summary) => summary.status === options.status);
   const totalCount = summaries.length;
@@ -664,7 +666,7 @@ function accessKeyListPage(rows: LooseRecord[], declaredScopes: readonly string[
   };
 }
 
-function accessKeySummary(row: LooseRecord, declaredScopes: readonly string[], now: string) {
+export function accessKeySummary(row: LooseRecord, declaredScopes: readonly string[], now: string) {
   const grants = Array.isArray(row.grants) ? row.grants : JSON.parse(row.grantsJson);
   const status = row.revokedAt ? "revoked" : row.expiresAt && Date.parse(row.expiresAt) <= Date.parse(now) ? "expired" : "active";
   return {
@@ -687,7 +689,7 @@ function privilegedAccessKeySummary(row: LooseRecord, declaredScopes: readonly s
   return { ...accessKeySummary(row, declaredScopes, now), ownerUserId: row.ownerUserId };
 }
 
-function withAccessKeyTransaction(database: LooseRecord, operation: (adapter: LooseRecord) => any) {
+export function withAccessKeyTransaction(database: LooseRecord, operation: (adapter: LooseRecord) => any) {
   return database.__transactionActive
     ? operation(database.adapter)
     : database.adapter.withTransaction(operation);
@@ -767,6 +769,10 @@ export function bindAccessKeyOwnerSession(context: LooseRecord, sessionToken: un
 
 export function accessKeySecretWasDisclosed(context: LooseRecord | undefined) {
   return Boolean(context && accessKeySecretDisclosedContexts.has(context));
+}
+
+export function markAccessKeySecretDisclosed(context: LooseRecord) {
+  accessKeySecretDisclosedContexts.add(context);
 }
 
 export async function emitAccessKeyOwnerTransitionAudits(database: LooseRecord, input: LooseRecord) {
@@ -877,7 +883,7 @@ function clearAccessKeyFailure(database: LooseRecord, kind: string, key: string)
   accessKeyLimiter(database, kind).delete(key);
 }
 
-function throwAccessKeyIssueError(status: string): never {
+export function throwAccessKeyIssueError(status: string): never {
   if (status === "invalid-expiry") {
     throw commandError("Invalid Access-key expiry.", "Pass an ISO instant later than issuance.", "INVALID_ACCESS_KEY_EXPIRY");
   }
@@ -905,7 +911,7 @@ function throwAccessKeyOwnerSessionInactive(action: string): never {
   );
 }
 
-function accessKeyNotFoundError() {
+export function accessKeyNotFoundError() {
   return commandError("Access key not found.", "Refresh the current user's Access-key list.", "ACCESS_KEY_NOT_FOUND");
 }
 

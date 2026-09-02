@@ -2236,13 +2236,12 @@ function commandError(message, hint, code = null) {
   return error;
 }
 function assertJsonCompatible(value) {
-  let context;
   try {
     const serialized = JSON.stringify(value);
     if (serialized === void 0) {
       throw invalidJsonFieldValueError();
     }
-    JSON.parse(serialized);
+    return JSON.parse(serialized);
   } catch (error) {
     if (error?.hint) {
       throw error;
@@ -5184,6 +5183,7 @@ async function resolveAccessKeyCredential(database, request, sessionToken) {
   else if (row.revokedAt) failure = "revoked";
   else if (row.expiresAt && Date.parse(row.expiresAt) <= now2.getTime()) failure = "expired";
   else if (Number(row.ownerIsAuthenticated) !== 1 || Number(row.ownerIsGuest) !== 0) failure = "owner-ineligible";
+  else if ((row.ownerUserKind ?? "human") === "service" && row.ownerLifecycleStatus !== "active") failure = "owner-ineligible";
   if (failure) {
     recordAccessKeyFailure(database, "source", source, 6e4);
     recordAccessKeyFailure(database, "selector", selectorFingerprint, 5 * 6e4);
@@ -5193,6 +5193,7 @@ async function resolveAccessKeyCredential(database, request, sessionToken) {
   return {
     auth: protectAccessKeyValue({
       userId: row.ownerUserId,
+      ...row.ownerUserKind === "service" ? { userKind: "service" } : {},
       displayName: row.ownerDisplayName,
       email: row.ownerEmail ?? null,
       picture: row.ownerPicture ?? null,
@@ -5446,6 +5447,9 @@ function bindAccessKeyOwnerSession(context, sessionToken) {
 }
 function accessKeySecretWasDisclosed(context) {
   return Boolean(context && accessKeySecretDisclosedContexts.has(context));
+}
+function markAccessKeySecretDisclosed(context) {
+  accessKeySecretDisclosedContexts.add(context);
 }
 async function emitAccessKeyOwnerTransitionAudits(database, input) {
   for (const record of input.records ?? []) {
@@ -6795,7 +6799,7 @@ async function performTeamBillingCheckout(database, context, payload, attempt = 
       if (!operation || !["queued", "running", "retrying"].includes(operation.status)) return null;
       await assertTeamBillingErasureInactive(database, transaction, operation.teamId);
       const actor = await transaction.prepare(sql(
-        "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider] FROM [sporades_auth_users] WHERE [id] = ?"
+        "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind] FROM [sporades_auth_users] WHERE [id] = ?"
       )).get(operation.actorUserId);
       if (!actor) throw teamBillingDenied();
       const auth = {
@@ -6805,7 +6809,8 @@ async function performTeamBillingCheckout(database, context, payload, attempt = 
         picture: actor.picture,
         isAuthenticated: Boolean(actor.isAuthenticated),
         isGuest: Boolean(actor.isGuest),
-        provider: actor.provider
+        provider: actor.provider,
+        ...actor.userKind === "service" ? { userKind: "service" } : {}
       };
       await admitTeamBillingActor(database, transaction, auth, { operation: "checkout", teamId: operation.teamId, productKey: operation.productKey });
       const desired = await checkoutDesiredState(database, transaction, operation.teamId, operation.productKey);
@@ -7276,7 +7281,7 @@ async function readPortalOperation(transaction, operationId) {
 }
 async function reauthorizePortalOperation(database, transaction, operation) {
   const actor = await transaction.prepare(transaction.dialect.sql(
-    "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider] FROM [sporades_auth_users] WHERE [id] = ?"
+    "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind] FROM [sporades_auth_users] WHERE [id] = ?"
   )).get(operation.actorUserId);
   if (!actor) throw teamBillingDenied();
   const auth = {
@@ -7286,7 +7291,8 @@ async function reauthorizePortalOperation(database, transaction, operation) {
     picture: actor.picture,
     isAuthenticated: Boolean(actor.isAuthenticated),
     isGuest: Boolean(actor.isGuest),
-    provider: actor.provider
+    provider: actor.provider,
+    ...actor.userKind === "service" ? { userKind: "service" } : {}
   };
   await admitTeamBillingActor(database, transaction, auth, { operation: "portal", teamId: operation.teamId });
   return portalDesiredState(database, transaction, operation.teamId);
@@ -8575,7 +8581,7 @@ function boundedJobIdentityString(value, field, maximum, nullable = false) {
   return value;
 }
 function canonicalJobAuthSnapshot(auth) {
-  const snapshot = {
+  const baseSnapshot = {
     userId: boundedJobIdentityString(auth?.userId, "userId", 256),
     displayName: boundedJobIdentityString(auth?.displayName, "displayName", 512),
     email: boundedJobIdentityString(auth?.email, "email", 320, true),
@@ -8584,9 +8590,13 @@ function canonicalJobAuthSnapshot(auth) {
     isGuest: auth?.isGuest,
     provider: boundedJobIdentityString(auth?.provider, "provider", 64)
   };
-  if (typeof snapshot.isAuthenticated !== "boolean" || typeof snapshot.isGuest !== "boolean") {
+  if (typeof baseSnapshot.isAuthenticated !== "boolean" || typeof baseSnapshot.isGuest !== "boolean") {
     throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is invalid.", "Use a runtime-issued AuthContext when enqueueing a Job.");
   }
+  if (auth?.userKind !== void 0 && auth.userKind !== "service") {
+    throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is invalid.", "Use a runtime-issued AuthContext when enqueueing a Job.");
+  }
+  const snapshot = auth?.userKind === "service" ? { ...baseSnapshot, userKind: "service" } : baseSnapshot;
   const serialized = JSON.stringify(snapshot);
   if (Buffer.byteLength(serialized, "utf8") > JOB_AUTH_SNAPSHOT_MAX_BYTES) {
     throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is too large.", "Reduce bounded profile metadata before enqueueing the Job.");
@@ -8979,7 +8989,7 @@ async function reindexPrivilegedAuditEventsAfterRollback(database, context) {
   }
   for (const event of events) {
     try {
-      if (await privilegedAuditEventAlreadyIndexed(database, event)) {
+      if (event?.data?.metadata?.actionOwned !== true && await privilegedAuditEventAlreadyIndexed(database, event)) {
         continue;
       }
       await database.adapter.insertLogIndexEvent(event);
@@ -9355,11 +9365,27 @@ function resolveEffectiveAclRule(aclRules, operation) {
   return aclRules[operation];
 }
 function createTableAclContext(context, database) {
-  const { db, privileged, jobs, mail, request, teams, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
   return {
-    ...aclContext,
+    auth: context?.auth,
+    credential: context?.credential,
     acl: createAclHelpers(database, context)
   };
+}
+var pendingAclWritesByContext = /* @__PURE__ */ new WeakMap();
+function bindPendingAclWrites(context, sourceContext) {
+  if (!context || typeof context !== "object") return context;
+  const shared = sourceContext && typeof sourceContext === "object" ? pendingAclWritesByContext.get(sourceContext) : void 0;
+  if (sourceContext && !shared) return context;
+  pendingAclWritesByContext.set(context, shared ?? []);
+  return context;
+}
+function trackPendingAclWrite(context, pending) {
+  const entries = context && typeof context === "object" ? pendingAclWritesByContext.get(context) : void 0;
+  if (entries) entries.push(pending);
+  return pending;
+}
+function pendingAclWrites(context) {
+  return context && typeof context === "object" ? pendingAclWritesByContext.get(context) : void 0;
 }
 function createFileAclContext(auth, database, credential = { kind: "session" }) {
   const context = {
@@ -9434,7 +9460,7 @@ function runTableWriteWithAcl(database, table, operation, previous, next, contex
     next
   });
   const deny = () => {
-    if (!context?.__pendingAclWrites) {
+    if (!pendingAclWrites(context)) {
       emitAclDeniedLog(database, { data: denialLogData });
     }
     throw createAclDeniedError(denialLogData);
@@ -9459,7 +9485,7 @@ function runTableWriteWithAcl(database, table, operation, previous, next, contex
     }
     return write();
   });
-  context?.__pendingAclWrites?.push(pending);
+  trackPendingAclWrite(context, pending);
   return pending;
 }
 function applyReadAcl(database, table, row, context) {
@@ -9776,9 +9802,10 @@ function assertActivePrivilegedJobAccess(contextGetter) {
 }
 async function drainPendingAclWrites(context) {
   let firstError = null;
-  while (context?.__pendingAclWrites?.length > 0) {
-    const pending = context.__pendingAclWrites.splice(0);
-    const results = await Promise.allSettled(pending);
+  const entries = pendingAclWrites(context);
+  while (entries && entries.length > 0) {
+    const pending = entries.splice(0);
+    const results = await Promise.allSettled(pending.map((entry) => entry?.promise ?? entry));
     for (const result of results) {
       if (result.status === "rejected" && !firstError) {
         firstError = result.reason;
@@ -14462,6 +14489,7 @@ function sessionFromRow(row) {
     token: row.token,
     auth: {
       userId: row.userId,
+      ...row.userKind === "service" ? { userKind: "service" } : {},
       displayName: row.displayName,
       email: row.email,
       picture: row.picture,
@@ -15317,9 +15345,13 @@ function createAnonymousAuthTables(sqlite, _authConfig = null) {
   return chainMaybePromise([
     () => sqlite.exec(
       sql(
-        "CREATE TABLE IF NOT EXISTS [sporades_auth_users] ([id] TEXT PRIMARY KEY, [createdAt] TEXT NOT NULL, [displayName] TEXT NOT NULL, [email] TEXT, [picture] TEXT, [isAuthenticated] INTEGER NOT NULL, [isGuest] INTEGER NOT NULL, [provider] TEXT NOT NULL)"
+        "CREATE TABLE IF NOT EXISTS [sporades_auth_users] ([id] TEXT PRIMARY KEY, [createdAt] TEXT NOT NULL, [displayName] TEXT NOT NULL, [email] TEXT, [picture] TEXT, [isAuthenticated] INTEGER NOT NULL, [isGuest] INTEGER NOT NULL, [provider] TEXT NOT NULL, [userKind] TEXT NOT NULL DEFAULT 'human', [lifecycleStatus] TEXT NOT NULL DEFAULT 'active', [disabledAt] TEXT)"
       )
     ),
+    () => ensureAuthUserKindColumns(sqlite),
+    () => sqlite.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_auth_service_user_locks] ([userId] TEXT PRIMARY KEY, [operationRevision] INTEGER NOT NULL)"
+    )),
     () => createAccessKeyTables(sqlite),
     () => sqlite.exec(
       sql(
@@ -15352,6 +15384,16 @@ function createAnonymousAuthTables(sqlite, _authConfig = null) {
       )
     ),
     () => ensureOAuthStateColumns(sqlite)
+  ]);
+}
+function ensureAuthUserKindColumns(sqlite) {
+  const sql = sqlite.dialect.sql;
+  return chainMaybePromise([
+    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_users", "userKind", "TEXT"),
+    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_users", "lifecycleStatus", "TEXT"),
+    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_users", "disabledAt", "TEXT"),
+    () => sqlite.exec(sql("UPDATE [sporades_auth_users] SET [userKind] = 'human' WHERE [userKind] IS NULL")),
+    () => sqlite.exec(sql("UPDATE [sporades_auth_users] SET [lifecycleStatus] = 'active' WHERE [lifecycleStatus] IS NULL"))
   ]);
 }
 function ensureOAuthStateColumns(sqlite) {
@@ -17122,6 +17164,235 @@ function createEmailEventEndpoints(mailConfig, serverEnv, subscription) {
   return endpoints;
 }
 
+// src/service-users-runtime.ts
+var SERVICE_USER_DISPLAY_NAME_BYTES = 160;
+function serviceUserError(code, message, hint) {
+  return commandError(message, hint, code);
+}
+function normalizeDisplayName(value) {
+  if (typeof value !== "string") {
+    throw serviceUserError("INVALID_SERVICE_USER", "Invalid service User.", "Provide a displayName and initial accessKey.");
+  }
+  const displayName = value.trim();
+  if (!displayName || Buffer.byteLength(displayName, "utf8") > SERVICE_USER_DISPLAY_NAME_BYTES || /[\u0000-\u001f\u007f]/.test(displayName)) {
+    throw serviceUserError("INVALID_SERVICE_USER", "Invalid service User.", "Use a bounded printable displayName.");
+  }
+  return displayName;
+}
+function serviceUserSummary(row) {
+  return {
+    id: row.id,
+    displayName: row.displayName,
+    status: row.lifecycleStatus,
+    createdAt: row.createdAt,
+    disabledAt: row.disabledAt ?? null
+  };
+}
+async function requireCurrentHumanSession(database, context, sessionToken) {
+  if (context?.credential?.kind !== "session" || typeof sessionToken !== "string" || !sessionToken) {
+    throw serviceUserError("FORBIDDEN", "Service-User management requires a human Session.", "Sign in with a linked human account.");
+  }
+  const adapter = database.adapter;
+  const sql = adapter.dialect.sql;
+  await adapter.prepare(sql(
+    "UPDATE [sporades_auth_sessions] SET [token] = [token] WHERE [token] = ? AND [userId] = ?"
+  )).run(sessionToken, context.auth?.userId);
+  const row = await adapter.prepare(sql(
+    "SELECT [s].[token] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[userKind] = 'human' AND [u].[lifecycleStatus] = 'active' AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0"
+  )).get(sessionToken, context.auth?.userId, database.clock.now().toISOString());
+  if (!row) {
+    throw serviceUserError("FORBIDDEN", "Service-User management requires a current human Session.", "Sign in again and retry.");
+  }
+}
+async function lockServiceUser(database, userId, requireActive = true) {
+  if (typeof userId !== "string" || !userId || Buffer.byteLength(userId, "utf8") > 256) {
+    throw serviceUserError("SERVICE_USER_NOT_FOUND", "Service User not found.", "Refresh the service-User list.");
+  }
+  const adapter = database.adapter;
+  const sql = adapter.dialect.sql;
+  const locked = await adapter.prepare(sql(
+    "UPDATE [sporades_auth_service_user_locks] SET [operationRevision] = [operationRevision] + 1 WHERE [userId] = ?"
+  )).run(userId);
+  if (Number(locked?.changes ?? 0) !== 1) {
+    throw serviceUserError("SERVICE_USER_NOT_FOUND", "Service User not found.", "Refresh the service-User list.");
+  }
+  const row = await adapter.prepare(sql(
+    "SELECT [id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind], [lifecycleStatus], [disabledAt] FROM [sporades_auth_users] WHERE [id] = ?"
+  )).get(userId);
+  if (!row || row.userKind !== "service" || requireActive && row.lifecycleStatus !== "active") {
+    throw serviceUserError(
+      requireActive ? "SERVICE_USER_NOT_ACTIVE" : "SERVICE_USER_NOT_FOUND",
+      requireActive ? "Service User is not active." : "Service User not found.",
+      requireActive ? "Use an active service User." : "Refresh the service-User list."
+    );
+  }
+  return row;
+}
+async function issueForOwner(database, context, ownerUserId, input) {
+  const normalized = normalizeAccessKeyIssue(input, database.accessKeyScopes ?? [], database.clock.now());
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const secret = createAccessKeySecret();
+    let issuedAt = normalized.createdAt;
+    const record = {
+      id: crypto.randomUUID(),
+      ownerUserId,
+      name: normalized.name,
+      reservedName: normalized.name,
+      grantsJson: JSON.stringify(normalized.grants),
+      secretVersion: 1,
+      selector: secret.selector,
+      verifierDigest: accessKeyVerifierDigest(secret.selector, secret.verifier),
+      lifecycleRevision: 1,
+      createdAt: normalized.createdAt,
+      expiresAt: normalized.expiresAt,
+      issuanceTime: () => {
+        issuedAt = database.clock.now().toISOString();
+        return issuedAt;
+      }
+    };
+    const outcome = await database.adapter.issueAccessKeyRecord(record);
+    if (outcome.status === "selector-conflict") continue;
+    if (outcome.status !== "issued") throwAccessKeyIssueError(outcome.status);
+    record.createdAt = issuedAt;
+    markAccessKeySecretDisclosed(context);
+    return {
+      accessKey: accessKeySummary(record, database.accessKeyScopes ?? [], issuedAt),
+      token: secret.token
+    };
+  }
+  throw serviceUserError("ACCESS_KEY_SECRET_CONFLICT", "Could not generate a unique Access key.", "Retry Access-key issuance.");
+}
+function createServiceUsersApi(database, contextGetter, sessionToken, options = {}) {
+  const inContext = (operation) => {
+    if (options.mutationSurface !== true) {
+      throw serviceUserError(
+        "SERVICE_USER_MUTATION_REQUIRED",
+        "Service-User lifecycle changes require a Mutation.",
+        "Call ctx.serviceUsers from a Mutation so User, key, and Capsule records commit atomically."
+      );
+    }
+    options.assertMutationInvocation?.();
+    const context = contextGetter();
+    return (async () => {
+      await requireCurrentHumanSession(database, context, sessionToken);
+      return operation(context);
+    })();
+  };
+  const tracked = (promise, requiresConsumption = false) => options.trackMutationWork ? options.trackMutationWork(promise, requiresConsumption) : promise;
+  return {
+    create(input) {
+      return tracked(inContext(async (context) => {
+        if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some((key) => !["displayName", "accessKey"].includes(key))) {
+          throw serviceUserError("INVALID_SERVICE_USER", "Invalid service User.", "Provide a displayName and initial accessKey.");
+        }
+        const displayName = normalizeDisplayName(input.displayName);
+        const id = crypto.randomUUID();
+        const createdAt = database.clock.now().toISOString();
+        const sql = database.adapter.dialect.sql;
+        await database.adapter.prepare(sql(
+          "INSERT INTO [sporades_auth_users] ([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind], [lifecycleStatus], [disabledAt]) VALUES (?, ?, ?, NULL, NULL, 1, 0, 'service', 'service', 'active', NULL)"
+        )).run(id, createdAt, displayName);
+        await database.adapter.prepare(sql(
+          "INSERT INTO [sporades_auth_service_user_locks] ([userId], [operationRevision]) VALUES (?, 0)"
+        )).run(id);
+        const issued = await issueForOwner(database, context, id, input.accessKey);
+        return { serviceUser: serviceUserSummary({ id, displayName, lifecycleStatus: "active", createdAt, disabledAt: null }), ...issued };
+      }), true);
+    },
+    issueAccessKey(userId, input) {
+      return tracked(inContext(async (context) => {
+        const serviceUser = await lockServiceUser(database, userId, true);
+        return { serviceUser: serviceUserSummary(serviceUser), ...await issueForOwner(database, context, serviceUser.id, input) };
+      }), true);
+    },
+    listAccessKeys(userId, options2 = {}) {
+      return tracked(inContext(async () => {
+        const serviceUser = await lockServiceUser(database, userId, false);
+        const normalized = normalizeAccessKeyListOptions(options2);
+        const rows = await database.adapter.listAccessKeyRecordsForOwner(serviceUser.id);
+        return { serviceUser: serviceUserSummary(serviceUser), ...accessKeyListPage(rows, database.accessKeyScopes ?? [], database.clock.now(), normalized) };
+      }));
+    },
+    rotateAccessKey(userId, id, options2) {
+      return tracked(inContext(async (context) => {
+        const serviceUser = await lockServiceUser(database, userId, true);
+        if (typeof id !== "string" || !id) throw accessKeyNotFoundError();
+        if (!options2 || typeof options2 !== "object" || Array.isArray(options2) || Object.keys(options2).some((key) => key !== "lifecycleRevision") || !Number.isInteger(options2.lifecycleRevision) || options2.lifecycleRevision < 1) {
+          throw serviceUserError("ACCESS_KEY_REVISION_CONFLICT", "Invalid Access-key lifecycle revision.", "Pass the lifecycleRevision returned by listAccessKeys().");
+        }
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+          const secret = createAccessKeySecret();
+          const outcome = await database.adapter.rotateAccessKeyRecord({
+            ownerUserId: serviceUser.id,
+            id,
+            lifecycleRevision: options2.lifecycleRevision,
+            secretVersion: 1,
+            selector: secret.selector,
+            verifierDigest: accessKeyVerifierDigest(secret.selector, secret.verifier),
+            rotationTime: () => database.clock.now().toISOString()
+          });
+          if (outcome.status === "selector-conflict") continue;
+          if (outcome.status === "not-found") throw accessKeyNotFoundError();
+          if (outcome.status === "not-active") throw serviceUserError("ACCESS_KEY_NOT_ACTIVE", "Access key is not active.", "Issue a new Access key.");
+          if (outcome.status === "revision-conflict") throw serviceUserError("ACCESS_KEY_REVISION_CONFLICT", "Access-key revision changed.", "Refresh the key list and retry rotation.");
+          markAccessKeySecretDisclosed(context);
+          return {
+            serviceUser: serviceUserSummary(serviceUser),
+            accessKey: accessKeySummary(outcome.record, database.accessKeyScopes ?? [], outcome.rotatedAt),
+            token: secret.token
+          };
+        }
+        throw serviceUserError("ACCESS_KEY_SECRET_CONFLICT", "Could not generate a unique Access key.", "Retry Access-key rotation.");
+      }), true);
+    },
+    revokeAccessKey(userId, id) {
+      return tracked(inContext(async () => {
+        const serviceUser = await lockServiceUser(database, userId, false);
+        if (typeof id !== "string" || !id) throw accessKeyNotFoundError();
+        const outcome = await database.adapter.revokeAccessKeyRecord({
+          ownerUserId: serviceUser.id,
+          id,
+          revocationTime: () => database.clock.now().toISOString(),
+          revocationCause: "service-user-administrator"
+        });
+        if (!outcome) throw accessKeyNotFoundError();
+        return {
+          serviceUser: serviceUserSummary(serviceUser),
+          accessKey: accessKeySummary(outcome, database.accessKeyScopes ?? [], outcome.revokedAt ?? database.clock.now().toISOString())
+        };
+      }));
+    },
+    disable(userId) {
+      return tracked(inContext(async () => {
+        const serviceUser = await lockServiceUser(database, userId, true);
+        const revoked = await database.adapter.bulkRevokeAccessKeysForOwner({
+          ownerUserId: serviceUser.id,
+          revocationTime: () => database.clock.now().toISOString(),
+          revocationCause: "service-user-disabled"
+        });
+        const disabledAt = database.clock.now().toISOString();
+        const sql = database.adapter.dialect.sql;
+        const result = await database.adapter.prepare(sql(
+          "UPDATE [sporades_auth_users] SET [lifecycleStatus] = 'disabled', [disabledAt] = ?, [isAuthenticated] = 0 WHERE [id] = ? AND [userKind] = 'service' AND [lifecycleStatus] = 'active'"
+        )).run(disabledAt, serviceUser.id);
+        if (Number(result?.changes ?? 0) !== 1) {
+          throw serviceUserError("SERVICE_USER_NOT_ACTIVE", "Service User is not active.", "Refresh the service-User list.");
+        }
+        const accessKeyRows = await database.adapter.listAccessKeyRecordsForOwner(serviceUser.id);
+        return {
+          serviceUser: serviceUserSummary({ ...serviceUser, lifecycleStatus: "disabled", disabledAt }),
+          revokedCount: revoked.revokedCount,
+          accessKeys: accessKeyRows.map((row) => accessKeySummary(
+            row,
+            database.accessKeyScopes ?? [],
+            disabledAt
+          ))
+        };
+      }));
+    }
+  };
+}
+
 // src/cli/access-key-operator-envelope.ts
 import { createInterface } from "node:readline/promises";
 var ACCESS_KEY_OPERATOR_ACTIONS = [
@@ -17133,7 +17404,15 @@ var ACCESS_KEY_OPERATOR_ACTIONS = [
 ];
 var ACTIONS = new Set(ACCESS_KEY_OPERATOR_ACTIONS);
 var STATUSES = /* @__PURE__ */ new Set(["active", "expired", "revoked"]);
-var REVOCATION_CAUSES = /* @__PURE__ */ new Set(["owner", "operator", "password-reset", "owner-unlinked", "owner-deleted"]);
+var REVOCATION_CAUSES = /* @__PURE__ */ new Set([
+  "owner",
+  "operator",
+  "password-reset",
+  "owner-unlinked",
+  "owner-deleted",
+  "service-user-administrator",
+  "service-user-disabled"
+]);
 var ACCESS_KEY_OPERATOR_LIST_PAGE_LIMIT = 100;
 var JSON_STRING_MAX_BYTE_EXPANSION = 6;
 var ACCESS_KEY_OPERATOR_ENVELOPE_STRUCTURAL_HEADROOM = 8 * 1024 * 1024;
@@ -18472,7 +18751,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
     findAccessKeyAuthenticationRecord(selector) {
       return this.prepare(
         sql(
-          "SELECT [k].*, [u].[displayName] AS [ownerDisplayName], [u].[email] AS [ownerEmail], [u].[picture] AS [ownerPicture], [u].[isAuthenticated] AS [ownerIsAuthenticated], [u].[isGuest] AS [ownerIsGuest] FROM [sporades_auth_access_keys] [k] LEFT JOIN [sporades_auth_users] [u] ON [u].[id] = [k].[ownerUserId] WHERE [k].[secretVersion] = ? AND [k].[selector] = ?"
+          "SELECT [k].*, [u].[displayName] AS [ownerDisplayName], [u].[email] AS [ownerEmail], [u].[picture] AS [ownerPicture], [u].[isAuthenticated] AS [ownerIsAuthenticated], [u].[isGuest] AS [ownerIsGuest], [u].[userKind] AS [ownerUserKind], [u].[lifecycleStatus] AS [ownerLifecycleStatus] FROM [sporades_auth_access_keys] [k] LEFT JOIN [sporades_auth_users] [u] ON [u].[id] = [k].[ownerUserId] WHERE [k].[secretVersion] = ? AND [k].[selector] = ?"
         )
       ).get(1, selector) ?? null;
     },
@@ -18700,9 +18979,9 @@ function createSharedDatabaseAdapterMethods(dialect) {
       assertNotReservedAuthUserId(row.id);
       return this.prepare(
         sql(
-          "INSERT INTO [sporades_auth_users] ([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider]) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+          "INSERT INTO [sporades_auth_users] ([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind], [lifecycleStatus], [disabledAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
-      ).run(row.id, row.createdAt, row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider);
+      ).run(row.id, row.createdAt, row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider, row.userKind ?? "human", row.lifecycleStatus ?? "active", row.disabledAt ?? null);
     },
     updateAuthUserProfile(row) {
       assertNotReservedAuthUserId(row.id);
@@ -18766,7 +19045,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
       return thenIfPromise(
         this.prepare(
           sql(
-            "SELECT [s].[token], [s].[expiresAt], [u].[id] AS [userId], [u].[displayName], [u].[email], [u].[picture], [u].[isAuthenticated], [u].[isGuest], [s].[provider] AS [provider] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ?"
+            "SELECT [s].[token], [s].[expiresAt], [u].[id] AS [userId], [u].[userKind], [u].[displayName], [u].[email], [u].[picture], [u].[isAuthenticated], [u].[isGuest], [s].[provider] AS [provider] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ?"
           )
         ).get(token),
         (row) => isReservedAuthUserId(row?.userId) ? null : row ?? null
@@ -21064,7 +21343,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     readTeamBillingActorAuth: async (transaction, userId) => {
       if (typeof userId !== "string") return null;
       const actor = await transaction.prepare(transaction.dialect.sql(
-        "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider] FROM [sporades_auth_users] WHERE [id] = ?"
+        "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind] FROM [sporades_auth_users] WHERE [id] = ?"
       )).get(userId);
       return actor ? Object.freeze({
         userId: actor.id,
@@ -21073,7 +21352,8 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
         picture: actor.picture,
         isAuthenticated: Boolean(actor.isAuthenticated),
         isGuest: Boolean(actor.isGuest),
-        provider: actor.provider
+        provider: actor.provider,
+        ...actor.userKind === "service" ? { userKind: "service" } : {}
       }) : null;
     },
     updateTeamBillingSubscription: async (context, input) => {
@@ -22394,11 +22674,13 @@ function createContextPrivilegedApi(database, contextGetter) {
 }
 function createPrivilegedHandlerContext(database, context, signal) {
   const privilegedContext = {
-    ...context,
+    env: context.env,
+    payments: context.payments,
+    log: context.log,
+    messages: context.messages,
     signal,
     __privilegedRunActive: true,
     __jobEnqueuedBy: context.auth?.userId ?? null,
-    __jobParentContext: context,
     auth: Object.freeze({
       userId: privilegedAuthUserId(),
       displayName: "Privileged server role",
@@ -22415,10 +22697,11 @@ function createPrivilegedHandlerContext(database, context, signal) {
       enumerable: false
     });
   }
-  delete privilegedContext.teams;
-  delete privilegedContext.accessKeys;
-  delete privilegedContext.credential;
-  delete privilegedContext.__sporadesAccessKeyGrants;
+  Object.defineProperty(privilegedContext, "__jobParentContext", {
+    value: context,
+    enumerable: false,
+    configurable: false
+  });
   const provenanceStore = (database.__rootDatabase ?? database).jobScheduleProvenanceByContext;
   const scheduleProvenance = provenanceStore?.get(context);
   if (scheduleProvenance) provenanceStore.set(privilegedContext, scheduleProvenance);
@@ -23424,9 +23707,9 @@ function createAtomicStripeConsequenceContext(database, parent) {
     signal: parent.signal,
     log: createEndpointLogger(database),
     __privilegedRunActive: true,
-    __jobEnqueuedBy: parent.__jobEnqueuedBy ?? null,
-    __pendingAclWrites: []
+    __jobEnqueuedBy: parent.__jobEnqueuedBy ?? null
   };
+  bindPendingAclWrites(context);
   grantPrivilegedDbAccess(context);
   const holder = createContextHolder(context);
   registerHandlerContextMapping(database, holder);
@@ -23543,7 +23826,7 @@ function endpointRequestHead(requestUrl, request) {
   };
 }
 function createEndpointContext(database, endpointRequest, session, options = {}) {
-  const auth = protectContextIdentity(session.auth);
+  const auth = protectContextIdentity(contextAuthIdentity(session.auth));
   const credential = options.ordinaryCredential === false ? null : protectContextIdentity(options.credential ?? { kind: "session" });
   const context = {
     auth,
@@ -23600,7 +23883,16 @@ function createEndpointContext(database, endpointRequest, session, options = {})
     (candidate) => handlerContextByDatabase.get(database)?.() === candidate
   );
   context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
+  context.serviceUsers = createServiceUsersApi(
+    database,
+    () => holder.current,
+    credential?.kind === "session" && typeof session.token === "string" ? session.token : null,
+    { mutationSurface: false }
+  );
   context.serverAuth = {
+    revokeHumanSecurity(_userId) {
+      throw commandError("Human security transition is unavailable.", "Run this operation inside an authenticated Capsule mutation.", "HUMAN_SECURITY_TRANSITION_UNAVAILABLE");
+    },
     async setEmailPassword(email, newPassword) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);
       if (!result.ok) throw new Error(result.error?.message ?? "Could not set password.");
@@ -23625,6 +23917,10 @@ function createEndpointContext(database, endpointRequest, session, options = {})
     }
   };
   return context;
+}
+function contextAuthIdentity(value) {
+  const { userKind, ...legacyIdentity } = value ?? {};
+  return userKind === "service" ? { ...legacyIdentity, userKind } : legacyIdentity;
 }
 function protectContextIdentity(value) {
   const target = Object.freeze({ ...value });
@@ -23652,6 +23948,11 @@ function createContextHolder(context) {
   return holder;
 }
 var handlerContextByDatabase = /* @__PURE__ */ new WeakMap();
+var serviceUserMutationAuthority = Object.freeze({ kind: "service-user-mutation-authority" });
+var MutationExecutionStorage = process.getBuiltinModule("node:async_hooks").AsyncLocalStorage;
+var mutationExecution = new MutationExecutionStorage();
+var validatedLifecycleReservations = /* @__PURE__ */ new WeakMap();
+var validatedLifecycleContinuations = /* @__PURE__ */ new WeakMap();
 function registerHandlerContextMapping(database, holder) {
   if (!database.__transactionActive) return;
   releaseHandlerContextMapping(database);
@@ -23683,6 +23984,51 @@ async function cleanupTransactionHandler(database, context, preservePrimaryError
     }
   }
 }
+function trackMutationContextWork(context, promise, requiresConsumption = false) {
+  const operation = Promise.resolve(promise);
+  const tracked = requiresConsumption ? operation.then((value) => {
+    const token = value?.token;
+    if (typeof token !== "string" || token.length === 0) {
+      throw Object.assign(new Error("One-time credential result was invalid."), {
+        code: "ACCESS_KEY_SECRET_NOT_CONSUMED",
+        hint: "Return the complete Service-User credential result from the Mutation."
+      });
+    }
+    mutationSecretState(context).tokens.push(token);
+    return value;
+  }) : operation;
+  void tracked.then(void 0, () => void 0);
+  const entry = { promise: tracked };
+  trackPendingAclWrite(context, entry);
+  return operation;
+}
+function resultContainsMutationSecret(value, token) {
+  if (value === token) return true;
+  if (!value || typeof value !== "object") return false;
+  if (Array.isArray(value)) return value.some((entry) => resultContainsMutationSecret(entry, token));
+  return Object.values(value).some((entry) => resultContainsMutationSecret(entry, token));
+}
+function assertMutationSecretsReturned(context, result) {
+  for (const token of mutationSecretState(context).tokens) {
+    if (!resultContainsMutationSecret(result?.data, token)) {
+      throw Object.assign(new Error("One-time credential result was not returned."), {
+        code: "ACCESS_KEY_SECRET_NOT_CONSUMED",
+        hint: "Return the complete Service-User credential result from the Mutation."
+      });
+    }
+  }
+}
+var mutationSecretsByContext = /* @__PURE__ */ new WeakMap();
+function bindMutationSecretState(context, sourceContext) {
+  const shared = sourceContext ? mutationSecretsByContext.get(sourceContext) : void 0;
+  if (sourceContext && !shared) return;
+  mutationSecretsByContext.set(context, shared ?? { tokens: [] });
+}
+function mutationSecretState(context) {
+  const state = mutationSecretsByContext.get(context);
+  if (!state) throw new Error("Mutation secret state is unavailable.");
+  return state;
+}
 async function drainPendingLogWrites(database) {
   const pending = database.__pendingLogWrites;
   while (pending?.length > 0) {
@@ -23698,6 +24044,8 @@ async function applyContextMiddleware(database, baseContext, kind) {
     ...baseContext,
     kind
   };
+  bindPendingAclWrites(context, baseContext);
+  bindMutationSecretState(context, baseContext);
   transferAccessKeyRuntimeState(baseContext, context);
   const holder = baseContext.__sporadesContextHolder ?? createContextHolder(context);
   holder.current = context;
@@ -23733,9 +24081,8 @@ async function applyContextMiddleware(database, baseContext, kind) {
         configurable: true
       });
     }
-    if (previousContext.__pendingAclWrites && !context.__pendingAclWrites) {
-      context.__pendingAclWrites = previousContext.__pendingAclWrites;
-    }
+    bindPendingAclWrites(context, previousContext);
+    bindMutationSecretState(context, previousContext);
     transferAccessKeyRuntimeState(previousContext, context);
   }
   return context;
@@ -23927,7 +24274,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       };
       const operation = fieldValues.some(isPromiseLike) ? Promise.all(fieldValues).then(finish) : finish(fieldValues);
       if (isPromiseLike(operation)) {
-        contextGetter?.()?.__pendingAclWrites?.push(operation);
+        trackPendingAclWrite(contextGetter?.(), operation);
       }
       return operation;
     },
@@ -23973,7 +24320,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       };
       const operation = fieldValues.some(isPromiseLike) ? Promise.all(fieldValues).then(finish) : finish(fieldValues);
       if (isPromiseLike(operation)) {
-        contextGetter?.()?.__pendingAclWrites?.push(operation);
+        trackPendingAclWrite(contextGetter?.(), operation);
       }
       return operation;
     },
@@ -24015,7 +24362,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       const selected = database.adapter.selectAppRowById(table, id);
       const operation = thenIfPromise(selected, finishExisting);
       if (isPromiseLike(operation)) {
-        contextGetter?.()?.__pendingAclWrites?.push(operation);
+        trackPendingAclWrite(contextGetter?.(), operation);
       }
       return operation;
     },
@@ -24033,7 +24380,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       };
       const operation = thenIfPromise(database.adapter.selectAppRowById(table, id), finish);
       if (isPromiseLike(operation)) {
-        contextGetter?.()?.__pendingAclWrites?.push(operation);
+        trackPendingAclWrite(contextGetter?.(), operation);
       }
       return operation;
     },
@@ -25676,39 +26023,51 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
     }
     const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
-      let handlerFailed = false;
-      try {
-        context = createMutationContext(transactionDatabase, auth, { sessionToken: options.sessionToken });
-        const customHandler = transactionDatabase.mutations.find((candidate) => candidate.name === mutationName);
-        const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
-        if (mutationHandler) admitCredentialHandler(mutationHandler, context, "mutation");
-        const reauthenticationPurpose = readAuthRequirements(mutationHandler)?.reauthentication;
-        if (reauthenticationPurpose) {
-          const consumed = typeof options.sessionToken === "string" && await transactionAdapter.consumeReauthenticationProof({ sessionToken: options.sessionToken, userId: auth.userId, purpose: reauthenticationPurpose, now: database.clock.now().toISOString() });
-          if (!consumed) throw commandError("Reauthentication required.", "Verify the current Session for this purpose and retry.", "REAUTHENTICATION_REQUIRED");
-        }
-        context = await applyContextMiddleware(transactionDatabase, context, "mutation");
-        for (const hookSource of database.mutationHooks.beforeMutation) {
-          await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
-        }
-        result = await runCustomMutation(transactionDatabase, context, mutationName, args, mutationHandler);
-        if (!result) {
-          result = mutationName.startsWith("update") ? await runUpdateMutation(transactionDatabase, context, mutationName, args) : await runInsertMutation(transactionDatabase, context, mutationName, args);
-        }
-        await drainPendingAclWrites(context);
-        if (result.ok) {
-          for (const hookSource of database.mutationHooks.afterMutation) {
-            await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context, result }, context);
+      const mutationInvocation = { active: true };
+      return mutationExecution.run(mutationInvocation, async () => {
+        let handlerFailed = false;
+        try {
+          context = createMutationContext(transactionDatabase, auth, {
+            sessionToken: options.sessionToken,
+            serviceUserMutationAuthority,
+            mutationInvocation
+          });
+          const customHandler = transactionDatabase.mutations.find((candidate) => candidate.name === mutationName);
+          const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
+          if (mutationHandler) admitCredentialHandler(mutationHandler, context, "mutation");
+          const reauthenticationPurpose = readAuthRequirements(mutationHandler)?.reauthentication;
+          if (reauthenticationPurpose) {
+            const consumed = typeof options.sessionToken === "string" && await transactionAdapter.consumeReauthenticationProof({ sessionToken: options.sessionToken, userId: auth.userId, purpose: reauthenticationPurpose, now: database.clock.now().toISOString() });
+            if (!consumed) throw commandError("Reauthentication required.", "Verify the current Session for this purpose and retry.", "REAUTHENTICATION_REQUIRED");
+          }
+          context = await applyContextMiddleware(transactionDatabase, context, "mutation");
+          for (const hookSource of database.mutationHooks.beforeMutation) {
+            await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
+          }
+          result = await runCustomMutation(transactionDatabase, context, mutationName, args, mutationHandler);
+          if (!result) {
+            result = mutationName.startsWith("update") ? await runUpdateMutation(transactionDatabase, context, mutationName, args) : await runInsertMutation(transactionDatabase, context, mutationName, args);
           }
           await drainPendingAclWrites(context);
+          if (result.ok) {
+            for (const hookSource of database.mutationHooks.afterMutation) {
+              await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context, result }, context);
+            }
+            await drainPendingAclWrites(context);
+            assertMutationSecretsReturned(context, result);
+          }
+          return result;
+        } catch (error) {
+          handlerFailed = true;
+          throw error;
+        } finally {
+          try {
+            await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed);
+          } finally {
+            mutationInvocation.active = false;
+          }
         }
-        return result;
-      } catch (error) {
-        handlerFailed = true;
-        throw error;
-      } finally {
-        await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed);
-      }
+      });
     });
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
@@ -25743,12 +26102,13 @@ async function runCustomMutation(database, context, mutationName, args, resolved
   const mutationHandler = resolvedHandler ?? materializeHandler(handler);
   let result;
   try {
-    result = await mutationHandler(context, ...args);
+    result = await invokeWithLifecycleInitiation(() => mutationHandler(context, ...args));
+    result = await resolveValidatedLifecycleContinuation(result);
   } finally {
     await drainPendingAclWrites(context);
   }
   if (result !== void 0) {
-    assertJsonCompatible(result);
+    result = assertJsonCompatible(result);
   }
   return { ok: true, data: result ?? null, error: null };
 }
@@ -25873,7 +26233,7 @@ function createMessageContext(database, auth, sendAppMessage, sessionToken) {
 async function runMutationHook(hookSource, event) {
   const createHook = new Function(`return (${hookSource});`);
   const hook = createHook();
-  return await hook(event);
+  return await invokeWithLifecycleInitiation(() => hook(event));
 }
 async function runMutationHookAndDrainPendingAclWrites(hookSource, event, context) {
   try {
@@ -25883,7 +26243,7 @@ async function runMutationHookAndDrainPendingAclWrites(hookSource, event, contex
   }
 }
 function createMutationContext(database, auth, options = {}) {
-  auth = protectContextIdentity(auth);
+  auth = protectContextIdentity(contextAuthIdentity(auth));
   const credential = options.ordinaryCredential === false ? null : protectContextIdentity(options.credential ?? { kind: "session" });
   const context = {
     auth,
@@ -25895,9 +26255,12 @@ function createMutationContext(database, auth, options = {}) {
         actor: { userId: auth.userId },
         credential: credential.kind === "access-key" ? { kind: credential.kind, id: credential.id, name: credential.name } : { kind: "session" }
       }
-    } : {}),
-    __pendingAclWrites: []
+    } : {})
   };
+  if (options.serviceUserMutationAuthority === serviceUserMutationAuthority) {
+    bindPendingAclWrites(context);
+    bindMutationSecretState(context);
+  }
   if (typeof options.sessionToken === "string") {
     bindAccessKeyOwnerSession(context, options.sessionToken);
   }
@@ -25920,7 +26283,64 @@ function createMutationContext(database, auth, options = {}) {
     (candidate) => database.__transactionActive ? handlerContextByDatabase.get(database)?.() === candidate : holder.current === candidate
   );
   context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
+  context.serviceUsers = createServiceUsersApi(
+    database,
+    () => holder.current,
+    credential?.kind === "session" && typeof options.sessionToken === "string" ? options.sessionToken : null,
+    {
+      mutationSurface: options.serviceUserMutationAuthority === serviceUserMutationAuthority,
+      ...options.serviceUserMutationAuthority === serviceUserMutationAuthority ? {
+        assertMutationInvocation: () => assertLiveMutationInvocation(options, "service-user"),
+        trackMutationWork: (promise, requiresConsumption) => trackMutationContextWork(context, promise, requiresConsumption)
+      } : {}
+    }
+  );
+  const serviceUserExecutors = {};
+  for (const operationName of ["create", "issueAccessKey", "listAccessKeys", "rotateAccessKey", "revokeAccessKey", "disable"]) {
+    serviceUserExecutors[operationName] = context.serviceUsers[operationName].bind(context.serviceUsers);
+  }
+  for (const [reserveName, operationName] of [
+    ["reserveCreate", "create"],
+    ["reserveIssueAccessKey", "issueAccessKey"],
+    ["reserveListAccessKeys", "listAccessKeys"],
+    ["reserveRotateAccessKey", "rotateAccessKey"],
+    ["reserveRevokeAccessKey", "revokeAccessKey"],
+    ["reserveDisable", "disable"]
+  ]) {
+    context.serviceUsers[reserveName] = (...args) => {
+      const snapshot = assertJsonCompatible(args);
+      return reserveValidatedLifecycle(options, "service-user", () => serviceUserExecutors[operationName](...snapshot));
+    };
+  }
   context.serverAuth = {
+    revokeHumanSecurity(userId) {
+      assertLiveMutationInvocation(options);
+      return trackMutationContextWork(context, (async () => {
+        if (!database.__transactionActive || !auth?.isAuthenticated || auth?.isGuest || auth?.userKind === "service" || typeof options.sessionToken !== "string" || typeof userId !== "string" || !userId || userId === "__privileged__") {
+          throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
+        }
+        const actorSession = await database.adapter.prepare(database.adapter.dialect.sql(
+          "SELECT [s].[token] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0"
+        )).get(options.sessionToken, auth.userId, database.clock.now().toISOString());
+        if (!actorSession) throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
+        const target = await database.adapter.prepare(database.adapter.dialect.sql(
+          "SELECT [u].[id] FROM [sporades_auth_users] [u] WHERE [u].[id] = ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0 AND (EXISTS (SELECT 1 FROM [sporades_auth_email_credentials] [c] WHERE [c].[userId] = [u].[id]) OR EXISTS (SELECT 1 FROM [sporades_auth_identities] [i] WHERE [i].[userId] = [u].[id]))"
+        )).get(userId);
+        if (!target) {
+          throw commandError("Human security transition denied.", "Select one existing active human user.", "HUMAN_SECURITY_TRANSITION_DENIED");
+        }
+        const sessions = await database.adapter.prepare(database.adapter.dialect.sql(
+          "SELECT COUNT(*) AS [count] FROM [sporades_auth_sessions] WHERE [userId] = ?"
+        )).get(userId);
+        await database.adapter.deleteAuthSessionsForUser(userId);
+        const revoked = await database.adapter.bulkRevokeAccessKeysForOwner({
+          ownerUserId: userId,
+          revocationTime: () => database.clock.now().toISOString(),
+          revocationCause: "operator"
+        });
+        return { userId, revokedSessionCount: Number(sessions?.count ?? 0), revokedAccessKeyCount: Number(revoked?.records?.length ?? 0) };
+      })());
+    },
     async setEmailPassword(email, newPassword) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);
       if (!result.ok) throw new Error(result.error?.message ?? "Could not set password.");
@@ -25944,7 +26364,80 @@ function createMutationContext(database, auth, options = {}) {
       if (!result.ok) throw serverAuthError(result.error, "Could not complete the password reset.");
     }
   };
+  const revokeHumanSecurityExecutor = context.serverAuth.revokeHumanSecurity.bind(context.serverAuth);
+  context.serverAuth.reserveRevokeHumanSecurity = (userId) => {
+    const [targetUserId] = assertJsonCompatible([userId]);
+    return reserveValidatedLifecycle(options, "human-security", () => revokeHumanSecurityExecutor(targetUserId));
+  };
+  context.lifecycle = {
+    continue(operations, continuation) {
+      const list = Array.isArray(operations) ? operations : [operations];
+      if (list.length === 0 || typeof continuation !== "function") {
+        throw commandError("Invalid lifecycle continuation.", "Return one or more reserved lifecycle operations with a continuation callback.", "INVALID_LIFECYCLE_CONTINUATION");
+      }
+      const states = list.map((operation) => validatedLifecycleReservations.get(operation));
+      if (states.some((state) => !state)) {
+        throw commandError("Invalid lifecycle continuation.", "Use reservations created by this Mutation context.", "INVALID_LIFECYCLE_CONTINUATION");
+      }
+      const invocation = mutationExecution.getStore();
+      if (!invocation || invocation.active !== true || states.some((state) => state?.invocation !== invocation || state?.consumed)) {
+        throw commandError("Lifecycle continuation denied.", "Return fresh reservations from the owning Mutation exactly once.", "LIFECYCLE_CONTINUATION_DENIED");
+      }
+      if (new Set(states).size !== states.length) {
+        throw commandError("Lifecycle continuation denied.", "Each reserved lifecycle operation may appear exactly once.", "LIFECYCLE_CONTINUATION_DENIED");
+      }
+      const wrapper = Object.freeze({});
+      validatedLifecycleContinuations.set(wrapper, { states, continuation });
+      return wrapper;
+    }
+  };
+  Object.freeze(context.serviceUsers);
+  Object.freeze(context.serverAuth);
+  Object.freeze(context.lifecycle);
   return context;
+}
+function reserveValidatedLifecycle(options, capability, execute) {
+  assertLiveMutationInvocation(options, capability);
+  const reservation = Object.freeze({});
+  validatedLifecycleReservations.set(reservation, {
+    invocation: options.mutationInvocation,
+    execute,
+    consumed: false
+  });
+  return reservation;
+}
+async function resolveValidatedLifecycleContinuation(value) {
+  const plan = value && typeof value === "object" ? validatedLifecycleContinuations.get(value) : void 0;
+  if (!plan) return value;
+  const invocation = mutationExecution.getStore();
+  if (!invocation || invocation.active !== true || plan.states.some((state) => state.invocation !== invocation || state.consumed) || new Set(plan.states).size !== plan.states.length) {
+    throw commandError("Lifecycle continuation denied.", "Return fresh reservations from the owning Mutation exactly once.", "LIFECYCLE_CONTINUATION_DENIED");
+  }
+  for (const state of plan.states) state.consumed = true;
+  const outcomes = [];
+  for (const state of plan.states) {
+    const pending = invokeWithLifecycleInitiation(() => state.execute());
+    outcomes.push(await pending);
+  }
+  return await plan.continuation(plan.states.length === 1 ? outcomes[0] : outcomes);
+}
+function assertLiveMutationInvocation(options, capability = "human-security") {
+  if (options.serviceUserMutationAuthority !== serviceUserMutationAuthority || options.mutationInvocation?.active !== true || mutationExecution.getStore() !== options.mutationInvocation || options.mutationInvocation?.initiationOpen !== true) {
+    if (capability === "service-user") {
+      throw commandError("Service-User lifecycle changes require a Mutation.", "Call ctx.serviceUsers from the active Mutation invocation.", "SERVICE_USER_MUTATION_REQUIRED");
+    }
+    throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
+  }
+}
+function invokeWithLifecycleInitiation(operation) {
+  const invocation = mutationExecution.getStore();
+  if (!invocation) return operation();
+  invocation.initiationOpen = true;
+  try {
+    return operation();
+  } finally {
+    invocation.initiationOpen = false;
+  }
 }
 function createTeamJoinAdmissionContext(database, auth, trustedDb, teamId, assertActive) {
   const context = {
@@ -32695,7 +33188,7 @@ jobs:
 }
 
 // src/cli/cli-version.ts
-var CLI_VERSION = "0.9.9";
+var CLI_VERSION = "0.9.10";
 
 // src/cli/sporades.ts
 var SUPPORTED_TEMPLATES = new Set(CLIENT_TEMPLATES);

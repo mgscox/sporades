@@ -34,6 +34,7 @@ import { isPromiseLike, thenIfPromise } from "./maybe-promise.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import { accessKeyGrantsSatisfyScopes, normalizeCapsuleAuthDefinition, readAuthRequirements, validateCapsuleAuthRequirements, } from "./auth-admission.js";
 import { accessKeyCredentialLogAttribution, bindAccessKeyOwnerSession, createCurrentUserAccessKeysApi, createPrivilegedAccessKeysApi, emitAccessKeyAdmittedAudit, accessKeySecretWasDisclosed, dropAccessKeyLifecycleAuditEvents, flushAccessKeyLifecycleAuditEvents, grantPrivilegedAccessKeyAccess, publicAccessKeyManagementError, recordAccessKeyUsage, resolveAccessKeyCredential, transferAccessKeyRuntimeState, revokePrivilegedAccessKeyAccess, } from "./access-keys-runtime.js";
+import { createServiceUsersApi } from "./service-users-runtime.js";
 import { validateAccessKeyOperatorActionInput } from "./cli/access-key-operator-envelope.js";
 // Batch 9 left one engine-construction name here: `openDevDatabase` builds the Capsule's adapter
 // with it. Trusted policy reads now also ask that module whether the supplied adapter is an active
@@ -47,7 +48,7 @@ import { deserializeFieldValue, deserializeRow, normalizeDateValue, serializeFie
 // both are exported from `acl-runtime.js` for consumers outside this file — the constant probe and
 // `test/mail.test.js` — and reach them through the `export *` below rather than through a binding
 // here, so importing them would declare a name nothing in this file reads.
-import { applyReadAcl, assertActivePrivilegedJobAccess, createPrivilegedAuditEmitter, createPrivilegedAuditEmissionPublicError, createPrivilegedFileApi, createPrivilegedRunAbortError, createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi, drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit, filterRowsByReadAcl, grantPrivilegedDbAccess, isPrivilegedAuditEmissionPublicError, normalizeFileAcl, normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback, revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode, } from "./acl-runtime.js";
+import { applyReadAcl, assertActivePrivilegedJobAccess, bindPendingAclWrites, createPrivilegedAuditEmitter, createPrivilegedAuditEmissionPublicError, createPrivilegedFileApi, createPrivilegedRunAbortError, createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi, drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit, filterRowsByReadAcl, grantPrivilegedDbAccess, isPrivilegedAuditEmissionPublicError, normalizeFileAcl, normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback, revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode, trackPendingAclWrite, } from "./acl-runtime.js";
 import { createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter, deletePrivateFile, getPrivateFileUrl, revokePublicFileUrl, } from "./file-storage-runtime.js";
 import { createEndpointIngressApi, finalizeEndpointIngressClaims, stageMultipartIngress, sweepExpiredFileIngress, validateMultipartIngressPolicy } from "./file-ingress-runtime.js";
 import { abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob, canonicalJobCredentialProvenance, captureJobAuthSnapshot, commitPendingJobCancellationAborts, createRuntimeClock, decodeJobCursor, dropPendingJobCancellationAborts, encodeJobCursor, ensureJobStorage, ensureScheduleStorage, finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence, normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, readJobAuthSnapshot, readJobCredentialProvenance, resolveSchedulePayload, RESERVED_JOB_NAME_PREFIX, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure, scheduleStripeEventPayloadCleanup, startStripeEventPayloadCleanup, stopStripeEventPayloadCleanup, STRIPE_EVENT_JOB, stripeEventPayloadRetentionStorageValue, scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduledOccurrenceIdentity, } from "./jobs-runtime.js";
@@ -711,7 +712,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         readTeamBillingActorAuth: async (transaction, userId) => {
             if (typeof userId !== "string")
                 return null;
-            const actor = await transaction.prepare(transaction.dialect.sql("SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider] FROM [sporades_auth_users] WHERE [id] = ?")).get(userId);
+            const actor = await transaction.prepare(transaction.dialect.sql("SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind] FROM [sporades_auth_users] WHERE [id] = ?")).get(userId);
             return actor ? Object.freeze({
                 userId: actor.id,
                 displayName: actor.displayName,
@@ -720,6 +721,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 isAuthenticated: Boolean(actor.isAuthenticated),
                 isGuest: Boolean(actor.isGuest),
                 provider: actor.provider,
+                ...(actor.userKind === "service" ? { userKind: "service" } : {}),
             }) : null;
         },
         updateTeamBillingSubscription: async (context, input) => {
@@ -2214,12 +2216,18 @@ function createContextPrivilegedApi(database, contextGetter) {
     };
 }
 function createPrivilegedHandlerContext(database, context, signal) {
+    // Privileged execution is a constrained projection, never a derived copy of
+    // Capsule middleware state. In particular, copying arbitrary fields would
+    // let middleware smuggle lifecycle APIs across this userless boundary under
+    // aliases or closures.
     const privilegedContext = {
-        ...context,
+        env: context.env,
+        payments: context.payments,
+        log: context.log,
+        messages: context.messages,
         signal,
         __privilegedRunActive: true,
         __jobEnqueuedBy: context.auth?.userId ?? null,
-        __jobParentContext: context,
         auth: Object.freeze({
             userId: privilegedAuthUserId(),
             displayName: "Privileged server role",
@@ -2236,12 +2244,13 @@ function createPrivilegedHandlerContext(database, context, signal) {
             enumerable: false,
         });
     }
-    // User-scoped and mutating Team operations remain unavailable. This is the
-    // separate userless inspection projection, not inherited Team authority.
-    delete privilegedContext.teams;
-    delete privilegedContext.accessKeys;
-    delete privilegedContext.credential;
-    delete privilegedContext.__sporadesAccessKeyGrants;
+    // Runtime queue bookkeeping keeps the enclosing transaction identity on a
+    // non-enumerable internal slot. It is not copied into further projections.
+    Object.defineProperty(privilegedContext, "__jobParentContext", {
+        value: context,
+        enumerable: false,
+        configurable: false,
+    });
     const provenanceStore = (database.__rootDatabase ?? database).jobScheduleProvenanceByContext;
     const scheduleProvenance = provenanceStore?.get(context);
     if (scheduleProvenance)
@@ -3316,8 +3325,8 @@ function createAtomicStripeConsequenceContext(database, parent) {
         log: createEndpointLogger(database),
         __privilegedRunActive: true,
         __jobEnqueuedBy: parent.__jobEnqueuedBy ?? null,
-        __pendingAclWrites: [],
     };
+    bindPendingAclWrites(context);
     grantPrivilegedDbAccess(context);
     const holder = createContextHolder(context);
     registerHandlerContextMapping(database, holder);
@@ -3439,7 +3448,7 @@ function endpointRequestHead(requestUrl, request) {
     };
 }
 function createEndpointContext(database, endpointRequest, session, options = {}) {
-    const auth = protectContextIdentity(session.auth);
+    const auth = protectContextIdentity(contextAuthIdentity(session.auth));
     const credential = options.ordinaryCredential === false
         ? null
         : protectContextIdentity(options.credential ?? { kind: "session" });
@@ -3493,7 +3502,11 @@ function createEndpointContext(database, endpointRequest, session, options = {})
     context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
     context.teamBilling = createCurrentUserTeamBillingErasureApi(database, auth, () => holder.current, (candidate) => handlerContextByDatabase.get(database)?.() === candidate);
     context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
+    context.serviceUsers = createServiceUsersApi(database, () => holder.current, credential?.kind === "session" && typeof session.token === "string" ? session.token : null, { mutationSurface: false });
     context.serverAuth = {
+        revokeHumanSecurity(_userId) {
+            throw commandError("Human security transition is unavailable.", "Run this operation inside an authenticated Capsule mutation.", "HUMAN_SECURITY_TRANSITION_UNAVAILABLE");
+        },
         async setEmailPassword(email, newPassword) {
             const result = await setEmailPassword(database, { auth }, email, newPassword);
             if (!result.ok)
@@ -3524,6 +3537,10 @@ function createEndpointContext(database, endpointRequest, session, options = {})
     };
     return context;
 }
+function contextAuthIdentity(value) {
+    const { userKind, ...legacyIdentity } = value ?? {};
+    return userKind === "service" ? { ...legacyIdentity, userKind } : legacyIdentity;
+}
 function protectContextIdentity(value) {
     const target = Object.freeze({ ...value });
     const tampered = () => {
@@ -3546,6 +3563,13 @@ function createContextHolder(context) {
     return holder;
 }
 const handlerContextByDatabase = new WeakMap();
+// Lexical runtime authority: Capsule input and context middleware can neither
+// construct nor recover this exact identity.
+const serviceUserMutationAuthority = Object.freeze({ kind: "service-user-mutation-authority" });
+const MutationExecutionStorage = process.getBuiltinModule("node:async_hooks").AsyncLocalStorage;
+const mutationExecution = new MutationExecutionStorage();
+const validatedLifecycleReservations = new WeakMap();
+const validatedLifecycleContinuations = new WeakMap();
 function registerHandlerContextMapping(database, holder) {
     if (!database.__transactionActive)
         return;
@@ -3585,6 +3609,62 @@ async function cleanupTransactionHandler(database, context, preservePrimaryError
         }
     }
 }
+function trackMutationContextWork(context, promise, requiresConsumption = false) {
+    const operation = Promise.resolve(promise);
+    const tracked = requiresConsumption
+        ? operation.then((value) => {
+            const token = value?.token;
+            if (typeof token !== "string" || token.length === 0) {
+                throw Object.assign(new Error("One-time credential result was invalid."), {
+                    code: "ACCESS_KEY_SECRET_NOT_CONSUMED",
+                    hint: "Return the complete Service-User credential result from the Mutation.",
+                });
+            }
+            mutationSecretState(context).tokens.push(token);
+            return value;
+        })
+        : operation;
+    // Registration happens before the handler necessarily yields back to the
+    // mutation runtime. Observe rejection immediately so an early failure never
+    // reaches Node's unhandled-rejection/fatal policy; the original tracked
+    // promise remains in the drain ledger and still carries the exact reason.
+    void tracked.then(undefined, () => undefined);
+    const entry = { promise: tracked };
+    trackPendingAclWrite(context, entry);
+    return operation;
+}
+function resultContainsMutationSecret(value, token) {
+    if (value === token)
+        return true;
+    if (!value || typeof value !== "object")
+        return false;
+    if (Array.isArray(value))
+        return value.some((entry) => resultContainsMutationSecret(entry, token));
+    return Object.values(value).some((entry) => resultContainsMutationSecret(entry, token));
+}
+function assertMutationSecretsReturned(context, result) {
+    for (const token of mutationSecretState(context).tokens) {
+        if (!resultContainsMutationSecret(result?.data, token)) {
+            throw Object.assign(new Error("One-time credential result was not returned."), {
+                code: "ACCESS_KEY_SECRET_NOT_CONSUMED",
+                hint: "Return the complete Service-User credential result from the Mutation.",
+            });
+        }
+    }
+}
+const mutationSecretsByContext = new WeakMap();
+function bindMutationSecretState(context, sourceContext) {
+    const shared = sourceContext ? mutationSecretsByContext.get(sourceContext) : undefined;
+    if (sourceContext && !shared)
+        return;
+    mutationSecretsByContext.set(context, shared ?? { tokens: [] });
+}
+function mutationSecretState(context) {
+    const state = mutationSecretsByContext.get(context);
+    if (!state)
+        throw new Error("Mutation secret state is unavailable.");
+    return state;
+}
 async function drainPendingLogWrites(database) {
     const pending = database.__pendingLogWrites;
     while (pending?.length > 0) {
@@ -3601,6 +3681,8 @@ async function applyContextMiddleware(database, baseContext, kind) {
         ...baseContext,
         kind,
     };
+    bindPendingAclWrites(context, baseContext);
+    bindMutationSecretState(context, baseContext);
     transferAccessKeyRuntimeState(baseContext, context);
     const holder = baseContext.__sporadesContextHolder ?? createContextHolder(context);
     holder.current = context;
@@ -3633,9 +3715,8 @@ async function applyContextMiddleware(database, baseContext, kind) {
                 configurable: true,
             });
         }
-        if (previousContext.__pendingAclWrites && !context.__pendingAclWrites) {
-            context.__pendingAclWrites = previousContext.__pendingAclWrites;
-        }
+        bindPendingAclWrites(context, previousContext);
+        bindMutationSecretState(context, previousContext);
         transferAccessKeyRuntimeState(previousContext, context);
     }
     return context;
@@ -3799,7 +3880,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
             };
             const operation = fieldValues.some(isPromiseLike) ? Promise.all(fieldValues).then(finish) : finish(fieldValues);
             if (isPromiseLike(operation)) {
-                contextGetter?.()?.__pendingAclWrites?.push(operation);
+                trackPendingAclWrite(contextGetter?.(), operation);
             }
             return operation;
         },
@@ -3834,7 +3915,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
             };
             const operation = fieldValues.some(isPromiseLike) ? Promise.all(fieldValues).then(finish) : finish(fieldValues);
             if (isPromiseLike(operation)) {
-                contextGetter?.()?.__pendingAclWrites?.push(operation);
+                trackPendingAclWrite(contextGetter?.(), operation);
             }
             return operation;
         },
@@ -3876,7 +3957,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
             const selected = database.adapter.selectAppRowById(table, id);
             const operation = thenIfPromise(selected, finishExisting);
             if (isPromiseLike(operation)) {
-                contextGetter?.()?.__pendingAclWrites?.push(operation);
+                trackPendingAclWrite(contextGetter?.(), operation);
             }
             return operation;
         },
@@ -3894,7 +3975,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
             };
             const operation = thenIfPromise(database.adapter.selectAppRowById(table, id), finish);
             if (isPromiseLike(operation)) {
-                contextGetter?.()?.__pendingAclWrites?.push(operation);
+                trackPendingAclWrite(contextGetter?.(), operation);
             }
             return operation;
         },
@@ -5677,45 +5758,58 @@ export async function runMutation(database, auth, mutationName, args, options = 
         }
         const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
             const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
-            let handlerFailed = false;
-            try {
-                context = createMutationContext(transactionDatabase, auth, { sessionToken: options.sessionToken });
-                const customHandler = transactionDatabase.mutations.find((candidate) => candidate.name === mutationName);
-                const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
-                if (mutationHandler)
-                    admitCredentialHandler(mutationHandler, context, "mutation");
-                const reauthenticationPurpose = readAuthRequirements(mutationHandler)?.reauthentication;
-                if (reauthenticationPurpose) {
-                    const consumed = typeof options.sessionToken === "string" && await transactionAdapter.consumeReauthenticationProof({ sessionToken: options.sessionToken, userId: auth.userId, purpose: reauthenticationPurpose, now: database.clock.now().toISOString() });
-                    if (!consumed)
-                        throw commandError("Reauthentication required.", "Verify the current Session for this purpose and retry.", "REAUTHENTICATION_REQUIRED");
-                }
-                context = await applyContextMiddleware(transactionDatabase, context, "mutation");
-                for (const hookSource of database.mutationHooks.beforeMutation) {
-                    await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
-                }
-                result = await runCustomMutation(transactionDatabase, context, mutationName, args, mutationHandler);
-                if (!result) {
-                    result = mutationName.startsWith("update")
-                        ? await runUpdateMutation(transactionDatabase, context, mutationName, args)
-                        : await runInsertMutation(transactionDatabase, context, mutationName, args);
-                }
-                await drainPendingAclWrites(context);
-                if (result.ok) {
-                    for (const hookSource of database.mutationHooks.afterMutation) {
-                        await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context, result }, context);
+            const mutationInvocation = { active: true };
+            return mutationExecution.run(mutationInvocation, async () => {
+                let handlerFailed = false;
+                try {
+                    context = createMutationContext(transactionDatabase, auth, {
+                        sessionToken: options.sessionToken,
+                        serviceUserMutationAuthority,
+                        mutationInvocation,
+                    });
+                    const customHandler = transactionDatabase.mutations.find((candidate) => candidate.name === mutationName);
+                    const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
+                    if (mutationHandler)
+                        admitCredentialHandler(mutationHandler, context, "mutation");
+                    const reauthenticationPurpose = readAuthRequirements(mutationHandler)?.reauthentication;
+                    if (reauthenticationPurpose) {
+                        const consumed = typeof options.sessionToken === "string" && await transactionAdapter.consumeReauthenticationProof({ sessionToken: options.sessionToken, userId: auth.userId, purpose: reauthenticationPurpose, now: database.clock.now().toISOString() });
+                        if (!consumed)
+                            throw commandError("Reauthentication required.", "Verify the current Session for this purpose and retry.", "REAUTHENTICATION_REQUIRED");
+                    }
+                    context = await applyContextMiddleware(transactionDatabase, context, "mutation");
+                    for (const hookSource of database.mutationHooks.beforeMutation) {
+                        await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
+                    }
+                    result = await runCustomMutation(transactionDatabase, context, mutationName, args, mutationHandler);
+                    if (!result) {
+                        result = mutationName.startsWith("update")
+                            ? await runUpdateMutation(transactionDatabase, context, mutationName, args)
+                            : await runInsertMutation(transactionDatabase, context, mutationName, args);
                     }
                     await drainPendingAclWrites(context);
+                    if (result.ok) {
+                        for (const hookSource of database.mutationHooks.afterMutation) {
+                            await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context, result }, context);
+                        }
+                        await drainPendingAclWrites(context);
+                        assertMutationSecretsReturned(context, result);
+                    }
+                    return result;
                 }
-                return result;
-            }
-            catch (error) {
-                handlerFailed = true;
-                throw error;
-            }
-            finally {
-                await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed);
-            }
+                catch (error) {
+                    handlerFailed = true;
+                    throw error;
+                }
+                finally {
+                    try {
+                        await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed);
+                    }
+                    finally {
+                        mutationInvocation.active = false;
+                    }
+                }
+            });
         });
         commitPendingJobCancellationAborts(context);
         await flushAccessKeyLifecycleAuditEvents(database, context);
@@ -5751,13 +5845,17 @@ async function runCustomMutation(database, context, mutationName, args, resolved
     const mutationHandler = resolvedHandler ?? materializeHandler(handler);
     let result;
     try {
-        result = await mutationHandler(context, ...args);
+        result = await invokeWithLifecycleInitiation(() => mutationHandler(context, ...args));
+        result = await resolveValidatedLifecycleContinuation(result);
     }
     finally {
         await drainPendingAclWrites(context);
     }
     if (result !== undefined) {
-        assertJsonCompatible(result);
+        // This inert snapshot is the single source of truth for both one-time-secret
+        // reachability and the value returned across the public boundary. Never read
+        // Capsule-owned getters or proxies again after this point.
+        result = assertJsonCompatible(result);
     }
     return { ok: true, data: result ?? null, error: null };
 }
@@ -5877,7 +5975,7 @@ function createMessageContext(database, auth, sendAppMessage, sessionToken) {
 async function runMutationHook(hookSource, event) {
     const createHook = new Function(`return (${hookSource});`);
     const hook = createHook();
-    return await hook(event);
+    return await invokeWithLifecycleInitiation(() => hook(event));
 }
 async function runMutationHookAndDrainPendingAclWrites(hookSource, event, context) {
     try {
@@ -5888,7 +5986,7 @@ async function runMutationHookAndDrainPendingAclWrites(hookSource, event, contex
     }
 }
 function createMutationContext(database, auth, options = {}) {
-    auth = protectContextIdentity(auth);
+    auth = protectContextIdentity(contextAuthIdentity(auth));
     const credential = options.ordinaryCredential === false
         ? null
         : protectContextIdentity(options.credential ?? { kind: "session" });
@@ -5905,8 +6003,11 @@ function createMutationContext(database, auth, options = {}) {
                     : { kind: "session" },
             },
         } : {}),
-        __pendingAclWrites: [],
     };
+    if (options.serviceUserMutationAuthority === serviceUserMutationAuthority) {
+        bindPendingAclWrites(context);
+        bindMutationSecretState(context);
+    }
     if (typeof options.sessionToken === "string") {
         bindAccessKeyOwnerSession(context, options.sessionToken);
     }
@@ -5926,7 +6027,56 @@ function createMutationContext(database, auth, options = {}) {
         ? handlerContextByDatabase.get(database)?.() === candidate
         : holder.current === candidate);
     context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
+    context.serviceUsers = createServiceUsersApi(database, () => holder.current, credential?.kind === "session" && typeof options.sessionToken === "string" ? options.sessionToken : null, {
+        mutationSurface: options.serviceUserMutationAuthority === serviceUserMutationAuthority,
+        ...(options.serviceUserMutationAuthority === serviceUserMutationAuthority
+            ? {
+                assertMutationInvocation: () => assertLiveMutationInvocation(options, "service-user"),
+                trackMutationWork: (promise, requiresConsumption) => trackMutationContextWork(context, promise, requiresConsumption),
+            }
+            : {}),
+    });
+    const serviceUserExecutors = {};
+    for (const operationName of ["create", "issueAccessKey", "listAccessKeys", "rotateAccessKey", "revokeAccessKey", "disable"]) {
+        serviceUserExecutors[operationName] = context.serviceUsers[operationName].bind(context.serviceUsers);
+    }
+    for (const [reserveName, operationName] of [
+        ["reserveCreate", "create"],
+        ["reserveIssueAccessKey", "issueAccessKey"],
+        ["reserveListAccessKeys", "listAccessKeys"],
+        ["reserveRotateAccessKey", "rotateAccessKey"],
+        ["reserveRevokeAccessKey", "revokeAccessKey"],
+        ["reserveDisable", "disable"],
+    ]) {
+        context.serviceUsers[reserveName] = (...args) => {
+            const snapshot = assertJsonCompatible(args);
+            return reserveValidatedLifecycle(options, "service-user", () => serviceUserExecutors[operationName](...snapshot));
+        };
+    }
     context.serverAuth = {
+        revokeHumanSecurity(userId) {
+            assertLiveMutationInvocation(options);
+            return trackMutationContextWork(context, (async () => {
+                if (!database.__transactionActive || !auth?.isAuthenticated || auth?.isGuest || auth?.userKind === "service" || typeof options.sessionToken !== "string" || typeof userId !== "string" || !userId || userId === "__privileged__") {
+                    throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
+                }
+                const actorSession = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [s].[token] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0")).get(options.sessionToken, auth.userId, database.clock.now().toISOString());
+                if (!actorSession)
+                    throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
+                const target = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [u].[id] FROM [sporades_auth_users] [u] WHERE [u].[id] = ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0 AND (EXISTS (SELECT 1 FROM [sporades_auth_email_credentials] [c] WHERE [c].[userId] = [u].[id]) OR EXISTS (SELECT 1 FROM [sporades_auth_identities] [i] WHERE [i].[userId] = [u].[id]))")).get(userId);
+                if (!target) {
+                    throw commandError("Human security transition denied.", "Select one existing active human user.", "HUMAN_SECURITY_TRANSITION_DENIED");
+                }
+                const sessions = await database.adapter.prepare(database.adapter.dialect.sql("SELECT COUNT(*) AS [count] FROM [sporades_auth_sessions] WHERE [userId] = ?")).get(userId);
+                await database.adapter.deleteAuthSessionsForUser(userId);
+                const revoked = await database.adapter.bulkRevokeAccessKeysForOwner({
+                    ownerUserId: userId,
+                    revocationTime: () => database.clock.now().toISOString(),
+                    revocationCause: "operator",
+                });
+                return { userId, revokedSessionCount: Number(sessions?.count ?? 0), revokedAccessKeyCount: Number(revoked?.records?.length ?? 0) };
+            })());
+        },
         async setEmailPassword(email, newPassword) {
             const result = await setEmailPassword(database, { auth }, email, newPassword);
             if (!result.ok)
@@ -5955,7 +6105,87 @@ function createMutationContext(database, auth, options = {}) {
                 throw serverAuthError(result.error, "Could not complete the password reset.");
         },
     };
+    const revokeHumanSecurityExecutor = context.serverAuth.revokeHumanSecurity.bind(context.serverAuth);
+    context.serverAuth.reserveRevokeHumanSecurity = (userId) => {
+        const [targetUserId] = assertJsonCompatible([userId]);
+        return reserveValidatedLifecycle(options, "human-security", () => revokeHumanSecurityExecutor(targetUserId));
+    };
+    context.lifecycle = {
+        continue(operations, continuation) {
+            const list = Array.isArray(operations) ? operations : [operations];
+            if (list.length === 0 || typeof continuation !== "function") {
+                throw commandError("Invalid lifecycle continuation.", "Return one or more reserved lifecycle operations with a continuation callback.", "INVALID_LIFECYCLE_CONTINUATION");
+            }
+            const states = list.map((operation) => validatedLifecycleReservations.get(operation));
+            if (states.some((state) => !state)) {
+                throw commandError("Invalid lifecycle continuation.", "Use reservations created by this Mutation context.", "INVALID_LIFECYCLE_CONTINUATION");
+            }
+            const invocation = mutationExecution.getStore();
+            if (!invocation || invocation.active !== true || states.some((state) => state?.invocation !== invocation || state?.consumed)) {
+                throw commandError("Lifecycle continuation denied.", "Return fresh reservations from the owning Mutation exactly once.", "LIFECYCLE_CONTINUATION_DENIED");
+            }
+            if (new Set(states).size !== states.length) {
+                throw commandError("Lifecycle continuation denied.", "Each reserved lifecycle operation may appear exactly once.", "LIFECYCLE_CONTINUATION_DENIED");
+            }
+            const wrapper = Object.freeze({});
+            validatedLifecycleContinuations.set(wrapper, { states, continuation });
+            return wrapper;
+        },
+    };
+    Object.freeze(context.serviceUsers);
+    Object.freeze(context.serverAuth);
+    Object.freeze(context.lifecycle);
     return context;
+}
+function reserveValidatedLifecycle(options, capability, execute) {
+    assertLiveMutationInvocation(options, capability);
+    const reservation = Object.freeze({});
+    validatedLifecycleReservations.set(reservation, {
+        invocation: options.mutationInvocation,
+        execute,
+        consumed: false,
+    });
+    return reservation;
+}
+async function resolveValidatedLifecycleContinuation(value) {
+    const plan = value && typeof value === "object" ? validatedLifecycleContinuations.get(value) : undefined;
+    if (!plan)
+        return value;
+    const invocation = mutationExecution.getStore();
+    if (!invocation || invocation.active !== true || plan.states.some((state) => state.invocation !== invocation || state.consumed) || new Set(plan.states).size !== plan.states.length) {
+        throw commandError("Lifecycle continuation denied.", "Return fresh reservations from the owning Mutation exactly once.", "LIFECYCLE_CONTINUATION_DENIED");
+    }
+    for (const state of plan.states)
+        state.consumed = true;
+    const outcomes = [];
+    for (const state of plan.states) {
+        const pending = invokeWithLifecycleInitiation(() => state.execute());
+        outcomes.push(await pending);
+    }
+    return await plan.continuation(plan.states.length === 1 ? outcomes[0] : outcomes);
+}
+function assertLiveMutationInvocation(options, capability = "human-security") {
+    if (options.serviceUserMutationAuthority !== serviceUserMutationAuthority
+        || options.mutationInvocation?.active !== true
+        || mutationExecution.getStore() !== options.mutationInvocation
+        || options.mutationInvocation?.initiationOpen !== true) {
+        if (capability === "service-user") {
+            throw commandError("Service-User lifecycle changes require a Mutation.", "Call ctx.serviceUsers from the active Mutation invocation.", "SERVICE_USER_MUTATION_REQUIRED");
+        }
+        throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
+    }
+}
+function invokeWithLifecycleInitiation(operation) {
+    const invocation = mutationExecution.getStore();
+    if (!invocation)
+        return operation();
+    invocation.initiationOpen = true;
+    try {
+        return operation();
+    }
+    finally {
+        invocation.initiationOpen = false;
+    }
 }
 function createTeamJoinAdmissionContext(database, auth, trustedDb, teamId, assertActive) {
     const context = {

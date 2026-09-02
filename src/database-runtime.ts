@@ -974,7 +974,8 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
         sql(
           "SELECT [k].*, [u].[displayName] AS [ownerDisplayName], [u].[email] AS [ownerEmail], " +
           "[u].[picture] AS [ownerPicture], [u].[isAuthenticated] AS [ownerIsAuthenticated], " +
-          "[u].[isGuest] AS [ownerIsGuest] FROM [sporades_auth_access_keys] [k] " +
+          "[u].[isGuest] AS [ownerIsGuest], [u].[userKind] AS [ownerUserKind], " +
+          "[u].[lifecycleStatus] AS [ownerLifecycleStatus] FROM [sporades_auth_access_keys] [k] " +
           "LEFT JOIN [sporades_auth_users] [u] ON [u].[id] = [k].[ownerUserId] " +
           "WHERE [k].[secretVersion] = ? AND [k].[selector] = ?",
         ),
@@ -1212,15 +1213,15 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
         ),
       ).run(row.subject, row.email, row.displayName, row.picture, row.updatedAt, row.id);
     },
-    insertAuthUser(row: { id: any; createdAt: any; displayName: any; email: any; picture: any; isAuthenticated: any; isGuest: any; provider: any; }) {
+    insertAuthUser(row: { id: any; createdAt: any; displayName: any; email: any; picture: any; isAuthenticated: any; isGuest: any; provider: any; userKind?: any; lifecycleStatus?: any; disabledAt?: any; }) {
       assertNotReservedAuthUserId(row.id);
       return this.prepare(
         sql(
           "INSERT INTO [sporades_auth_users] " +
-          "([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider]) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          "([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind], [lifecycleStatus], [disabledAt]) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ),
-      ).run(row.id, row.createdAt, row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider);
+      ).run(row.id, row.createdAt, row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider, row.userKind ?? "human", row.lifecycleStatus ?? "active", row.disabledAt ?? null);
     },
     updateAuthUserProfile(row: { displayName: any; picture: any; isAuthenticated: any; isGuest: any; id: any; }) {
       assertNotReservedAuthUserId(row.id);
@@ -1287,7 +1288,7 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
       return thenIfPromise(
         this.prepare(
           sql(
-            "SELECT [s].[token], [s].[expiresAt], [u].[id] AS [userId], [u].[displayName], [u].[email], [u].[picture], " +
+            "SELECT [s].[token], [s].[expiresAt], [u].[id] AS [userId], [u].[userKind], [u].[displayName], [u].[email], [u].[picture], " +
             "[u].[isAuthenticated], [u].[isGuest], [s].[provider] AS [provider] " +
             "FROM [sporades_auth_sessions] [s] " +
             "JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] " +

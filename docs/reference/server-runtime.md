@@ -374,6 +374,104 @@ Access keys cannot manage Access keys. Neither can Anonymous or guest Sessions,
 Jobs, Schedules, or lifecycle hooks. A key authenticates its linked owner; it is
 not a synthetic user and grants never add authority the owner lacks.
 
+### Manage Service Users
+
+Use a Service User when automation must be a stable actor in its own right,
+rather than merely another credential owned by a human. A Service User cannot
+sign in: it has no email/password, OAuth identity, browser Session, or implicit
+human owner. Its Access keys resolve `ctx.auth.userKind` to `"service"` and keep
+the exact named key in `ctx.credential`.
+
+Only a Mutation running under a current linked human Session may use
+`ctx.serviceUsers`. This lets the runtime commit its User/key lifecycle in the
+same transaction as the Capsule's role, Team membership, and audit rows.
+
+A transaction is a storage mechanism, not authority. Custom endpoints and
+other runtime surfaces may execute transactionally, but only the Mutation
+dispatcher receives the runtime-owned Service-User capability. Capsule input,
+middleware, and context properties cannot mint or forward that capability.
+
+For example:
+
+```ts
+mutations: {
+  createTriageAgent: mutation(async (ctx) => {
+    const issued = await ctx.serviceUsers.create({
+      displayName: "Triage Agent",
+      accessKey: { name: "production", grants: ["tickets:read"] },
+    });
+    await ctx.db.insert("Agent", { userId: issued.serviceUser.id });
+    return issued; // issued.token is available exactly once, after commit
+  }),
+  rotateTriageAgent: mutation((ctx, userId: string, keyId: string, revision: number) =>
+    ctx.serviceUsers.rotateAccessKey(userId, keyId, { lifecycleRevision: revision })),
+  disableTriageAgent: mutation((ctx, userId: string) =>
+    ctx.serviceUsers.disable(userId)),
+},
+```
+
+`create()` always issues the initial named key atomically. Additional keys use
+`issueAccessKey()`. `listAccessKeys()`, `rotateAccessKey()`, and
+`revokeAccessKey()` take the stable Service User ID; rotation also compare-and-
+swaps the listed lifecycle revision. `disable()` is irreversible and revokes
+every current key while retaining safe identity and key metadata for historical
+attribution. Plaintext is returned only by a committed create, issue, or
+rotation and is never recoverable, so move it directly to an external secret
+store. Mutation work is drained before commit even if Capsule code forgets to
+await it. For `create()`, `issueAccessKey()`, and `rotateAccessKey()`, however,
+every produced token must occur in the Mutation's returned JSON data. Returning
+an aggregate from `Promise.all`, `allSettled`, `race`, or `any` works when it
+contains the token; merely observing or discarding that aggregate rolls the
+transaction back rather than silently committing a credential whose one-time
+plaintext result was lost. Sporades canonicalizes the Mutation result exactly
+once and uses that inert JSON snapshot for both this check and the public result;
+stateful getters, proxies, or `toJSON` hooks cannot create a check/transport gap.
+Non-secret lifecycle operations are still
+drained, and any rejected operation rolls the whole Mutation back.
+
+Service identity and scopes do not grant application authority. The Capsule
+must still map the User ID to its own Team membership, role, and resource
+policy; effective authority is their intersection. This explicit mapping is
+the principal trade-off for avoiding fake human accounts and app-owned bearer
+credential tables. Keep a human-owned Access key when the work should continue
+to be attributed and authorized as that human instead.
+
+Anonymous and guest Sessions, Access keys, Jobs, Schedules, lifecycle hooks,
+Queries, App messages, and Custom endpoints cannot manage Service Users.
+Service-User lifecycle work must also be initiated during the Mutation
+handler's initial synchronous dispatch, before its first `await`. Its returned
+Promise remains awaitable and transaction-drained, but timers, microtasks,
+detached Promises, and post-`await` continuations cannot start new lifecycle
+operations through a retained context reference.
+Existing human-owned Access keys and Session behavior are unchanged.
+
+When application authorization or idempotency checks require database reads
+before lifecycle work, reserve the write-free operation during initial dispatch
+and return a validated continuation after those checks:
+
+```ts
+const operation = ctx.serviceUsers.reserveDisable(userId);
+const membership = await ctx.db.agentMemberships.where("userId", userId).first();
+if (!membership || !mayAdminister(ctx.auth.userId, membership)) throw new Error("Denied");
+return ctx.lifecycle.continue(operation, async (disabled) => {
+  await ctx.db.agentMemberships.update(membership.id, { status: "removed" });
+  return disabled;
+});
+```
+
+Reservations are opaque, write-free, one-shot, and bound to the owning Mutation
+transaction. Only the exact continuation returned by that Mutation is adopted;
+copies, unused or duplicate reservations, detached callbacks, other handlers,
+and calls after settlement cannot execute them. An array declares multiple
+approved lifecycle operations explicitly and any failure rolls all of them
+back. Operations execute sequentially in declared order, so a later operation
+observes every earlier lifecycle transition rather than racing it. Sporades canonicalizes reservation arguments immediately, so later
+mutation of caller-owned objects or arrays cannot retarget the operation, and
+the frozen public facades cannot be replaced. The TypeScript type uses a private
+required unique-symbol brand for compile-time opacity; the runtime still
+validates exact WeakMap identity rather than trusting types. This costs a little ceremony but
+allows async application validation without reopening ambient authority.
+
 An explicit `ctx.privileged.run(...)` callback receives a separate
 `ctx.accessKeys` projection with only `list(ownerUserId, options?)`,
 `inspect(keyId)`, `revoke(keyId)`, `revokeAll(ownerUserId)`, and

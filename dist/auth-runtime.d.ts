@@ -253,13 +253,14 @@ export declare function refreshSessionOnAdapter(sqlite: LooseRecord, token: any)
 export declare function resolveAnonymousSession(database: LooseRecord, sessionToken: string | null): Promise<{
     token: any;
     auth: {
-        userId: any;
         displayName: any;
         email: any;
         picture: any;
         isAuthenticated: boolean;
         isGuest: boolean;
         provider: any;
+        userKind?: string | undefined;
+        userId: any;
     };
 }>;
 export declare function authStatus(config: LooseRecord, serverEnv: LooseRecord): {

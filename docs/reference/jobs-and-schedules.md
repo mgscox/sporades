@@ -42,7 +42,10 @@ repeating the same key for the same handler and captured user returns the
 retained Job.
 
 Retries, restart recovery, and child Jobs rehydrate the exact committed,
-bounded Auth and Credential snapshot. At capture, profile display metadata
+bounded Auth and Credential snapshot. Service actors retain the explicit
+`userKind: "service"` discriminator, so durable execution and audit policy never
+reinterpret a headless actor as a legacy human. Older snapshots without the
+discriminator remain the backwards-compatible human/Anonymous shape. At capture, profile display metadata
 that predates the Job storage bounds is deterministically shortened or omitted;
 authority-bearing user and provider identity remains exact. Later profile
 edits, Access-key rotation, revocation or deletion, unlinking, owner deletion,

@@ -21,6 +21,7 @@ const RUNTIME_TABLE_NAMES = [
   "sporades_auth_access_key_locks",
   "sporades_auth_access_key_owners",
   "sporades_auth_access_keys",
+  "sporades_auth_service_user_locks",
   "sporades_auth_email_credentials",
   "sporades_auth_identities",
   "sporades_auth_oauth_states",

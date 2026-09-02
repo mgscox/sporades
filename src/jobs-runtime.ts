@@ -1091,7 +1091,7 @@ function boundedJobIdentityString(value: unknown, field: string, maximum: number
 
 /** Canonical bounded AuthContext persisted at the successful enqueue boundary. */
 export function canonicalJobAuthSnapshot(auth: LooseRecord) {
-  const snapshot = {
+  const baseSnapshot = {
     userId: boundedJobIdentityString(auth?.userId, "userId", 256),
     displayName: boundedJobIdentityString(auth?.displayName, "displayName", 512),
     email: boundedJobIdentityString(auth?.email, "email", 320, true),
@@ -1100,9 +1100,15 @@ export function canonicalJobAuthSnapshot(auth: LooseRecord) {
     isGuest: auth?.isGuest,
     provider: boundedJobIdentityString(auth?.provider, "provider", 64),
   };
-  if (typeof snapshot.isAuthenticated !== "boolean" || typeof snapshot.isGuest !== "boolean") {
+  if (typeof baseSnapshot.isAuthenticated !== "boolean" || typeof baseSnapshot.isGuest !== "boolean") {
     throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is invalid.", "Use a runtime-issued AuthContext when enqueueing a Job.");
   }
+  if (auth?.userKind !== undefined && auth.userKind !== "service") {
+    throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is invalid.", "Use a runtime-issued AuthContext when enqueueing a Job.");
+  }
+  const snapshot = auth?.userKind === "service"
+    ? { ...baseSnapshot, userKind: "service" as const }
+    : baseSnapshot;
   const serialized = JSON.stringify(snapshot);
   if (Buffer.byteLength(serialized, "utf8") > JOB_AUTH_SNAPSHOT_MAX_BYTES) {
     throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is too large.", "Reduce bounded profile metadata before enqueueing the Job.");

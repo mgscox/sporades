@@ -168,6 +168,10 @@ const MIGRATED_RUNTIME_MODULES = [
   // admission throttles ship as one runtime domain. The private selector
   // fingerprint is security-sensitive and must remain visible to the walker.
   { file: "access-keys-runtime.js", atLeast: 20, sentinel: "accessKeySelectorFingerprint" },
+  // Service-User lifecycle authority, locking, and service-owned key issuance
+  // ship as a complete runtime domain. The Session recheck is private and is
+  // the trust boundary every management operation must cross.
+  { file: "service-users-runtime.js", atLeast: 5, sentinel: "requireCurrentHumanSession" },
   { file: "inspection-sql.js", atLeast: 15, sentinel: "skipSqlQuotedOrCommented" },
   { file: "log-index-guard.js", atLeast: 3, sentinel: "readSqlIdentifier" },
   // Batch 2. `mail-runtime`'s sentinel is private for the same reason the log-index guard's is: it
@@ -1290,6 +1294,7 @@ const RUN_LEXER_CENSUS = {
   beginOAuthSignIn: "not a lexer: `--client-id`, `--client-secret`, `--client-json` in CLI hint strings",
   createSharedDatabaseAdapterMethods: "not a lexer: `sporades logs --json` in CLI hint strings",
   buildSmtpMessage: "not a lexer: `--${boundary}` MIME multipart delimiters",
+  multipartParts: "not a lexer: `--${boundary}` HTTP multipart delimiters",
   isSensitiveLogString: "not a lexer: the `-----BEGIN … PRIVATE KEY-----` PEM header pattern",
   validateMailConfig: "not a lexer: a hostname label may not start or end with `-`",
   parseScheduleExpression: "not a lexer: cron step syntax, `split(\"/\")` and `base === \"*\"`",

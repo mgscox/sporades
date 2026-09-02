@@ -309,7 +309,15 @@ var ACCESS_KEY_OPERATOR_ACTIONS = [
 ];
 var ACTIONS = new Set(ACCESS_KEY_OPERATOR_ACTIONS);
 var STATUSES = /* @__PURE__ */ new Set(["active", "expired", "revoked"]);
-var REVOCATION_CAUSES = /* @__PURE__ */ new Set(["owner", "operator", "password-reset", "owner-unlinked", "owner-deleted"]);
+var REVOCATION_CAUSES = /* @__PURE__ */ new Set([
+  "owner",
+  "operator",
+  "password-reset",
+  "owner-unlinked",
+  "owner-deleted",
+  "service-user-administrator",
+  "service-user-disabled"
+]);
 var ACCESS_KEY_OPERATOR_LIST_PAGE_LIMIT = 100;
 var JSON_STRING_MAX_BYTE_EXPANSION = 6;
 var ACCESS_KEY_OPERATOR_ENVELOPE_STRUCTURAL_HEADROOM = 8 * 1024 * 1024;
@@ -580,6 +588,9 @@ function capLogEnvelope(envelope, maxBytes) {
   capped.message = capped.message.slice(0, 256);
   return capped;
 }
+var serviceUserMutationAuthority = Object.freeze({ kind: "service-user-mutation-authority" });
+var MutationExecutionStorage = process.getBuiltinModule("node:async_hooks").AsyncLocalStorage;
+var mutationExecution = new MutationExecutionStorage();
 
 // src/cli/cli-support.ts
 function errorDetails(error) {
@@ -622,7 +633,7 @@ function writeEnvelope(result, failed = false) {
 }
 
 // src/cli/cli-version.ts
-var CLI_VERSION = "0.9.9";
+var CLI_VERSION = "0.9.10";
 
 // src/cli/schedule-inspection-envelope.ts
 var SCHEDULE_DIAGNOSTIC_FIELDS = /* @__PURE__ */ new Set([

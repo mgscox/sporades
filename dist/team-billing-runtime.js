@@ -345,7 +345,7 @@ export async function performTeamBillingCheckout(database, context, payload, att
             if (!operation || !["queued", "running", "retrying"].includes(operation.status))
                 return null;
             await assertTeamBillingErasureInactive(database, transaction, operation.teamId);
-            const actor = await transaction.prepare(sql("SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider] FROM [sporades_auth_users] WHERE [id] = ?")).get(operation.actorUserId);
+            const actor = await transaction.prepare(sql("SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind] FROM [sporades_auth_users] WHERE [id] = ?")).get(operation.actorUserId);
             if (!actor)
                 throw teamBillingDenied();
             const auth = {
@@ -356,6 +356,7 @@ export async function performTeamBillingCheckout(database, context, payload, att
                 isAuthenticated: Boolean(actor.isAuthenticated),
                 isGuest: Boolean(actor.isGuest),
                 provider: actor.provider,
+                ...(actor.userKind === "service" ? { userKind: "service" } : {}),
             };
             await admitTeamBillingActor(database, transaction, auth, { operation: "checkout", teamId: operation.teamId, productKey: operation.productKey });
             const desired = await checkoutDesiredState(database, transaction, operation.teamId, operation.productKey);
@@ -859,11 +860,12 @@ async function readPortalOperation(transaction, operationId) {
         "FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'portal'")).get(operationId);
 }
 async function reauthorizePortalOperation(database, transaction, operation) {
-    const actor = await transaction.prepare(transaction.dialect.sql("SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider] FROM [sporades_auth_users] WHERE [id] = ?")).get(operation.actorUserId);
+    const actor = await transaction.prepare(transaction.dialect.sql("SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind] FROM [sporades_auth_users] WHERE [id] = ?")).get(operation.actorUserId);
     if (!actor)
         throw teamBillingDenied();
     const auth = { userId: actor.id, displayName: actor.displayName, email: actor.email, picture: actor.picture,
-        isAuthenticated: Boolean(actor.isAuthenticated), isGuest: Boolean(actor.isGuest), provider: actor.provider };
+        isAuthenticated: Boolean(actor.isAuthenticated), isGuest: Boolean(actor.isGuest), provider: actor.provider,
+        ...(actor.userKind === "service" ? { userKind: "service" } : {}) };
     await admitTeamBillingActor(database, transaction, auth, { operation: "portal", teamId: operation.teamId });
     return portalDesiredState(database, transaction, operation.teamId);
 }

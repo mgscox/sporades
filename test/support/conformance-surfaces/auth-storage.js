@@ -736,6 +736,78 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
     },
   },
   {
+    name: "email reauthentication claims, throttles, consumes, clears, and expires through the shared adapter",
+    async run(adapter) {
+      assert.equal(await adapter.claimEmailCredentialVersion(SIGNED_IN_USER.email, "hash-rotated", "salt-rotated"), true);
+      assert.equal(await adapter.claimEmailCredentialVersion(SIGNED_IN_USER.email, "hash-original", "salt-original"), false);
+      assert.equal(await adapter.claimEmailCredentialVersion("unregistered@example.com", "hash", "salt"), false);
+
+      const throttle = {
+        keys: ["email:signed-in", "session:rotated"],
+        now: NOW,
+        resetAt: NEXT_MONTH,
+        limit: 2,
+        maxEntries: 8,
+      };
+      await adapter.clearEmailReauthenticationAttempts(throttle.keys);
+      assert.equal(await adapter.reserveEmailReauthenticationAttempt(throttle), true);
+      assert.equal(await adapter.reserveEmailReauthenticationAttempt(throttle), true);
+      assert.equal(await adapter.reserveEmailReauthenticationAttempt(throttle), false);
+      await adapter.clearEmailReauthenticationAttempts(["email:signed-in", "session:rotated"]);
+      assert.equal(await adapter.reserveEmailReauthenticationAttempt(throttle), true);
+      await adapter.clearEmailReauthenticationAttempts(throttle.keys);
+
+      await adapter.replaceReauthenticationProof({
+        id: "proof-conformance-live",
+        userId: SIGNED_IN_USER.id,
+        sessionToken: "session-rotated",
+        purpose: "administrator-authority",
+        createdAt: NOW,
+        expiresAt: FAR_FUTURE,
+      });
+      assert.equal(await adapter.consumeReauthenticationProof({
+        sessionToken: "session-rotated",
+        userId: SIGNED_IN_USER.id,
+        purpose: "wrong-purpose",
+        now: LATER,
+      }), false);
+      assert.equal(await adapter.consumeReauthenticationProof({
+        sessionToken: "session-rotated",
+        userId: SIGNED_IN_USER.id,
+        purpose: "administrator-authority",
+        now: LATER,
+      }), true);
+      assert.equal(await adapter.consumeReauthenticationProof({
+        sessionToken: "session-rotated",
+        userId: SIGNED_IN_USER.id,
+        purpose: "administrator-authority",
+        now: LATER,
+      }), false);
+
+      await adapter.replaceReauthenticationProof({
+        id: "proof-conformance-expired",
+        userId: SIGNED_IN_USER.id,
+        sessionToken: "session-rotated",
+        purpose: "expired-purpose",
+        createdAt: LONG_PAST_CREATED,
+        expiresAt: LONG_PAST_EXPIRED,
+      });
+      await adapter.replaceReauthenticationProof({
+        id: "proof-conformance-retained",
+        userId: SIGNED_IN_USER.id,
+        sessionToken: "session-rotated",
+        purpose: "retained-purpose",
+        createdAt: NOW,
+        expiresAt: FAR_FUTURE,
+      });
+      assert.equal(Number((await adapter.deleteExpiredReauthenticationProofs(NOW)).changes), 1);
+      const sql = adapter.dialect.sql;
+      assert.equal(await countRows(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_auth_reauthentication_proofs] WHERE [id] = ?", "proof-conformance-expired"), 0);
+      assert.equal(await countRows(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_auth_reauthentication_proofs] WHERE [id] = ?", "proof-conformance-retained"), 1);
+      await adapter.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [id] = ?")).run("proof-conformance-retained");
+    },
+  },
+  {
     name: "insertPasswordResetCode issues a Reset code that findPasswordResetCode returns by selector",
     async run(adapter) {
       assert.equal(await adapter.findPasswordResetCode("reset-never-issued"), null);

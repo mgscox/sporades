@@ -114,6 +114,15 @@ export declare function canonicalJobAuthSnapshot(auth: LooseRecord): {
     isAuthenticated: any;
     isGuest: any;
     provider: string | null;
+} | {
+    userKind: "service";
+    userId: string | null;
+    displayName: string | null;
+    email: string | null;
+    picture: string | null;
+    isAuthenticated: any;
+    isGuest: any;
+    provider: string | null;
 };
 /**
  * Bounds profile metadata at the enqueue/migration boundary without rejecting Auth profiles that
@@ -121,6 +130,15 @@ export declare function canonicalJobAuthSnapshot(auth: LooseRecord): {
  * identity fields remain strict; only display metadata is shortened or omitted.
  */
 export declare function captureJobAuthSnapshot(auth: LooseRecord): {
+    userId: string | null;
+    displayName: string | null;
+    email: string | null;
+    picture: string | null;
+    isAuthenticated: any;
+    isGuest: any;
+    provider: string | null;
+} | {
+    userKind: "service";
     userId: string | null;
     displayName: string | null;
     email: string | null;
@@ -149,6 +167,15 @@ export declare function legacyJobAuthFallback(userId: unknown, provider: unknown
     provider: string;
 };
 export declare function readJobAuthSnapshot(row: LooseRecord): {
+    userId: string | null;
+    displayName: string | null;
+    email: string | null;
+    picture: string | null;
+    isAuthenticated: any;
+    isGuest: any;
+    provider: string | null;
+} | {
+    userKind: "service";
     userId: string | null;
     displayName: string | null;
     email: string | null;
