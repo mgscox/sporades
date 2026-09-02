@@ -3499,6 +3499,9 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
       }
     }
     finalizeEndpointIngressClaims(context ?? {}, true);
+    if ((context as LooseRecord | undefined)?.__pendingIngressClaimAudit) {
+      try { await database.log.emit({ category: "platform", event: "file.ingress.completed", level: "info", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "claimed" } }); } catch {}
+    }
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);

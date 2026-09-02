@@ -56,6 +56,8 @@ function partHeader(rawHeaders, name) {
     return value;
 }
 function unsupportedMultipartPartEncoding(rawHeaders) {
+    if (/(?:^|[^\r])\n|\r(?!\n)/.test(rawHeaders) || rawHeaders.startsWith("\r\n") || rawHeaders.endsWith("\r\n"))
+        return true;
     for (const line of rawHeaders.split("\r\n")) {
         if (/^[ \t]/.test(line))
             return true;
@@ -443,7 +445,6 @@ export function createEndpointIngressApi(database, endpoint, endpointRequest, co
                 if (row.state === "complete") {
                     if (!sameFileDescriptor(row.file, expectedFile))
                         throw idempotencyConflict();
-                    await emitIngressAudit(database, "completed", { outcome: "claimed" });
                     return fileMetadataFromRow(row.file);
                 }
                 if (row.state === "expired" || Date.parse(row.expiresAt) <= Date.now())
@@ -473,7 +474,7 @@ export function createEndpointIngressApi(database, endpoint, endpointRequest, co
                 const completed = storedReceipt ? JSON.parse(storedReceipt.payload) : null;
                 if (!completed || completed.state !== "complete" || !sameFileDescriptor(completed.file, file))
                     throw idempotencyConflict("Ingress receipt completion conflicted with another claim.");
-                await emitIngressAudit(database, "completed", { outcome: "claimed" });
+                context.__pendingIngressClaimAudit = true;
                 return fileMetadataFromRow(storedFile);
             }
             catch (error) {

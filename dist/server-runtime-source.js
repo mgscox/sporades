@@ -3263,6 +3263,12 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
             }
         }
         finalizeEndpointIngressClaims(context ?? {}, true);
+        if (context?.__pendingIngressClaimAudit) {
+            try {
+                await database.log.emit({ category: "platform", event: "file.ingress.completed", level: "info", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "claimed" } });
+            }
+            catch { }
+        }
         commitPendingJobCancellationAborts(context);
         await flushAccessKeyLifecycleAuditEvents(database, context);
         flushTeamSecurityEvents(database, context);

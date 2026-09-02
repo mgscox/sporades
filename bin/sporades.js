@@ -20581,6 +20581,7 @@ function partHeader(rawHeaders, name) {
   return value;
 }
 function unsupportedMultipartPartEncoding(rawHeaders) {
+  if (/(?:^|[^\r])\n|\r(?!\n)/.test(rawHeaders) || rawHeaders.startsWith("\r\n") || rawHeaders.endsWith("\r\n")) return true;
   for (const line of rawHeaders.split("\r\n")) {
     if (/^[ \t]/.test(line)) return true;
     const separator = line.indexOf(":");
@@ -20932,7 +20933,6 @@ function createEndpointIngressApi(database, endpoint, endpointRequest, context) 
         const expectedFile = { id: row.fileId, ownerId: row.ownerId, path: path12, name, type, size: row.size, version: row.version };
         if (row.state === "complete") {
           if (!sameFileDescriptor(row.file, expectedFile)) throw idempotencyConflict();
-          await emitIngressAudit(database, "completed", { outcome: "claimed" });
           return fileMetadataFromRow(row.file);
         }
         if (row.state === "expired" || Date.parse(row.expiresAt) <= Date.now()) throw Object.assign(new Error("File ingress lease has expired."), { code: "INGRESS_LEASE_EXPIRED" });
@@ -20953,7 +20953,7 @@ function createEndpointIngressApi(database, endpoint, endpointRequest, context) 
         const storedReceipt = await database.adapter.completeIngressClaim(row);
         const completed = storedReceipt ? JSON.parse(storedReceipt.payload) : null;
         if (!completed || completed.state !== "complete" || !sameFileDescriptor(completed.file, file)) throw idempotencyConflict("Ingress receipt completion conflicted with another claim.");
-        await emitIngressAudit(database, "completed", { outcome: "claimed" });
+        context.__pendingIngressClaimAudit = true;
         return fileMetadataFromRow(storedFile);
       } catch (error) {
         const code = safeIngressAuditCode(error);
@@ -23683,6 +23683,12 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
       }
     }
     finalizeEndpointIngressClaims(context ?? {}, true);
+    if (context?.__pendingIngressClaimAudit) {
+      try {
+        await database.log.emit({ category: "platform", event: "file.ingress.completed", level: "info", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "claimed" } });
+      } catch {
+      }
+    }
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
