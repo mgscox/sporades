@@ -467,7 +467,26 @@ const file = await ctx.files.claim(lease, { path: `/attachments/${id}/source` })
 ```
 
 The staged bytes must exist before the receipt is completed. The File row,
-receipt completion, bucket, and application writes then commit together. A
+receipt completion, bucket, application writes, and one runtime-private audit
+intent then commit together. The intent drains after commit, at startup, and
+through a bounded single-flight clock retry to `file.ingress.completed`.
+Delivery is **at least once**, not exactly once: JSONL append and private
+acknowledgement cannot share an atomic commit, so a process stop after append
+and before acknowledgement can repeat an event during recovery. Every event
+contains only `{ schema: "v1", outcome: "claimed", deliveryId }`; `deliveryId`
+is a stable opaque digest, never a request key, lease, File ID, principal,
+filename, or credential. Consumers must deduplicate by `deliveryId`. Logger
+failure leaves the intent pending without altering committed application state.
+An acknowledgement failure after a successful append returns that exact
+token-fenced intent to pending for the live retry; if that release also fails,
+Sporades emits the safe `INGRESS_AUDIT_ACK_RELEASE_FAILED` platform warning and
+startup recovery repairs the abandoned delivery lease. A transient startup
+recovery failure emits `INGRESS_AUDIT_RECOVERY_FAILED` and remains a bounded
+live-maintenance retry until recovery succeeds; once clear, ordinary timer
+ticks do not rescan interrupted delivery rows.
+Delivered intents remain inspectable for 24 hours and are then pruned
+oldest-first in batches of 50; pending and in-progress intents are never
+pruned, and completed File retries do not create a new intent. A
 staging receipt becomes claimable only through a key, lease, state, and expiry
 compare-and-set after its object write. If expiry cleanup wins that race,
 Sporades compensates the exact newly written object and never revives the row;

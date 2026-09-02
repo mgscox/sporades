@@ -3,6 +3,12 @@
 import { ensureFileBucket, fileMetadataFromRow, normalizeAbsoluteFilePath } from "./file-storage-runtime.js";
 const crypto = process.getBuiltinModule("node:crypto");
 const leaseTtlMs = 10 * 60 * 1000;
+const ingressClaimAuditRetentionMs = 24 * 60 * 60 * 1000;
+const ingressClaimAuditPruneLimit = 50;
+function ingressAuditNow(database) {
+    const now = database.clock?.now?.();
+    return (now instanceof Date ? now : new Date()).toISOString();
+}
 async function receipt(database, key) {
     const sql = database.adapter.dialect.sql("SELECT [payload] FROM [sporades_file_ingress] WHERE [key] = ?");
     const row = await database.adapter.prepare(sql).get(key);
@@ -55,6 +61,24 @@ function partHeader(rawHeaders, name) {
         return /^<([^>\r\n]+)>$/.exec(value)?.[1] ?? value;
     return value;
 }
+function unsupportedMultipartPartEncoding(rawHeaders) {
+    if (/(?:^|[^\r])\n|\r(?!\n)/.test(rawHeaders) || rawHeaders.startsWith("\r\n") || rawHeaders.endsWith("\r\n"))
+        return true;
+    for (const line of rawHeaders.split("\r\n")) {
+        if (/^[ \t]/.test(line))
+            return true;
+        const separator = line.indexOf(":");
+        if (separator <= 0)
+            continue;
+        const name = line.slice(0, separator).trim().toLowerCase();
+        const value = line.slice(separator + 1).trim().toLowerCase();
+        if (name === "content-transfer-encoding")
+            return true;
+        if (name === "content-type" && /^multipart\//.test(value))
+            return true;
+    }
+    return false;
+}
 function safeName(value) { return String(value ?? "upload").replace(/[\\/\x00-\x1f]/g, "_").trim().slice(0, 255) || "upload"; }
 function safeType(value) { const type = String(value ?? "").split(";", 1)[0].trim().toLowerCase(); return /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(type) ? type : "application/octet-stream"; }
 function framedIngressKey(parts) {
@@ -66,6 +90,19 @@ function legacyDelimitedKeyFor(endpoint, requestKey, partKey, actor) { return `$
 function publicLease(row) { return Object.freeze({ leaseId: row.leaseId, partId: row.partId, fieldName: row.fieldName, name: row.name, type: row.type, declaredSize: null, size: row.size, expiresAt: row.expiresAt }); }
 function idempotencyConflict(message = "Ingress claim conflicts with the completed request.") { return Object.assign(new Error(message), { code: "IDEMPOTENCY_CONFLICT" }); }
 function ingressAuthorityDenied() { return Object.assign(new Error("File ingress authority is unavailable."), { code: "INGRESS_AUTHORITY_DENIED" }); }
+const ingressAuditCodes = new Set(["INVALID_MULTIPART", "MULTIPART_LIMIT_EXCEEDED", "INVALID_MULTIPART_REQUEST_KEY", "INVALID_MULTIPART_PART_KEY", "INGRESS_AUTHORITY_DENIED", "INGRESS_LEASE_EXPIRED", "INGRESS_PATH_DENIED", "INGRESS_DESCRIPTOR_CONFLICT", "INGRESS_STAGING_INCOMPLETE", "INGRESS_ORPHAN_CLEANUP_FAILED", "FILE_PATH_EXISTS"]);
+async function emitIngressAudit(database, event, data) {
+    try {
+        await database.log?.emit?.({ category: "platform", event: `file.ingress.${event}`, level: event === "failed" || event === "cleanup-failed" ? "warn" : "info", message: "Multipart ingress lifecycle event", data: { schema: "v1", ...data } });
+    }
+    catch { /* Auditing must not turn a bounded ingress outcome into a transport failure. */ }
+}
+function safeIngressAuditCode(error) { return ingressAuditCodes.has(error?.code) ? error.code : "INGRESS_FAILED"; }
+function ingressClaimAuditId(row) {
+    // Receipt keys are opaque already; hash again so no private storage identity
+    // can accidentally become a future audit payload field.
+    return `v1:${crypto.createHash("sha256").update(String(row.key), "utf8").digest("hex")}`;
+}
 function sameFileDescriptor(left, right) {
     return left?.id === right?.id && left?.ownerId === right?.ownerId && left?.path === right?.path && left?.name === right?.name && left?.type === right?.type && Number(left?.size) === Number(right?.size) && left?.version === right?.version;
 }
@@ -198,14 +235,28 @@ export async function* multipartParts(request, boundaryText, maxWireBytes, maxPa
 }
 /** Parse only after endpoint credential admission. The bounded body is never exposed as an ordinary endpoint body. */
 export async function stageMultipartIngress(database, endpoint, request, endpointRequest, actor, admittedAuthority) {
-    const policy = validateMultipartIngressPolicy(endpoint.options.body.multipart);
+    let policy;
+    try {
+        policy = validateMultipartIngressPolicy(endpoint.options.body.multipart);
+    }
+    catch (error) {
+        await emitIngressAudit(database, "failed", { outcome: "failed", code: safeIngressAuditCode(error) });
+        throw error;
+    }
     const contentType = String(endpointRequest.headers["content-type"] ?? "");
     const boundary = multipartBoundary(contentType);
-    if (!boundary)
-        throw Object.assign(new Error("Invalid multipart request."), { code: "INVALID_MULTIPART" });
+    if (!boundary) {
+        const error = Object.assign(new Error("Invalid multipart request."), { code: "INVALID_MULTIPART" });
+        await emitIngressAudit(database, "failed", { outcome: "failed", code: "INVALID_MULTIPART" });
+        throw error;
+    }
     const requestKey = header(endpointRequest.headers, policy.requestKeyHeader);
-    if (typeof requestKey !== "string" || requestKey.length < 1 || requestKey.length > 200)
-        throw Object.assign(new Error("Missing multipart idempotency key."), { code: "INVALID_MULTIPART_REQUEST_KEY" });
+    if (typeof requestKey !== "string" || requestKey.length < 1 || requestKey.length > 200) {
+        const error = Object.assign(new Error("Missing multipart idempotency key."), { code: "INVALID_MULTIPART_REQUEST_KEY" });
+        await emitIngressAudit(database, "failed", { outcome: "failed", code: "INVALID_MULTIPART_REQUEST_KEY" });
+        throw error;
+    }
+    await emitIngressAudit(database, "started", { outcome: "started" });
     const maxBytes = Number(policy.maxTotalFileBytes) + Number(policy.maxTotalFieldBytes) + 65536;
     const files = [];
     const fields = Object.create(null);
@@ -221,6 +272,8 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
             const body = part.body;
             if (rawHeaders.length > 16384)
                 throw Object.assign(new Error("Multipart headers exceed limit."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+            if (unsupportedMultipartPartEncoding(rawHeaders))
+                throw Object.assign(new Error("Unsupported multipart part encoding."), { code: "INVALID_MULTIPART" });
             const disposition = /^content-disposition:\s*form-data;\s*name="([^"]+)"(?:;\s*filename="([^"]*)")?/im.exec(rawHeaders);
             if (!disposition)
                 throw Object.assign(new Error("Malformed multipart part."), { code: "INVALID_MULTIPART" });
@@ -315,10 +368,14 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
                 cleanupErrors.push(cleanupError);
             }
         }
-        if (cleanupErrors.length)
+        if (cleanupErrors.length) {
+            await emitIngressAudit(database, "failed", { outcome: "failed", code: safeIngressAuditCode(primaryError) });
             throw new AggregateError([primaryError, ...cleanupErrors], "Multipart ingress staging failed and cleanup was incomplete.");
+        }
+        await emitIngressAudit(database, "failed", { outcome: "failed", code: safeIngressAuditCode(primaryError) });
         throw primaryError;
     }
+    await emitIngressAudit(database, "completed", { outcome: "leased" });
     return { body: null, bodyBytes: Object.freeze({ byteLength: 0, length: 0, at() { return undefined; }, toUint8Array() { return new Uint8Array(); }, *[Symbol.iterator]() { } }), multipart: Object.freeze({ files: Object.freeze(files), fields: Object.freeze(fields) }), __ingressRequestKey: requestKey, __ingressAuthority: admittedAuthority ?? Object.freeze({ kind: "actor", actorId: String(actor.userId ?? ""), ownerId: String(actor.userId ?? "") }) };
 }
 export function validateMultipartIngressPolicy(policy) {
@@ -366,68 +423,78 @@ export function createEndpointIngressApi(database, endpoint, endpointRequest, co
     const admittedAuthority = endpointRequest.__ingressAuthority ?? { kind: "actor", actorId, ownerId: actorId };
     return {
         async claim(lease, options) {
-            const row = await receiptByLease(database, lease?.leaseId);
-            if (!row)
-                throw ingressAuthorityDenied();
-            const requestedAuthority = options?.authority ?? { kind: "actor" };
-            let claimAuthorityId;
-            if (row.authorityKind === "capsule-principal") {
-                if (requestedAuthority?.kind !== "capsule-principal" || admittedAuthority?.kind !== "capsule-principal" || typeof requestedAuthority.namespace !== "string" || typeof requestedAuthority.key !== "string")
-                    throw ingressAuthorityDenied();
-                const requestedDigest = crypto.createHash("sha256").update(`${requestedAuthority.namespace}\0${requestedAuthority.key}`, "utf8").digest("hex");
-                if (requestedAuthority.namespace !== admittedAuthority.namespace || requestedDigest !== admittedAuthority.keyDigest || row.principalNamespace !== requestedAuthority.namespace || row.principalKeyDigest !== requestedDigest || row.ownerId !== database.capsuleIngressOwnerId)
-                    throw ingressAuthorityDenied();
-                claimAuthorityId = `capsule:${requestedAuthority.namespace}:${requestedDigest}`;
-            }
-            else {
-                if (requestedAuthority?.kind !== "actor" || admittedAuthority?.kind !== "actor" || !context.auth?.isAuthenticated || context.auth?.isGuest || admittedAuthority.actorId !== actorId || row.ownerId !== actorId)
-                    throw ingressAuthorityDenied();
-                claimAuthorityId = `actor:${actorId}`;
-            }
-            const expectedLease = publicLease(row);
-            if (row.authorityId !== claimAuthorityId || row.endpointMethod !== String(endpoint.options.method) || row.endpointPath !== String(endpoint.options.path) || row.requestKey !== requestKey ||
-                expectedLease.leaseId !== lease?.leaseId || expectedLease.partId !== lease?.partId || expectedLease.fieldName !== lease?.fieldName || expectedLease.name !== lease?.name || expectedLease.type !== lease?.type || expectedLease.size !== lease?.size || expectedLease.expiresAt !== lease?.expiresAt) {
-                throw ingressAuthorityDenied();
-            }
-            const path = normalizeAbsoluteFilePath(options?.path);
-            if (!policy.allowedPathPrefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}/`)))
-                throw Object.assign(new Error("File path is outside the endpoint ingress policy."), { code: "INGRESS_PATH_DENIED" });
-            const name = safeName(options?.name ?? row.name);
-            const type = safeType(options?.type ?? row.type);
-            const expectedFile = { id: row.fileId, ownerId: row.ownerId, path, name, type, size: row.size, version: row.version };
-            if (row.state === "complete") {
-                if (!sameFileDescriptor(row.file, expectedFile))
-                    throw idempotencyConflict();
-                return fileMetadataFromRow(row.file);
-            }
-            if (row.state === "expired" || Date.parse(row.expiresAt) <= Date.now())
-                throw Object.assign(new Error("File ingress lease has expired."), { code: "INGRESS_LEASE_EXPIRED" });
-            if (row.state !== "leased")
-                throw idempotencyConflict("Ingress lease is not claimable.");
-            const now = new Date().toISOString();
-            const bucket = await ensureFileBucket(database, row.ownerId, "default", now);
-            const file = { id: row.fileId, ownerId: row.ownerId, bucketId: bucket.id, bucketName: bucket.name, path, name: safeName(options?.name ?? row.name), type: safeType(options?.type ?? row.type), size: row.size, version: row.version, status: "uploaded", createdAt: now, updatedAt: now };
-            // This function receives the endpoint's transaction-scoped adapter. Persisting the
-            // receipt transition here means File metadata, claim state, and app writes commit or
-            // roll back together; there is no post-commit in-memory publication step.
             try {
-                await database.adapter.insertFileRowIfAbsent(file);
+                const row = await receiptByLease(database, lease?.leaseId);
+                if (!row)
+                    throw ingressAuthorityDenied();
+                const requestedAuthority = options?.authority ?? { kind: "actor" };
+                let claimAuthorityId;
+                if (row.authorityKind === "capsule-principal") {
+                    if (requestedAuthority?.kind !== "capsule-principal" || admittedAuthority?.kind !== "capsule-principal" || typeof requestedAuthority.namespace !== "string" || typeof requestedAuthority.key !== "string")
+                        throw ingressAuthorityDenied();
+                    const requestedDigest = crypto.createHash("sha256").update(`${requestedAuthority.namespace}\0${requestedAuthority.key}`, "utf8").digest("hex");
+                    if (requestedAuthority.namespace !== admittedAuthority.namespace || requestedDigest !== admittedAuthority.keyDigest || row.principalNamespace !== requestedAuthority.namespace || row.principalKeyDigest !== requestedDigest || row.ownerId !== database.capsuleIngressOwnerId)
+                        throw ingressAuthorityDenied();
+                    claimAuthorityId = `capsule:${requestedAuthority.namespace}:${requestedDigest}`;
+                }
+                else {
+                    if (requestedAuthority?.kind !== "actor" || admittedAuthority?.kind !== "actor" || !context.auth?.isAuthenticated || context.auth?.isGuest || admittedAuthority.actorId !== actorId || row.ownerId !== actorId)
+                        throw ingressAuthorityDenied();
+                    claimAuthorityId = `actor:${actorId}`;
+                }
+                const expectedLease = publicLease(row);
+                if (row.authorityId !== claimAuthorityId || row.endpointMethod !== String(endpoint.options.method) || row.endpointPath !== String(endpoint.options.path) || row.requestKey !== requestKey ||
+                    expectedLease.leaseId !== lease?.leaseId || expectedLease.partId !== lease?.partId || expectedLease.fieldName !== lease?.fieldName || expectedLease.name !== lease?.name || expectedLease.type !== lease?.type || expectedLease.size !== lease?.size || expectedLease.expiresAt !== lease?.expiresAt) {
+                    throw ingressAuthorityDenied();
+                }
+                const path = normalizeAbsoluteFilePath(options?.path);
+                if (!policy.allowedPathPrefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}/`)))
+                    throw Object.assign(new Error("File path is outside the endpoint ingress policy."), { code: "INGRESS_PATH_DENIED" });
+                const name = safeName(options?.name ?? row.name);
+                const type = safeType(options?.type ?? row.type);
+                const expectedFile = { id: row.fileId, ownerId: row.ownerId, path, name, type, size: row.size, version: row.version };
+                if (row.state === "complete") {
+                    if (!sameFileDescriptor(row.file, expectedFile))
+                        throw idempotencyConflict();
+                    return fileMetadataFromRow(row.file);
+                }
+                if (row.state === "expired" || Date.parse(row.expiresAt) <= Date.now())
+                    throw Object.assign(new Error("File ingress lease has expired."), { code: "INGRESS_LEASE_EXPIRED" });
+                if (row.state !== "leased")
+                    throw idempotencyConflict("Ingress lease is not claimable.");
+                const now = new Date().toISOString();
+                const bucket = await ensureFileBucket(database, row.ownerId, "default", now);
+                const file = { id: row.fileId, ownerId: row.ownerId, bucketId: bucket.id, bucketName: bucket.name, path, name: safeName(options?.name ?? row.name), type: safeType(options?.type ?? row.type), size: row.size, version: row.version, status: "uploaded", createdAt: now, updatedAt: now };
+                // This function receives the endpoint's transaction-scoped adapter. Persisting the
+                // receipt transition here means File metadata, claim state, and app writes commit or
+                // roll back together; there is no post-commit in-memory publication step.
+                try {
+                    await database.adapter.insertFileRowIfAbsent(file);
+                }
+                catch (error) {
+                    if (isUniqueConstraintError(error))
+                        throw Object.assign(new Error("File path already exists."), { code: "FILE_PATH_EXISTS" });
+                    throw error;
+                }
+                const storedFile = await database.adapter.selectFileById(file.id);
+                if (!storedFile || !sameFileDescriptor(storedFile, file))
+                    throw idempotencyConflict("Ingress File metadata conflicts with an existing row.");
+                row.state = "complete";
+                row.file = storedFile;
+                const storedReceipt = await database.adapter.completeIngressClaim(row);
+                const completed = storedReceipt ? JSON.parse(storedReceipt.payload) : null;
+                if (!completed || completed.state !== "complete" || !sameFileDescriptor(completed.file, file))
+                    throw idempotencyConflict("Ingress receipt completion conflicted with another claim.");
+                // This transaction-scoped write is not coupled to a context object:
+                // Capsule middleware may clone contexts before the handler receives one.
+                await database.adapter.enqueueIngressClaimAudit({ claimId: ingressClaimAuditId(completed), createdAt: now });
+                return fileMetadataFromRow(storedFile);
             }
             catch (error) {
-                if (isUniqueConstraintError(error))
-                    throw Object.assign(new Error("File path already exists."), { code: "FILE_PATH_EXISTS" });
+                const code = safeIngressAuditCode(error);
+                await emitIngressAudit(database, code === "INGRESS_AUTHORITY_DENIED" || code === "INGRESS_PATH_DENIED" ? "denied" : "failed", { outcome: code === "INGRESS_AUTHORITY_DENIED" || code === "INGRESS_PATH_DENIED" ? "denied" : "failed", code });
                 throw error;
             }
-            const storedFile = await database.adapter.selectFileById(file.id);
-            if (!storedFile || !sameFileDescriptor(storedFile, file))
-                throw idempotencyConflict("Ingress File metadata conflicts with an existing row.");
-            row.state = "complete";
-            row.file = storedFile;
-            const storedReceipt = await database.adapter.completeIngressClaim(row);
-            const completed = storedReceipt ? JSON.parse(storedReceipt.payload) : null;
-            if (!completed || completed.state !== "complete" || !sameFileDescriptor(completed.file, file))
-                throw idempotencyConflict("Ingress receipt completion conflicted with another claim.");
-            return fileMetadataFromRow(storedFile);
         },
         async status(statusRequestKey, partKey) {
             const capsulePrincipal = admittedAuthority.kind === "capsule-principal";
@@ -454,6 +521,92 @@ export function createEndpointIngressApi(database, endpoint, endpointRequest, co
 /** Database and object storage cannot share a transaction: publish Map state only after SQL commits. */
 export function finalizeEndpointIngressClaims(context, committed) {
     // Claim state is persisted in the endpoint transaction; retained for call-site compatibility.
+}
+/** Reset an interrupted delivery lease at startup; ordinary drains never steal live work. */
+export async function recoverIngressClaimAuditOutbox(database) {
+    try {
+        await database.adapter.recoverIngressClaimAudits(ingressAuditNow(database));
+        return true;
+    }
+    catch {
+        try {
+            await database.log?.emit?.({ category: "platform", event: "file.ingress.audit-recovery-failed", level: "warn", message: "Multipart ingress audit recovery failed", data: { schema: "v1", outcome: "failed", code: "INGRESS_AUDIT_RECOVERY_FAILED" } });
+        }
+        catch { }
+        return false;
+    }
+}
+/** Emit the fixed public audit only after its transaction has committed. */
+export async function drainIngressClaimAuditOutbox(database, options = {}) {
+    const limit = Math.max(1, Math.min(100, Number.isInteger(options.limit) ? options.limit : 50));
+    let pending;
+    try {
+        pending = await database.adapter.selectPendingIngressClaimAudits(limit);
+    }
+    catch {
+        return;
+    }
+    for (const candidate of pending) {
+        const claimId = String(candidate.claimId ?? "");
+        if (!claimId)
+            continue;
+        const claimToken = crypto.randomUUID();
+        try {
+            const claimed = await database.adapter.claimIngressClaimAudit(claimId, claimToken, ingressAuditNow(database));
+            if (Number(claimed?.changes ?? 0) !== 1)
+                continue;
+            try {
+                await database.log.emit({ category: "platform", event: "file.ingress.completed", level: "info", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "claimed", deliveryId: claimId } });
+            }
+            catch {
+                await releaseIngressClaimAudit(database, claimId, claimToken, "INGRESS_AUDIT_RELEASE_FAILED");
+                continue;
+            }
+            try {
+                await database.adapter.deliverIngressClaimAudit(claimId, claimToken, ingressAuditNow(database));
+            }
+            catch {
+                // The append may already be durable, so retry is deliberately
+                // duplicate-tolerant. Return only this token-fenced lease to pending;
+                // a concurrent drainer cannot reset another worker's claim.
+                try {
+                    await releaseIngressClaimAudit(database, claimId, claimToken, "INGRESS_AUDIT_ACK_RELEASE_FAILED");
+                }
+                catch {
+                    // Startup recovery remains the final repair path. This marker is
+                    // observable without exposing the private delivery identity.
+                    try {
+                        await database.log.emit({ category: "platform", event: "file.ingress.audit-delivery-release-failed", level: "warn", message: "Multipart ingress audit delivery release failed", data: { schema: "v1", outcome: "failed", code: "INGRESS_AUDIT_ACK_RELEASE_FAILED" } });
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch {
+            // A failed sink or adapter operation leaves private durable work pending.
+        }
+    }
+    try {
+        const cutoff = new Date(new Date(ingressAuditNow(database)).getTime() - ingressClaimAuditRetentionMs).toISOString();
+        await database.adapter.pruneDeliveredIngressClaimAudits(cutoff, ingressClaimAuditPruneLimit);
+    }
+    catch { /* Retention is maintenance; the next bounded drain retries. */ }
+}
+async function releaseIngressClaimAudit(database, claimId, claimToken, code) {
+    try {
+        await database.adapter.releaseIngressClaimAudit(claimId, claimToken, ingressAuditNow(database));
+        return true;
+    }
+    catch {
+        // This exact claim remains delivering, so make the root maintenance loop
+        // retry recovery while the runtime stays alive.
+        (database.__rootDatabase ?? database).__ingressAuditRecoveryPending = true;
+        try {
+            await database.log?.emit?.({ category: "platform", event: "file.ingress.audit-delivery-release-failed", level: "warn", message: "Multipart ingress audit delivery release failed", data: { schema: "v1", outcome: "failed", code } });
+        }
+        catch { }
+        return false;
+    }
 }
 async function armIngressSweep(database, candidate, now, sweepToken) {
     for (let attempt = 0; attempt <= 100; attempt += 1) {
@@ -524,6 +677,10 @@ export async function sweepExpiredFileIngress(database, options = {}) {
             failures.push(Object.freeze({ leaseId, code: error?.code === "INGRESS_SWEEP_INVALID_RECEIPT" ? "INGRESS_SWEEP_INVALID_RECEIPT" : "INGRESS_SWEEP_STORAGE_FAILED" }));
         }
     }
+    if (cleaned.length > 0)
+        await emitIngressAudit(database, "completed", { outcome: "cleaned" });
+    if (failures.length > 0)
+        await emitIngressAudit(database, "cleanup-failed", { outcome: "failed", code: failures[0].code });
     return Object.freeze({ scanned: candidates.length, cleaned: Object.freeze(cleaned), failures: Object.freeze(failures) });
 }
 //# sourceMappingURL=file-ingress-runtime.js.map

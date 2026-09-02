@@ -50,7 +50,7 @@ import { deserializeFieldValue, deserializeRow, normalizeDateValue, serializeFie
 // here, so importing them would declare a name nothing in this file reads.
 import { applyReadAcl, assertActivePrivilegedJobAccess, bindPendingAclWrites, createPrivilegedAuditEmitter, createPrivilegedAuditEmissionPublicError, createPrivilegedFileApi, createPrivilegedRunAbortError, createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi, drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit, filterRowsByReadAcl, grantPrivilegedDbAccess, isPrivilegedAuditEmissionPublicError, normalizeFileAcl, normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback, revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode, trackPendingAclWrite, } from "./acl-runtime.js";
 import { createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter, deletePrivateFile, getPrivateFileUrl, revokePublicFileUrl, } from "./file-storage-runtime.js";
-import { createEndpointIngressApi, finalizeEndpointIngressClaims, stageMultipartIngress, sweepExpiredFileIngress, validateMultipartIngressPolicy } from "./file-ingress-runtime.js";
+import { createEndpointIngressApi, drainIngressClaimAuditOutbox, finalizeEndpointIngressClaims, recoverIngressClaimAuditOutbox, stageMultipartIngress, sweepExpiredFileIngress, validateMultipartIngressPolicy } from "./file-ingress-runtime.js";
 import { abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob, canonicalJobCredentialProvenance, captureJobAuthSnapshot, commitPendingJobCancellationAborts, createRuntimeClock, decodeJobCursor, dropPendingJobCancellationAborts, encodeJobCursor, ensureJobStorage, ensureScheduleStorage, finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence, normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, readJobAuthSnapshot, readJobCredentialProvenance, resolveSchedulePayload, RESERVED_JOB_NAME_PREFIX, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure, scheduleStripeEventPayloadCleanup, startStripeEventPayloadCleanup, stopStripeEventPayloadCleanup, STRIPE_EVENT_JOB, stripeEventPayloadRetentionStorageValue, scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduledOccurrenceIdentity, } from "./jobs-runtime.js";
 import { dispatchVerifiedStripeEvent } from "./stripe-events-runtime.js";
 const mutationResultsWithWrites = new WeakSet();
@@ -971,6 +971,8 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             database.__scheduleRecoveryDueAt = null;
             database.__scheduleRecoveryPromise = null;
             database.__scheduleLegacyDiscoveryTimer = null;
+            database.__ingressAuditRecoveryPending = true;
+            await runIngressAuditOutboxDrain(database);
             // Recovery may classify durable state while the candidate is stopped,
             // but it returns the retained wake instead of arming it. Publication is
             // the single boundary that releases both Job and Schedule work.
@@ -980,6 +982,9 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             const reconciled = await reconcileSchedules(database);
             database.__scheduleStopped = false;
             startStaticSchedules(database, reconciled.timerPlans);
+            await runPeriodicIngressSweep(database);
+            startPeriodicIngressSweep(database);
+            startPeriodicIngressAuditOutboxDrain(database);
             if (!database.__jobActivationDeferred) {
                 // Orderly shutdown deliberately retains queued and delayed Jobs. A
                 // fresh runtime has no inherited worker/wake timer, so activation
@@ -1102,9 +1107,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     await sqlite.ensureFileStorage();
     await sqlite.ensureLogStorage();
     if (!options?.runtimeActionOnly) {
-        const ingressSweep = await sweepExpiredFileIngress(database);
-        if (ingressSweep.failures.length > 0)
-            await database.log.emit({ category: "platform", event: "file.ingress.sweep_failed", level: "warn", message: "Multipart ingress cleanup left retryable orphan state", data: { code: ingressSweep.failures[0].code, failures: ingressSweep.failures.length, scanned: ingressSweep.scanned } });
+        await reportIngressSweepSelectionFailure(database, await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() }));
     }
     if (!options?.runtimeActionOnly) {
         await recoverInvalidRetainedJobState(database);
@@ -1292,10 +1295,91 @@ const MAX_NATIVE_TIMER_DELAY_MS = 2_147_483_647;
 const SCHEDULE_RECOVERY_RETRY_MS = 1_000;
 const LEGACY_SCHEDULE_DISCOVERY_INTERVAL_MS = 1_000;
 const LEGACY_SCHEDULE_DISCOVERY_LIMIT = 100;
+const INGRESS_SWEEP_INTERVAL_MS = 60_000;
+const INGRESS_AUDIT_OUTBOX_INTERVAL_MS = 1_000;
+async function runIngressAuditOutboxDrain(database) {
+    if (database.__ingressAuditOutboxPromise)
+        return database.__ingressAuditOutboxPromise;
+    const run = (async () => {
+        if (database.__ingressAuditRecoveryPending) {
+            database.__ingressAuditRecoveryPending = !(await recoverIngressClaimAuditOutbox(database));
+        }
+        await drainIngressClaimAuditOutbox(database);
+    })();
+    database.__ingressAuditOutboxPromise = run;
+    try {
+        await run;
+    }
+    finally {
+        if (database.__ingressAuditOutboxPromise === run)
+            database.__ingressAuditOutboxPromise = null;
+    }
+}
+function startPeriodicIngressAuditOutboxDrain(database) {
+    const arm = () => {
+        if (database.__scheduleStopped)
+            return;
+        const timer = database.clock.setTimer(async () => {
+            database.__scheduleTimers?.delete(timer);
+            await runIngressAuditOutboxDrain(database);
+            arm();
+        }, INGRESS_AUDIT_OUTBOX_INTERVAL_MS);
+        database.__scheduleTimers?.add(timer);
+        database.__ingressAuditOutboxTimer = timer;
+    };
+    arm();
+}
+async function runPeriodicIngressSweep(database) {
+    if (database.__ingressSweepPromise)
+        return database.__ingressSweepPromise;
+    const run = (async () => {
+        try {
+            await reportIngressSweepSelectionFailure(database, await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() }));
+        }
+        catch {
+            // Cleanup is maintenance: it must never make the serving runtime unhealthy.
+            await database.log.emit({ category: "platform", event: "file.ingress.cleanup-failed", level: "warn", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "failed", code: "INGRESS_SWEEP_STORAGE_FAILED" } });
+        }
+    })();
+    database.__ingressSweepPromise = run;
+    try {
+        await run;
+    }
+    finally {
+        if (database.__ingressSweepPromise === run)
+            database.__ingressSweepPromise = null;
+    }
+}
+async function reportIngressSweepSelectionFailure(database, result) {
+    if (result?.scanned !== 0 || result?.cleaned?.length !== 0 || !result?.failures?.some((failure) => failure?.code === "INGRESS_SWEEP_STORAGE_FAILED"))
+        return;
+    try {
+        await database.log.emit({ category: "platform", event: "file.ingress.cleanup-failed", level: "warn", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "failed", code: "INGRESS_SWEEP_STORAGE_FAILED" } });
+    }
+    catch { }
+}
+function startPeriodicIngressSweep(database) {
+    const arm = () => {
+        if (database.__scheduleStopped)
+            return;
+        const timer = database.clock.setTimer(async () => {
+            database.__scheduleTimers?.delete(timer);
+            await runPeriodicIngressSweep(database);
+            arm();
+        }, INGRESS_SWEEP_INTERVAL_MS);
+        database.__scheduleTimers?.add(timer);
+        database.__ingressSweepTimer = timer;
+    };
+    arm();
+}
 function settleActiveScheduleWork(database) {
     const active = new Set(database.__activeScheduleOccurrences ?? []);
     if (database.__scheduleRecoveryPromise)
         active.add(database.__scheduleRecoveryPromise);
+    if (database.__ingressSweepPromise)
+        active.add(database.__ingressSweepPromise);
+    if (database.__ingressAuditOutboxPromise)
+        active.add(database.__ingressAuditOutboxPromise);
     if (active.size === 0)
         return undefined;
     return Promise.allSettled([...active]).then(() => undefined);
@@ -3136,19 +3220,30 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
         await recordAccessKeyUsage(database, accessKeyAdmission);
     }
     if (endpoint.options?.body?.multipart) {
-        const claimAuthority = endpointIngressClaimAuthority(endpoint);
-        const admitted = (accessKeyAdmission ?? session);
-        let ingressAuthority;
-        if (claimAuthority === "capsule-principal") {
-            ingressAuthority = await admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, request.signal);
+        try {
+            const claimAuthority = endpointIngressClaimAuthority(endpoint);
+            const admitted = (accessKeyAdmission ?? session);
+            let ingressAuthority;
+            if (claimAuthority === "capsule-principal") {
+                ingressAuthority = await admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, request.signal);
+            }
+            else {
+                if (!admitted?.auth?.isAuthenticated || admitted.auth.isGuest || isReservedAuthUserId(admitted.auth.userId))
+                    throw commandError("Unauthenticated.", "Sign in with a linked human or service User and retry.", "UNAUTHENTICATED");
+                ingressAuthority = Object.freeze({ kind: "actor", actorId: String(admitted.auth.userId), ownerId: String(admitted.auth.userId) });
+            }
+            const payload = await stageMultipartIngress(database, endpoint, request, endpointRequest, admitted.auth, ingressAuthority);
+            endpointRequest = { ...endpointRequest, ...payload };
         }
-        else {
-            if (!admitted?.auth?.isAuthenticated || admitted.auth.isGuest || isReservedAuthUserId(admitted.auth.userId))
-                throw commandError("Unauthenticated.", "Sign in with a linked human or service User and retry.", "UNAUTHENTICATED");
-            ingressAuthority = Object.freeze({ kind: "actor", actorId: String(admitted.auth.userId), ownerId: String(admitted.auth.userId) });
+        catch (error) {
+            if (error?.code === "UNAUTHENTICATED") {
+                try {
+                    await database.log.emit({ category: "platform", event: "file.ingress.denied", level: "warn", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "denied", code: "UNAUTHENTICATED" } });
+                }
+                catch { }
+            }
+            throw error;
         }
-        const payload = await stageMultipartIngress(database, endpoint, request, endpointRequest, admitted.auth, ingressAuthority);
-        endpointRequest = { ...endpointRequest, ...payload };
     }
     else {
         endpointRequest = await readEndpointRequest(database, requestUrl, request, !endpoint.runtimeOwnedStripeCallback);
@@ -3215,6 +3310,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
             }
         }
         finalizeEndpointIngressClaims(context ?? {}, true);
+        await runIngressAuditOutboxDrain(database);
         commitPendingJobCancellationAborts(context);
         await flushAccessKeyLifecycleAuditEvents(database, context);
         flushTeamSecurityEvents(database, context);
@@ -3222,6 +3318,12 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
         return result;
     }
     catch (error) {
+        if (endpointRequest.multipart) {
+            try {
+                await database.log.emit({ category: "platform", event: "file.ingress.failed", level: "warn", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "failed", code: "INGRESS_ROLLBACK" } });
+            }
+            catch { }
+        }
         finalizeEndpointIngressClaims(context ?? {}, false);
         dropPendingJobCancellationAborts(context);
         dropAccessKeyLifecycleAuditEvents(context);

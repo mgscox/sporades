@@ -8,7 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { capsule, endpoint, requireAuth, String as StringField, table } from "../dist/server.js";
-import { openDevDatabase, routeEndpoint, runEndpoint } from "../dist/server-runtime-source.js";
+import { createControllableRuntimeClock, openDevDatabase, routeEndpoint, runEndpoint } from "../dist/server-runtime-source.js";
 import { createEndpointIngressApi, multipartParts, stageMultipartIngress, sweepExpiredFileIngress } from "../dist/file-ingress-runtime.js";
 import { capsuleIngressAuthUserId } from "../dist/auth-runtime.js";
 import { accessKeyVerifierDigest, createAccessKeySecret } from "../dist/access-keys-runtime.js";
@@ -137,6 +137,79 @@ test("multipart fields safely aggregate prototype-shaped names", async () => {
     const parts = ["constructor", "toString", "__proto__", "constructor"].map((name, index) => ({ headers: `Content-Disposition: form-data; name="${name}"`, body: `v${index}` }));
     const result = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipartMany("field-keys", parts); } }, { headers: { "content-type": "multipart/form-data; boundary=field-keys", "idempotency-key": "field-keys" } }, { userId: "actor" });
     assert.equal(Object.getPrototypeOf(result.multipart.fields), null); assert.deepEqual([...result.multipart.fields.constructor], ["v0", "v3"]); assert.deepEqual([...result.multipart.fields.toString], ["v1"]); assert.deepEqual([...result.multipart.fields.__proto__], ["v2"]); assert.equal({}.v2, undefined);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("multipart ingress rejects nested multipart and transfer encodings before staging any residue", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-nested-rejected-")); let database;
+  try {
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "nested-rejected", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "nested-rejected" }));
+    const endpoint = { options: { method: "POST", path: "/nested", body: { multipart: ingressPolicy() } } };
+    const headers = { "content-type": "multipart/form-data; boundary=nested", "idempotency-key": "must-not-persist" };
+    for (const partHeaders of [
+      'Content-Disposition: form-data; name="file"; filename="secret-name.txt"\r\nContent-Type: MULTIPART/MIXED; boundary=inner\r\nContent-ID: stable',
+      'Content-Disposition: form-data; name="file"; filename="secret-name.txt"\r\nContent-Transfer-Encoding: BaSe64\r\nContent-ID: stable',
+      'Content-Disposition: form-data; name="file"; filename="secret-name.txt"\r\nContent-Type:\r\n multipart/mixed; boundary=inner\r\nContent-ID: stable',
+      'Content-Disposition: form-data; name="file"; filename="secret-name.txt"\r\nContent-Transfer-Encoding:\r\n\tbase64\r\nContent-ID: stable',
+      'Content-Disposition: form-data; name="file"; filename="secret-name.txt"\nContent-Transfer-Encoding: base64\r\nContent-ID: stable',
+      'Content-Disposition: form-data; name="file"; filename="secret-name.txt"\rContent-Type: multipart/mixed\r\nContent-ID: stable',
+    ]) {
+      let reads = 0;
+      const bytes = multipart("nested", partHeaders, "super-secret-bytes");
+      const request = { async *[Symbol.asyncIterator]() { for (const byte of bytes) { reads += 1; yield Buffer.from([byte]); } } };
+      await assert.rejects(stageMultipartIngress(database, endpoint, request, { headers }, { userId: "secret-actor" }), { code: "INVALID_MULTIPART" });
+      assert.ok(reads <= bytes.length, "rejection must consume only the bounded request source");
+      assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 0);
+      assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_files]").get()).count), 0);
+    }
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a running runtime periodically sweeps expired ingress leases and stops its ingress timer on shutdown", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-live-sweep-")); let database;
+  try {
+    const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "live-sweep", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "live-sweep" }), { clock });
+    await database.init();
+    const endpoint = { options: { method: "POST", path: "/live-sweep", body: { multipart: ingressPolicy() } } };
+    const result = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipart("live-sweep", 'Content-Disposition: form-data; name="file"; filename="a.txt"\r\nContent-ID: stable', "bytes"); } }, { headers: { "content-type": "multipart/form-data; boundary=live-sweep", "idempotency-key": "sweep-key" } }, { userId: "actor" });
+    const row = JSON.parse((await database.adapter.prepare("SELECT [payload] FROM [sporades_file_ingress] WHERE [leaseId] = ?").get(result.multipart.files[0].leaseId)).payload);
+    row.expiresAt = "2029-12-31T23:59:59.000Z";
+    await database.adapter.prepare("UPDATE [sporades_file_ingress] SET [expiresAt] = ?, [payload] = ? WHERE [leaseId] = ?").run(row.expiresAt, JSON.stringify(row), row.leaseId);
+    clock.advanceBy(60_000); await clock.runDueTimers();
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 0);
+    await database.shutdown();
+    clock.advanceBy(60_000); await clock.runDueTimers();
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 0);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("shutdown waits for an in-flight periodic ingress sweep before closing its lifecycle", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-sweep-shutdown-")); let database;
+  try {
+    const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "sweep-shutdown", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "sweep-shutdown" }), { clock }); await database.init();
+    const endpoint = { options: { method: "POST", path: "/sweep-shutdown", body: { multipart: ingressPolicy() } } };
+    const staged = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipart("sweep-shutdown", 'Content-Disposition: form-data; name="file"; filename="a.txt"\r\nContent-ID: stable', "bytes"); } }, { headers: { "content-type": "multipart/form-data; boundary=sweep-shutdown", "idempotency-key": "key" } }, { userId: "actor" });
+    const row = JSON.parse((await database.adapter.prepare("SELECT [payload] FROM [sporades_file_ingress] WHERE [leaseId] = ?").get(staged.multipart.files[0].leaseId)).payload); row.expiresAt = "2029-12-31T23:59:59.000Z"; await database.adapter.prepare("UPDATE [sporades_file_ingress] SET [expiresAt] = ?, [payload] = ? WHERE [leaseId] = ?").run(row.expiresAt, JSON.stringify(row), row.leaseId);
+    let release; const blocked = new Promise((resolve) => { release = resolve; }); let started; const entered = new Promise((resolve) => { started = resolve; }); const remove = database.fileStorage.deleteFileVersion.bind(database.fileStorage); database.fileStorage.deleteFileVersion = async (input) => { started(); await blocked; return await remove(input); };
+    clock.advanceBy(60_000); const sweep = clock.runDueTimers(); await entered; let settled = false; const shutdown = database.shutdown().then(() => { settled = true; }); await Promise.resolve(); assert.equal(settled, false); release(); await sweep; await shutdown; assert.equal(settled, true); clock.advanceBy(60_000); await clock.runDueTimers();
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("ingress audit lifecycle is useful but never records upload secrets or error detail", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-redaction-")); let database;
+  const secret = "request-key-part-key-file-name-mime-secret-bytes-actor";
+  try {
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "audit-redaction", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "audit-redaction" }));
+    const endpoint = { options: { method: "POST", path: "/audit", body: { multipart: ingressPolicy() } } };
+    const headers = { "content-type": "multipart/form-data; boundary=audit", "idempotency-key": secret };
+    await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipart("audit", `Content-Disposition: form-data; name="${secret}"; filename="${secret}.txt"\r\nContent-Type: text/${secret}\r\nContent-ID: ${secret}`, secret); } }, { headers }, { userId: secret });
+    await assert.rejects(stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipart("audit", `Content-Disposition: form-data; name="file"; filename="${secret}.txt"\r\nContent-Transfer-Encoding: base64\r\nContent-ID: ${secret}`, secret); } }, { headers }, { userId: secret }), { code: "INVALID_MULTIPART" });
+    const events = (await database.log.tail(20)).filter((event) => event.event.startsWith("file.ingress."));
+    assert.deepEqual(events.map((event) => event.event), ["file.ingress.started", "file.ingress.completed", "file.ingress.started", "file.ingress.failed"]);
+    assert.equal(JSON.stringify(events).includes(secret), false);
+    assert.deepEqual(events.at(-1).data, { schema: "v1", outcome: "failed", code: "INVALID_MULTIPART" });
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -344,6 +417,170 @@ test("failed ingress claim rolls File, receipt claim, and app row back together"
     assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_files]").get()).count), 0); assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [effects]").get()).count), 0); let receipt = JSON.parse((await database.adapter.prepare("SELECT [payload] FROM [sporades_file_ingress]").get()).payload); assert.equal(receipt.state, "leased"); assert.equal(receipt.file, undefined);
     fail = false; const result = await runEndpoint(database, route, new URL("http://capsule.test/rollback"), request()); receipt = JSON.parse((await database.adapter.prepare("SELECT [payload] FROM [sporades_file_ingress]").get()).payload); assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_files]").get()).count), 1); assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [effects]").get()).count), 1); assert.equal(receipt.state, "complete"); assert.equal(receipt.file.id, result.id);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("committed ingress claims enqueue one durable completed audit per claim across middleware, retries, and logger failure", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-outbox-")); let database;
+  try {
+    const policy = { ...ingressPolicy(), maxFiles: 2, maxTotalFileBytes: 200 };
+    const definition = capsule({ name: "audit-outbox", context: [async (ctx) => ({ ...ctx })], endpoints: { upload: endpoint({ method: "POST", path: "/audit-outbox", body: { multipart: policy } }, requireAuth(async (ctx) => {
+      const files = [];
+      for (const lease of ctx.request.multipart.files) files.push(await ctx.files.claim(lease, { path: `/attachments/${lease.partId}.txt` }));
+      return files;
+    })) } });
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "audit-outbox", files: { storagePath: path.join(dir, "files") } }, definition); await seedIngressUser(database);
+    const source = multipartMany("audit-outbox", [
+      { headers: 'Content-Disposition: form-data; name="first"; filename="first.txt"\r\nContent-ID: first', body: "first" },
+      { headers: 'Content-Disposition: form-data; name="second"; filename="second.txt"\r\nContent-ID: second', body: "second" },
+    ]);
+    const request = () => ({ method: "POST", headers: { "content-type": "multipart/form-data; boundary=audit-outbox", "idempotency-key": "audit-outbox", "x-sporades-session-token": "claim-session" }, async *[Symbol.asyncIterator]() { yield source; } });
+    const originalEmit = database.log.emit.bind(database.log); let failDelivery = true;
+    database.log.emit = async (event) => { if (event.event === "file.ingress.completed" && failDelivery) throw new Error("audit sink unavailable"); return await originalEmit(event); };
+    await runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/audit-outbox"), request());
+    assert.equal((await database.log.tail(50)).filter((event) => event.event === "file.ingress.completed" && event.data?.outcome === "claimed").length, 0);
+    failDelivery = false;
+    await database.close();
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "audit-outbox", files: { storagePath: path.join(dir, "files") } }, definition);
+    await database.init();
+    await runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/audit-outbox"), request());
+    const completed = (await database.log.tail(50)).filter((event) => event.event === "file.ingress.completed" && event.data?.outcome === "claimed");
+    assert.equal(completed.length, 2);
+    assert.ok(completed.every((event) => event.data?.schema === "v1" && event.data?.outcome === "claimed" && /^v1:[a-f0-9]{64}$/.test(event.data?.deliveryId)));
+    assert.notEqual(completed[0].data.deliveryId, completed[1].data.deliveryId);
+    assert.equal(JSON.stringify(completed).includes("first.txt"), false);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("rolled-back ingress claims leave no completed audit intent to replay after startup", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-rollback-")); let database;
+  try {
+    const definition = capsule({ name: "audit-rollback", endpoints: { upload: endpoint({ method: "POST", path: "/audit-rollback", body: { multipart: ingressPolicy() } }, requireAuth(async (ctx) => { await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/rollback.txt" }); throw new Error("rollback"); })) } });
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "audit-rollback", files: { storagePath: path.join(dir, "files") } }, definition); await seedIngressUser(database);
+    await assert.rejects(runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/audit-rollback"), ingressRequest("audit-rollback")), /rollback/);
+    await database.init();
+    assert.equal((await database.log.tail(50)).filter((event) => event.event === "file.ingress.completed" && event.data?.outcome === "claimed").length, 0);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a live runtime retries a failed ingress audit drain on its clock without another endpoint commit", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-clock-")); let database;
+  try {
+    const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+    const definition = capsule({ name: "audit-clock", endpoints: { upload: endpoint({ method: "POST", path: "/audit-clock", body: { multipart: ingressPolicy() } }, requireAuth(async (ctx) => await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/clock.txt" }))) } });
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "audit-clock", files: { storagePath: path.join(dir, "files") } }, definition, { clock }); await seedIngressUser(database); await database.init();
+    const originalEmit = database.log.emit.bind(database.log); let fail = true;
+    database.log.emit = async (event) => { if (event.event === "file.ingress.completed" && fail) throw new Error("sink unavailable"); return await originalEmit(event); };
+    await runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/audit-clock"), ingressRequest("audit-clock"));
+    fail = false; clock.advanceBy(60_000); await clock.runDueTimers();
+    assert.equal((await database.log.tail(50)).filter((event) => event.event === "file.ingress.completed" && event.data?.outcome === "claimed").length, 1);
+    await database.shutdown(); clock.advanceBy(60_000); await clock.runDueTimers();
+    assert.equal((await database.log.tail(50)).filter((event) => event.event === "file.ingress.completed" && event.data?.outcome === "claimed").length, 1);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a live runtime releases an acknowledgement-failed audit delivery for timer retry with the same opaque key", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-ack-clock-")); let database;
+  try {
+    const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+    const definition = capsule({ name: "audit-ack-clock", endpoints: { upload: endpoint({ method: "POST", path: "/audit-ack-clock", body: { multipart: ingressPolicy() } }, requireAuth(async (ctx) => await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/ack-clock.txt" }))) } });
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "audit-ack-clock", files: { storagePath: path.join(dir, "files") } }, definition, { clock }); await seedIngressUser(database); await database.init();
+    const originalDeliver = database.adapter.deliverIngressClaimAudit.bind(database.adapter); let failAck = true;
+    database.adapter.deliverIngressClaimAudit = async (...args) => { if (failAck) throw new Error("ack unavailable"); return await originalDeliver(...args); };
+    await runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/audit-ack-clock"), ingressRequest("audit-ack-clock"));
+    assert.equal((await database.adapter.prepare("SELECT [state] FROM [sporades_file_ingress_audit_outbox]").get()).state, "pending");
+    failAck = false; clock.advanceBy(60_000); await clock.runDueTimers();
+    const completed = (await database.log.tail(50)).filter((event) => event.event === "file.ingress.completed" && event.data?.outcome === "claimed");
+    assert.equal(completed.length, 2); assert.equal(completed[0].data.deliveryId, completed[1].data.deliveryId);
+    assert.equal((await database.adapter.prepare("SELECT [state] FROM [sporades_file_ingress_audit_outbox]").get()).state, "delivered");
+    await database.shutdown(); clock.advanceBy(60_000); await clock.runDueTimers();
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a live runtime retries transient startup outbox recovery without an endpoint or restart", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-recovery-clock-")); let database;
+  try {
+    const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "audit-recovery-clock", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "audit-recovery-clock" }), { clock });
+    await database.adapter.prepare("INSERT INTO [sporades_file_ingress_audit_outbox] ([claimId], [state], [claimToken], [createdAt], [updatedAt], [deliveredAt]) VALUES ('v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'delivering', 'interrupted', ?, ?, NULL)").run("2029-01-01T00:00:00.000Z", "2029-01-01T00:00:00.000Z");
+    const originalRecover = database.adapter.recoverIngressClaimAudits.bind(database.adapter); let failRecovery = true;
+    database.adapter.recoverIngressClaimAudits = async (...args) => { if (failRecovery) throw new Error("temporary recovery adapter failure"); return await originalRecover(...args); };
+    await database.init();
+    assert.equal((await database.adapter.prepare("SELECT [state] FROM [sporades_file_ingress_audit_outbox]").get()).state, "delivering");
+    failRecovery = false; clock.advanceBy(60_000); await clock.runDueTimers();
+    assert.equal((await database.adapter.prepare("SELECT [state] FROM [sporades_file_ingress_audit_outbox]").get()).state, "delivered");
+    const completed = (await database.log.tail(50)).filter((event) => event.event === "file.ingress.completed" && event.data?.outcome === "claimed");
+    assert.equal(completed.length, 1); assert.equal(completed[0].data.deliveryId, "v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    await database.shutdown();
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("logger and release failures rearm live recovery for the stranded audit claim", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-release-clock-")); let database;
+  try {
+    const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+    const definition = capsule({ name: "audit-release-clock", endpoints: { upload: endpoint({ method: "POST", path: "/audit-release-clock", body: { multipart: ingressPolicy() } }, requireAuth(async (ctx) => await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/release.txt" }))) } });
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "audit-release-clock", files: { storagePath: path.join(dir, "files") } }, definition, { clock }); await seedIngressUser(database); await database.init();
+    const emit = database.log.emit.bind(database.log); const release = database.adapter.releaseIngressClaimAudit.bind(database.adapter); let failEmit = true; let failRelease = true;
+    database.log.emit = async (event) => event.event === "file.ingress.completed" && failEmit ? Promise.reject(new Error("emit failed")) : emit(event);
+    database.adapter.releaseIngressClaimAudit = async (...args) => { if (failRelease) throw new Error("release failed"); return await release(...args); };
+    await runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/audit-release-clock"), ingressRequest("audit-release-clock"));
+    assert.equal((await database.adapter.prepare("SELECT [state] FROM [sporades_file_ingress_audit_outbox]").get()).state, "delivering");
+    failEmit = false; failRelease = false; clock.advanceBy(60_000); await clock.runDueTimers();
+    assert.equal((await database.adapter.prepare("SELECT [state] FROM [sporades_file_ingress_audit_outbox]").get()).state, "delivered");
+    assert.equal((await database.log.tail(50)).filter((event) => event.event === "file.ingress.completed").length, 1);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("startup and periodic ingress sweep selection failures emit one safe cleanup warning and later recover", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-sweep-selection-")); let database;
+  try {
+    const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "sweep-selection", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "sweep-selection" }), { clock });
+    const select = database.adapter.selectIngressSweepCandidates.bind(database.adapter); let fail = true;
+    database.adapter.selectIngressSweepCandidates = async (...args) => { if (fail) throw new Error("secret selection failure"); return await select(...args); };
+    await database.init();
+    let warnings = (await database.log.tail(50)).filter((event) => event.event === "file.ingress.cleanup-failed");
+    assert.deepEqual(warnings.map((event) => event.data), [{ schema: "v1", outcome: "failed", code: "INGRESS_SWEEP_STORAGE_FAILED" }]);
+    assert.equal(JSON.stringify(warnings).includes("secret selection failure"), false);
+    fail = false; clock.advanceBy(60_000); await clock.runDueTimers();
+    warnings = (await database.log.tail(50)).filter((event) => event.event === "file.ingress.cleanup-failed"); assert.equal(warnings.length, 1);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("ingress audit recovery may duplicate after an emit-before-ack crash, with one opaque delivery key", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-crash-")); let database;
+  try {
+    const definition = capsule({ name: "audit-crash", endpoints: { upload: endpoint({ method: "POST", path: "/audit-crash", body: { multipart: ingressPolicy() } }, requireAuth(async (ctx) => await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/crash.txt" }))) } });
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "audit-crash", files: { storagePath: path.join(dir, "files") } }, definition); await seedIngressUser(database);
+    database.adapter.deliverIngressClaimAudit = async () => { throw new Error("simulated process crash after JSONL emit"); };
+    await runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/audit-crash"), ingressRequest("audit-crash"));
+    await database.close();
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "audit-crash", files: { storagePath: path.join(dir, "files") } }, definition); await database.init();
+    const completed = (await database.log.tail(50)).filter((event) => event.event === "file.ingress.completed" && event.data?.outcome === "claimed");
+    assert.equal(completed.length, 2);
+    assert.equal(completed[0].data.deliveryId, completed[1].data.deliveryId);
+    assert.match(completed[0].data.deliveryId, /^v1:[a-f0-9]{64}$/);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("outbox retention prunes delivered intents in bounded batches without touching pending work or re-enqueuing completed claims", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-retention-")); let database;
+  try {
+    const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+    const definition = capsule({ name: "audit-retention", endpoints: { upload: endpoint({ method: "POST", path: "/audit-retention", body: { multipart: ingressPolicy() } }, requireAuth(async (ctx) => await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/retention.txt" }))) } });
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "audit-retention", files: { storagePath: path.join(dir, "files") } }, definition, { clock }); await seedIngressUser(database); await database.init();
+    await runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/audit-retention"), ingressRequest("audit-retention"));
+    for (let index = 0; index < 55; index += 1) await database.adapter.prepare("INSERT INTO [sporades_file_ingress_audit_outbox] ([claimId], [state], [claimToken], [createdAt], [updatedAt], [deliveredAt]) VALUES (?, 'delivered', NULL, ?, ?, ?)").run(`old-${index}`, "2029-01-01T00:00:00.000Z", "2029-01-01T00:00:00.000Z", "2029-01-01T00:00:00.000Z");
+    await database.adapter.prepare("INSERT INTO [sporades_file_ingress_audit_outbox] ([claimId], [state], [claimToken], [createdAt], [updatedAt], [deliveredAt]) VALUES ('pending-keep', 'pending', NULL, ?, ?, NULL), ('delivering-keep', 'delivering', 'token', ?, ?, NULL)").run("2029-01-01T00:00:00.000Z", "2029-01-01T00:00:00.000Z", "2029-01-01T00:00:00.000Z", "2029-01-01T00:00:00.000Z");
+    const originalEmit = database.log.emit.bind(database.log); database.log.emit = async (event) => event.event === "file.ingress.completed" ? Promise.reject(new Error("keep pending")) : originalEmit(event);
+    clock.advanceBy(24 * 60 * 60 * 1000); await clock.runDueTimers();
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress_audit_outbox] WHERE [state] = 'delivered'").get()).count), 6);
+    assert.equal((await database.adapter.prepare("SELECT [state] FROM [sporades_file_ingress_audit_outbox] WHERE [claimId] = 'pending-keep'").get()).state, "pending");
+    assert.equal((await database.adapter.prepare("SELECT [state] FROM [sporades_file_ingress_audit_outbox] WHERE [claimId] = 'delivering-keep'").get()).state, "delivering");
+    await runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/audit-retention"), ingressRequest("audit-retention"));
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress_audit_outbox] WHERE [state] = 'delivered'").get()).count), 0);
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress_audit_outbox] WHERE [state] = 'pending'").get()).count), 1);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
 test("concurrent incompatible ingress descriptors keep one winner and stage no loser bytes", async () => {
