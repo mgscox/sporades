@@ -69481,8 +69481,12 @@ async function validatePdfIngress(bytes, options = {}) {
       const visitedObjects = /* @__PURE__ */ new WeakSet();
       const visitedRefs = /* @__PURE__ */ new Set();
       let visitedCount = 0;
-      const visit = (candidate, depth = 0) => {
+      const actionBearingKeys = /* @__PURE__ */ new Set(["/OpenAction", "/AA", "/A", "/Next"]);
+      const forbiddenStructureKeys = /* @__PURE__ */ new Set(["/JavaScript", "/EmbeddedFiles", "/EF"]);
+      const actionSubtypes = /* @__PURE__ */ new Set(["/GoTo", "/GoToR", "/GoToE", "/Launch", "/Thread", "/URI", "/Sound", "/Movie", "/Hide", "/Named", "/SubmitForm", "/ResetForm", "/ImportData", "/JavaScript", "/SetOCGState", "/Rendition", "/Trans", "/GoTo3DView"]);
+      const visit = (candidate, depth = 0, actionContext = false) => {
         if (depth > 128 || ++visitedCount > 1e5) return false;
+        if (actionContext) return false;
         if (candidate instanceof import_pdf_lib.PDFRef) {
           const key = candidate.toString();
           if (visitedRefs.has(key)) return true;
@@ -69500,11 +69504,12 @@ async function validatePdfIngress(bytes, options = {}) {
         if (!(candidate instanceof import_pdf_lib.PDFDict)) return true;
         const type = candidate.get(import_pdf_lib.PDFName.of("Type"));
         if (type === import_pdf_lib.PDFName.of("Action") || type === import_pdf_lib.PDFName.of("Filespec") || type === import_pdf_lib.PDFName.of("EmbeddedFile")) return false;
+        const subtype = candidate.get(import_pdf_lib.PDFName.of("S"));
+        if (subtype instanceof import_pdf_lib.PDFName && actionSubtypes.has(subtype.asString())) return false;
         for (const [key, value] of candidate.entries()) {
           const name = key.asString();
-          if (["/OpenAction", "/AA", "/A", "/JavaScript", "/EmbeddedFiles", "/EF", "/JS", "/URI"].includes(name)) return false;
-          if (name === "/S" && value instanceof import_pdf_lib.PDFName) return false;
-          if (!visit(value, depth + 1)) return false;
+          if (forbiddenStructureKeys.has(name) || name === "/JS") return false;
+          if (!visit(value, depth + 1, actionBearingKeys.has(name))) return false;
         }
         return true;
       };

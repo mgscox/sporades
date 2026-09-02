@@ -271,8 +271,16 @@ export async function validatePdfIngress(bytes, options = {}) {
             const visitedObjects = new WeakSet();
             const visitedRefs = new Set();
             let visitedCount = 0;
-            const visit = (candidate, depth = 0) => {
+            const actionBearingKeys = new Set(["/OpenAction", "/AA", "/A", "/Next"]);
+            const forbiddenStructureKeys = new Set(["/JavaScript", "/EmbeddedFiles", "/EF"]);
+            const actionSubtypes = new Set(["/GoTo", "/GoToR", "/GoToE", "/Launch", "/Thread", "/URI", "/Sound", "/Movie", "/Hide", "/Named", "/SubmitForm", "/ResetForm", "/ImportData", "/JavaScript", "/SetOCGState", "/Rendition", "/Trans", "/GoTo3DView"]);
+            const visit = (candidate, depth = 0, actionContext = false) => {
                 if (depth > 128 || ++visitedCount > 100_000)
+                    return false;
+                // OpenAction, AA, A, and Next values are action-bearing by definition.
+                // Reject the whole reachable value even when it is indirect, an array,
+                // or a dictionary that legally omits /Type /Action and /S.
+                if (actionContext)
                     return false;
                 if (candidate instanceof PDFRef) {
                     const key = candidate.toString();
@@ -299,16 +307,17 @@ export async function validatePdfIngress(bytes, options = {}) {
                 const type = candidate.get(PDFName.of("Type"));
                 if (type === PDFName.of("Action") || type === PDFName.of("Filespec") || type === PDFName.of("EmbeddedFile"))
                     return false;
+                const subtype = candidate.get(PDFName.of("S"));
+                // /S is shared by many benign PDF structures (border styles,
+                // transparency groups, and more). It is action semantics only for a
+                // standardized action subtype or in an action-bearing context.
+                if (subtype instanceof PDFName && actionSubtypes.has(subtype.asString()))
+                    return false;
                 for (const [key, value] of candidate.entries()) {
                     const name = key.asString();
-                    if (["/OpenAction", "/AA", "/A", "/JavaScript", "/EmbeddedFiles", "/EF", "/JS", "/URI"].includes(name))
+                    if (forbiddenStructureKeys.has(name) || name === "/JS")
                         return false;
-                    // Action dictionaries may legally omit /Type /Action. A named /S is
-                    // therefore treated as action semantics rather than allowlisting
-                    // only the currently-known action subtype names.
-                    if (name === "/S" && value instanceof PDFName)
-                        return false;
-                    if (!visit(value, depth + 1))
+                    if (!visit(value, depth + 1, actionBearingKeys.has(name)))
                         return false;
                 }
                 return true;
