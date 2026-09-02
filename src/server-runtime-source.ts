@@ -1182,8 +1182,7 @@ export async function openDevDatabase(
   await sqlite.ensureFileStorage();
   await sqlite.ensureLogStorage();
   if (!options?.runtimeActionOnly) {
-    const ingressSweep = await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() });
-    if (ingressSweep.failures.length > 0) await database.log.emit({ category: "platform", event: "file.ingress.sweep_failed", level: "warn", message: "Multipart ingress cleanup left retryable orphan state", data: { code: ingressSweep.failures[0].code, failures: ingressSweep.failures.length, scanned: ingressSweep.scanned } });
+    await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() });
   }
   if (!options?.runtimeActionOnly) {
     await recoverInvalidRetainedJobState(database);
@@ -1400,11 +1399,10 @@ async function runPeriodicIngressSweep(database: LooseRecord) {
   if (database.__ingressSweepPromise) return database.__ingressSweepPromise;
   const run = (async () => {
     try {
-      const result = await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() });
-      if (result.failures.length > 0) await database.log.emit({ category: "platform", event: "file.ingress.sweep_failed", level: "warn", message: "Multipart ingress cleanup left retryable orphan state", data: { code: result.failures[0].code } });
+      await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() });
     } catch {
       // Cleanup is maintenance: it must never make the serving runtime unhealthy.
-      await database.log.emit({ category: "platform", event: "file.ingress.sweep_failed", level: "warn", message: "Multipart ingress cleanup left retryable orphan state", data: { code: "INGRESS_SWEEP_STORAGE_FAILED" } });
+      await database.log.emit({ category: "platform", event: "file.ingress.cleanup-failed", level: "warn", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "failed", code: "INGRESS_SWEEP_STORAGE_FAILED" } });
     }
   })();
   database.__ingressSweepPromise = run;

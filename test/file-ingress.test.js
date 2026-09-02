@@ -182,6 +182,19 @@ test("a running runtime periodically sweeps expired ingress leases and stops its
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("shutdown waits for an in-flight periodic ingress sweep before closing its lifecycle", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-sweep-shutdown-")); let database;
+  try {
+    const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "sweep-shutdown", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "sweep-shutdown" }), { clock }); await database.init();
+    const endpoint = { options: { method: "POST", path: "/sweep-shutdown", body: { multipart: ingressPolicy() } } };
+    const staged = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipart("sweep-shutdown", 'Content-Disposition: form-data; name="file"; filename="a.txt"\r\nContent-ID: stable', "bytes"); } }, { headers: { "content-type": "multipart/form-data; boundary=sweep-shutdown", "idempotency-key": "key" } }, { userId: "actor" });
+    const row = JSON.parse((await database.adapter.prepare("SELECT [payload] FROM [sporades_file_ingress] WHERE [leaseId] = ?").get(staged.multipart.files[0].leaseId)).payload); row.expiresAt = "2029-12-31T23:59:59.000Z"; await database.adapter.prepare("UPDATE [sporades_file_ingress] SET [expiresAt] = ?, [payload] = ? WHERE [leaseId] = ?").run(row.expiresAt, JSON.stringify(row), row.leaseId);
+    let release; const blocked = new Promise((resolve) => { release = resolve; }); let started; const entered = new Promise((resolve) => { started = resolve; }); const remove = database.fileStorage.deleteFileVersion.bind(database.fileStorage); database.fileStorage.deleteFileVersion = async (input) => { started(); await blocked; return await remove(input); };
+    clock.advanceBy(60_000); const sweep = clock.runDueTimers(); await entered; let settled = false; const shutdown = database.shutdown().then(() => { settled = true; }); await Promise.resolve(); assert.equal(settled, false); release(); await sweep; await shutdown; assert.equal(settled, true); clock.advanceBy(60_000); await clock.runDueTimers();
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("ingress audit lifecycle is useful but never records upload secrets or error detail", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-redaction-")); let database;
   const secret = "request-key-part-key-file-name-mime-secret-bytes-actor";
