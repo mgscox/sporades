@@ -18498,6 +18498,9 @@ function createSharedDatabaseAdapterMethods(dialect) {
     recoverIngressClaimAudits(updatedAt) {
       return this.prepare(sql("UPDATE [sporades_file_ingress_audit_outbox] SET [state] = 'pending', [claimToken] = NULL, [updatedAt] = ? WHERE [state] = 'delivering'")).run(updatedAt);
     },
+    pruneDeliveredIngressClaimAudits(deliveredBefore, limit) {
+      return this.prepare(sql("DELETE FROM [sporades_file_ingress_audit_outbox] WHERE [claimId] IN (SELECT [claimId] FROM [sporades_file_ingress_audit_outbox] WHERE [state] = 'delivered' AND [deliveredAt] <= ? ORDER BY [deliveredAt], [claimId] LIMIT ?)")).run(deliveredBefore, limit);
+    },
     selectIngressSweepCandidates(now2, limit) {
       return this.prepare(sql("SELECT * FROM [sporades_file_ingress] WHERE [state] = 'sweeping' OR ([state] IN ('leased', 'staging') AND [expiresAt] <= ?) ORDER BY CASE WHEN [state] = 'sweeping' THEN 0 ELSE 1 END, [expiresAt], [requestKey], [partKey], [key] LIMIT ?")).all(now2, limit);
     },
@@ -20551,6 +20554,12 @@ function quoteIdentifier(identifier) {
 // src/file-ingress-runtime.ts
 var crypto2 = process.getBuiltinModule("node:crypto");
 var leaseTtlMs = 10 * 60 * 1e3;
+var ingressClaimAuditRetentionMs = 24 * 60 * 60 * 1e3;
+var ingressClaimAuditPruneLimit = 50;
+function ingressAuditNow(database) {
+  const now2 = database.clock?.now?.();
+  return (now2 instanceof Date ? now2 : /* @__PURE__ */ new Date()).toISOString();
+}
 async function receipt(database, key) {
   const sql = database.adapter.dialect.sql("SELECT [payload] FROM [sporades_file_ingress] WHERE [key] = ?");
   const row = await database.adapter.prepare(sql).get(key);
@@ -21003,7 +21012,7 @@ function finalizeEndpointIngressClaims(context, committed) {
 }
 async function recoverIngressClaimAuditOutbox(database) {
   try {
-    await database.adapter.recoverIngressClaimAudits((/* @__PURE__ */ new Date()).toISOString());
+    await database.adapter.recoverIngressClaimAudits(ingressAuditNow(database));
   } catch {
   }
 }
@@ -21020,17 +21029,22 @@ async function drainIngressClaimAuditOutbox(database, options = {}) {
     if (!claimId) continue;
     const claimToken = crypto2.randomUUID();
     try {
-      const claimed = await database.adapter.claimIngressClaimAudit(claimId, claimToken, (/* @__PURE__ */ new Date()).toISOString());
+      const claimed = await database.adapter.claimIngressClaimAudit(claimId, claimToken, ingressAuditNow(database));
       if (Number(claimed?.changes ?? 0) !== 1) continue;
       try {
-        await database.log.emit({ category: "platform", event: "file.ingress.completed", level: "info", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "claimed" } });
+        await database.log.emit({ category: "platform", event: "file.ingress.completed", level: "info", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "claimed", deliveryId: claimId } });
       } catch {
-        await database.adapter.releaseIngressClaimAudit(claimId, claimToken, (/* @__PURE__ */ new Date()).toISOString());
+        await database.adapter.releaseIngressClaimAudit(claimId, claimToken, ingressAuditNow(database));
         continue;
       }
-      await database.adapter.deliverIngressClaimAudit(claimId, claimToken, (/* @__PURE__ */ new Date()).toISOString());
+      await database.adapter.deliverIngressClaimAudit(claimId, claimToken, ingressAuditNow(database));
     } catch {
     }
+  }
+  try {
+    const cutoff = new Date(new Date(ingressAuditNow(database)).getTime() - ingressClaimAuditRetentionMs).toISOString();
+    await database.adapter.pruneDeliveredIngressClaimAudits(cutoff, ingressClaimAuditPruneLimit);
+  } catch {
   }
 }
 async function armIngressSweep(database, candidate, now2, sweepToken) {
@@ -21704,7 +21718,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       database.__scheduleRecoveryPromise = null;
       database.__scheduleLegacyDiscoveryTimer = null;
       await recoverIngressClaimAuditOutbox(database);
-      await drainIngressClaimAuditOutbox(database);
+      await runIngressAuditOutboxDrain(database);
       const earliestFutureLeaseAt = await recoverExpiredJobLeases(database);
       await recoverPendingScheduleOccurrences(database, { validateOnly: true });
       preflightStaticScheduleTimers(database);
@@ -21712,6 +21726,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       database.__scheduleStopped = false;
       startStaticSchedules(database, reconciled.timerPlans);
       startPeriodicIngressSweep(database);
+      startPeriodicIngressAuditOutboxDrain(database);
       if (!database.__jobActivationDeferred) {
         activateCurrentUserJobExecution(database, earliestFutureLeaseAt);
       }
@@ -21986,6 +22001,30 @@ var SCHEDULE_RECOVERY_RETRY_MS = 1e3;
 var LEGACY_SCHEDULE_DISCOVERY_INTERVAL_MS = 1e3;
 var LEGACY_SCHEDULE_DISCOVERY_LIMIT = 100;
 var INGRESS_SWEEP_INTERVAL_MS = 6e4;
+var INGRESS_AUDIT_OUTBOX_INTERVAL_MS = 1e3;
+async function runIngressAuditOutboxDrain(database) {
+  if (database.__ingressAuditOutboxPromise) return database.__ingressAuditOutboxPromise;
+  const run2 = drainIngressClaimAuditOutbox(database);
+  database.__ingressAuditOutboxPromise = run2;
+  try {
+    await run2;
+  } finally {
+    if (database.__ingressAuditOutboxPromise === run2) database.__ingressAuditOutboxPromise = null;
+  }
+}
+function startPeriodicIngressAuditOutboxDrain(database) {
+  const arm = () => {
+    if (database.__scheduleStopped) return;
+    const timer = database.clock.setTimer(async () => {
+      database.__scheduleTimers?.delete(timer);
+      await runIngressAuditOutboxDrain(database);
+      arm();
+    }, INGRESS_AUDIT_OUTBOX_INTERVAL_MS);
+    database.__scheduleTimers?.add(timer);
+    database.__ingressAuditOutboxTimer = timer;
+  };
+  arm();
+}
 async function runPeriodicIngressSweep(database) {
   if (database.__ingressSweepPromise) return database.__ingressSweepPromise;
   const run2 = (async () => {
@@ -22019,6 +22058,7 @@ function settleActiveScheduleWork(database) {
   const active = new Set(database.__activeScheduleOccurrences ?? []);
   if (database.__scheduleRecoveryPromise) active.add(database.__scheduleRecoveryPromise);
   if (database.__ingressSweepPromise) active.add(database.__ingressSweepPromise);
+  if (database.__ingressAuditOutboxPromise) active.add(database.__ingressAuditOutboxPromise);
   if (active.size === 0) return void 0;
   return Promise.allSettled([...active]).then(() => void 0);
 }
@@ -23740,7 +23780,7 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
       }
     }
     finalizeEndpointIngressClaims(context ?? {}, true);
-    await drainIngressClaimAuditOutbox(database);
+    await runIngressAuditOutboxDrain(database);
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);

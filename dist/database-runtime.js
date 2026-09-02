@@ -595,6 +595,9 @@ export function createSharedDatabaseAdapterMethods(dialect) {
         recoverIngressClaimAudits(updatedAt) {
             return this.prepare(sql("UPDATE [sporades_file_ingress_audit_outbox] SET [state] = 'pending', [claimToken] = NULL, [updatedAt] = ? WHERE [state] = 'delivering'")).run(updatedAt);
         },
+        pruneDeliveredIngressClaimAudits(deliveredBefore, limit) {
+            return this.prepare(sql("DELETE FROM [sporades_file_ingress_audit_outbox] WHERE [claimId] IN (SELECT [claimId] FROM [sporades_file_ingress_audit_outbox] WHERE [state] = 'delivered' AND [deliveredAt] <= ? ORDER BY [deliveredAt], [claimId] LIMIT ?)")).run(deliveredBefore, limit);
+        },
         selectIngressSweepCandidates(now, limit) {
             return this.prepare(sql("SELECT * FROM [sporades_file_ingress] WHERE [state] = 'sweeping' OR ([state] IN ('leased', 'staging') AND [expiresAt] <= ?) ORDER BY CASE WHEN [state] = 'sweeping' THEN 0 ELSE 1 END, [expiresAt], [requestKey], [partKey], [key] LIMIT ?")).all(now, limit);
         },

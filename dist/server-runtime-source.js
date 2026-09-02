@@ -972,7 +972,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             database.__scheduleRecoveryPromise = null;
             database.__scheduleLegacyDiscoveryTimer = null;
             await recoverIngressClaimAuditOutbox(database);
-            await drainIngressClaimAuditOutbox(database);
+            await runIngressAuditOutboxDrain(database);
             // Recovery may classify durable state while the candidate is stopped,
             // but it returns the retained wake instead of arming it. Publication is
             // the single boundary that releases both Job and Schedule work.
@@ -983,6 +983,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             database.__scheduleStopped = false;
             startStaticSchedules(database, reconciled.timerPlans);
             startPeriodicIngressSweep(database);
+            startPeriodicIngressAuditOutboxDrain(database);
             if (!database.__jobActivationDeferred) {
                 // Orderly shutdown deliberately retains queued and delayed Jobs. A
                 // fresh runtime has no inherited worker/wake timer, so activation
@@ -1294,6 +1295,34 @@ const SCHEDULE_RECOVERY_RETRY_MS = 1_000;
 const LEGACY_SCHEDULE_DISCOVERY_INTERVAL_MS = 1_000;
 const LEGACY_SCHEDULE_DISCOVERY_LIMIT = 100;
 const INGRESS_SWEEP_INTERVAL_MS = 60_000;
+const INGRESS_AUDIT_OUTBOX_INTERVAL_MS = 1_000;
+async function runIngressAuditOutboxDrain(database) {
+    if (database.__ingressAuditOutboxPromise)
+        return database.__ingressAuditOutboxPromise;
+    const run = drainIngressClaimAuditOutbox(database);
+    database.__ingressAuditOutboxPromise = run;
+    try {
+        await run;
+    }
+    finally {
+        if (database.__ingressAuditOutboxPromise === run)
+            database.__ingressAuditOutboxPromise = null;
+    }
+}
+function startPeriodicIngressAuditOutboxDrain(database) {
+    const arm = () => {
+        if (database.__scheduleStopped)
+            return;
+        const timer = database.clock.setTimer(async () => {
+            database.__scheduleTimers?.delete(timer);
+            await runIngressAuditOutboxDrain(database);
+            arm();
+        }, INGRESS_AUDIT_OUTBOX_INTERVAL_MS);
+        database.__scheduleTimers?.add(timer);
+        database.__ingressAuditOutboxTimer = timer;
+    };
+    arm();
+}
 async function runPeriodicIngressSweep(database) {
     if (database.__ingressSweepPromise)
         return database.__ingressSweepPromise;
@@ -1335,6 +1364,8 @@ function settleActiveScheduleWork(database) {
         active.add(database.__scheduleRecoveryPromise);
     if (database.__ingressSweepPromise)
         active.add(database.__ingressSweepPromise);
+    if (database.__ingressAuditOutboxPromise)
+        active.add(database.__ingressAuditOutboxPromise);
     if (active.size === 0)
         return undefined;
     return Promise.allSettled([...active]).then(() => undefined);
@@ -3265,7 +3296,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
             }
         }
         finalizeEndpointIngressClaims(context ?? {}, true);
-        await drainIngressClaimAuditOutbox(database);
+        await runIngressAuditOutboxDrain(database);
         commitPendingJobCancellationAborts(context);
         await flushAccessKeyLifecycleAuditEvents(database, context);
         flushTeamSecurityEvents(database, context);

@@ -445,7 +445,8 @@ test("committed ingress claims enqueue one durable completed audit per claim acr
     await runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/audit-outbox"), request());
     const completed = (await database.log.tail(50)).filter((event) => event.event === "file.ingress.completed" && event.data?.outcome === "claimed");
     assert.equal(completed.length, 2);
-    assert.deepEqual(completed.map((event) => event.data), [{ schema: "v1", outcome: "claimed" }, { schema: "v1", outcome: "claimed" }]);
+    assert.ok(completed.every((event) => event.data?.schema === "v1" && event.data?.outcome === "claimed" && /^v1:[a-f0-9]{64}$/.test(event.data?.deliveryId)));
+    assert.notEqual(completed[0].data.deliveryId, completed[1].data.deliveryId);
     assert.equal(JSON.stringify(completed).includes("first.txt"), false);
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
@@ -458,6 +459,58 @@ test("rolled-back ingress claims leave no completed audit intent to replay after
     await assert.rejects(runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/audit-rollback"), ingressRequest("audit-rollback")), /rollback/);
     await database.init();
     assert.equal((await database.log.tail(50)).filter((event) => event.event === "file.ingress.completed" && event.data?.outcome === "claimed").length, 0);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a live runtime retries a failed ingress audit drain on its clock without another endpoint commit", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-clock-")); let database;
+  try {
+    const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+    const definition = capsule({ name: "audit-clock", endpoints: { upload: endpoint({ method: "POST", path: "/audit-clock", body: { multipart: ingressPolicy() } }, requireAuth(async (ctx) => await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/clock.txt" }))) } });
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "audit-clock", files: { storagePath: path.join(dir, "files") } }, definition, { clock }); await seedIngressUser(database); await database.init();
+    const originalEmit = database.log.emit.bind(database.log); let fail = true;
+    database.log.emit = async (event) => { if (event.event === "file.ingress.completed" && fail) throw new Error("sink unavailable"); return await originalEmit(event); };
+    await runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/audit-clock"), ingressRequest("audit-clock"));
+    fail = false; clock.advanceBy(60_000); await clock.runDueTimers();
+    assert.equal((await database.log.tail(50)).filter((event) => event.event === "file.ingress.completed" && event.data?.outcome === "claimed").length, 1);
+    await database.shutdown(); clock.advanceBy(60_000); await clock.runDueTimers();
+    assert.equal((await database.log.tail(50)).filter((event) => event.event === "file.ingress.completed" && event.data?.outcome === "claimed").length, 1);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("ingress audit recovery may duplicate after an emit-before-ack crash, with one opaque delivery key", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-crash-")); let database;
+  try {
+    const definition = capsule({ name: "audit-crash", endpoints: { upload: endpoint({ method: "POST", path: "/audit-crash", body: { multipart: ingressPolicy() } }, requireAuth(async (ctx) => await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/crash.txt" }))) } });
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "audit-crash", files: { storagePath: path.join(dir, "files") } }, definition); await seedIngressUser(database);
+    database.adapter.deliverIngressClaimAudit = async () => { throw new Error("simulated process crash after JSONL emit"); };
+    await runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/audit-crash"), ingressRequest("audit-crash"));
+    await database.close();
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "audit-crash", files: { storagePath: path.join(dir, "files") } }, definition); await database.init();
+    const completed = (await database.log.tail(50)).filter((event) => event.event === "file.ingress.completed" && event.data?.outcome === "claimed");
+    assert.equal(completed.length, 2);
+    assert.equal(completed[0].data.deliveryId, completed[1].data.deliveryId);
+    assert.match(completed[0].data.deliveryId, /^v1:[a-f0-9]{64}$/);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("outbox retention prunes delivered intents in bounded batches without touching pending work or re-enqueuing completed claims", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-retention-")); let database;
+  try {
+    const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+    const definition = capsule({ name: "audit-retention", endpoints: { upload: endpoint({ method: "POST", path: "/audit-retention", body: { multipart: ingressPolicy() } }, requireAuth(async (ctx) => await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/retention.txt" }))) } });
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "audit-retention", files: { storagePath: path.join(dir, "files") } }, definition, { clock }); await seedIngressUser(database); await database.init();
+    await runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/audit-retention"), ingressRequest("audit-retention"));
+    for (let index = 0; index < 55; index += 1) await database.adapter.prepare("INSERT INTO [sporades_file_ingress_audit_outbox] ([claimId], [state], [claimToken], [createdAt], [updatedAt], [deliveredAt]) VALUES (?, 'delivered', NULL, ?, ?, ?)").run(`old-${index}`, "2029-01-01T00:00:00.000Z", "2029-01-01T00:00:00.000Z", "2029-01-01T00:00:00.000Z");
+    await database.adapter.prepare("INSERT INTO [sporades_file_ingress_audit_outbox] ([claimId], [state], [claimToken], [createdAt], [updatedAt], [deliveredAt]) VALUES ('pending-keep', 'pending', NULL, ?, ?, NULL), ('delivering-keep', 'delivering', 'token', ?, ?, NULL)").run("2029-01-01T00:00:00.000Z", "2029-01-01T00:00:00.000Z", "2029-01-01T00:00:00.000Z", "2029-01-01T00:00:00.000Z");
+    const originalEmit = database.log.emit.bind(database.log); database.log.emit = async (event) => event.event === "file.ingress.completed" ? Promise.reject(new Error("keep pending")) : originalEmit(event);
+    clock.advanceBy(24 * 60 * 60 * 1000); await clock.runDueTimers();
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress_audit_outbox] WHERE [state] = 'delivered'").get()).count), 6);
+    assert.equal((await database.adapter.prepare("SELECT [state] FROM [sporades_file_ingress_audit_outbox] WHERE [claimId] = 'pending-keep'").get()).state, "pending");
+    assert.equal((await database.adapter.prepare("SELECT [state] FROM [sporades_file_ingress_audit_outbox] WHERE [claimId] = 'delivering-keep'").get()).state, "delivering");
+    await runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/audit-retention"), ingressRequest("audit-retention"));
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress_audit_outbox] WHERE [state] = 'delivered'").get()).count), 0);
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress_audit_outbox] WHERE [state] = 'pending'").get()).count), 1);
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 

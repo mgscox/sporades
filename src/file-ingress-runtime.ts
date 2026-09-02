@@ -5,6 +5,13 @@ import { ensureFileBucket, fileMetadataFromRow, normalizeAbsoluteFilePath } from
 type RecordLike = Record<string, any>;
 const crypto = process.getBuiltinModule("node:crypto");
 const leaseTtlMs = 10 * 60 * 1000;
+const ingressClaimAuditRetentionMs = 24 * 60 * 60 * 1000;
+const ingressClaimAuditPruneLimit = 50;
+
+function ingressAuditNow(database: RecordLike) {
+  const now = database.clock?.now?.();
+  return (now instanceof Date ? now : new Date()).toISOString();
+}
 
 async function receipt(database: RecordLike, key: string) {
   const sql = database.adapter.dialect.sql("SELECT [payload] FROM [sporades_file_ingress] WHERE [key] = ?");
@@ -304,7 +311,7 @@ export function finalizeEndpointIngressClaims(context: RecordLike, committed: bo
 
 /** Reset an interrupted delivery lease at startup; ordinary drains never steal live work. */
 export async function recoverIngressClaimAuditOutbox(database: RecordLike) {
-  try { await database.adapter.recoverIngressClaimAudits(new Date().toISOString()); } catch { /* A later recovery safely retries. */ }
+  try { await database.adapter.recoverIngressClaimAudits(ingressAuditNow(database)); } catch { /* A later recovery safely retries. */ }
 }
 
 /** Emit the fixed public audit only after its transaction has committed. */
@@ -316,19 +323,23 @@ export async function drainIngressClaimAuditOutbox(database: RecordLike, options
     const claimId = String(candidate.claimId ?? ""); if (!claimId) continue;
     const claimToken = crypto.randomUUID();
     try {
-      const claimed = await database.adapter.claimIngressClaimAudit(claimId, claimToken, new Date().toISOString());
+      const claimed = await database.adapter.claimIngressClaimAudit(claimId, claimToken, ingressAuditNow(database));
       if (Number(claimed?.changes ?? 0) !== 1) continue;
       try {
-        await database.log.emit({ category: "platform", event: "file.ingress.completed", level: "info", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "claimed" } });
+        await database.log.emit({ category: "platform", event: "file.ingress.completed", level: "info", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "claimed", deliveryId: claimId } });
       } catch {
-        await database.adapter.releaseIngressClaimAudit(claimId, claimToken, new Date().toISOString());
+        await database.adapter.releaseIngressClaimAudit(claimId, claimToken, ingressAuditNow(database));
         continue;
       }
-      await database.adapter.deliverIngressClaimAudit(claimId, claimToken, new Date().toISOString());
+      await database.adapter.deliverIngressClaimAudit(claimId, claimToken, ingressAuditNow(database));
     } catch {
       // A failed sink or adapter operation leaves private durable work pending.
     }
   }
+  try {
+    const cutoff = new Date(new Date(ingressAuditNow(database)).getTime() - ingressClaimAuditRetentionMs).toISOString();
+    await database.adapter.pruneDeliveredIngressClaimAudits(cutoff, ingressClaimAuditPruneLimit);
+  } catch { /* Retention is maintenance; the next bounded drain retries. */ }
 }
 
 async function armIngressSweep(database: RecordLike, candidate: RecordLike, now: string, sweepToken: string) {
