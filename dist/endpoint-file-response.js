@@ -3,9 +3,8 @@
 // path, object key, stream, or storage credentials.
 const attachmentResponseDetails = new WeakMap();
 const guardedAttachmentHttpResponses = new WeakSet();
-export function createEndpointFileResponseApi(ingressApi) {
-    return Object.freeze({
-        ...ingressApi,
+export function createEndpointFileResponseApi(ingressApi, enabled) {
+    const attachment = enabled ? {
         attachment(reference, options) {
             const fileId = exactIdentifier(reference?.id);
             const version = exactIdentifier(reference?.version);
@@ -19,7 +18,8 @@ export function createEndpointFileResponseApi(ingressApi) {
             attachmentResponseDetails.set(response, Object.freeze({ fileId, version, filename }));
             return response;
         },
-    });
+    } : {};
+    return Object.freeze({ ...ingressApi, ...attachment });
 }
 export function endpointFileAttachmentDetails(value) {
     return value !== null && typeof value === "object" ? attachmentResponseDetails.get(value) ?? null : null;

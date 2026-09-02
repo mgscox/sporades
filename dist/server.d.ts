@@ -13,6 +13,10 @@ export type Capsule<Definition extends CapsuleDefinition = CapsuleDefinition> = 
 export type EndpointOptions = {
     method: string;
     path: string;
+    /** Explicitly delegates exact-version attachment authorization to this trusted endpoint handler. */
+    response?: {
+        fileAttachment: true;
+    };
     /** Runtime-owned bounded multipart ingress for a trusted Custom endpoint. */
     body?: {
         multipart: {

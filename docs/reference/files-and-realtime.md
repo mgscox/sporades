@@ -83,7 +83,11 @@ version as an attachment without exposing a private File URL, File bytes,
 storage path, object key, stream, or storage credentials to Capsule code:
 
 ```ts
-endpoint({ method: "GET", path: "/tickets/export" }, async (ctx) => {
+endpoint({
+  method: "GET",
+  path: "/tickets/export",
+  response: { fileAttachment: true },
+}, async (ctx) => {
   const exportFile = await ctx.db.exports.where({ ticketId: ctx.request.query.ticket }).first();
   if (!exportFile) return { status: 404, body: "Not found" };
   return ctx.files.attachment(
@@ -92,6 +96,15 @@ endpoint({ method: "GET", path: "/tickets/export" }, async (ctx) => {
   );
 });
 ```
+
+The `response: { fileAttachment: true }` declaration is an explicit authority
+boundary: it delegates attachment-response authorization to this trusted
+endpoint's server code. Undeclared endpoints do not receive
+`ctx.files.attachment`. This path deliberately does **not** apply ordinary File
+ownership or `files.acl` rules, because external customer Grants and similar
+application capabilities may not be Sporades Users. The handler must derive the
+exact File from current domain authorization, retention, and safety state. Do
+not accept an arbitrary request-supplied File ID and pass it through.
 
 `ctx.files.attachment()` creates an opaque, runtime-only endpoint result. It
 accepts only the exact File `id` and `version` plus a presentation filename;

@@ -617,6 +617,16 @@ function endpointIngressClaimAuthority(endpoint: LooseRecord) {
   return declared[0];
 }
 
+function validateEndpointResponseDeclarations(capsuleDefinition: LooseRecord | null) {
+  for (const definition of Object.values(capsuleDefinition?.endpoints ?? {}) as LooseRecord[]) {
+    const response = definition?.options?.response;
+    if (response === undefined) continue;
+    if (!response || typeof response !== "object" || Array.isArray(response) || Object.keys(response).length !== 1 || response.fileAttachment !== true) {
+      throw commandError("Invalid endpoint response declaration.", "Declare response: { fileAttachment: true } only on endpoints whose trusted handler performs current domain authorization.", "INVALID_ENDPOINT_RESPONSE_DECLARATION");
+    }
+  }
+}
+
 function normalizeCapsuleFileIngressDefinition(files: LooseRecord | undefined, endpoints: LooseRecord[]) {
   const usesCapsulePrincipal = endpoints.some((endpoint) => endpoint?.options?.body?.multipart && endpointIngressClaimAuthority(endpoint) === "capsule-principal");
   if (!usesCapsulePrincipal) return null;
@@ -643,6 +653,7 @@ export async function openDevDatabase(
     capsuleDefinition = normalizeCapsuleAuthDefinition(capsuleDefinition);
     validateCapsuleAuthRequirements(capsuleDefinition);
     validateStripeEventSubscription(capsuleDefinition.stripeEvents);
+    validateEndpointResponseDeclarations(capsuleDefinition);
   }
   const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
   if (capsuleDefinition?.teams !== undefined && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
@@ -3513,7 +3524,10 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
               credential: accessKeyAdmission?.credential,
               accessKeyGrants: accessKeyAdmission?.grants,
             });
-            context.files = createEndpointFileResponseApi(createEndpointIngressApi(transactionDatabase, endpoint as LooseRecord, endpointRequest, context));
+            context.files = createEndpointFileResponseApi(
+              createEndpointIngressApi(transactionDatabase, endpoint as LooseRecord, endpointRequest, context),
+              (endpoint as LooseRecord).options?.response?.fileAttachment === true,
+            );
             if ((endpoint as LooseRecord).runtimeOwnedStripeCallback) {
               Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
             }

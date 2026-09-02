@@ -10810,9 +10810,8 @@ async function removeFileVersionBestEffort(database, fileId, version) {
 // src/endpoint-file-response.ts
 var attachmentResponseDetails = /* @__PURE__ */ new WeakMap();
 var guardedAttachmentHttpResponses = /* @__PURE__ */ new WeakSet();
-function createEndpointFileResponseApi(ingressApi) {
-  return Object.freeze({
-    ...ingressApi,
+function createEndpointFileResponseApi(ingressApi, enabled) {
+  const attachment = enabled ? {
     attachment(reference, options) {
       const fileId = exactIdentifier(reference?.id);
       const version = exactIdentifier(reference?.version);
@@ -10826,7 +10825,8 @@ function createEndpointFileResponseApi(ingressApi) {
       attachmentResponseDetails.set(response, Object.freeze({ fileId, version, filename }));
       return response;
     }
-  });
+  } : {};
+  return Object.freeze({ ...ingressApi, ...attachment });
 }
 function endpointFileAttachmentDetails(value) {
   return value !== null && typeof value === "object" ? attachmentResponseDetails.get(value) ?? null : null;
@@ -21461,6 +21461,15 @@ function endpointIngressClaimAuthority(endpoint) {
   }
   return declared[0];
 }
+function validateEndpointResponseDeclarations(capsuleDefinition) {
+  for (const definition of Object.values(capsuleDefinition?.endpoints ?? {})) {
+    const response = definition?.options?.response;
+    if (response === void 0) continue;
+    if (!response || typeof response !== "object" || Array.isArray(response) || Object.keys(response).length !== 1 || response.fileAttachment !== true) {
+      throw commandError("Invalid endpoint response declaration.", "Declare response: { fileAttachment: true } only on endpoints whose trusted handler performs current domain authorization.", "INVALID_ENDPOINT_RESPONSE_DECLARATION");
+    }
+  }
+}
 function normalizeCapsuleFileIngressDefinition(files, endpoints) {
   const usesCapsulePrincipal = endpoints.some((endpoint) => endpoint?.options?.body?.multipart && endpointIngressClaimAuthority(endpoint) === "capsule-principal");
   if (!usesCapsulePrincipal) return null;
@@ -21479,6 +21488,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     capsuleDefinition = normalizeCapsuleAuthDefinition(capsuleDefinition);
     validateCapsuleAuthRequirements(capsuleDefinition);
     validateStripeEventSubscription(capsuleDefinition.stripeEvents);
+    validateEndpointResponseDeclarations(capsuleDefinition);
   }
   const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
   if (capsuleDefinition?.teams !== void 0 && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
@@ -23963,7 +23973,10 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
               credential: accessKeyAdmission?.credential,
               accessKeyGrants: accessKeyAdmission?.grants
             });
-            context.files = createEndpointFileResponseApi(createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context));
+            context.files = createEndpointFileResponseApi(
+              createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context),
+              endpoint.options?.response?.fileAttachment === true
+            );
             if (endpoint.runtimeOwnedStripeCallback) {
               Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
             }

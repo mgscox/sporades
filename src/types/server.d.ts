@@ -891,7 +891,8 @@ export type EndpointFileAttachmentReference = Readonly<Pick<EndpointFileMetadata
 export type EndpointFileAttachmentOptions = Readonly<{ filename: string }>;
 /** Runtime-created opaque endpoint result. It can only be returned from an endpoint handler. */
 export type EndpointFileAttachmentResponse = object;
-export type EndpointFileIngressApi = { claim(lease: EndpointFileIngressLease, options: FileIngressOptions): Promise<EndpointFileMetadata>; status(requestKey: string, partKey: string): Promise<{ state: "missing" } | { state: "leased"; lease: EndpointFileIngressLease } | { state: "complete"; file: EndpointFileMetadata } | { state: "failed"; retryable: boolean }>; attachment(file: EndpointFileAttachmentReference, options: EndpointFileAttachmentOptions): EndpointFileAttachmentResponse; };
+export type EndpointFileIngressApi = { claim(lease: EndpointFileIngressLease, options: FileIngressOptions): Promise<EndpointFileMetadata>; status(requestKey: string, partKey: string): Promise<{ state: "missing" } | { state: "leased"; lease: EndpointFileIngressLease } | { state: "complete"; file: EndpointFileMetadata } | { state: "failed"; retryable: boolean }>; };
+export type EndpointFileAttachmentApi = { attachment(file: EndpointFileAttachmentReference, options: EndpointFileAttachmentOptions): EndpointFileAttachmentResponse };
 
 export type EndpointContext<
   Schema extends SchemaDefinition = SchemaDefinition,
@@ -903,6 +904,7 @@ export type EndpointContext<
   /** Present only after declared Capsule-principal pre-body admission. */
   readonly ingress?: Readonly<{ principal: FileIngressPrincipal }>;
 };
+export type EndpointFileAttachmentContext<Schema extends SchemaDefinition = SchemaDefinition> = Omit<EndpointContext<Schema>, "files"> & { files: EndpointFileIngressApi & EndpointFileAttachmentApi };
 
 /** Provider-neutral lifecycle state reported by an outbound email provider. */
 export type EmailEventKind =
@@ -985,6 +987,9 @@ export type MutationHandler<
 export type EndpointHandler<Schema extends SchemaDefinition = SchemaDefinition, Result = unknown> = (
   ctx: EndpointContext<Schema>,
 ) => MaybePromise<Result>;
+export type EndpointFileAttachmentHandler<Schema extends SchemaDefinition = SchemaDefinition, Result = unknown> = (
+  ctx: EndpointFileAttachmentContext<Schema>,
+) => MaybePromise<Result>;
 
 /** Handler for a client-origin App message. */
 export type MessageHandler<Schema extends SchemaDefinition = SchemaDefinition, Result = unknown> = (
@@ -1045,8 +1050,10 @@ export type MutationDefinition<Handler = MutationHandler> = {
 export type EndpointOptions = {
   method: string;
   path: string;
+  response?: { fileAttachment: true };
   body?: { multipart: { maxFiles: number; maxFileBytes: number; maxTotalFileBytes: number; maxFieldCount: number; maxFieldBytes: number; maxTotalFieldBytes: number; allowedMimeTypes?: readonly string[]; allowedPathPrefixes: readonly string[]; requestKeyHeader: string; partKeyHeader: string; requireStablePartKeys?: boolean; claimAuthorities?: readonly ["actor" | "capsule-principal"]; } };
 };
+export type EndpointFileAttachmentOptionsDeclaration = EndpointOptions & { response: { fileAttachment: true } };
 
 export type EndpointDefinition<Handler = EndpointHandler> = {
   kind: "endpoint";
@@ -1164,7 +1171,7 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   schema?: Schema;
   queries?: Record<string, QueryDefinition<QueryHandler<Schema, any> | AuthGuardedHandler<(...args: any[]) => any>>>;
   mutations?: Record<string, MutationDefinition<MutationHandler<Schema, any[]> | AuthGuardedHandler<(...args: any[]) => any>>>;
-  endpoints?: Record<string, EndpointDefinition<EndpointHandler<Schema> | AuthGuardedHandler<(...args: any[]) => any>>>;
+  endpoints?: Record<string, EndpointDefinition<EndpointHandler<Schema> | EndpointFileAttachmentHandler<Schema> | AuthGuardedHandler<(...args: any[]) => any>>>;
   emailEvents?: EmailEventDefinition<EmailEventHandler<Schema>>;
   stripeEvents?: StripeEventDefinition<StripeEventHandler<Schema>> | AtomicStripeEventDefinition<AtomicStripeEventHandler<Schema>>;
   messages?: Record<string, MessageDefinition<MessageHandler<Schema> | AuthGuardedHandler<(...args: any[]) => any>>>;
@@ -1249,6 +1256,7 @@ export function requireAuth<Handler extends (...args: any[]) => any>(
   handler: Handler,
 ): AuthGuardedHandler<Handler>;
 /** Define a Custom endpoint for HTTP integrations such as webhooks. */
+export function endpoint(options: EndpointFileAttachmentOptionsDeclaration, handler: EndpointFileAttachmentHandler): EndpointDefinition<EndpointFileAttachmentHandler>;
 export function endpoint(options: EndpointOptions, handler: EndpointHandler): EndpointDefinition<EndpointHandler>;
 export function endpoint<Handler extends (...args: any[]) => any>(options: EndpointOptions, handler: AuthGuardedHandler<Handler>): EndpointDefinition<AuthGuardedHandler<Handler>>;
 

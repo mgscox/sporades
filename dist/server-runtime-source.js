@@ -503,6 +503,16 @@ function endpointIngressClaimAuthority(endpoint) {
     }
     return declared[0];
 }
+function validateEndpointResponseDeclarations(capsuleDefinition) {
+    for (const definition of Object.values(capsuleDefinition?.endpoints ?? {})) {
+        const response = definition?.options?.response;
+        if (response === undefined)
+            continue;
+        if (!response || typeof response !== "object" || Array.isArray(response) || Object.keys(response).length !== 1 || response.fileAttachment !== true) {
+            throw commandError("Invalid endpoint response declaration.", "Declare response: { fileAttachment: true } only on endpoints whose trusted handler performs current domain authorization.", "INVALID_ENDPOINT_RESPONSE_DECLARATION");
+        }
+    }
+}
 function normalizeCapsuleFileIngressDefinition(files, endpoints) {
     const usesCapsulePrincipal = endpoints.some((endpoint) => endpoint?.options?.body?.multipart && endpointIngressClaimAuthority(endpoint) === "capsule-principal");
     if (!usesCapsulePrincipal)
@@ -522,6 +532,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         capsuleDefinition = normalizeCapsuleAuthDefinition(capsuleDefinition);
         validateCapsuleAuthRequirements(capsuleDefinition);
         validateStripeEventSubscription(capsuleDefinition.stripeEvents);
+        validateEndpointResponseDeclarations(capsuleDefinition);
     }
     const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
     if (capsuleDefinition?.teams !== undefined && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
@@ -3281,7 +3292,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                             credential: accessKeyAdmission?.credential,
                             accessKeyGrants: accessKeyAdmission?.grants,
                         });
-                        context.files = createEndpointFileResponseApi(createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context));
+                        context.files = createEndpointFileResponseApi(createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context), endpoint.options?.response?.fileAttachment === true);
                         if (endpoint.runtimeOwnedStripeCallback) {
                             Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
                         }

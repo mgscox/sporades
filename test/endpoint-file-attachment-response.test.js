@@ -40,14 +40,26 @@ async function upload(database, baseUrl, auth, contents) {
   return pending.data.file;
 }
 
+test("attachment response declarations are explicit and closed", () => {
+  for (const response of [{}, { fileAttachment: false }, { fileAttachment: true, extra: true }, "fileAttachment"]) {
+    assert.throws(() => capsule({ name: "invalid-attachment-response", endpoints: {
+      download: endpoint({ method: "GET", path: "/download", response }, () => null),
+    } }), { code: "INVALID_ENDPOINT_RESPONSE_DECLARATION" });
+  }
+});
+
 test("an endpoint can return only its runtime-created exact-version attachment response", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "sporades-endpoint-attachment-"));
-  const holder = { file: null, forged: false, hostileName: "report\r\nX-Evil: yes/../\u202Eexe.txt" };
+  const holder = { file: null, forged: false, customerGrant: true, hostileName: "report\r\nX-Evil: yes/../\u202Eexe.txt" };
   const definition = capsule({ name: "endpoint-attachment", endpoints: {
-    download: endpoint({ method: "GET", path: "/download" }, (ctx) => holder.forged
+    download: endpoint({ method: "GET", path: "/download", response: { fileAttachment: true } }, (ctx) => holder.forged
       ? { id: holder.file.id, version: holder.file.version, filename: holder.hostileName }
       : ctx.files.attachment({ id: holder.file.id, version: holder.file.version }, { filename: holder.hostileName })),
-    rollback: endpoint({ method: "GET", path: "/rollback" }, (ctx) => {
+    customer: endpoint({ method: "GET", path: "/customer", response: { fileAttachment: true } }, (ctx) => holder.customerGrant
+      ? ctx.files.attachment(holder.file, { filename: "customer.txt" })
+      : { status: 404, body: "Not found" }),
+    undeclared: endpoint({ method: "GET", path: "/undeclared" }, (ctx) => ctx.files.attachment(holder.file, { filename: "forbidden.txt" })),
+    rollback: endpoint({ method: "GET", path: "/rollback", response: { fileAttachment: true } }, (ctx) => {
       ctx.files.attachment({ id: holder.file.id, version: holder.file.version }, { filename: "report.txt" });
       throw new Error("rollback sentinel");
     }),
@@ -85,6 +97,20 @@ test("an endpoint can return only its runtime-created exact-version attachment r
     let reads = 0;
     const originalRead = database.fileStorage.openFileVersionStream.bind(database.fileStorage);
     database.fileStorage.openFileVersionStream = async (input) => { reads += 1; return await originalRead(input); };
+    const customer = await fetch(`${server.baseUrl}/customer`);
+    assert.equal(customer.status, 200, "trusted domain authorization may deliberately serve a non-Sporades customer capability");
+    assert.equal(await customer.text(), "attachment bytes");
+    assert.equal(reads, 1);
+    holder.customerGrant = false;
+    const revokedCustomer = await fetch(`${server.baseUrl}/customer`);
+    assert.equal(revokedCustomer.status, 404);
+    assert.equal(reads, 1, "revoked app authorization prevents descriptor creation on the next request");
+    reads = 0;
+    for (const headers of [{}, { "x-sporades-session-token": token }]) {
+      const undeclared = await fetch(`${server.baseUrl}/undeclared`, { headers });
+      assert.equal(undeclared.status, 500);
+    }
+    assert.equal(reads, 0, "undeclared anonymous and authenticated endpoints cannot start attachment reads");
     const rolledBack = await fetch(`${server.baseUrl}/rollback`, { headers: { "x-sporades-session-token": token } });
     assert.equal(rolledBack.status, 500);
     assert.equal(reads, 0, "a descriptor made in a rolled-back endpoint never starts a File read");
@@ -123,7 +149,7 @@ test("the guarded attachment response reads the exact uploaded version from S3-c
     const directory = await mkdtemp(path.join(tmpdir(), "sporades-endpoint-attachment-s3-"));
     const holder = { file: null };
     const definition = capsule({ name: "endpoint-attachment-s3", endpoints: {
-      download: endpoint({ method: "GET", path: "/download" }, (ctx) => ctx.files.attachment(holder.file, { filename: "evidence café.txt" })),
+      download: endpoint({ method: "GET", path: "/download", response: { fileAttachment: true } }, (ctx) => ctx.files.attachment(holder.file, { filename: "evidence café.txt" })),
     } });
     const serviceEnv = {
       SPORADES_SERVICE_STORAGE_ENGINE: "minio",
@@ -154,7 +180,7 @@ test("a disconnected attachment stream is destroyed and a reconnect runs endpoin
   const directory = await mkdtemp(path.join(tmpdir(), "sporades-endpoint-attachment-disconnect-"));
   const holder = { file: null, authorizations: 0 };
   const definition = capsule({ name: "endpoint-attachment-disconnect", endpoints: {
-    download: endpoint({ method: "GET", path: "/download" }, (ctx) => {
+    download: endpoint({ method: "GET", path: "/download", response: { fileAttachment: true } }, (ctx) => {
       holder.authorizations += 1;
       return ctx.files.attachment(holder.file, { filename: "large.txt" });
     }),

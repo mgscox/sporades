@@ -9,9 +9,8 @@ type AttachmentResponseDetails = Readonly<{ fileId: string; version: string; fil
 const attachmentResponseDetails = new WeakMap<object, AttachmentResponseDetails>();
 const guardedAttachmentHttpResponses = new WeakSet<object>();
 
-export function createEndpointFileResponseApi(ingressApi: LooseRecord) {
-  return Object.freeze({
-    ...ingressApi,
+export function createEndpointFileResponseApi(ingressApi: LooseRecord, enabled: boolean) {
+  const attachment = enabled ? {
     attachment(reference: LooseRecord, options: LooseRecord) {
       const fileId = exactIdentifier(reference?.id);
       const version = exactIdentifier(reference?.version);
@@ -25,7 +24,8 @@ export function createEndpointFileResponseApi(ingressApi: LooseRecord) {
       attachmentResponseDetails.set(response, Object.freeze({ fileId, version, filename }));
       return response;
     },
-  });
+  } : {};
+  return Object.freeze({ ...ingressApi, ...attachment });
 }
 
 export function endpointFileAttachmentDetails(value: unknown): AttachmentResponseDetails | null {
