@@ -1,4 +1,12 @@
 const atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
+const fileIngressInspectionBrand = Symbol.for("sporades.file-ingress-inspection");
+/**
+ * Creates a deterministic inspector for tests and local acceptance fixtures.
+ * It receives no uploaded bytes and must never be enabled as a production policy.
+ */
+export function fileIngressInspectionFixture(options) {
+    return Object.freeze({ name: options?.name, kind: "fixture", [fileIngressInspectionBrand]: Object.freeze({ verdict: options?.verdict }) });
+}
 export function requireUserAuth(context, options = {}) {
     const linked = normalizeRequireUserAuthOptions(options).linked;
     const auth = context?.auth;

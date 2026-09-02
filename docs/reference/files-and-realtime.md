@@ -460,6 +460,54 @@ authority, request key, and part key, so delimiter-bearing values cannot alias.
 Existing pre-0.9.6 delimiter-framed receipts remain replayable only when their
 stored tuple exactly matches; every newly staged receipt uses the framed digest.
 
+### Required inspection evidence
+
+Use a required inspection policy for an integration that accepts material from
+outside its trust boundary and must not create an ordinary File until that
+material has passed a security control. The policy is intentionally opt-in, so
+existing trusted-ingress handlers retain their established behaviour:
+
+```ts
+const inspection = {
+  policyRevision: "support-attachments-v1",
+  maxVerdictAgeMs: 60 * 60 * 1000,
+  inspectors: [fileIngressInspectionFixture({ name: "local-fixture", verdict: "clean" })],
+};
+
+endpoint({ method: "POST", path: "/attachments", body: {
+  multipart: { ...limits, inspection },
+}}, async (ctx) => ctx.files.claim(ctx.request.multipart.files[0], {
+  path: `/attachments/${ctx.request.multipart.files[0].partId}`,
+}));
+```
+
+The fixture is only for deterministic tests and local acceptance checks. It
+does not inspect bytes and must not be used as a production control. Production
+scanner transport is deliberately a runtime-owned integration rather than an
+endpoint-handler callback: no endpoint handler, Capsule policy, caller, or
+lease API receives the staged bytes. This prevents a convenient inspection hook
+from becoming a second File-download capability. An isolated scanner adapter
+must impose its own destination allow-list, byte cap, timeout, response cap,
+and fail-closed handling before a Capsule may use it.
+For ClamAV specifically, its [INSTREAM protocol](https://docs.clamav.net/manual/Usage/ClamdProtocol.html)
+sends the content over clamd's socket and is bounded by clamd's
+`StreamMaxLength`; ClamAV documents that a TCP clamd socket is unauthenticated
+and unencrypted, so it must remain on an isolated trusted network rather than
+be exposed to callers. Operators must also keep signatures current with
+[freshclam](https://docs.clamav.net/manual/Usage/SignatureManagement.html).
+
+When inspection is required, Sporades seals bounded verdict metadata into the
+private receipt: inspector name and outcome, lease identity, observed byte
+size, SHA-256 digest, policy revision, and inspection time. `claim()` succeeds
+only if every declared inspector has a current `clean` verdict matching that
+exact receipt and policy revision. Missing, stale, malformed, mismatched,
+infected, or inconclusive evidence returns `INGRESS_INSPECTION_REQUIRED` before
+creating a File row. Changing the policy revision deliberately invalidates old
+evidence. This reduces the risk of a stale or substituted scan result being
+reused, but it is not a content-safety guarantee: operators still need a
+maintained scanner, constrained storage, forced-download delivery, and no
+automatic rendering or execution of uploaded material.
+
 By default, the authenticated human or Access-key service User is the actor and
 File owner. A scoped service User remains a normal non-session actor; do not
 create login-capable bot accounts merely to receive a file. For integrations

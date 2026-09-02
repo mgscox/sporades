@@ -7,7 +7,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
-import { capsule, endpoint, requireAuth, String as StringField, table } from "../dist/server.js";
+import { capsule, endpoint, fileIngressInspectionFixture, requireAuth, String as StringField, table } from "../dist/server.js";
 import { createControllableRuntimeClock, openDevDatabase, routeEndpoint, runEndpoint } from "../dist/server-runtime-source.js";
 import { createEndpointIngressApi, multipartParts, stageMultipartIngress, sweepExpiredFileIngress } from "../dist/file-ingress-runtime.js";
 import { capsuleIngressAuthUserId } from "../dist/auth-runtime.js";
@@ -1010,5 +1010,37 @@ test("ingress orphan cleanup failures are stable, bounded, and retryable", async
     const failed = await sweepExpiredFileIngress(database, { limit: 1 });
     assert.deepEqual(failed.failures, [{ leaseId: lease.leaseId, code: "INGRESS_ORPHAN_CLEANUP_FAILED" }]); assert.equal(JSON.stringify(failed).includes("provider-secret-detail"), false); assert.equal((await database.adapter.selectIngressByLease(lease.leaseId)).state, "sweeping");
     database.fileStorage.deleteFileVersion = remove; const retried = await sweepExpiredFileIngress(database, { limit: 1 }); assert.equal(retried.cleaned.length, 1); assert.equal(await database.adapter.selectIngressByLease(lease.leaseId), null);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("required inspection evidence is bound to the lease and fails closed before a File exists", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-inspection-gate-")); let database;
+  try {
+    const inspection = { policyRevision: "attachments-v1", maxVerdictAgeMs: 60_000, inspectors: [fileIngressInspectionFixture({ name: "fixture", verdict: "inconclusive" })] };
+    const endpoint = { options: { method: "POST", path: "/inspection", body: { multipart: { ...ingressPolicy(), inspection } } } };
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "inspection", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "inspection" }));
+    const staged = await stageMultipartIngress(database, endpoint, ingressRequest("inspection"), { headers: ingressRequest("inspection").headers }, { userId: "claim-user" });
+    const lease = staged.multipart.files[0]; const api = createEndpointIngressApi(database, endpoint, { __ingressRequestKey: "inspection", __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
+    await assert.rejects(api.claim(lease, { path: "/attachments/blocked.txt" }), { code: "INGRESS_INSPECTION_REQUIRED" });
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_files]").get()).count), 0);
+    const receipt = JSON.parse((await database.adapter.selectIngressByLease(lease.leaseId)).payload);
+    assert.equal(receipt.inspection.policyRevision, "attachments-v1"); assert.equal(receipt.inspection.verdicts[0].leaseId, lease.leaseId); assert.equal(receipt.inspection.verdicts[0].digest, receipt.digest); assert.equal(receipt.inspection.verdicts[0].size, lease.size);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a clean required verdict must remain current and exactly match the staged receipt", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-inspection-current-")); let database;
+  try {
+    const inspection = { policyRevision: "attachments-v1", maxVerdictAgeMs: 1_000, inspectors: [fileIngressInspectionFixture({ name: "fixture", verdict: "clean" })] };
+    const endpoint = { options: { method: "POST", path: "/inspection-current", body: { multipart: { ...ingressPolicy(), inspection } } } };
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "inspection-current", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "inspection-current" }));
+    const staged = await stageMultipartIngress(database, endpoint, ingressRequest("inspection-current"), { headers: ingressRequest("inspection-current").headers }, { userId: "claim-user" }); const lease = staged.multipart.files[0];
+    const api = createEndpointIngressApi(database, endpoint, { __ingressRequestKey: "inspection-current", __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
+    const row = await database.adapter.selectIngressByLease(lease.leaseId); const receipt = JSON.parse(row.payload); receipt.inspection.verdicts[0].inspectedAt = "2000-01-01T00:00:00.000Z";
+    await database.adapter.prepare("UPDATE [sporades_file_ingress] SET [payload] = ? WHERE [leaseId] = ?").run(JSON.stringify(receipt), lease.leaseId);
+    await assert.rejects(api.claim(lease, { path: "/attachments/stale.txt" }), { code: "INGRESS_INSPECTION_REQUIRED" }); assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_files]").get()).count), 0);
+    const fresh = await stageMultipartIngress(database, endpoint, ingressRequest("inspection-current-fresh"), { headers: ingressRequest("inspection-current-fresh").headers }, { userId: "claim-user" }); const freshLease = fresh.multipart.files[0];
+    const freshApi = createEndpointIngressApi(database, endpoint, { __ingressRequestKey: "inspection-current-fresh", __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
+    assert.equal((await freshApi.claim(freshLease, { path: "/attachments/current.txt" })).path, "/attachments/current.txt");
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });

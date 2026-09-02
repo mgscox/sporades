@@ -179,6 +179,12 @@ export type FileAclRule = (input: FileAclRuleInput) => MaybePromise<boolean>;
 export type FileAclRules = Partial<Record<FileAclOperation, FileAclRule>>;
 
 export type FileIngressPrincipal = Readonly<{ namespace: string; key: string }>;
+/** A runtime-owned inspector declaration. Endpoint handlers never receive lease bytes. */
+export type FileIngressInspector = Readonly<{ name: string; kind: "fixture" }>;
+export type FileIngressInspection = Readonly<{ policyRevision: string; maxVerdictAgeMs?: number; inspectors: readonly FileIngressInspector[] }>;
+export type FileIngressInspectionFixtureOptions = Readonly<{ name: string; verdict: "clean" | "infected" | "inconclusive" }>;
+/** Creates a deterministic no-byte inspector for tests and local acceptance fixtures. */
+export function fileIngressInspectionFixture(options: FileIngressInspectionFixtureOptions): FileIngressInspector;
 export type FileIngressAdmissionDecision = Readonly<{ allow: false } | { allow: true; principal: FileIngressPrincipal }>;
 export type FileIngressAdmissionRequest = Readonly<{ method: string; path: string; headers: Readonly<Record<string, string>>; query: Readonly<Record<string, string>> }>;
 export type FileIngressAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
@@ -1051,7 +1057,7 @@ export type EndpointOptions = {
   method: string;
   path: string;
   response?: { fileAttachment: true };
-  body?: { multipart: { maxFiles: number; maxFileBytes: number; maxTotalFileBytes: number; maxFieldCount: number; maxFieldBytes: number; maxTotalFieldBytes: number; allowedMimeTypes?: readonly string[]; allowedPathPrefixes: readonly string[]; requestKeyHeader: string; partKeyHeader: string; requireStablePartKeys?: boolean; claimAuthorities?: readonly ["actor" | "capsule-principal"]; } };
+  body?: { multipart: { maxFiles: number; maxFileBytes: number; maxTotalFileBytes: number; maxFieldCount: number; maxFieldBytes: number; maxTotalFieldBytes: number; allowedMimeTypes?: readonly string[]; allowedPathPrefixes: readonly string[]; requestKeyHeader: string; partKeyHeader: string; requireStablePartKeys?: boolean; claimAuthorities?: readonly ["actor" | "capsule-principal"]; inspection?: FileIngressInspection; } };
 };
 export type EndpointFileAttachmentOptionsDeclaration = EndpointOptions & { response: { fileAttachment: true } };
 
