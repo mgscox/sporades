@@ -53,6 +53,7 @@ function partHeader(rawHeaders: string, name: string) {
 }
 function unsupportedMultipartPartEncoding(rawHeaders: string) {
   for (const line of rawHeaders.split("\r\n")) {
+    if (/^[ \t]/.test(line)) return true;
     const separator = line.indexOf(":"); if (separator <= 0) continue;
     const name = line.slice(0, separator).trim().toLowerCase(); const value = line.slice(separator + 1).trim().toLowerCase();
     if (name === "content-transfer-encoding") return true;
@@ -117,12 +118,14 @@ export async function* multipartParts(request: AsyncIterable<Uint8Array>, bounda
 
 /** Parse only after endpoint credential admission. The bounded body is never exposed as an ordinary endpoint body. */
 export async function stageMultipartIngress(database: RecordLike, endpoint: RecordLike, request: any, endpointRequest: RecordLike, actor: RecordLike, admittedAuthority?: RecordLike) {
-  const policy = validateMultipartIngressPolicy(endpoint.options.body.multipart);
+  let policy: RecordLike;
+  try { policy = validateMultipartIngressPolicy(endpoint.options.body.multipart); }
+  catch (error) { await emitIngressAudit(database, "failed", { outcome: "failed", code: safeIngressAuditCode(error) }); throw error; }
   const contentType = String(endpointRequest.headers["content-type"] ?? "");
   const boundary = multipartBoundary(contentType);
-  if (!boundary) throw Object.assign(new Error("Invalid multipart request."), { code: "INVALID_MULTIPART" });
+  if (!boundary) { const error = Object.assign(new Error("Invalid multipart request."), { code: "INVALID_MULTIPART" }); await emitIngressAudit(database, "failed", { outcome: "failed", code: "INVALID_MULTIPART" }); throw error; }
   const requestKey = header(endpointRequest.headers, policy.requestKeyHeader);
-  if (typeof requestKey !== "string" || requestKey.length < 1 || requestKey.length > 200) throw Object.assign(new Error("Missing multipart idempotency key."), { code: "INVALID_MULTIPART_REQUEST_KEY" });
+  if (typeof requestKey !== "string" || requestKey.length < 1 || requestKey.length > 200) { const error = Object.assign(new Error("Missing multipart idempotency key."), { code: "INVALID_MULTIPART_REQUEST_KEY" }); await emitIngressAudit(database, "failed", { outcome: "failed", code: "INVALID_MULTIPART_REQUEST_KEY" }); throw error; }
   await emitIngressAudit(database, "started", { outcome: "started" });
   const maxBytes = Number(policy.maxTotalFileBytes) + Number(policy.maxTotalFieldBytes) + 65536;
   const files: any[] = []; const fields: RecordLike = Object.create(null); let fieldCount = 0; let fieldBytes = 0; let fileBytes = 0; const partKeys = new Set<string>(); const wonReceipts: RecordLike[] = [];
@@ -186,11 +189,11 @@ export async function stageMultipartIngress(database: RecordLike, endpoint: Reco
         if (Number(deleted?.changes ?? 0) > 0) await database.fileStorage.deleteFileVersion({ fileId: row.fileId, version: row.version });
       } catch (cleanupError) { cleanupErrors.push(cleanupError); }
     }
-    if (cleanupErrors.length) throw new AggregateError([primaryError, ...cleanupErrors], "Multipart ingress staging failed and cleanup was incomplete.");
+    if (cleanupErrors.length) { await emitIngressAudit(database, "failed", { outcome: "failed", code: safeIngressAuditCode(primaryError) }); throw new AggregateError([primaryError, ...cleanupErrors], "Multipart ingress staging failed and cleanup was incomplete."); }
     await emitIngressAudit(database, "failed", { outcome: "failed", code: safeIngressAuditCode(primaryError) });
     throw primaryError;
   }
-  await emitIngressAudit(database, "completed", { outcome: "leased", parts: files.length, bytes: fileBytes });
+  await emitIngressAudit(database, "completed", { outcome: "leased" });
   return { body: null, bodyBytes: Object.freeze({ byteLength: 0, length: 0, at() { return undefined; }, toUint8Array() { return new Uint8Array(); }, *[Symbol.iterator]() {} }), multipart: Object.freeze({ files: Object.freeze(files), fields: Object.freeze(fields) }), __ingressRequestKey: requestKey, __ingressAuthority: admittedAuthority ?? Object.freeze({ kind: "actor", actorId: String(actor.userId ?? ""), ownerId: String(actor.userId ?? "") }) };
 }
 
@@ -244,7 +247,7 @@ export function createEndpointIngressApi(database: RecordLike, endpoint: RecordL
       const expectedFile = { id: row.fileId, ownerId: row.ownerId, path, name, type, size: row.size, version: row.version };
       if (row.state === "complete") {
         if (!sameFileDescriptor(row.file, expectedFile)) throw idempotencyConflict();
-        await emitIngressAudit(database, "completed", { outcome: "claimed", parts: 1, bytes: row.size });
+        await emitIngressAudit(database, "completed", { outcome: "claimed" });
         return fileMetadataFromRow(row.file);
       }
       if (row.state === "expired" || Date.parse(row.expiresAt) <= Date.now()) throw Object.assign(new Error("File ingress lease has expired."), { code: "INGRESS_LEASE_EXPIRED" });
@@ -261,7 +264,7 @@ export function createEndpointIngressApi(database: RecordLike, endpoint: RecordL
       row.state = "complete"; row.file = storedFile;
       const storedReceipt = await database.adapter.completeIngressClaim(row); const completed = storedReceipt ? JSON.parse(storedReceipt.payload) : null;
       if (!completed || completed.state !== "complete" || !sameFileDescriptor(completed.file, file)) throw idempotencyConflict("Ingress receipt completion conflicted with another claim.");
-      await emitIngressAudit(database, "completed", { outcome: "claimed", parts: 1, bytes: row.size });
+      await emitIngressAudit(database, "completed", { outcome: "claimed" });
       return fileMetadataFromRow(storedFile);
       } catch (error: any) {
         const code = safeIngressAuditCode(error);
@@ -338,7 +341,7 @@ export async function sweepExpiredFileIngress(database: RecordLike, options: Rec
       failures.push(Object.freeze({ leaseId, code: error?.code === "INGRESS_SWEEP_INVALID_RECEIPT" ? "INGRESS_SWEEP_INVALID_RECEIPT" : "INGRESS_SWEEP_STORAGE_FAILED" }));
     }
   }
-  if (cleaned.length > 0) await emitIngressAudit(database, "completed", { outcome: "cleaned", parts: cleaned.length, bytes: 0 });
-  if (failures.length > 0) await emitIngressAudit(database, "cleanup-failed", { outcome: "failed", code: failures[0].code, failures: failures.length });
+  if (cleaned.length > 0) await emitIngressAudit(database, "completed", { outcome: "cleaned" });
+  if (failures.length > 0) await emitIngressAudit(database, "cleanup-failed", { outcome: "failed", code: failures[0].code });
   return Object.freeze({ scanned: candidates.length, cleaned: Object.freeze(cleaned), failures: Object.freeze(failures) });
 }

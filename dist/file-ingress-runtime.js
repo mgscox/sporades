@@ -57,6 +57,8 @@ function partHeader(rawHeaders, name) {
 }
 function unsupportedMultipartPartEncoding(rawHeaders) {
     for (const line of rawHeaders.split("\r\n")) {
+        if (/^[ \t]/.test(line))
+            return true;
         const separator = line.indexOf(":");
         if (separator <= 0)
             continue;
@@ -220,14 +222,27 @@ export async function* multipartParts(request, boundaryText, maxWireBytes, maxPa
 }
 /** Parse only after endpoint credential admission. The bounded body is never exposed as an ordinary endpoint body. */
 export async function stageMultipartIngress(database, endpoint, request, endpointRequest, actor, admittedAuthority) {
-    const policy = validateMultipartIngressPolicy(endpoint.options.body.multipart);
+    let policy;
+    try {
+        policy = validateMultipartIngressPolicy(endpoint.options.body.multipart);
+    }
+    catch (error) {
+        await emitIngressAudit(database, "failed", { outcome: "failed", code: safeIngressAuditCode(error) });
+        throw error;
+    }
     const contentType = String(endpointRequest.headers["content-type"] ?? "");
     const boundary = multipartBoundary(contentType);
-    if (!boundary)
-        throw Object.assign(new Error("Invalid multipart request."), { code: "INVALID_MULTIPART" });
+    if (!boundary) {
+        const error = Object.assign(new Error("Invalid multipart request."), { code: "INVALID_MULTIPART" });
+        await emitIngressAudit(database, "failed", { outcome: "failed", code: "INVALID_MULTIPART" });
+        throw error;
+    }
     const requestKey = header(endpointRequest.headers, policy.requestKeyHeader);
-    if (typeof requestKey !== "string" || requestKey.length < 1 || requestKey.length > 200)
-        throw Object.assign(new Error("Missing multipart idempotency key."), { code: "INVALID_MULTIPART_REQUEST_KEY" });
+    if (typeof requestKey !== "string" || requestKey.length < 1 || requestKey.length > 200) {
+        const error = Object.assign(new Error("Missing multipart idempotency key."), { code: "INVALID_MULTIPART_REQUEST_KEY" });
+        await emitIngressAudit(database, "failed", { outcome: "failed", code: "INVALID_MULTIPART_REQUEST_KEY" });
+        throw error;
+    }
     await emitIngressAudit(database, "started", { outcome: "started" });
     const maxBytes = Number(policy.maxTotalFileBytes) + Number(policy.maxTotalFieldBytes) + 65536;
     const files = [];
@@ -340,12 +355,14 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
                 cleanupErrors.push(cleanupError);
             }
         }
-        if (cleanupErrors.length)
+        if (cleanupErrors.length) {
+            await emitIngressAudit(database, "failed", { outcome: "failed", code: safeIngressAuditCode(primaryError) });
             throw new AggregateError([primaryError, ...cleanupErrors], "Multipart ingress staging failed and cleanup was incomplete.");
+        }
         await emitIngressAudit(database, "failed", { outcome: "failed", code: safeIngressAuditCode(primaryError) });
         throw primaryError;
     }
-    await emitIngressAudit(database, "completed", { outcome: "leased", parts: files.length, bytes: fileBytes });
+    await emitIngressAudit(database, "completed", { outcome: "leased" });
     return { body: null, bodyBytes: Object.freeze({ byteLength: 0, length: 0, at() { return undefined; }, toUint8Array() { return new Uint8Array(); }, *[Symbol.iterator]() { } }), multipart: Object.freeze({ files: Object.freeze(files), fields: Object.freeze(fields) }), __ingressRequestKey: requestKey, __ingressAuthority: admittedAuthority ?? Object.freeze({ kind: "actor", actorId: String(actor.userId ?? ""), ownerId: String(actor.userId ?? "") }) };
 }
 export function validateMultipartIngressPolicy(policy) {
@@ -426,7 +443,7 @@ export function createEndpointIngressApi(database, endpoint, endpointRequest, co
                 if (row.state === "complete") {
                     if (!sameFileDescriptor(row.file, expectedFile))
                         throw idempotencyConflict();
-                    await emitIngressAudit(database, "completed", { outcome: "claimed", parts: 1, bytes: row.size });
+                    await emitIngressAudit(database, "completed", { outcome: "claimed" });
                     return fileMetadataFromRow(row.file);
                 }
                 if (row.state === "expired" || Date.parse(row.expiresAt) <= Date.now())
@@ -456,7 +473,7 @@ export function createEndpointIngressApi(database, endpoint, endpointRequest, co
                 const completed = storedReceipt ? JSON.parse(storedReceipt.payload) : null;
                 if (!completed || completed.state !== "complete" || !sameFileDescriptor(completed.file, file))
                     throw idempotencyConflict("Ingress receipt completion conflicted with another claim.");
-                await emitIngressAudit(database, "completed", { outcome: "claimed", parts: 1, bytes: row.size });
+                await emitIngressAudit(database, "completed", { outcome: "claimed" });
                 return fileMetadataFromRow(storedFile);
             }
             catch (error) {
@@ -561,9 +578,9 @@ export async function sweepExpiredFileIngress(database, options = {}) {
         }
     }
     if (cleaned.length > 0)
-        await emitIngressAudit(database, "completed", { outcome: "cleaned", parts: cleaned.length, bytes: 0 });
+        await emitIngressAudit(database, "completed", { outcome: "cleaned" });
     if (failures.length > 0)
-        await emitIngressAudit(database, "cleanup-failed", { outcome: "failed", code: failures[0].code, failures: failures.length });
+        await emitIngressAudit(database, "cleanup-failed", { outcome: "failed", code: failures[0].code });
     return Object.freeze({ scanned: candidates.length, cleaned: Object.freeze(cleaned), failures: Object.freeze(failures) });
 }
 //# sourceMappingURL=file-ingress-runtime.js.map

@@ -1401,10 +1401,10 @@ async function runPeriodicIngressSweep(database: LooseRecord) {
   const run = (async () => {
     try {
       const result = await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() });
-      if (result.failures.length > 0) await database.log.emit({ category: "platform", event: "file.ingress.sweep_failed", level: "warn", message: "Multipart ingress cleanup left retryable orphan state", data: { code: result.failures[0].code, failures: result.failures.length, scanned: result.scanned } });
+      if (result.failures.length > 0) await database.log.emit({ category: "platform", event: "file.ingress.sweep_failed", level: "warn", message: "Multipart ingress cleanup left retryable orphan state", data: { code: result.failures[0].code } });
     } catch {
       // Cleanup is maintenance: it must never make the serving runtime unhealthy.
-      await database.log.emit({ category: "platform", event: "file.ingress.sweep_failed", level: "warn", message: "Multipart ingress cleanup left retryable orphan state", data: { code: "INGRESS_SWEEP_STORAGE_FAILED", failures: 1, scanned: 0 } });
+      await database.log.emit({ category: "platform", event: "file.ingress.sweep_failed", level: "warn", message: "Multipart ingress cleanup left retryable orphan state", data: { code: "INGRESS_SWEEP_STORAGE_FAILED" } });
     }
   })();
   database.__ingressSweepPromise = run;
@@ -1428,6 +1428,7 @@ function startPeriodicIngressSweep(database: LooseRecord) {
 function settleActiveScheduleWork(database: LooseRecord) {
   const active = new Set<any>(database.__activeScheduleOccurrences ?? []);
   if (database.__scheduleRecoveryPromise) active.add(database.__scheduleRecoveryPromise);
+  if (database.__ingressSweepPromise) active.add(database.__ingressSweepPromise);
   if (active.size === 0) return undefined;
   return Promise.allSettled([...active]).then(() => undefined);
 }

@@ -149,6 +149,8 @@ test("multipart ingress rejects nested multipart and transfer encodings before s
     for (const partHeaders of [
       'Content-Disposition: form-data; name="file"; filename="secret-name.txt"\r\nContent-Type: MULTIPART/MIXED; boundary=inner\r\nContent-ID: stable',
       'Content-Disposition: form-data; name="file"; filename="secret-name.txt"\r\nContent-Transfer-Encoding: BaSe64\r\nContent-ID: stable',
+      'Content-Disposition: form-data; name="file"; filename="secret-name.txt"\r\nContent-Type:\r\n multipart/mixed; boundary=inner\r\nContent-ID: stable',
+      'Content-Disposition: form-data; name="file"; filename="secret-name.txt"\r\nContent-Transfer-Encoding:\r\n\tbase64\r\nContent-ID: stable',
     ]) {
       let reads = 0;
       const bytes = multipart("nested", partHeaders, "super-secret-bytes");
