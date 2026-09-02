@@ -2,6 +2,7 @@
 // may name a File id/version pair and a presentation filename, but never receive bytes, a storage
 // path, object key, stream, or storage credentials.
 const attachmentResponseDetails = new WeakMap();
+const guardedAttachmentHttpResponses = new WeakSet();
 export function createEndpointFileResponseApi(ingressApi) {
     return Object.freeze({
         ...ingressApi,
@@ -22,6 +23,12 @@ export function createEndpointFileResponseApi(ingressApi) {
 }
 export function endpointFileAttachmentDetails(value) {
     return value !== null && typeof value === "object" ? attachmentResponseDetails.get(value) ?? null : null;
+}
+export function markGuardedAttachmentHttpResponse(response) {
+    guardedAttachmentHttpResponses.add(response);
+}
+export function isGuardedAttachmentHttpResponse(response) {
+    return response !== null && typeof response === "object" && guardedAttachmentHttpResponses.has(response);
 }
 function exactIdentifier(value) {
     if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > 512 || /[\x00-\x1f\x7f]/.test(value))

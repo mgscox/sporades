@@ -152,7 +152,18 @@ export function createLocalFileStorageAdapter({ storagePath }) {
         },
         async openFileVersionStream({ fileId, version }) {
             const { createReadStream } = await import("node:fs");
-            return createReadStream(localFileVersionPath(storagePath, fileId, version));
+            const stream = createReadStream(localFileVersionPath(storagePath, fileId, version));
+            await new Promise((resolve, reject) => {
+                const cleanup = () => {
+                    stream.removeListener("open", opened);
+                    stream.removeListener("error", failed);
+                };
+                const opened = () => { cleanup(); resolve(); };
+                const failed = (error) => { cleanup(); stream.destroy(); reject(error); };
+                stream.once("open", opened);
+                stream.once("error", failed);
+            });
+            return stream;
         },
         async deleteFileVersion({ fileId, version }) {
             const { rm } = await import("node:fs/promises");

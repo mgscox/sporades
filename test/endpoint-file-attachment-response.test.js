@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { createServer, request as httpRequest } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
 import { capsule, endpoint } from "../dist/server.js";
 import { createPendingFileUpload } from "../dist/file-storage-runtime.js";
-import { handleFileHttpRoute } from "../dist/http-runtime.js";
+import { handleFileHttpRoute, prepareHttpSecurity } from "../dist/http-runtime.js";
 import { openDevDatabase, routeEndpoint } from "../dist/server-runtime-source.js";
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
 
@@ -22,6 +22,7 @@ async function seedUser(database, auth, token) {
 
 async function start(database) {
   const server = createServer(async (request, response) => {
+    if (prepareHttpSecurity(database, request, response)) return;
     if (await routeEndpoint(database, request, response)) return;
     if (await handleFileHttpRoute(database, request, response)) return;
     response.writeHead(404).end("Not found");
@@ -51,7 +52,7 @@ test("an endpoint can return only its runtime-created exact-version attachment r
       throw new Error("rollback sentinel");
     }),
   } });
-  const database = await openDevDatabase(path.join(directory, "data.db"), "", {}, { name: definition.name, files: { storagePath: path.join(directory, "files") } }, definition);
+  const database = await openDevDatabase(path.join(directory, "data.db"), "", {}, { name: definition.name, __sporadesSession: "public-dev", files: { storagePath: path.join(directory, "files") } }, definition);
   const auth = actor("attachment-owner");
   const token = "attachment-owner-session";
   let server;
@@ -60,7 +61,7 @@ test("an endpoint can return only its runtime-created exact-version attachment r
     server = await start(database);
     holder.file = await upload(database, server.baseUrl, auth, "attachment bytes");
 
-    const response = await fetch(`${server.baseUrl}/download`, { headers: { "x-sporades-session-token": token } });
+    const response = await fetch(`${server.baseUrl}/download`, { headers: { "x-sporades-session-token": token, origin: "https://cross-origin.example" } });
     assert.equal(response.status, 200);
     assert.equal(await response.text(), "attachment bytes");
     assert.equal(response.headers.get("content-type"), "application/octet-stream");
@@ -68,6 +69,7 @@ test("an endpoint can return only its runtime-created exact-version attachment r
     assert.equal(response.headers.get("pragma"), "no-cache");
     assert.equal(response.headers.get("x-content-type-options"), "nosniff");
     assert.equal(response.headers.get("content-security-policy"), "sandbox");
+    assert.equal(response.headers.get("content-security-policy-report-only"), null);
     assert.equal(response.headers.get("cross-origin-resource-policy"), "same-origin");
     assert.equal(response.headers.get("access-control-allow-origin"), null);
     assert.match(response.headers.get("content-disposition"), /^attachment; filename="/);
@@ -86,6 +88,17 @@ test("an endpoint can return only its runtime-created exact-version attachment r
     const rolledBack = await fetch(`${server.baseUrl}/rollback`, { headers: { "x-sporades-session-token": token } });
     assert.equal(rolledBack.status, 500);
     assert.equal(reads, 0, "a descriptor made in a rolled-back endpoint never starts a File read");
+
+    await unlink(path.join(directory, "files", holder.file.id, holder.file.version));
+    const unreadable = await fetch(`${server.baseUrl}/download`, { headers: { "x-sporades-session-token": token, origin: "https://cross-origin.example" } });
+    assert.equal(unreadable.status, 404);
+    assert.equal(await unreadable.text(), "Not found");
+    assert.equal(unreadable.headers.get("cache-control"), "private, no-store");
+    assert.equal(unreadable.headers.get("pragma"), "no-cache");
+    assert.equal(unreadable.headers.get("content-security-policy"), "sandbox");
+    assert.equal(unreadable.headers.get("access-control-allow-origin"), null);
+    assert.equal(reads, 1, "local storage readiness fails before response headers are committed");
+    reads = 0;
 
     const replacement = await createPendingFileUpload(database, auth, { replace: true, fileId: holder.file.id, file: { name: "replacement.txt", type: "text/plain", size: Buffer.byteLength("replacement bytes") } });
     assert.equal(replacement.ok, true);

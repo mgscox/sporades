@@ -8,6 +8,8 @@ export declare function createEndpointFileResponseApi(ingressApi: LooseRecord): 
     attachment(reference: LooseRecord, options: LooseRecord): Readonly<{}>;
 }>;
 export declare function endpointFileAttachmentDetails(value: unknown): AttachmentResponseDetails | null;
+export declare function markGuardedAttachmentHttpResponse(response: object): void;
+export declare function isGuardedAttachmentHttpResponse(response: unknown): boolean;
 export declare function safePresentationFilename(value: unknown): string | null;
 export declare function attachmentContentDisposition(filename: string): string;
 export {};

@@ -109,7 +109,7 @@ import {
   checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, fileRowForActor,
 } from "./file-storage-runtime.js";
 import { commandError } from "./runtime-errors.js";
-import { attachmentContentDisposition, endpointFileAttachmentDetails } from "./endpoint-file-response.js";
+import { attachmentContentDisposition, endpointFileAttachmentDetails, isGuardedAttachmentHttpResponse, markGuardedAttachmentHttpResponse } from "./endpoint-file-response.js";
 
 // Redeclared rather than imported, as every migrated module redeclares them: they are erased by
 // tsc, so they create no top-level binding for esbuild to rename and cannot collide with the
@@ -242,11 +242,24 @@ export function prepareHttpSecurity(database: { securityPolicy?: RuntimeSecurity
       "cross-origin-opener-policy": "same-origin",
       [policy.csp.header]: serializeCspDirectives(policy.csp.directives),
     };
-    const origin = request.headers.origin;
-    if (requestOriginAllowed(policy, request)) {
-      headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : String(origin);
-      if (!policy.cors.publicDev) {
-        headers.vary = appendVaryHeader(headers.vary, "Origin");
+    if (isGuardedAttachmentHttpResponse(response)) {
+      delete headers["content-security-policy-report-only"];
+      delete headers["access-control-allow-origin"];
+      delete headers["access-control-allow-credentials"];
+      delete headers["access-control-expose-headers"];
+      headers["content-type"] = "application/octet-stream";
+      headers["cache-control"] = "private, no-store";
+      headers.pragma = "no-cache";
+      headers["x-content-type-options"] = "nosniff";
+      headers["content-security-policy"] = "sandbox";
+      headers["cross-origin-resource-policy"] = "same-origin";
+    } else {
+      const origin = request.headers.origin;
+      if (requestOriginAllowed(policy, request)) {
+        headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : String(origin);
+        if (!policy.cors.publicDev) {
+          headers.vary = appendVaryHeader(headers.vary, "Origin");
+        }
       }
     }
     if (statusMessage) {
@@ -679,6 +692,7 @@ export async function writeEndpointResult(database: LooseRecord, response: any, 
 }
 
 async function sendEndpointFileAttachmentResponse(database: LooseRecord, response: any, attachment: { fileId: string; version: string; filename: string }) {
+  markGuardedAttachmentHttpResponse(response);
   try {
     // The handler's descriptor can be created before commit, but it is deliberately resolved only
     // here, after runEndpoint's transaction has committed. Re-read the current row so replacement

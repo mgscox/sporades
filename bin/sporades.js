@@ -9853,7 +9853,25 @@ function createLocalFileStorageAdapter({ storagePath }) {
     },
     async openFileVersionStream({ fileId, version }) {
       const { createReadStream } = await import("node:fs");
-      return createReadStream(localFileVersionPath(storagePath, fileId, version));
+      const stream = createReadStream(localFileVersionPath(storagePath, fileId, version));
+      await new Promise((resolve, reject) => {
+        const cleanup = () => {
+          stream.removeListener("open", opened);
+          stream.removeListener("error", failed);
+        };
+        const opened = () => {
+          cleanup();
+          resolve();
+        };
+        const failed = (error) => {
+          cleanup();
+          stream.destroy();
+          reject(error);
+        };
+        stream.once("open", opened);
+        stream.once("error", failed);
+      });
+      return stream;
     },
     async deleteFileVersion({ fileId, version }) {
       const { rm: rm7 } = await import("node:fs/promises");
@@ -10791,6 +10809,7 @@ async function removeFileVersionBestEffort(database, fileId, version) {
 
 // src/endpoint-file-response.ts
 var attachmentResponseDetails = /* @__PURE__ */ new WeakMap();
+var guardedAttachmentHttpResponses = /* @__PURE__ */ new WeakSet();
 function createEndpointFileResponseApi(ingressApi) {
   return Object.freeze({
     ...ingressApi,
@@ -10811,6 +10830,12 @@ function createEndpointFileResponseApi(ingressApi) {
 }
 function endpointFileAttachmentDetails(value) {
   return value !== null && typeof value === "object" ? attachmentResponseDetails.get(value) ?? null : null;
+}
+function markGuardedAttachmentHttpResponse(response) {
+  guardedAttachmentHttpResponses.add(response);
+}
+function isGuardedAttachmentHttpResponse(response) {
+  return response !== null && typeof response === "object" && guardedAttachmentHttpResponses.has(response);
 }
 function exactIdentifier(value) {
   if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > 512 || /[\x00-\x1f\x7f]/.test(value)) return null;
@@ -10924,11 +10949,24 @@ function prepareHttpSecurity(database, request, response) {
       "cross-origin-opener-policy": "same-origin",
       [policy.csp.header]: serializeCspDirectives(policy.csp.directives)
     };
-    const origin = request.headers.origin;
-    if (requestOriginAllowed(policy, request)) {
-      headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : String(origin);
-      if (!policy.cors.publicDev) {
-        headers.vary = appendVaryHeader(headers.vary, "Origin");
+    if (isGuardedAttachmentHttpResponse(response)) {
+      delete headers["content-security-policy-report-only"];
+      delete headers["access-control-allow-origin"];
+      delete headers["access-control-allow-credentials"];
+      delete headers["access-control-expose-headers"];
+      headers["content-type"] = "application/octet-stream";
+      headers["cache-control"] = "private, no-store";
+      headers.pragma = "no-cache";
+      headers["x-content-type-options"] = "nosniff";
+      headers["content-security-policy"] = "sandbox";
+      headers["cross-origin-resource-policy"] = "same-origin";
+    } else {
+      const origin = request.headers.origin;
+      if (requestOriginAllowed(policy, request)) {
+        headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : String(origin);
+        if (!policy.cors.publicDev) {
+          headers.vary = appendVaryHeader(headers.vary, "Origin");
+        }
       }
     }
     if (statusMessage) {
@@ -11270,6 +11308,7 @@ async function writeEndpointResult(database, response, result, runtimeHeaders = 
   return true;
 }
 async function sendEndpointFileAttachmentResponse(database, response, attachment) {
+  markGuardedAttachmentHttpResponse(response);
   try {
     const row = await database.adapter.selectFileById(attachment.fileId);
     if (!row || row.deletedAt !== null || row.status !== "uploaded" || String(row.version) !== attachment.version) {

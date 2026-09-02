@@ -101,7 +101,7 @@ import { accessKeyGrantsSatisfyScopes } from "./auth-admission.js";
 import { accessKeyAuthenticationError, emitAccessKeyAdmittedAudit, recordAccessKeyUsage, resolveAccessKeyCredential, } from "./access-keys-runtime.js";
 import { checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, fileRowForActor, } from "./file-storage-runtime.js";
 import { commandError } from "./runtime-errors.js";
-import { attachmentContentDisposition, endpointFileAttachmentDetails } from "./endpoint-file-response.js";
+import { attachmentContentDisposition, endpointFileAttachmentDetails, isGuardedAttachmentHttpResponse, markGuardedAttachmentHttpResponse } from "./endpoint-file-response.js";
 const CLIENT_REQUEST_ERROR_CODES = new Set([
     "INVALID_JSON_REQUEST",
     "OAUTH_INVALID_CALLBACK",
@@ -194,11 +194,25 @@ export function prepareHttpSecurity(database, request, response) {
             "cross-origin-opener-policy": "same-origin",
             [policy.csp.header]: serializeCspDirectives(policy.csp.directives),
         };
-        const origin = request.headers.origin;
-        if (requestOriginAllowed(policy, request)) {
-            headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : String(origin);
-            if (!policy.cors.publicDev) {
-                headers.vary = appendVaryHeader(headers.vary, "Origin");
+        if (isGuardedAttachmentHttpResponse(response)) {
+            delete headers["content-security-policy-report-only"];
+            delete headers["access-control-allow-origin"];
+            delete headers["access-control-allow-credentials"];
+            delete headers["access-control-expose-headers"];
+            headers["content-type"] = "application/octet-stream";
+            headers["cache-control"] = "private, no-store";
+            headers.pragma = "no-cache";
+            headers["x-content-type-options"] = "nosniff";
+            headers["content-security-policy"] = "sandbox";
+            headers["cross-origin-resource-policy"] = "same-origin";
+        }
+        else {
+            const origin = request.headers.origin;
+            if (requestOriginAllowed(policy, request)) {
+                headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : String(origin);
+                if (!policy.cors.publicDev) {
+                    headers.vary = appendVaryHeader(headers.vary, "Origin");
+                }
             }
         }
         if (statusMessage) {
@@ -604,6 +618,7 @@ export async function writeEndpointResult(database, response, result, runtimeHea
     return true;
 }
 async function sendEndpointFileAttachmentResponse(database, response, attachment) {
+    markGuardedAttachmentHttpResponse(response);
     try {
         // The handler's descriptor can be created before commit, but it is deliberately resolved only
         // here, after runEndpoint's transaction has committed. Re-read the current row so replacement
