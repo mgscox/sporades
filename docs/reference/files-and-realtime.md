@@ -527,9 +527,12 @@ health and signature-update logs, budget memory for clamd, and keep the data
 volume writable for `/app/data/clamav`. The image configuration uses only a
 private socket and caps stream/file/aggregate scan size, recursion, files,
 queue depth, and scan time.
-Freshness is derived from the database's embedded, validated build timestamp,
-not its filesystem modification time: copying or touching an old database
-cannot make it current. The runtime also enforces the exact 10 MB scanner cap
+Freshness is derived from ClamAV `sigtool --info` verification of the signed
+database and its embedded build timestamp, never its filesystem modification
+time. Runtime health and every scan also require clamd's bounded `VERSION`
+reply to match that authenticated database version. Copying or touching an old
+database, or replacing it with an unsigned current-looking header, cannot make
+it current. The runtime also enforces the exact 10 MB scanner cap
 before opening the socket or writing any frame.
 Production malware-scanner transport is deliberately a runtime-owned
 integration rather than an endpoint-handler callback: no endpoint handler,

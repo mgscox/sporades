@@ -1,5 +1,6 @@
 type RecordLike = Record<string, any>;
 export declare function validatePdfIngress(bytes: Buffer, options?: RecordLike): Promise<boolean>;
+export declare function isCurrentClamavSignature(signature: RecordLike | null, now?: number): boolean;
 export declare function initializeClamavRuntime(database: RecordLike): Promise<any>;
 export declare function shutdownClamavRuntime(database: RecordLike): Promise<void>;
 export declare function checkClamavRuntime(database: RecordLike): Promise<{

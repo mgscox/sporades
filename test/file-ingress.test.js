@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
-import { access, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { deflateSync, inflateSync } from "node:zlib";
@@ -13,7 +13,7 @@ import { PNG } from "pngjs";
 
 import { capsule, endpoint, requireAuth, String as StringField, table } from "../dist/server.js";
 import { createControllableRuntimeClock, openDevDatabase, routeEndpoint, runEndpoint } from "../dist/server-runtime-source.js";
-import { checkClamavRuntime, createEndpointIngressApi, multipartParts, shutdownClamavRuntime, stageMultipartIngress, sweepExpiredFileIngress, validatePdfIngress } from "../dist/file-ingress-runtime.js";
+import { checkClamavRuntime, createEndpointIngressApi, isCurrentClamavSignature, multipartParts, shutdownClamavRuntime, stageMultipartIngress, sweepExpiredFileIngress, validatePdfIngress } from "../dist/file-ingress-runtime.js";
 import { capsuleIngressAuthUserId } from "../dist/auth-runtime.js";
 import { accessKeyVerifierDigest, createAccessKeySecret } from "../dist/access-keys-runtime.js";
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
@@ -1067,26 +1067,21 @@ test("ClamAV inspection uses only bounded Unix INSTREAM framing and fails closed
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-clamav-socket-")); let database;
   try { database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "clamav-socket", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "clamav-socket" })); const inspection = { policyRevision: "clam-v1", requiredInspectors: ["clamav"] }; const endpoint = { options: { method: "POST", path: "/clam", body: { multipart: { ...ingressPolicy(), inspection } } } }; const body = Buffer.from("claim-bytes");
     const cases = [["clean", "stream: OK\0", "clean"], ["infected", "stream: Eicar-Test-Signature FOUND\0", "rejected"], ["malformed", "nonsense\0", "inconclusive"], ["limit", "INSTREAM size limit exceeded. ERROR\0", "inconclusive"], ["timeout", undefined, "inconclusive"], ["unavailable", null, "inconclusive"], ["stale", null, "inconclusive"]];
-    for (const [key, response, expected] of cases) { const socketPath = path.join(dir, `${key}.sock`); let fake; if (response !== null) fake = await fakeClamSocket(socketPath, { response, delayMs: key === "timeout" ? 100 : 0 }); database.__clamavTest = { socketPath, timeoutMs: 10, signature: { version: "daily-test", updatedAt: key === "stale" ? "2000-01-01T00:00:00.000Z" : new Date().toISOString() } }; const headers = { "content-type": `multipart/form-data; boundary=${key}`, "idempotency-key": key }; const staged = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipartBinary(key, "claim.txt", "text/plain", body); } }, { headers }, { userId: "claim-user" }); const receipt = JSON.parse((await database.adapter.selectIngressByLease(staged.multipart.files[0].leaseId)).payload); const verdict = receipt.inspection.verdicts[0]; assert.equal(verdict.outcome, expected, key); assert.equal(JSON.stringify(verdict).includes("Eicar"), false); if (key === "clean") { const wire = fake.received; assert.equal(wire.subarray(0, 10).toString(), "zINSTREAM\0"); assert.equal(wire.readUInt32BE(10), body.length); assert.deepEqual(wire.subarray(14, 14 + body.length), body); assert.deepEqual(wire.subarray(-4), Buffer.alloc(4)); } if (fake) await new Promise((resolve) => fake.server.close(resolve)); }
+    for (const [key, response, expected] of cases) { const socketPath = path.join(dir, `${key}.sock`); let fake; if (response !== null) fake = await fakeClamSocket(socketPath, { response, delayMs: key === "timeout" ? 100 : 0 }); database.__clamavTest = { socketPath, timeoutMs: 10, loadedSignature: "daily:42", signature: { version: "daily:42", updatedAt: key === "stale" ? "2000-01-01T00:00:00.000Z" : new Date().toISOString() } }; const headers = { "content-type": `multipart/form-data; boundary=${key}`, "idempotency-key": key }; const staged = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipartBinary(key, "claim.txt", "text/plain", body); } }, { headers }, { userId: "claim-user" }); const receipt = JSON.parse((await database.adapter.selectIngressByLease(staged.multipart.files[0].leaseId)).payload); const verdict = receipt.inspection.verdicts[0]; assert.equal(verdict.outcome, expected, key); assert.equal(JSON.stringify(verdict).includes("Eicar"), false); if (key === "clean") { const wire = fake.received; assert.equal(wire.subarray(0, 10).toString(), "zINSTREAM\0"); assert.equal(wire.readUInt32BE(10), body.length); assert.deepEqual(wire.subarray(14, 14 + body.length), body); assert.deepEqual(wire.subarray(-4), Buffer.alloc(4)); } if (fake) await new Promise((resolve) => fake.server.close(resolve)); }
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
-test("ClamAV signature freshness comes from the embedded database build time, not a copied file timestamp", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "sporades-clamav-signature-time-")); const signaturePath = path.join(dir, "daily.cld");
-  try {
-    await writeFile(signaturePath, Buffer.concat([Buffer.from("ClamAV-VDB:01 Jan 2000 00-00 +0000:42:1:0:0:0:0:0:0:0:"), Buffer.alloc(512)])); await utimes(signaturePath, new Date(), new Date());
-    const database = { clamavRequired: true, clamavReady: true, __clamavProcess: { exitCode: null }, __clamavUpdateProcess: { exitCode: null }, __clamavTest: { signaturePaths: [signaturePath], socketPath: path.join(dir, "absent.sock") } };
-    assert.deepEqual(await checkClamavRuntime(database), { ok: false });
-  } finally { await rm(dir, { recursive: true, force: true }); }
+test("the one ClamAV freshness predicate rejects stale, future, malformed, and over-24-hour signatures", () => {
+  const now = Date.parse("2026-09-02T12:00:00.000Z"); assert.equal(isCurrentClamavSignature({ version: "daily:42", updatedAt: new Date(now - 24 * 60 * 60 * 1000).toISOString() }, now), true); assert.equal(isCurrentClamavSignature({ version: "daily:42", updatedAt: new Date(now - 24 * 60 * 60 * 1000 - 1).toISOString() }, now), false); assert.equal(isCurrentClamavSignature({ version: "daily:42", updatedAt: new Date(now + 1).toISOString() }, now), false); assert.equal(isCurrentClamavSignature({ version: "forged", updatedAt: new Date(now).toISOString() }, now), false);
 });
 
 test("ClamAV health requires a bounded PING and shutdown awaits both managed children", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-clamav-health-")); const socketPath = path.join(dir, "clamd.sock"); let commands = 0;
   const server = createNetServer((socket) => socket.once("data", (bytes) => { commands += 1; assert.equal(bytes.toString(), "zPING\0"); socket.end(Buffer.from("PONG\0")); })); await new Promise((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); });
-  const child = () => { const listeners = new Map(); return { exitCode: null, once(name, handler) { listeners.set(name, handler); }, kill(signal) { assert.equal(signal, "SIGTERM"); this.exitCode = 0; queueMicrotask(() => listeners.get("exit")?.(0)); } }; };
+  const child = (stuck = false) => { const listeners = new Map(); const signals = []; return { exitCode: null, signals, once(name, handler) { listeners.set(name, handler); }, kill(signal) { signals.push(signal); if (stuck && signal === "SIGTERM") return; this.exitCode = signal === "SIGKILL" ? null : 0; queueMicrotask(() => { this.exitCode = 0; listeners.get("exit")?.(0); }); } }; };
   try {
-    const database = { clamavRequired: true, clamavReady: true, __clamavProcess: child(), __clamavUpdateProcess: child(), __clamavTest: { socketPath, signature: { version: "daily:1", updatedAt: new Date().toISOString() } } };
-    assert.deepEqual(await checkClamavRuntime(database), { ok: true }); assert.equal(commands, 1); await shutdownClamavRuntime(database); assert.equal(database.clamavReady, false); assert.equal(database.__clamavProcess, null); assert.equal(database.__clamavUpdateProcess, null);
+    const clamd = child(); const updater = child(true); const database = { clamavRequired: true, clamavReady: true, __clamavProcess: clamd, __clamavUpdateProcess: updater, __clamavTest: { socketPath, loadedSignature: "daily:1", terminateTimeoutMs: 5, signature: { version: "daily:1", updatedAt: new Date().toISOString() } } };
+    assert.deepEqual(await checkClamavRuntime(database), { ok: true }); assert.equal(commands, 1); await shutdownClamavRuntime(database); assert.deepEqual(clamd.signals, ["SIGTERM"]); assert.deepEqual(updater.signals, ["SIGTERM", "SIGKILL"]); assert.equal(database.clamavReady, false); assert.equal(database.__clamavProcess, null); assert.equal(database.__clamavUpdateProcess, null);
   } finally { await new Promise((resolve) => server.close(resolve)); await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -1094,7 +1089,7 @@ test("ClamAV refuses bytes above its exact 10 MB stream cap before opening a soc
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-clamav-cap-")); const socketPath = path.join(dir, "clamd.sock"); let connections = 0; let database;
   const server = createNetServer(() => { connections += 1; }); await new Promise((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); });
   try {
-    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "clamav-cap", files: { storagePath: path.join(dir, "files"), maxSizeBytes: 11 * 1024 * 1024 } }, capsule({ name: "clamav-cap" })); database.__clamavTest = { socketPath, signature: { version: "daily:1", updatedAt: new Date().toISOString() } };
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "clamav-cap", files: { storagePath: path.join(dir, "files"), maxSizeBytes: 11 * 1024 * 1024 } }, capsule({ name: "clamav-cap" })); database.__clamavTest = { socketPath, loadedSignature: "daily:1", signature: { version: "daily:1", updatedAt: new Date().toISOString() } };
     const inspection = { policyRevision: "clam-cap-v1", requiredInspectors: ["clamav"] }; const policy = { ...ingressPolicy(), maxFileBytes: 11 * 1024 * 1024, maxTotalFileBytes: 11 * 1024 * 1024, inspection }; const endpoint = { options: { method: "POST", path: "/clam-cap", body: { multipart: policy } } }; const boundary = "clam-cap"; const bytes = Buffer.alloc(10 * 1024 * 1024 + 1, 65);
     const staged = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipartBinary(boundary, "large.txt", "text/plain", bytes); } }, { headers: { "content-type": `multipart/form-data; boundary=${boundary}`, "idempotency-key": boundary } }, { userId: "claim-user" }); const row = JSON.parse((await database.adapter.selectIngressByLease(staged.multipart.files[0].leaseId)).payload);
     assert.equal(row.inspection.verdicts[0].outcome, "inconclusive"); assert.equal(connections, 0);

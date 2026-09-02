@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import path from "node:path";
 import { test } from "node:test";
 
 const enabled = process.env.SPORADES_REAL_CLAMAV_DOCKER === "1";
 
 test("real Capsule image acquires signatures and scans only over its local Unix socket", { skip: !enabled }, () => {
   const image = `sporades-clamav-acceptance:${process.pid}`;
+  const volume = `sporades-clamav-acceptance-${process.pid}`;
   const build = spawnSync("docker", ["build", "-f", "Dockerfile.base", "-t", image, "."], { encoding: "utf8", timeout: 10 * 60_000 });
   assert.equal(build.status, 0, `${build.stdout}\n${build.stderr}`);
   const script = String.raw`
@@ -40,6 +42,11 @@ trap - EXIT INT TERM
 ! kill -0 "$freshclam_pid" 2>/dev/null
 `;
   const run = spawnSync("docker", ["run", "--rm", "--entrypoint", "/bin/sh", image, "-ec", script], { encoding: "utf8", timeout: 10 * 60_000 });
-  spawnSync("docker", ["image", "rm", "-f", image], { encoding: "utf8" });
   assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
+  for (let restart = 0; restart < 2; restart += 1) {
+    const lifecycle = spawnSync("docker", ["run", "--rm", "-e", "SPORADES_CLAMAV_MANAGED=1", ...(restart === 1 ? ["-e", "SPORADES_SMOKE_REPLACEMENT=1"] : []), "-v", `${volume}:/app/data`, "-v", `${path.resolve()}:/src:ro`, "--entrypoint", "node", image, "/src/test/fixtures/clamav-runtime-smoke.mjs"], { encoding: "utf8", timeout: 10 * 60_000 });
+    assert.equal(lifecycle.status, 0, `${lifecycle.stdout}\n${lifecycle.stderr}`);
+  }
+  spawnSync("docker", ["volume", "rm", "-f", volume], { encoding: "utf8" });
+  spawnSync("docker", ["image", "rm", "-f", image], { encoding: "utf8" });
 });
