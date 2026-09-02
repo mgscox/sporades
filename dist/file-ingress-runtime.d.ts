@@ -1,5 +1,10 @@
 type RecordLike = Record<string, any>;
 export declare function validatePdfIngress(bytes: Buffer, options?: RecordLike): Promise<boolean>;
+export declare function initializeClamavRuntime(database: RecordLike): Promise<any>;
+export declare function shutdownClamavRuntime(database: RecordLike): Promise<void>;
+export declare function checkClamavRuntime(database: RecordLike): Promise<{
+    ok: boolean;
+}>;
 export declare function multipartParts(request: AsyncIterable<Uint8Array>, boundaryText: string, maxWireBytes: number, maxPartBytes: number | {
     file: number;
     field: number;

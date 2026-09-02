@@ -100,6 +100,7 @@ import { emitAuthDeniedLog, resolveAnonymousSession } from "./auth-runtime.js";
 import { accessKeyGrantsSatisfyScopes } from "./auth-admission.js";
 import { accessKeyAuthenticationError, emitAccessKeyAdmittedAudit, recordAccessKeyUsage, resolveAccessKeyCredential, } from "./access-keys-runtime.js";
 import { checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, fileRowForActor, } from "./file-storage-runtime.js";
+import { checkClamavRuntime } from "./file-ingress-runtime.js";
 import { commandError } from "./runtime-errors.js";
 import { attachmentContentDisposition, consumeSealedEndpointFileAttachment, isGuardedAttachmentHttpResponse, markGuardedAttachmentHttpResponse } from "./endpoint-file-response.js";
 const CLIENT_REQUEST_ERROR_CODES = new Set([
@@ -537,8 +538,9 @@ async function createRuntimeHealthResult(database) {
     const checks = {
         sqlite: await checkRuntimeSqlite(database),
         fileStorage: await checkRuntimeFileStorage(database),
+        fileInspection: await checkClamavRuntime(database),
     };
-    const ready = checks.sqlite.ok && checks.fileStorage.ok;
+    const ready = checks.sqlite.ok && checks.fileStorage.ok && checks.fileInspection.ok;
     return {
         ok: ready,
         data: {

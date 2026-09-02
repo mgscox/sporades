@@ -4548,6 +4548,8 @@ async function dockerRunArgs(lifecycle: HostedCapsuleLifecycle, releaseId: strin
     "--env",
     "SPORADES_SECURITY_SESSION=hosted",
     "--env",
+    "SPORADES_CLAMAV_MANAGED=1",
+    "--env",
     `SPORADES_PUBLIC_ORIGIN=${lifecycle.hostedUrl}`,
     "--env",
     `SPORADES_RELEASE_ID=${releaseId}`,

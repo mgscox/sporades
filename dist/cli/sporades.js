@@ -3646,6 +3646,8 @@ async function startContainerSession(options) {
         "PORT=4000",
         "--env",
         "SPORADES_LOG_STDOUT=1",
+        "--env",
+        "SPORADES_CLAMAV_MANAGED=1",
         SPORADES_BASE_IMAGE.image,
         ...(sshAccess.enabled ? ["/usr/local/bin/sporades-start"] : ["node", "/app/server.mjs"]),
     ];

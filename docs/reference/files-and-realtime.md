@@ -502,11 +502,25 @@ This includes generic XML and common JavaScript, Python, and shell source forms.
 That deliberately creates false positives for support notes containing code;
 such material should be pasted as quoted ticket text or explicitly handled by
 a future reviewed evidence policy, never treated as an executable channel.
-The reserved `clamav` inspector name currently produces only an
-`inconclusive` verdict, so declaring it fails every claim closed. This lets a
-Capsule state the eventual all-required policy without silently bypassing the
-missing transport; it becomes usable only after the isolated adapter is
-explicitly enabled in a later Sporades release.
+The `clamav` inspector is runtime-owned and communicates only with clamd's
+fixed Unix-domain socket inside the Capsule container. There is no TCP,
+hostname, IP, path-scan, or caller-configurable destination surface. Sporades
+sends the exact lease bytes with bounded INSTREAM chunks and a zero terminator;
+customer bytes never leave the deployment. A Capsule declaring `clamav`
+starts the managed daemon during runtime initialization and is not healthy
+until fresh signatures and the socket are ready. Capsules that omit it do not
+start clamd and retain legacy startup behaviour.
+
+The Base image includes ClamAV, which increases image size, while enabling it
+also costs daemon startup time and RAM. `freshclam` is the only intended
+network egress and downloads public signature updates, never customer data.
+Signatures older than 24 hours, missing databases, daemon/socket failure,
+timeouts, malformed or oversized replies, scan limits, infection, and every
+other inconclusive outcome fail closed. Operators should monitor runtime
+health and signature-update logs, budget memory for clamd, and keep the data
+volume writable for `/app/data/clamav`. The image configuration uses only a
+private socket and caps stream/file/aggregate scan size, recursion, files,
+queue depth, and scan time.
 Production malware-scanner transport is deliberately a runtime-owned
 integration rather than an endpoint-handler callback: no endpoint handler,
 Capsule policy, caller, or lease API receives the staged bytes. This prevents a
@@ -514,7 +528,7 @@ convenient inspection hook from becoming a second File-download capability. An
 isolated scanner adapter
 must impose its own destination allow-list, byte cap, timeout, response cap,
 and fail-closed handling before a Capsule may use it.
-For ClamAV specifically, its [INSTREAM protocol](https://docs.clamav.net/manual/Usage/ClamdProtocol.html)
+ClamAV's [INSTREAM protocol](https://docs.clamav.net/manual/Usage/ClamdProtocol.html)
 sends the content over clamd's socket and is bounded by clamd's
 `StreamMaxLength`; ClamAV documents that a TCP clamd socket is unauthenticated
 and unencrypted, so it must remain on an isolated trusted network rather than

@@ -1752,10 +1752,14 @@ test("sporades deploy rejects private-key-looking SSH material", async () => {
   });
 });
 
-test("Sporades Base image includes dormant OpenSSH and Fail2ban startup capability", async () => {
+test("Sporades Base image includes dormant OpenSSH, Fail2ban, and Unix-only ClamAV capability", async () => {
   const dockerfile = await readFile(path.join(repoRoot, "Dockerfile.base"), "utf8");
   assert.match(dockerfile, /apk add --no-cache openssh-server/);
   assert.match(dockerfile, /apk add --no-cache openssh-server fail2ban/);
+  assert.match(dockerfile, /clamav clamav-daemon/);
+  assert.match(dockerfile, /LocalSocket \/tmp\/sporades-clamav\/clamd\.sock/);
+  assert.doesNotMatch(dockerfile, /TCPSocket|TCPAddr/);
+  assert.match(dockerfile, /StreamMaxLength 10M/);
   assert.match(dockerfile, /\/usr\/local\/bin\/sporades-start/);
   assert.match(dockerfile, /PasswordAuthentication=no/);
   assert.match(dockerfile, /PermitRootLogin=no/);

@@ -7,6 +7,9 @@ import jpeg from "jpeg-js";
 import { PNG } from "pngjs";
 const crypto = process.getBuiltinModule("node:crypto");
 const zlib = process.getBuiltinModule("node:zlib");
+const net = process.getBuiltinModule("node:net");
+const fs = process.getBuiltinModule("node:fs");
+const childProcess = process.getBuiltinModule("node:child_process");
 const leaseTtlMs = 10 * 60 * 1000;
 const ingressClaimAuditRetentionMs = 24 * 60 * 60 * 1000;
 const ingressClaimAuditPruneLimit = 50;
@@ -313,11 +316,118 @@ async function contentPolicyOutcome(row, bytes) {
         return await validatePdfIngress(bytes) && /\.pdf$/.test(name) && type === "application/pdf" ? "clean" : "rejected";
     return safeUntrustedText(bytes) && /\.txt$/.test(name) && type === "text/plain" ? "clean" : "rejected";
 }
-async function inspectIngressLease(policy, row, bytes) {
+function clamavSignatureState(database) {
+    if (database.__clamavTest?.signature)
+        return database.__clamavTest.signature;
+    for (const path of ["/app/data/clamav/daily.cld", "/app/data/clamav/daily.cvd"]) {
+        try {
+            const stats = fs.statSync(path);
+            const descriptor = fs.openSync(path, "r");
+            const header = Buffer.alloc(512);
+            try {
+                fs.readSync(descriptor, header, 0, header.length, 0);
+            }
+            finally {
+                fs.closeSync(descriptor);
+            }
+            const databaseVersion = /^ClamAV-VDB:[^:]*:(\d+):/.exec(header.toString("ascii"))?.[1];
+            return { version: databaseVersion ? `daily:${databaseVersion}` : `daily:${Math.floor(stats.mtimeMs)}`, updatedAt: stats.mtime.toISOString() };
+        }
+        catch { }
+    }
+    return null;
+}
+async function clamavInstream(database, bytes) {
+    const signature = clamavSignatureState(database);
+    const updatedAt = Date.parse(signature?.updatedAt);
+    if (!signature || !Number.isFinite(updatedAt) || updatedAt > Date.now() || Date.now() - updatedAt > 24 * 60 * 60 * 1000)
+        return { outcome: "inconclusive", signatureVersion: "unavailable" };
+    const socketPath = database.__clamavTest?.socketPath ?? "/tmp/sporades-clamav/clamd.sock";
+    const timeoutMs = database.__clamavTest?.timeoutMs ?? 10_000;
+    return await new Promise((resolve) => {
+        let settled = false;
+        let response = Buffer.alloc(0);
+        const socket = net.createConnection({ path: socketPath });
+        const finish = (outcome) => { if (settled)
+            return; settled = true; clearTimeout(timer); socket.destroy(); resolve({ outcome, signatureVersion: String(signature.version).slice(0, 128) }); };
+        const timer = setTimeout(() => finish("inconclusive"), timeoutMs);
+        socket.once("connect", () => { socket.write(Buffer.from("zINSTREAM\0")); for (let offset = 0; offset < bytes.length; offset += 64 * 1024) {
+            const chunk = bytes.subarray(offset, Math.min(bytes.length, offset + 64 * 1024));
+            const length = Buffer.alloc(4);
+            length.writeUInt32BE(chunk.length);
+            socket.write(length);
+            socket.write(chunk);
+        } socket.write(Buffer.alloc(4)); });
+        socket.on("data", (chunk) => { if (response.length + chunk.length > 4096)
+            return finish("inconclusive"); response = Buffer.concat([response, chunk]); if (response.includes(0)) {
+            const text = response.subarray(0, response.indexOf(0)).toString("utf8");
+            if (/^stream: OK$/.test(text))
+                finish("clean");
+            else if (/^stream: .+ FOUND$/.test(text))
+                finish("rejected");
+            else
+                finish("inconclusive");
+        } });
+        socket.once("error", () => finish("inconclusive"));
+        socket.once("end", () => { if (!settled)
+            finish("inconclusive"); });
+    });
+}
+function waitForChild(child, timeoutMs) { return new Promise((resolve) => { let settled = false; const finish = (ok) => { if (settled)
+    return; settled = true; clearTimeout(timer); resolve(ok); }; const timer = setTimeout(() => { try {
+    child.kill("SIGTERM");
+}
+catch { } finish(false); }, timeoutMs); child.once("exit", (code) => finish(code === 0)); child.once("error", () => finish(false)); }); }
+export async function initializeClamavRuntime(database) {
+    const required = database.endpoints?.some((endpoint) => endpoint?.options?.body?.multipart?.inspection?.requiredInspectors?.includes("clamav"));
+    database.clamavRequired = Boolean(required);
+    database.clamavReady = !required;
+    if (!required)
+        return true;
+    if (database.__clamavTest) {
+        database.clamavReady = Boolean(clamavSignatureState(database));
+        return database.clamavReady;
+    }
+    if (process.env.SPORADES_CLAMAV_MANAGED !== "1")
+        return false;
+    try {
+        fs.mkdirSync("/app/data/clamav", { recursive: true });
+        fs.mkdirSync("/tmp/sporades-clamav", { recursive: true });
+    }
+    catch {
+        return false;
+    }
+    const update = childProcess.spawn("/usr/bin/freshclam", ["--config-file=/etc/clamav/freshclam.conf"], { stdio: "ignore" });
+    if (!await waitForChild(update, 120_000) && !clamavSignatureState(database))
+        return false;
+    const daemon = childProcess.spawn("/usr/sbin/clamd", ["--foreground", "--config-file=/etc/clamav/clamd.conf"], { stdio: "ignore" });
+    database.__clamavProcess = daemon;
+    for (let attempt = 0; attempt < 300; attempt += 1) {
+        if (fs.existsSync("/tmp/sporades-clamav/clamd.sock") && clamavSignatureState(database)) {
+            database.clamavReady = true;
+            return true;
+        }
+        if (daemon.exitCode !== null)
+            break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    try {
+        daemon.kill("SIGTERM");
+    }
+    catch { }
+    return false;
+}
+export async function shutdownClamavRuntime(database) { try {
+    database.__clamavProcess?.kill?.("SIGTERM");
+}
+catch { } database.clamavReady = !database.clamavRequired; }
+export async function checkClamavRuntime(database) { if (!database.clamavRequired)
+    return { ok: true }; const signature = clamavSignatureState(database); const updatedAt = Date.parse(signature?.updatedAt); return { ok: database.clamavReady === true && Boolean(signature) && Number.isFinite(updatedAt) && Date.now() - updatedAt <= 24 * 60 * 60 * 1000 }; }
+async function inspectIngressLease(database, policy, row, bytes) {
     if (!policy)
         return undefined;
     const inspectedAt = new Date().toISOString();
-    const verdicts = await Promise.all(policy.requiredInspectors.map(async (inspector) => Object.freeze({ inspector, outcome: inspector === "content-policy-v1" ? await contentPolicyOutcome(row, bytes) : "inconclusive", leaseId: row.leaseId, size: row.size, digest: row.digest, version: row.version, policyRevision: policy.policyRevision, engine: inspector === "content-policy-v1" ? "sporades-content-policy" : "clamav", signatureVersion: inspector === "content-policy-v1" ? "content-policy-v1" : "unavailable", inspectedAt })));
+    const verdicts = await Promise.all(policy.requiredInspectors.map(async (inspector) => { const result = inspector === "content-policy-v1" ? { outcome: await contentPolicyOutcome(row, bytes), signatureVersion: "content-policy-v1" } : await clamavInstream(database, bytes); return Object.freeze({ inspector, outcome: result.outcome, leaseId: row.leaseId, size: row.size, digest: row.digest, version: row.version, policyRevision: policy.policyRevision, engine: inspector === "content-policy-v1" ? "sporades-content-policy" : "clamav", signatureVersion: result.signatureVersion, inspectedAt }); }));
     return Object.freeze({ policyRevision: policy.policyRevision, maxVerdictAgeMs: policy.maxVerdictAgeMs, verdicts: Object.freeze(verdicts) });
 }
 function inspectionEvidenceIsCurrent(row, policy) {
@@ -560,7 +670,7 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
             const digest = crypto.createHash("sha256").update(body).digest("hex");
             const now = new Date();
             const candidate = { key, leaseId: crypto.randomUUID(), partId: crypto.createHash("sha256").update(key).digest("hex"), fieldName, name: safeName(filename), type, size: body.length, digest, fileId: crypto.randomUUID(), version: crypto.randomUUID(), state: "staging", actorId, authorityKind: authority.kind, authorityId, ownerId: authority.ownerId, ...(authority.kind === "capsule-principal" ? { principalNamespace: authority.namespace, principalKeyDigest: authority.keyDigest } : {}), endpointMethod: String(endpoint.options.method), endpointPath: String(endpoint.options.path), requestKey, partKey: stablePartKey, expiresAt: new Date(now.getTime() + leaseTtlMs).toISOString() };
-            const inspection = await inspectIngressLease(policy.inspection, candidate, body);
+            const inspection = await inspectIngressLease(database, policy.inspection, candidate, body);
             if (inspection)
                 Object.assign(candidate, { inspection });
             // Pre-authority receipts used the raw actor ID in their durable key. Keep that key and

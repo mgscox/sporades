@@ -149,7 +149,7 @@ import {
   getPrivateFileUrl, isAbsoluteFilePath, normalizeAbsoluteFilePath, resolvePrivilegedLiveFileReference,
   revokePublicFileUrl,
 } from "./file-storage-runtime.js";
-import { createEndpointIngressApi, drainIngressClaimAuditOutbox, finalizeEndpointIngressClaims, recoverIngressClaimAuditOutbox, stageMultipartIngress, sweepExpiredFileIngress, validateMultipartIngressPolicy } from "./file-ingress-runtime.js";
+import { createEndpointIngressApi, drainIngressClaimAuditOutbox, finalizeEndpointIngressClaims, initializeClamavRuntime, recoverIngressClaimAuditOutbox, shutdownClamavRuntime, stageMultipartIngress, sweepExpiredFileIngress, validateMultipartIngressPolicy } from "./file-ingress-runtime.js";
 import { createEndpointFileResponseApi } from "./endpoint-file-response.js";
 import {
   abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob,
@@ -1000,7 +1000,8 @@ export async function openDevDatabase(
       const closeResources = () => {
         const failures: Array<{ index: number; error: unknown }> = [];
         const pending: Promise<void>[] = [];
-        const resources = [
+    const resources = [
+          () => shutdownClamavRuntime(database),
           () => database.mail.close(),
           () => database.adapter.close(),
           () => database.fileStorage.close(),
@@ -1068,6 +1069,7 @@ export async function openDevDatabase(
   database.init = async () => {
     if (database.__runtimeInitialized) return;
     try {
+      if (!await initializeClamavRuntime(database)) throw commandError("Required File inspection is unavailable.", "Check ClamAV signatures and the local daemon socket.", "FILE_INSPECTION_UNAVAILABLE");
       if (database.lifecycleHooks.init !== undefined) {
         if (typeof database.lifecycleHooks.init !== "function") throw commandError("Invalid Capsule init hook.", "Declare hooks.init as a function.");
         await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false }));
@@ -1153,6 +1155,7 @@ export async function openDevDatabase(
         shutdownRejected = true;
         shutdownError = error;
       } finally {
+        shutdownClamavRuntime(database);
         database.__runtimeInitialized = false;
       }
       try { await database.mail.close(); }

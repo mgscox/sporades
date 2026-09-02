@@ -28,7 +28,7 @@ await Promise.all(
       platform: "node",
       format: "esm",
       target: "node22",
-      external: ["esbuild", "vite"],
+      external: ["esbuild", "vite", "jpeg-js", "pdfjs-dist", "pngjs"],
       sourcemap: false,
       logLevel: "info",
       banner: {
