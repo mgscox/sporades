@@ -42,7 +42,7 @@ function resolveServerBundleEntry() {
 //
 // There is a real self-containment requirement behind the original `toString()` approach, and it is
 // the one thing about that approach that must survive: a deployed Capsule cannot resolve a bare
-// specifier at runtime. `Dockerfile.base` is `node:22-alpine` with no install step and no
+// specifier at runtime. `Dockerfile.base` is pinned to Node 22.14 Alpine with no install step and no
 // `node_modules` anywhere, its `CMD` is `node /app/server.mjs`, and the release mounts only
 // `server.mjs`, `sporades.json` and the public tree into `/app`, read-only — see
 // `bundle-pipeline.ts`'s container mounts and `cli/host-helper-release-files.ts`. That is why the

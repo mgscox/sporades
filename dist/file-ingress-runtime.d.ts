@@ -1,10 +1,11 @@
 type RecordLike = Record<string, any>;
+export declare function isSupportedInspectionNodeVersion(version: string): boolean;
 export declare function validatePdfIngress(bytes: Buffer, options?: RecordLike): Promise<boolean>;
 export declare function isCurrentClamavSignature(signature: RecordLike | null, now?: number): boolean;
 export declare function initializeClamavRuntime(database: RecordLike): Promise<any>;
 export declare function shutdownClamavRuntime(database: RecordLike): Promise<void>;
 export declare function checkClamavRuntime(database: RecordLike): Promise<{
-    ok: boolean;
+    ok: any;
 }>;
 export declare function multipartParts(request: AsyncIterable<Uint8Array>, boundaryText: string, maxWireBytes: number, maxPartBytes: number | {
     file: number;

@@ -3,6 +3,7 @@
 /// <reference path="./vendor-decoders.d.ts" />
 import { ensureFileBucket, fileMetadataFromRow, normalizeAbsoluteFilePath } from "./file-storage-runtime.js";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
+import { PDFDict, PDFDocument, PDFName } from "pdf-lib";
 import jpeg from "jpeg-js";
 import { PNG } from "pngjs";
 const crypto = process.getBuiltinModule("node:crypto");
@@ -14,6 +15,10 @@ const leaseTtlMs = 10 * 60 * 1000;
 const ingressClaimAuditRetentionMs = 24 * 60 * 60 * 1000;
 const ingressClaimAuditPruneLimit = 50;
 const clamavMaximumStreamBytes = 10 * 1024 * 1024;
+export function isSupportedInspectionNodeVersion(version) { const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(version); if (!match)
+    return false; const major = Number(match[1]); const minor = Number(match[2]); return (major === 22 && minor >= 13) || major >= 24; }
+if (!isSupportedInspectionNodeVersion(process.versions.node))
+    throw Object.assign(new Error("Sporades File inspection requires Node 22.13+ or Node 24+."), { code: "UNSUPPORTED_NODE_RUNTIME" });
 function ingressAuditNow(database) {
     const now = database.clock?.now?.();
     return (now instanceof Date ? now : new Date()).toISOString();
@@ -259,11 +264,40 @@ export async function validatePdfIngress(bytes, options = {}) {
     const timeoutMs = Number.isInteger(options.timeoutMs) ? Math.max(1, Math.min(2_000, options.timeoutMs)) : 2_000;
     try {
         task = getDocument({ data: new Uint8Array(bytes), useWorkerFetch: false, disableFontFace: true });
-        const workflow = (async () => { const document = await task.promise; if (document.numPages < 1 || document.numPages > 100)
-            return false; for (let page = 1; page <= document.numPages; page += 1) {
-            await options.beforeOperatorList?.(page);
-            await (await document.getPage(page)).getOperatorList();
-        } return true; })();
+        const workflow = (async () => {
+            const [document, parsed] = await Promise.all([task.promise, PDFDocument.load(bytes, { ignoreEncryption: false, throwOnInvalidObject: true, updateMetadata: false })]);
+            if (document.numPages < 1 || document.numPages > 100)
+                return false;
+            const forbiddenCatalogKeys = ["OpenAction", "AA"];
+            if (forbiddenCatalogKeys.some((key) => parsed.catalog.has(PDFName.of(key))))
+                return false;
+            const names = parsed.catalog.lookupMaybe(PDFName.of("Names"), PDFDict);
+            if (names?.has(PDFName.of("EmbeddedFiles")) || names?.has(PDFName.of("JavaScript")))
+                return false;
+            for (const [, object] of parsed.context.enumerateIndirectObjects()) {
+                if (!(object instanceof PDFDict))
+                    continue;
+                const type = object.get(PDFName.of("Type"));
+                const subtype = object.get(PDFName.of("S"));
+                if (type === PDFName.of("Filespec") || type === PDFName.of("EmbeddedFile") || ["JavaScript", "Launch", "SubmitForm", "ImportData"].some((name) => subtype === PDFName.of(name)))
+                    return false;
+            }
+            const catalogChecks = await Promise.all([document.getAttachments?.(), document.getJSActions?.(), document.getOpenAction?.()]);
+            const hasEntries = (value) => Boolean(value) && (value instanceof Map || value instanceof Set ? value.size > 0 : Array.isArray(value) ? value.length > 0 : typeof value !== "object" || Object.keys(value).length > 0);
+            if (catalogChecks.some(hasEntries))
+                return false;
+            for (let page = 1; page <= document.numPages; page += 1) {
+                await options.beforeOperatorList?.(page);
+                const currentPage = await document.getPage(page);
+                const [operators, actions, annotations] = await Promise.all([currentPage.getOperatorList(), currentPage.getJSActions?.(), currentPage.getAnnotations?.({ intent: "display" })]);
+                if (hasEntries(actions))
+                    return false;
+                if (Array.isArray(annotations) && annotations.some((annotation) => annotation?.action || annotation?.attachment || annotation?.file || annotation?.unsafeUrl || annotation?.annotationType === 17))
+                    return false;
+                void operators;
+            }
+            return true;
+        })();
         return await Promise.race([workflow, new Promise((_, reject) => { timer = setTimeout(() => { try {
                 task?.destroy?.();
             }
@@ -343,7 +377,7 @@ async function verifiedClamavSignature(database) {
     return null;
 }
 function clamavSocketCommand(database, command, maximumReplyBytes = 4096, timeoutMs = 2_000) {
-    const socketPath = database.__clamavTest?.socketPath ?? "/tmp/sporades-clamav/clamd.sock";
+    const socketPath = database.__clamavTest?.socketPath ?? "/tmp/sporades-clamd.sock";
     return new Promise((resolve) => {
         let settled = false;
         let response = Buffer.alloc(0);
@@ -366,7 +400,7 @@ async function clamavInstream(database, bytes) {
         return { outcome: "inconclusive", signatureVersion: "unavailable" };
     if (bytes.length > clamavMaximumStreamBytes)
         return { outcome: "inconclusive", signatureVersion: String(signature.version).slice(0, 128) };
-    const socketPath = database.__clamavTest?.socketPath ?? "/tmp/sporades-clamav/clamd.sock";
+    const socketPath = database.__clamavTest?.socketPath ?? "/tmp/sporades-clamd.sock";
     const timeoutMs = database.__clamavTest?.timeoutMs ?? 10_000;
     return await new Promise((resolve) => {
         let settled = false;
@@ -463,7 +497,7 @@ export async function initializeClamavRuntime(database) {
     daemon.once("exit", () => { database.clamavReady = false; });
     daemon.once("error", () => { database.clamavReady = false; });
     for (let attempt = 0; attempt < 300; attempt += 1) {
-        if (fs.existsSync("/tmp/sporades-clamav/clamd.sock") && await currentLoadedClamavSignature(database) && await clamavSocketCommand(database, Buffer.from("zPING\0"), 16, 500) === "PONG") {
+        if (fs.existsSync("/tmp/sporades-clamd.sock") && await currentLoadedClamavSignature(database) && await clamavSocketCommand(database, Buffer.from("zPING\0"), 16, 500) === "PONG") {
             database.clamavReady = true;
             const updater = childProcess.spawn("/usr/bin/freshclam", ["--daemon", "--foreground=true", "--config-file=/etc/clamav/freshclam.conf"], { stdio: "ignore" });
             database.__clamavUpdateProcess = updater;
@@ -480,11 +514,10 @@ export async function initializeClamavRuntime(database) {
 }
 export async function shutdownClamavRuntime(database) { database.clamavReady = false; await Promise.all([terminateChild(database.__clamavProcess, clamavTerminateTimeout(database)), terminateChild(database.__clamavUpdateProcess, clamavTerminateTimeout(database))]); database.__clamavProcess = null; database.__clamavUpdateProcess = null; }
 export async function checkClamavRuntime(database) { if (!database.clamavRequired)
-    return { ok: true }; if (!database.clamavReady || database.__clamavProcess?.exitCode !== null || database.__clamavUpdateProcess?.exitCode !== null || !await currentLoadedClamavSignature(database)) {
+    return { ok: true }; if (database.__clamavProcess?.exitCode !== null || database.__clamavUpdateProcess?.exitCode !== null) {
     database.clamavReady = false;
     return { ok: false };
-} const pong = await clamavSocketCommand(database, Buffer.from("zPING\0"), 16, 500); if (pong !== "PONG")
-    database.clamavReady = false; return { ok: pong === "PONG" }; }
+} const current = await currentLoadedClamavSignature(database); const pong = current ? await clamavSocketCommand(database, Buffer.from("zPING\0"), 16, 500) : null; database.clamavReady = pong === "PONG"; return { ok: database.clamavReady }; }
 async function inspectIngressLease(database, policy, row, bytes) {
     if (!policy)
         return undefined;

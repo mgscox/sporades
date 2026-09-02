@@ -7,6 +7,8 @@ import { routeRuntimeHealth } from "/src/dist/http-runtime.js";
 import { openDevDatabase } from "/src/dist/server-runtime-source.js";
 import { stageMultipartIngress } from "/src/dist/file-ingress-runtime.js";
 
+if (process.env.SPORADES_EXPECT_RUNTIME_UID) assert.equal(String(process.getuid?.()), process.env.SPORADES_EXPECT_RUNTIME_UID);
+
 const policy = { maxFiles: 1, maxFileBytes: 10 * 1024 * 1024, maxTotalFileBytes: 10 * 1024 * 1024, maxFieldCount: 1, maxFieldBytes: 1024, maxTotalFieldBytes: 1024, allowedPathPrefixes: ["/attachments"], requestKeyHeader: "idempotency-key", partKeyHeader: "content-id", requireStablePartKeys: true, inspection: { policyRevision: "docker-v1", requiredInspectors: ["clamav"] } };
 const definition = capsule({ name: "clamav-runtime-smoke", endpoints: { upload: endpoint({ method: "POST", path: "/upload", body: { multipart: policy } }, () => ({ ok: true })) } });
 const database = await openDevDatabase("/app/data/runtime-smoke.db", "", {}, { name: definition.name, files: { storagePath: "/app/data/files" } }, definition);

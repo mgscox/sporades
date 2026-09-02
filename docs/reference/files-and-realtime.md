@@ -492,10 +492,12 @@ EOI, then decodes under the pinned `jpeg-js@0.4.4` resolution and memory caps.
 PNG validation pre-bounds dimensions, pixels, and expected decoded storage,
 checks chunk bounds/order, PLTE and contiguous-IDAT rules, IHDR constraints,
 every CRC and exact IEND, then uses pinned `pngjs@7.0.0` to inflate and decode
-the exact scanline/filter stream. PDF validation uses the pinned maintained server-side
-`pdfjs-dist@6.3.289` parser, forces bounded page/operator parsing, rejects
-encrypted input, caps pages, and enforces a short inspection timeout; the
-production dependency audit must remain clean when it is upgraded. Text is a
+the exact scanline/filter stream. PDF validation uses pinned maintained server-side
+`pdfjs-dist@6.3.289` for bounded render/operator validation and `pdf-lib@1.17.1`
+for parsed catalog and object-graph checks. It rejects encryption, document or
+catalog actions (including JavaScript and Launch actions), and embedded files,
+caps pages, and enforces a short inspection timeout. The production dependency
+audit must remain clean when either parser is upgraded. Text is a
 particularly conservative untrusted-evidence lane: strict UTF-8 is rejected
 when it resembles markup, JavaScript, shell, or common script/source forms.
 This includes generic XML and common JavaScript, Python, and shell source forms.
@@ -509,8 +511,9 @@ sends the exact lease bytes with bounded INSTREAM chunks and a zero terminator;
 customer bytes never leave the deployment. A Capsule declaring `clamav`
 starts the managed daemon during runtime initialization and is not healthy
 until fresh signatures and a bounded `PING` over that socket succeed. Runtime
-health repeats that socket probe and degrades immediately when clamd or the
-signature updater exits. Capsules that omit it do not
+health repeats that socket probe, degrades immediately when clamd or the
+signature updater exits, and recovers from a transient probe or reload mismatch
+once the same live daemon again reports a current loaded database. Capsules that omit it do not
 start clamd and retain legacy startup behaviour.
 
 The Base image includes ClamAV, which increases image size, while enabling it
@@ -527,6 +530,11 @@ health and signature-update logs, budget memory for clamd, and keep the data
 volume writable for `/app/data/clamav`. The image configuration uses only a
 private socket and caps stream/file/aggregate scan size, recursion, files,
 queue depth, and scan time.
+Local Container sessions invoke clamd and freshclam as the same host UID/GID
+selected for the Capsule; neither configuration switches to the image's
+fallback `sporades` identity. The data bind mount and private `/tmp` socket are
+therefore owned and accessible by that invoking identity without widening the
+socket mode. Hosted Capsules retain the image's non-root `10001:10001` default.
 Freshness is derived from ClamAV `sigtool --info` verification of the signed
 database and its embedded build timestamp, never its filesystem modification
 time. Runtime health and every scan also require clamd's bounded `VERSION`

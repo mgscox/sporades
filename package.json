@@ -53,11 +53,12 @@
     "prepublishOnly": "npm test"
   },
   "engines": {
-    "node": ">=22.3.0"
+    "node": ">=22.13.0 <23 || >=24"
   },
   "dependencies": {
     "esbuild": "0.25.12",
     "jpeg-js": "0.4.4",
+    "pdf-lib": "1.17.1",
     "pdfjs-dist": "6.3.289",
     "pngjs": "7.0.0",
     "stripe": "^22.5.0",

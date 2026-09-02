@@ -182,7 +182,7 @@ the dependency-free Node helper can parse it directly:
 ```json
 {
   "hostedCapsule": {
-    "dockerImage": "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
+    "dockerImage": "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
     "dockerNetwork": "sporades-hosted-capsules",
     "graceCheckMs": 500
   },
