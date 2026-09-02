@@ -10145,7 +10145,9 @@ function createFileStorageTables(sqlite) {
     // Runtime-private ingress receipts. The identity columns are intentionally queryable:
     // endpoint transactions lock and classify a lease without scanning JSON payloads.
     () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_file_ingress] ([key] TEXT PRIMARY KEY, [leaseId] TEXT, [state] TEXT, [actorId] TEXT, [authorityKind] TEXT, [authorityId] TEXT, [ownerId] TEXT, [principalNamespace] TEXT, [principalKeyDigest] TEXT, [endpointMethod] TEXT, [endpointPath] TEXT, [requestKey] TEXT, [partKey] TEXT, [expiresAt] TEXT, [sweepToken] TEXT, [payload] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)")),
-    () => ensureFileIngressColumns(sqlite)
+    () => ensureFileIngressColumns(sqlite),
+    () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_file_ingress_audit_outbox] ([claimId] TEXT PRIMARY KEY, [state] TEXT NOT NULL, [claimToken] TEXT, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [deliveredAt] TEXT)")),
+    () => sqlite.exec(sql("CREATE INDEX IF NOT EXISTS [sporades_file_ingress_audit_outbox_pending] ON [sporades_file_ingress_audit_outbox] ([state], [createdAt], [claimId])"))
   ]);
 }
 async function readRequestBytes(request, maxBytes) {
@@ -18478,6 +18480,24 @@ function createSharedDatabaseAdapterMethods(dialect) {
         () => this.selectIngressByLease(row.leaseId)
       );
     },
+    enqueueIngressClaimAudit(row) {
+      return this.prepare(sql("INSERT INTO [sporades_file_ingress_audit_outbox] ([claimId], [state], [claimToken], [createdAt], [updatedAt], [deliveredAt]) VALUES (?, 'pending', NULL, ?, ?, NULL) ON CONFLICT([claimId]) DO NOTHING")).run(row.claimId, row.createdAt, row.createdAt);
+    },
+    selectPendingIngressClaimAudits(limit) {
+      return this.prepare(sql("SELECT [claimId] FROM [sporades_file_ingress_audit_outbox] WHERE [state] = 'pending' ORDER BY [createdAt], [claimId] LIMIT ?")).all(limit);
+    },
+    claimIngressClaimAudit(claimId, claimToken, updatedAt) {
+      return this.prepare(sql("UPDATE [sporades_file_ingress_audit_outbox] SET [state] = 'delivering', [claimToken] = ?, [updatedAt] = ? WHERE [claimId] = ? AND [state] = 'pending'")).run(claimToken, updatedAt, claimId);
+    },
+    deliverIngressClaimAudit(claimId, claimToken, deliveredAt) {
+      return this.prepare(sql("UPDATE [sporades_file_ingress_audit_outbox] SET [state] = 'delivered', [claimToken] = NULL, [updatedAt] = ?, [deliveredAt] = ? WHERE [claimId] = ? AND [state] = 'delivering' AND [claimToken] = ?")).run(deliveredAt, deliveredAt, claimId, claimToken);
+    },
+    releaseIngressClaimAudit(claimId, claimToken, updatedAt) {
+      return this.prepare(sql("UPDATE [sporades_file_ingress_audit_outbox] SET [state] = 'pending', [claimToken] = NULL, [updatedAt] = ? WHERE [claimId] = ? AND [state] = 'delivering' AND [claimToken] = ?")).run(updatedAt, claimId, claimToken);
+    },
+    recoverIngressClaimAudits(updatedAt) {
+      return this.prepare(sql("UPDATE [sporades_file_ingress_audit_outbox] SET [state] = 'pending', [claimToken] = NULL, [updatedAt] = ? WHERE [state] = 'delivering'")).run(updatedAt);
+    },
     selectIngressSweepCandidates(now2, limit) {
       return this.prepare(sql("SELECT * FROM [sporades_file_ingress] WHERE [state] = 'sweeping' OR ([state] IN ('leased', 'staging') AND [expiresAt] <= ?) ORDER BY CASE WHEN [state] = 'sweeping' THEN 0 ELSE 1 END, [expiresAt], [requestKey], [partKey], [key] LIMIT ?")).all(now2, limit);
     },
@@ -20632,6 +20652,9 @@ async function emitIngressAudit(database, event, data) {
 function safeIngressAuditCode(error) {
   return ingressAuditCodes.has(error?.code) ? error.code : "INGRESS_FAILED";
 }
+function ingressClaimAuditId(row) {
+  return `v1:${crypto2.createHash("sha256").update(String(row.key), "utf8").digest("hex")}`;
+}
 function sameFileDescriptor(left, right) {
   return left?.id === right?.id && left?.ownerId === right?.ownerId && left?.path === right?.path && left?.name === right?.name && left?.type === right?.type && Number(left?.size) === Number(right?.size) && left?.version === right?.version;
 }
@@ -20953,7 +20976,7 @@ function createEndpointIngressApi(database, endpoint, endpointRequest, context) 
         const storedReceipt = await database.adapter.completeIngressClaim(row);
         const completed = storedReceipt ? JSON.parse(storedReceipt.payload) : null;
         if (!completed || completed.state !== "complete" || !sameFileDescriptor(completed.file, file)) throw idempotencyConflict("Ingress receipt completion conflicted with another claim.");
-        context.__pendingIngressClaimAudit = true;
+        await database.adapter.enqueueIngressClaimAudit({ claimId: ingressClaimAuditId(completed), createdAt: now2 });
         return fileMetadataFromRow(storedFile);
       } catch (error) {
         const code = safeIngressAuditCode(error);
@@ -20977,6 +21000,38 @@ function createEndpointIngressApi(database, endpoint, endpointRequest, context) 
   };
 }
 function finalizeEndpointIngressClaims(context, committed) {
+}
+async function recoverIngressClaimAuditOutbox(database) {
+  try {
+    await database.adapter.recoverIngressClaimAudits((/* @__PURE__ */ new Date()).toISOString());
+  } catch {
+  }
+}
+async function drainIngressClaimAuditOutbox(database, options = {}) {
+  const limit = Math.max(1, Math.min(100, Number.isInteger(options.limit) ? options.limit : 50));
+  let pending;
+  try {
+    pending = await database.adapter.selectPendingIngressClaimAudits(limit);
+  } catch {
+    return;
+  }
+  for (const candidate of pending) {
+    const claimId = String(candidate.claimId ?? "");
+    if (!claimId) continue;
+    const claimToken = crypto2.randomUUID();
+    try {
+      const claimed = await database.adapter.claimIngressClaimAudit(claimId, claimToken, (/* @__PURE__ */ new Date()).toISOString());
+      if (Number(claimed?.changes ?? 0) !== 1) continue;
+      try {
+        await database.log.emit({ category: "platform", event: "file.ingress.completed", level: "info", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "claimed" } });
+      } catch {
+        await database.adapter.releaseIngressClaimAudit(claimId, claimToken, (/* @__PURE__ */ new Date()).toISOString());
+        continue;
+      }
+      await database.adapter.deliverIngressClaimAudit(claimId, claimToken, (/* @__PURE__ */ new Date()).toISOString());
+    } catch {
+    }
+  }
 }
 async function armIngressSweep(database, candidate, now2, sweepToken) {
   for (let attempt = 0; attempt <= 100; attempt += 1) {
@@ -21648,6 +21703,8 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       database.__scheduleRecoveryDueAt = null;
       database.__scheduleRecoveryPromise = null;
       database.__scheduleLegacyDiscoveryTimer = null;
+      await recoverIngressClaimAuditOutbox(database);
+      await drainIngressClaimAuditOutbox(database);
       const earliestFutureLeaseAt = await recoverExpiredJobLeases(database);
       await recoverPendingScheduleOccurrences(database, { validateOnly: true });
       preflightStaticScheduleTimers(database);
@@ -23683,12 +23740,7 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
       }
     }
     finalizeEndpointIngressClaims(context ?? {}, true);
-    if (context?.__pendingIngressClaimAudit) {
-      try {
-        await database.log.emit({ category: "platform", event: "file.ingress.completed", level: "info", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "claimed" } });
-      } catch {
-      }
-    }
+    await drainIngressClaimAuditOutbox(database);
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);

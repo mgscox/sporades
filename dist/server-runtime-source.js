@@ -50,7 +50,7 @@ import { deserializeFieldValue, deserializeRow, normalizeDateValue, serializeFie
 // here, so importing them would declare a name nothing in this file reads.
 import { applyReadAcl, assertActivePrivilegedJobAccess, bindPendingAclWrites, createPrivilegedAuditEmitter, createPrivilegedAuditEmissionPublicError, createPrivilegedFileApi, createPrivilegedRunAbortError, createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi, drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit, filterRowsByReadAcl, grantPrivilegedDbAccess, isPrivilegedAuditEmissionPublicError, normalizeFileAcl, normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback, revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode, trackPendingAclWrite, } from "./acl-runtime.js";
 import { createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter, deletePrivateFile, getPrivateFileUrl, revokePublicFileUrl, } from "./file-storage-runtime.js";
-import { createEndpointIngressApi, finalizeEndpointIngressClaims, stageMultipartIngress, sweepExpiredFileIngress, validateMultipartIngressPolicy } from "./file-ingress-runtime.js";
+import { createEndpointIngressApi, drainIngressClaimAuditOutbox, finalizeEndpointIngressClaims, recoverIngressClaimAuditOutbox, stageMultipartIngress, sweepExpiredFileIngress, validateMultipartIngressPolicy } from "./file-ingress-runtime.js";
 import { abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob, canonicalJobCredentialProvenance, captureJobAuthSnapshot, commitPendingJobCancellationAborts, createRuntimeClock, decodeJobCursor, dropPendingJobCancellationAborts, encodeJobCursor, ensureJobStorage, ensureScheduleStorage, finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence, normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, readJobAuthSnapshot, readJobCredentialProvenance, resolveSchedulePayload, RESERVED_JOB_NAME_PREFIX, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure, scheduleStripeEventPayloadCleanup, startStripeEventPayloadCleanup, stopStripeEventPayloadCleanup, STRIPE_EVENT_JOB, stripeEventPayloadRetentionStorageValue, scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduledOccurrenceIdentity, } from "./jobs-runtime.js";
 import { dispatchVerifiedStripeEvent } from "./stripe-events-runtime.js";
 const mutationResultsWithWrites = new WeakSet();
@@ -971,6 +971,8 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             database.__scheduleRecoveryDueAt = null;
             database.__scheduleRecoveryPromise = null;
             database.__scheduleLegacyDiscoveryTimer = null;
+            await recoverIngressClaimAuditOutbox(database);
+            await drainIngressClaimAuditOutbox(database);
             // Recovery may classify durable state while the candidate is stopped,
             // but it returns the retained wake instead of arming it. Publication is
             // the single boundary that releases both Job and Schedule work.
@@ -3263,12 +3265,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
             }
         }
         finalizeEndpointIngressClaims(context ?? {}, true);
-        if (context?.__pendingIngressClaimAudit) {
-            try {
-                await database.log.emit({ category: "platform", event: "file.ingress.completed", level: "info", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "claimed" } });
-            }
-            catch { }
-        }
+        await drainIngressClaimAuditOutbox(database);
         commitPendingJobCancellationAborts(context);
         await flushAccessKeyLifecycleAuditEvents(database, context);
         flushTeamSecurityEvents(database, context);

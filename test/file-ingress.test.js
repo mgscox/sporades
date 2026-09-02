@@ -419,6 +419,48 @@ test("failed ingress claim rolls File, receipt claim, and app row back together"
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test("committed ingress claims enqueue one durable completed audit per claim across middleware, retries, and logger failure", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-outbox-")); let database;
+  try {
+    const policy = { ...ingressPolicy(), maxFiles: 2, maxTotalFileBytes: 200 };
+    const definition = capsule({ name: "audit-outbox", context: [async (ctx) => ({ ...ctx })], endpoints: { upload: endpoint({ method: "POST", path: "/audit-outbox", body: { multipart: policy } }, requireAuth(async (ctx) => {
+      const files = [];
+      for (const lease of ctx.request.multipart.files) files.push(await ctx.files.claim(lease, { path: `/attachments/${lease.partId}.txt` }));
+      return files;
+    })) } });
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "audit-outbox", files: { storagePath: path.join(dir, "files") } }, definition); await seedIngressUser(database);
+    const source = multipartMany("audit-outbox", [
+      { headers: 'Content-Disposition: form-data; name="first"; filename="first.txt"\r\nContent-ID: first', body: "first" },
+      { headers: 'Content-Disposition: form-data; name="second"; filename="second.txt"\r\nContent-ID: second', body: "second" },
+    ]);
+    const request = () => ({ method: "POST", headers: { "content-type": "multipart/form-data; boundary=audit-outbox", "idempotency-key": "audit-outbox", "x-sporades-session-token": "claim-session" }, async *[Symbol.asyncIterator]() { yield source; } });
+    const originalEmit = database.log.emit.bind(database.log); let failDelivery = true;
+    database.log.emit = async (event) => { if (event.event === "file.ingress.completed" && failDelivery) throw new Error("audit sink unavailable"); return await originalEmit(event); };
+    await runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/audit-outbox"), request());
+    assert.equal((await database.log.tail(50)).filter((event) => event.event === "file.ingress.completed" && event.data?.outcome === "claimed").length, 0);
+    failDelivery = false;
+    await database.close();
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "audit-outbox", files: { storagePath: path.join(dir, "files") } }, definition);
+    await database.init();
+    await runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/audit-outbox"), request());
+    const completed = (await database.log.tail(50)).filter((event) => event.event === "file.ingress.completed" && event.data?.outcome === "claimed");
+    assert.equal(completed.length, 2);
+    assert.deepEqual(completed.map((event) => event.data), [{ schema: "v1", outcome: "claimed" }, { schema: "v1", outcome: "claimed" }]);
+    assert.equal(JSON.stringify(completed).includes("first.txt"), false);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("rolled-back ingress claims leave no completed audit intent to replay after startup", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-rollback-")); let database;
+  try {
+    const definition = capsule({ name: "audit-rollback", endpoints: { upload: endpoint({ method: "POST", path: "/audit-rollback", body: { multipart: ingressPolicy() } }, requireAuth(async (ctx) => { await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/rollback.txt" }); throw new Error("rollback"); })) } });
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "audit-rollback", files: { storagePath: path.join(dir, "files") } }, definition); await seedIngressUser(database);
+    await assert.rejects(runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/audit-rollback"), ingressRequest("audit-rollback")), /rollback/);
+    await database.init();
+    assert.equal((await database.log.tail(50)).filter((event) => event.event === "file.ingress.completed" && event.data?.outcome === "claimed").length, 0);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("concurrent incompatible ingress descriptors keep one winner and stage no loser bytes", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-conflict-"));
   try {

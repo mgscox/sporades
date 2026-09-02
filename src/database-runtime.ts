@@ -673,6 +673,24 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
       return thenIfPromise(this.prepare(sql("UPDATE [sporades_file_ingress] SET [payload] = ?, [state] = ?, [updatedAt] = ? WHERE [leaseId] = ? AND [state] = ?")).run(JSON.stringify(row), "complete", updatedAt, row.leaseId, "leased"),
         () => this.selectIngressByLease(row.leaseId));
     },
+    enqueueIngressClaimAudit(row: { claimId: any; createdAt: any; }) {
+      return this.prepare(sql("INSERT INTO [sporades_file_ingress_audit_outbox] ([claimId], [state], [claimToken], [createdAt], [updatedAt], [deliveredAt]) VALUES (?, 'pending', NULL, ?, ?, NULL) ON CONFLICT([claimId]) DO NOTHING")).run(row.claimId, row.createdAt, row.createdAt);
+    },
+    selectPendingIngressClaimAudits(limit: number) {
+      return this.prepare(sql("SELECT [claimId] FROM [sporades_file_ingress_audit_outbox] WHERE [state] = 'pending' ORDER BY [createdAt], [claimId] LIMIT ?")).all(limit);
+    },
+    claimIngressClaimAudit(claimId: string, claimToken: string, updatedAt: string) {
+      return this.prepare(sql("UPDATE [sporades_file_ingress_audit_outbox] SET [state] = 'delivering', [claimToken] = ?, [updatedAt] = ? WHERE [claimId] = ? AND [state] = 'pending'")).run(claimToken, updatedAt, claimId);
+    },
+    deliverIngressClaimAudit(claimId: string, claimToken: string, deliveredAt: string) {
+      return this.prepare(sql("UPDATE [sporades_file_ingress_audit_outbox] SET [state] = 'delivered', [claimToken] = NULL, [updatedAt] = ?, [deliveredAt] = ? WHERE [claimId] = ? AND [state] = 'delivering' AND [claimToken] = ?")).run(deliveredAt, deliveredAt, claimId, claimToken);
+    },
+    releaseIngressClaimAudit(claimId: string, claimToken: string, updatedAt: string) {
+      return this.prepare(sql("UPDATE [sporades_file_ingress_audit_outbox] SET [state] = 'pending', [claimToken] = NULL, [updatedAt] = ? WHERE [claimId] = ? AND [state] = 'delivering' AND [claimToken] = ?")).run(updatedAt, claimId, claimToken);
+    },
+    recoverIngressClaimAudits(updatedAt: string) {
+      return this.prepare(sql("UPDATE [sporades_file_ingress_audit_outbox] SET [state] = 'pending', [claimToken] = NULL, [updatedAt] = ? WHERE [state] = 'delivering'")).run(updatedAt);
+    },
     selectIngressSweepCandidates(now: string, limit: number) {
       return this.prepare(sql("SELECT * FROM [sporades_file_ingress] WHERE [state] = 'sweeping' OR ([state] IN ('leased', 'staging') AND [expiresAt] <= ?) ORDER BY CASE WHEN [state] = 'sweeping' THEN 0 ELSE 1 END, [expiresAt], [requestKey], [partKey], [key] LIMIT ?")).all(now, limit);
     },

@@ -451,6 +451,8 @@ export function createFileStorageTables(sqlite) {
         // endpoint transactions lock and classify a lease without scanning JSON payloads.
         () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_file_ingress] ([key] TEXT PRIMARY KEY, [leaseId] TEXT, [state] TEXT, [actorId] TEXT, [authorityKind] TEXT, [authorityId] TEXT, [ownerId] TEXT, [principalNamespace] TEXT, [principalKeyDigest] TEXT, [endpointMethod] TEXT, [endpointPath] TEXT, [requestKey] TEXT, [partKey] TEXT, [expiresAt] TEXT, [sweepToken] TEXT, [payload] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)")),
         () => ensureFileIngressColumns(sqlite),
+        () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_file_ingress_audit_outbox] ([claimId] TEXT PRIMARY KEY, [state] TEXT NOT NULL, [claimToken] TEXT, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [deliveredAt] TEXT)")),
+        () => sqlite.exec(sql("CREATE INDEX IF NOT EXISTS [sporades_file_ingress_audit_outbox_pending] ON [sporades_file_ingress_audit_outbox] ([state], [createdAt], [claimId])")),
     ]);
 }
 async function readRequestBytes(request, maxBytes) {

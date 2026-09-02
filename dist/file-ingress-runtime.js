@@ -92,6 +92,11 @@ async function emitIngressAudit(database, event, data) {
     catch { /* Auditing must not turn a bounded ingress outcome into a transport failure. */ }
 }
 function safeIngressAuditCode(error) { return ingressAuditCodes.has(error?.code) ? error.code : "INGRESS_FAILED"; }
+function ingressClaimAuditId(row) {
+    // Receipt keys are opaque already; hash again so no private storage identity
+    // can accidentally become a future audit payload field.
+    return `v1:${crypto.createHash("sha256").update(String(row.key), "utf8").digest("hex")}`;
+}
 function sameFileDescriptor(left, right) {
     return left?.id === right?.id && left?.ownerId === right?.ownerId && left?.path === right?.path && left?.name === right?.name && left?.type === right?.type && Number(left?.size) === Number(right?.size) && left?.version === right?.version;
 }
@@ -474,7 +479,9 @@ export function createEndpointIngressApi(database, endpoint, endpointRequest, co
                 const completed = storedReceipt ? JSON.parse(storedReceipt.payload) : null;
                 if (!completed || completed.state !== "complete" || !sameFileDescriptor(completed.file, file))
                     throw idempotencyConflict("Ingress receipt completion conflicted with another claim.");
-                context.__pendingIngressClaimAudit = true;
+                // This transaction-scoped write is not coupled to a context object:
+                // Capsule middleware may clone contexts before the handler receives one.
+                await database.adapter.enqueueIngressClaimAudit({ claimId: ingressClaimAuditId(completed), createdAt: now });
                 return fileMetadataFromRow(storedFile);
             }
             catch (error) {
@@ -508,6 +515,46 @@ export function createEndpointIngressApi(database, endpoint, endpointRequest, co
 /** Database and object storage cannot share a transaction: publish Map state only after SQL commits. */
 export function finalizeEndpointIngressClaims(context, committed) {
     // Claim state is persisted in the endpoint transaction; retained for call-site compatibility.
+}
+/** Reset an interrupted delivery lease at startup; ordinary drains never steal live work. */
+export async function recoverIngressClaimAuditOutbox(database) {
+    try {
+        await database.adapter.recoverIngressClaimAudits(new Date().toISOString());
+    }
+    catch { /* A later recovery safely retries. */ }
+}
+/** Emit the fixed public audit only after its transaction has committed. */
+export async function drainIngressClaimAuditOutbox(database, options = {}) {
+    const limit = Math.max(1, Math.min(100, Number.isInteger(options.limit) ? options.limit : 50));
+    let pending;
+    try {
+        pending = await database.adapter.selectPendingIngressClaimAudits(limit);
+    }
+    catch {
+        return;
+    }
+    for (const candidate of pending) {
+        const claimId = String(candidate.claimId ?? "");
+        if (!claimId)
+            continue;
+        const claimToken = crypto.randomUUID();
+        try {
+            const claimed = await database.adapter.claimIngressClaimAudit(claimId, claimToken, new Date().toISOString());
+            if (Number(claimed?.changes ?? 0) !== 1)
+                continue;
+            try {
+                await database.log.emit({ category: "platform", event: "file.ingress.completed", level: "info", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "claimed" } });
+            }
+            catch {
+                await database.adapter.releaseIngressClaimAudit(claimId, claimToken, new Date().toISOString());
+                continue;
+            }
+            await database.adapter.deliverIngressClaimAudit(claimId, claimToken, new Date().toISOString());
+        }
+        catch {
+            // A failed sink or adapter operation leaves private durable work pending.
+        }
+    }
 }
 async function armIngressSweep(database, candidate, now, sweepToken) {
     for (let attempt = 0; attempt <= 100; attempt += 1) {
