@@ -555,7 +555,25 @@ export async function drainIngressClaimAuditOutbox(database, options = {}) {
                 await database.adapter.releaseIngressClaimAudit(claimId, claimToken, ingressAuditNow(database));
                 continue;
             }
-            await database.adapter.deliverIngressClaimAudit(claimId, claimToken, ingressAuditNow(database));
+            try {
+                await database.adapter.deliverIngressClaimAudit(claimId, claimToken, ingressAuditNow(database));
+            }
+            catch {
+                // The append may already be durable, so retry is deliberately
+                // duplicate-tolerant. Return only this token-fenced lease to pending;
+                // a concurrent drainer cannot reset another worker's claim.
+                try {
+                    await database.adapter.releaseIngressClaimAudit(claimId, claimToken, ingressAuditNow(database));
+                }
+                catch {
+                    // Startup recovery remains the final repair path. This marker is
+                    // observable without exposing the private delivery identity.
+                    try {
+                        await database.log.emit({ category: "platform", event: "file.ingress.audit-delivery-release-failed", level: "warn", message: "Multipart ingress audit delivery release failed", data: { schema: "v1", outcome: "failed", code: "INGRESS_AUDIT_ACK_RELEASE_FAILED" } });
+                    }
+                    catch { }
+                }
+            }
         }
         catch {
             // A failed sink or adapter operation leaves private durable work pending.

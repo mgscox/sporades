@@ -21037,7 +21037,18 @@ async function drainIngressClaimAuditOutbox(database, options = {}) {
         await database.adapter.releaseIngressClaimAudit(claimId, claimToken, ingressAuditNow(database));
         continue;
       }
-      await database.adapter.deliverIngressClaimAudit(claimId, claimToken, ingressAuditNow(database));
+      try {
+        await database.adapter.deliverIngressClaimAudit(claimId, claimToken, ingressAuditNow(database));
+      } catch {
+        try {
+          await database.adapter.releaseIngressClaimAudit(claimId, claimToken, ingressAuditNow(database));
+        } catch {
+          try {
+            await database.log.emit({ category: "platform", event: "file.ingress.audit-delivery-release-failed", level: "warn", message: "Multipart ingress audit delivery release failed", data: { schema: "v1", outcome: "failed", code: "INGRESS_AUDIT_ACK_RELEASE_FAILED" } });
+          } catch {
+          }
+        }
+      }
     } catch {
     }
   }

@@ -477,6 +477,10 @@ contains only `{ schema: "v1", outcome: "claimed", deliveryId }`; `deliveryId`
 is a stable opaque digest, never a request key, lease, File ID, principal,
 filename, or credential. Consumers must deduplicate by `deliveryId`. Logger
 failure leaves the intent pending without altering committed application state.
+An acknowledgement failure after a successful append returns that exact
+token-fenced intent to pending for the live retry; if that release also fails,
+Sporades emits the safe `INGRESS_AUDIT_ACK_RELEASE_FAILED` platform warning and
+startup recovery repairs the abandoned delivery lease.
 Delivered intents remain inspectable for 24 hours and are then pruned
 oldest-first in batches of 50; pending and in-progress intents are never
 pruned, and completed File retries do not create a new intent. A

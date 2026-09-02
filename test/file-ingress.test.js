@@ -478,6 +478,24 @@ test("a live runtime retries a failed ingress audit drain on its clock without a
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("a live runtime releases an acknowledgement-failed audit delivery for timer retry with the same opaque key", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-ack-clock-")); let database;
+  try {
+    const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+    const definition = capsule({ name: "audit-ack-clock", endpoints: { upload: endpoint({ method: "POST", path: "/audit-ack-clock", body: { multipart: ingressPolicy() } }, requireAuth(async (ctx) => await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/ack-clock.txt" }))) } });
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "audit-ack-clock", files: { storagePath: path.join(dir, "files") } }, definition, { clock }); await seedIngressUser(database); await database.init();
+    const originalDeliver = database.adapter.deliverIngressClaimAudit.bind(database.adapter); let failAck = true;
+    database.adapter.deliverIngressClaimAudit = async (...args) => { if (failAck) throw new Error("ack unavailable"); return await originalDeliver(...args); };
+    await runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/audit-ack-clock"), ingressRequest("audit-ack-clock"));
+    assert.equal((await database.adapter.prepare("SELECT [state] FROM [sporades_file_ingress_audit_outbox]").get()).state, "pending");
+    failAck = false; clock.advanceBy(60_000); await clock.runDueTimers();
+    const completed = (await database.log.tail(50)).filter((event) => event.event === "file.ingress.completed" && event.data?.outcome === "claimed");
+    assert.equal(completed.length, 2); assert.equal(completed[0].data.deliveryId, completed[1].data.deliveryId);
+    assert.equal((await database.adapter.prepare("SELECT [state] FROM [sporades_file_ingress_audit_outbox]").get()).state, "delivered");
+    await database.shutdown(); clock.advanceBy(60_000); await clock.runDueTimers();
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("ingress audit recovery may duplicate after an emit-before-ack crash, with one opaque delivery key", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-crash-")); let database;
   try {
