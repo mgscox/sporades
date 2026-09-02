@@ -89,10 +89,11 @@
       "src/types/stripe.d.ts",
       "src/types/team-billing-import.d.ts",
       "src/user-preferences-runtime.ts",
+      "src/vendor-decoders.d.ts",
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "6222bcdd2f0e00659f3f56ed053c2b51b116e30a4279665e582f0ac4ee3b619b"
+    "digest": "4eb820af5f0469a5aaf0a68ce8da3fa0f03848aa26495cced45b566984086fd4"
   },
   "outputs": {
     "files": [
@@ -403,6 +404,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "d9f8fe1f240d00f504f93b5e056968264134971ac9b0197b351cc0e09d3fffa0"
+    "digest": "7e3da422e32589315888cec1101e2eb54084049b4e022c7b9d49ae4c9d36244d"
   }
 }
