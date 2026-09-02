@@ -88,7 +88,7 @@ export declare function routeEndpoint(database: {
 export declare function runEndpoint(database: any, endpoint: {
     handler?: Function;
     handlerSource?: string;
-}, requestUrl: URL, request: any): Promise<any>;
+}, requestUrl: URL, request: any): Promise<unknown>;
 export declare function runAtomicStripeConsequence(database: LooseRecord, parentContext: LooseRecord, event: LooseRecord, subscription?: LooseRecord, platformConsequence?: (database: LooseRecord, event: LooseRecord) => Promise<any>): Promise<any>;
 export declare function createEndpointDatabaseApi(database: LooseRecord, contextGetter?: any): {
     [k: string]: any;

@@ -101,7 +101,7 @@ import { accessKeyGrantsSatisfyScopes } from "./auth-admission.js";
 import { accessKeyAuthenticationError, emitAccessKeyAdmittedAudit, recordAccessKeyUsage, resolveAccessKeyCredential, } from "./access-keys-runtime.js";
 import { checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, fileRowForActor, } from "./file-storage-runtime.js";
 import { commandError } from "./runtime-errors.js";
-import { attachmentContentDisposition, endpointFileAttachmentDetails, isGuardedAttachmentHttpResponse, markGuardedAttachmentHttpResponse } from "./endpoint-file-response.js";
+import { attachmentContentDisposition, consumeSealedEndpointFileAttachment, isGuardedAttachmentHttpResponse, markGuardedAttachmentHttpResponse } from "./endpoint-file-response.js";
 const CLIENT_REQUEST_ERROR_CODES = new Set([
     "INVALID_JSON_REQUEST",
     "OAUTH_INVALID_CALLBACK",
@@ -579,7 +579,7 @@ async function sendFileHttpResponse(database, response, row, options = {}) {
     }
 }
 export async function writeEndpointResult(database, response, result, runtimeHeaders = {}) {
-    const attachment = endpointFileAttachmentDetails(result);
+    const attachment = consumeSealedEndpointFileAttachment(result);
     if (attachment) {
         await sendEndpointFileAttachmentResponse(database, response, attachment);
         return false;

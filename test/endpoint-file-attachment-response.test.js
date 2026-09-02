@@ -7,6 +7,7 @@ import { test } from "node:test";
 
 import { capsule, endpoint } from "../dist/server.js";
 import { createPendingFileUpload } from "../dist/file-storage-runtime.js";
+import { consumeSealedEndpointFileAttachment, createEndpointFileResponseApi } from "../dist/endpoint-file-response.js";
 import { handleFileHttpRoute, prepareHttpSecurity } from "../dist/http-runtime.js";
 import { openDevDatabase, routeEndpoint } from "../dist/server-runtime-source.js";
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
@@ -48,17 +49,33 @@ test("attachment response declarations are explicit and closed", () => {
   }
 });
 
+test("attachment descriptors and sealed results are invocation-bound and one-use", () => {
+  const first = createEndpointFileResponseApi({}, true);
+  const descriptor = first.files.attachment({ id: "file", version: "v1" }, { filename: "report.txt" });
+  const retry = createEndpointFileResponseApi({}, true);
+  assert.equal(retry.sealCommittedResult(descriptor), descriptor, "a transaction retry cannot accept an abandoned attempt's descriptor");
+  const sealed = first.sealCommittedResult(descriptor);
+  assert.notEqual(sealed, descriptor);
+  assert.deepEqual(consumeSealedEndpointFileAttachment(sealed), { fileId: "file", version: "v1", filename: "report.txt" });
+  assert.equal(consumeSealedEndpointFileAttachment(sealed), null, "the HTTP result envelope is consumed once");
+  assert.equal(first.sealCommittedResult(descriptor), descriptor, "the same invocation cannot seal its descriptor twice");
+});
+
 test("an endpoint can return only its runtime-created exact-version attachment response", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "sporades-endpoint-attachment-"));
-  const holder = { file: null, forged: false, customerGrant: true, hostileName: "report\r\nX-Evil: yes/../\u202Eexe.txt" };
+  const holder = { file: null, cached: null, forged: false, customerGrant: true, hostileName: "report\r\nX-Evil: yes/../\u202Eexe.txt" };
   const definition = capsule({ name: "endpoint-attachment", endpoints: {
     download: endpoint({ method: "GET", path: "/download", response: { fileAttachment: true } }, (ctx) => holder.forged
       ? { id: holder.file.id, version: holder.file.version, filename: holder.hostileName }
       : ctx.files.attachment({ id: holder.file.id, version: holder.file.version }, { filename: holder.hostileName })),
-    customer: endpoint({ method: "GET", path: "/customer", response: { fileAttachment: true } }, (ctx) => holder.customerGrant
-      ? ctx.files.attachment(holder.file, { filename: "customer.txt" })
-      : { status: 404, body: "Not found" }),
-    undeclared: endpoint({ method: "GET", path: "/undeclared" }, (ctx) => ctx.files.attachment(holder.file, { filename: "forbidden.txt" })),
+    customer: endpoint({ method: "GET", path: "/customer", response: { fileAttachment: true } }, (ctx) => {
+      if (!holder.customerGrant) return holder.cached;
+      holder.cached = ctx.files.attachment(holder.file, { filename: "customer.txt" });
+      return holder.cached;
+    }),
+    otherDeclared: endpoint({ method: "GET", path: "/other-declared", response: { fileAttachment: true } }, () => holder.cached),
+    undeclared: endpoint({ method: "GET", path: "/undeclared" }, () => holder.cached),
+    undeclaredMint: endpoint({ method: "GET", path: "/undeclared-mint" }, (ctx) => ctx.files.attachment(holder.file, { filename: "forbidden.txt" })),
     rollback: endpoint({ method: "GET", path: "/rollback", response: { fileAttachment: true } }, (ctx) => {
       ctx.files.attachment({ id: holder.file.id, version: holder.file.version }, { filename: "report.txt" });
       throw new Error("rollback sentinel");
@@ -95,19 +112,34 @@ test("an endpoint can return only its runtime-created exact-version attachment r
 
     holder.forged = false;
     let reads = 0;
+    let lookups = 0;
     const originalRead = database.fileStorage.openFileVersionStream.bind(database.fileStorage);
+    const originalLookup = database.adapter.selectFileById;
     database.fileStorage.openFileVersionStream = async (input) => { reads += 1; return await originalRead(input); };
+    database.adapter.selectFileById = function (id) { lookups += 1; return Reflect.apply(originalLookup, this, [id]); };
     const customer = await fetch(`${server.baseUrl}/customer`);
     assert.equal(customer.status, 200, "trusted domain authorization may deliberately serve a non-Sporades customer capability");
     assert.equal(await customer.text(), "attachment bytes");
     assert.equal(reads, 1);
+    assert.equal(lookups, 1);
     holder.customerGrant = false;
-    const revokedCustomer = await fetch(`${server.baseUrl}/customer`);
-    assert.equal(revokedCustomer.status, 404);
-    assert.equal(reads, 1, "revoked app authorization prevents descriptor creation on the next request");
     reads = 0;
+    lookups = 0;
+    for (const [pathName, headers] of [
+      ["customer", {}],
+      ["undeclared", {}],
+      ["undeclared", { "x-sporades-session-token": token }],
+      ["other-declared", {}],
+    ]) {
+      const replay = await fetch(`${server.baseUrl}/${pathName}`, { headers });
+      assert.equal(replay.status, 200, "a stale descriptor is only an ordinary endpoint value");
+      assert.doesNotMatch(await replay.text(), /attachment bytes/);
+    }
+    assert.equal(lookups, 0, "cross-request and cross-endpoint descriptor replay never reaches exact-version lookup");
+    assert.equal(reads, 0, "a consumed descriptor is one-use and replay never reaches storage");
+    database.adapter.selectFileById = originalLookup;
     for (const headers of [{}, { "x-sporades-session-token": token }]) {
-      const undeclared = await fetch(`${server.baseUrl}/undeclared`, { headers });
+      const undeclared = await fetch(`${server.baseUrl}/undeclared-mint`, { headers });
       assert.equal(undeclared.status, 500);
     }
     assert.equal(reads, 0, "undeclared anonymous and authenticated endpoints cannot start attachment reads");
@@ -129,7 +161,7 @@ test("an endpoint can return only its runtime-created exact-version attachment r
     const replacement = await createPendingFileUpload(database, auth, { replace: true, fileId: holder.file.id, file: { name: "replacement.txt", type: "text/plain", size: Buffer.byteLength("replacement bytes") } });
     assert.equal(replacement.ok, true);
     const replacementUpload = await fetch(new URL(replacement.data.uploadUrl, server.baseUrl), { method: "PUT", body: "replacement bytes" });
-    assert.equal(replacementUpload.status, 200);
+    assert.equal(replacementUpload.status, 200, await replacementUpload.text());
     const stale = await fetch(`${server.baseUrl}/download`, { headers: { "x-sporades-session-token": token } });
     assert.equal(stale.status, 404, "an old exact version cannot fall through to its replacement");
     assert.equal(await stale.text(), "Not found");

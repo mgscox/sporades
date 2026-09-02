@@ -5,11 +5,14 @@ type AttachmentResponseDetails = Readonly<{
     filename: string;
 }>;
 export declare function createEndpointFileResponseApi(ingressApi: LooseRecord, enabled: boolean): Readonly<{
-    attachment(reference: LooseRecord, options: LooseRecord): Readonly<{}>;
-} | {
-    attachment?: undefined;
+    files: Readonly<{
+        attachment(reference: LooseRecord, options: LooseRecord): Readonly<{}>;
+    } | {
+        attachment?: undefined;
+    }>;
+    sealCommittedResult(value: unknown): unknown;
 }>;
-export declare function endpointFileAttachmentDetails(value: unknown): AttachmentResponseDetails | null;
+export declare function consumeSealedEndpointFileAttachment(value: unknown): AttachmentResponseDetails | null;
 export declare function markGuardedAttachmentHttpResponse(response: object): void;
 export declare function isGuardedAttachmentHttpResponse(response: unknown): boolean;
 export declare function safePresentationFilename(value: unknown): string | null;

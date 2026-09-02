@@ -3271,6 +3271,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
     try {
         let result;
         let transactionAttempt = 0;
+        let sealCommittedAttachmentResult = (value) => value;
         while (true) {
             let ingressFenceAcquired = false;
             try {
@@ -3292,7 +3293,8 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                             credential: accessKeyAdmission?.credential,
                             accessKeyGrants: accessKeyAdmission?.grants,
                         });
-                        context.files = createEndpointFileResponseApi(createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context), endpoint.options?.response?.fileAttachment === true);
+                        const endpointIngressApi = createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context);
+                        context.files = endpointIngressApi;
                         if (endpoint.runtimeOwnedStripeCallback) {
                             Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
                         }
@@ -3301,6 +3303,9 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                                 admitCredentialHandler(handler, context, "endpoint");
                             context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
                         }
+                        const attachmentResponse = createEndpointFileResponseApi(endpointIngressApi, endpoint.options?.response?.fileAttachment === true);
+                        context.files = attachmentResponse.files;
+                        sealCommittedAttachmentResult = attachmentResponse.sealCommittedResult;
                         const result = await handler(context);
                         if (accessKeySecretWasDisclosed(context))
                             request.__sporadesSecretDisclosed = true;
@@ -3329,7 +3334,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
         await flushAccessKeyLifecycleAuditEvents(database, context);
         flushTeamSecurityEvents(database, context);
         await dispatchPendingJobs(context);
-        return result;
+        return sealCommittedAttachmentResult(result);
     }
     catch (error) {
         if (endpointRequest.multipart) {

@@ -2,8 +2,11 @@
 // may name a File id/version pair and a presentation filename, but never receive bytes, a storage
 // path, object key, stream, or storage credentials.
 const attachmentResponseDetails = new WeakMap();
+const sealedAttachmentResponseDetails = new WeakMap();
 const guardedAttachmentHttpResponses = new WeakSet();
 export function createEndpointFileResponseApi(ingressApi, enabled) {
+    const authority = Object.freeze({});
+    let accepted = false;
     const attachment = enabled ? {
         attachment(reference, options) {
             const fileId = exactIdentifier(reference?.id);
@@ -15,14 +18,33 @@ export function createEndpointFileResponseApi(ingressApi, enabled) {
                 throw error;
             }
             const response = Object.freeze({});
-            attachmentResponseDetails.set(response, Object.freeze({ fileId, version, filename }));
+            attachmentResponseDetails.set(response, Object.freeze({ fileId, version, filename, authority }));
             return response;
         },
     } : {};
-    return Object.freeze({ ...ingressApi, ...attachment });
+    return Object.freeze({
+        files: Object.freeze({ ...ingressApi, ...attachment }),
+        sealCommittedResult(value) {
+            if (!enabled || accepted || value === null || typeof value !== "object")
+                return value;
+            const details = attachmentResponseDetails.get(value);
+            if (!details || details.authority !== authority)
+                return value;
+            accepted = true;
+            attachmentResponseDetails.delete(value);
+            const sealed = Object.freeze({});
+            sealedAttachmentResponseDetails.set(sealed, Object.freeze({ fileId: details.fileId, version: details.version, filename: details.filename }));
+            return sealed;
+        },
+    });
 }
-export function endpointFileAttachmentDetails(value) {
-    return value !== null && typeof value === "object" ? attachmentResponseDetails.get(value) ?? null : null;
+export function consumeSealedEndpointFileAttachment(value) {
+    if (value === null || typeof value !== "object")
+        return null;
+    const details = sealedAttachmentResponseDetails.get(value) ?? null;
+    if (details)
+        sealedAttachmentResponseDetails.delete(value);
+    return details;
 }
 export function markGuardedAttachmentHttpResponse(response) {
     guardedAttachmentHttpResponses.add(response);

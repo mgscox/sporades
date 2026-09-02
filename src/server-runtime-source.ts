@@ -3504,6 +3504,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
   let context: LooseRecord | undefined;
   try {
     let result: any; let transactionAttempt = 0;
+    let sealCommittedAttachmentResult = (value: unknown) => value;
     while (true) {
       let ingressFenceAcquired = false;
       try {
@@ -3524,10 +3525,8 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
               credential: accessKeyAdmission?.credential,
               accessKeyGrants: accessKeyAdmission?.grants,
             });
-            context.files = createEndpointFileResponseApi(
-              createEndpointIngressApi(transactionDatabase, endpoint as LooseRecord, endpointRequest, context),
-              (endpoint as LooseRecord).options?.response?.fileAttachment === true,
-            );
+            const endpointIngressApi = createEndpointIngressApi(transactionDatabase, endpoint as LooseRecord, endpointRequest, context);
+            context.files = endpointIngressApi;
             if ((endpoint as LooseRecord).runtimeOwnedStripeCallback) {
               Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
             }
@@ -3535,6 +3534,12 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
               if (!accessKeyAdmission) admitCredentialHandler(handler, context, "endpoint");
               context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
             }
+            const attachmentResponse = createEndpointFileResponseApi(
+              endpointIngressApi,
+              (endpoint as LooseRecord).options?.response?.fileAttachment === true,
+            );
+            context.files = attachmentResponse.files;
+            sealCommittedAttachmentResult = attachmentResponse.sealCommittedResult;
             const result = await handler(context);
             if (accessKeySecretWasDisclosed(context)) (request as LooseRecord).__sporadesSecretDisclosed = true;
             return result;
@@ -3558,7 +3563,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
-    return result;
+    return sealCommittedAttachmentResult(result);
   } catch (error) {
     if ((endpointRequest as LooseRecord).multipart) {
       try { await database.log.emit({ category: "platform", event: "file.ingress.failed", level: "warn", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "failed", code: "INGRESS_ROLLBACK" } }); } catch {}

@@ -10809,8 +10809,11 @@ async function removeFileVersionBestEffort(database, fileId, version) {
 
 // src/endpoint-file-response.ts
 var attachmentResponseDetails = /* @__PURE__ */ new WeakMap();
+var sealedAttachmentResponseDetails = /* @__PURE__ */ new WeakMap();
 var guardedAttachmentHttpResponses = /* @__PURE__ */ new WeakSet();
 function createEndpointFileResponseApi(ingressApi, enabled) {
+  const authority = Object.freeze({});
+  let accepted = false;
   const attachment = enabled ? {
     attachment(reference, options) {
       const fileId = exactIdentifier(reference?.id);
@@ -10822,14 +10825,29 @@ function createEndpointFileResponseApi(ingressApi, enabled) {
         throw error;
       }
       const response = Object.freeze({});
-      attachmentResponseDetails.set(response, Object.freeze({ fileId, version, filename }));
+      attachmentResponseDetails.set(response, Object.freeze({ fileId, version, filename, authority }));
       return response;
     }
   } : {};
-  return Object.freeze({ ...ingressApi, ...attachment });
+  return Object.freeze({
+    files: Object.freeze({ ...ingressApi, ...attachment }),
+    sealCommittedResult(value) {
+      if (!enabled || accepted || value === null || typeof value !== "object") return value;
+      const details = attachmentResponseDetails.get(value);
+      if (!details || details.authority !== authority) return value;
+      accepted = true;
+      attachmentResponseDetails.delete(value);
+      const sealed = Object.freeze({});
+      sealedAttachmentResponseDetails.set(sealed, Object.freeze({ fileId: details.fileId, version: details.version, filename: details.filename }));
+      return sealed;
+    }
+  });
 }
-function endpointFileAttachmentDetails(value) {
-  return value !== null && typeof value === "object" ? attachmentResponseDetails.get(value) ?? null : null;
+function consumeSealedEndpointFileAttachment(value) {
+  if (value === null || typeof value !== "object") return null;
+  const details = sealedAttachmentResponseDetails.get(value) ?? null;
+  if (details) sealedAttachmentResponseDetails.delete(value);
+  return details;
 }
 function markGuardedAttachmentHttpResponse(response) {
   guardedAttachmentHttpResponses.add(response);
@@ -11268,7 +11286,7 @@ async function sendFileHttpResponse(database, response, row, options = {}) {
   }
 }
 async function writeEndpointResult(database, response, result, runtimeHeaders = {}) {
-  const attachment = endpointFileAttachmentDetails(result);
+  const attachment = consumeSealedEndpointFileAttachment(result);
   if (attachment) {
     await sendEndpointFileAttachmentResponse(database, response, attachment);
     return false;
@@ -23956,6 +23974,7 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
   try {
     let result;
     let transactionAttempt = 0;
+    let sealCommittedAttachmentResult = (value) => value;
     while (true) {
       let ingressFenceAcquired = false;
       try {
@@ -23973,10 +23992,8 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
               credential: accessKeyAdmission?.credential,
               accessKeyGrants: accessKeyAdmission?.grants
             });
-            context.files = createEndpointFileResponseApi(
-              createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context),
-              endpoint.options?.response?.fileAttachment === true
-            );
+            const endpointIngressApi = createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context);
+            context.files = endpointIngressApi;
             if (endpoint.runtimeOwnedStripeCallback) {
               Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
             }
@@ -23984,6 +24001,12 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
               if (!accessKeyAdmission) admitCredentialHandler(handler, context, "endpoint");
               context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
             }
+            const attachmentResponse = createEndpointFileResponseApi(
+              endpointIngressApi,
+              endpoint.options?.response?.fileAttachment === true
+            );
+            context.files = attachmentResponse.files;
+            sealCommittedAttachmentResult = attachmentResponse.sealCommittedResult;
             const result2 = await handler(context);
             if (accessKeySecretWasDisclosed(context)) request.__sporadesSecretDisclosed = true;
             return result2;
@@ -24007,7 +24030,7 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
-    return result;
+    return sealCommittedAttachmentResult(result);
   } catch (error) {
     if (endpointRequest.multipart) {
       try {

@@ -109,7 +109,7 @@ import {
   checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, fileRowForActor,
 } from "./file-storage-runtime.js";
 import { commandError } from "./runtime-errors.js";
-import { attachmentContentDisposition, endpointFileAttachmentDetails, isGuardedAttachmentHttpResponse, markGuardedAttachmentHttpResponse } from "./endpoint-file-response.js";
+import { attachmentContentDisposition, consumeSealedEndpointFileAttachment, isGuardedAttachmentHttpResponse, markGuardedAttachmentHttpResponse } from "./endpoint-file-response.js";
 
 // Redeclared rather than imported, as every migrated module redeclares them: they are erased by
 // tsc, so they create no top-level binding for esbuild to rename and cannot collide with the
@@ -647,7 +647,7 @@ async function sendFileHttpResponse(database: LooseRecord, response: any, row: L
 }
 
 export async function writeEndpointResult(database: LooseRecord, response: any, result: any, runtimeHeaders: LooseRecord = {}) {
-  const attachment = endpointFileAttachmentDetails(result);
+  const attachment = consumeSealedEndpointFileAttachment(result);
   if (attachment) {
     await sendEndpointFileAttachmentResponse(database, response, attachment);
     return false;

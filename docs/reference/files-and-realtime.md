@@ -109,7 +109,11 @@ not accept an arbitrary request-supplied File ID and pass it through.
 `ctx.files.attachment()` creates an opaque, runtime-only endpoint result. It
 accepts only the exact File `id` and `version` plus a presentation filename;
 plain objects that resemble it are ordinary endpoint values and cannot cause a
-File read. Sporades resolves the descriptor only after the endpoint transaction
+File read. Each descriptor belongs to the single declared endpoint invocation
+that minted it and is consumed once. Replaying it from a later request, another
+endpoint, a middleware context, or an abandoned transaction attempt cannot
+reach File lookup or storage. Sporades resolves the descriptor only after the
+endpoint transaction
 commits, rereads the current File row, and denies a deleted, replaced, missing,
 or unreadable version with the same opaque no-store response. The result always
 uses `application/octet-stream`, `Content-Disposition: attachment` with an

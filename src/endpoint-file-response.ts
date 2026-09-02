@@ -5,11 +5,15 @@
 type LooseRecord = Record<string, any>;
 
 type AttachmentResponseDetails = Readonly<{ fileId: string; version: string; filename: string }>;
+type MintedAttachmentResponseDetails = AttachmentResponseDetails & Readonly<{ authority: object }>;
 
-const attachmentResponseDetails = new WeakMap<object, AttachmentResponseDetails>();
+const attachmentResponseDetails = new WeakMap<object, MintedAttachmentResponseDetails>();
+const sealedAttachmentResponseDetails = new WeakMap<object, AttachmentResponseDetails>();
 const guardedAttachmentHttpResponses = new WeakSet<object>();
 
 export function createEndpointFileResponseApi(ingressApi: LooseRecord, enabled: boolean) {
+  const authority = Object.freeze({});
+  let accepted = false;
   const attachment = enabled ? {
     attachment(reference: LooseRecord, options: LooseRecord) {
       const fileId = exactIdentifier(reference?.id);
@@ -21,15 +25,30 @@ export function createEndpointFileResponseApi(ingressApi: LooseRecord, enabled: 
         throw error;
       }
       const response = Object.freeze({});
-      attachmentResponseDetails.set(response, Object.freeze({ fileId, version, filename }));
+      attachmentResponseDetails.set(response, Object.freeze({ fileId, version, filename, authority }));
       return response;
     },
   } : {};
-  return Object.freeze({ ...ingressApi, ...attachment });
+  return Object.freeze({
+    files: Object.freeze({ ...ingressApi, ...attachment }),
+    sealCommittedResult(value: unknown) {
+      if (!enabled || accepted || value === null || typeof value !== "object") return value;
+      const details = attachmentResponseDetails.get(value as object);
+      if (!details || details.authority !== authority) return value;
+      accepted = true;
+      attachmentResponseDetails.delete(value as object);
+      const sealed = Object.freeze({});
+      sealedAttachmentResponseDetails.set(sealed, Object.freeze({ fileId: details.fileId, version: details.version, filename: details.filename }));
+      return sealed;
+    },
+  });
 }
 
-export function endpointFileAttachmentDetails(value: unknown): AttachmentResponseDetails | null {
-  return value !== null && typeof value === "object" ? attachmentResponseDetails.get(value as object) ?? null : null;
+export function consumeSealedEndpointFileAttachment(value: unknown): AttachmentResponseDetails | null {
+  if (value === null || typeof value !== "object") return null;
+  const details = sealedAttachmentResponseDetails.get(value as object) ?? null;
+  if (details) sealedAttachmentResponseDetails.delete(value as object);
+  return details;
 }
 
 export function markGuardedAttachmentHttpResponse(response: object) {
