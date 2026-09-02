@@ -1,6 +1,7 @@
 // Runtime-owned endpoint multipart ingress. Leases deliberately have no File row, URL or ACL
 // visibility: only claim() creates an ordinary File in the handler transaction.
 import { ensureFileBucket, fileMetadataFromRow, normalizeAbsoluteFilePath } from "./file-storage-runtime.js";
+import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 const crypto = process.getBuiltinModule("node:crypto");
 const leaseTtlMs = 10 * 60 * 1000;
 const ingressClaimAuditRetentionMs = 24 * 60 * 60 * 1000;
@@ -94,43 +95,166 @@ function normalizedInspectionPolicy(value) {
         invalid();
     const names = new Set();
     for (const inspector of value.requiredInspectors) {
-        if (inspector !== "content-policy-v1" || names.has(inspector))
+        if (!["content-policy-v1", "clamav"].includes(inspector) || names.has(inspector))
             invalid();
         names.add(inspector);
     }
     return { policyRevision: value.policyRevision, maxVerdictAgeMs, requiredInspectors: value.requiredInspectors };
 }
-function contentPolicyOutcome(row, bytes) {
+function crc32(bytes) { let crc = 0xffffffff; for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1)
+        crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+} return (crc ^ 0xffffffff) >>> 0; }
+function validPng(bytes) {
+    if (bytes.length < 45 || !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])))
+        return false;
+    let offset = 8;
+    let index = 0;
+    let sawIdat = false;
+    while (offset + 12 <= bytes.length) {
+        const length = bytes.readUInt32BE(offset);
+        if (length > bytes.length - offset - 12)
+            return false;
+        const type = bytes.subarray(offset + 4, offset + 8).toString("ascii");
+        const data = bytes.subarray(offset + 8, offset + 8 + length);
+        const storedCrc = bytes.readUInt32BE(offset + 8 + length);
+        if (crc32(bytes.subarray(offset + 4, offset + 8 + length)) !== storedCrc)
+            return false;
+        if (index === 0) {
+            if (type !== "IHDR" || length !== 13 || data.readUInt32BE(0) === 0 || data.readUInt32BE(4) === 0 || data[10] !== 0 || data[11] !== 0 || data[12] !== 0)
+                return false;
+            const allowed = new Set(["0:1", "0:2", "0:4", "0:8", "0:16", "2:8", "2:16", "3:1", "3:2", "3:4", "3:8", "4:8", "4:16", "6:8", "6:16"]);
+            if (!allowed.has(`${data[9]}:${data[8]}`))
+                return false;
+        }
+        if (type === "IDAT")
+            sawIdat = true;
+        if (type === "IEND")
+            return length === 0 && sawIdat && offset + 12 === bytes.length;
+        if (type === "IHDR" && index !== 0)
+            return false;
+        offset += 12 + length;
+        index += 1;
+    }
+    return false;
+}
+function validJpeg(bytes) {
+    if (bytes.length < 8 || bytes[0] !== 0xff || bytes[1] !== 0xd8)
+        return false;
+    let offset = 2;
+    let sawFrame = false;
+    let sawScan = false;
+    while (offset < bytes.length) {
+        if (bytes[offset++] !== 0xff)
+            return false;
+        while (offset < bytes.length && bytes[offset] === 0xff)
+            offset += 1;
+        if (offset >= bytes.length)
+            return false;
+        const marker = bytes[offset++];
+        if (marker === 0xd9)
+            return sawScan && offset === bytes.length;
+        if (marker === 0x00 || marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7))
+            return false;
+        if (offset + 2 > bytes.length)
+            return false;
+        const length = bytes.readUInt16BE(offset);
+        if (length < 2 || offset + length > bytes.length)
+            return false;
+        const data = bytes.subarray(offset + 2, offset + length);
+        offset += length;
+        if ([0xc0, 0xc1, 0xc2].includes(marker)) {
+            if (data.length < 6 || data[0] !== 8 || data.readUInt16BE(1) === 0 || data.readUInt16BE(3) === 0 || data[5] < 1 || data.length !== 6 + data[5] * 3)
+                return false;
+            sawFrame = true;
+        }
+        if (marker === 0xda) {
+            if (!sawFrame || data.length < 6 || data[0] < 1 || data.length !== 1 + data[0] * 2 + 3)
+                return false;
+            sawScan = true;
+            while (offset < bytes.length) {
+                if (bytes[offset++] !== 0xff)
+                    continue;
+                if (offset >= bytes.length)
+                    return false;
+                const next = bytes[offset];
+                if (next === 0x00 || (next >= 0xd0 && next <= 0xd7)) {
+                    offset += 1;
+                    continue;
+                }
+                offset -= 1;
+                break;
+            }
+        }
+    }
+    return false;
+}
+async function validPdf(bytes) {
+    if (bytes.length < 16 || bytes.subarray(0, 5).toString("ascii") !== "%PDF-" || bytes.includes(Buffer.from("/Encrypt")))
+        return false;
+    let task;
+    let timer;
+    try {
+        task = getDocument({ data: new Uint8Array(bytes), useWorkerFetch: false, disableFontFace: true });
+        const document = await Promise.race([task.promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("PDF inspection timeout")), 2_000); })]);
+        if (document.numPages < 1 || document.numPages > 100)
+            return false;
+        for (let page = 1; page <= document.numPages; page += 1)
+            await (await document.getPage(page)).getOperatorList();
+        return true;
+    }
+    catch {
+        return false;
+    }
+    finally {
+        clearTimeout(timer);
+        try {
+            await task?.destroy?.();
+        }
+        catch { }
+    }
+}
+function safeUntrustedText(bytes) {
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    let text = "";
+    try {
+        text = decoder.decode(bytes);
+    }
+    catch {
+        return false;
+    }
+    if (!text || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text) || /<\s*(?:!doctype|\?xml|html\b|head\b|body\b|script\b|svg\b|[a-z][\w:-]*\s+[^>]*>)/i.test(text))
+        return false;
+    if (/(?:^|\n)\s*(?:#!|sudo\b|rm\s+-|curl\b|wget\b|bash\b|sh\b|python\b|node\b|chmod\b|eval\b|exec\b|export\s+\w+=|set\s+-[eux]|if\s+\[|for\s+\w+\s+in\b)/im.test(text))
+        return false;
+    if (/(?:\b(?:const|let|var|function|class|import|export)\b|=>|\brequire\s*\(|\bprocess\.)/.test(text)) {
+        try {
+            new Function(text);
+            return false;
+        }
+        catch { }
+    }
+    return true;
+}
+async function contentPolicyOutcome(row, bytes) {
     const name = String(row.name).toLowerCase();
     const type = String(row.type).toLowerCase();
     if (bytes.length === 0 || /\.(zip|gz|rar|7z|tar|docx?|xlsx?|pptx?|exe|dmg|app|js|mjs|sh|bat|cmd|ps1|svg|html?|xml)$/i.test(name) || bytes.subarray(0, 2).toString("hex") === "4d5a" || bytes.subarray(0, 2).toString("hex") === "504b" || bytes.subarray(0, 6).toString("ascii") === "Rar!\x1a\x07" || bytes.subarray(0, 6).toString("ascii") === "7z\xbc\xaf\x27\x1c")
         return "rejected";
-    const jpeg = bytes.length >= 4 && bytes.subarray(0, 3).toString("hex") === "ffd8ff" && bytes.subarray(-2).toString("hex") === "ffd9";
-    const png = bytes.length >= 24 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) && bytes.subarray(12, 16).toString("ascii") === "IHDR";
-    const pdf = bytes.length >= 9 && bytes.subarray(0, 5).toString("ascii") === "%PDF-" && bytes.includes(Buffer.from("%%EOF")) && !bytes.includes(Buffer.from("/Encrypt"));
-    const decoded = new TextDecoder("utf-8", { fatal: true });
-    let text = "";
-    try {
-        text = decoded.decode(bytes);
-    }
-    catch { }
-    const utf8 = text.length > 0 && !/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text) && !/^\s*(?:<!doctype|<html|<svg|<\?xml)/i.test(text) && !/^#!/.test(text);
-    const candidates = [jpeg, png, pdf, utf8].filter(Boolean).length;
-    if (candidates !== 1)
-        return "inconclusive";
-    if (jpeg)
-        return /\.(jpg|jpeg)$/.test(name) && type === "image/jpeg" ? "clean" : "rejected";
-    if (png)
-        return /\.png$/.test(name) && type === "image/png" ? "clean" : "rejected";
-    if (pdf)
-        return /\.pdf$/.test(name) && type === "application/pdf" ? "clean" : "rejected";
-    return /\.txt$/.test(name) && type === "text/plain" ? "clean" : "rejected";
+    if (bytes.subarray(0, 3).toString("hex") === "ffd8ff")
+        return validJpeg(bytes) && /\.(jpg|jpeg)$/.test(name) && type === "image/jpeg" ? "clean" : "rejected";
+    if (bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])))
+        return validPng(bytes) && /\.png$/.test(name) && type === "image/png" ? "clean" : "rejected";
+    if (bytes.subarray(0, 5).toString("ascii") === "%PDF-")
+        return await validPdf(bytes) && /\.pdf$/.test(name) && type === "application/pdf" ? "clean" : "rejected";
+    return safeUntrustedText(bytes) && /\.txt$/.test(name) && type === "text/plain" ? "clean" : "rejected";
 }
-function inspectIngressLease(policy, row, bytes) {
+async function inspectIngressLease(policy, row, bytes) {
     if (!policy)
         return undefined;
     const inspectedAt = new Date().toISOString();
-    const verdicts = policy.requiredInspectors.map((inspector) => Object.freeze({ inspector, outcome: contentPolicyOutcome(row, bytes), leaseId: row.leaseId, size: row.size, digest: row.digest, version: row.version, policyRevision: policy.policyRevision, engine: "sporades-content-policy", signatureVersion: "content-policy-v1", inspectedAt }));
+    const verdicts = await Promise.all(policy.requiredInspectors.map(async (inspector) => Object.freeze({ inspector, outcome: inspector === "content-policy-v1" ? await contentPolicyOutcome(row, bytes) : "inconclusive", leaseId: row.leaseId, size: row.size, digest: row.digest, version: row.version, policyRevision: policy.policyRevision, engine: inspector === "content-policy-v1" ? "sporades-content-policy" : "clamav", signatureVersion: inspector === "content-policy-v1" ? "content-policy-v1" : "unavailable", inspectedAt })));
     return Object.freeze({ policyRevision: policy.policyRevision, maxVerdictAgeMs: policy.maxVerdictAgeMs, verdicts: Object.freeze(verdicts) });
 }
 function inspectionEvidenceIsCurrent(row, policy) {
@@ -143,7 +267,7 @@ function inspectionEvidenceIsCurrent(row, policy) {
     return policy.requiredInspectors.every((inspector) => {
         const verdict = inspection.verdicts.find((candidate) => candidate?.inspector === inspector);
         const inspectedAt = Date.parse(verdict?.inspectedAt);
-        return verdict?.outcome === "clean" && verdict?.leaseId === row.leaseId && verdict?.size === row.size && verdict?.digest === row.digest && verdict?.version === row.version && verdict?.policyRevision === policy.policyRevision && verdict?.engine === "sporades-content-policy" && verdict?.signatureVersion === "content-policy-v1" && Number.isFinite(inspectedAt) && inspectedAt <= now && now - inspectedAt <= policy.maxVerdictAgeMs;
+        return verdict?.outcome === "clean" && verdict?.leaseId === row.leaseId && verdict?.size === row.size && verdict?.digest === row.digest && verdict?.version === row.version && verdict?.policyRevision === policy.policyRevision && typeof verdict?.engine === "string" && typeof verdict?.signatureVersion === "string" && Number.isFinite(inspectedAt) && inspectedAt <= now && now - inspectedAt <= policy.maxVerdictAgeMs;
     });
 }
 function framedIngressKey(parts) {
@@ -373,7 +497,7 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
             const digest = crypto.createHash("sha256").update(body).digest("hex");
             const now = new Date();
             const candidate = { key, leaseId: crypto.randomUUID(), partId: crypto.createHash("sha256").update(key).digest("hex"), fieldName, name: safeName(filename), type, size: body.length, digest, fileId: crypto.randomUUID(), version: crypto.randomUUID(), state: "staging", actorId, authorityKind: authority.kind, authorityId, ownerId: authority.ownerId, ...(authority.kind === "capsule-principal" ? { principalNamespace: authority.namespace, principalKeyDigest: authority.keyDigest } : {}), endpointMethod: String(endpoint.options.method), endpointPath: String(endpoint.options.path), requestKey, partKey: stablePartKey, expiresAt: new Date(now.getTime() + leaseTtlMs).toISOString() };
-            const inspection = inspectIngressLease(policy.inspection, candidate, body);
+            const inspection = await inspectIngressLease(policy.inspection, candidate, body);
             if (inspection)
                 Object.assign(candidate, { inspection });
             // Pre-authority receipts used the raw actor ID in their durable key. Keep that key and

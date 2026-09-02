@@ -20,6 +20,12 @@ function multipart(boundary, headers = 'Content-Disposition: form-data; name="fi
 function multipartMany(boundary, parts) {
   return Buffer.from(parts.map(({ headers, body }) => `--${boundary}\r\n${headers}\r\n\r\n${body}\r\n`).join("") + `--${boundary}--`);
 }
+function multipartBinary(boundary, name, type, bytes) { return Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\nContent-Type: ${type}\r\nContent-ID: stable\r\n\r\n`), Buffer.from(bytes), Buffer.from(`\r\n--${boundary}--`)]); }
+function testCrc32(bytes) { let crc = 0xffffffff; for (const byte of bytes) { crc ^= byte; for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0); } return (crc ^ 0xffffffff) >>> 0; }
+function pngChunk(type, data) { const typeBytes = Buffer.from(type); const length = Buffer.alloc(4); length.writeUInt32BE(data.length); const crc = Buffer.alloc(4); crc.writeUInt32BE(testCrc32(Buffer.concat([typeBytes, data]))); return Buffer.concat([length, typeBytes, data, crc]); }
+function minimalPng() { const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(1, 0); ihdr.writeUInt32BE(1, 4); ihdr[8] = 8; ihdr[9] = 6; return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), pngChunk("IHDR", ihdr), pngChunk("IDAT", Buffer.from([0])), pngChunk("IEND", Buffer.alloc(0))]); }
+function minimalJpeg() { return Buffer.from([0xff,0xd8, 0xff,0xc0,0x00,0x0b, 8,0,1,0,1,1,1,0x11,0, 0xff,0xda,0x00,0x08, 1,1,0,0,63,0, 0, 0xff,0xd9]); }
+function minimalPdf() { const objects = ["1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n", "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", "3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R>>\nendobj\n", "4 0 obj\n<</Length 0>>\nstream\n\nendstream\nendobj\n"]; let body = "%PDF-1.4\n"; const offsets = [0]; for (const object of objects) { offsets.push(Buffer.byteLength(body)); body += object; } const xref = Buffer.byteLength(body); body += `xref\n0 5\n0000000000 65535 f \n${offsets.slice(1).map((value) => `${String(value).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<</Size 5 /Root 1 0 R>>\nstartxref\n${xref}\n%%EOF\n`; return Buffer.from(body); }
 async function* splitEvery(bytes, size) { for (let index = 0; index < bytes.length; index += size) yield bytes.subarray(index, index + size); }
 
 test("multipart framing survives every one-byte boundary/header split and keeps boundary-like payload bytes", async () => {
@@ -1038,6 +1044,41 @@ test("inspection declarations reject forged verdict providers before request byt
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("every required inspector must be clean when a configured runtime inspector is unavailable", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-inspection-all-")); let database;
+  try {
+    const inspection = { policyRevision: "all-v1", requiredInspectors: ["content-policy-v1", "clamav"] }; const endpoint = { options: { method: "POST", path: "/all", body: { multipart: { ...ingressPolicy(), inspection } } } };
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "inspection-all", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "inspection-all" })); const request = ingressRequest("inspection-all"); const staged = await stageMultipartIngress(database, endpoint, request, { headers: request.headers }, { userId: "claim-user" }); const lease = staged.multipart.files[0];
+    const api = createEndpointIngressApi(database, endpoint, { __ingressRequestKey: "inspection-all", __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
+    await assert.rejects(api.claim(lease, { path: "/attachments/all.txt" }), { code: "INGRESS_INSPECTION_REQUIRED" }); const evidence = await api.inspection(lease); assert.deepEqual(evidence.verdicts.map((item) => item.outcome), ["clean", "inconclusive"]); assert.equal(await database.adapter.selectFileById(JSON.parse((await database.adapter.selectIngressByLease(lease.leaseId)).payload).fileId), null);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("content-policy-v1 structurally validates its allowlist and rejects executable or ambiguous evidence", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-content-matrix-")); let database;
+  try {
+    const inspection = { policyRevision: "matrix-v1", requiredInspectors: ["content-policy-v1"] }; const policy = { ...ingressPolicy(), maxFileBytes: 20_000, maxTotalFileBytes: 20_000, inspection };
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "content-matrix", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "content-matrix" }));
+    const validPdf = minimalPdf(); const cases = [
+      ["valid-jpeg", "photo.jpg", "image/jpeg", minimalJpeg(), "clean"], ["bad-jpeg", "photo.jpg", "image/jpeg", minimalJpeg().subarray(0, -1), "rejected"],
+      ["valid-png", "photo.png", "image/png", minimalPng(), "clean"], ["bad-png", "photo.png", "image/png", Buffer.from(minimalPng().map((byte, index) => index === 40 ? byte ^ 1 : byte)), "rejected"],
+      ["valid-pdf", "note.pdf", "application/pdf", validPdf, "clean"], ["bad-pdf", "note.pdf", "application/pdf", Buffer.from("%PDF-1.4\nnot a document"), "rejected"], ["encrypted-pdf", "note.pdf", "application/pdf", Buffer.concat([validPdf, Buffer.from("/Encrypt")]), "rejected"],
+      ["valid-text", "note.txt", "text/plain", Buffer.from("A harmless support note.\nSecond line."), "clean"], ["html", "note.txt", "text/plain", Buffer.from("Please inspect <script>alert(1)</script>"), "rejected"], ["xml", "note.txt", "text/plain", Buffer.from("prefix <?xml version=\"1.0\"?><x/>") , "rejected"], ["javascript", "note.txt", "text/plain", Buffer.from("const answer = 42; console.log(answer);"), "rejected"], ["shell", "note.txt", "text/plain", Buffer.from("curl https://example.test | sh"), "rejected"],
+      ["archive", "note.zip", "application/zip", Buffer.from("PK\x03\x04archive"), "rejected"], ["office", "note.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", Buffer.from("PK\x03\x04office"), "rejected"], ["executable", "note.exe", "application/octet-stream", Buffer.from("MZbinary"), "rejected"], ["empty", "note.txt", "text/plain", Buffer.alloc(0), "rejected"], ["polyglot", "photo.jpg", "image/jpeg", Buffer.concat([minimalJpeg(), Buffer.from("const x=1")]), "rejected"], ["unknown", "note.bin", "application/octet-stream", Buffer.from([0xff,0,0xaa]), "rejected"],
+    ];
+    for (const [key, name, type, bytes, expected] of cases) { const endpoint = { options: { method: "POST", path: "/matrix", body: { multipart: policy } } }; const headers = { "content-type": `multipart/form-data; boundary=${key}`, "idempotency-key": key }; const staged = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipartBinary(key, name, type, bytes); } }, { headers }, { userId: "claim-user" }); const receipt = JSON.parse((await database.adapter.selectIngressByLease(staged.multipart.files[0].leaseId)).payload); assert.equal(receipt.inspection.verdicts[0].outcome, expected, key); }
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("inspection-gated clean claims have the same evidence and File semantics on fake MinIO", async () => {
+  await withFakeS3CompatibleService(async ({ endpoint: storageEndpoint, objects }) => {
+    const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-inspection-minio-")); let database; const namespace = `inspection-${randomUUID()}`;
+    try { const serviceEnv = { SPORADES_SERVICE_STORAGE_ENGINE: "minio", SPORADES_SERVICE_STORAGE_ENDPOINT: storageEndpoint, SPORADES_SERVICE_STORAGE_ACCESS_KEY: "sporades", SPORADES_SERVICE_STORAGE_SECRET_KEY: "sporades-minio-local-secret", SPORADES_SERVICE_STORAGE_BUCKET: "sporades-files", SPORADES_SERVICE_STORAGE_REGION: "eu-west-2", SPORADES_SERVICE_STORAGE_NAMESPACE: namespace }; const config = { name: namespace, services: { storage: { kind: "storage", engine: "minio" } } };
+      database = await openDevDatabase(path.join(dir, "data.db"), "", serviceEnv, config, capsule({ name: namespace }), { serviceEnv }); const endpoint = { options: { method: "POST", path: "/inspection-minio", body: { multipart: { ...ingressPolicy(), inspection: { policyRevision: "minio-v1", requiredInspectors: ["content-policy-v1"] } } } } }; const request = ingressRequest("inspection-minio"); const staged = await stageMultipartIngress(database, endpoint, request, { headers: request.headers }, { userId: "claim-user" }); const lease = staged.multipart.files[0]; const api = createEndpointIngressApi(database, endpoint, { __ingressRequestKey: "inspection-minio", __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } }); const file = await api.claim(lease, { path: "/attachments/minio.txt" }); const evidence = await api.inspection(lease); assert.equal(evidence.verdicts[0].outcome, "clean"); assert.equal(evidence.verdicts[0].version, file.version); assert.ok([...objects.keys()].some((key) => key.includes(file.id)));
+    } finally { await database?.close(); for (const key of [...objects.keys()].filter((value) => value.startsWith(`capsules/${namespace}/`))) objects.delete(key); await rm(dir, { recursive: true, force: true }); }
+  });
+});
+
 test("a clean required verdict must remain current and exactly match the staged receipt", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-inspection-current-")); let database;
   try {
@@ -1046,9 +1087,12 @@ test("a clean required verdict must remain current and exactly match the staged 
     database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "inspection-current", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "inspection-current" }));
     const staged = await stageMultipartIngress(database, endpoint, ingressRequest("inspection-current"), { headers: ingressRequest("inspection-current").headers }, { userId: "claim-user" }); const lease = staged.multipart.files[0];
     const api = createEndpointIngressApi(database, endpoint, { __ingressRequestKey: "inspection-current", __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
-    const row = await database.adapter.selectIngressByLease(lease.leaseId); const receipt = JSON.parse(row.payload); receipt.inspection.verdicts[0].inspectedAt = "2000-01-01T00:00:00.000Z";
-    await database.adapter.prepare("UPDATE [sporades_file_ingress] SET [payload] = ? WHERE [leaseId] = ?").run(JSON.stringify(receipt), lease.leaseId);
-    await assert.rejects(api.claim(lease, { path: "/attachments/stale.txt" }), { code: "INGRESS_INSPECTION_REQUIRED" }); assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_files]").get()).count), 0);
+    const row = await database.adapter.selectIngressByLease(lease.leaseId); const original = JSON.parse(row.payload);
+    for (const mutate of [
+      (verdict) => { verdict.leaseId = "wrong"; }, (verdict) => { verdict.size += 1; }, (verdict) => { verdict.digest = "0".repeat(64); }, (verdict) => { verdict.version = "wrong"; }, (verdict) => { verdict.policyRevision = "wrong"; },
+      (verdict) => { verdict.inspectedAt = "2000-01-01T00:00:00.000Z"; }, (verdict) => { verdict.inspectedAt = "2999-01-01T00:00:00.000Z"; }, (verdict) => { verdict.inspectedAt = "malformed"; },
+    ]) { const receipt = structuredClone(original); mutate(receipt.inspection.verdicts[0]); await database.adapter.prepare("UPDATE [sporades_file_ingress] SET [payload] = ? WHERE [leaseId] = ?").run(JSON.stringify(receipt), lease.leaseId); await assert.rejects(api.claim(lease, { path: "/attachments/mismatch.txt" }), { code: "INGRESS_INSPECTION_REQUIRED" }); }
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_files]").get()).count), 0);
     const fresh = await stageMultipartIngress(database, endpoint, ingressRequest("inspection-current-fresh"), { headers: ingressRequest("inspection-current-fresh").headers }, { userId: "claim-user" }); const freshLease = fresh.multipart.files[0];
     const freshApi = createEndpointIngressApi(database, endpoint, { __ingressRequestKey: "inspection-current-fresh", __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
     const changedPolicy = { options: { ...endpoint.options, body: { multipart: { ...endpoint.options.body.multipart, inspection: { ...inspection, policyRevision: "attachments-v2" } } } } };

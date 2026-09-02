@@ -14,7 +14,7 @@ export type FileIngressInspection = Readonly<{
     policyRevision: string;
     maxVerdictAgeMs?: number;
     /** Runtime-owned inspector names; Capsule code cannot supply verdicts. */
-    requiredInspectors: readonly "content-policy-v1"[];
+    requiredInspectors: readonly ("content-policy-v1" | "clamav")[];
 }>;
 export type EndpointOptions = {
     method: string;

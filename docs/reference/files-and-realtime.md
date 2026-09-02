@@ -487,6 +487,22 @@ detected signature, and bounded parser checks agree. It rejects archives,
 encrypted containers, SVG/HTML/XML, Office formats, executables, scripts,
 empty/polyglot/ambiguous content, and malformed or oversized input. Endpoint
 handlers cannot supply verdict-producing objects or receive lease bytes.
+JPEG validation walks bounded segment and entropy structure through the exact
+EOI. PNG validation checks chunk bounds and order, IHDR constraints, every CRC,
+and an exact IEND. PDF validation uses the pinned maintained server-side
+`pdfjs-dist@6.3.289` parser, forces bounded page/operator parsing, rejects
+encrypted input, caps pages, and enforces a short inspection timeout; the
+production dependency audit must remain clean when it is upgraded. Text is a
+particularly conservative untrusted-evidence lane: strict UTF-8 is rejected
+when it resembles markup, JavaScript, shell, or common script/source forms.
+That deliberately creates false positives for support notes containing code;
+such material should be pasted as quoted ticket text or explicitly handled by
+a future reviewed evidence policy, never treated as an executable channel.
+The reserved `clamav` inspector name currently produces only an
+`inconclusive` verdict, so declaring it fails every claim closed. This lets a
+Capsule state the eventual all-required policy without silently bypassing the
+missing transport; it becomes usable only after the isolated adapter is
+explicitly enabled in a later Sporades release.
 Production malware-scanner transport is deliberately a runtime-owned
 integration rather than an endpoint-handler callback: no endpoint handler,
 Capsule policy, caller, or lease API receives the staged bytes. This prevents a
