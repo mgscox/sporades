@@ -11,6 +11,9 @@ const releaseTypes = new Set(["major", "minor", "patch"]);
 
 export function parsePackageArgs(args) {
   const selected = [];
+  let resume = false;
+  let recoveryBranch = "";
+  let recoveryRemote = "";
 
   for (const arg of args) {
     if (arg === "--major") {
@@ -25,8 +28,26 @@ export function parsePackageArgs(args) {
       selected.push("patch");
       continue;
     }
+    if (arg === "--resume") {
+      resume = true;
+      continue;
+    }
+    if (arg.startsWith("--branch=")) {
+      recoveryBranch = arg.slice("--branch=".length).trim();
+      if (!recoveryBranch) {
+        throw new Error("--branch requires a branch name.");
+      }
+      continue;
+    }
+    if (arg.startsWith("--remote=")) {
+      recoveryRemote = arg.slice("--remote=".length).trim();
+      if (!recoveryRemote) {
+        throw new Error("--remote requires a remote name.");
+      }
+      continue;
+    }
     if (arg === "--help" || arg === "-h") {
-      return { help: true, releaseType: "minor" };
+      return { help: true, recoveryBranch: "", recoveryRemote: "", releaseType: "minor", resume: false };
     }
 
     throw new Error(`Unknown packaging option: ${arg}`);
@@ -36,17 +57,26 @@ export function parsePackageArgs(args) {
   if (unique.length > 1) {
     throw new Error("Choose exactly one version bump: --major, --minor, or --patch.");
   }
+  if (resume && unique.length > 0) {
+    throw new Error("--resume cannot be combined with a version bump.");
+  }
+  if (!resume && (recoveryBranch || recoveryRemote)) {
+    throw new Error("--branch and --remote may only be used with --resume.");
+  }
 
-  return { help: false, releaseType: unique[0] ?? "minor" };
+  return { help: false, recoveryBranch, recoveryRemote, releaseType: unique[0] ?? "minor", resume };
 }
 
 export function usage() {
   return `Usage: npm run package -- [--major | --minor | --patch]
+       npm run package -- --resume [--branch=<name>] [--remote=<name>]
 
 Builds API docs, bumps package semver, creates an npm tarball, and publishes it.
 Updates CHANGES.md from Git history before the version bump.
 Commits release metadata before packaging.
-Creates an annotated vX.Y.Z Git tag after npm publish succeeds.
+Atomically pushes the release commit and annotated vX.Y.Z tag before npm publish.
+Requires the current branch to match its fetched upstream before publishing.
+Recovery from detached HEAD requires --branch; --remote is needed only when the remote is ambiguous.
 Default bump: --minor`;
 }
 
@@ -158,7 +188,7 @@ function runResult(command, args) {
   });
 }
 
-export function parsePackedTarball(stdout) {
+export function parsePackedArtifact(stdout) {
   const trimmed = stdout.trim();
   if (!trimmed) {
     throw new Error("npm pack did not report a tarball filename.");
@@ -174,7 +204,15 @@ export function parsePackedTarball(stdout) {
   if (typeof filename !== "string" || filename.length === 0) {
     throw new Error("npm pack output did not include a tarball filename.");
   }
-  return filename;
+  return {
+    filename,
+    integrity: packageEntries[0]?.integrity ?? "",
+    shasum: packageEntries[0]?.shasum ?? "",
+  };
+}
+
+export function parsePackedTarball(stdout) {
+  return parsePackedArtifact(stdout).filename;
 }
 
 export function releaseTagForVersion(version) {
@@ -195,6 +233,28 @@ export function assertCleanWorkingTree(status) {
   }
 }
 
+export function assertSynchronizedUpstream(branch, upstream, divergence) {
+  if (!branch) {
+    throw new Error("Refusing to package from a detached HEAD.");
+  }
+  if (!upstream) {
+    throw new Error(`Refusing to package branch ${branch} without a configured upstream.`);
+  }
+
+  const match = /^(\d+)\s+(\d+)$/.exec(divergence.trim());
+  if (!match) {
+    throw new Error(`Could not determine divergence between ${branch} and ${upstream}.`);
+  }
+
+  const [, ahead, behind] = match.map(Number);
+  if (ahead !== 0 || behind !== 0) {
+    throw new Error(
+      `Refusing to package because ${branch} and ${upstream} have diverged ` +
+        `(ahead ${ahead}, behind ${behind}). Pull and reconcile the branch before publishing.`,
+    );
+  }
+}
+
 export function assertVersionNotPublished(packageName, version, result) {
   if (result.code === 0 && result.stdout.trim()) {
     throw new Error(`${packageName}@${version} already exists on npm.`);
@@ -208,6 +268,117 @@ export function assertReleaseTagAvailable(tag, result) {
   if (result.code === 0) {
     throw new Error(`Git tag ${tag} already exists.`);
   }
+}
+
+export function assertRemoteReleaseTagAvailable(tag, remote, result) {
+  if (result.code === 0 && result.stdout.trim()) {
+    throw new Error(`Git tag ${tag} already exists on ${remote}.`);
+  }
+  if (result.code !== 2 && !(result.code === 0 && !result.stdout.trim())) {
+    throw new Error(`Could not check Git tag ${tag} on ${remote}:\n${result.stderr.trim()}`);
+  }
+}
+
+export function assertReleaseCommitOnUpstream(branch, upstream, result) {
+  if (result.code !== 0) {
+    throw new Error(
+      `Cannot resume because release commit ${branch} is not contained in ${upstream}. ` +
+        "Reconcile the branch before retrying; npm will not be changed.",
+    );
+  }
+}
+
+export function detachedReleaseUpstream(remotes, pushDefault, branchName, requestedRemote = "") {
+  const available = remotes.map((remote) => remote.trim()).filter(Boolean);
+  if (!branchName) {
+    throw new Error("Detached recovery requires --branch=<name>.");
+  }
+  const remote = requestedRemote || pushDefault || (available.includes("origin") ? "origin" : available.length === 1 ? available[0] : "");
+  if (!remote) {
+    throw new Error("Cannot resume from detached HEAD without an unambiguous Git remote.");
+  }
+  if (!available.includes(remote)) {
+    throw new Error(`Cannot resume because Git remote ${remote} is not configured.`);
+  }
+
+  return {
+    branch: "HEAD",
+    mergeRef: `refs/heads/${branchName}`,
+    remote,
+    upstream: `${remote}/${branchName}`,
+  };
+}
+
+export function assertPublishedArtifactMatches(packageName, version, publishedResult, packedArtifact) {
+  if (isNotFoundResult(publishedResult)) {
+    return false;
+  }
+  if (publishedResult.code !== 0) {
+    throw new Error(
+      `Could not verify ${packageName}@${version} before resuming:\n${publishedResult.stderr.trim()}`,
+    );
+  }
+
+  let published;
+  try {
+    published = JSON.parse(publishedResult.stdout);
+  } catch {
+    throw new Error(`npm returned invalid artifact metadata for ${packageName}@${version}.`);
+  }
+
+  if (!packedArtifact.shasum || !packedArtifact.integrity) {
+    throw new Error("npm pack did not provide shasum and integrity metadata required for recovery.");
+  }
+  const publishedShasum = published.shasum ?? published["dist.shasum"] ?? published.dist?.shasum;
+  const publishedIntegrity = published.integrity ?? published["dist.integrity"] ?? published.dist?.integrity;
+  if (publishedShasum !== packedArtifact.shasum || publishedIntegrity !== packedArtifact.integrity) {
+    throw new Error(
+      `Refusing to resume because ${packageName}@${version} does not match the exact local release artifact.`,
+    );
+  }
+  return true;
+}
+
+export function assertReleaseTagTargetsHead(tag, head, tagTarget) {
+  if (head.trim() !== tagTarget.trim()) {
+    throw new Error(`Git tag ${tag} does not target the current release commit.`);
+  }
+}
+
+async function readReleaseUpstream(options = {}) {
+  const currentBranch = (await run("git", ["branch", "--show-current"], { captureStdout: true })).trim();
+  if (!currentBranch) {
+    if (!options.allowDetached) {
+      assertSynchronizedUpstream(branch, "", "0 0");
+    }
+    const remotes = (await run("git", ["remote"], { captureStdout: true })).trim().split("\n");
+    const pushDefaultResult = await runResult("git", ["config", "--get", "remote.pushDefault"]);
+    const pushDefault = pushDefaultResult.code === 0 ? pushDefaultResult.stdout.trim() : "";
+    const branchCheck = options.recoveryBranch
+      ? await runResult("git", ["check-ref-format", "--branch", options.recoveryBranch])
+      : { code: 1 };
+    if (branchCheck.code !== 0) {
+      throw new Error("Detached recovery requires a valid --branch=<name>.");
+    }
+    return detachedReleaseUpstream(remotes, pushDefault, options.recoveryBranch, options.recoveryRemote);
+  }
+
+  const remoteResult = await runResult("git", ["config", "--get", `branch.${currentBranch}.remote`]);
+  const mergeResult = await runResult("git", ["config", "--get", `branch.${currentBranch}.merge`]);
+  const remote = remoteResult.code === 0 ? remoteResult.stdout.trim() : "";
+  const mergeRef = mergeResult.code === 0 ? mergeResult.stdout.trim() : "";
+  const upstream = remote && mergeRef ? `${remote}/${mergeRef.replace(/^refs\/heads\//, "")}` : "";
+  if (!remote || remote === "." || !mergeRef.startsWith("refs/heads/")) {
+    assertSynchronizedUpstream(currentBranch, "", "0 0");
+  }
+  if (options.recoveryBranch && mergeRef !== `refs/heads/${options.recoveryBranch}`) {
+    throw new Error(`Configured upstream does not match --branch=${options.recoveryBranch}.`);
+  }
+  if (options.recoveryRemote && remote !== options.recoveryRemote) {
+    throw new Error(`Configured upstream does not match --remote=${options.recoveryRemote}.`);
+  }
+
+  return { branch: currentBranch, mergeRef, remote, upstream };
 }
 
 export function applyPackageVersion(packageJson, packageLock, nextVersion) {
@@ -237,6 +408,117 @@ async function readPackageJson() {
   return JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
 }
 
+export function remoteTagTarget(tag, result) {
+  if (result.code !== 0) {
+    throw new Error(`Could not inspect Git tag ${tag} on the configured remote:\n${result.stderr.trim()}`);
+  }
+
+  const entries = result.stdout
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => line.split(/\s+/, 2));
+  const peeled = entries.find(([, ref]) => ref === `refs/tags/${tag}^{}`);
+  const direct = entries.find(([, ref]) => ref === `refs/tags/${tag}`);
+  return peeled?.[0] ?? direct?.[0] ?? null;
+}
+
+async function inspectLocalReleaseTag(releaseTag, head) {
+  const existingTag = await runResult("git", ["rev-parse", "--verify", "--quiet", `refs/tags/${releaseTag}`]);
+  if (existingTag.code !== 0) {
+    return false;
+  }
+
+  const tagTarget = await run("git", ["rev-parse", `${releaseTag}^{}`], { captureStdout: true });
+  assertReleaseTagTargetsHead(releaseTag, head, tagTarget);
+  return true;
+}
+
+async function resumeRelease(packageJson, options) {
+  const releaseTag = releaseTagForVersion(packageJson.version);
+  const status = await run("git", ["status", "--porcelain=v1"], { captureStdout: true });
+  assertCleanWorkingTree(status);
+  const releaseUpstream = await readReleaseUpstream({
+    allowDetached: true,
+    recoveryBranch: options.recoveryBranch,
+    recoveryRemote: options.recoveryRemote,
+  });
+  await run("git", ["fetch", "--tags", releaseUpstream.remote]);
+
+  const head = (await run("git", ["rev-parse", "HEAD"], { captureStdout: true })).trim();
+  const subject = (await run("git", ["log", "-1", "--pretty=%s"], { captureStdout: true })).trim();
+  if (subject !== releaseCommitMessage(releaseTag)) {
+    throw new Error(`Cannot resume because HEAD is not ${releaseCommitMessage(releaseTag)}.`);
+  }
+  const contained = await runResult("git", ["merge-base", "--is-ancestor", "HEAD", releaseUpstream.upstream]);
+  let pushReleaseCommit = false;
+  if (contained.code !== 0) {
+    const upstreamContained = await runResult("git", [
+      "merge-base",
+      "--is-ancestor",
+      releaseUpstream.upstream,
+      "HEAD",
+    ]);
+    assertReleaseCommitOnUpstream(releaseUpstream.branch, releaseUpstream.upstream, upstreamContained);
+    pushReleaseCommit = true;
+  }
+
+  const packOutput = await run("npm", ["pack", "--json"], { captureStdout: true });
+  const artifact = parsePackedArtifact(packOutput);
+  try {
+    const hasLocalTag = await inspectLocalReleaseTag(releaseTag, head);
+    const remoteTagResult = await runResult("git", [
+      "ls-remote",
+      "--tags",
+      releaseUpstream.remote,
+      `refs/tags/${releaseTag}`,
+      `refs/tags/${releaseTag}^{}`,
+    ]);
+    const remoteTarget = remoteTagTarget(releaseTag, remoteTagResult);
+    if (remoteTarget) {
+      assertReleaseTagTargetsHead(releaseTag, head, remoteTarget);
+    }
+
+    const published = await runResult("npm", [
+      "view",
+      `${packageJson.name}@${packageJson.version}`,
+      "dist.shasum",
+      "dist.integrity",
+      "--json",
+    ]);
+    const alreadyPublished = assertPublishedArtifactMatches(
+      packageJson.name,
+      packageJson.version,
+      published,
+      artifact,
+    );
+    if (!hasLocalTag) {
+      await run("git", ["tag", "--annotate", releaseTag, "--message", releaseCommitMessage(releaseTag)]);
+    }
+    if (pushReleaseCommit) {
+      await run("git", [
+        "push",
+        "--atomic",
+        releaseUpstream.remote,
+        `HEAD:${releaseUpstream.mergeRef}`,
+        `refs/tags/${releaseTag}`,
+      ]);
+    } else if (!remoteTarget) {
+      await run("git", ["push", releaseUpstream.remote, `refs/tags/${releaseTag}`]);
+    }
+
+    if (!alreadyPublished) {
+      await run("npm", ["whoami"]);
+      await run("npm", ["publish", artifact.filename]);
+    }
+
+    console.log(`Verified ${packageJson.name}@${packageJson.version}.`);
+    console.log(`Release commit and ${releaseTag} are synchronized with ${releaseUpstream.remote}.`);
+  } finally {
+    await rm(path.join(repoRoot, artifact.filename), { force: true });
+  }
+}
+
 export async function packageForNpm(args = process.argv.slice(2)) {
   const options = parsePackageArgs(args);
   if (options.help) {
@@ -250,9 +532,21 @@ export async function packageForNpm(args = process.argv.slice(2)) {
 
   const packageJson = await readPackageJson();
 
+  if (options.resume) {
+    await resumeRelease(packageJson, options);
+    return;
+  }
   await run("npm", ["whoami"]);
   const status = await run("git", ["status", "--porcelain=v1"], { captureStdout: true });
   assertCleanWorkingTree(status);
+  const releaseUpstream = await readReleaseUpstream();
+  await run("git", ["fetch", "--tags", releaseUpstream.remote]);
+  const divergence = await run(
+    "git",
+    ["rev-list", "--left-right", "--count", `HEAD...${releaseUpstream.upstream}`],
+    { captureStdout: true },
+  );
+  assertSynchronizedUpstream(releaseUpstream.branch, releaseUpstream.upstream, divergence);
   const currentPublished = await runResult("npm", ["view", packageJson.name, "version"]);
   const nextVersion = nextReleaseVersion(packageJson.version, options.releaseType, currentPublished);
   const releaseTag = releaseTagForVersion(nextVersion);
@@ -262,6 +556,14 @@ export async function packageForNpm(args = process.argv.slice(2)) {
   assertVersionNotPublished(packageJson.name, nextVersion, published);
   const existingTag = await runResult("git", ["rev-parse", "--verify", "--quiet", `refs/tags/${releaseTag}`]);
   assertReleaseTagAvailable(releaseTag, existingTag);
+  const remoteTag = await runResult("git", [
+    "ls-remote",
+    "--exit-code",
+    "--tags",
+    releaseUpstream.remote,
+    `refs/tags/${releaseTag}`,
+  ]);
+  assertRemoteReleaseTagAvailable(releaseTag, releaseUpstream.remote, remoteTag);
 
   await run("npm", ["run", "docs:api"]);
   await generateChanges();
@@ -273,14 +575,22 @@ export async function packageForNpm(args = process.argv.slice(2)) {
   await run("git", ["add", "--", "package.json", "package-lock.json", "CHANGES.md", "docs/api", "src/cli/cli-version.ts", "dist", "bin"]);
   await run("git", ["commit", "--message", releaseCommitMessage(releaseTag)]);
   const packOutput = await run("npm", ["pack", "--json"], { captureStdout: true });
-  const tarball = parsePackedTarball(packOutput);
+  const artifact = parsePackedArtifact(packOutput);
   try {
-    await run("npm", ["publish", tarball]);
     await run("git", ["tag", "--annotate", releaseTag, "--message", releaseCommitMessage(releaseTag)]);
-    console.log(`Published ${tarball}.`);
+    await run("git", [
+      "push",
+      "--atomic",
+      releaseUpstream.remote,
+      `HEAD:${releaseUpstream.mergeRef}`,
+      `refs/tags/${releaseTag}`,
+    ]);
+    await run("npm", ["publish", artifact.filename]);
+    console.log(`Published ${artifact.filename}.`);
     console.log(`Created release tag ${releaseTag}.`);
+    console.log(`Pushed the release commit and ${releaseTag} to ${releaseUpstream.remote}.`);
   } finally {
-    await rm(path.join(repoRoot, tarball), { force: true });
+    await rm(path.join(repoRoot, artifact.filename), { force: true });
   }
 }
 

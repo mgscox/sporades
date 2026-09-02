@@ -265,7 +265,7 @@ function renderGeneratedSection({ date, baseline, commits, workingTreeChanges })
   return lines.join("\n").trimEnd();
 }
 
-function upsertTopSection(existing, section) {
+export function upsertTopSection(existing, section) {
   if (!existing.trim()) {
     return `# Changes\n\n${section}\n`;
   }
@@ -280,9 +280,13 @@ function upsertTopSection(existing, section) {
   }
 
   const rest = existing.slice(sectionStart + 1);
+  const prefix = existing.slice(0, sectionStart).trimEnd();
+  if (!rest.startsWith("## Unreleased -")) {
+    return `${prefix}\n\n${section}\n\n${rest.trimStart()}`;
+  }
+
   const nextSectionMatch = /\n## (?![🚀🐛🔧⚠️📝🧪📦])/.exec(rest);
   const nextSectionStart = nextSectionMatch ? sectionStart + 1 + nextSectionMatch.index : -1;
-  const prefix = existing.slice(0, sectionStart).trimEnd();
   const suffix = nextSectionStart === -1 ? "" : existing.slice(nextSectionStart).trimStart();
   return `${prefix}\n\n${section}${suffix ? `\n\n${suffix}` : ""}\n`;
 }
