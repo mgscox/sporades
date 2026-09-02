@@ -494,8 +494,10 @@ checks chunk bounds/order, PLTE and contiguous-IDAT rules, IHDR constraints,
 every CRC and exact IEND, then uses pinned `pngjs@7.0.0` to inflate and decode
 the exact scanline/filter stream. PDF validation uses pinned maintained server-side
 `pdfjs-dist@6.3.289` for bounded render/operator validation and `pdf-lib@1.17.1`
-for parsed catalog and object-graph checks. It rejects encryption, document or
-catalog actions (including JavaScript and Launch actions), and embedded files,
+for a bounded, cycle-safe traversal of the parsed catalog, pages, annotations,
+streams, arrays, and indirect object graph. It rejects encryption, action
+semantics at any traversed location (including page additional actions,
+JavaScript, URI, Launch, SubmitForm, and ImportData), and embedded files,
 caps pages, and enforces a short inspection timeout. The production dependency
 audit must remain clean when either parser is upgraded. Text is a
 particularly conservative untrusted-evidence lane: strict UTF-8 is rejected

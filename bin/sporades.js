@@ -6423,39 +6423,39 @@ var require_PDFArray = __commonJS({
     var PDFObject_1 = tslib_1.__importDefault(require_PDFObject());
     var CharCodes_1 = tslib_1.__importDefault(require_CharCodes());
     var errors_1 = require_errors2();
-    var PDFArray = (
+    var PDFArray2 = (
       /** @class */
       (function(_super) {
-        tslib_1.__extends(PDFArray2, _super);
-        function PDFArray2(context) {
+        tslib_1.__extends(PDFArray3, _super);
+        function PDFArray3(context) {
           var _this = _super.call(this) || this;
           _this.array = [];
           _this.context = context;
           return _this;
         }
-        PDFArray2.prototype.size = function() {
+        PDFArray3.prototype.size = function() {
           return this.array.length;
         };
-        PDFArray2.prototype.push = function(object) {
+        PDFArray3.prototype.push = function(object) {
           this.array.push(object);
         };
-        PDFArray2.prototype.insert = function(index, object) {
+        PDFArray3.prototype.insert = function(index, object) {
           this.array.splice(index, 0, object);
         };
-        PDFArray2.prototype.indexOf = function(object) {
+        PDFArray3.prototype.indexOf = function(object) {
           var index = this.array.indexOf(object);
           return index === -1 ? void 0 : index;
         };
-        PDFArray2.prototype.remove = function(index) {
+        PDFArray3.prototype.remove = function(index) {
           this.array.splice(index, 1);
         };
-        PDFArray2.prototype.set = function(idx, object) {
+        PDFArray3.prototype.set = function(idx, object) {
           this.array[idx] = object;
         };
-        PDFArray2.prototype.get = function(index) {
+        PDFArray3.prototype.get = function(index) {
           return this.array[index];
         };
-        PDFArray2.prototype.lookupMaybe = function(index) {
+        PDFArray3.prototype.lookupMaybe = function(index) {
           var _a;
           var types = [];
           for (var _i = 1; _i < arguments.length; _i++) {
@@ -6463,7 +6463,7 @@ var require_PDFArray = __commonJS({
           }
           return (_a = this.context).lookupMaybe.apply(_a, tslib_1.__spreadArrays([this.get(index)], types));
         };
-        PDFArray2.prototype.lookup = function(index) {
+        PDFArray3.prototype.lookup = function(index) {
           var _a;
           var types = [];
           for (var _i = 1; _i < arguments.length; _i++) {
@@ -6471,7 +6471,7 @@ var require_PDFArray = __commonJS({
           }
           return (_a = this.context).lookup.apply(_a, tslib_1.__spreadArrays([this.get(index)], types));
         };
-        PDFArray2.prototype.asRectangle = function() {
+        PDFArray3.prototype.asRectangle = function() {
           if (this.size() !== 4)
             throw new errors_1.PDFArrayIsNotRectangleError(this.size());
           var lowerLeftX = this.lookup(0, PDFNumber_1.default).asNumber();
@@ -6484,17 +6484,17 @@ var require_PDFArray = __commonJS({
           var height = upperRightY - lowerLeftY;
           return { x, y, width, height };
         };
-        PDFArray2.prototype.asArray = function() {
+        PDFArray3.prototype.asArray = function() {
           return this.array.slice();
         };
-        PDFArray2.prototype.clone = function(context) {
-          var clone = PDFArray2.withContext(context || this.context);
+        PDFArray3.prototype.clone = function(context) {
+          var clone = PDFArray3.withContext(context || this.context);
           for (var idx = 0, len = this.size(); idx < len; idx++) {
             clone.push(this.array[idx]);
           }
           return clone;
         };
-        PDFArray2.prototype.toString = function() {
+        PDFArray3.prototype.toString = function() {
           var arrayString = "[ ";
           for (var idx = 0, len = this.size(); idx < len; idx++) {
             arrayString += this.get(idx).toString();
@@ -6503,14 +6503,14 @@ var require_PDFArray = __commonJS({
           arrayString += "]";
           return arrayString;
         };
-        PDFArray2.prototype.sizeInBytes = function() {
+        PDFArray3.prototype.sizeInBytes = function() {
           var size = 3;
           for (var idx = 0, len = this.size(); idx < len; idx++) {
             size += this.get(idx).sizeInBytes() + 1;
           }
           return size;
         };
-        PDFArray2.prototype.copyBytesInto = function(buffer, offset) {
+        PDFArray3.prototype.copyBytesInto = function(buffer, offset) {
           var initialOffset = offset;
           buffer[offset++] = CharCodes_1.default.LeftSquareBracket;
           buffer[offset++] = CharCodes_1.default.Space;
@@ -6521,7 +6521,7 @@ var require_PDFArray = __commonJS({
           buffer[offset++] = CharCodes_1.default.RightSquareBracket;
           return offset - initialOffset;
         };
-        PDFArray2.prototype.scalePDFNumbers = function(x, y) {
+        PDFArray3.prototype.scalePDFNumbers = function(x, y) {
           for (var idx = 0, len = this.size(); idx < len; idx++) {
             var el = this.lookup(idx);
             if (el instanceof PDFNumber_1.default) {
@@ -6530,13 +6530,13 @@ var require_PDFArray = __commonJS({
             }
           }
         };
-        PDFArray2.withContext = function(context) {
-          return new PDFArray2(context);
+        PDFArray3.withContext = function(context) {
+          return new PDFArray3(context);
         };
-        return PDFArray2;
+        return PDFArray3;
       })(PDFObject_1.default)
     );
-    exports.default = PDFArray;
+    exports.default = PDFArray2;
   }
 });
 
@@ -6990,36 +6990,36 @@ var require_PDFStream = __commonJS({
     var PDFNumber_1 = tslib_1.__importDefault(require_PDFNumber());
     var PDFObject_1 = tslib_1.__importDefault(require_PDFObject());
     var CharCodes_1 = tslib_1.__importDefault(require_CharCodes());
-    var PDFStream = (
+    var PDFStream2 = (
       /** @class */
       (function(_super) {
-        tslib_1.__extends(PDFStream2, _super);
-        function PDFStream2(dict) {
+        tslib_1.__extends(PDFStream3, _super);
+        function PDFStream3(dict) {
           var _this = _super.call(this) || this;
           _this.dict = dict;
           return _this;
         }
-        PDFStream2.prototype.clone = function(_context) {
+        PDFStream3.prototype.clone = function(_context) {
           throw new errors_1.MethodNotImplementedError(this.constructor.name, "clone");
         };
-        PDFStream2.prototype.getContentsString = function() {
+        PDFStream3.prototype.getContentsString = function() {
           throw new errors_1.MethodNotImplementedError(this.constructor.name, "getContentsString");
         };
-        PDFStream2.prototype.getContents = function() {
+        PDFStream3.prototype.getContents = function() {
           throw new errors_1.MethodNotImplementedError(this.constructor.name, "getContents");
         };
-        PDFStream2.prototype.getContentsSize = function() {
+        PDFStream3.prototype.getContentsSize = function() {
           throw new errors_1.MethodNotImplementedError(this.constructor.name, "getContentsSize");
         };
-        PDFStream2.prototype.updateDict = function() {
+        PDFStream3.prototype.updateDict = function() {
           var contentsSize = this.getContentsSize();
           this.dict.set(PDFName_1.default.Length, PDFNumber_1.default.of(contentsSize));
         };
-        PDFStream2.prototype.sizeInBytes = function() {
+        PDFStream3.prototype.sizeInBytes = function() {
           this.updateDict();
           return this.dict.sizeInBytes() + this.getContentsSize() + 18;
         };
-        PDFStream2.prototype.toString = function() {
+        PDFStream3.prototype.toString = function() {
           this.updateDict();
           var streamString = this.dict.toString();
           streamString += "\nstream\n";
@@ -7027,7 +7027,7 @@ var require_PDFStream = __commonJS({
           streamString += "\nendstream";
           return streamString;
         };
-        PDFStream2.prototype.copyBytesInto = function(buffer, offset) {
+        PDFStream3.prototype.copyBytesInto = function(buffer, offset) {
           this.updateDict();
           var initialOffset = offset;
           offset += this.dict.copyBytesInto(buffer, offset);
@@ -7055,10 +7055,10 @@ var require_PDFStream = __commonJS({
           buffer[offset++] = CharCodes_1.default.m;
           return offset - initialOffset;
         };
-        return PDFStream2;
+        return PDFStream3;
       })(PDFObject_1.default)
     );
-    exports.default = PDFStream;
+    exports.default = PDFStream2;
   }
 });
 
@@ -7115,11 +7115,11 @@ var require_PDFRef = __commonJS({
     var utils_1 = require_utils2();
     var ENFORCER = {};
     var pool = /* @__PURE__ */ new Map();
-    var PDFRef = (
+    var PDFRef2 = (
       /** @class */
       (function(_super) {
-        tslib_1.__extends(PDFRef2, _super);
-        function PDFRef2(enforcer, objectNumber, generationNumber) {
+        tslib_1.__extends(PDFRef3, _super);
+        function PDFRef3(enforcer, objectNumber, generationNumber) {
           var _this = this;
           if (enforcer !== ENFORCER)
             throw new errors_1.PrivateConstructorError("PDFRef");
@@ -7129,35 +7129,35 @@ var require_PDFRef = __commonJS({
           _this.tag = objectNumber + " " + generationNumber + " R";
           return _this;
         }
-        PDFRef2.prototype.clone = function() {
+        PDFRef3.prototype.clone = function() {
           return this;
         };
-        PDFRef2.prototype.toString = function() {
+        PDFRef3.prototype.toString = function() {
           return this.tag;
         };
-        PDFRef2.prototype.sizeInBytes = function() {
+        PDFRef3.prototype.sizeInBytes = function() {
           return this.tag.length;
         };
-        PDFRef2.prototype.copyBytesInto = function(buffer, offset) {
+        PDFRef3.prototype.copyBytesInto = function(buffer, offset) {
           offset += utils_1.copyStringIntoBuffer(this.tag, buffer, offset);
           return this.tag.length;
         };
-        PDFRef2.of = function(objectNumber, generationNumber) {
+        PDFRef3.of = function(objectNumber, generationNumber) {
           if (generationNumber === void 0) {
             generationNumber = 0;
           }
           var tag = objectNumber + " " + generationNumber + " R";
           var instance = pool.get(tag);
           if (!instance) {
-            instance = new PDFRef2(ENFORCER, objectNumber, generationNumber);
+            instance = new PDFRef3(ENFORCER, objectNumber, generationNumber);
             pool.set(tag, instance);
           }
           return instance;
         };
-        return PDFRef2;
+        return PDFRef3;
       })(PDFObject_1.default)
     );
-    exports.default = PDFRef;
+    exports.default = PDFRef2;
   }
 });
 
@@ -69474,16 +69474,38 @@ async function validatePdfIngress(bytes, options = {}) {
     const workflow = (async () => {
       const [document2, parsed] = await Promise.all([task.promise, import_pdf_lib.PDFDocument.load(bytes, { ignoreEncryption: false, throwOnInvalidObject: true, updateMetadata: false })]);
       if (document2.numPages < 1 || document2.numPages > 100) return false;
-      const forbiddenCatalogKeys = ["OpenAction", "AA"];
-      if (forbiddenCatalogKeys.some((key) => parsed.catalog.has(import_pdf_lib.PDFName.of(key)))) return false;
-      const names = parsed.catalog.lookupMaybe(import_pdf_lib.PDFName.of("Names"), import_pdf_lib.PDFDict);
-      if (names?.has(import_pdf_lib.PDFName.of("EmbeddedFiles")) || names?.has(import_pdf_lib.PDFName.of("JavaScript"))) return false;
-      for (const [, object] of parsed.context.enumerateIndirectObjects()) {
-        if (!(object instanceof import_pdf_lib.PDFDict)) continue;
-        const type = object.get(import_pdf_lib.PDFName.of("Type"));
-        const subtype = object.get(import_pdf_lib.PDFName.of("S"));
-        if (type === import_pdf_lib.PDFName.of("Filespec") || type === import_pdf_lib.PDFName.of("EmbeddedFile") || ["JavaScript", "Launch", "SubmitForm", "ImportData"].some((name) => subtype === import_pdf_lib.PDFName.of(name))) return false;
-      }
+      const visitedObjects = /* @__PURE__ */ new WeakSet();
+      const visitedRefs = /* @__PURE__ */ new Set();
+      let visitedCount = 0;
+      const visit = (candidate, depth = 0) => {
+        if (depth > 128 || ++visitedCount > 1e5) return false;
+        if (candidate instanceof import_pdf_lib.PDFRef) {
+          const key = candidate.toString();
+          if (visitedRefs.has(key)) return true;
+          visitedRefs.add(key);
+          return visit(parsed.context.lookup(candidate), depth + 1);
+        }
+        if (!candidate || typeof candidate !== "object") return true;
+        if (visitedObjects.has(candidate)) return true;
+        visitedObjects.add(candidate);
+        if (candidate instanceof import_pdf_lib.PDFStream) return visit(candidate.dict, depth + 1);
+        if (candidate instanceof import_pdf_lib.PDFArray) {
+          for (let index = 0; index < candidate.size(); index += 1) if (!visit(candidate.get(index), depth + 1)) return false;
+          return true;
+        }
+        if (!(candidate instanceof import_pdf_lib.PDFDict)) return true;
+        const type = candidate.get(import_pdf_lib.PDFName.of("Type"));
+        if (type === import_pdf_lib.PDFName.of("Action") || type === import_pdf_lib.PDFName.of("Filespec") || type === import_pdf_lib.PDFName.of("EmbeddedFile")) return false;
+        for (const [key, value] of candidate.entries()) {
+          const name = key.asString();
+          if (["/OpenAction", "/AA", "/A", "/JavaScript", "/EmbeddedFiles", "/EF", "/JS", "/URI"].includes(name)) return false;
+          if (name === "/S" && value instanceof import_pdf_lib.PDFName) return false;
+          if (!visit(value, depth + 1)) return false;
+        }
+        return true;
+      };
+      if (!visit(parsed.catalog)) return false;
+      for (const [, object] of parsed.context.enumerateIndirectObjects()) if (!visit(object)) return false;
       const catalogChecks = await Promise.all([document2.getAttachments?.(), document2.getJSActions?.(), document2.getOpenAction?.()]);
       const hasEntries = (value) => Boolean(value) && (value instanceof Map || value instanceof Set ? value.size > 0 : Array.isArray(value) ? value.length > 0 : typeof value !== "object" || Object.keys(value).length > 0);
       if (catalogChecks.some(hasEntries)) return false;

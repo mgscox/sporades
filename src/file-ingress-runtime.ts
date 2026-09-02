@@ -3,7 +3,7 @@
 /// <reference path="./vendor-decoders.d.ts" />
 import { ensureFileBucket, fileMetadataFromRow, normalizeAbsoluteFilePath } from "./file-storage-runtime.js";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
-import { PDFDict, PDFDocument, PDFName } from "pdf-lib";
+import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRef, PDFStream } from "pdf-lib";
 import jpeg from "jpeg-js";
 import { PNG } from "pngjs";
 
@@ -137,15 +137,30 @@ export async function validatePdfIngress(bytes: Buffer, options: RecordLike = {}
     const workflow = (async () => {
       const [document, parsed] = await Promise.all([task.promise, PDFDocument.load(bytes, { ignoreEncryption: false, throwOnInvalidObject: true, updateMetadata: false })]);
       if ((document as any).numPages < 1 || (document as any).numPages > 100) return false;
-      const forbiddenCatalogKeys = ["OpenAction", "AA"];
-      if (forbiddenCatalogKeys.some((key) => parsed.catalog.has(PDFName.of(key)))) return false;
-      const names = parsed.catalog.lookupMaybe(PDFName.of("Names"), PDFDict);
-      if (names?.has(PDFName.of("EmbeddedFiles")) || names?.has(PDFName.of("JavaScript"))) return false;
-      for (const [, object] of parsed.context.enumerateIndirectObjects()) {
-        if (!(object instanceof PDFDict)) continue;
-        const type = object.get(PDFName.of("Type")); const subtype = object.get(PDFName.of("S"));
-        if (type === PDFName.of("Filespec") || type === PDFName.of("EmbeddedFile") || ["JavaScript", "Launch", "SubmitForm", "ImportData"].some((name) => subtype === PDFName.of(name))) return false;
-      }
+      const visitedObjects = new WeakSet<object>(); const visitedRefs = new Set<string>(); let visitedCount = 0;
+      const visit = (candidate: any, depth = 0): boolean => {
+        if (depth > 128 || ++visitedCount > 100_000) return false;
+        if (candidate instanceof PDFRef) { const key = candidate.toString(); if (visitedRefs.has(key)) return true; visitedRefs.add(key); return visit(parsed.context.lookup(candidate), depth + 1); }
+        if (!candidate || typeof candidate !== "object") return true;
+        if (visitedObjects.has(candidate)) return true; visitedObjects.add(candidate);
+        if (candidate instanceof PDFStream) return visit(candidate.dict, depth + 1);
+        if (candidate instanceof PDFArray) { for (let index = 0; index < candidate.size(); index += 1) if (!visit(candidate.get(index), depth + 1)) return false; return true; }
+        if (!(candidate instanceof PDFDict)) return true;
+        const type = candidate.get(PDFName.of("Type"));
+        if (type === PDFName.of("Action") || type === PDFName.of("Filespec") || type === PDFName.of("EmbeddedFile")) return false;
+        for (const [key, value] of candidate.entries()) {
+          const name = key.asString();
+          if (["/OpenAction", "/AA", "/A", "/JavaScript", "/EmbeddedFiles", "/EF", "/JS", "/URI"].includes(name)) return false;
+          // Action dictionaries may legally omit /Type /Action. A named /S is
+          // therefore treated as action semantics rather than allowlisting
+          // only the currently-known action subtype names.
+          if (name === "/S" && value instanceof PDFName) return false;
+          if (!visit(value, depth + 1)) return false;
+        }
+        return true;
+      };
+      if (!visit(parsed.catalog)) return false;
+      for (const [, object] of parsed.context.enumerateIndirectObjects()) if (!visit(object)) return false;
       const catalogChecks = await Promise.all([(document as any).getAttachments?.(), (document as any).getJSActions?.(), (document as any).getOpenAction?.()]);
       const hasEntries = (value: any) => Boolean(value) && (value instanceof Map || value instanceof Set ? value.size > 0 : Array.isArray(value) ? value.length > 0 : typeof value !== "object" || Object.keys(value).length > 0);
       if (catalogChecks.some(hasEntries)) return false;

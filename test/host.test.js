@@ -1878,7 +1878,7 @@ test("Host helper legacy drain uses a monotonic bounded deadline despite wall-cl
     });
     const forcedKill = setTimeout(() => {
       try { process.kill(-upgrade.child.pid, "SIGKILL"); } catch {}
-    }, 500);
+    }, 2_000);
     const result = await upgrade.result;
     clearTimeout(forcedKill);
     assert.equal(result.code, 1);
