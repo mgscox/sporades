@@ -1079,6 +1079,7 @@ export async function openDevDatabase(
       const reconciled = await reconcileSchedules(database);
       database.__scheduleStopped = false;
       startStaticSchedules(database, reconciled.timerPlans);
+      startPeriodicIngressSweep(database);
       if (!database.__jobActivationDeferred) {
         // Orderly shutdown deliberately retains queued and delayed Jobs. A
         // fresh runtime has no inherited worker/wake timer, so activation
@@ -1181,7 +1182,7 @@ export async function openDevDatabase(
   await sqlite.ensureFileStorage();
   await sqlite.ensureLogStorage();
   if (!options?.runtimeActionOnly) {
-    const ingressSweep = await sweepExpiredFileIngress(database);
+    const ingressSweep = await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() });
     if (ingressSweep.failures.length > 0) await database.log.emit({ category: "platform", event: "file.ingress.sweep_failed", level: "warn", message: "Multipart ingress cleanup left retryable orphan state", data: { code: ingressSweep.failures[0].code, failures: ingressSweep.failures.length, scanned: ingressSweep.scanned } });
   }
   if (!options?.runtimeActionOnly) {
@@ -1393,6 +1394,36 @@ const MAX_NATIVE_TIMER_DELAY_MS = 2_147_483_647;
 const SCHEDULE_RECOVERY_RETRY_MS = 1_000;
 const LEGACY_SCHEDULE_DISCOVERY_INTERVAL_MS = 1_000;
 const LEGACY_SCHEDULE_DISCOVERY_LIMIT = 100;
+const INGRESS_SWEEP_INTERVAL_MS = 60_000;
+
+async function runPeriodicIngressSweep(database: LooseRecord) {
+  if (database.__ingressSweepPromise) return database.__ingressSweepPromise;
+  const run = (async () => {
+    try {
+      const result = await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() });
+      if (result.failures.length > 0) await database.log.emit({ category: "platform", event: "file.ingress.sweep_failed", level: "warn", message: "Multipart ingress cleanup left retryable orphan state", data: { code: result.failures[0].code, failures: result.failures.length, scanned: result.scanned } });
+    } catch {
+      // Cleanup is maintenance: it must never make the serving runtime unhealthy.
+      await database.log.emit({ category: "platform", event: "file.ingress.sweep_failed", level: "warn", message: "Multipart ingress cleanup left retryable orphan state", data: { code: "INGRESS_SWEEP_STORAGE_FAILED", failures: 1, scanned: 0 } });
+    }
+  })();
+  database.__ingressSweepPromise = run;
+  try { await run; } finally { if (database.__ingressSweepPromise === run) database.__ingressSweepPromise = null; }
+}
+
+function startPeriodicIngressSweep(database: LooseRecord) {
+  const arm = () => {
+    if (database.__scheduleStopped) return;
+    const timer = database.clock.setTimer(async () => {
+      database.__scheduleTimers?.delete(timer);
+      await runPeriodicIngressSweep(database);
+      arm();
+    }, INGRESS_SWEEP_INTERVAL_MS);
+    database.__scheduleTimers?.add(timer);
+    database.__ingressSweepTimer = timer;
+  };
+  arm();
+}
 
 function settleActiveScheduleWork(database: LooseRecord) {
   const active = new Set<any>(database.__activeScheduleOccurrences ?? []);
@@ -3395,17 +3426,24 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
     await recordAccessKeyUsage(database, accessKeyAdmission);
   }
   if ((endpoint as LooseRecord).options?.body?.multipart) {
-    const claimAuthority = endpointIngressClaimAuthority(endpoint as LooseRecord);
-    const admitted = (accessKeyAdmission ?? session) as LooseRecord;
-    let ingressAuthority: LooseRecord;
-    if (claimAuthority === "capsule-principal") {
-      ingressAuthority = await admitCapsuleIngressPrincipal(database, endpoint as LooseRecord, endpointRequest, request.signal);
-    } else {
-      if (!admitted?.auth?.isAuthenticated || admitted.auth.isGuest || isReservedAuthUserId(admitted.auth.userId)) throw commandError("Unauthenticated.", "Sign in with a linked human or service User and retry.", "UNAUTHENTICATED");
-      ingressAuthority = Object.freeze({ kind: "actor", actorId: String(admitted.auth.userId), ownerId: String(admitted.auth.userId) });
+    try {
+      const claimAuthority = endpointIngressClaimAuthority(endpoint as LooseRecord);
+      const admitted = (accessKeyAdmission ?? session) as LooseRecord;
+      let ingressAuthority: LooseRecord;
+      if (claimAuthority === "capsule-principal") {
+        ingressAuthority = await admitCapsuleIngressPrincipal(database, endpoint as LooseRecord, endpointRequest, request.signal);
+      } else {
+        if (!admitted?.auth?.isAuthenticated || admitted.auth.isGuest || isReservedAuthUserId(admitted.auth.userId)) throw commandError("Unauthenticated.", "Sign in with a linked human or service User and retry.", "UNAUTHENTICATED");
+        ingressAuthority = Object.freeze({ kind: "actor", actorId: String(admitted.auth.userId), ownerId: String(admitted.auth.userId) });
+      }
+      const payload = await stageMultipartIngress(database, endpoint as LooseRecord, request, endpointRequest, admitted.auth, ingressAuthority);
+      endpointRequest = { ...endpointRequest, ...payload };
+    } catch (error: any) {
+      if (error?.code === "UNAUTHENTICATED") {
+        try { await database.log.emit({ category: "platform", event: "file.ingress.denied", level: "warn", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "denied", code: "UNAUTHENTICATED" } }); } catch {}
+      }
+      throw error;
     }
-    const payload = await stageMultipartIngress(database, endpoint as LooseRecord, request, endpointRequest, admitted.auth, ingressAuthority);
-    endpointRequest = { ...endpointRequest, ...payload };
   } else {
     endpointRequest = await readEndpointRequest(database, requestUrl, request, !(endpoint as LooseRecord).runtimeOwnedStripeCallback);
     // `readEndpointRequest` rebuilds the request head before reading the body.
@@ -3468,6 +3506,9 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
     await dispatchPendingJobs(context);
     return result;
   } catch (error) {
+    if ((endpointRequest as LooseRecord).multipart) {
+      try { await database.log.emit({ category: "platform", event: "file.ingress.failed", level: "warn", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "failed", code: "INGRESS_ROLLBACK" } }); } catch {}
+    }
     finalizeEndpointIngressClaims(context ?? {}, false);
     dropPendingJobCancellationAborts(context);
     dropAccessKeyLifecycleAuditEvents(context);

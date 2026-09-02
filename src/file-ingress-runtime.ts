@@ -51,6 +51,15 @@ function partHeader(rawHeaders: string, name: string) {
   if (normalizedName === "content-id") return /^<([^>\r\n]+)>$/.exec(value)?.[1] ?? value;
   return value;
 }
+function unsupportedMultipartPartEncoding(rawHeaders: string) {
+  for (const line of rawHeaders.split("\r\n")) {
+    const separator = line.indexOf(":"); if (separator <= 0) continue;
+    const name = line.slice(0, separator).trim().toLowerCase(); const value = line.slice(separator + 1).trim().toLowerCase();
+    if (name === "content-transfer-encoding") return true;
+    if (name === "content-type" && /^multipart\//.test(value)) return true;
+  }
+  return false;
+}
 function safeName(value: string) { return String(value ?? "upload").replace(/[\\/\x00-\x1f]/g, "_").trim().slice(0, 255) || "upload"; }
 function safeType(value: string) { const type = String(value ?? "").split(";", 1)[0].trim().toLowerCase(); return /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(type) ? type : "application/octet-stream"; }
 function framedIngressKey(parts: string[]) {
@@ -62,6 +71,12 @@ function legacyDelimitedKeyFor(endpoint: RecordLike, requestKey: string, partKey
 function publicLease(row: RecordLike) { return Object.freeze({ leaseId: row.leaseId, partId: row.partId, fieldName: row.fieldName, name: row.name, type: row.type, declaredSize: null, size: row.size, expiresAt: row.expiresAt }); }
 function idempotencyConflict(message = "Ingress claim conflicts with the completed request.") { return Object.assign(new Error(message), { code: "IDEMPOTENCY_CONFLICT" }); }
 function ingressAuthorityDenied() { return Object.assign(new Error("File ingress authority is unavailable."), { code: "INGRESS_AUTHORITY_DENIED" }); }
+const ingressAuditCodes = new Set(["INVALID_MULTIPART", "MULTIPART_LIMIT_EXCEEDED", "INVALID_MULTIPART_REQUEST_KEY", "INVALID_MULTIPART_PART_KEY", "INGRESS_AUTHORITY_DENIED", "INGRESS_LEASE_EXPIRED", "INGRESS_PATH_DENIED", "INGRESS_DESCRIPTOR_CONFLICT", "INGRESS_STAGING_INCOMPLETE", "INGRESS_ORPHAN_CLEANUP_FAILED", "FILE_PATH_EXISTS"]);
+async function emitIngressAudit(database: RecordLike, event: string, data: RecordLike) {
+  try { await database.log?.emit?.({ category: "platform", event: `file.ingress.${event}`, level: event === "failed" || event === "cleanup-failed" ? "warn" : "info", message: "Multipart ingress lifecycle event", data: { schema: "v1", ...data } }); }
+  catch { /* Auditing must not turn a bounded ingress outcome into a transport failure. */ }
+}
+function safeIngressAuditCode(error: any) { return ingressAuditCodes.has(error?.code) ? error.code : "INGRESS_FAILED"; }
 function sameFileDescriptor(left: RecordLike, right: RecordLike) {
   return left?.id === right?.id && left?.ownerId === right?.ownerId && left?.path === right?.path && left?.name === right?.name && left?.type === right?.type && Number(left?.size) === Number(right?.size) && left?.version === right?.version;
 }
@@ -108,12 +123,14 @@ export async function stageMultipartIngress(database: RecordLike, endpoint: Reco
   if (!boundary) throw Object.assign(new Error("Invalid multipart request."), { code: "INVALID_MULTIPART" });
   const requestKey = header(endpointRequest.headers, policy.requestKeyHeader);
   if (typeof requestKey !== "string" || requestKey.length < 1 || requestKey.length > 200) throw Object.assign(new Error("Missing multipart idempotency key."), { code: "INVALID_MULTIPART_REQUEST_KEY" });
+  await emitIngressAudit(database, "started", { outcome: "started" });
   const maxBytes = Number(policy.maxTotalFileBytes) + Number(policy.maxTotalFieldBytes) + 65536;
   const files: any[] = []; const fields: RecordLike = Object.create(null); let fieldCount = 0; let fieldBytes = 0; let fileBytes = 0; const partKeys = new Set<string>(); const wonReceipts: RecordLike[] = [];
   const streamingFileLimit = Math.min(Number(policy.maxFileBytes), Number(database.fileMaxSizeBytes));
   try { for await (const part of multipartParts(request, boundary, maxBytes, { file: streamingFileLimit, field: policy.maxFieldBytes })) {
     const rawHeaders = part.rawHeaders; const body = part.body;
     if (rawHeaders.length > 16384) throw Object.assign(new Error("Multipart headers exceed limit."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+    if (unsupportedMultipartPartEncoding(rawHeaders)) throw Object.assign(new Error("Unsupported multipart part encoding."), { code: "INVALID_MULTIPART" });
     const disposition = /^content-disposition:\s*form-data;\s*name="([^"]+)"(?:;\s*filename="([^"]*)")?/im.exec(rawHeaders);
     if (!disposition) throw Object.assign(new Error("Malformed multipart part."), { code: "INVALID_MULTIPART" });
     const fieldName = disposition[1]; const filename = disposition[2];
@@ -170,8 +187,10 @@ export async function stageMultipartIngress(database: RecordLike, endpoint: Reco
       } catch (cleanupError) { cleanupErrors.push(cleanupError); }
     }
     if (cleanupErrors.length) throw new AggregateError([primaryError, ...cleanupErrors], "Multipart ingress staging failed and cleanup was incomplete.");
+    await emitIngressAudit(database, "failed", { outcome: "failed", code: safeIngressAuditCode(primaryError) });
     throw primaryError;
   }
+  await emitIngressAudit(database, "completed", { outcome: "leased", parts: files.length, bytes: fileBytes });
   return { body: null, bodyBytes: Object.freeze({ byteLength: 0, length: 0, at() { return undefined; }, toUint8Array() { return new Uint8Array(); }, *[Symbol.iterator]() {} }), multipart: Object.freeze({ files: Object.freeze(files), fields: Object.freeze(fields) }), __ingressRequestKey: requestKey, __ingressAuthority: admittedAuthority ?? Object.freeze({ kind: "actor", actorId: String(actor.userId ?? ""), ownerId: String(actor.userId ?? "") }) };
 }
 
@@ -201,6 +220,7 @@ export function createEndpointIngressApi(database: RecordLike, endpoint: RecordL
   const actorId = String(context.auth?.userId ?? ""); const requestKey = endpointRequest.__ingressRequestKey; const admittedAuthority = endpointRequest.__ingressAuthority ?? { kind: "actor", actorId, ownerId: actorId };
   return {
     async claim(lease: RecordLike, options: RecordLike) {
+      try {
       const row = await receiptByLease(database, lease?.leaseId);
       if (!row) throw ingressAuthorityDenied();
       const requestedAuthority = options?.authority ?? { kind: "actor" };
@@ -224,6 +244,7 @@ export function createEndpointIngressApi(database: RecordLike, endpoint: RecordL
       const expectedFile = { id: row.fileId, ownerId: row.ownerId, path, name, type, size: row.size, version: row.version };
       if (row.state === "complete") {
         if (!sameFileDescriptor(row.file, expectedFile)) throw idempotencyConflict();
+        await emitIngressAudit(database, "completed", { outcome: "claimed", parts: 1, bytes: row.size });
         return fileMetadataFromRow(row.file);
       }
       if (row.state === "expired" || Date.parse(row.expiresAt) <= Date.now()) throw Object.assign(new Error("File ingress lease has expired."), { code: "INGRESS_LEASE_EXPIRED" });
@@ -240,7 +261,13 @@ export function createEndpointIngressApi(database: RecordLike, endpoint: RecordL
       row.state = "complete"; row.file = storedFile;
       const storedReceipt = await database.adapter.completeIngressClaim(row); const completed = storedReceipt ? JSON.parse(storedReceipt.payload) : null;
       if (!completed || completed.state !== "complete" || !sameFileDescriptor(completed.file, file)) throw idempotencyConflict("Ingress receipt completion conflicted with another claim.");
+      await emitIngressAudit(database, "completed", { outcome: "claimed", parts: 1, bytes: row.size });
       return fileMetadataFromRow(storedFile);
+      } catch (error: any) {
+        const code = safeIngressAuditCode(error);
+        await emitIngressAudit(database, code === "INGRESS_AUTHORITY_DENIED" || code === "INGRESS_PATH_DENIED" ? "denied" : "failed", { outcome: code === "INGRESS_AUTHORITY_DENIED" || code === "INGRESS_PATH_DENIED" ? "denied" : "failed", code });
+        throw error;
+      }
     },
     async status(statusRequestKey: string, partKey: string) {
       const capsulePrincipal = admittedAuthority.kind === "capsule-principal";
@@ -311,5 +338,7 @@ export async function sweepExpiredFileIngress(database: RecordLike, options: Rec
       failures.push(Object.freeze({ leaseId, code: error?.code === "INGRESS_SWEEP_INVALID_RECEIPT" ? "INGRESS_SWEEP_INVALID_RECEIPT" : "INGRESS_SWEEP_STORAGE_FAILED" }));
     }
   }
+  if (cleaned.length > 0) await emitIngressAudit(database, "completed", { outcome: "cleaned", parts: cleaned.length, bytes: 0 });
+  if (failures.length > 0) await emitIngressAudit(database, "cleanup-failed", { outcome: "failed", code: failures[0].code, failures: failures.length });
   return Object.freeze({ scanned: candidates.length, cleaned: Object.freeze(cleaned), failures: Object.freeze(failures) });
 }

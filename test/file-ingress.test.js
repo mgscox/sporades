@@ -8,7 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { capsule, endpoint, requireAuth, String as StringField, table } from "../dist/server.js";
-import { openDevDatabase, routeEndpoint, runEndpoint } from "../dist/server-runtime-source.js";
+import { createControllableRuntimeClock, openDevDatabase, routeEndpoint, runEndpoint } from "../dist/server-runtime-source.js";
 import { createEndpointIngressApi, multipartParts, stageMultipartIngress, sweepExpiredFileIngress } from "../dist/file-ingress-runtime.js";
 import { capsuleIngressAuthUserId } from "../dist/auth-runtime.js";
 import { accessKeyVerifierDigest, createAccessKeySecret } from "../dist/access-keys-runtime.js";
@@ -137,6 +137,62 @@ test("multipart fields safely aggregate prototype-shaped names", async () => {
     const parts = ["constructor", "toString", "__proto__", "constructor"].map((name, index) => ({ headers: `Content-Disposition: form-data; name="${name}"`, body: `v${index}` }));
     const result = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipartMany("field-keys", parts); } }, { headers: { "content-type": "multipart/form-data; boundary=field-keys", "idempotency-key": "field-keys" } }, { userId: "actor" });
     assert.equal(Object.getPrototypeOf(result.multipart.fields), null); assert.deepEqual([...result.multipart.fields.constructor], ["v0", "v3"]); assert.deepEqual([...result.multipart.fields.toString], ["v1"]); assert.deepEqual([...result.multipart.fields.__proto__], ["v2"]); assert.equal({}.v2, undefined);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("multipart ingress rejects nested multipart and transfer encodings before staging any residue", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-nested-rejected-")); let database;
+  try {
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "nested-rejected", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "nested-rejected" }));
+    const endpoint = { options: { method: "POST", path: "/nested", body: { multipart: ingressPolicy() } } };
+    const headers = { "content-type": "multipart/form-data; boundary=nested", "idempotency-key": "must-not-persist" };
+    for (const partHeaders of [
+      'Content-Disposition: form-data; name="file"; filename="secret-name.txt"\r\nContent-Type: MULTIPART/MIXED; boundary=inner\r\nContent-ID: stable',
+      'Content-Disposition: form-data; name="file"; filename="secret-name.txt"\r\nContent-Transfer-Encoding: BaSe64\r\nContent-ID: stable',
+    ]) {
+      let reads = 0;
+      const bytes = multipart("nested", partHeaders, "super-secret-bytes");
+      const request = { async *[Symbol.asyncIterator]() { for (const byte of bytes) { reads += 1; yield Buffer.from([byte]); } } };
+      await assert.rejects(stageMultipartIngress(database, endpoint, request, { headers }, { userId: "secret-actor" }), { code: "INVALID_MULTIPART" });
+      assert.ok(reads <= bytes.length, "rejection must consume only the bounded request source");
+      assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 0);
+      assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_files]").get()).count), 0);
+    }
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a running runtime periodically sweeps expired ingress leases and stops its ingress timer on shutdown", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-live-sweep-")); let database;
+  try {
+    const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "live-sweep", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "live-sweep" }), { clock });
+    await database.init();
+    const endpoint = { options: { method: "POST", path: "/live-sweep", body: { multipart: ingressPolicy() } } };
+    const result = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipart("live-sweep", 'Content-Disposition: form-data; name="file"; filename="a.txt"\r\nContent-ID: stable', "bytes"); } }, { headers: { "content-type": "multipart/form-data; boundary=live-sweep", "idempotency-key": "sweep-key" } }, { userId: "actor" });
+    const row = JSON.parse((await database.adapter.prepare("SELECT [payload] FROM [sporades_file_ingress] WHERE [leaseId] = ?").get(result.multipart.files[0].leaseId)).payload);
+    row.expiresAt = "2029-12-31T23:59:59.000Z";
+    await database.adapter.prepare("UPDATE [sporades_file_ingress] SET [expiresAt] = ?, [payload] = ? WHERE [leaseId] = ?").run(row.expiresAt, JSON.stringify(row), row.leaseId);
+    clock.advanceBy(60_000); await clock.runDueTimers();
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 0);
+    await database.shutdown();
+    clock.advanceBy(60_000); await clock.runDueTimers();
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 0);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("ingress audit lifecycle is useful but never records upload secrets or error detail", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-redaction-")); let database;
+  const secret = "request-key-part-key-file-name-mime-secret-bytes-actor";
+  try {
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "audit-redaction", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "audit-redaction" }));
+    const endpoint = { options: { method: "POST", path: "/audit", body: { multipart: ingressPolicy() } } };
+    const headers = { "content-type": "multipart/form-data; boundary=audit", "idempotency-key": secret };
+    await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipart("audit", `Content-Disposition: form-data; name="${secret}"; filename="${secret}.txt"\r\nContent-Type: text/${secret}\r\nContent-ID: ${secret}`, secret); } }, { headers }, { userId: secret });
+    await assert.rejects(stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipart("audit", `Content-Disposition: form-data; name="file"; filename="${secret}.txt"\r\nContent-Transfer-Encoding: base64\r\nContent-ID: ${secret}`, secret); } }, { headers }, { userId: secret }), { code: "INVALID_MULTIPART" });
+    const events = (await database.log.tail(20)).filter((event) => event.event.startsWith("file.ingress."));
+    assert.deepEqual(events.map((event) => event.event), ["file.ingress.started", "file.ingress.completed", "file.ingress.started", "file.ingress.failed"]);
+    assert.equal(JSON.stringify(events).includes(secret), false);
+    assert.deepEqual(events.at(-1).data, { schema: "v1", outcome: "failed", code: "INVALID_MULTIPART" });
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
