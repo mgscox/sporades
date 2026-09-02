@@ -1,5 +1,22 @@
 # Changes
 
+## Unreleased - 2026-09-02
+
+Changes since v0.9.11.
+
+### 🐛 Bug Fixes
+
+- Recover ingress maintenance failures (1c87e1ea).
+- Retry transient ingress audit recovery (fd9f79eb).
+- Retry unacknowledged ingress audits (7bcba464).
+- Harden ingress audit outbox recovery (b145d481).
+- Durable ingress claim audit outbox (e1d2ccd7).
+- Defer ingress claim audit until commit (34d5d7ef).
+- Settle ingress sweep shutdown (4de6302f).
+- Close ingress audit and sweep races (dd191b97).
+- Harden trusted multipart ingress lifecycle (54fa0129).
+- Make synchronization recoverable (#23) (729d8bec).
+
 ## v0.9.11 - 2026-09-02
 
 Corrects the incomplete `0.9.10` npm package, which was published from a stale
