@@ -311,7 +311,13 @@ export function finalizeEndpointIngressClaims(context: RecordLike, committed: bo
 
 /** Reset an interrupted delivery lease at startup; ordinary drains never steal live work. */
 export async function recoverIngressClaimAuditOutbox(database: RecordLike) {
-  try { await database.adapter.recoverIngressClaimAudits(ingressAuditNow(database)); } catch { /* A later recovery safely retries. */ }
+  try {
+    await database.adapter.recoverIngressClaimAudits(ingressAuditNow(database));
+    return true;
+  } catch {
+    try { await database.log?.emit?.({ category: "platform", event: "file.ingress.audit-recovery-failed", level: "warn", message: "Multipart ingress audit recovery failed", data: { schema: "v1", outcome: "failed", code: "INGRESS_AUDIT_RECOVERY_FAILED" } }); } catch {}
+    return false;
+  }
 }
 
 /** Emit the fixed public audit only after its transaction has committed. */

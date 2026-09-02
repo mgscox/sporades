@@ -80,7 +80,7 @@ export declare function createEndpointIngressApi(database: RecordLike, endpoint:
 /** Database and object storage cannot share a transaction: publish Map state only after SQL commits. */
 export declare function finalizeEndpointIngressClaims(context: RecordLike, committed: boolean): void;
 /** Reset an interrupted delivery lease at startup; ordinary drains never steal live work. */
-export declare function recoverIngressClaimAuditOutbox(database: RecordLike): Promise<void>;
+export declare function recoverIngressClaimAuditOutbox(database: RecordLike): Promise<boolean>;
 /** Emit the fixed public audit only after its transaction has committed. */
 export declare function drainIngressClaimAuditOutbox(database: RecordLike, options?: RecordLike): Promise<void>;
 /** Retire one deterministic bounded batch. Object deletion precedes the token-fenced receipt delete. */

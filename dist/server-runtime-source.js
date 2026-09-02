@@ -971,7 +971,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             database.__scheduleRecoveryDueAt = null;
             database.__scheduleRecoveryPromise = null;
             database.__scheduleLegacyDiscoveryTimer = null;
-            await recoverIngressClaimAuditOutbox(database);
+            database.__ingressAuditRecoveryPending = true;
             await runIngressAuditOutboxDrain(database);
             // Recovery may classify durable state while the candidate is stopped,
             // but it returns the retained wake instead of arming it. Publication is
@@ -1299,7 +1299,12 @@ const INGRESS_AUDIT_OUTBOX_INTERVAL_MS = 1_000;
 async function runIngressAuditOutboxDrain(database) {
     if (database.__ingressAuditOutboxPromise)
         return database.__ingressAuditOutboxPromise;
-    const run = drainIngressClaimAuditOutbox(database);
+    const run = (async () => {
+        if (database.__ingressAuditRecoveryPending) {
+            database.__ingressAuditRecoveryPending = !(await recoverIngressClaimAuditOutbox(database));
+        }
+        await drainIngressClaimAuditOutbox(database);
+    })();
     database.__ingressAuditOutboxPromise = run;
     try {
         await run;

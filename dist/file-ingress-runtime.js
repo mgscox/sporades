@@ -526,8 +526,15 @@ export function finalizeEndpointIngressClaims(context, committed) {
 export async function recoverIngressClaimAuditOutbox(database) {
     try {
         await database.adapter.recoverIngressClaimAudits(ingressAuditNow(database));
+        return true;
     }
-    catch { /* A later recovery safely retries. */ }
+    catch {
+        try {
+            await database.log?.emit?.({ category: "platform", event: "file.ingress.audit-recovery-failed", level: "warn", message: "Multipart ingress audit recovery failed", data: { schema: "v1", outcome: "failed", code: "INGRESS_AUDIT_RECOVERY_FAILED" } });
+        }
+        catch { }
+        return false;
+    }
 }
 /** Emit the fixed public audit only after its transaction has committed. */
 export async function drainIngressClaimAuditOutbox(database, options = {}) {

@@ -496,6 +496,24 @@ test("a live runtime releases an acknowledgement-failed audit delivery for timer
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("a live runtime retries transient startup outbox recovery without an endpoint or restart", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-recovery-clock-")); let database;
+  try {
+    const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "audit-recovery-clock", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "audit-recovery-clock" }), { clock });
+    await database.adapter.prepare("INSERT INTO [sporades_file_ingress_audit_outbox] ([claimId], [state], [claimToken], [createdAt], [updatedAt], [deliveredAt]) VALUES ('v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'delivering', 'interrupted', ?, ?, NULL)").run("2029-01-01T00:00:00.000Z", "2029-01-01T00:00:00.000Z");
+    const originalRecover = database.adapter.recoverIngressClaimAudits.bind(database.adapter); let failRecovery = true;
+    database.adapter.recoverIngressClaimAudits = async (...args) => { if (failRecovery) throw new Error("temporary recovery adapter failure"); return await originalRecover(...args); };
+    await database.init();
+    assert.equal((await database.adapter.prepare("SELECT [state] FROM [sporades_file_ingress_audit_outbox]").get()).state, "delivering");
+    failRecovery = false; clock.advanceBy(60_000); await clock.runDueTimers();
+    assert.equal((await database.adapter.prepare("SELECT [state] FROM [sporades_file_ingress_audit_outbox]").get()).state, "delivered");
+    const completed = (await database.log.tail(50)).filter((event) => event.event === "file.ingress.completed" && event.data?.outcome === "claimed");
+    assert.equal(completed.length, 1); assert.equal(completed[0].data.deliveryId, "v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    await database.shutdown();
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("ingress audit recovery may duplicate after an emit-before-ack crash, with one opaque delivery key", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-crash-")); let database;
   try {

@@ -480,7 +480,10 @@ failure leaves the intent pending without altering committed application state.
 An acknowledgement failure after a successful append returns that exact
 token-fenced intent to pending for the live retry; if that release also fails,
 Sporades emits the safe `INGRESS_AUDIT_ACK_RELEASE_FAILED` platform warning and
-startup recovery repairs the abandoned delivery lease.
+startup recovery repairs the abandoned delivery lease. A transient startup
+recovery failure emits `INGRESS_AUDIT_RECOVERY_FAILED` and remains a bounded
+live-maintenance retry until recovery succeeds; once clear, ordinary timer
+ticks do not rescan interrupted delivery rows.
 Delivered intents remain inspectable for 24 hours and are then pruned
 oldest-first in batches of 50; pending and in-progress intents are never
 pruned, and completed File retries do not create a new intent. A

@@ -21013,7 +21013,13 @@ function finalizeEndpointIngressClaims(context, committed) {
 async function recoverIngressClaimAuditOutbox(database) {
   try {
     await database.adapter.recoverIngressClaimAudits(ingressAuditNow(database));
+    return true;
   } catch {
+    try {
+      await database.log?.emit?.({ category: "platform", event: "file.ingress.audit-recovery-failed", level: "warn", message: "Multipart ingress audit recovery failed", data: { schema: "v1", outcome: "failed", code: "INGRESS_AUDIT_RECOVERY_FAILED" } });
+    } catch {
+    }
+    return false;
   }
 }
 async function drainIngressClaimAuditOutbox(database, options = {}) {
@@ -21728,7 +21734,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       database.__scheduleRecoveryDueAt = null;
       database.__scheduleRecoveryPromise = null;
       database.__scheduleLegacyDiscoveryTimer = null;
-      await recoverIngressClaimAuditOutbox(database);
+      database.__ingressAuditRecoveryPending = true;
       await runIngressAuditOutboxDrain(database);
       const earliestFutureLeaseAt = await recoverExpiredJobLeases(database);
       await recoverPendingScheduleOccurrences(database, { validateOnly: true });
@@ -22015,7 +22021,12 @@ var INGRESS_SWEEP_INTERVAL_MS = 6e4;
 var INGRESS_AUDIT_OUTBOX_INTERVAL_MS = 1e3;
 async function runIngressAuditOutboxDrain(database) {
   if (database.__ingressAuditOutboxPromise) return database.__ingressAuditOutboxPromise;
-  const run2 = drainIngressClaimAuditOutbox(database);
+  const run2 = (async () => {
+    if (database.__ingressAuditRecoveryPending) {
+      database.__ingressAuditRecoveryPending = !await recoverIngressClaimAuditOutbox(database);
+    }
+    await drainIngressClaimAuditOutbox(database);
+  })();
   database.__ingressAuditOutboxPromise = run2;
   try {
     await run2;
