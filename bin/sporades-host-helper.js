@@ -292,6 +292,7 @@ var fs = process.getBuiltinModule("node:fs");
 var childProcess = process.getBuiltinModule("node:child_process");
 var leaseTtlMs = 10 * 60 * 1e3;
 var ingressClaimAuditRetentionMs = 24 * 60 * 60 * 1e3;
+var clamavMaximumStreamBytes = 10 * 1024 * 1024;
 var maximumInspectionAgeMs = 24 * 60 * 60 * 1e3;
 
 // src/teams-runtime.ts

@@ -15,6 +15,7 @@ const childProcess = process.getBuiltinModule("node:child_process");
 const leaseTtlMs = 10 * 60 * 1000;
 const ingressClaimAuditRetentionMs = 24 * 60 * 60 * 1000;
 const ingressClaimAuditPruneLimit = 50;
+const clamavMaximumStreamBytes = 10 * 1024 * 1024;
 
 function ingressAuditNow(database: RecordLike) {
   const now = database.clock?.now?.();
@@ -152,19 +153,34 @@ async function contentPolicyOutcome(row: RecordLike, bytes: Buffer) {
 }
 function clamavSignatureState(database: RecordLike) {
   if (database.__clamavTest?.signature) return database.__clamavTest.signature;
-  for (const path of ["/app/data/clamav/daily.cld", "/app/data/clamav/daily.cvd"]) {
+  for (const path of database.__clamavTest?.signaturePaths ?? ["/app/data/clamav/daily.cld", "/app/data/clamav/daily.cvd"]) {
     try {
-      const stats = fs.statSync(path); const descriptor = fs.openSync(path, "r"); const header = Buffer.alloc(512);
+      const descriptor = fs.openSync(path, "r"); const header = Buffer.alloc(512);
       try { fs.readSync(descriptor, header, 0, header.length, 0); } finally { fs.closeSync(descriptor); }
-      const databaseVersion = /^ClamAV-VDB:[^:]*:(\d+):/.exec(header.toString("ascii"))?.[1];
-      return { version: databaseVersion ? `daily:${databaseVersion}` : `daily:${Math.floor(stats.mtimeMs)}`, updatedAt: stats.mtime.toISOString() };
+      const fields = /^ClamAV-VDB:([^:]{1,80}):(\d{1,12}):/.exec(header.toString("ascii"));
+      if (!fields) continue;
+      const builtAt = new Date(fields[1].replace(/ (\d{2})-(\d{2}) /, " $1:$2 "));
+      if (!Number.isFinite(builtAt.getTime())) continue;
+      return { version: `daily:${fields[2]}`, updatedAt: builtAt.toISOString() };
     } catch {}
   }
   return null;
 }
+function clamavSocketCommand(database: RecordLike, command: Buffer, maximumReplyBytes = 4096, timeoutMs = 2_000) {
+  const socketPath = database.__clamavTest?.socketPath ?? "/tmp/sporades-clamav/clamd.sock";
+  return new Promise<string | null>((resolve) => {
+    let settled = false; let response = Buffer.alloc(0); const socket = net.createConnection({ path: socketPath });
+    const finish = (value: string | null) => { if (settled) return; settled = true; clearTimeout(timer); socket.destroy(); resolve(value); };
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    socket.once("connect", () => socket.write(command));
+    socket.on("data", (chunk: Buffer) => { if (response.length + chunk.length > maximumReplyBytes) return finish(null); response = Buffer.concat([response, chunk]); if (response.includes(0)) finish(response.subarray(0, response.indexOf(0)).toString("utf8")); });
+    socket.once("error", () => finish(null)); socket.once("end", () => { if (!settled) finish(null); });
+  });
+}
 async function clamavInstream(database: RecordLike, bytes: Buffer) {
   const signature = clamavSignatureState(database); const updatedAt = Date.parse(signature?.updatedAt);
   if (!signature || !Number.isFinite(updatedAt) || updatedAt > Date.now() || Date.now() - updatedAt > 24 * 60 * 60 * 1000) return { outcome: "inconclusive", signatureVersion: "unavailable" };
+  if (bytes.length > clamavMaximumStreamBytes) return { outcome: "inconclusive", signatureVersion: String(signature.version).slice(0, 128) };
   const socketPath = database.__clamavTest?.socketPath ?? "/tmp/sporades-clamav/clamd.sock"; const timeoutMs = database.__clamavTest?.timeoutMs ?? 10_000;
   return await new Promise<RecordLike>((resolve) => {
     let settled = false; let response = Buffer.alloc(0); const socket = net.createConnection({ path: socketPath });
@@ -176,19 +192,28 @@ async function clamavInstream(database: RecordLike, bytes: Buffer) {
   });
 }
 function waitForChild(child: any, timeoutMs: number) { return new Promise<boolean>((resolve) => { let settled = false; const finish = (ok: boolean) => { if (settled) return; settled = true; clearTimeout(timer); resolve(ok); }; const timer = setTimeout(() => { try { child.kill("SIGTERM"); } catch {} finish(false); }, timeoutMs); child.once("exit", (code: number) => finish(code === 0)); child.once("error", () => finish(false)); }); }
+async function terminateChild(child: any, timeoutMs = 5_000) {
+  if (!child || child.exitCode !== null) return;
+  const exited = new Promise<void>((resolve) => { child.once("exit", resolve); child.once("error", resolve); });
+  try { child.kill("SIGTERM"); } catch { return; }
+  if (await Promise.race([exited.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), timeoutMs))])) return;
+  try { child.kill("SIGKILL"); } catch { return; }
+  await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))]);
+}
 export async function initializeClamavRuntime(database: RecordLike) {
   const required = database.endpoints?.some((endpoint: RecordLike) => endpoint?.options?.body?.multipart?.inspection?.requiredInspectors?.includes("clamav")); database.clamavRequired = Boolean(required); database.clamavReady = !required;
   if (!required) return true;
   if (database.__clamavTest) { database.clamavReady = Boolean(clamavSignatureState(database)); return database.clamavReady; }
   if (process.env.SPORADES_CLAMAV_MANAGED !== "1") return false;
   try { fs.mkdirSync("/app/data/clamav", { recursive: true }); fs.mkdirSync("/tmp/sporades-clamav", { recursive: true }); } catch { return false; }
-  const update = childProcess.spawn("/usr/bin/freshclam", ["--config-file=/etc/clamav/freshclam.conf"], { stdio: "ignore" }); if (!await waitForChild(update, 120_000) && !clamavSignatureState(database)) return false;
+  const update = childProcess.spawn("/usr/bin/freshclam", ["--config-file=/etc/clamav/freshclam.conf"], { stdio: "ignore" }); database.__clamavUpdateProcess = update; if (!await waitForChild(update, 120_000) && !clamavSignatureState(database)) { await terminateChild(update); return false; }
   const daemon = childProcess.spawn("/usr/sbin/clamd", ["--foreground", "--config-file=/etc/clamav/clamd.conf"], { stdio: "ignore" }); database.__clamavProcess = daemon;
-  for (let attempt = 0; attempt < 300; attempt += 1) { if (fs.existsSync("/tmp/sporades-clamav/clamd.sock") && clamavSignatureState(database)) { database.clamavReady = true; return true; } if (daemon.exitCode !== null) break; await new Promise((resolve) => setTimeout(resolve, 100)); }
-  try { daemon.kill("SIGTERM"); } catch {} return false;
+  daemon.once("exit", () => { database.clamavReady = false; }); daemon.once("error", () => { database.clamavReady = false; });
+  for (let attempt = 0; attempt < 300; attempt += 1) { if (fs.existsSync("/tmp/sporades-clamav/clamd.sock") && clamavSignatureState(database) && await clamavSocketCommand(database, Buffer.from("zPING\0"), 16, 500) === "PONG") { database.clamavReady = true; const updater = childProcess.spawn("/usr/bin/freshclam", ["--daemon", "--foreground=true", "--config-file=/etc/clamav/freshclam.conf"], { stdio: "ignore" }); database.__clamavUpdateProcess = updater; updater.once("exit", () => { database.clamavReady = false; }); updater.once("error", () => { database.clamavReady = false; }); return true; } if (daemon.exitCode !== null) break; await new Promise((resolve) => setTimeout(resolve, 100)); }
+  await Promise.all([terminateChild(daemon), terminateChild(database.__clamavUpdateProcess)]); return false;
 }
-export async function shutdownClamavRuntime(database: RecordLike) { try { database.__clamavProcess?.kill?.("SIGTERM"); } catch {} database.clamavReady = !database.clamavRequired; }
-export async function checkClamavRuntime(database: RecordLike) { if (!database.clamavRequired) return { ok: true }; const signature = clamavSignatureState(database); const updatedAt = Date.parse(signature?.updatedAt); return { ok: database.clamavReady === true && Boolean(signature) && Number.isFinite(updatedAt) && Date.now() - updatedAt <= 24 * 60 * 60 * 1000 }; }
+export async function shutdownClamavRuntime(database: RecordLike) { database.clamavReady = false; await Promise.all([terminateChild(database.__clamavProcess), terminateChild(database.__clamavUpdateProcess)]); database.__clamavProcess = null; database.__clamavUpdateProcess = null; }
+export async function checkClamavRuntime(database: RecordLike) { if (!database.clamavRequired) return { ok: true }; const signature = clamavSignatureState(database); const updatedAt = Date.parse(signature?.updatedAt); const current = Boolean(signature) && Number.isFinite(updatedAt) && updatedAt <= Date.now() && Date.now() - updatedAt <= 24 * 60 * 60 * 1000; if (!database.clamavReady || !current || database.__clamavProcess?.exitCode !== null || database.__clamavUpdateProcess?.exitCode !== null) { database.clamavReady = false; return { ok: false }; } const pong = await clamavSocketCommand(database, Buffer.from("zPING\0"), 16, 500); if (pong !== "PONG") database.clamavReady = false; return { ok: pong === "PONG" }; }
 async function inspectIngressLease(database: RecordLike, policy: RecordLike | null, row: RecordLike, bytes: Buffer) {
   if (!policy) return undefined;
   const inspectedAt = new Date().toISOString();

@@ -33,6 +33,7 @@ RUN apk add --no-cache openssh-server fail2ban clamav clamav-daemon \
     'DatabaseOwner sporades' \
     'DatabaseMirror database.clamav.net' \
     'Checks 24' \
+    'Foreground yes' \
     > /etc/clamav/freshclam.conf \
   && ssh-keygen -A \
   && printf '%s\n' \

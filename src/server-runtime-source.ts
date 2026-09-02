@@ -1155,7 +1155,7 @@ export async function openDevDatabase(
         shutdownRejected = true;
         shutdownError = error;
       } finally {
-        shutdownClamavRuntime(database);
+        await shutdownClamavRuntime(database);
         database.__runtimeInitialized = false;
       }
       try { await database.mail.close(); }

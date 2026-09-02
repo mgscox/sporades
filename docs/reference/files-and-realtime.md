@@ -508,12 +508,18 @@ hostname, IP, path-scan, or caller-configurable destination surface. Sporades
 sends the exact lease bytes with bounded INSTREAM chunks and a zero terminator;
 customer bytes never leave the deployment. A Capsule declaring `clamav`
 starts the managed daemon during runtime initialization and is not healthy
-until fresh signatures and the socket are ready. Capsules that omit it do not
+until fresh signatures and a bounded `PING` over that socket succeed. Runtime
+health repeats that socket probe and degrades immediately when clamd or the
+signature updater exits. Capsules that omit it do not
 start clamd and retain legacy startup behaviour.
 
 The Base image includes ClamAV, which increases image size, while enabling it
 also costs daemon startup time and RAM. `freshclam` is the only intended
 network egress and downloads public signature updates, never customer data.
+After the initial readiness update, Sporades keeps freshclam's bounded daemon
+running for periodic updates and supervises both children. Shutdown awaits
+both processes after `SIGTERM` and uses a bounded `SIGKILL` fallback, including
+partial-startup failure paths.
 Signatures older than 24 hours, missing databases, daemon/socket failure,
 timeouts, malformed or oversized replies, scan limits, infection, and every
 other inconclusive outcome fail closed. Operators should monitor runtime
@@ -521,6 +527,10 @@ health and signature-update logs, budget memory for clamd, and keep the data
 volume writable for `/app/data/clamav`. The image configuration uses only a
 private socket and caps stream/file/aggregate scan size, recursion, files,
 queue depth, and scan time.
+Freshness is derived from the database's embedded, validated build timestamp,
+not its filesystem modification time: copying or touching an old database
+cannot make it current. The runtime also enforces the exact 10 MB scanner cap
+before opening the socket or writing any frame.
 Production malware-scanner transport is deliberately a runtime-owned
 integration rather than an endpoint-handler callback: no endpoint handler,
 Capsule policy, caller, or lease API receives the staged bytes. This prevents a
