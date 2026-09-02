@@ -21040,14 +21040,14 @@ async function drainIngressClaimAuditOutbox(database, options = {}) {
       try {
         await database.log.emit({ category: "platform", event: "file.ingress.completed", level: "info", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "claimed", deliveryId: claimId } });
       } catch {
-        await database.adapter.releaseIngressClaimAudit(claimId, claimToken, ingressAuditNow(database));
+        await releaseIngressClaimAudit(database, claimId, claimToken, "INGRESS_AUDIT_RELEASE_FAILED");
         continue;
       }
       try {
         await database.adapter.deliverIngressClaimAudit(claimId, claimToken, ingressAuditNow(database));
       } catch {
         try {
-          await database.adapter.releaseIngressClaimAudit(claimId, claimToken, ingressAuditNow(database));
+          await releaseIngressClaimAudit(database, claimId, claimToken, "INGRESS_AUDIT_ACK_RELEASE_FAILED");
         } catch {
           try {
             await database.log.emit({ category: "platform", event: "file.ingress.audit-delivery-release-failed", level: "warn", message: "Multipart ingress audit delivery release failed", data: { schema: "v1", outcome: "failed", code: "INGRESS_AUDIT_ACK_RELEASE_FAILED" } });
@@ -21062,6 +21062,19 @@ async function drainIngressClaimAuditOutbox(database, options = {}) {
     const cutoff = new Date(new Date(ingressAuditNow(database)).getTime() - ingressClaimAuditRetentionMs).toISOString();
     await database.adapter.pruneDeliveredIngressClaimAudits(cutoff, ingressClaimAuditPruneLimit);
   } catch {
+  }
+}
+async function releaseIngressClaimAudit(database, claimId, claimToken, code) {
+  try {
+    await database.adapter.releaseIngressClaimAudit(claimId, claimToken, ingressAuditNow(database));
+    return true;
+  } catch {
+    (database.__rootDatabase ?? database).__ingressAuditRecoveryPending = true;
+    try {
+      await database.log?.emit?.({ category: "platform", event: "file.ingress.audit-delivery-release-failed", level: "warn", message: "Multipart ingress audit delivery release failed", data: { schema: "v1", outcome: "failed", code } });
+    } catch {
+    }
+    return false;
   }
 }
 async function armIngressSweep(database, candidate, now2, sweepToken) {
@@ -21742,6 +21755,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       const reconciled = await reconcileSchedules(database);
       database.__scheduleStopped = false;
       startStaticSchedules(database, reconciled.timerPlans);
+      await runPeriodicIngressSweep(database);
       startPeriodicIngressSweep(database);
       startPeriodicIngressAuditOutboxDrain(database);
       if (!database.__jobActivationDeferred) {
@@ -21841,7 +21855,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   await sqlite.ensureFileStorage();
   await sqlite.ensureLogStorage();
   if (!options?.runtimeActionOnly) {
-    await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() });
+    await reportIngressSweepSelectionFailure(database, await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() }));
   }
   if (!options?.runtimeActionOnly) {
     await recoverInvalidRetainedJobState(database);
@@ -22051,7 +22065,7 @@ async function runPeriodicIngressSweep(database) {
   if (database.__ingressSweepPromise) return database.__ingressSweepPromise;
   const run2 = (async () => {
     try {
-      await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() });
+      await reportIngressSweepSelectionFailure(database, await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() }));
     } catch {
       await database.log.emit({ category: "platform", event: "file.ingress.cleanup-failed", level: "warn", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "failed", code: "INGRESS_SWEEP_STORAGE_FAILED" } });
     }
@@ -22061,6 +22075,13 @@ async function runPeriodicIngressSweep(database) {
     await run2;
   } finally {
     if (database.__ingressSweepPromise === run2) database.__ingressSweepPromise = null;
+  }
+}
+async function reportIngressSweepSelectionFailure(database, result) {
+  if (result?.scanned !== 0 || result?.cleaned?.length !== 0 || !result?.failures?.some((failure) => failure?.code === "INGRESS_SWEEP_STORAGE_FAILED")) return;
+  try {
+    await database.log.emit({ category: "platform", event: "file.ingress.cleanup-failed", level: "warn", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "failed", code: "INGRESS_SWEEP_STORAGE_FAILED" } });
+  } catch {
   }
 }
 function startPeriodicIngressSweep(database) {

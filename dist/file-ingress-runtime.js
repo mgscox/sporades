@@ -559,7 +559,7 @@ export async function drainIngressClaimAuditOutbox(database, options = {}) {
                 await database.log.emit({ category: "platform", event: "file.ingress.completed", level: "info", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "claimed", deliveryId: claimId } });
             }
             catch {
-                await database.adapter.releaseIngressClaimAudit(claimId, claimToken, ingressAuditNow(database));
+                await releaseIngressClaimAudit(database, claimId, claimToken, "INGRESS_AUDIT_RELEASE_FAILED");
                 continue;
             }
             try {
@@ -570,7 +570,7 @@ export async function drainIngressClaimAuditOutbox(database, options = {}) {
                 // duplicate-tolerant. Return only this token-fenced lease to pending;
                 // a concurrent drainer cannot reset another worker's claim.
                 try {
-                    await database.adapter.releaseIngressClaimAudit(claimId, claimToken, ingressAuditNow(database));
+                    await releaseIngressClaimAudit(database, claimId, claimToken, "INGRESS_AUDIT_ACK_RELEASE_FAILED");
                 }
                 catch {
                     // Startup recovery remains the final repair path. This marker is
@@ -591,6 +591,22 @@ export async function drainIngressClaimAuditOutbox(database, options = {}) {
         await database.adapter.pruneDeliveredIngressClaimAudits(cutoff, ingressClaimAuditPruneLimit);
     }
     catch { /* Retention is maintenance; the next bounded drain retries. */ }
+}
+async function releaseIngressClaimAudit(database, claimId, claimToken, code) {
+    try {
+        await database.adapter.releaseIngressClaimAudit(claimId, claimToken, ingressAuditNow(database));
+        return true;
+    }
+    catch {
+        // This exact claim remains delivering, so make the root maintenance loop
+        // retry recovery while the runtime stays alive.
+        (database.__rootDatabase ?? database).__ingressAuditRecoveryPending = true;
+        try {
+            await database.log?.emit?.({ category: "platform", event: "file.ingress.audit-delivery-release-failed", level: "warn", message: "Multipart ingress audit delivery release failed", data: { schema: "v1", outcome: "failed", code } });
+        }
+        catch { }
+        return false;
+    }
 }
 async function armIngressSweep(database, candidate, now, sweepToken) {
     for (let attempt = 0; attempt <= 100; attempt += 1) {

@@ -514,6 +514,39 @@ test("a live runtime retries transient startup outbox recovery without an endpoi
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("logger and release failures rearm live recovery for the stranded audit claim", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-release-clock-")); let database;
+  try {
+    const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+    const definition = capsule({ name: "audit-release-clock", endpoints: { upload: endpoint({ method: "POST", path: "/audit-release-clock", body: { multipart: ingressPolicy() } }, requireAuth(async (ctx) => await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/release.txt" }))) } });
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "audit-release-clock", files: { storagePath: path.join(dir, "files") } }, definition, { clock }); await seedIngressUser(database); await database.init();
+    const emit = database.log.emit.bind(database.log); const release = database.adapter.releaseIngressClaimAudit.bind(database.adapter); let failEmit = true; let failRelease = true;
+    database.log.emit = async (event) => event.event === "file.ingress.completed" && failEmit ? Promise.reject(new Error("emit failed")) : emit(event);
+    database.adapter.releaseIngressClaimAudit = async (...args) => { if (failRelease) throw new Error("release failed"); return await release(...args); };
+    await runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/audit-release-clock"), ingressRequest("audit-release-clock"));
+    assert.equal((await database.adapter.prepare("SELECT [state] FROM [sporades_file_ingress_audit_outbox]").get()).state, "delivering");
+    failEmit = false; failRelease = false; clock.advanceBy(60_000); await clock.runDueTimers();
+    assert.equal((await database.adapter.prepare("SELECT [state] FROM [sporades_file_ingress_audit_outbox]").get()).state, "delivered");
+    assert.equal((await database.log.tail(50)).filter((event) => event.event === "file.ingress.completed").length, 1);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("startup and periodic ingress sweep selection failures emit one safe cleanup warning and later recover", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-sweep-selection-")); let database;
+  try {
+    const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "sweep-selection", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "sweep-selection" }), { clock });
+    const select = database.adapter.selectIngressSweepCandidates.bind(database.adapter); let fail = true;
+    database.adapter.selectIngressSweepCandidates = async (...args) => { if (fail) throw new Error("secret selection failure"); return await select(...args); };
+    await database.init();
+    let warnings = (await database.log.tail(50)).filter((event) => event.event === "file.ingress.cleanup-failed");
+    assert.deepEqual(warnings.map((event) => event.data), [{ schema: "v1", outcome: "failed", code: "INGRESS_SWEEP_STORAGE_FAILED" }]);
+    assert.equal(JSON.stringify(warnings).includes("secret selection failure"), false);
+    fail = false; clock.advanceBy(60_000); await clock.runDueTimers();
+    warnings = (await database.log.tail(50)).filter((event) => event.event === "file.ingress.cleanup-failed"); assert.equal(warnings.length, 1);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("ingress audit recovery may duplicate after an emit-before-ack crash, with one opaque delivery key", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-crash-")); let database;
   try {

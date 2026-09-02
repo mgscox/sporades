@@ -982,6 +982,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             const reconciled = await reconcileSchedules(database);
             database.__scheduleStopped = false;
             startStaticSchedules(database, reconciled.timerPlans);
+            await runPeriodicIngressSweep(database);
             startPeriodicIngressSweep(database);
             startPeriodicIngressAuditOutboxDrain(database);
             if (!database.__jobActivationDeferred) {
@@ -1106,7 +1107,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     await sqlite.ensureFileStorage();
     await sqlite.ensureLogStorage();
     if (!options?.runtimeActionOnly) {
-        await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() });
+        await reportIngressSweepSelectionFailure(database, await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() }));
     }
     if (!options?.runtimeActionOnly) {
         await recoverInvalidRetainedJobState(database);
@@ -1333,7 +1334,7 @@ async function runPeriodicIngressSweep(database) {
         return database.__ingressSweepPromise;
     const run = (async () => {
         try {
-            await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() });
+            await reportIngressSweepSelectionFailure(database, await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() }));
         }
         catch {
             // Cleanup is maintenance: it must never make the serving runtime unhealthy.
@@ -1348,6 +1349,14 @@ async function runPeriodicIngressSweep(database) {
         if (database.__ingressSweepPromise === run)
             database.__ingressSweepPromise = null;
     }
+}
+async function reportIngressSweepSelectionFailure(database, result) {
+    if (result?.scanned !== 0 || result?.cleaned?.length !== 0 || !result?.failures?.some((failure) => failure?.code === "INGRESS_SWEEP_STORAGE_FAILED"))
+        return;
+    try {
+        await database.log.emit({ category: "platform", event: "file.ingress.cleanup-failed", level: "warn", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "failed", code: "INGRESS_SWEEP_STORAGE_FAILED" } });
+    }
+    catch { }
 }
 function startPeriodicIngressSweep(database) {
     const arm = () => {
