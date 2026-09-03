@@ -848,10 +848,7 @@ function boundedBraceExpansion(pattern: string) {
   }
   return null;
 }
-const posixBracketClasses: Record<string, string> = {
-  alnum: "A-Za-z0-9", alpha: "A-Za-z", blank: " \\t", cntrl: "\\x00-\\x1f\\x7f", digit: "0-9", graph: "\\x21-\\x7e",
-  lower: "a-z", print: "\\x20-\\x7e", punct: "!\"#$%&'()*+,./:;<=>?@\\[\\\\\\]^_`{|}~-", space: " \\t-\\r", upper: "A-Z", word: "A-Za-z0-9_", xdigit: "A-Fa-f0-9",
-};
+const posixBracketClassNames = new Set(["alnum", "alpha", "blank", "cntrl", "digit", "graph", "lower", "print", "punct", "space", "upper", "word", "xdigit"]);
 function shellGlobSegment(segment: string): RegExp | null | false {
   let source = "^"; let active = false;
   for (let index = 0; index < segment.length; index += 1) {
@@ -859,17 +856,18 @@ function shellGlobSegment(segment: string): RegExp | null | false {
     if (character === "*") { source += "[^/]*"; active = true; continue; }
     if (character === "?") { source += "[^/]"; active = true; continue; }
     if (character === "[") {
-      let close = index + 1; let body = "";
+      let close = index + 1; let body = ""; let localeDependent = false; let unsupported = false;
       while (close < segment.length) {
         if (segment[close] === "[" && [":", ".", "="].includes(segment[close + 1])) {
           const marker = segment[close + 1]; const innerClose = segment.indexOf(`${marker}]`, close + 2); if (innerClose < 0) break;
-          const token = segment.slice(close + 2, innerClose); if (marker !== ":" || !posixBracketClasses[token]) return false;
-          body += posixBracketClasses[token]; close = innerClose + 2; continue;
+          const token = segment.slice(close + 2, innerClose); localeDependent ||= marker === ":" && posixBracketClassNames.has(token); unsupported ||= marker !== ":" || !posixBracketClassNames.has(token);
+          body += "A"; close = innerClose + 2; continue;
         }
         if (segment[close] === "]" && close > index + 1) break;
         const literal = segment[close]; body += literal === "\\" || literal === "]" ? `\\${literal}` : literal; close += 1;
       }
       if (close < segment.length && segment[close] === "]" && close - index <= 128) {
+        if (localeDependent || unsupported) return false;
         body = body.replace(/^!/, "^"); source += `[${body}]`; active = true; index = close; continue;
       }
     }
@@ -883,12 +881,12 @@ function expandedShellCommandCanRun(pattern: string) {
   const braces = boundedBraceExpansion(pattern); if (!braces) return true;
   let visited = 0;
   for (let candidate of braces) {
-    let roots: string[]; let segments: string[];
+    let roots: string[]; let segments: string[]; let pathQualified = candidate.includes("/");
     const currentUserTilde = process.env.USER && (candidate === `~${process.env.USER}` || candidate.startsWith(`~${process.env.USER}/`));
     if (candidate === "~" || candidate.startsWith("~/") || currentUserTilde) {
       const home = String(process.env.HOME ?? ""); if (!home || Buffer.byteLength(home, "utf8") > 4096) continue;
       const prefixLength = candidate[1] === "/" ? 2 : currentUserTilde ? String(process.env.USER).length + 2 : 1;
-      roots = [home]; segments = candidate.length < prefixLength ? [] : candidate.slice(prefixLength).split("/");
+      roots = [home]; segments = candidate.length < prefixLength ? [] : candidate.slice(prefixLength).split("/"); pathQualified = true;
     } else {
       const absolute = candidate.startsWith("/"); roots = [absolute ? "/" : process.cwd()]; segments = candidate.split("/").filter((segment, index) => !(absolute && index === 0));
     }
@@ -911,7 +909,8 @@ function expandedShellCommandCanRun(pattern: string) {
       }
       roots = next; if (roots.length === 0) break;
     }
-    if (roots.some(isRegularExecutableShellPath)) return true;
+    if (pathQualified ? roots.some(isRegularExecutableShellPath) : roots.some((root: string) => shellCommandCanRun(pathRuntime.basename(root)))) return true;
+    if (!pathQualified && roots.length === 0 && shellCommandCanRun(candidate)) return true;
   }
   return false;
 }

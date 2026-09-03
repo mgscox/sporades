@@ -1595,10 +1595,7 @@ function boundedBraceExpansion(pattern) {
     }
     return null;
 }
-const posixBracketClasses = {
-    alnum: "A-Za-z0-9", alpha: "A-Za-z", blank: " \\t", cntrl: "\\x00-\\x1f\\x7f", digit: "0-9", graph: "\\x21-\\x7e",
-    lower: "a-z", print: "\\x20-\\x7e", punct: "!\"#$%&'()*+,./:;<=>?@\\[\\\\\\]^_`{|}~-", space: " \\t-\\r", upper: "A-Z", word: "A-Za-z0-9_", xdigit: "A-Fa-f0-9",
-};
+const posixBracketClassNames = new Set(["alnum", "alpha", "blank", "cntrl", "digit", "graph", "lower", "print", "punct", "space", "upper", "word", "xdigit"]);
 function shellGlobSegment(segment) {
     let source = "^";
     let active = false;
@@ -1617,6 +1614,8 @@ function shellGlobSegment(segment) {
         if (character === "[") {
             let close = index + 1;
             let body = "";
+            let localeDependent = false;
+            let unsupported = false;
             while (close < segment.length) {
                 if (segment[close] === "[" && [":", ".", "="].includes(segment[close + 1])) {
                     const marker = segment[close + 1];
@@ -1624,9 +1623,9 @@ function shellGlobSegment(segment) {
                     if (innerClose < 0)
                         break;
                     const token = segment.slice(close + 2, innerClose);
-                    if (marker !== ":" || !posixBracketClasses[token])
-                        return false;
-                    body += posixBracketClasses[token];
+                    localeDependent ||= marker === ":" && posixBracketClassNames.has(token);
+                    unsupported ||= marker !== ":" || !posixBracketClassNames.has(token);
+                    body += "A";
                     close = innerClose + 2;
                     continue;
                 }
@@ -1637,6 +1636,8 @@ function shellGlobSegment(segment) {
                 close += 1;
             }
             if (close < segment.length && segment[close] === "]" && close - index <= 128) {
+                if (localeDependent || unsupported)
+                    return false;
                 body = body.replace(/^!/, "^");
                 source += `[${body}]`;
                 active = true;
@@ -1665,6 +1666,7 @@ function expandedShellCommandCanRun(pattern) {
     for (let candidate of braces) {
         let roots;
         let segments;
+        let pathQualified = candidate.includes("/");
         const currentUserTilde = process.env.USER && (candidate === `~${process.env.USER}` || candidate.startsWith(`~${process.env.USER}/`));
         if (candidate === "~" || candidate.startsWith("~/") || currentUserTilde) {
             const home = String(process.env.HOME ?? "");
@@ -1673,6 +1675,7 @@ function expandedShellCommandCanRun(pattern) {
             const prefixLength = candidate[1] === "/" ? 2 : currentUserTilde ? String(process.env.USER).length + 2 : 1;
             roots = [home];
             segments = candidate.length < prefixLength ? [] : candidate.slice(prefixLength).split("/");
+            pathQualified = true;
         }
         else {
             const absolute = candidate.startsWith("/");
@@ -1721,7 +1724,9 @@ function expandedShellCommandCanRun(pattern) {
             if (roots.length === 0)
                 break;
         }
-        if (roots.some(isRegularExecutableShellPath))
+        if (pathQualified ? roots.some(isRegularExecutableShellPath) : roots.some((root) => shellCommandCanRun(pathRuntime.basename(root))))
+            return true;
+        if (!pathQualified && roots.length === 0 && shellCommandCanRun(candidate))
             return true;
     }
     return false;
