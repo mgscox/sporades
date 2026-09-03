@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
-import { access, chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { deflateSync, inflateSync } from "node:zlib";
 import { DatabaseSync } from "node:sqlite";
 import { EventEmitter } from "node:events";
@@ -36,6 +38,21 @@ function breakJpegComponent(bytes) { const output = Buffer.from(bytes); const at
 function pngChunks(bytes) { const chunks = []; for (let offset = 8; offset < bytes.length;) { const length = bytes.readUInt32BE(offset); const type = bytes.subarray(offset + 4, offset + 8).toString("ascii"); chunks.push({ type, data: bytes.subarray(offset + 8, offset + 8 + length) }); offset += 12 + length; } return chunks; }
 function rebuildPng(chunks) { return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), ...chunks.map(({ type, data }) => pngChunk(type, data))]); }
 function minimalPdf() { const objects = ["1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n", "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", "3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R>>\nendobj\n", "4 0 obj\n<</Length 0>>\nstream\n\nendstream\nendobj\n"]; let body = "%PDF-1.4\n"; const offsets = [0]; for (const object of objects) { offsets.push(Buffer.byteLength(body)); body += object; } const xref = Buffer.byteLength(body); body += `xref\n0 5\n0000000000 65535 f \n${offsets.slice(1).map((value) => `${String(value).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<</Size 5 /Root 1 0 R>>\nstartxref\n${xref}\n%%EOF\n`; return Buffer.from(body); }
+function freshPdfDeadlineProbe(concurrency) {
+  const moduleUrl = new URL("../dist/file-ingress-runtime.js", import.meta.url).href;
+  const script = `import { validatePdfIngress } from ${JSON.stringify(moduleUrl)};
+const bytes = Buffer.from(${JSON.stringify(minimalPdf().toString("base64"))}, "base64");
+let expiredHooks = 0;
+const startedAt = Date.now();
+const results = await Promise.all(Array.from({ length: ${concurrency} }, () => validatePdfIngress(bytes, { timeoutMs: 1, beforeOperatorList() { expiredHooks += 1; } })));
+const elapsedMs = Date.now() - startedAt;
+let retryHooks = 0;
+const retry = await validatePdfIngress(bytes, { timeoutMs: 2000, beforeOperatorList() { retryHooks += 1; } });
+console.log(JSON.stringify({ results, expiredHooks, elapsedMs, retry, retryHooks }));`;
+  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout.trim().split("\n").at(-1));
+}
 function compactTrailerPdf(suffix = "") { return Buffer.from(minimalPdf().toString("latin1").replace("<</Size 5 /Root 1 0 R>>", `<</Size 5/Root 1 0 R${suffix}>>`), "latin1"); }
 function classicPdfWithStreamLength(lengthToken, lengthObject = "4", content = "q\nQ\n", trailerExtra = "", streamExtra = "") { const objects = ["1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n", "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", "3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R>>\nendobj\n", `4 0 obj\n<</Length ${lengthToken}${streamExtra}>>\nstream\n${content}endstream\nendobj\n`, `5 0 obj\n${lengthObject}\nendobj\n`]; let body = "%PDF-1.5\n"; const offsets = [0]; for (const object of objects) { offsets.push(Buffer.byteLength(body)); body += object; } const xref = Buffer.byteLength(body); body += `xref\n0 6\n0000000000 65535 f \n${offsets.slice(1).map((value) => `${String(value).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<</Size 6 /Root 1 0 R ${trailerExtra}>>\nstartxref\n${xref}\n%%EOF\n`; return Buffer.from(body); }
 function futureRevisionStreamLength() { const base = classicPdfWithStreamLength("6 0 R"); const previousXref = Number(/startxref\n(\d+)\n%%EOF/.exec(base.toString("latin1"))[1]); const objectOffset = base.length; const object = Buffer.from("6 0 obj\n4\nendobj\n"); const xrefOffset = objectOffset + object.length; return Buffer.concat([base, object, Buffer.from(`xref\n6 1\n${String(objectOffset).padStart(10, "0")} 00000 n \ntrailer\n<</Size 7 /Root 1 0 R /Prev ${previousXref}>>\nstartxref\n${xrefOffset}\n%%EOF\n`)]); }
@@ -204,6 +221,40 @@ test("strict text shell vocabulary matches the pinned Bash 5.2 command vocabular
     assert.equal(hasExecutableShellSemantics(name), true, name);
     assert.equal(hasExecutableShellSemantics(`'${name}'`), true, `'${name}'`);
     assert.equal(hasExecutableShellSemantics(`"${name}"`), true, `"${name}"`);
+  }
+});
+
+test("PDF inspection fail-closes expired fresh and concurrent lazy loads before operator work", () => {
+  for (const concurrency of [1, 8]) {
+    const probe = freshPdfDeadlineProbe(concurrency);
+    assert.deepEqual(probe.results, Array(concurrency).fill(false), `fresh lazy load concurrency ${concurrency}`);
+    assert.equal(probe.expiredHooks, 0, `expired lazy load reached operator hook at concurrency ${concurrency}`);
+    assert.ok(probe.elapsedMs < 2_000, `expired lazy load was not bounded at concurrency ${concurrency}: ${probe.elapsedMs}ms`);
+    assert.equal(probe.retry, true, `normal retry failed after expired lazy load at concurrency ${concurrency}`);
+    assert.equal(probe.retryHooks, 1, `normal retry did not reach its operator hook at concurrency ${concurrency}`);
+  }
+});
+
+test("PDF inspection fails closed and retries after a transient lazy module failure", async () => {
+  const token = randomUUID();
+  const runtimePath = path.join(process.cwd(), "dist", `.file-ingress-runtime-${token}.mjs`);
+  const loaderName = `.pdfjs-retry-${token}.mjs`;
+  const loaderPath = path.join(process.cwd(), "dist", loaderName);
+  try {
+    const source = await readFile(path.join(process.cwd(), "dist", "file-ingress-runtime.js"), "utf8");
+    assert.match(source, /import\("pdfjs-dist\/legacy\/build\/pdf\.mjs"\)/);
+    await writeFile(runtimePath, source.replace('import("pdfjs-dist/legacy/build/pdf.mjs")', `import("./${loaderName}")`));
+    const isolated = await import(`${pathToFileURL(runtimePath).href}?${token}`);
+    assert.equal(await isolated.validatePdfIngress(minimalPdf()), false);
+    await writeFile(loaderPath, `export function getDocument() {
+  const page = { async getOperatorList() { return {}; }, async getJSActions() { return null; }, async getAnnotations() { return []; } };
+  const document = { numPages: 1, async getAttachments() { return null; }, async getJSActions() { return null; }, async getOpenAction() { return null; }, async getPage() { return page; } };
+  return { promise: Promise.resolve(document), async destroy() {} };
+}\n`);
+    assert.equal(await isolated.validatePdfIngress(minimalPdf()), true);
+  } finally {
+    await rm(runtimePath, { force: true });
+    await rm(loaderPath, { force: true });
   }
 });
 

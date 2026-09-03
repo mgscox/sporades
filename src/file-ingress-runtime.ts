@@ -528,15 +528,25 @@ function validPdfTerminalBoundary(bytes: Buffer) {
   }
   return false;
 }
+let pdfJsModulePromise: Promise<RecordLike> | undefined;
+function loadPdfJsModule() {
+  if (!pdfJsModulePromise) {
+    const pending = import("pdfjs-dist/legacy/build/pdf.mjs");
+    pdfJsModulePromise = pending;
+    void pending.catch(() => { if (pdfJsModulePromise === pending) pdfJsModulePromise = undefined; });
+  }
+  return pdfJsModulePromise;
+}
 export async function validatePdfIngress(bytes: Buffer, options: RecordLike = {}) {
   if (bytes.length < 16 || bytes.subarray(0, 5).toString("ascii") !== "%PDF-" || !validPdfTerminalBoundary(bytes)) return false;
-  let task: any; let timer: any; const timeoutMs = Number.isInteger(options.timeoutMs) ? Math.max(1, Math.min(2_000, options.timeoutMs)) : 2_000;
+  let task: any; let timer: any; let expired = false; const timeoutMs = Number.isInteger(options.timeoutMs) ? Math.max(1, Math.min(2_000, options.timeoutMs)) : 2_000; const deadline = Date.now() + timeoutMs; const deadlineExpired = () => expired || Date.now() >= deadline;
   try {
     const workflow = (async () => {
-      const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+      const { getDocument } = await loadPdfJsModule();
+      if (deadlineExpired()) return false;
       task = getDocument({ data: new Uint8Array(bytes), useWorkerFetch: false, disableFontFace: true });
       const [document, parsed] = await Promise.all([task.promise, PDFDocument.load(bytes, { ignoreEncryption: false, throwOnInvalidObject: true, updateMetadata: false })]);
-      if ((document as any).numPages < 1 || (document as any).numPages > 100) return false;
+      if (deadlineExpired() || (document as any).numPages < 1 || (document as any).numPages > 100) return false;
       type PdfGraphRole = "ordinary" | "page-tree" | "annotation" | "outline-root" | "outline-item" | "action";
       const visitedObjects = new WeakMap<object, Set<PdfGraphRole>>(); const visitedRefs = new Map<string, Set<PdfGraphRole>>(); let visitedCount = 0;
       const actionBearingKeys = new Set(["/OpenAction", "/AA"]);
@@ -548,6 +558,7 @@ export async function validatePdfIngress(bytes: Buffer, options: RecordLike = {}
         if (value === undefined) return undefined;
         const refs = new Set<string>();
         for (let hop = 0; hop < 16; hop += 1) {
+          if (deadlineExpired()) return null;
           if (value instanceof PDFName) return value.asString();
           if (!(value instanceof PDFRef)) return null;
           const ref = value.toString();
@@ -559,7 +570,7 @@ export async function validatePdfIngress(bytes: Buffer, options: RecordLike = {}
         return null;
       };
       const visit = (candidate: any, depth = 0, role: PdfGraphRole = "ordinary"): boolean => {
-        if (depth > 128 || ++visitedCount > 100_000) return false;
+        if (deadlineExpired() || depth > 128 || ++visitedCount > 100_000) return false;
         // Action ownership follows the object graph from the catalog's Pages
         // and Outlines roots. It never depends on optional annotation or
         // outline marker fields: /A is also a benign StructElem/IconFit key.
@@ -599,15 +610,16 @@ export async function validatePdfIngress(bytes: Buffer, options: RecordLike = {}
         return true;
       };
       if (!visit(parsed.catalog)) return false;
-      for (const [, object] of parsed.context.enumerateIndirectObjects()) if (!visit(object)) return false;
+      for (const [, object] of parsed.context.enumerateIndirectObjects()) if (deadlineExpired() || !visit(object)) return false;
       const catalogChecks = await Promise.all([(document as any).getAttachments?.(), (document as any).getJSActions?.(), (document as any).getOpenAction?.()]);
+      if (deadlineExpired()) return false;
       const hasEntries = (value: any) => Boolean(value) && (value instanceof Map || value instanceof Set ? value.size > 0 : Array.isArray(value) ? value.length > 0 : typeof value !== "object" || Object.keys(value).length > 0);
       if (catalogChecks.some(hasEntries)) return false;
-      for (let page = 1; page <= (document as any).numPages; page += 1) { await options.beforeOperatorList?.(page); const currentPage = await (document as any).getPage(page); const [operators, actions, annotations] = await Promise.all([currentPage.getOperatorList(), currentPage.getJSActions?.(), currentPage.getAnnotations?.({ intent: "display" })]); if (hasEntries(actions)) return false; if (Array.isArray(annotations) && annotations.some((annotation: RecordLike) => annotation?.action || annotation?.attachment || annotation?.file || annotation?.unsafeUrl || annotation?.annotationType === 17)) return false; void operators; }
-      return true;
+      for (let page = 1; page <= (document as any).numPages; page += 1) { if (deadlineExpired()) return false; await options.beforeOperatorList?.(page); if (deadlineExpired()) return false; const currentPage = await (document as any).getPage(page); if (deadlineExpired()) return false; const [operators, actions, annotations] = await Promise.all([currentPage.getOperatorList(), currentPage.getJSActions?.(), currentPage.getAnnotations?.({ intent: "display" })]); if (deadlineExpired() || hasEntries(actions)) return false; if (Array.isArray(annotations) && annotations.some((annotation: RecordLike) => annotation?.action || annotation?.attachment || annotation?.file || annotation?.unsafeUrl || annotation?.annotationType === 17)) return false; void operators; }
+      return !deadlineExpired();
     })();
-    return await Promise.race([workflow, new Promise<boolean>((_, reject) => { timer = setTimeout(() => { try { task?.destroy?.(); } catch {} reject(new Error("PDF inspection timeout")); }, timeoutMs); })]);
-  } catch { return false; } finally { clearTimeout(timer); try { await task?.destroy?.(); } catch {} }
+    return await Promise.race([workflow, new Promise<boolean>((resolve) => { timer = setTimeout(() => { expired = true; try { task?.destroy?.(); } catch {} resolve(false); }, Math.max(0, deadline - Date.now())); })]);
+  } catch { return false; } finally { expired = true; clearTimeout(timer); try { await task?.destroy?.(); } catch {} }
 }
 const maximumContentPolicyTextBytes = 1024 * 1024;
 const maximumContentPolicyTokens = 100_000;

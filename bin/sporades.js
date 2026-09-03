@@ -85810,17 +85810,32 @@ function validPdfTerminalBoundary(bytes) {
   }
   return false;
 }
+var pdfJsModulePromise;
+function loadPdfJsModule() {
+  if (!pdfJsModulePromise) {
+    const pending = Promise.resolve().then(() => (init_pdf(), pdf_exports));
+    pdfJsModulePromise = pending;
+    void pending.catch(() => {
+      if (pdfJsModulePromise === pending) pdfJsModulePromise = void 0;
+    });
+  }
+  return pdfJsModulePromise;
+}
 async function validatePdfIngress(bytes, options = {}) {
   if (bytes.length < 16 || bytes.subarray(0, 5).toString("ascii") !== "%PDF-" || !validPdfTerminalBoundary(bytes)) return false;
   let task;
   let timer;
+  let expired = false;
   const timeoutMs = Number.isInteger(options.timeoutMs) ? Math.max(1, Math.min(2e3, options.timeoutMs)) : 2e3;
+  const deadline = Date.now() + timeoutMs;
+  const deadlineExpired = () => expired || Date.now() >= deadline;
   try {
     const workflow = (async () => {
-      const { getDocument: getDocument2 } = await Promise.resolve().then(() => (init_pdf(), pdf_exports));
+      const { getDocument: getDocument2 } = await loadPdfJsModule();
+      if (deadlineExpired()) return false;
       task = getDocument2({ data: new Uint8Array(bytes), useWorkerFetch: false, disableFontFace: true });
       const [document2, parsed] = await Promise.all([task.promise, import_pdf_lib.PDFDocument.load(bytes, { ignoreEncryption: false, throwOnInvalidObject: true, updateMetadata: false })]);
-      if (document2.numPages < 1 || document2.numPages > 100) return false;
+      if (deadlineExpired() || document2.numPages < 1 || document2.numPages > 100) return false;
       const visitedObjects = /* @__PURE__ */ new WeakMap();
       const visitedRefs = /* @__PURE__ */ new Map();
       let visitedCount = 0;
@@ -85833,6 +85848,7 @@ async function validatePdfIngress(bytes, options = {}) {
         if (value === void 0) return void 0;
         const refs = /* @__PURE__ */ new Set();
         for (let hop = 0; hop < 16; hop += 1) {
+          if (deadlineExpired()) return null;
           if (value instanceof import_pdf_lib.PDFName) return value.asString();
           if (!(value instanceof import_pdf_lib.PDFRef)) return null;
           const ref2 = value.toString();
@@ -85848,7 +85864,7 @@ async function validatePdfIngress(bytes, options = {}) {
         return null;
       };
       const visit = (candidate, depth = 0, role = "ordinary") => {
-        if (depth > 128 || ++visitedCount > 1e5) return false;
+        if (deadlineExpired() || depth > 128 || ++visitedCount > 1e5) return false;
         if (role === "action") return false;
         if (candidate instanceof import_pdf_lib.PDFRef) {
           const key = candidate.toString();
@@ -85890,32 +85906,38 @@ async function validatePdfIngress(bytes, options = {}) {
         return true;
       };
       if (!visit(parsed.catalog)) return false;
-      for (const [, object] of parsed.context.enumerateIndirectObjects()) if (!visit(object)) return false;
+      for (const [, object] of parsed.context.enumerateIndirectObjects()) if (deadlineExpired() || !visit(object)) return false;
       const catalogChecks = await Promise.all([document2.getAttachments?.(), document2.getJSActions?.(), document2.getOpenAction?.()]);
+      if (deadlineExpired()) return false;
       const hasEntries = (value) => Boolean(value) && (value instanceof Map || value instanceof Set ? value.size > 0 : Array.isArray(value) ? value.length > 0 : typeof value !== "object" || Object.keys(value).length > 0);
       if (catalogChecks.some(hasEntries)) return false;
       for (let page = 1; page <= document2.numPages; page += 1) {
+        if (deadlineExpired()) return false;
         await options.beforeOperatorList?.(page);
+        if (deadlineExpired()) return false;
         const currentPage = await document2.getPage(page);
+        if (deadlineExpired()) return false;
         const [operators, actions, annotations] = await Promise.all([currentPage.getOperatorList(), currentPage.getJSActions?.(), currentPage.getAnnotations?.({ intent: "display" })]);
-        if (hasEntries(actions)) return false;
+        if (deadlineExpired() || hasEntries(actions)) return false;
         if (Array.isArray(annotations) && annotations.some((annotation) => annotation?.action || annotation?.attachment || annotation?.file || annotation?.unsafeUrl || annotation?.annotationType === 17)) return false;
         void operators;
       }
-      return true;
+      return !deadlineExpired();
     })();
-    return await Promise.race([workflow, new Promise((_, reject) => {
+    return await Promise.race([workflow, new Promise((resolve) => {
       timer = setTimeout(() => {
+        expired = true;
         try {
           task?.destroy?.();
         } catch {
         }
-        reject(new Error("PDF inspection timeout"));
-      }, timeoutMs);
+        resolve(false);
+      }, Math.max(0, deadline - Date.now()));
     })]);
   } catch {
     return false;
   } finally {
+    expired = true;
     clearTimeout(timer);
     try {
       await task?.destroy?.();
