@@ -1512,6 +1512,32 @@ function shellCommandCanRun(name) {
     }
     return false;
 }
+function braceSequenceAlternatives(body) {
+    const numeric = /^(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?$/.exec(body);
+    const alphabetic = /^([A-Za-z])\.\.([A-Za-z])(?:\.\.(-?\d+))?$/.exec(body);
+    if (!numeric && !alphabetic)
+        return undefined;
+    const stepText = (numeric ?? alphabetic)?.[3];
+    const step = stepText === undefined ? 1 : Number(stepText);
+    if (!Number.isSafeInteger(step) || step === 0)
+        return undefined;
+    const start = numeric ? Number(numeric[1]) : alphabetic[1].charCodeAt(0);
+    const end = numeric ? Number(numeric[2]) : alphabetic[2].charCodeAt(0);
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end))
+        return null;
+    const increment = (start <= end ? 1 : -1) * Math.abs(step);
+    const count = Math.floor(Math.abs(end - start) / Math.abs(increment)) + 1;
+    if (count > 64)
+        return null;
+    const width = numeric && (/^-?0\d/.test(numeric[1]) || /^-?0\d/.test(numeric[2])) ? Math.max(numeric[1].length, numeric[2].length) : 0;
+    const format = (value) => alphabetic ? String.fromCharCode(value) : width > 0
+        ? value < 0 ? `-${String(Math.abs(value)).padStart(width - 1, "0")}` : String(value).padStart(width, "0")
+        : String(value);
+    return Array.from({ length: count }, (_, index) => format(start + index * increment));
+}
+function braceBodyIsExpandable(body) {
+    return body.includes(",") || braceSequenceAlternatives(body) !== undefined;
+}
 function shellWordHasPathExpansion(word) {
     const raw = String(word?.text ?? "");
     let quote = "";
@@ -1533,8 +1559,11 @@ function shellWordHasPathExpansion(word) {
         const currentUserTilde = process.env.USER && (raw === `~${process.env.USER}` || raw.startsWith(`~${process.env.USER}/`));
         if ((index === 0 && character === "~" && (raw[index + 1] === "/" || raw.length === 1 || currentUserTilde)) || character === "*" || character === "?" || character === "[")
             return true;
-        if (character === "{" && raw.indexOf(",", index + 1) >= 0 && raw.indexOf("}", index + 1) > raw.indexOf(",", index + 1))
-            return true;
+        if (character === "{") {
+            const close = raw.indexOf("}", index + 1);
+            if (close > index + 1 && braceBodyIsExpandable(raw.slice(index + 1, close)))
+                return true;
+        }
     }
     return false;
 }
@@ -1544,12 +1573,15 @@ function boundedBraceExpansion(pattern) {
         let expanded = false;
         const next = [];
         for (const candidate of patterns) {
-            const match = /\{([^{}]{0,512})\}/.exec(candidate);
-            const alternatives = match?.[1].split(",");
-            if (!match || !alternatives || alternatives.length < 2) {
+            const matches = [...candidate.matchAll(/\{([^{}]*)\}/g)];
+            const match = matches.find((entry) => braceBodyIsExpandable(entry[1]));
+            const alternatives = !match ? undefined : match[1].includes(",") ? match[1].split(",") : braceSequenceAlternatives(match[1]);
+            if (!match || alternatives === undefined) {
                 next.push(candidate);
                 continue;
             }
+            if (alternatives === null)
+                return null;
             expanded = true;
             for (const alternative of alternatives) {
                 next.push(candidate.slice(0, match.index) + alternative + candidate.slice(match.index + match[0].length));
@@ -1563,6 +1595,10 @@ function boundedBraceExpansion(pattern) {
     }
     return null;
 }
+const posixBracketClasses = {
+    alnum: "A-Za-z0-9", alpha: "A-Za-z", blank: " \\t", cntrl: "\\x00-\\x1f\\x7f", digit: "0-9", graph: "\\x21-\\x7e",
+    lower: "a-z", print: "\\x20-\\x7e", punct: "!\"#$%&'()*+,./:;<=>?@\\[\\\\\\]^_`{|}~-", space: " \\t-\\r", upper: "A-Z", word: "A-Za-z0-9_", xdigit: "A-Fa-f0-9",
+};
 function shellGlobSegment(segment) {
     let source = "^";
     let active = false;
@@ -1579,9 +1615,29 @@ function shellGlobSegment(segment) {
             continue;
         }
         if (character === "[") {
-            const close = segment.indexOf("]", index + 1);
-            if (close > index + 1 && close - index <= 66) {
-                const body = segment.slice(index + 1, close).replace(/^!/, "^").replace(/\\/g, "\\\\");
+            let close = index + 1;
+            let body = "";
+            while (close < segment.length) {
+                if (segment[close] === "[" && [":", ".", "="].includes(segment[close + 1])) {
+                    const marker = segment[close + 1];
+                    const innerClose = segment.indexOf(`${marker}]`, close + 2);
+                    if (innerClose < 0)
+                        break;
+                    const token = segment.slice(close + 2, innerClose);
+                    if (marker !== ":" || !posixBracketClasses[token])
+                        return false;
+                    body += posixBracketClasses[token];
+                    close = innerClose + 2;
+                    continue;
+                }
+                if (segment[close] === "]" && close > index + 1)
+                    break;
+                const literal = segment[close];
+                body += literal === "\\" || literal === "]" ? `\\${literal}` : literal;
+                close += 1;
+            }
+            if (close < segment.length && segment[close] === "]" && close - index <= 128) {
+                body = body.replace(/^!/, "^");
                 source += `[${body}]`;
                 active = true;
                 index = close;
@@ -1633,6 +1689,8 @@ function expandedShellCommandCanRun(pattern) {
                 continue;
             }
             const matcher = shellGlobSegment(segment);
+            if (matcher === false)
+                return true;
             const next = [];
             for (const root of roots) {
                 if (!matcher)
