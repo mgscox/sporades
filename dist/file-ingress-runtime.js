@@ -271,13 +271,13 @@ export async function validatePdfIngress(bytes, options = {}) {
             const [document, parsed] = await Promise.all([task.promise, PDFDocument.load(bytes, { ignoreEncryption: false, throwOnInvalidObject: true, updateMetadata: false })]);
             if (document.numPages < 1 || document.numPages > 100)
                 return false;
-            const visitedObjects = new WeakSet();
-            const visitedRefs = new Set();
+            const visitedObjects = new WeakMap();
+            const visitedRefs = new Map();
             let visitedCount = 0;
             const actionBearingKeys = new Set(["/OpenAction", "/AA"]);
+            const outlineItemLinkKeys = new Set(["/First", "/Last", "/Next", "/Prev"]);
             const forbiddenStructureKeys = new Set(["/JavaScript", "/EmbeddedFiles", "/EF", "/XFA"]);
             const actionSubtypes = new Set(["/GoTo", "/GoToR", "/GoToE", "/Launch", "/Thread", "/URI", "/Sound", "/Movie", "/Hide", "/Named", "/SubmitForm", "/ResetForm", "/ImportData", "/JavaScript", "/SetOCGState", "/Rendition", "/Trans", "/GoTo3DView"]);
-            const annotationSubtypes = new Set(["/Text", "/Link", "/FreeText", "/Line", "/Square", "/Circle", "/Polygon", "/PolyLine", "/Highlight", "/Underline", "/Squiggly", "/StrikeOut", "/Stamp", "/Caret", "/Ink", "/Popup", "/FileAttachment", "/Sound", "/Movie", "/Widget", "/Screen", "/PrinterMark", "/TrapNet", "/Watermark", "/3D", "/Redact", "/Projection", "/RichMedia"]);
             const semanticName = (candidate, key) => {
                 let value = candidate.get(PDFName.of(key));
                 if (value === undefined)
@@ -303,33 +303,37 @@ export async function validatePdfIngress(bytes, options = {}) {
                 }
                 return null;
             };
-            const visit = (candidate, depth = 0, actionContext = false) => {
+            const visit = (candidate, depth = 0, role = "ordinary") => {
                 if (depth > 128 || ++visitedCount > 100_000)
                     return false;
-                // The caller only supplies actionContext for keys which define actions
-                // on their owning PDF dictionary. In particular, /A is also the
-                // structure-element attributes key and cannot be classified globally.
+                // Action ownership follows the object graph from the catalog's Pages
+                // and Outlines roots. It never depends on optional annotation or
+                // outline marker fields: /A is also a benign StructElem/IconFit key.
                 // Reject the whole reachable value even when it is indirect, an array,
                 // or a dictionary that legally omits /Type /Action and /S.
-                if (actionContext)
+                if (role === "action")
                     return false;
                 if (candidate instanceof PDFRef) {
                     const key = candidate.toString();
-                    if (visitedRefs.has(key))
+                    const roles = visitedRefs.get(key) ?? new Set();
+                    if (roles.has(role))
                         return true;
-                    visitedRefs.add(key);
-                    return visit(parsed.context.lookup(candidate), depth + 1);
+                    roles.add(role);
+                    visitedRefs.set(key, roles);
+                    return visit(parsed.context.lookup(candidate), depth + 1, role);
                 }
                 if (!candidate || typeof candidate !== "object")
                     return true;
-                if (visitedObjects.has(candidate))
+                const objectRoles = visitedObjects.get(candidate) ?? new Set();
+                if (objectRoles.has(role))
                     return true;
-                visitedObjects.add(candidate);
+                objectRoles.add(role);
+                visitedObjects.set(candidate, objectRoles);
                 if (candidate instanceof PDFStream)
-                    return visit(candidate.dict, depth + 1);
+                    return visit(candidate.dict, depth + 1, role);
                 if (candidate instanceof PDFArray) {
                     for (let index = 0; index < candidate.size(); index += 1)
-                        if (!visit(candidate.get(index), depth + 1))
+                        if (!visit(candidate.get(index), depth + 1, role))
                             return false;
                     return true;
                 }
@@ -346,12 +350,7 @@ export async function validatePdfIngress(bytes, options = {}) {
                 // standardized action subtype or in an action-bearing context.
                 if (subtype !== undefined && actionSubtypes.has(subtype))
                     return false;
-                const annotationSubtype = semanticName(candidate, "Subtype");
-                if (annotationSubtype === null)
-                    return false;
-                const ownsActivationAction = type === "/Annot"
-                    || (annotationSubtype !== undefined && annotationSubtypes.has(annotationSubtype))
-                    || (candidate.has(PDFName.of("Title")) && candidate.has(PDFName.of("Parent")));
+                const ownsActivationAction = role === "annotation" || role === "outline-item";
                 for (const [key, value] of candidate.entries()) {
                     const name = key.asString();
                     if (forbiddenStructureKeys.has(name) || name === "/JS")
@@ -359,7 +358,20 @@ export async function validatePdfIngress(bytes, options = {}) {
                     // /Next is also the ordinary sibling pointer in outline trees. It is
                     // an action chain only after this dictionary has independently been
                     // classified as an action; those dictionaries are rejected above.
-                    if (!visit(value, depth + 1, actionBearingKeys.has(name) || (name === "/A" && ownsActivationAction)))
+                    let childRole = actionBearingKeys.has(name) || (name === "/A" && ownsActivationAction) ? "action" : "ordinary";
+                    if (candidate === parsed.catalog && name === "/Pages")
+                        childRole = "page-tree";
+                    else if (candidate === parsed.catalog && name === "/Outlines")
+                        childRole = "outline-root";
+                    else if (role === "page-tree" && name === "/Kids")
+                        childRole = "page-tree";
+                    else if (role === "page-tree" && name === "/Annots")
+                        childRole = "annotation";
+                    else if (role === "outline-root" && (name === "/First" || name === "/Last"))
+                        childRole = "outline-item";
+                    else if (role === "outline-item" && outlineItemLinkKeys.has(name))
+                        childRole = "outline-item";
+                    if (!visit(value, depth + 1, childRole))
                         return false;
                 }
                 return true;

@@ -85064,13 +85064,13 @@ async function validatePdfIngress(bytes, options = {}) {
     const workflow = (async () => {
       const [document2, parsed] = await Promise.all([task.promise, import_pdf_lib.PDFDocument.load(bytes, { ignoreEncryption: false, throwOnInvalidObject: true, updateMetadata: false })]);
       if (document2.numPages < 1 || document2.numPages > 100) return false;
-      const visitedObjects = /* @__PURE__ */ new WeakSet();
-      const visitedRefs = /* @__PURE__ */ new Set();
+      const visitedObjects = /* @__PURE__ */ new WeakMap();
+      const visitedRefs = /* @__PURE__ */ new Map();
       let visitedCount = 0;
       const actionBearingKeys = /* @__PURE__ */ new Set(["/OpenAction", "/AA"]);
+      const outlineItemLinkKeys = /* @__PURE__ */ new Set(["/First", "/Last", "/Next", "/Prev"]);
       const forbiddenStructureKeys = /* @__PURE__ */ new Set(["/JavaScript", "/EmbeddedFiles", "/EF", "/XFA"]);
       const actionSubtypes = /* @__PURE__ */ new Set(["/GoTo", "/GoToR", "/GoToE", "/Launch", "/Thread", "/URI", "/Sound", "/Movie", "/Hide", "/Named", "/SubmitForm", "/ResetForm", "/ImportData", "/JavaScript", "/SetOCGState", "/Rendition", "/Trans", "/GoTo3DView"]);
-      const annotationSubtypes = /* @__PURE__ */ new Set(["/Text", "/Link", "/FreeText", "/Line", "/Square", "/Circle", "/Polygon", "/PolyLine", "/Highlight", "/Underline", "/Squiggly", "/StrikeOut", "/Stamp", "/Caret", "/Ink", "/Popup", "/FileAttachment", "/Sound", "/Movie", "/Widget", "/Screen", "/PrinterMark", "/TrapNet", "/Watermark", "/3D", "/Redact", "/Projection", "/RichMedia"]);
       const semanticName = (candidate, key) => {
         let value = candidate.get(import_pdf_lib.PDFName.of(key));
         if (value === void 0) return void 0;
@@ -85090,21 +85090,25 @@ async function validatePdfIngress(bytes, options = {}) {
         }
         return null;
       };
-      const visit = (candidate, depth = 0, actionContext = false) => {
+      const visit = (candidate, depth = 0, role = "ordinary") => {
         if (depth > 128 || ++visitedCount > 1e5) return false;
-        if (actionContext) return false;
+        if (role === "action") return false;
         if (candidate instanceof import_pdf_lib.PDFRef) {
           const key = candidate.toString();
-          if (visitedRefs.has(key)) return true;
-          visitedRefs.add(key);
-          return visit(parsed.context.lookup(candidate), depth + 1);
+          const roles = visitedRefs.get(key) ?? /* @__PURE__ */ new Set();
+          if (roles.has(role)) return true;
+          roles.add(role);
+          visitedRefs.set(key, roles);
+          return visit(parsed.context.lookup(candidate), depth + 1, role);
         }
         if (!candidate || typeof candidate !== "object") return true;
-        if (visitedObjects.has(candidate)) return true;
-        visitedObjects.add(candidate);
-        if (candidate instanceof import_pdf_lib.PDFStream) return visit(candidate.dict, depth + 1);
+        const objectRoles = visitedObjects.get(candidate) ?? /* @__PURE__ */ new Set();
+        if (objectRoles.has(role)) return true;
+        objectRoles.add(role);
+        visitedObjects.set(candidate, objectRoles);
+        if (candidate instanceof import_pdf_lib.PDFStream) return visit(candidate.dict, depth + 1, role);
         if (candidate instanceof import_pdf_lib.PDFArray) {
-          for (let index = 0; index < candidate.size(); index += 1) if (!visit(candidate.get(index), depth + 1)) return false;
+          for (let index = 0; index < candidate.size(); index += 1) if (!visit(candidate.get(index), depth + 1, role)) return false;
           return true;
         }
         if (!(candidate instanceof import_pdf_lib.PDFDict)) return true;
@@ -85113,13 +85117,18 @@ async function validatePdfIngress(bytes, options = {}) {
         const subtype = semanticName(candidate, "S");
         if (subtype === null) return false;
         if (subtype !== void 0 && actionSubtypes.has(subtype)) return false;
-        const annotationSubtype = semanticName(candidate, "Subtype");
-        if (annotationSubtype === null) return false;
-        const ownsActivationAction = type === "/Annot" || annotationSubtype !== void 0 && annotationSubtypes.has(annotationSubtype) || candidate.has(import_pdf_lib.PDFName.of("Title")) && candidate.has(import_pdf_lib.PDFName.of("Parent"));
+        const ownsActivationAction = role === "annotation" || role === "outline-item";
         for (const [key, value] of candidate.entries()) {
           const name2 = key.asString();
           if (forbiddenStructureKeys.has(name2) || name2 === "/JS") return false;
-          if (!visit(value, depth + 1, actionBearingKeys.has(name2) || name2 === "/A" && ownsActivationAction)) return false;
+          let childRole = actionBearingKeys.has(name2) || name2 === "/A" && ownsActivationAction ? "action" : "ordinary";
+          if (candidate === parsed.catalog && name2 === "/Pages") childRole = "page-tree";
+          else if (candidate === parsed.catalog && name2 === "/Outlines") childRole = "outline-root";
+          else if (role === "page-tree" && name2 === "/Kids") childRole = "page-tree";
+          else if (role === "page-tree" && name2 === "/Annots") childRole = "annotation";
+          else if (role === "outline-root" && (name2 === "/First" || name2 === "/Last")) childRole = "outline-item";
+          else if (role === "outline-item" && outlineItemLinkKeys.has(name2)) childRole = "outline-item";
+          if (!visit(value, depth + 1, childRole)) return false;
         }
         return true;
       };
