@@ -4,6 +4,7 @@
 import { ensureFileBucket, fileMetadataFromRow, normalizeAbsoluteFilePath } from "./file-storage-runtime.js";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRef, PDFStream } from "pdf-lib";
+import { parse } from "acorn";
 import jpeg from "jpeg-js";
 import { PNG } from "pngjs";
 
@@ -198,18 +199,51 @@ export async function validatePdfIngress(bytes: Buffer, options: RecordLike = {}
   } catch { return false; } finally { clearTimeout(timer); try { await task?.destroy?.(); } catch {} }
 }
 const maximumContentPolicyTextBytes = 1024 * 1024;
+const maximumContentPolicyAstNodes = 100_000;
+const maximumContentPolicyAstDepth = 256;
+const executableJavaScriptNodes = new Set([
+  "ArrowFunctionExpression", "AssignmentExpression", "AwaitExpression", "CallExpression",
+  "ClassDeclaration", "ClassExpression",
+  "DebuggerStatement", "DoWhileStatement", "ExportAllDeclaration", "ExportDefaultDeclaration",
+  "ExportNamedDeclaration", "ForInStatement", "ForOfStatement", "ForStatement",
+  "FunctionDeclaration", "FunctionExpression", "IfStatement", "ImportDeclaration", "ImportExpression",
+  "MemberExpression", "NewExpression",
+  "SwitchStatement", "TaggedTemplateExpression", "ThrowStatement", "TryStatement",
+  "UpdateExpression", "VariableDeclaration", "WhileStatement", "WithStatement",
+  "YieldExpression",
+]);
+function hasExecutableJavaScriptSemantics(text: string) {
+  let root: RecordLike;
+  try {
+    root = parse(text, { ecmaVersion: "latest", sourceType: "module", allowAwaitOutsideFunction: true }) as RecordLike;
+  } catch {
+    return false;
+  }
+  const pending = [{ node: root, depth: 0 }]; let visited = 0;
+  while (pending.length > 0) {
+    const { node, depth } = pending.pop()!;
+    visited += 1;
+    if (visited > maximumContentPolicyAstNodes || depth > maximumContentPolicyAstDepth) return true;
+    if (executableJavaScriptNodes.has(node.type)) return true;
+    if (node.type === "UnaryExpression" && node.operator === "delete") return true;
+    for (const value of Object.values(node)) {
+      if (Array.isArray(value)) {
+        for (const child of value) if (child && typeof child === "object" && typeof child.type === "string") pending.push({ node: child, depth: depth + 1 });
+      } else if (value && typeof value === "object" && typeof value.type === "string") pending.push({ node: value, depth: depth + 1 });
+    }
+  }
+  return false;
+}
 function safeUntrustedText(bytes: Buffer) {
   if (bytes.length > maximumContentPolicyTextBytes) return false;
   const decoder = new TextDecoder("utf-8", { fatal: true }); let text = ""; try { text = decoder.decode(bytes); } catch { return false; }
   if (!text || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text) || /<\s*(?:!doctype|\?xml|html\b|head\b|body\b|script\b|svg\b|[a-z][\w:-]*\s+[^>]*>)/i.test(text) || /<\s*([a-z][\w:-]*)\b[^>]*>[\s\S]*<\/\s*\1\s*>/i.test(text)) return false;
   if (/(?:^|\n)\s*(?:#!|sudo\b|rm\s+-|curl\b|wget\b|bash\b|sh\b|python\b|node\b|chmod\b|eval\b|exec\b|echo\b|source\b|\.\s+[^\s]+|export\s+\w+=|set\s+-[eux]|if\s+\[|for\s+\w+\s+in\b)/im.test(text)) return false;
   if (/\b(?:print|open|compile|__import__|subprocess\.(?:run|call|Popen)|os\.system)\s*\(/.test(text)) return false;
-  // Compilation never executes the upload. Requiring both a high-confidence
-  // statement-start call shape and a syntactically valid complete program
-  // catches call-only JavaScript without classifying ordinary prose merely for
-  // containing a word followed later by a parenthesis.
-  const javascriptSignal = /(?:\b(?:const|let|var|function|class|import|export)\b|=>|\brequire\s*\(|\bprocess\.|(?:^|[;{}\n])\s*(?:await\s+)?(?:new\s+)?[A-Za-z_$][\w$]*(?:\s*(?:\?\.|\.)\s*[A-Za-z_$][\w$]*)*\s*(?:\?\.)?\s*\()/m;
-  if (javascriptSignal.test(text)) { try { new Function(text); return false; } catch {} }
+  // Acorn parses but never executes the upload. Whole-program parsing handles
+  // comments, escapes, computed or parenthesized callees, and optional chains;
+  // the iterative traversal fails closed at fixed node and depth budgets.
+  if (hasExecutableJavaScriptSemantics(text)) return false;
   return true;
 }
 async function contentPolicyOutcome(row: RecordLike, bytes: Buffer) {

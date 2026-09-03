@@ -431,8 +431,8 @@ var require_base64 = __commonJS({
       if (!res)
         return exports.decodeFromBase64(trimmedUri);
       var fullMatch = res[0];
-      var data = trimmedUri.substring(fullMatch.length);
-      return exports.decodeFromBase64(data);
+      var data2 = trimmedUri.substring(fullMatch.length);
+      return exports.decodeFromBase64(data2);
     };
   }
 });
@@ -468,10 +468,10 @@ var require_strings = __commonJS({
       }
       return padding + value;
     };
-    exports.copyStringIntoBuffer = function(str, buffer, offset) {
+    exports.copyStringIntoBuffer = function(str, buffer, offset2) {
       var length = str.length;
       for (var idx = 0; idx < length; idx++) {
-        buffer[offset++] = str.charCodeAt(idx);
+        buffer[offset2++] = str.charCodeAt(idx);
       }
       return length;
     };
@@ -501,14 +501,14 @@ var require_strings = __commonJS({
     exports.charAtIndex = function(text2, index) {
       var cuFirst = text2.charCodeAt(index);
       var cuSecond;
-      var nextIndex = index + 1;
+      var nextIndex2 = index + 1;
       var length = 1;
       if (
         // Check if it's the start of a surrogate pair.
         cuFirst >= 55296 && cuFirst <= 56319 && // high surrogate
-        text2.length > nextIndex
+        text2.length > nextIndex2
       ) {
-        cuSecond = text2.charCodeAt(nextIndex);
+        cuSecond = text2.charCodeAt(nextIndex2);
         if (cuSecond >= 56320 && cuSecond <= 57343)
           length = 2;
       }
@@ -626,11 +626,11 @@ var require_arrays = __commonJS({
         totalSize += arrays[idx].length;
       }
       var merged = new Uint8Array(totalSize);
-      var offset = 0;
+      var offset2 = 0;
       for (var arrIdx = 0; arrIdx < arrayCount; arrIdx++) {
         var arr = typedArrays[arrIdx];
         for (var byteIdx = 0, arrLen = arr.length; byteIdx < arrLen; byteIdx++) {
-          merged[offset++] = arr[byteIdx];
+          merged[offset2++] = arr[byteIdx];
         }
       }
       return merged;
@@ -641,11 +641,11 @@ var require_arrays = __commonJS({
         totalSize += arrays[idx].length;
       }
       var mergedBuffer = new Uint8Array(totalSize);
-      var offset = 0;
+      var offset2 = 0;
       for (var idx = 0, len = arrays.length; idx < len; idx++) {
         var array = arrays[idx];
-        mergedBuffer.set(array, offset);
-        offset += array.length;
+        mergedBuffer.set(array, offset2);
+        offset2 += array.length;
       }
       return mergedBuffer;
     };
@@ -2963,7 +2963,7 @@ var require_deflate2 = __commonJS({
     var strings = require_strings2();
     var msg = require_messages();
     var ZStream = require_zstream();
-    var toString = Object.prototype.toString;
+    var toString2 = Object.prototype.toString;
     var Z_NO_FLUSH = 0;
     var Z_FINISH = 4;
     var Z_OK = 0;
@@ -3013,7 +3013,7 @@ var require_deflate2 = __commonJS({
         var dict;
         if (typeof opt.dictionary === "string") {
           dict = strings.string2buf(opt.dictionary);
-        } else if (toString.call(opt.dictionary) === "[object ArrayBuffer]") {
+        } else if (toString2.call(opt.dictionary) === "[object ArrayBuffer]") {
           dict = new Uint8Array(opt.dictionary);
         } else {
           dict = opt.dictionary;
@@ -3025,7 +3025,7 @@ var require_deflate2 = __commonJS({
         this._dict_set = true;
       }
     }
-    Deflate.prototype.push = function(data, mode) {
+    Deflate.prototype.push = function(data2, mode) {
       var strm = this.strm;
       var chunkSize = this.options.chunkSize;
       var status, _mode;
@@ -3033,12 +3033,12 @@ var require_deflate2 = __commonJS({
         return false;
       }
       _mode = mode === ~~mode ? mode : mode === true ? Z_FINISH : Z_NO_FLUSH;
-      if (typeof data === "string") {
-        strm.input = strings.string2buf(data);
-      } else if (toString.call(data) === "[object ArrayBuffer]") {
-        strm.input = new Uint8Array(data);
+      if (typeof data2 === "string") {
+        strm.input = strings.string2buf(data2);
+      } else if (toString2.call(data2) === "[object ArrayBuffer]") {
+        strm.input = new Uint8Array(data2);
       } else {
-        strm.input = data;
+        strm.input = data2;
       }
       strm.next_in = 0;
       strm.avail_in = strm.input.length;
@@ -4977,7 +4977,7 @@ var require_inflate2 = __commonJS({
     var msg = require_messages();
     var ZStream = require_zstream();
     var GZheader = require_gzheader();
-    var toString = Object.prototype.toString;
+    var toString2 = Object.prototype.toString;
     function Inflate(options) {
       if (!(this instanceof Inflate)) return new Inflate(options);
       this.options = utils.assign({
@@ -5018,7 +5018,7 @@ var require_inflate2 = __commonJS({
       if (opt.dictionary) {
         if (typeof opt.dictionary === "string") {
           opt.dictionary = strings.string2buf(opt.dictionary);
-        } else if (toString.call(opt.dictionary) === "[object ArrayBuffer]") {
+        } else if (toString2.call(opt.dictionary) === "[object ArrayBuffer]") {
           opt.dictionary = new Uint8Array(opt.dictionary);
         }
         if (opt.raw) {
@@ -5029,7 +5029,7 @@ var require_inflate2 = __commonJS({
         }
       }
     }
-    Inflate.prototype.push = function(data, mode) {
+    Inflate.prototype.push = function(data2, mode) {
       var strm = this.strm;
       var chunkSize = this.options.chunkSize;
       var dictionary = this.options.dictionary;
@@ -5040,12 +5040,12 @@ var require_inflate2 = __commonJS({
         return false;
       }
       _mode = mode === ~~mode ? mode : mode === true ? c.Z_FINISH : c.Z_NO_FLUSH;
-      if (typeof data === "string") {
-        strm.input = strings.binstring2buf(data);
-      } else if (toString.call(data) === "[object ArrayBuffer]") {
-        strm.input = new Uint8Array(data);
+      if (typeof data2 === "string") {
+        strm.input = strings.binstring2buf(data2);
+      } else if (toString2.call(data2) === "[object ArrayBuffer]") {
+        strm.input = new Uint8Array(data2);
       } else {
-        strm.input = data;
+        strm.input = data2;
       }
       strm.next_in = 0;
       strm.avail_in = strm.input.length;
@@ -5606,10 +5606,10 @@ var require_validators = __commonJS({
         return value instanceof Function;
       return value instanceof type[0];
     };
-    exports.createTypeErrorMsg = function(value, valueName, types) {
-      var allowedTypes = new Array(types.length);
-      for (var idx = 0, len = types.length; idx < len; idx++) {
-        var type = types[idx];
+    exports.createTypeErrorMsg = function(value, valueName, types2) {
+      var allowedTypes = new Array(types2.length);
+      for (var idx = 0, len = types2.length; idx < len; idx++) {
+        var type = types2[idx];
         if (type === "null")
           allowedTypes[idx] = exports.backtick("null");
         if (type === "undefined")
@@ -5636,19 +5636,19 @@ var require_validators = __commonJS({
       var joinedTypes = allowedTypes.join(" or ");
       return exports.backtick(valueName) + " must be of type " + joinedTypes + ", but was actually of type " + exports.backtick(exports.getType(value));
     };
-    exports.assertIs = function(value, valueName, types) {
-      for (var idx = 0, len = types.length; idx < len; idx++) {
-        if (exports.isType(value, types[idx]))
+    exports.assertIs = function(value, valueName, types2) {
+      for (var idx = 0, len = types2.length; idx < len; idx++) {
+        if (exports.isType(value, types2[idx]))
           return;
       }
-      throw new TypeError(exports.createTypeErrorMsg(value, valueName, types));
+      throw new TypeError(exports.createTypeErrorMsg(value, valueName, types2));
     };
-    exports.assertOrUndefined = function(value, valueName, types) {
-      exports.assertIs(value, valueName, types.concat("undefined"));
+    exports.assertOrUndefined = function(value, valueName, types2) {
+      exports.assertIs(value, valueName, types2.concat("undefined"));
     };
-    exports.assertEachIs = function(values, valueName, types) {
+    exports.assertEachIs = function(values, valueName, types2) {
       for (var idx = 0, len = values.length; idx < len; idx++) {
-        exports.assertIs(values[idx], valueName, types);
+        exports.assertIs(values[idx], valueName, types2);
       }
     };
     exports.assertRange = function(value, valueName, min, max) {
@@ -5893,9 +5893,9 @@ var require_errors2 = __commonJS({
       /** @class */
       (function(_super) {
         tslib_1.__extends(MissingCatalogError2, _super);
-        function MissingCatalogError2(ref) {
+        function MissingCatalogError2(ref2) {
           var _this = this;
-          var msg = "Missing catalog (ref=" + ref + ")";
+          var msg = "Missing catalog (ref=" + ref2 + ")";
           _this = _super.call(this, msg) || this;
           return _this;
         }
@@ -6308,23 +6308,23 @@ var require_PDFHeader = __commonJS({
         PDFHeader2.prototype.sizeInBytes = function() {
           return 12 + this.major.length + this.minor.length;
         };
-        PDFHeader2.prototype.copyBytesInto = function(buffer, offset) {
-          var initialOffset = offset;
-          buffer[offset++] = CharCodes_1.default.Percent;
-          buffer[offset++] = CharCodes_1.default.P;
-          buffer[offset++] = CharCodes_1.default.D;
-          buffer[offset++] = CharCodes_1.default.F;
-          buffer[offset++] = CharCodes_1.default.Dash;
-          offset += utils_1.copyStringIntoBuffer(this.major, buffer, offset);
-          buffer[offset++] = CharCodes_1.default.Period;
-          offset += utils_1.copyStringIntoBuffer(this.minor, buffer, offset);
-          buffer[offset++] = CharCodes_1.default.Newline;
-          buffer[offset++] = CharCodes_1.default.Percent;
-          buffer[offset++] = 129;
-          buffer[offset++] = 129;
-          buffer[offset++] = 129;
-          buffer[offset++] = 129;
-          return offset - initialOffset;
+        PDFHeader2.prototype.copyBytesInto = function(buffer, offset2) {
+          var initialOffset = offset2;
+          buffer[offset2++] = CharCodes_1.default.Percent;
+          buffer[offset2++] = CharCodes_1.default.P;
+          buffer[offset2++] = CharCodes_1.default.D;
+          buffer[offset2++] = CharCodes_1.default.F;
+          buffer[offset2++] = CharCodes_1.default.Dash;
+          offset2 += utils_1.copyStringIntoBuffer(this.major, buffer, offset2);
+          buffer[offset2++] = CharCodes_1.default.Period;
+          offset2 += utils_1.copyStringIntoBuffer(this.minor, buffer, offset2);
+          buffer[offset2++] = CharCodes_1.default.Newline;
+          buffer[offset2++] = CharCodes_1.default.Percent;
+          buffer[offset2++] = 129;
+          buffer[offset2++] = 129;
+          buffer[offset2++] = 129;
+          buffer[offset2++] = 129;
+          return offset2 - initialOffset;
         };
         PDFHeader2.forVersion = function(major, minor) {
           return new PDFHeader2(major, minor);
@@ -6399,8 +6399,8 @@ var require_PDFNumber = __commonJS({
         PDFNumber2.prototype.sizeInBytes = function() {
           return this.stringValue.length;
         };
-        PDFNumber2.prototype.copyBytesInto = function(buffer, offset) {
-          offset += index_1.copyStringIntoBuffer(this.stringValue, buffer, offset);
+        PDFNumber2.prototype.copyBytesInto = function(buffer, offset2) {
+          offset2 += index_1.copyStringIntoBuffer(this.stringValue, buffer, offset2);
           return this.stringValue.length;
         };
         PDFNumber2.of = function(value) {
@@ -6457,19 +6457,19 @@ var require_PDFArray = __commonJS({
         };
         PDFArray3.prototype.lookupMaybe = function(index) {
           var _a;
-          var types = [];
+          var types2 = [];
           for (var _i = 1; _i < arguments.length; _i++) {
-            types[_i - 1] = arguments[_i];
+            types2[_i - 1] = arguments[_i];
           }
-          return (_a = this.context).lookupMaybe.apply(_a, tslib_1.__spreadArrays([this.get(index)], types));
+          return (_a = this.context).lookupMaybe.apply(_a, tslib_1.__spreadArrays([this.get(index)], types2));
         };
         PDFArray3.prototype.lookup = function(index) {
           var _a;
-          var types = [];
+          var types2 = [];
           for (var _i = 1; _i < arguments.length; _i++) {
-            types[_i - 1] = arguments[_i];
+            types2[_i - 1] = arguments[_i];
           }
-          return (_a = this.context).lookup.apply(_a, tslib_1.__spreadArrays([this.get(index)], types));
+          return (_a = this.context).lookup.apply(_a, tslib_1.__spreadArrays([this.get(index)], types2));
         };
         PDFArray3.prototype.asRectangle = function() {
           if (this.size() !== 4)
@@ -6510,16 +6510,16 @@ var require_PDFArray = __commonJS({
           }
           return size;
         };
-        PDFArray3.prototype.copyBytesInto = function(buffer, offset) {
-          var initialOffset = offset;
-          buffer[offset++] = CharCodes_1.default.LeftSquareBracket;
-          buffer[offset++] = CharCodes_1.default.Space;
+        PDFArray3.prototype.copyBytesInto = function(buffer, offset2) {
+          var initialOffset = offset2;
+          buffer[offset2++] = CharCodes_1.default.LeftSquareBracket;
+          buffer[offset2++] = CharCodes_1.default.Space;
           for (var idx = 0, len = this.size(); idx < len; idx++) {
-            offset += this.get(idx).copyBytesInto(buffer, offset);
-            buffer[offset++] = CharCodes_1.default.Space;
+            offset2 += this.get(idx).copyBytesInto(buffer, offset2);
+            buffer[offset2++] = CharCodes_1.default.Space;
           }
-          buffer[offset++] = CharCodes_1.default.RightSquareBracket;
-          return offset - initialOffset;
+          buffer[offset2++] = CharCodes_1.default.RightSquareBracket;
+          return offset2 - initialOffset;
         };
         PDFArray3.prototype.scalePDFNumbers = function(x, y) {
           for (var idx = 0, len = this.size(); idx < len; idx++) {
@@ -6574,19 +6574,19 @@ var require_PDFBool = __commonJS({
         PDFBool2.prototype.sizeInBytes = function() {
           return this.value ? 4 : 5;
         };
-        PDFBool2.prototype.copyBytesInto = function(buffer, offset) {
+        PDFBool2.prototype.copyBytesInto = function(buffer, offset2) {
           if (this.value) {
-            buffer[offset++] = CharCodes_1.default.t;
-            buffer[offset++] = CharCodes_1.default.r;
-            buffer[offset++] = CharCodes_1.default.u;
-            buffer[offset++] = CharCodes_1.default.e;
+            buffer[offset2++] = CharCodes_1.default.t;
+            buffer[offset2++] = CharCodes_1.default.r;
+            buffer[offset2++] = CharCodes_1.default.u;
+            buffer[offset2++] = CharCodes_1.default.e;
             return 4;
           } else {
-            buffer[offset++] = CharCodes_1.default.f;
-            buffer[offset++] = CharCodes_1.default.a;
-            buffer[offset++] = CharCodes_1.default.l;
-            buffer[offset++] = CharCodes_1.default.s;
-            buffer[offset++] = CharCodes_1.default.e;
+            buffer[offset2++] = CharCodes_1.default.f;
+            buffer[offset2++] = CharCodes_1.default.a;
+            buffer[offset2++] = CharCodes_1.default.l;
+            buffer[offset2++] = CharCodes_1.default.s;
+            buffer[offset2++] = CharCodes_1.default.e;
             return 5;
           }
         };
@@ -6749,8 +6749,8 @@ var require_PDFName = __commonJS({
         PDFName3.prototype.sizeInBytes = function() {
           return this.encodedName.length;
         };
-        PDFName3.prototype.copyBytesInto = function(buffer, offset) {
-          offset += utils_1.copyStringIntoBuffer(this.encodedName, buffer, offset);
+        PDFName3.prototype.copyBytesInto = function(buffer, offset2) {
+          offset2 += utils_1.copyStringIntoBuffer(this.encodedName, buffer, offset2);
           return this.encodedName.length;
         };
         PDFName3.of = function(name) {
@@ -6821,11 +6821,11 @@ var require_PDFNull = __commonJS({
         PDFNull2.prototype.sizeInBytes = function() {
           return 4;
         };
-        PDFNull2.prototype.copyBytesInto = function(buffer, offset) {
-          buffer[offset++] = CharCodes_1.default.n;
-          buffer[offset++] = CharCodes_1.default.u;
-          buffer[offset++] = CharCodes_1.default.l;
-          buffer[offset++] = CharCodes_1.default.l;
+        PDFNull2.prototype.copyBytesInto = function(buffer, offset2) {
+          buffer[offset2++] = CharCodes_1.default.n;
+          buffer[offset2++] = CharCodes_1.default.u;
+          buffer[offset2++] = CharCodes_1.default.l;
+          buffer[offset2++] = CharCodes_1.default.l;
           return 4;
         };
         return PDFNull2;
@@ -6882,24 +6882,24 @@ var require_PDFDict = __commonJS({
         };
         PDFDict3.prototype.lookupMaybe = function(key) {
           var _a;
-          var types = [];
+          var types2 = [];
           for (var _i = 1; _i < arguments.length; _i++) {
-            types[_i - 1] = arguments[_i];
+            types2[_i - 1] = arguments[_i];
           }
-          var preservePDFNull = types.includes(PDFNull_1.default);
-          var value = (_a = this.context).lookupMaybe.apply(_a, tslib_1.__spreadArrays([this.get(key, preservePDFNull)], types));
+          var preservePDFNull = types2.includes(PDFNull_1.default);
+          var value = (_a = this.context).lookupMaybe.apply(_a, tslib_1.__spreadArrays([this.get(key, preservePDFNull)], types2));
           if (value === PDFNull_1.default && !preservePDFNull)
             return void 0;
           return value;
         };
         PDFDict3.prototype.lookup = function(key) {
           var _a;
-          var types = [];
+          var types2 = [];
           for (var _i = 1; _i < arguments.length; _i++) {
-            types[_i - 1] = arguments[_i];
+            types2[_i - 1] = arguments[_i];
           }
-          var preservePDFNull = types.includes(PDFNull_1.default);
-          var value = (_a = this.context).lookup.apply(_a, tslib_1.__spreadArrays([this.get(key, preservePDFNull)], types));
+          var preservePDFNull = types2.includes(PDFNull_1.default);
+          var value = (_a = this.context).lookup.apply(_a, tslib_1.__spreadArrays([this.get(key, preservePDFNull)], types2));
           if (value === PDFNull_1.default && !preservePDFNull)
             return void 0;
           return value;
@@ -6949,22 +6949,22 @@ var require_PDFDict = __commonJS({
           }
           return size;
         };
-        PDFDict3.prototype.copyBytesInto = function(buffer, offset) {
-          var initialOffset = offset;
-          buffer[offset++] = CharCodes_1.default.LessThan;
-          buffer[offset++] = CharCodes_1.default.LessThan;
-          buffer[offset++] = CharCodes_1.default.Newline;
+        PDFDict3.prototype.copyBytesInto = function(buffer, offset2) {
+          var initialOffset = offset2;
+          buffer[offset2++] = CharCodes_1.default.LessThan;
+          buffer[offset2++] = CharCodes_1.default.LessThan;
+          buffer[offset2++] = CharCodes_1.default.Newline;
           var entries = this.entries();
           for (var idx = 0, len = entries.length; idx < len; idx++) {
             var _a = entries[idx], key = _a[0], value = _a[1];
-            offset += key.copyBytesInto(buffer, offset);
-            buffer[offset++] = CharCodes_1.default.Space;
-            offset += value.copyBytesInto(buffer, offset);
-            buffer[offset++] = CharCodes_1.default.Newline;
+            offset2 += key.copyBytesInto(buffer, offset2);
+            buffer[offset2++] = CharCodes_1.default.Space;
+            offset2 += value.copyBytesInto(buffer, offset2);
+            buffer[offset2++] = CharCodes_1.default.Newline;
           }
-          buffer[offset++] = CharCodes_1.default.GreaterThan;
-          buffer[offset++] = CharCodes_1.default.GreaterThan;
-          return offset - initialOffset;
+          buffer[offset2++] = CharCodes_1.default.GreaterThan;
+          buffer[offset2++] = CharCodes_1.default.GreaterThan;
+          return offset2 - initialOffset;
         };
         PDFDict3.withContext = function(context) {
           return new PDFDict3(/* @__PURE__ */ new Map(), context);
@@ -7027,33 +7027,33 @@ var require_PDFStream = __commonJS({
           streamString += "\nendstream";
           return streamString;
         };
-        PDFStream3.prototype.copyBytesInto = function(buffer, offset) {
+        PDFStream3.prototype.copyBytesInto = function(buffer, offset2) {
           this.updateDict();
-          var initialOffset = offset;
-          offset += this.dict.copyBytesInto(buffer, offset);
-          buffer[offset++] = CharCodes_1.default.Newline;
-          buffer[offset++] = CharCodes_1.default.s;
-          buffer[offset++] = CharCodes_1.default.t;
-          buffer[offset++] = CharCodes_1.default.r;
-          buffer[offset++] = CharCodes_1.default.e;
-          buffer[offset++] = CharCodes_1.default.a;
-          buffer[offset++] = CharCodes_1.default.m;
-          buffer[offset++] = CharCodes_1.default.Newline;
+          var initialOffset = offset2;
+          offset2 += this.dict.copyBytesInto(buffer, offset2);
+          buffer[offset2++] = CharCodes_1.default.Newline;
+          buffer[offset2++] = CharCodes_1.default.s;
+          buffer[offset2++] = CharCodes_1.default.t;
+          buffer[offset2++] = CharCodes_1.default.r;
+          buffer[offset2++] = CharCodes_1.default.e;
+          buffer[offset2++] = CharCodes_1.default.a;
+          buffer[offset2++] = CharCodes_1.default.m;
+          buffer[offset2++] = CharCodes_1.default.Newline;
           var contents = this.getContents();
           for (var idx = 0, len = contents.length; idx < len; idx++) {
-            buffer[offset++] = contents[idx];
+            buffer[offset2++] = contents[idx];
           }
-          buffer[offset++] = CharCodes_1.default.Newline;
-          buffer[offset++] = CharCodes_1.default.e;
-          buffer[offset++] = CharCodes_1.default.n;
-          buffer[offset++] = CharCodes_1.default.d;
-          buffer[offset++] = CharCodes_1.default.s;
-          buffer[offset++] = CharCodes_1.default.t;
-          buffer[offset++] = CharCodes_1.default.r;
-          buffer[offset++] = CharCodes_1.default.e;
-          buffer[offset++] = CharCodes_1.default.a;
-          buffer[offset++] = CharCodes_1.default.m;
-          return offset - initialOffset;
+          buffer[offset2++] = CharCodes_1.default.Newline;
+          buffer[offset2++] = CharCodes_1.default.e;
+          buffer[offset2++] = CharCodes_1.default.n;
+          buffer[offset2++] = CharCodes_1.default.d;
+          buffer[offset2++] = CharCodes_1.default.s;
+          buffer[offset2++] = CharCodes_1.default.t;
+          buffer[offset2++] = CharCodes_1.default.r;
+          buffer[offset2++] = CharCodes_1.default.e;
+          buffer[offset2++] = CharCodes_1.default.a;
+          buffer[offset2++] = CharCodes_1.default.m;
+          return offset2 - initialOffset;
         };
         return PDFStream3;
       })(PDFObject_1.default)
@@ -7138,8 +7138,8 @@ var require_PDFRef = __commonJS({
         PDFRef3.prototype.sizeInBytes = function() {
           return this.tag.length;
         };
-        PDFRef3.prototype.copyBytesInto = function(buffer, offset) {
-          offset += utils_1.copyStringIntoBuffer(this.tag, buffer, offset);
+        PDFRef3.prototype.copyBytesInto = function(buffer, offset2) {
+          offset2 += utils_1.copyStringIntoBuffer(this.tag, buffer, offset2);
           return this.tag.length;
         };
         PDFRef3.of = function(objectNumber, generationNumber) {
@@ -7202,19 +7202,19 @@ var require_PDFOperator = __commonJS({
           size += this.name.length;
           return size;
         };
-        PDFOperator2.prototype.copyBytesInto = function(buffer, offset) {
-          var initialOffset = offset;
+        PDFOperator2.prototype.copyBytesInto = function(buffer, offset2) {
+          var initialOffset = offset2;
           for (var idx = 0, len = this.args.length; idx < len; idx++) {
             var arg = this.args[idx];
             if (arg instanceof PDFObject_1.default) {
-              offset += arg.copyBytesInto(buffer, offset);
+              offset2 += arg.copyBytesInto(buffer, offset2);
             } else {
-              offset += utils_1.copyStringIntoBuffer(arg, buffer, offset);
+              offset2 += utils_1.copyStringIntoBuffer(arg, buffer, offset2);
             }
-            buffer[offset++] = CharCodes_1.default.Space;
+            buffer[offset2++] = CharCodes_1.default.Space;
           }
-          offset += utils_1.copyStringIntoBuffer(this.name, buffer, offset);
-          return offset - initialOffset;
+          offset2 += utils_1.copyStringIntoBuffer(this.name, buffer, offset2);
+          return offset2 - initialOffset;
         };
         PDFOperator2.of = function(name, args) {
           return new PDFOperator2(name, args);
@@ -7399,10 +7399,10 @@ var require_PDFContentStream = __commonJS({
         };
         PDFContentStream2.prototype.getUnencodedContents = function() {
           var buffer = new Uint8Array(this.getUnencodedContentsSize());
-          var offset = 0;
+          var offset2 = 0;
           for (var idx = 0, len = this.operators.length; idx < len; idx++) {
-            offset += this.operators[idx].copyBytesInto(buffer, offset);
-            buffer[offset++] = CharCodes_1.default.Newline;
+            offset2 += this.operators[idx].copyBytesInto(buffer, offset2);
+            buffer[offset2++] = CharCodes_1.default.Newline;
           }
           return buffer;
         };
@@ -7490,10 +7490,10 @@ var require_PDFContext = __commonJS({
           this.indirectObjects = /* @__PURE__ */ new Map();
           this.rng = rng_1.SimpleRNG.withSeed(1);
         }
-        PDFContext2.prototype.assign = function(ref, object) {
-          this.indirectObjects.set(ref, object);
-          if (ref.objectNumber > this.largestObjectNumber) {
-            this.largestObjectNumber = ref.objectNumber;
+        PDFContext2.prototype.assign = function(ref2, object) {
+          this.indirectObjects.set(ref2, object);
+          if (ref2.objectNumber > this.largestObjectNumber) {
+            this.largestObjectNumber = ref2.objectNumber;
           }
         };
         PDFContext2.prototype.nextRef = function() {
@@ -7501,24 +7501,24 @@ var require_PDFContext = __commonJS({
           return PDFRef_1.default.of(this.largestObjectNumber);
         };
         PDFContext2.prototype.register = function(object) {
-          var ref = this.nextRef();
-          this.assign(ref, object);
-          return ref;
+          var ref2 = this.nextRef();
+          this.assign(ref2, object);
+          return ref2;
         };
-        PDFContext2.prototype.delete = function(ref) {
-          return this.indirectObjects.delete(ref);
+        PDFContext2.prototype.delete = function(ref2) {
+          return this.indirectObjects.delete(ref2);
         };
-        PDFContext2.prototype.lookupMaybe = function(ref) {
-          var types = [];
+        PDFContext2.prototype.lookupMaybe = function(ref2) {
+          var types2 = [];
           for (var _i = 1; _i < arguments.length; _i++) {
-            types[_i - 1] = arguments[_i];
+            types2[_i - 1] = arguments[_i];
           }
-          var preservePDFNull = types.includes(PDFNull_1.default);
-          var result = ref instanceof PDFRef_1.default ? this.indirectObjects.get(ref) : ref;
+          var preservePDFNull = types2.includes(PDFNull_1.default);
+          var result = ref2 instanceof PDFRef_1.default ? this.indirectObjects.get(ref2) : ref2;
           if (!result || result === PDFNull_1.default && !preservePDFNull)
             return void 0;
-          for (var idx = 0, len = types.length; idx < len; idx++) {
-            var type = types[idx];
+          for (var idx = 0, len = types2.length; idx < len; idx++) {
+            var type = types2[idx];
             if (type === PDFNull_1.default) {
               if (result === PDFNull_1.default)
                 return result;
@@ -7527,18 +7527,18 @@ var require_PDFContext = __commonJS({
                 return result;
             }
           }
-          throw new errors_1.UnexpectedObjectTypeError(types, result);
+          throw new errors_1.UnexpectedObjectTypeError(types2, result);
         };
-        PDFContext2.prototype.lookup = function(ref) {
-          var types = [];
+        PDFContext2.prototype.lookup = function(ref2) {
+          var types2 = [];
           for (var _i = 1; _i < arguments.length; _i++) {
-            types[_i - 1] = arguments[_i];
+            types2[_i - 1] = arguments[_i];
           }
-          var result = ref instanceof PDFRef_1.default ? this.indirectObjects.get(ref) : ref;
-          if (types.length === 0)
+          var result = ref2 instanceof PDFRef_1.default ? this.indirectObjects.get(ref2) : ref2;
+          if (types2.length === 0)
             return result;
-          for (var idx = 0, len = types.length; idx < len; idx++) {
-            var type = types[idx];
+          for (var idx = 0, len = types2.length; idx < len; idx++) {
+            var type = types2[idx];
             if (type === PDFNull_1.default) {
               if (result === PDFNull_1.default)
                 return result;
@@ -7547,14 +7547,14 @@ var require_PDFContext = __commonJS({
                 return result;
             }
           }
-          throw new errors_1.UnexpectedObjectTypeError(types, result);
+          throw new errors_1.UnexpectedObjectTypeError(types2, result);
         };
         PDFContext2.prototype.getObjectRef = function(pdfObject) {
           var entries = Array.from(this.indirectObjects.entries());
           for (var idx = 0, len = entries.length; idx < len; idx++) {
-            var _a = entries[idx], ref = _a[0], object = _a[1];
+            var _a = entries[idx], ref2 = _a[0], object = _a[1];
             if (object === pdfObject) {
-              return ref;
+              return ref2;
             }
           }
           return void 0;
@@ -7562,29 +7562,29 @@ var require_PDFContext = __commonJS({
         PDFContext2.prototype.enumerateIndirectObjects = function() {
           return Array.from(this.indirectObjects.entries()).sort(byAscendingObjectNumber);
         };
-        PDFContext2.prototype.obj = function(literal) {
-          if (literal instanceof PDFObject_1.default) {
-            return literal;
-          } else if (literal === null || literal === void 0) {
+        PDFContext2.prototype.obj = function(literal2) {
+          if (literal2 instanceof PDFObject_1.default) {
+            return literal2;
+          } else if (literal2 === null || literal2 === void 0) {
             return PDFNull_1.default;
-          } else if (typeof literal === "string") {
-            return PDFName_1.default.of(literal);
-          } else if (typeof literal === "number") {
-            return PDFNumber_1.default.of(literal);
-          } else if (typeof literal === "boolean") {
-            return literal ? PDFBool_1.default.True : PDFBool_1.default.False;
-          } else if (Array.isArray(literal)) {
+          } else if (typeof literal2 === "string") {
+            return PDFName_1.default.of(literal2);
+          } else if (typeof literal2 === "number") {
+            return PDFNumber_1.default.of(literal2);
+          } else if (typeof literal2 === "boolean") {
+            return literal2 ? PDFBool_1.default.True : PDFBool_1.default.False;
+          } else if (Array.isArray(literal2)) {
             var array = PDFArray_1.default.withContext(this);
-            for (var idx = 0, len = literal.length; idx < len; idx++) {
-              array.push(this.obj(literal[idx]));
+            for (var idx = 0, len = literal2.length; idx < len; idx++) {
+              array.push(this.obj(literal2[idx]));
             }
             return array;
           } else {
             var dict = PDFDict_1.default.withContext(this);
-            var keys = Object.keys(literal);
+            var keys = Object.keys(literal2);
             for (var idx = 0, len = keys.length; idx < len; idx++) {
               var key = keys[idx];
-              var value = literal[key];
+              var value = literal2[key];
               if (value !== void 0)
                 dict.set(PDFName_1.default.of(key), this.obj(value));
             }
@@ -7936,18 +7936,18 @@ var require_PDFObjectCopier = __commonJS({
             }
             return clonedStream;
           };
-          this.copyPDFIndirectObject = function(ref) {
-            var alreadyMapped = _this.traversedObjects.has(ref);
+          this.copyPDFIndirectObject = function(ref2) {
+            var alreadyMapped = _this.traversedObjects.has(ref2);
             if (!alreadyMapped) {
               var newRef = _this.dest.nextRef();
-              _this.traversedObjects.set(ref, newRef);
-              var dereferencedValue = _this.src.lookup(ref);
+              _this.traversedObjects.set(ref2, newRef);
+              var dereferencedValue = _this.src.lookup(ref2);
               if (dereferencedValue) {
                 var cloned = _this.copy(dereferencedValue);
                 _this.dest.assign(newRef, cloned);
               }
             }
-            return _this.traversedObjects.get(ref);
+            return _this.traversedObjects.get(ref2);
           };
           this.src = src;
           this.dest = dest;
@@ -7979,11 +7979,11 @@ var require_PDFCrossRefSection = __commonJS({
           this.chunkIdx = 0;
           this.chunkLength = firstEntry ? 1 : 0;
         }
-        PDFCrossRefSection2.prototype.addEntry = function(ref, offset) {
-          this.append({ ref, offset, deleted: false });
+        PDFCrossRefSection2.prototype.addEntry = function(ref2, offset2) {
+          this.append({ ref: ref2, offset: offset2, deleted: false });
         };
-        PDFCrossRefSection2.prototype.addDeletedEntry = function(ref, nextFreeObjectNumber) {
-          this.append({ ref, offset: nextFreeObjectNumber, deleted: true });
+        PDFCrossRefSection2.prototype.addDeletedEntry = function(ref2, nextFreeObjectNumber) {
+          this.append({ ref: ref2, offset: nextFreeObjectNumber, deleted: true });
         };
         PDFCrossRefSection2.prototype.toString = function() {
           var section = "xref\n";
@@ -8015,44 +8015,44 @@ var require_PDFCrossRefSection = __commonJS({
           }
           return size;
         };
-        PDFCrossRefSection2.prototype.copyBytesInto = function(buffer, offset) {
-          var initialOffset = offset;
-          buffer[offset++] = CharCodes_1.default.x;
-          buffer[offset++] = CharCodes_1.default.r;
-          buffer[offset++] = CharCodes_1.default.e;
-          buffer[offset++] = CharCodes_1.default.f;
-          buffer[offset++] = CharCodes_1.default.Newline;
-          offset += this.copySubsectionsIntoBuffer(this.subsections, buffer, offset);
-          return offset - initialOffset;
+        PDFCrossRefSection2.prototype.copyBytesInto = function(buffer, offset2) {
+          var initialOffset = offset2;
+          buffer[offset2++] = CharCodes_1.default.x;
+          buffer[offset2++] = CharCodes_1.default.r;
+          buffer[offset2++] = CharCodes_1.default.e;
+          buffer[offset2++] = CharCodes_1.default.f;
+          buffer[offset2++] = CharCodes_1.default.Newline;
+          offset2 += this.copySubsectionsIntoBuffer(this.subsections, buffer, offset2);
+          return offset2 - initialOffset;
         };
-        PDFCrossRefSection2.prototype.copySubsectionsIntoBuffer = function(subsections, buffer, offset) {
-          var initialOffset = offset;
+        PDFCrossRefSection2.prototype.copySubsectionsIntoBuffer = function(subsections, buffer, offset2) {
+          var initialOffset = offset2;
           var length = subsections.length;
           for (var idx = 0; idx < length; idx++) {
             var subsection = this.subsections[idx];
             var firstObjectNumber = String(subsection[0].ref.objectNumber);
-            offset += utils_1.copyStringIntoBuffer(firstObjectNumber, buffer, offset);
-            buffer[offset++] = CharCodes_1.default.Space;
+            offset2 += utils_1.copyStringIntoBuffer(firstObjectNumber, buffer, offset2);
+            buffer[offset2++] = CharCodes_1.default.Space;
             var rangeLength = String(subsection.length);
-            offset += utils_1.copyStringIntoBuffer(rangeLength, buffer, offset);
-            buffer[offset++] = CharCodes_1.default.Newline;
-            offset += this.copyEntriesIntoBuffer(subsection, buffer, offset);
+            offset2 += utils_1.copyStringIntoBuffer(rangeLength, buffer, offset2);
+            buffer[offset2++] = CharCodes_1.default.Newline;
+            offset2 += this.copyEntriesIntoBuffer(subsection, buffer, offset2);
           }
-          return offset - initialOffset;
+          return offset2 - initialOffset;
         };
-        PDFCrossRefSection2.prototype.copyEntriesIntoBuffer = function(entries, buffer, offset) {
+        PDFCrossRefSection2.prototype.copyEntriesIntoBuffer = function(entries, buffer, offset2) {
           var length = entries.length;
           for (var idx = 0; idx < length; idx++) {
             var entry = entries[idx];
             var entryOffset = utils_1.padStart(String(entry.offset), 10, "0");
-            offset += utils_1.copyStringIntoBuffer(entryOffset, buffer, offset);
-            buffer[offset++] = CharCodes_1.default.Space;
+            offset2 += utils_1.copyStringIntoBuffer(entryOffset, buffer, offset2);
+            buffer[offset2++] = CharCodes_1.default.Space;
             var entryGen = utils_1.padStart(String(entry.ref.generationNumber), 5, "0");
-            offset += utils_1.copyStringIntoBuffer(entryGen, buffer, offset);
-            buffer[offset++] = CharCodes_1.default.Space;
-            buffer[offset++] = entry.deleted ? CharCodes_1.default.f : CharCodes_1.default.n;
-            buffer[offset++] = CharCodes_1.default.Space;
-            buffer[offset++] = CharCodes_1.default.Newline;
+            offset2 += utils_1.copyStringIntoBuffer(entryGen, buffer, offset2);
+            buffer[offset2++] = CharCodes_1.default.Space;
+            buffer[offset2++] = entry.deleted ? CharCodes_1.default.f : CharCodes_1.default.n;
+            buffer[offset2++] = CharCodes_1.default.Space;
+            buffer[offset2++] = CharCodes_1.default.Newline;
           }
           return 20 * length;
         };
@@ -8111,29 +8111,29 @@ var require_PDFTrailer = __commonJS({
         PDFTrailer2.prototype.sizeInBytes = function() {
           return 16 + this.lastXRefOffset.length;
         };
-        PDFTrailer2.prototype.copyBytesInto = function(buffer, offset) {
-          var initialOffset = offset;
-          buffer[offset++] = CharCodes_1.default.s;
-          buffer[offset++] = CharCodes_1.default.t;
-          buffer[offset++] = CharCodes_1.default.a;
-          buffer[offset++] = CharCodes_1.default.r;
-          buffer[offset++] = CharCodes_1.default.t;
-          buffer[offset++] = CharCodes_1.default.x;
-          buffer[offset++] = CharCodes_1.default.r;
-          buffer[offset++] = CharCodes_1.default.e;
-          buffer[offset++] = CharCodes_1.default.f;
-          buffer[offset++] = CharCodes_1.default.Newline;
-          offset += utils_1.copyStringIntoBuffer(this.lastXRefOffset, buffer, offset);
-          buffer[offset++] = CharCodes_1.default.Newline;
-          buffer[offset++] = CharCodes_1.default.Percent;
-          buffer[offset++] = CharCodes_1.default.Percent;
-          buffer[offset++] = CharCodes_1.default.E;
-          buffer[offset++] = CharCodes_1.default.O;
-          buffer[offset++] = CharCodes_1.default.F;
-          return offset - initialOffset;
+        PDFTrailer2.prototype.copyBytesInto = function(buffer, offset2) {
+          var initialOffset = offset2;
+          buffer[offset2++] = CharCodes_1.default.s;
+          buffer[offset2++] = CharCodes_1.default.t;
+          buffer[offset2++] = CharCodes_1.default.a;
+          buffer[offset2++] = CharCodes_1.default.r;
+          buffer[offset2++] = CharCodes_1.default.t;
+          buffer[offset2++] = CharCodes_1.default.x;
+          buffer[offset2++] = CharCodes_1.default.r;
+          buffer[offset2++] = CharCodes_1.default.e;
+          buffer[offset2++] = CharCodes_1.default.f;
+          buffer[offset2++] = CharCodes_1.default.Newline;
+          offset2 += utils_1.copyStringIntoBuffer(this.lastXRefOffset, buffer, offset2);
+          buffer[offset2++] = CharCodes_1.default.Newline;
+          buffer[offset2++] = CharCodes_1.default.Percent;
+          buffer[offset2++] = CharCodes_1.default.Percent;
+          buffer[offset2++] = CharCodes_1.default.E;
+          buffer[offset2++] = CharCodes_1.default.O;
+          buffer[offset2++] = CharCodes_1.default.F;
+          return offset2 - initialOffset;
         };
-        PDFTrailer2.forLastCrossRefSectionOffset = function(offset) {
-          return new PDFTrailer2(offset);
+        PDFTrailer2.forLastCrossRefSectionOffset = function(offset2) {
+          return new PDFTrailer2(offset2);
         };
         return PDFTrailer2;
       })()
@@ -8161,18 +8161,18 @@ var require_PDFTrailerDict = __commonJS({
         PDFTrailerDict2.prototype.sizeInBytes = function() {
           return 8 + this.dict.sizeInBytes();
         };
-        PDFTrailerDict2.prototype.copyBytesInto = function(buffer, offset) {
-          var initialOffset = offset;
-          buffer[offset++] = CharCodes_1.default.t;
-          buffer[offset++] = CharCodes_1.default.r;
-          buffer[offset++] = CharCodes_1.default.a;
-          buffer[offset++] = CharCodes_1.default.i;
-          buffer[offset++] = CharCodes_1.default.l;
-          buffer[offset++] = CharCodes_1.default.e;
-          buffer[offset++] = CharCodes_1.default.r;
-          buffer[offset++] = CharCodes_1.default.Newline;
-          offset += this.dict.copyBytesInto(buffer, offset);
-          return offset - initialOffset;
+        PDFTrailerDict2.prototype.copyBytesInto = function(buffer, offset2) {
+          var initialOffset = offset2;
+          buffer[offset2++] = CharCodes_1.default.t;
+          buffer[offset2++] = CharCodes_1.default.r;
+          buffer[offset2++] = CharCodes_1.default.a;
+          buffer[offset2++] = CharCodes_1.default.i;
+          buffer[offset2++] = CharCodes_1.default.l;
+          buffer[offset2++] = CharCodes_1.default.e;
+          buffer[offset2++] = CharCodes_1.default.r;
+          buffer[offset2++] = CharCodes_1.default.Newline;
+          offset2 += this.dict.copyBytesInto(buffer, offset2);
+          return offset2 - initialOffset;
         };
         PDFTrailerDict2.of = function(dict) {
           return new PDFTrailerDict2(dict);
@@ -8228,11 +8228,11 @@ var require_PDFObjectStream = __commonJS({
         };
         PDFObjectStream2.prototype.getUnencodedContents = function() {
           var buffer = new Uint8Array(this.getUnencodedContentsSize());
-          var offset = utils_1.copyStringIntoBuffer(this.offsetsString, buffer, 0);
+          var offset2 = utils_1.copyStringIntoBuffer(this.offsetsString, buffer, 0);
           for (var idx = 0, len = this.objects.length; idx < len; idx++) {
             var _a = this.objects[idx], object = _a[1];
-            offset += object.copyBytesInto(buffer, offset);
-            buffer[offset++] = CharCodes_1.default.Newline;
+            offset2 += object.copyBytesInto(buffer, offset2);
+            buffer[offset2++] = CharCodes_1.default.Newline;
           }
           return buffer;
         };
@@ -8242,18 +8242,18 @@ var require_PDFObjectStream = __commonJS({
         PDFObjectStream2.prototype.computeOffsetsString = function() {
           var offsetsString = "";
           for (var idx = 0, len = this.offsets.length; idx < len; idx++) {
-            var _a = this.offsets[idx], objectNumber = _a[0], offset = _a[1];
-            offsetsString += objectNumber + " " + offset + " ";
+            var _a = this.offsets[idx], objectNumber = _a[0], offset2 = _a[1];
+            offsetsString += objectNumber + " " + offset2 + " ";
           }
           return offsetsString;
         };
         PDFObjectStream2.prototype.computeObjectOffsets = function() {
-          var offset = 0;
+          var offset2 = 0;
           var offsets = new Array(this.objects.length);
           for (var idx = 0, len = this.objects.length; idx < len; idx++) {
-            var _a = this.objects[idx], ref = _a[0], object = _a[1];
-            offsets[idx] = [ref.objectNumber, offset];
-            offset += object.sizeInBytes() + 1;
+            var _a = this.objects[idx], ref2 = _a[0], object = _a[1];
+            offsets[idx] = [ref2.objectNumber, offset2];
+            offset2 += object.sizeInBytes() + 1;
           }
           return offsets;
         };
@@ -8298,43 +8298,43 @@ var require_PDFWriter = __commonJS({
         }
         PDFWriter2.prototype.serializeToBuffer = function() {
           return tslib_1.__awaiter(this, void 0, void 0, function() {
-            var _a, size, header2, indirectObjects, xref, trailerDict, trailer, offset, buffer, idx, len, _b, ref, object, objectNumber, generationNumber, n;
+            var _a, size, header2, indirectObjects, xref, trailerDict, trailer, offset2, buffer, idx, len, _b, ref2, object, objectNumber, generationNumber, n;
             return tslib_1.__generator(this, function(_c) {
               switch (_c.label) {
                 case 0:
                   return [4, this.computeBufferSize()];
                 case 1:
                   _a = _c.sent(), size = _a.size, header2 = _a.header, indirectObjects = _a.indirectObjects, xref = _a.xref, trailerDict = _a.trailerDict, trailer = _a.trailer;
-                  offset = 0;
+                  offset2 = 0;
                   buffer = new Uint8Array(size);
-                  offset += header2.copyBytesInto(buffer, offset);
-                  buffer[offset++] = CharCodes_1.default.Newline;
-                  buffer[offset++] = CharCodes_1.default.Newline;
+                  offset2 += header2.copyBytesInto(buffer, offset2);
+                  buffer[offset2++] = CharCodes_1.default.Newline;
+                  buffer[offset2++] = CharCodes_1.default.Newline;
                   idx = 0, len = indirectObjects.length;
                   _c.label = 2;
                 case 2:
                   if (!(idx < len)) return [3, 5];
-                  _b = indirectObjects[idx], ref = _b[0], object = _b[1];
-                  objectNumber = String(ref.objectNumber);
-                  offset += utils_1.copyStringIntoBuffer(objectNumber, buffer, offset);
-                  buffer[offset++] = CharCodes_1.default.Space;
-                  generationNumber = String(ref.generationNumber);
-                  offset += utils_1.copyStringIntoBuffer(generationNumber, buffer, offset);
-                  buffer[offset++] = CharCodes_1.default.Space;
-                  buffer[offset++] = CharCodes_1.default.o;
-                  buffer[offset++] = CharCodes_1.default.b;
-                  buffer[offset++] = CharCodes_1.default.j;
-                  buffer[offset++] = CharCodes_1.default.Newline;
-                  offset += object.copyBytesInto(buffer, offset);
-                  buffer[offset++] = CharCodes_1.default.Newline;
-                  buffer[offset++] = CharCodes_1.default.e;
-                  buffer[offset++] = CharCodes_1.default.n;
-                  buffer[offset++] = CharCodes_1.default.d;
-                  buffer[offset++] = CharCodes_1.default.o;
-                  buffer[offset++] = CharCodes_1.default.b;
-                  buffer[offset++] = CharCodes_1.default.j;
-                  buffer[offset++] = CharCodes_1.default.Newline;
-                  buffer[offset++] = CharCodes_1.default.Newline;
+                  _b = indirectObjects[idx], ref2 = _b[0], object = _b[1];
+                  objectNumber = String(ref2.objectNumber);
+                  offset2 += utils_1.copyStringIntoBuffer(objectNumber, buffer, offset2);
+                  buffer[offset2++] = CharCodes_1.default.Space;
+                  generationNumber = String(ref2.generationNumber);
+                  offset2 += utils_1.copyStringIntoBuffer(generationNumber, buffer, offset2);
+                  buffer[offset2++] = CharCodes_1.default.Space;
+                  buffer[offset2++] = CharCodes_1.default.o;
+                  buffer[offset2++] = CharCodes_1.default.b;
+                  buffer[offset2++] = CharCodes_1.default.j;
+                  buffer[offset2++] = CharCodes_1.default.Newline;
+                  offset2 += object.copyBytesInto(buffer, offset2);
+                  buffer[offset2++] = CharCodes_1.default.Newline;
+                  buffer[offset2++] = CharCodes_1.default.e;
+                  buffer[offset2++] = CharCodes_1.default.n;
+                  buffer[offset2++] = CharCodes_1.default.d;
+                  buffer[offset2++] = CharCodes_1.default.o;
+                  buffer[offset2++] = CharCodes_1.default.b;
+                  buffer[offset2++] = CharCodes_1.default.j;
+                  buffer[offset2++] = CharCodes_1.default.Newline;
+                  buffer[offset2++] = CharCodes_1.default.Newline;
                   n = object instanceof PDFObjectStream_1.default ? object.getObjectsCount() : 1;
                   if (!this.shouldWaitForTick(n)) return [3, 4];
                   return [4, utils_1.waitForTick()];
@@ -8346,23 +8346,23 @@ var require_PDFWriter = __commonJS({
                   return [3, 2];
                 case 5:
                   if (xref) {
-                    offset += xref.copyBytesInto(buffer, offset);
-                    buffer[offset++] = CharCodes_1.default.Newline;
+                    offset2 += xref.copyBytesInto(buffer, offset2);
+                    buffer[offset2++] = CharCodes_1.default.Newline;
                   }
                   if (trailerDict) {
-                    offset += trailerDict.copyBytesInto(buffer, offset);
-                    buffer[offset++] = CharCodes_1.default.Newline;
-                    buffer[offset++] = CharCodes_1.default.Newline;
+                    offset2 += trailerDict.copyBytesInto(buffer, offset2);
+                    buffer[offset2++] = CharCodes_1.default.Newline;
+                    buffer[offset2++] = CharCodes_1.default.Newline;
                   }
-                  offset += trailer.copyBytesInto(buffer, offset);
+                  offset2 += trailer.copyBytesInto(buffer, offset2);
                   return [2, buffer];
               }
             });
           });
         };
         PDFWriter2.prototype.computeIndirectObjectSize = function(_a) {
-          var ref = _a[0], object = _a[1];
-          var refSize = ref.sizeInBytes() + 3;
+          var ref2 = _a[0], object = _a[1];
+          var refSize = ref2.sizeInBytes() + 3;
           var objectSize = object.sizeInBytes() + 9;
           return refSize + objectSize;
         };
@@ -8377,7 +8377,7 @@ var require_PDFWriter = __commonJS({
         };
         PDFWriter2.prototype.computeBufferSize = function() {
           return tslib_1.__awaiter(this, void 0, void 0, function() {
-            var header2, size, xref, indirectObjects, idx, len, indirectObject, ref, xrefOffset, trailerDict, trailer;
+            var header2, size, xref, indirectObjects, idx, len, indirectObject, ref2, xrefOffset, trailerDict, trailer;
             return tslib_1.__generator(this, function(_a) {
               switch (_a.label) {
                 case 0:
@@ -8390,8 +8390,8 @@ var require_PDFWriter = __commonJS({
                 case 1:
                   if (!(idx < len)) return [3, 4];
                   indirectObject = indirectObjects[idx];
-                  ref = indirectObject[0];
-                  xref.addEntry(ref, size);
+                  ref2 = indirectObject[0];
+                  xref.addEntry(ref2, size);
                   size += this.computeIndirectObjectSize(indirectObject);
                   if (!this.shouldWaitForTick(1)) return [3, 3];
                   return [4, utils_1.waitForTick()];
@@ -8434,9 +8434,9 @@ var require_PDFInvalidObject = __commonJS({
       /** @class */
       (function(_super) {
         tslib_1.__extends(PDFInvalidObject2, _super);
-        function PDFInvalidObject2(data) {
+        function PDFInvalidObject2(data2) {
           var _this = _super.call(this) || this;
-          _this.data = data;
+          _this.data = data2;
           return _this;
         }
         PDFInvalidObject2.prototype.clone = function() {
@@ -8448,15 +8448,15 @@ var require_PDFInvalidObject = __commonJS({
         PDFInvalidObject2.prototype.sizeInBytes = function() {
           return this.data.length;
         };
-        PDFInvalidObject2.prototype.copyBytesInto = function(buffer, offset) {
+        PDFInvalidObject2.prototype.copyBytesInto = function(buffer, offset2) {
           var length = this.data.length;
           for (var idx = 0; idx < length; idx++) {
-            buffer[offset++] = this.data[idx];
+            buffer[offset2++] = this.data[idx];
           }
           return length;
         };
-        PDFInvalidObject2.of = function(data) {
-          return new PDFInvalidObject2(data);
+        PDFInvalidObject2.of = function(data2) {
+          return new PDFInvalidObject2(data2);
         };
         return PDFInvalidObject2;
       })(PDFObject_1.default)
@@ -8514,12 +8514,12 @@ var require_PDFCrossRefStream = __commonJS({
             for (var idx = 0, len = _this.entries.length; idx < len; idx++) {
               var entry = _this.entries[idx];
               if (entry.type === EntryType.Deleted) {
-                var type = entry.type, nextFreeObjectNumber = entry.nextFreeObjectNumber, ref = entry.ref;
-                entryTuples[idx] = [type, nextFreeObjectNumber, ref.generationNumber];
+                var type = entry.type, nextFreeObjectNumber = entry.nextFreeObjectNumber, ref2 = entry.ref;
+                entryTuples[idx] = [type, nextFreeObjectNumber, ref2.generationNumber];
               }
               if (entry.type === EntryType.Uncompressed) {
-                var type = entry.type, offset = entry.offset, ref = entry.ref;
-                entryTuples[idx] = [type, offset, ref.generationNumber];
+                var type = entry.type, offset2 = entry.offset, ref2 = entry.ref;
+                entryTuples[idx] = [type, offset2, ref2.generationNumber];
               }
               if (entry.type === EntryType.Compressed) {
                 var type = entry.type, objectStreamRef = entry.objectStreamRef, index = entry.index;
@@ -8552,25 +8552,25 @@ var require_PDFCrossRefStream = __commonJS({
           dict.set(PDFName_1.default.of("Type"), PDFName_1.default.of("XRef"));
           return _this;
         }
-        PDFCrossRefStream2.prototype.addDeletedEntry = function(ref, nextFreeObjectNumber) {
+        PDFCrossRefStream2.prototype.addDeletedEntry = function(ref2, nextFreeObjectNumber) {
           var type = EntryType.Deleted;
-          this.entries.push({ type, ref, nextFreeObjectNumber });
+          this.entries.push({ type, ref: ref2, nextFreeObjectNumber });
           this.entryTuplesCache.invalidate();
           this.maxByteWidthsCache.invalidate();
           this.indexCache.invalidate();
           this.contentsCache.invalidate();
         };
-        PDFCrossRefStream2.prototype.addUncompressedEntry = function(ref, offset) {
+        PDFCrossRefStream2.prototype.addUncompressedEntry = function(ref2, offset2) {
           var type = EntryType.Uncompressed;
-          this.entries.push({ type, ref, offset });
+          this.entries.push({ type, ref: ref2, offset: offset2 });
           this.entryTuplesCache.invalidate();
           this.maxByteWidthsCache.invalidate();
           this.indexCache.invalidate();
           this.contentsCache.invalidate();
         };
-        PDFCrossRefStream2.prototype.addCompressedEntry = function(ref, objectStreamRef, index) {
+        PDFCrossRefStream2.prototype.addCompressedEntry = function(ref2, objectStreamRef, index) {
           var type = EntryType.Compressed;
-          this.entries.push({ type, ref, objectStreamRef, index });
+          this.entries.push({ type, ref: ref2, objectStreamRef, index });
           this.entryTuplesCache.invalidate();
           this.maxByteWidthsCache.invalidate();
           this.indexCache.invalidate();
@@ -8605,20 +8605,20 @@ var require_PDFCrossRefStream = __commonJS({
           var entryTuples = this.entryTuplesCache.access();
           var byteWidths = this.maxByteWidthsCache.access();
           var buffer = new Uint8Array(this.getUnencodedContentsSize());
-          var offset = 0;
+          var offset2 = 0;
           for (var entryIdx = 0, entriesLen = entryTuples.length; entryIdx < entriesLen; entryIdx++) {
             var _a = entryTuples[entryIdx], first = _a[0], second = _a[1], third = _a[2];
             var firstBytes = utils_1.reverseArray(utils_1.bytesFor(first));
             var secondBytes = utils_1.reverseArray(utils_1.bytesFor(second));
             var thirdBytes = utils_1.reverseArray(utils_1.bytesFor(third));
             for (var idx = byteWidths[0] - 1; idx >= 0; idx--) {
-              buffer[offset++] = firstBytes[idx] || 0;
+              buffer[offset2++] = firstBytes[idx] || 0;
             }
             for (var idx = byteWidths[1] - 1; idx >= 0; idx--) {
-              buffer[offset++] = secondBytes[idx] || 0;
+              buffer[offset2++] = secondBytes[idx] || 0;
             }
             for (var idx = byteWidths[2] - 1; idx >= 0; idx--) {
-              buffer[offset++] = thirdBytes[idx] || 0;
+              buffer[offset2++] = thirdBytes[idx] || 0;
             }
           }
           return buffer;
@@ -8686,7 +8686,7 @@ var require_PDFStreamWriter = __commonJS({
         }
         PDFStreamWriter2.prototype.computeBufferSize = function() {
           return tslib_1.__awaiter(this, void 0, void 0, function() {
-            var objectNumber, header2, size, xrefStream, uncompressedObjects, compressedObjects, objectStreamRefs, indirectObjects, idx, len, indirectObject, ref, object, shouldNotCompress, chunk, objectStreamRef, idx, len, chunk, ref, objectStream, xrefStreamRef, xrefOffset, trailer;
+            var objectNumber, header2, size, xrefStream, uncompressedObjects, compressedObjects, objectStreamRefs, indirectObjects, idx, len, indirectObject, ref2, object, shouldNotCompress, chunk, objectStreamRef, idx, len, chunk, ref2, objectStream, xrefStreamRef, xrefOffset, trailer;
             return tslib_1.__generator(this, function(_a) {
               switch (_a.label) {
                 case 0:
@@ -8703,11 +8703,11 @@ var require_PDFStreamWriter = __commonJS({
                 case 1:
                   if (!(idx < len)) return [3, 6];
                   indirectObject = indirectObjects[idx];
-                  ref = indirectObject[0], object = indirectObject[1];
-                  shouldNotCompress = ref === this.context.trailerInfo.Encrypt || object instanceof PDFStream_1.default || object instanceof PDFInvalidObject_1.default || ref.generationNumber !== 0;
+                  ref2 = indirectObject[0], object = indirectObject[1];
+                  shouldNotCompress = ref2 === this.context.trailerInfo.Encrypt || object instanceof PDFStream_1.default || object instanceof PDFInvalidObject_1.default || ref2.generationNumber !== 0;
                   if (!shouldNotCompress) return [3, 4];
                   uncompressedObjects.push(indirectObject);
-                  xrefStream.addUncompressedEntry(ref, size);
+                  xrefStream.addUncompressedEntry(ref2, size);
                   size += this.computeIndirectObjectSize(indirectObject);
                   if (!this.shouldWaitForTick(1)) return [3, 3];
                   return [4, utils_1.waitForTick()];
@@ -8725,7 +8725,7 @@ var require_PDFStreamWriter = __commonJS({
                     objectStreamRef = PDFRef_1.default.of(objectNumber++);
                     objectStreamRefs.push(objectStreamRef);
                   }
-                  xrefStream.addCompressedEntry(ref, objectStreamRef, chunk.length);
+                  xrefStream.addCompressedEntry(ref2, objectStreamRef, chunk.length);
                   chunk.push(indirectObject);
                   _a.label = 5;
                 case 5:
@@ -8737,11 +8737,11 @@ var require_PDFStreamWriter = __commonJS({
                 case 7:
                   if (!(idx < len)) return [3, 10];
                   chunk = compressedObjects[idx];
-                  ref = objectStreamRefs[idx];
+                  ref2 = objectStreamRefs[idx];
                   objectStream = PDFObjectStream_1.default.withContextAndObjects(this.context, chunk, this.encodeStreams);
-                  xrefStream.addUncompressedEntry(ref, size);
-                  size += this.computeIndirectObjectSize([ref, objectStream]);
-                  uncompressedObjects.push([ref, objectStream]);
+                  xrefStream.addUncompressedEntry(ref2, size);
+                  size += this.computeIndirectObjectSize([ref2, objectStream]);
+                  uncompressedObjects.push([ref2, objectStream]);
                   if (!this.shouldWaitForTick(chunk.length)) return [3, 9];
                   return [4, utils_1.waitForTick()];
                 case 8:
@@ -8838,10 +8838,10 @@ var require_PDFHexString = __commonJS({
         PDFHexString2.prototype.sizeInBytes = function() {
           return this.value.length + 2;
         };
-        PDFHexString2.prototype.copyBytesInto = function(buffer, offset) {
-          buffer[offset++] = CharCodes_1.default.LessThan;
-          offset += utils_1.copyStringIntoBuffer(this.value, buffer, offset);
-          buffer[offset++] = CharCodes_1.default.GreaterThan;
+        PDFHexString2.prototype.copyBytesInto = function(buffer, offset2) {
+          buffer[offset2++] = CharCodes_1.default.LessThan;
+          offset2 += utils_1.copyStringIntoBuffer(this.value, buffer, offset2);
+          buffer[offset2++] = CharCodes_1.default.GreaterThan;
           return this.value.length + 2;
         };
         PDFHexString2.of = function(value) {
@@ -8919,16 +8919,16 @@ var require_StandardFontEmbedder = __commonJS({
           var yBottom = Descender || FontBBox[1];
           return 1e3 * height / (yTop - yBottom);
         };
-        StandardFontEmbedder2.prototype.embedIntoContext = function(context, ref) {
+        StandardFontEmbedder2.prototype.embedIntoContext = function(context, ref2) {
           var fontDict = context.obj({
             Type: "Font",
             Subtype: "Type1",
             BaseFont: this.customName || this.fontName,
             Encoding: this.encoding === standard_fonts_1.Encodings.WinAnsi ? "WinAnsiEncoding" : void 0
           });
-          if (ref) {
-            context.assign(ref, fontDict);
-            return ref;
+          if (ref2) {
+            context.assign(ref2, fontDict);
+            return ref2;
           } else {
             return context.register(fontDict);
           }
@@ -9145,10 +9145,10 @@ var require_PDFString = __commonJS({
         PDFString2.prototype.sizeInBytes = function() {
           return this.value.length + 2;
         };
-        PDFString2.prototype.copyBytesInto = function(buffer, offset) {
-          buffer[offset++] = CharCodes_1.default.LeftParen;
-          offset += utils_1.copyStringIntoBuffer(this.value, buffer, offset);
-          buffer[offset++] = CharCodes_1.default.RightParen;
+        PDFString2.prototype.copyBytesInto = function(buffer, offset2) {
+          buffer[offset2++] = CharCodes_1.default.LeftParen;
+          offset2 += utils_1.copyStringIntoBuffer(this.value, buffer, offset2);
+          buffer[offset2++] = CharCodes_1.default.RightParen;
           return this.value.length + 2;
         };
         PDFString2.of = function(value) {
@@ -9255,11 +9255,11 @@ var require_CustomFontEmbedder = __commonJS({
           var yBottom = (descent || bbox.minY) * this.scale;
           return 1e3 * height / (yTop - yBottom);
         };
-        CustomFontEmbedder2.prototype.embedIntoContext = function(context, ref) {
+        CustomFontEmbedder2.prototype.embedIntoContext = function(context, ref2) {
           this.baseFontName = this.customName || context.addRandomSuffix(this.fontName);
-          return this.embedFontDict(context, ref);
+          return this.embedFontDict(context, ref2);
         };
-        CustomFontEmbedder2.prototype.embedFontDict = function(context, ref) {
+        CustomFontEmbedder2.prototype.embedFontDict = function(context, ref2) {
           return tslib_1.__awaiter(this, void 0, void 0, function() {
             var cidFontDictRef, unicodeCMapRef, fontDict;
             return tslib_1.__generator(this, function(_a) {
@@ -9277,9 +9277,9 @@ var require_CustomFontEmbedder = __commonJS({
                     DescendantFonts: [cidFontDictRef],
                     ToUnicode: unicodeCMapRef
                   });
-                  if (ref) {
-                    context.assign(ref, fontDict);
-                    return [2, ref];
+                  if (ref2) {
+                    context.assign(ref2, fontDict);
+                    return [2, ref2];
                   } else {
                     return [2, context.register(fontDict)];
                   }
@@ -9526,7 +9526,7 @@ var require_FileEmbedder = __commonJS({
           }
           return new FileEmbedder2(bytes, fileName, options);
         };
-        FileEmbedder2.prototype.embedIntoContext = function(context, ref) {
+        FileEmbedder2.prototype.embedIntoContext = function(context, ref2) {
           return tslib_1.__awaiter(this, void 0, void 0, function() {
             var _a, mimeType, description, creationDate, modificationDate, afRelationship, embeddedFileStream, embeddedFileStreamRef, fileSpecDict;
             return tslib_1.__generator(this, function(_b) {
@@ -9549,9 +9549,9 @@ var require_FileEmbedder = __commonJS({
                 Desc: description ? PDFHexString_1.default.fromText(description) : void 0,
                 AFRelationship: afRelationship !== null && afRelationship !== void 0 ? afRelationship : void 0
               });
-              if (ref) {
-                context.assign(ref, fileSpecDict);
-                return [2, ref];
+              if (ref2) {
+                context.assign(ref2, fileSpecDict);
+                return [2, ref2];
               } else {
                 return [2, context.register(fileSpecDict)];
               }
@@ -9646,7 +9646,7 @@ var require_JpegEmbedder = __commonJS({
             });
           });
         };
-        JpegEmbedder2.prototype.embedIntoContext = function(context, ref) {
+        JpegEmbedder2.prototype.embedIntoContext = function(context, ref2) {
           return tslib_1.__awaiter(this, void 0, void 0, function() {
             var xObject;
             return tslib_1.__generator(this, function(_a) {
@@ -9668,9 +9668,9 @@ var require_JpegEmbedder = __commonJS({
                 // through this method will benefit from it.
                 Decode: this.colorSpace === ColorSpace.DeviceCMYK ? [1, 0, 1, 0, 1, 0, 1, 0] : void 0
               });
-              if (ref) {
-                context.assign(ref, xObject);
-                return [2, ref];
+              if (ref2) {
+                context.assign(ref2, xObject);
+                return [2, ref2];
               } else {
                 return [2, context.register(xObject)];
               }
@@ -9706,7 +9706,7 @@ var require_UPNG = __commonJS({
       if (out.tabs.acTL == null) return [UPNG.toRGBA8.decodeImage(out.data, w, h, out).buffer];
       var frms = [];
       if (out.frames[0].data == null) out.frames[0].data = out.data;
-      var len = w * h * 4, img = new Uint8Array(len), empty = new Uint8Array(len), prev = new Uint8Array(len);
+      var len = w * h * 4, img = new Uint8Array(len), empty2 = new Uint8Array(len), prev = new Uint8Array(len);
       for (var i = 0; i < out.frames.length; i++) {
         var frm = out.frames[i];
         var fx = frm.rect.x, fy = frm.rect.y, fw = frm.rect.width, fh = frm.rect.height;
@@ -9716,12 +9716,12 @@ var require_UPNG = __commonJS({
         else if (frm.blend == 1) UPNG._copyTile(fdata, fw, fh, img, w, h, fx, fy, 1);
         frms.push(img.buffer.slice(0));
         if (frm.dispose == 0) {
-        } else if (frm.dispose == 1) UPNG._copyTile(empty, fw, fh, img, w, h, fx, fy, 0);
+        } else if (frm.dispose == 1) UPNG._copyTile(empty2, fw, fh, img, w, h, fx, fy, 0);
         else if (frm.dispose == 2) for (var j = 0; j < len; j++) img[j] = prev[j];
       }
       return frms;
     };
-    UPNG.toRGBA8.decodeImage = function(data, w, h, out) {
+    UPNG.toRGBA8.decodeImage = function(data2, w, h, out) {
       var area = w * h, bpp = UPNG.decode._getBPP(out);
       var bpl = Math.ceil(w * bpp / 8);
       var bf = new Uint8Array(area * 4), bf32 = new Uint32Array(bf.buffer);
@@ -9731,36 +9731,36 @@ var require_UPNG = __commonJS({
       if (ctype == 6) {
         var qarea = area << 2;
         if (depth == 8) for (var i = 0; i < qarea; i += 4) {
-          bf[i] = data[i];
-          bf[i + 1] = data[i + 1];
-          bf[i + 2] = data[i + 2];
-          bf[i + 3] = data[i + 3];
+          bf[i] = data2[i];
+          bf[i + 1] = data2[i + 1];
+          bf[i + 2] = data2[i + 2];
+          bf[i + 3] = data2[i + 3];
         }
         if (depth == 16) for (var i = 0; i < qarea; i++) {
-          bf[i] = data[i << 1];
+          bf[i] = data2[i << 1];
         }
       } else if (ctype == 2) {
         var ts = out.tabs["tRNS"];
         if (ts == null) {
           if (depth == 8) for (var i = 0; i < area; i++) {
             var ti = i * 3;
-            bf32[i] = 255 << 24 | data[ti + 2] << 16 | data[ti + 1] << 8 | data[ti];
+            bf32[i] = 255 << 24 | data2[ti + 2] << 16 | data2[ti + 1] << 8 | data2[ti];
           }
           if (depth == 16) for (var i = 0; i < area; i++) {
             var ti = i * 6;
-            bf32[i] = 255 << 24 | data[ti + 4] << 16 | data[ti + 2] << 8 | data[ti];
+            bf32[i] = 255 << 24 | data2[ti + 4] << 16 | data2[ti + 2] << 8 | data2[ti];
           }
         } else {
           var tr = ts[0], tg = ts[1], tb = ts[2];
           if (depth == 8) for (var i = 0; i < area; i++) {
             var qi = i << 2, ti = i * 3;
-            bf32[i] = 255 << 24 | data[ti + 2] << 16 | data[ti + 1] << 8 | data[ti];
-            if (data[ti] == tr && data[ti + 1] == tg && data[ti + 2] == tb) bf[qi + 3] = 0;
+            bf32[i] = 255 << 24 | data2[ti + 2] << 16 | data2[ti + 1] << 8 | data2[ti];
+            if (data2[ti] == tr && data2[ti + 1] == tg && data2[ti + 2] == tb) bf[qi + 3] = 0;
           }
           if (depth == 16) for (var i = 0; i < area; i++) {
             var qi = i << 2, ti = i * 6;
-            bf32[i] = 255 << 24 | data[ti + 4] << 16 | data[ti + 2] << 8 | data[ti];
-            if (rs(data, ti) == tr && rs(data, ti + 2) == tg && rs(data, ti + 4) == tb) bf[qi + 3] = 0;
+            bf32[i] = 255 << 24 | data2[ti + 4] << 16 | data2[ti + 2] << 8 | data2[ti];
+            if (rs(data2, ti) == tr && rs(data2, ti + 2) == tg && rs(data2, ti + 4) == tb) bf[qi + 3] = 0;
           }
         }
       } else if (ctype == 3) {
@@ -9768,7 +9768,7 @@ var require_UPNG = __commonJS({
         if (depth == 1) for (var y = 0; y < h; y++) {
           var s0 = y * bpl, t0 = y * w;
           for (var i = 0; i < w; i++) {
-            var qi = t0 + i << 2, j = data[s0 + (i >> 3)] >> 7 - ((i & 7) << 0) & 1, cj = 3 * j;
+            var qi = t0 + i << 2, j = data2[s0 + (i >> 3)] >> 7 - ((i & 7) << 0) & 1, cj = 3 * j;
             bf[qi] = p[cj];
             bf[qi + 1] = p[cj + 1];
             bf[qi + 2] = p[cj + 2];
@@ -9778,7 +9778,7 @@ var require_UPNG = __commonJS({
         if (depth == 2) for (var y = 0; y < h; y++) {
           var s0 = y * bpl, t0 = y * w;
           for (var i = 0; i < w; i++) {
-            var qi = t0 + i << 2, j = data[s0 + (i >> 2)] >> 6 - ((i & 3) << 1) & 3, cj = 3 * j;
+            var qi = t0 + i << 2, j = data2[s0 + (i >> 2)] >> 6 - ((i & 3) << 1) & 3, cj = 3 * j;
             bf[qi] = p[cj];
             bf[qi + 1] = p[cj + 1];
             bf[qi + 2] = p[cj + 2];
@@ -9788,7 +9788,7 @@ var require_UPNG = __commonJS({
         if (depth == 4) for (var y = 0; y < h; y++) {
           var s0 = y * bpl, t0 = y * w;
           for (var i = 0; i < w; i++) {
-            var qi = t0 + i << 2, j = data[s0 + (i >> 1)] >> 4 - ((i & 1) << 2) & 15, cj = 3 * j;
+            var qi = t0 + i << 2, j = data2[s0 + (i >> 1)] >> 4 - ((i & 1) << 2) & 15, cj = 3 * j;
             bf[qi] = p[cj];
             bf[qi + 1] = p[cj + 1];
             bf[qi + 2] = p[cj + 2];
@@ -9796,7 +9796,7 @@ var require_UPNG = __commonJS({
           }
         }
         if (depth == 8) for (var i = 0; i < area; i++) {
-          var qi = i << 2, j = data[i], cj = 3 * j;
+          var qi = i << 2, j = data2[i], cj = 3 * j;
           bf[qi] = p[cj];
           bf[qi + 1] = p[cj + 1];
           bf[qi + 2] = p[cj + 2];
@@ -9804,41 +9804,41 @@ var require_UPNG = __commonJS({
         }
       } else if (ctype == 4) {
         if (depth == 8) for (var i = 0; i < area; i++) {
-          var qi = i << 2, di = i << 1, gr = data[di];
+          var qi = i << 2, di = i << 1, gr = data2[di];
           bf[qi] = gr;
           bf[qi + 1] = gr;
           bf[qi + 2] = gr;
-          bf[qi + 3] = data[di + 1];
+          bf[qi + 3] = data2[di + 1];
         }
         if (depth == 16) for (var i = 0; i < area; i++) {
-          var qi = i << 2, di = i << 2, gr = data[di];
+          var qi = i << 2, di = i << 2, gr = data2[di];
           bf[qi] = gr;
           bf[qi + 1] = gr;
           bf[qi + 2] = gr;
-          bf[qi + 3] = data[di + 2];
+          bf[qi + 3] = data2[di + 2];
         }
       } else if (ctype == 0) {
         var tr = out.tabs["tRNS"] ? out.tabs["tRNS"] : -1;
         for (var y = 0; y < h; y++) {
           var off = y * bpl, to = y * w;
           if (depth == 1) for (var x = 0; x < w; x++) {
-            var gr = 255 * (data[off + (x >>> 3)] >>> 7 - (x & 7) & 1), al = gr == tr * 255 ? 0 : 255;
+            var gr = 255 * (data2[off + (x >>> 3)] >>> 7 - (x & 7) & 1), al = gr == tr * 255 ? 0 : 255;
             bf32[to + x] = al << 24 | gr << 16 | gr << 8 | gr;
           }
           else if (depth == 2) for (var x = 0; x < w; x++) {
-            var gr = 85 * (data[off + (x >>> 2)] >>> 6 - ((x & 3) << 1) & 3), al = gr == tr * 85 ? 0 : 255;
+            var gr = 85 * (data2[off + (x >>> 2)] >>> 6 - ((x & 3) << 1) & 3), al = gr == tr * 85 ? 0 : 255;
             bf32[to + x] = al << 24 | gr << 16 | gr << 8 | gr;
           }
           else if (depth == 4) for (var x = 0; x < w; x++) {
-            var gr = 17 * (data[off + (x >>> 1)] >>> 4 - ((x & 1) << 2) & 15), al = gr == tr * 17 ? 0 : 255;
+            var gr = 17 * (data2[off + (x >>> 1)] >>> 4 - ((x & 1) << 2) & 15), al = gr == tr * 17 ? 0 : 255;
             bf32[to + x] = al << 24 | gr << 16 | gr << 8 | gr;
           }
           else if (depth == 8) for (var x = 0; x < w; x++) {
-            var gr = data[off + x], al = gr == tr ? 0 : 255;
+            var gr = data2[off + x], al = gr == tr ? 0 : 255;
             bf32[to + x] = al << 24 | gr << 16 | gr << 8 | gr;
           }
           else if (depth == 16) for (var x = 0; x < w; x++) {
-            var gr = data[off + (x << 1)], al = rs(data, off + (x << i)) == tr ? 0 : 255;
+            var gr = data2[off + (x << 1)], al = rs(data2, off + (x << i)) == tr ? 0 : 255;
             bf32[to + x] = al << 24 | gr << 16 | gr << 8 | gr;
           }
         }
@@ -9846,31 +9846,31 @@ var require_UPNG = __commonJS({
       return bf;
     };
     UPNG.decode = function(buff) {
-      var data = new Uint8Array(buff), offset = 8, bin = UPNG._bin, rUs = bin.readUshort, rUi = bin.readUint;
+      var data2 = new Uint8Array(buff), offset2 = 8, bin = UPNG._bin, rUs = bin.readUshort, rUi = bin.readUint;
       var out = {
         tabs: {},
         frames: []
       };
-      var dd = new Uint8Array(data.length), doff = 0;
+      var dd = new Uint8Array(data2.length), doff = 0;
       var fd, foff = 0;
       var mgck = [137, 80, 78, 71, 13, 10, 26, 10];
-      for (var i = 0; i < 8; i++) if (data[i] != mgck[i]) throw "The input is not a PNG file!";
-      while (offset < data.length) {
-        var len = bin.readUint(data, offset);
-        offset += 4;
-        var type = bin.readASCII(data, offset, 4);
-        offset += 4;
+      for (var i = 0; i < 8; i++) if (data2[i] != mgck[i]) throw "The input is not a PNG file!";
+      while (offset2 < data2.length) {
+        var len = bin.readUint(data2, offset2);
+        offset2 += 4;
+        var type = bin.readASCII(data2, offset2, 4);
+        offset2 += 4;
         if (type == "IHDR") {
-          UPNG.decode._IHDR(data, offset, out);
+          UPNG.decode._IHDR(data2, offset2, out);
         } else if (type == "IDAT") {
-          for (var i = 0; i < len; i++) dd[doff + i] = data[offset + i];
+          for (var i = 0; i < len; i++) dd[doff + i] = data2[offset2 + i];
           doff += len;
         } else if (type == "acTL") {
           out.tabs[type] = {
-            num_frames: rUi(data, offset),
-            num_plays: rUi(data, offset + 4)
+            num_frames: rUi(data2, offset2),
+            num_plays: rUi(data2, offset2 + 4)
           };
-          fd = new Uint8Array(data.length);
+          fd = new Uint8Array(data2.length);
         } else if (type == "fcTL") {
           if (foff != 0) {
             var fr = out.frames[out.frames.length - 1];
@@ -9878,72 +9878,72 @@ var require_UPNG = __commonJS({
             foff = 0;
           }
           var rct = {
-            x: rUi(data, offset + 12),
-            y: rUi(data, offset + 16),
-            width: rUi(data, offset + 4),
-            height: rUi(data, offset + 8)
+            x: rUi(data2, offset2 + 12),
+            y: rUi(data2, offset2 + 16),
+            width: rUi(data2, offset2 + 4),
+            height: rUi(data2, offset2 + 8)
           };
-          var del = rUs(data, offset + 22);
-          del = rUs(data, offset + 20) / (del == 0 ? 100 : del);
+          var del = rUs(data2, offset2 + 22);
+          del = rUs(data2, offset2 + 20) / (del == 0 ? 100 : del);
           var frm = {
             rect: rct,
             delay: Math.round(del * 1e3),
-            dispose: data[offset + 24],
-            blend: data[offset + 25]
+            dispose: data2[offset2 + 24],
+            blend: data2[offset2 + 25]
           };
           out.frames.push(frm);
         } else if (type == "fdAT") {
-          for (var i = 0; i < len - 4; i++) fd[foff + i] = data[offset + i + 4];
+          for (var i = 0; i < len - 4; i++) fd[foff + i] = data2[offset2 + i + 4];
           foff += len - 4;
         } else if (type == "pHYs") {
-          out.tabs[type] = [bin.readUint(data, offset), bin.readUint(data, offset + 4), data[offset + 8]];
+          out.tabs[type] = [bin.readUint(data2, offset2), bin.readUint(data2, offset2 + 4), data2[offset2 + 8]];
         } else if (type == "cHRM") {
           out.tabs[type] = [];
-          for (var i = 0; i < 8; i++) out.tabs[type].push(bin.readUint(data, offset + i * 4));
+          for (var i = 0; i < 8; i++) out.tabs[type].push(bin.readUint(data2, offset2 + i * 4));
         } else if (type == "tEXt") {
           if (out.tabs[type] == null) out.tabs[type] = {};
-          var nz = bin.nextZero(data, offset);
-          var keyw = bin.readASCII(data, offset, nz - offset);
-          var text2 = bin.readASCII(data, nz + 1, offset + len - nz - 1);
+          var nz = bin.nextZero(data2, offset2);
+          var keyw = bin.readASCII(data2, offset2, nz - offset2);
+          var text2 = bin.readASCII(data2, nz + 1, offset2 + len - nz - 1);
           out.tabs[type][keyw] = text2;
         } else if (type == "iTXt") {
           if (out.tabs[type] == null) out.tabs[type] = {};
-          var nz = 0, off = offset;
-          nz = bin.nextZero(data, off);
-          var keyw = bin.readASCII(data, off, nz - off);
+          var nz = 0, off = offset2;
+          nz = bin.nextZero(data2, off);
+          var keyw = bin.readASCII(data2, off, nz - off);
           off = nz + 1;
-          var cflag = data[off], cmeth = data[off + 1];
+          var cflag = data2[off], cmeth = data2[off + 1];
           off += 2;
-          nz = bin.nextZero(data, off);
-          var ltag = bin.readASCII(data, off, nz - off);
+          nz = bin.nextZero(data2, off);
+          var ltag = bin.readASCII(data2, off, nz - off);
           off = nz + 1;
-          nz = bin.nextZero(data, off);
-          var tkeyw = bin.readUTF8(data, off, nz - off);
+          nz = bin.nextZero(data2, off);
+          var tkeyw = bin.readUTF8(data2, off, nz - off);
           off = nz + 1;
-          var text2 = bin.readUTF8(data, off, len - (off - offset));
+          var text2 = bin.readUTF8(data2, off, len - (off - offset2));
           out.tabs[type][keyw] = text2;
         } else if (type == "PLTE") {
-          out.tabs[type] = bin.readBytes(data, offset, len);
+          out.tabs[type] = bin.readBytes(data2, offset2, len);
         } else if (type == "hIST") {
           var pl = out.tabs["PLTE"].length / 3;
           out.tabs[type] = [];
-          for (var i = 0; i < pl; i++) out.tabs[type].push(rUs(data, offset + i * 2));
+          for (var i = 0; i < pl; i++) out.tabs[type].push(rUs(data2, offset2 + i * 2));
         } else if (type == "tRNS") {
-          if (out.ctype == 3) out.tabs[type] = bin.readBytes(data, offset, len);
-          else if (out.ctype == 0) out.tabs[type] = rUs(data, offset);
-          else if (out.ctype == 2) out.tabs[type] = [rUs(data, offset), rUs(data, offset + 2), rUs(data, offset + 4)];
-        } else if (type == "gAMA") out.tabs[type] = bin.readUint(data, offset) / 1e5;
-        else if (type == "sRGB") out.tabs[type] = data[offset];
+          if (out.ctype == 3) out.tabs[type] = bin.readBytes(data2, offset2, len);
+          else if (out.ctype == 0) out.tabs[type] = rUs(data2, offset2);
+          else if (out.ctype == 2) out.tabs[type] = [rUs(data2, offset2), rUs(data2, offset2 + 2), rUs(data2, offset2 + 4)];
+        } else if (type == "gAMA") out.tabs[type] = bin.readUint(data2, offset2) / 1e5;
+        else if (type == "sRGB") out.tabs[type] = data2[offset2];
         else if (type == "bKGD") {
-          if (out.ctype == 0 || out.ctype == 4) out.tabs[type] = [rUs(data, offset)];
-          else if (out.ctype == 2 || out.ctype == 6) out.tabs[type] = [rUs(data, offset), rUs(data, offset + 2), rUs(data, offset + 4)];
-          else if (out.ctype == 3) out.tabs[type] = data[offset];
+          if (out.ctype == 0 || out.ctype == 4) out.tabs[type] = [rUs(data2, offset2)];
+          else if (out.ctype == 2 || out.ctype == 6) out.tabs[type] = [rUs(data2, offset2), rUs(data2, offset2 + 2), rUs(data2, offset2 + 4)];
+          else if (out.ctype == 3) out.tabs[type] = data2[offset2];
         } else if (type == "IEND") {
           break;
         }
-        offset += len;
-        var crc = bin.readUint(data, offset);
-        offset += 4;
+        offset2 += len;
+        var crc = bin.readUint(data2, offset2);
+        offset2 += 4;
       }
       if (foff != 0) {
         var fr = out.frames[out.frames.length - 1];
@@ -9965,8 +9965,8 @@ var require_UPNG = __commonJS({
       else if (out.interlace == 1) dd = UPNG.decode._readInterlace(dd, out);
       return dd;
     };
-    UPNG.decode._inflate = function(data, buff) {
-      var out = UPNG["inflateRaw"](new Uint8Array(data.buffer, 2, data.length - 6), buff);
+    UPNG.decode._inflate = function(data2, buff) {
+      var out = UPNG["inflateRaw"](new Uint8Array(data2.buffer, 2, data2.length - 6), buff);
       return out;
     };
     UPNG.inflateRaw = (function() {
@@ -10241,7 +10241,7 @@ var require_UPNG = __commonJS({
       })();
       return H.H.N;
     })();
-    UPNG.decode._readInterlace = function(data, out) {
+    UPNG.decode._readInterlace = function(data2, out) {
       var w = out.width, h = out.height;
       var bpp = UPNG.decode._getBPP(out), cbpp = bpp >> 3, bpl = Math.ceil(w * bpp / 8);
       var img = new Uint8Array(h * bpl);
@@ -10265,30 +10265,30 @@ var require_UPNG = __commonJS({
           sw++;
         }
         var bpll = Math.ceil(sw * bpp / 8);
-        UPNG.decode._filterZero(data, out, di, sw, sh);
+        UPNG.decode._filterZero(data2, out, di, sw, sh);
         var y = 0, row = starting_row[pass];
         while (row < h) {
           var col = starting_col[pass];
           var cdi = di + y * bpll << 3;
           while (col < w) {
             if (bpp == 1) {
-              var val = data[cdi >> 3];
+              var val = data2[cdi >> 3];
               val = val >> 7 - (cdi & 7) & 1;
               img[row * bpl + (col >> 3)] |= val << 7 - ((col & 7) << 0);
             }
             if (bpp == 2) {
-              var val = data[cdi >> 3];
+              var val = data2[cdi >> 3];
               val = val >> 6 - (cdi & 7) & 3;
               img[row * bpl + (col >> 2)] |= val << 6 - ((col & 3) << 1);
             }
             if (bpp == 4) {
-              var val = data[cdi >> 3];
+              var val = data2[cdi >> 3];
               val = val >> 4 - (cdi & 7) & 15;
               img[row * bpl + (col >> 1)] |= val << 4 - ((col & 1) << 2);
             }
             if (bpp >= 8) {
               var ii = row * bpl + col * cbpp;
-              for (var j = 0; j < cbpp; j++) img[ii + j] = data[(cdi >> 3) + j];
+              for (var j = 0; j < cbpp; j++) img[ii + j] = data2[(cdi >> 3) + j];
             }
             cdi += bpp;
             col += ci;
@@ -10305,32 +10305,32 @@ var require_UPNG = __commonJS({
       var noc = [1, null, 3, 1, 2, null, 4][out.ctype];
       return noc * out.depth;
     };
-    UPNG.decode._filterZero = function(data, out, off, w, h) {
+    UPNG.decode._filterZero = function(data2, out, off, w, h) {
       var bpp = UPNG.decode._getBPP(out), bpl = Math.ceil(w * bpp / 8), paeth = UPNG.decode._paeth;
       bpp = Math.ceil(bpp / 8);
-      var i = 0, di = 1, type = data[off], x = 0;
-      if (type > 1) data[off] = [0, 0, 1][type - 2];
-      if (type == 3) for (x = bpp; x < bpl; x++) data[x + 1] = data[x + 1] + (data[x + 1 - bpp] >>> 1) & 255;
+      var i = 0, di = 1, type = data2[off], x = 0;
+      if (type > 1) data2[off] = [0, 0, 1][type - 2];
+      if (type == 3) for (x = bpp; x < bpl; x++) data2[x + 1] = data2[x + 1] + (data2[x + 1 - bpp] >>> 1) & 255;
       for (var y = 0; y < h; y++) {
         i = off + y * bpl;
         di = i + y + 1;
-        type = data[di - 1];
+        type = data2[di - 1];
         x = 0;
-        if (type == 0) for (; x < bpl; x++) data[i + x] = data[di + x];
+        if (type == 0) for (; x < bpl; x++) data2[i + x] = data2[di + x];
         else if (type == 1) {
-          for (; x < bpp; x++) data[i + x] = data[di + x];
-          for (; x < bpl; x++) data[i + x] = data[di + x] + data[i + x - bpp];
+          for (; x < bpp; x++) data2[i + x] = data2[di + x];
+          for (; x < bpl; x++) data2[i + x] = data2[di + x] + data2[i + x - bpp];
         } else if (type == 2) {
-          for (; x < bpl; x++) data[i + x] = data[di + x] + data[i + x - bpl];
+          for (; x < bpl; x++) data2[i + x] = data2[di + x] + data2[i + x - bpl];
         } else if (type == 3) {
-          for (; x < bpp; x++) data[i + x] = data[di + x] + (data[i + x - bpl] >>> 1);
-          for (; x < bpl; x++) data[i + x] = data[di + x] + (data[i + x - bpl] + data[i + x - bpp] >>> 1);
+          for (; x < bpp; x++) data2[i + x] = data2[di + x] + (data2[i + x - bpl] >>> 1);
+          for (; x < bpl; x++) data2[i + x] = data2[di + x] + (data2[i + x - bpl] + data2[i + x - bpp] >>> 1);
         } else {
-          for (; x < bpp; x++) data[i + x] = data[di + x] + paeth(0, data[i + x - bpl], 0);
-          for (; x < bpl; x++) data[i + x] = data[di + x] + paeth(data[i + x - bpp], data[i + x - bpl], data[i + x - bpp - bpl]);
+          for (; x < bpp; x++) data2[i + x] = data2[di + x] + paeth(0, data2[i + x - bpl], 0);
+          for (; x < bpl; x++) data2[i + x] = data2[di + x] + paeth(data2[i + x - bpp], data2[i + x - bpl], data2[i + x - bpp - bpl]);
         }
       }
-      return data;
+      return data2;
     };
     UPNG.decode._paeth = function(a, b, c) {
       var p = a + b - c, pa = p - a, pb = p - b, pc = p - c;
@@ -10338,26 +10338,26 @@ var require_UPNG = __commonJS({
       else if (pb * pb <= pc * pc) return b;
       return c;
     };
-    UPNG.decode._IHDR = function(data, offset, out) {
+    UPNG.decode._IHDR = function(data2, offset2, out) {
       var bin = UPNG._bin;
-      out.width = bin.readUint(data, offset);
-      offset += 4;
-      out.height = bin.readUint(data, offset);
-      offset += 4;
-      out.depth = data[offset];
-      offset++;
-      out.ctype = data[offset];
-      offset++;
-      out.compress = data[offset];
-      offset++;
-      out.filter = data[offset];
-      offset++;
-      out.interlace = data[offset];
-      offset++;
+      out.width = bin.readUint(data2, offset2);
+      offset2 += 4;
+      out.height = bin.readUint(data2, offset2);
+      offset2 += 4;
+      out.depth = data2[offset2];
+      offset2++;
+      out.ctype = data2[offset2];
+      offset2++;
+      out.compress = data2[offset2];
+      offset2++;
+      out.filter = data2[offset2];
+      offset2++;
+      out.interlace = data2[offset2];
+      offset2++;
     };
     UPNG._bin = {
-      nextZero: function(data, p) {
-        while (data[p] != 0) p++;
+      nextZero: function(data2, p) {
+        while (data2[p] != 0) p++;
         return p;
       },
       readUshort: function(buff, p) {
@@ -10381,8 +10381,8 @@ var require_UPNG = __commonJS({
         for (var i = 0; i < l; i++) s += String.fromCharCode(buff[p + i]);
         return s;
       },
-      writeASCII: function(data, p, s) {
-        for (var i = 0; i < s.length; i++) data[p + i] = s.charCodeAt(i);
+      writeASCII: function(data2, p, s) {
+        for (var i = 0; i < s.length; i++) data2[p + i] = s.charCodeAt(i);
       },
       readBytes: function(buff, p, l) {
         var arr = [];
@@ -10485,7 +10485,7 @@ var require_UPNG = __commonJS({
     UPNG.encode._main = function(nimg, w, h, dels, tabs) {
       if (tabs == null) tabs = {};
       var crc = UPNG.crc.crc, wUi = UPNG._bin.writeUint, wUs = UPNG._bin.writeUshort, wAs = UPNG._bin.writeASCII;
-      var offset = 8, anim = nimg.frames.length > 1, pltAlpha = false;
+      var offset2 = 8, anim = nimg.frames.length > 1, pltAlpha = false;
       var leng = 8 + (16 + 5 + 4) + (anim ? 20 : 0);
       if (tabs["sRGB"] != null) leng += 8 + 1 + 4;
       if (tabs["pHYs"] != null) leng += 8 + 9 + 4;
@@ -10501,142 +10501,142 @@ var require_UPNG = __commonJS({
         if (j != 0) leng += 4;
       }
       leng += 12;
-      var data = new Uint8Array(leng);
+      var data2 = new Uint8Array(leng);
       var wr = [137, 80, 78, 71, 13, 10, 26, 10];
-      for (var i = 0; i < 8; i++) data[i] = wr[i];
-      wUi(data, offset, 13);
-      offset += 4;
-      wAs(data, offset, "IHDR");
-      offset += 4;
-      wUi(data, offset, w);
-      offset += 4;
-      wUi(data, offset, h);
-      offset += 4;
-      data[offset] = nimg.depth;
-      offset++;
-      data[offset] = nimg.ctype;
-      offset++;
-      data[offset] = 0;
-      offset++;
-      data[offset] = 0;
-      offset++;
-      data[offset] = 0;
-      offset++;
-      wUi(data, offset, crc(data, offset - 17, 17));
-      offset += 4;
+      for (var i = 0; i < 8; i++) data2[i] = wr[i];
+      wUi(data2, offset2, 13);
+      offset2 += 4;
+      wAs(data2, offset2, "IHDR");
+      offset2 += 4;
+      wUi(data2, offset2, w);
+      offset2 += 4;
+      wUi(data2, offset2, h);
+      offset2 += 4;
+      data2[offset2] = nimg.depth;
+      offset2++;
+      data2[offset2] = nimg.ctype;
+      offset2++;
+      data2[offset2] = 0;
+      offset2++;
+      data2[offset2] = 0;
+      offset2++;
+      data2[offset2] = 0;
+      offset2++;
+      wUi(data2, offset2, crc(data2, offset2 - 17, 17));
+      offset2 += 4;
       if (tabs["sRGB"] != null) {
-        wUi(data, offset, 1);
-        offset += 4;
-        wAs(data, offset, "sRGB");
-        offset += 4;
-        data[offset] = tabs["sRGB"];
-        offset++;
-        wUi(data, offset, crc(data, offset - 5, 5));
-        offset += 4;
+        wUi(data2, offset2, 1);
+        offset2 += 4;
+        wAs(data2, offset2, "sRGB");
+        offset2 += 4;
+        data2[offset2] = tabs["sRGB"];
+        offset2++;
+        wUi(data2, offset2, crc(data2, offset2 - 5, 5));
+        offset2 += 4;
       }
       if (tabs["pHYs"] != null) {
-        wUi(data, offset, 9);
-        offset += 4;
-        wAs(data, offset, "pHYs");
-        offset += 4;
-        wUi(data, offset, tabs["pHYs"][0]);
-        offset += 4;
-        wUi(data, offset, tabs["pHYs"][1]);
-        offset += 4;
-        data[offset] = tabs["pHYs"][2];
-        offset++;
-        wUi(data, offset, crc(data, offset - 13, 13));
-        offset += 4;
+        wUi(data2, offset2, 9);
+        offset2 += 4;
+        wAs(data2, offset2, "pHYs");
+        offset2 += 4;
+        wUi(data2, offset2, tabs["pHYs"][0]);
+        offset2 += 4;
+        wUi(data2, offset2, tabs["pHYs"][1]);
+        offset2 += 4;
+        data2[offset2] = tabs["pHYs"][2];
+        offset2++;
+        wUi(data2, offset2, crc(data2, offset2 - 13, 13));
+        offset2 += 4;
       }
       if (anim) {
-        wUi(data, offset, 8);
-        offset += 4;
-        wAs(data, offset, "acTL");
-        offset += 4;
-        wUi(data, offset, nimg.frames.length);
-        offset += 4;
-        wUi(data, offset, tabs["loop"] != null ? tabs["loop"] : 0);
-        offset += 4;
-        wUi(data, offset, crc(data, offset - 12, 12));
-        offset += 4;
+        wUi(data2, offset2, 8);
+        offset2 += 4;
+        wAs(data2, offset2, "acTL");
+        offset2 += 4;
+        wUi(data2, offset2, nimg.frames.length);
+        offset2 += 4;
+        wUi(data2, offset2, tabs["loop"] != null ? tabs["loop"] : 0);
+        offset2 += 4;
+        wUi(data2, offset2, crc(data2, offset2 - 12, 12));
+        offset2 += 4;
       }
       if (nimg.ctype == 3) {
         var dl = nimg.plte.length;
-        wUi(data, offset, dl * 3);
-        offset += 4;
-        wAs(data, offset, "PLTE");
-        offset += 4;
+        wUi(data2, offset2, dl * 3);
+        offset2 += 4;
+        wAs(data2, offset2, "PLTE");
+        offset2 += 4;
         for (var i = 0; i < dl; i++) {
           var ti = i * 3, c = nimg.plte[i], r = c & 255, g = c >>> 8 & 255, b = c >>> 16 & 255;
-          data[offset + ti + 0] = r;
-          data[offset + ti + 1] = g;
-          data[offset + ti + 2] = b;
+          data2[offset2 + ti + 0] = r;
+          data2[offset2 + ti + 1] = g;
+          data2[offset2 + ti + 2] = b;
         }
-        offset += dl * 3;
-        wUi(data, offset, crc(data, offset - dl * 3 - 4, dl * 3 + 4));
-        offset += 4;
+        offset2 += dl * 3;
+        wUi(data2, offset2, crc(data2, offset2 - dl * 3 - 4, dl * 3 + 4));
+        offset2 += 4;
         if (pltAlpha) {
-          wUi(data, offset, dl);
-          offset += 4;
-          wAs(data, offset, "tRNS");
-          offset += 4;
-          for (var i = 0; i < dl; i++) data[offset + i] = nimg.plte[i] >>> 24 & 255;
-          offset += dl;
-          wUi(data, offset, crc(data, offset - dl - 4, dl + 4));
-          offset += 4;
+          wUi(data2, offset2, dl);
+          offset2 += 4;
+          wAs(data2, offset2, "tRNS");
+          offset2 += 4;
+          for (var i = 0; i < dl; i++) data2[offset2 + i] = nimg.plte[i] >>> 24 & 255;
+          offset2 += dl;
+          wUi(data2, offset2, crc(data2, offset2 - dl - 4, dl + 4));
+          offset2 += 4;
         }
       }
       var fi = 0;
       for (var j = 0; j < nimg.frames.length; j++) {
         var fr = nimg.frames[j];
         if (anim) {
-          wUi(data, offset, 26);
-          offset += 4;
-          wAs(data, offset, "fcTL");
-          offset += 4;
-          wUi(data, offset, fi++);
-          offset += 4;
-          wUi(data, offset, fr.rect.width);
-          offset += 4;
-          wUi(data, offset, fr.rect.height);
-          offset += 4;
-          wUi(data, offset, fr.rect.x);
-          offset += 4;
-          wUi(data, offset, fr.rect.y);
-          offset += 4;
-          wUs(data, offset, dels[j]);
-          offset += 2;
-          wUs(data, offset, 1e3);
-          offset += 2;
-          data[offset] = fr.dispose;
-          offset++;
-          data[offset] = fr.blend;
-          offset++;
-          wUi(data, offset, crc(data, offset - 30, 30));
-          offset += 4;
+          wUi(data2, offset2, 26);
+          offset2 += 4;
+          wAs(data2, offset2, "fcTL");
+          offset2 += 4;
+          wUi(data2, offset2, fi++);
+          offset2 += 4;
+          wUi(data2, offset2, fr.rect.width);
+          offset2 += 4;
+          wUi(data2, offset2, fr.rect.height);
+          offset2 += 4;
+          wUi(data2, offset2, fr.rect.x);
+          offset2 += 4;
+          wUi(data2, offset2, fr.rect.y);
+          offset2 += 4;
+          wUs(data2, offset2, dels[j]);
+          offset2 += 2;
+          wUs(data2, offset2, 1e3);
+          offset2 += 2;
+          data2[offset2] = fr.dispose;
+          offset2++;
+          data2[offset2] = fr.blend;
+          offset2++;
+          wUi(data2, offset2, crc(data2, offset2 - 30, 30));
+          offset2 += 4;
         }
         var imgd = fr.cimg, dl = imgd.length;
-        wUi(data, offset, dl + (j == 0 ? 0 : 4));
-        offset += 4;
-        var ioff = offset;
-        wAs(data, offset, j == 0 ? "IDAT" : "fdAT");
-        offset += 4;
+        wUi(data2, offset2, dl + (j == 0 ? 0 : 4));
+        offset2 += 4;
+        var ioff = offset2;
+        wAs(data2, offset2, j == 0 ? "IDAT" : "fdAT");
+        offset2 += 4;
         if (j != 0) {
-          wUi(data, offset, fi++);
-          offset += 4;
+          wUi(data2, offset2, fi++);
+          offset2 += 4;
         }
-        data.set(imgd, offset);
-        offset += dl;
-        wUi(data, offset, crc(data, ioff, offset - ioff));
-        offset += 4;
+        data2.set(imgd, offset2);
+        offset2 += dl;
+        wUi(data2, offset2, crc(data2, ioff, offset2 - ioff));
+        offset2 += 4;
       }
-      wUi(data, offset, 0);
-      offset += 4;
-      wAs(data, offset, "IEND");
-      offset += 4;
-      wUi(data, offset, crc(data, offset - 4, 4));
-      offset += 4;
-      return data.buffer;
+      wUi(data2, offset2, 0);
+      offset2 += 4;
+      wAs(data2, offset2, "IEND");
+      offset2 += 4;
+      wUi(data2, offset2, crc(data2, offset2 - 4, 4));
+      offset2 += 4;
+      return data2.buffer;
     };
     UPNG.encode.compressPNG = function(out, filter, levelZero) {
       for (var i = 0; i < out.frames.length; i++) {
@@ -10865,7 +10865,7 @@ var require_UPNG = __commonJS({
     UPNG.encode._prepareDiff = function(cimg, w, h, nimg, rec) {
       UPNG._copyTile(cimg, w, h, nimg, rec.width, rec.height, -rec.x, -rec.y, 2);
     };
-    UPNG.encode._filterZero = function(img, h, bpp, bpl, data, filter, levelZero) {
+    UPNG.encode._filterZero = function(img, h, bpp, bpl, data2, filter, levelZero) {
       var fls = [], ftry = [0, 1, 2, 3, 4];
       if (filter != -1) ftry = [filter];
       else if (h * bpl > 5e5 || bpp == 1) ftry = [0];
@@ -10875,8 +10875,8 @@ var require_UPNG = __commonJS({
       };
       var CMPR = levelZero && UZIP != null ? UZIP : _pako.default;
       for (var i = 0; i < ftry.length; i++) {
-        for (var y = 0; y < h; y++) UPNG.encode._filterLine(data, img, y, bpl, bpp, ftry[i]);
-        fls.push(CMPR["deflate"](data, opts));
+        for (var y = 0; y < h; y++) UPNG.encode._filterLine(data2, img, y, bpl, bpp, ftry[i]);
+        fls.push(CMPR["deflate"](data2, opts));
       }
       var ti, tsize = 1e9;
       for (var i = 0; i < fls.length; i++) if (fls[i].length < tsize) {
@@ -10885,32 +10885,32 @@ var require_UPNG = __commonJS({
       }
       return fls[ti];
     };
-    UPNG.encode._filterLine = function(data, img, y, bpl, bpp, type) {
+    UPNG.encode._filterLine = function(data2, img, y, bpl, bpp, type) {
       var i = y * bpl, di = i + y, paeth = UPNG.decode._paeth;
-      data[di] = type;
+      data2[di] = type;
       di++;
       if (type == 0) {
-        if (bpl < 500) for (var x = 0; x < bpl; x++) data[di + x] = img[i + x];
-        else data.set(new Uint8Array(img.buffer, i, bpl), di);
+        if (bpl < 500) for (var x = 0; x < bpl; x++) data2[di + x] = img[i + x];
+        else data2.set(new Uint8Array(img.buffer, i, bpl), di);
       } else if (type == 1) {
-        for (var x = 0; x < bpp; x++) data[di + x] = img[i + x];
-        for (var x = bpp; x < bpl; x++) data[di + x] = img[i + x] - img[i + x - bpp] + 256 & 255;
+        for (var x = 0; x < bpp; x++) data2[di + x] = img[i + x];
+        for (var x = bpp; x < bpl; x++) data2[di + x] = img[i + x] - img[i + x - bpp] + 256 & 255;
       } else if (y == 0) {
-        for (var x = 0; x < bpp; x++) data[di + x] = img[i + x];
-        if (type == 2) for (var x = bpp; x < bpl; x++) data[di + x] = img[i + x];
-        if (type == 3) for (var x = bpp; x < bpl; x++) data[di + x] = img[i + x] - (img[i + x - bpp] >> 1) + 256 & 255;
-        if (type == 4) for (var x = bpp; x < bpl; x++) data[di + x] = img[i + x] - paeth(img[i + x - bpp], 0, 0) + 256 & 255;
+        for (var x = 0; x < bpp; x++) data2[di + x] = img[i + x];
+        if (type == 2) for (var x = bpp; x < bpl; x++) data2[di + x] = img[i + x];
+        if (type == 3) for (var x = bpp; x < bpl; x++) data2[di + x] = img[i + x] - (img[i + x - bpp] >> 1) + 256 & 255;
+        if (type == 4) for (var x = bpp; x < bpl; x++) data2[di + x] = img[i + x] - paeth(img[i + x - bpp], 0, 0) + 256 & 255;
       } else {
         if (type == 2) {
-          for (var x = 0; x < bpl; x++) data[di + x] = img[i + x] + 256 - img[i + x - bpl] & 255;
+          for (var x = 0; x < bpl; x++) data2[di + x] = img[i + x] + 256 - img[i + x - bpl] & 255;
         }
         if (type == 3) {
-          for (var x = 0; x < bpp; x++) data[di + x] = img[i + x] + 256 - (img[i + x - bpl] >> 1) & 255;
-          for (var x = bpp; x < bpl; x++) data[di + x] = img[i + x] + 256 - (img[i + x - bpl] + img[i + x - bpp] >> 1) & 255;
+          for (var x = 0; x < bpp; x++) data2[di + x] = img[i + x] + 256 - (img[i + x - bpl] >> 1) & 255;
+          for (var x = bpp; x < bpl; x++) data2[di + x] = img[i + x] + 256 - (img[i + x - bpl] + img[i + x - bpp] >> 1) & 255;
         }
         if (type == 4) {
-          for (var x = 0; x < bpp; x++) data[di + x] = img[i + x] + 256 - paeth(0, img[i + x - bpl], 0) & 255;
-          for (var x = bpp; x < bpl; x++) data[di + x] = img[i + x] + 256 - paeth(img[i + x - bpp], img[i + x - bpl], img[i + x - bpp - bpl]) & 255;
+          for (var x = 0; x < bpp; x++) data2[di + x] = img[i + x] + 256 - paeth(0, img[i + x - bpl], 0) & 255;
+          for (var x = bpp; x < bpl; x++) data2[di + x] = img[i + x] + 256 - paeth(img[i + x - bpp], img[i + x - bpl], img[i + x - bpp - bpl]) & 255;
         }
       }
     };
@@ -11259,7 +11259,7 @@ var require_PngEmbedder = __commonJS({
             });
           });
         };
-        PngEmbedder2.prototype.embedIntoContext = function(context, ref) {
+        PngEmbedder2.prototype.embedIntoContext = function(context, ref2) {
           return tslib_1.__awaiter(this, void 0, void 0, function() {
             var SMask, xObject;
             return tslib_1.__generator(this, function(_a) {
@@ -11273,9 +11273,9 @@ var require_PngEmbedder = __commonJS({
                 ColorSpace: this.colorSpace,
                 SMask
               });
-              if (ref) {
-                context.assign(ref, xObject);
-                return [2, ref];
+              if (ref2) {
+                context.assign(ref2, xObject);
+                return [2, ref2];
               } else {
                 return [2, context.register(xObject)];
               }
@@ -12880,7 +12880,7 @@ var require_PDFPageEmbedder = __commonJS({
             });
           });
         };
-        PDFPageEmbedder2.prototype.embedIntoContext = function(context, ref) {
+        PDFPageEmbedder2.prototype.embedIntoContext = function(context, ref2) {
           return tslib_1.__awaiter(this, void 0, void 0, function() {
             var _a, Contents, Resources, decodedContents, _b, left, bottom, right, top, xObject;
             return tslib_1.__generator(this, function(_c) {
@@ -12897,9 +12897,9 @@ var require_PDFPageEmbedder = __commonJS({
                 Matrix: this.transformationMatrix,
                 Resources
               });
-              if (ref) {
-                context.assign(ref, xObject);
-                return [2, ref];
+              if (ref2) {
+                context.assign(ref2, xObject);
+                return [2, ref2];
               } else {
                 return [2, context.register(xObject)];
               }
@@ -13200,9 +13200,9 @@ var require_PDFAcroField = __commonJS({
     var PDFAcroField = (
       /** @class */
       (function() {
-        function PDFAcroField2(dict, ref) {
+        function PDFAcroField2(dict, ref2) {
           this.dict = dict;
-          this.ref = ref;
+          this.ref = ref2;
         }
         PDFAcroField2.prototype.T = function() {
           return this.dict.lookupMaybe(PDFName_1.default.of("T"), PDFString_1.default, PDFHexString_1.default);
@@ -13775,9 +13775,9 @@ var require_PDFAcroTerminal = __commonJS({
           }
           return widgets;
         };
-        PDFAcroTerminal2.prototype.addWidget = function(ref) {
+        PDFAcroTerminal2.prototype.addWidget = function(ref2) {
           var Kids = this.normalizedEntries().Kids;
-          Kids.push(ref);
+          Kids.push(ref2);
         };
         PDFAcroTerminal2.prototype.removeWidget = function(idx) {
           var kidDicts = this.Kids();
@@ -13800,8 +13800,8 @@ var require_PDFAcroTerminal = __commonJS({
           }
           return { Kids };
         };
-        PDFAcroTerminal2.fromDict = function(dict, ref) {
-          return new PDFAcroTerminal2(dict, ref);
+        PDFAcroTerminal2.fromDict = function(dict, ref2) {
+          return new PDFAcroTerminal2(dict, ref2);
         };
         return PDFAcroTerminal2;
       })(PDFAcroField_1.default)
@@ -13948,16 +13948,16 @@ var require_PDFAcroCheckBox = __commonJS({
           var widget = this.getWidgets()[0];
           return widget === null || widget === void 0 ? void 0 : widget.getOnValue();
         };
-        PDFAcroCheckBox2.fromDict = function(dict, ref) {
-          return new PDFAcroCheckBox2(dict, ref);
+        PDFAcroCheckBox2.fromDict = function(dict, ref2) {
+          return new PDFAcroCheckBox2(dict, ref2);
         };
         PDFAcroCheckBox2.create = function(context) {
           var dict = context.obj({
             FT: "Btn",
             Kids: []
           });
-          var ref = context.register(dict);
-          return new PDFAcroCheckBox2(dict, ref);
+          var ref2 = context.register(dict);
+          return new PDFAcroCheckBox2(dict, ref2);
         };
         return PDFAcroCheckBox2;
       })(PDFAcroButton_1.default)
@@ -14156,8 +14156,8 @@ var require_PDFAcroComboBox = __commonJS({
         function PDFAcroComboBox2() {
           return _super !== null && _super.apply(this, arguments) || this;
         }
-        PDFAcroComboBox2.fromDict = function(dict, ref) {
-          return new PDFAcroComboBox2(dict, ref);
+        PDFAcroComboBox2.fromDict = function(dict, ref2) {
+          return new PDFAcroComboBox2(dict, ref2);
         };
         PDFAcroComboBox2.create = function(context) {
           var dict = context.obj({
@@ -14165,8 +14165,8 @@ var require_PDFAcroComboBox = __commonJS({
             Ff: flags_1.AcroChoiceFlags.Combo,
             Kids: []
           });
-          var ref = context.register(dict);
-          return new PDFAcroComboBox2(dict, ref);
+          var ref2 = context.register(dict);
+          return new PDFAcroComboBox2(dict, ref2);
         };
         return PDFAcroComboBox2;
       })(PDFAcroChoice_1.default)
@@ -14202,13 +14202,13 @@ var require_PDFAcroNonTerminal = __commonJS({
           }
           return { Kids };
         };
-        PDFAcroNonTerminal2.fromDict = function(dict, ref) {
-          return new PDFAcroNonTerminal2(dict, ref);
+        PDFAcroNonTerminal2.fromDict = function(dict, ref2) {
+          return new PDFAcroNonTerminal2(dict, ref2);
         };
         PDFAcroNonTerminal2.create = function(context) {
           var dict = context.obj({});
-          var ref = context.register(dict);
-          return new PDFAcroNonTerminal2(dict, ref);
+          var ref2 = context.register(dict);
+          return new PDFAcroNonTerminal2(dict, ref2);
         };
         return PDFAcroNonTerminal2;
       })(PDFAcroField_1.default)
@@ -14231,8 +14231,8 @@ var require_PDFAcroSignature = __commonJS({
         function PDFAcroSignature2() {
           return _super !== null && _super.apply(this, arguments) || this;
         }
-        PDFAcroSignature2.fromDict = function(dict, ref) {
-          return new PDFAcroSignature2(dict, ref);
+        PDFAcroSignature2.fromDict = function(dict, ref2) {
+          return new PDFAcroSignature2(dict, ref2);
         };
         return PDFAcroSignature2;
       })(PDFAcroTerminal_1.default)
@@ -14300,16 +14300,16 @@ var require_PDFAcroText = __commonJS({
             return v;
           return void 0;
         };
-        PDFAcroText2.fromDict = function(dict, ref) {
-          return new PDFAcroText2(dict, ref);
+        PDFAcroText2.fromDict = function(dict, ref2) {
+          return new PDFAcroText2(dict, ref2);
         };
         PDFAcroText2.create = function(context) {
           var dict = context.obj({
             FT: "Tx",
             Kids: []
           });
-          var ref = context.register(dict);
-          return new PDFAcroText2(dict, ref);
+          var ref2 = context.register(dict);
+          return new PDFAcroText2(dict, ref2);
         };
         return PDFAcroText2;
       })(PDFAcroTerminal_1.default)
@@ -14333,8 +14333,8 @@ var require_PDFAcroPushButton = __commonJS({
         function PDFAcroPushButton2() {
           return _super !== null && _super.apply(this, arguments) || this;
         }
-        PDFAcroPushButton2.fromDict = function(dict, ref) {
-          return new PDFAcroPushButton2(dict, ref);
+        PDFAcroPushButton2.fromDict = function(dict, ref2) {
+          return new PDFAcroPushButton2(dict, ref2);
         };
         PDFAcroPushButton2.create = function(context) {
           var dict = context.obj({
@@ -14342,8 +14342,8 @@ var require_PDFAcroPushButton = __commonJS({
             Ff: flags_1.AcroButtonFlags.PushButton,
             Kids: []
           });
-          var ref = context.register(dict);
-          return new PDFAcroPushButton2(dict, ref);
+          var ref2 = context.register(dict);
+          return new PDFAcroPushButton2(dict, ref2);
         };
         return PDFAcroPushButton2;
       })(PDFAcroButton_1.default)
@@ -14398,8 +14398,8 @@ var require_PDFAcroRadioButton = __commonJS({
           }
           return onValues;
         };
-        PDFAcroRadioButton2.fromDict = function(dict, ref) {
-          return new PDFAcroRadioButton2(dict, ref);
+        PDFAcroRadioButton2.fromDict = function(dict, ref2) {
+          return new PDFAcroRadioButton2(dict, ref2);
         };
         PDFAcroRadioButton2.create = function(context) {
           var dict = context.obj({
@@ -14407,8 +14407,8 @@ var require_PDFAcroRadioButton = __commonJS({
             Ff: flags_1.AcroButtonFlags.Radio,
             Kids: []
           });
-          var ref = context.register(dict);
-          return new PDFAcroRadioButton2(dict, ref);
+          var ref2 = context.register(dict);
+          return new PDFAcroRadioButton2(dict, ref2);
         };
         return PDFAcroRadioButton2;
       })(PDFAcroButton_1.default)
@@ -14431,16 +14431,16 @@ var require_PDFAcroListBox = __commonJS({
         function PDFAcroListBox2() {
           return _super !== null && _super.apply(this, arguments) || this;
         }
-        PDFAcroListBox2.fromDict = function(dict, ref) {
-          return new PDFAcroListBox2(dict, ref);
+        PDFAcroListBox2.fromDict = function(dict, ref2) {
+          return new PDFAcroListBox2(dict, ref2);
         };
         PDFAcroListBox2.create = function(context) {
           var dict = context.obj({
             FT: "Ch",
             Kids: []
           });
-          var ref = context.register(dict);
-          return new PDFAcroListBox2(dict, ref);
+          var ref2 = context.register(dict);
+          return new PDFAcroListBox2(dict, ref2);
         };
         return PDFAcroListBox2;
       })(PDFAcroChoice_1.default)
@@ -14476,19 +14476,19 @@ var require_utils3 = __commonJS({
         return [];
       var kids = [];
       for (var idx = 0, len = kidDicts.size(); idx < len; idx++) {
-        var ref = kidDicts.get(idx);
+        var ref2 = kidDicts.get(idx);
         var dict = kidDicts.lookup(idx);
-        if (ref instanceof PDFRef_1.default && dict instanceof PDFDict_1.default) {
-          kids.push([exports.createPDFAcroField(dict, ref), ref]);
+        if (ref2 instanceof PDFRef_1.default && dict instanceof PDFDict_1.default) {
+          kids.push([exports.createPDFAcroField(dict, ref2), ref2]);
         }
       }
       return kids;
     };
-    exports.createPDFAcroField = function(dict, ref) {
+    exports.createPDFAcroField = function(dict, ref2) {
       var isNonTerminal = isNonTerminalAcroField(dict);
       if (isNonTerminal)
-        return PDFAcroNonTerminal_1.default.fromDict(dict, ref);
-      return createPDFAcroTerminal(dict, ref);
+        return PDFAcroNonTerminal_1.default.fromDict(dict, ref2);
+      return createPDFAcroTerminal(dict, ref2);
     };
     var isNonTerminalAcroField = function(dict) {
       var kids = dict.lookup(PDFName_1.default.of("Kids"));
@@ -14502,41 +14502,41 @@ var require_utils3 = __commonJS({
       }
       return false;
     };
-    var createPDFAcroTerminal = function(dict, ref) {
+    var createPDFAcroTerminal = function(dict, ref2) {
       var ftNameOrRef = getInheritableAttribute(dict, PDFName_1.default.of("FT"));
       var type = dict.context.lookup(ftNameOrRef, PDFName_1.default);
       if (type === PDFName_1.default.of("Btn"))
-        return createPDFAcroButton(dict, ref);
+        return createPDFAcroButton(dict, ref2);
       if (type === PDFName_1.default.of("Ch"))
-        return createPDFAcroChoice(dict, ref);
+        return createPDFAcroChoice(dict, ref2);
       if (type === PDFName_1.default.of("Tx"))
-        return PDFAcroText_1.default.fromDict(dict, ref);
+        return PDFAcroText_1.default.fromDict(dict, ref2);
       if (type === PDFName_1.default.of("Sig"))
-        return PDFAcroSignature_1.default.fromDict(dict, ref);
-      return PDFAcroTerminal_1.default.fromDict(dict, ref);
+        return PDFAcroSignature_1.default.fromDict(dict, ref2);
+      return PDFAcroTerminal_1.default.fromDict(dict, ref2);
     };
-    var createPDFAcroButton = function(dict, ref) {
+    var createPDFAcroButton = function(dict, ref2) {
       var _a;
       var ffNumberOrRef = getInheritableAttribute(dict, PDFName_1.default.of("Ff"));
       var ffNumber = dict.context.lookupMaybe(ffNumberOrRef, PDFNumber_1.default);
       var flags = (_a = ffNumber === null || ffNumber === void 0 ? void 0 : ffNumber.asNumber()) !== null && _a !== void 0 ? _a : 0;
       if (flagIsSet(flags, flags_1.AcroButtonFlags.PushButton)) {
-        return PDFAcroPushButton_1.default.fromDict(dict, ref);
+        return PDFAcroPushButton_1.default.fromDict(dict, ref2);
       } else if (flagIsSet(flags, flags_1.AcroButtonFlags.Radio)) {
-        return PDFAcroRadioButton_1.default.fromDict(dict, ref);
+        return PDFAcroRadioButton_1.default.fromDict(dict, ref2);
       } else {
-        return PDFAcroCheckBox_1.default.fromDict(dict, ref);
+        return PDFAcroCheckBox_1.default.fromDict(dict, ref2);
       }
     };
-    var createPDFAcroChoice = function(dict, ref) {
+    var createPDFAcroChoice = function(dict, ref2) {
       var _a;
       var ffNumberOrRef = getInheritableAttribute(dict, PDFName_1.default.of("Ff"));
       var ffNumber = dict.context.lookupMaybe(ffNumberOrRef, PDFNumber_1.default);
       var flags = (_a = ffNumber === null || ffNumber === void 0 ? void 0 : ffNumber.asNumber()) !== null && _a !== void 0 ? _a : 0;
       if (flagIsSet(flags, flags_1.AcroChoiceFlags.Combo)) {
-        return PDFAcroComboBox_1.default.fromDict(dict, ref);
+        return PDFAcroComboBox_1.default.fromDict(dict, ref2);
       } else {
-        return PDFAcroListBox_1.default.fromDict(dict, ref);
+        return PDFAcroListBox_1.default.fromDict(dict, ref2);
       }
     };
     var flagIsSet = function(flags, flag) {
@@ -14586,9 +14586,9 @@ var require_PDFAcroForm = __commonJS({
           var Fields = this.normalizedEntries().Fields;
           var fields = new Array(Fields.size());
           for (var idx = 0, len = Fields.size(); idx < len; idx++) {
-            var ref = Fields.get(idx);
+            var ref2 = Fields.get(idx);
             var dict = Fields.lookup(idx, PDFDict_1.default);
-            fields[idx] = [utils_1.createPDFAcroField(dict, ref), ref];
+            fields[idx] = [utils_1.createPDFAcroField(dict, ref2), ref2];
           }
           return fields;
         };
@@ -15111,8 +15111,8 @@ var require_ByteStream = __commonJS({
           this.bytes = bytes;
           this.length = this.bytes.length;
         }
-        ByteStream2.prototype.moveTo = function(offset) {
-          this.idx = offset;
+        ByteStream2.prototype.moveTo = function(offset2) {
+          this.idx = offset2;
         };
         ByteStream2.prototype.next = function() {
           var byte = this.bytes[this.idx++];
@@ -15136,8 +15136,8 @@ var require_ByteStream = __commonJS({
         ByteStream2.prototype.peekAhead = function(steps) {
           return this.bytes[this.idx + steps];
         };
-        ByteStream2.prototype.peekAt = function(offset) {
-          return this.bytes[offset];
+        ByteStream2.prototype.peekAt = function(offset2) {
+          return this.bytes[offset2];
         };
         ByteStream2.prototype.done = function() {
           return this.idx >= this.length;
@@ -15505,7 +15505,7 @@ var require_PDFObjectStreamParser = __commonJS({
         }
         PDFObjectStreamParser2.prototype.parseIntoContext = function() {
           return tslib_1.__awaiter(this, void 0, void 0, function() {
-            var offsetsAndObjectNumbers, idx, len, _a, objectNumber, offset, object, ref;
+            var offsetsAndObjectNumbers, idx, len, _a, objectNumber, offset2, object, ref2;
             return tslib_1.__generator(this, function(_b) {
               switch (_b.label) {
                 case 0:
@@ -15518,11 +15518,11 @@ var require_PDFObjectStreamParser = __commonJS({
                   _b.label = 1;
                 case 1:
                   if (!(idx < len)) return [3, 4];
-                  _a = offsetsAndObjectNumbers[idx], objectNumber = _a.objectNumber, offset = _a.offset;
-                  this.bytes.moveTo(this.firstOffset + offset);
+                  _a = offsetsAndObjectNumbers[idx], objectNumber = _a.objectNumber, offset2 = _a.offset;
+                  this.bytes.moveTo(this.firstOffset + offset2);
                   object = this.parseObject();
-                  ref = PDFRef_1.default.of(objectNumber, 0);
-                  this.context.assign(ref, object);
+                  ref2 = PDFRef_1.default.of(objectNumber, 0);
+                  this.context.assign(ref2, object);
                   if (!this.shouldWaitForTick()) return [3, 3];
                   return [4, utils_1.waitForTick()];
                 case 2:
@@ -15546,8 +15546,8 @@ var require_PDFObjectStreamParser = __commonJS({
             this.skipWhitespaceAndComments();
             var objectNumber = this.parseRawInt();
             this.skipWhitespaceAndComments();
-            var offset = this.parseRawInt();
-            offsetsAndObjectNumbers.push({ objectNumber, offset });
+            var offset2 = this.parseRawInt();
+            offsetsAndObjectNumbers.push({ objectNumber, offset: offset2 });
           }
           return offsetsAndObjectNumbers;
         };
@@ -15623,9 +15623,9 @@ var require_PDFXRefStreamParser = __commonJS({
               for (var idx = 0, len = typeFieldWidth; idx < len; idx++) {
                 type = type << 8 | this.bytes.next();
               }
-              var offset = 0;
+              var offset2 = 0;
               for (var idx = 0, len = offsetFieldWidth; idx < len; idx++) {
-                offset = offset << 8 | this.bytes.next();
+                offset2 = offset2 << 8 | this.bytes.next();
               }
               var generationNumber = 0;
               for (var idx = 0, len = genFieldWidth; idx < len; idx++) {
@@ -15636,7 +15636,7 @@ var require_PDFXRefStreamParser = __commonJS({
               var objectNumber = firstObjectNumber + objIdx;
               var entry = {
                 ref: PDFRef_1.default.of(objectNumber, generationNumber),
-                offset,
+                offset: offset2,
                 deleted: type === 0,
                 inObjectStream: type === 2
               };
@@ -15706,7 +15706,7 @@ var require_PDFParser = __commonJS({
         }
         PDFParser2.prototype.parseDocument = function() {
           return tslib_1.__awaiter(this, void 0, void 0, function() {
-            var prevOffset, offset;
+            var prevOffset, offset2;
             return tslib_1.__generator(this, function(_a) {
               switch (_a.label) {
                 case 0:
@@ -15721,11 +15721,11 @@ var require_PDFParser = __commonJS({
                   return [4, this.parseDocumentSection()];
                 case 2:
                   _a.sent();
-                  offset = this.bytes.offset();
-                  if (offset === prevOffset) {
+                  offset2 = this.bytes.offset();
+                  if (offset2 === prevOffset) {
                     throw new errors_1.StalledParserError(this.bytes.position());
                   }
-                  prevOffset = offset;
+                  prevOffset = offset2;
                   return [3, 1];
                 case 3:
                   this.maybeRecoverRoot();
@@ -15746,9 +15746,9 @@ var require_PDFParser = __commonJS({
           if (!isValidCatalog(catalog)) {
             var indirectObjects = this.context.enumerateIndirectObjects();
             for (var idx = 0, len = indirectObjects.length; idx < len; idx++) {
-              var _a = indirectObjects[idx], ref = _a[0], object = _a[1];
+              var _a = indirectObjects[idx], ref2 = _a[0], object = _a[1];
               if (isValidCatalog(object)) {
-                this.context.trailerInfo.Root = ref;
+                this.context.trailerInfo.Root = ref2;
               }
             }
           }
@@ -15790,11 +15790,11 @@ var require_PDFParser = __commonJS({
         };
         PDFParser2.prototype.parseIndirectObject = function() {
           return tslib_1.__awaiter(this, void 0, void 0, function() {
-            var ref, object;
+            var ref2, object;
             return tslib_1.__generator(this, function(_a) {
               switch (_a.label) {
                 case 0:
-                  ref = this.parseIndirectObjectHeader();
+                  ref2 = this.parseIndirectObjectHeader();
                   this.skipWhitespaceAndComments();
                   object = this.parseObject();
                   this.skipWhitespaceAndComments();
@@ -15808,11 +15808,11 @@ var require_PDFParser = __commonJS({
                   if (object instanceof PDFRawStream_1.default && object.dict.lookup(PDFName_1.default.of("Type")) === PDFName_1.default.of("XRef")) {
                     PDFXRefStreamParser_1.default.forStream(object).parseIntoContext();
                   } else {
-                    this.context.assign(ref, object);
+                    this.context.assign(ref2, object);
                   }
                   _a.label = 3;
                 case 3:
-                  return [2, ref];
+                  return [2, ref2];
               }
             });
           });
@@ -15823,8 +15823,8 @@ var require_PDFParser = __commonJS({
           if (this.throwOnInvalidObject)
             throw new Error(msg);
           console.warn(msg);
-          var ref = this.parseIndirectObjectHeader();
-          console.warn("Invalid object ref: " + ref);
+          var ref2 = this.parseIndirectObjectHeader();
+          console.warn("Invalid object ref: " + ref2);
           this.skipWhitespaceAndComments();
           var start = this.bytes.offset();
           var failed = true;
@@ -15840,8 +15840,8 @@ var require_PDFParser = __commonJS({
             throw new errors_1.PDFInvalidObjectParsingError(startPos);
           var end = this.bytes.offset() - Keywords_1.Keywords.endobj.length;
           var object = PDFInvalidObject_1.default.of(this.bytes.slice(start, end));
-          this.context.assign(ref, object);
-          return ref;
+          this.context.assign(ref2, object);
+          return ref2;
         };
         PDFParser2.prototype.parseIndirectObjects = function() {
           return tslib_1.__awaiter(this, void 0, void 0, function() {
@@ -15899,11 +15899,11 @@ var require_PDFParser = __commonJS({
             this.skipWhitespaceAndComments();
             var byte = this.bytes.peek();
             if (byte === CharCodes_1.default.n || byte === CharCodes_1.default.f) {
-              var ref = PDFRef_1.default.of(objectNumber, secondInt);
+              var ref2 = PDFRef_1.default.of(objectNumber, secondInt);
               if (this.bytes.next() === CharCodes_1.default.n) {
-                xref.addEntry(ref, firstInt);
+                xref.addEntry(ref2, firstInt);
               } else {
-                xref.addDeletedEntry(ref, firstInt);
+                xref.addDeletedEntry(ref2, firstInt);
               }
               objectNumber += 1;
             } else {
@@ -15932,13 +15932,13 @@ var require_PDFParser = __commonJS({
           if (!this.matchKeyword(Keywords_1.Keywords.startxref))
             return;
           this.skipWhitespaceAndComments();
-          var offset = this.parseRawInt();
+          var offset2 = this.parseRawInt();
           this.skipWhitespace();
           this.matchKeyword(Keywords_1.Keywords.eof);
           this.skipWhitespaceAndComments();
           this.matchKeyword(Keywords_1.Keywords.eof);
           this.skipWhitespaceAndComments();
-          return PDFTrailer_1.default.forLastCrossRefSectionOffset(offset);
+          return PDFTrailer_1.default.forLastCrossRefSectionOffset(offset2);
         };
         PDFParser2.prototype.parseDocumentSection = function() {
           return tslib_1.__awaiter(this, void 0, void 0, function() {
@@ -16678,7 +16678,7 @@ var require_svgPath = __commonJS({
       ["Z", 0],
       ["z", 0]
     ]);
-    var parse = function(path13) {
+    var parse4 = function(path13) {
       var cmd;
       var ret = [];
       var args = [];
@@ -17000,7 +17000,7 @@ var require_svgPath = __commonJS({
       return result;
     };
     exports.svgPathToOperators = function(path13) {
-      return apply(parse(path13));
+      return apply(parse4(path13));
     };
   }
 });
@@ -18296,12 +18296,12 @@ var require_PDFEmbeddedPage = __commonJS({
     var PDFEmbeddedPage = (
       /** @class */
       (function() {
-        function PDFEmbeddedPage2(ref, doc, embedder) {
+        function PDFEmbeddedPage2(ref2, doc, embedder) {
           this.alreadyEmbedded = false;
-          utils_1.assertIs(ref, "ref", [[core_1.PDFRef, "PDFRef"]]);
+          utils_1.assertIs(ref2, "ref", [[core_1.PDFRef, "PDFRef"]]);
           utils_1.assertIs(doc, "doc", [[PDFDocument_1.default, "PDFDocument"]]);
           utils_1.assertIs(embedder, "embedder", [[core_1.PDFPageEmbedder, "PDFPageEmbedder"]]);
-          this.ref = ref;
+          this.ref = ref2;
           this.doc = doc;
           this.width = embedder.width;
           this.height = embedder.height;
@@ -18334,8 +18334,8 @@ var require_PDFEmbeddedPage = __commonJS({
             });
           });
         };
-        PDFEmbeddedPage2.of = function(ref, doc, embedder) {
-          return new PDFEmbeddedPage2(ref, doc, embedder);
+        PDFEmbeddedPage2.of = function(ref2, doc, embedder) {
+          return new PDFEmbeddedPage2(ref2, doc, embedder);
         };
         return PDFEmbeddedPage2;
       })()
@@ -18356,15 +18356,15 @@ var require_PDFFont = __commonJS({
     var PDFFont = (
       /** @class */
       (function() {
-        function PDFFont2(ref, doc, embedder) {
+        function PDFFont2(ref2, doc, embedder) {
           this.modified = true;
-          utils_1.assertIs(ref, "ref", [[core_1.PDFRef, "PDFRef"]]);
+          utils_1.assertIs(ref2, "ref", [[core_1.PDFRef, "PDFRef"]]);
           utils_1.assertIs(doc, "doc", [[PDFDocument_1.default, "PDFDocument"]]);
           utils_1.assertIs(embedder, "embedder", [
             [core_1.CustomFontEmbedder, "CustomFontEmbedder"],
             [core_1.StandardFontEmbedder, "StandardFontEmbedder"]
           ]);
-          this.ref = ref;
+          this.ref = ref2;
           this.doc = doc;
           this.name = embedder.fontName;
           this.embedder = embedder;
@@ -18418,8 +18418,8 @@ var require_PDFFont = __commonJS({
             });
           });
         };
-        PDFFont2.of = function(ref, doc, embedder) {
-          return new PDFFont2(ref, doc, embedder);
+        PDFFont2.of = function(ref2, doc, embedder) {
+          return new PDFFont2(ref2, doc, embedder);
         };
         return PDFFont2;
       })()
@@ -18440,14 +18440,14 @@ var require_PDFImage = __commonJS({
     var PDFImage = (
       /** @class */
       (function() {
-        function PDFImage2(ref, doc, embedder) {
-          utils_1.assertIs(ref, "ref", [[core_1.PDFRef, "PDFRef"]]);
+        function PDFImage2(ref2, doc, embedder) {
+          utils_1.assertIs(ref2, "ref", [[core_1.PDFRef, "PDFRef"]]);
           utils_1.assertIs(doc, "doc", [[PDFDocument_1.default, "PDFDocument"]]);
           utils_1.assertIs(embedder, "embedder", [
             [core_1.JpegEmbedder, "JpegEmbedder"],
             [core_1.PngEmbedder, "PngEmbedder"]
           ]);
-          this.ref = ref;
+          this.ref = ref2;
           this.doc = doc;
           this.width = embedder.width;
           this.height = embedder.height;
@@ -18470,7 +18470,7 @@ var require_PDFImage = __commonJS({
         };
         PDFImage2.prototype.embed = function() {
           return tslib_1.__awaiter(this, void 0, void 0, function() {
-            var _a, doc, ref;
+            var _a, doc, ref2;
             return tslib_1.__generator(this, function(_b) {
               switch (_b.label) {
                 case 0:
@@ -18480,8 +18480,8 @@ var require_PDFImage = __commonJS({
                       /*return*/
                     ];
                   if (!this.embedTask) {
-                    _a = this, doc = _a.doc, ref = _a.ref;
-                    this.embedTask = this.embedder.embedIntoContext(doc.context, ref);
+                    _a = this, doc = _a.doc, ref2 = _a.ref;
+                    this.embedTask = this.embedder.embedIntoContext(doc.context, ref2);
                   }
                   return [4, this.embedTask];
                 case 1:
@@ -18495,8 +18495,8 @@ var require_PDFImage = __commonJS({
             });
           });
         };
-        PDFImage2.of = function(ref, doc, embedder) {
-          return new PDFImage2(ref, doc, embedder);
+        PDFImage2.of = function(ref2, doc, embedder) {
+          return new PDFImage2(ref2, doc, embedder);
         };
         return PDFImage2;
       })()
@@ -18564,12 +18564,12 @@ var require_PDFField = __commonJS({
     var PDFField = (
       /** @class */
       (function() {
-        function PDFField2(acroField, ref, doc) {
+        function PDFField2(acroField, ref2, doc) {
           utils_1.assertIs(acroField, "acroField", [[core_1.PDFAcroTerminal, "PDFAcroTerminal"]]);
-          utils_1.assertIs(ref, "ref", [[core_1.PDFRef, "PDFRef"]]);
+          utils_1.assertIs(ref2, "ref", [[core_1.PDFRef, "PDFRef"]]);
           utils_1.assertIs(doc, "doc", [[PDFDocument_1.default, "PDFDocument"]]);
           this.acroField = acroField;
-          this.ref = ref;
+          this.ref = ref2;
           this.doc = doc;
         }
         PDFField2.prototype.getName = function() {
@@ -18775,8 +18775,8 @@ var require_PDFCheckBox = __commonJS({
       /** @class */
       (function(_super) {
         tslib_1.__extends(PDFCheckBox2, _super);
-        function PDFCheckBox2(acroCheckBox, ref, doc) {
-          var _this = _super.call(this, acroCheckBox, ref, doc) || this;
+        function PDFCheckBox2(acroCheckBox, ref2, doc) {
+          var _this = _super.call(this, acroCheckBox, ref2, doc) || this;
           utils_1.assertIs(acroCheckBox, "acroCheckBox", [
             [core_1.PDFAcroCheckBox, "PDFAcroCheckBox"]
           ]);
@@ -18865,8 +18865,8 @@ var require_PDFCheckBox = __commonJS({
           var appearances = appearances_1.normalizeAppearance(apProvider(this, widget));
           this.updateOnOffWidgetAppearance(widget, onValue, appearances);
         };
-        PDFCheckBox2.of = function(acroCheckBox, ref, doc) {
-          return new PDFCheckBox2(acroCheckBox, ref, doc);
+        PDFCheckBox2.of = function(acroCheckBox, ref2, doc) {
+          return new PDFCheckBox2(acroCheckBox, ref2, doc);
         };
         return PDFCheckBox2;
       })(PDFField_1.default)
@@ -18893,8 +18893,8 @@ var require_PDFDropdown = __commonJS({
       /** @class */
       (function(_super) {
         tslib_1.__extends(PDFDropdown2, _super);
-        function PDFDropdown2(acroComboBox, ref, doc) {
-          var _this = _super.call(this, acroComboBox, ref, doc) || this;
+        function PDFDropdown2(acroComboBox, ref2, doc) {
+          var _this = _super.call(this, acroComboBox, ref2, doc) || this;
           utils_1.assertIs(acroComboBox, "acroComboBox", [
             [core_1.PDFAcroComboBox, "PDFAcroComboBox"]
           ]);
@@ -19083,8 +19083,8 @@ var require_PDFDropdown = __commonJS({
           var appearances = appearances_1.normalizeAppearance(apProvider(this, widget, font));
           this.updateWidgetAppearanceWithFont(widget, font, appearances);
         };
-        PDFDropdown2.of = function(acroComboBox, ref, doc) {
-          return new PDFDropdown2(acroComboBox, ref, doc);
+        PDFDropdown2.of = function(acroComboBox, ref2, doc) {
+          return new PDFDropdown2(acroComboBox, ref2, doc);
         };
         return PDFDropdown2;
       })(PDFField_1.default)
@@ -19111,8 +19111,8 @@ var require_PDFOptionList = __commonJS({
       /** @class */
       (function(_super) {
         tslib_1.__extends(PDFOptionList2, _super);
-        function PDFOptionList2(acroListBox, ref, doc) {
-          var _this = _super.call(this, acroListBox, ref, doc) || this;
+        function PDFOptionList2(acroListBox, ref2, doc) {
+          var _this = _super.call(this, acroListBox, ref2, doc) || this;
           utils_1.assertIs(acroListBox, "acroListBox", [[core_1.PDFAcroListBox, "PDFAcroListBox"]]);
           _this.acroField = acroListBox;
           return _this;
@@ -19279,8 +19279,8 @@ var require_PDFOptionList = __commonJS({
           var appearances = appearances_1.normalizeAppearance(apProvider(this, widget, font));
           this.updateWidgetAppearanceWithFont(widget, font, appearances);
         };
-        PDFOptionList2.of = function(acroListBox, ref, doc) {
-          return new PDFOptionList2(acroListBox, ref, doc);
+        PDFOptionList2.of = function(acroListBox, ref2, doc) {
+          return new PDFOptionList2(acroListBox, ref2, doc);
         };
         return PDFOptionList2;
       })(PDFField_1.default)
@@ -19306,8 +19306,8 @@ var require_PDFRadioGroup = __commonJS({
       /** @class */
       (function(_super) {
         tslib_1.__extends(PDFRadioGroup2, _super);
-        function PDFRadioGroup2(acroRadioButton, ref, doc) {
-          var _this = _super.call(this, acroRadioButton, ref, doc) || this;
+        function PDFRadioGroup2(acroRadioButton, ref2, doc) {
+          var _this = _super.call(this, acroRadioButton, ref2, doc) || this;
           utils_1.assertIs(acroRadioButton, "acroRadioButton", [
             [core_1.PDFAcroRadioButton, "PDFAcroRadioButton"]
           ]);
@@ -19444,8 +19444,8 @@ var require_PDFRadioGroup = __commonJS({
           var appearances = appearances_1.normalizeAppearance(apProvider(this, widget));
           this.updateOnOffWidgetAppearance(widget, onValue, appearances);
         };
-        PDFRadioGroup2.of = function(acroRadioButton, ref, doc) {
-          return new PDFRadioGroup2(acroRadioButton, ref, doc);
+        PDFRadioGroup2.of = function(acroRadioButton, ref2, doc) {
+          return new PDFRadioGroup2(acroRadioButton, ref2, doc);
         };
         return PDFRadioGroup2;
       })(PDFField_1.default)
@@ -19467,8 +19467,8 @@ var require_PDFSignature = __commonJS({
       /** @class */
       (function(_super) {
         tslib_1.__extends(PDFSignature2, _super);
-        function PDFSignature2(acroSignature, ref, doc) {
-          var _this = _super.call(this, acroSignature, ref, doc) || this;
+        function PDFSignature2(acroSignature, ref2, doc) {
+          var _this = _super.call(this, acroSignature, ref2, doc) || this;
           utils_1.assertIs(acroSignature, "acroSignature", [
             [core_1.PDFAcroSignature, "PDFAcroSignature"]
           ]);
@@ -19478,8 +19478,8 @@ var require_PDFSignature = __commonJS({
         PDFSignature2.prototype.needsAppearancesUpdate = function() {
           return false;
         };
-        PDFSignature2.of = function(acroSignature, ref, doc) {
-          return new PDFSignature2(acroSignature, ref, doc);
+        PDFSignature2.of = function(acroSignature, ref2, doc) {
+          return new PDFSignature2(acroSignature, ref2, doc);
         };
         return PDFSignature2;
       })(PDFField_1.default)
@@ -19509,8 +19509,8 @@ var require_PDFTextField = __commonJS({
       /** @class */
       (function(_super) {
         tslib_1.__extends(PDFTextField2, _super);
-        function PDFTextField2(acroText, ref, doc) {
-          var _this = _super.call(this, acroText, ref, doc) || this;
+        function PDFTextField2(acroText, ref2, doc) {
+          var _this = _super.call(this, acroText, ref2, doc) || this;
           utils_1.assertIs(acroText, "acroText", [[core_1.PDFAcroText, "PDFAcroText"]]);
           _this.acroField = acroText;
           return _this;
@@ -19720,8 +19720,8 @@ var require_PDFTextField = __commonJS({
           var appearances = appearances_1.normalizeAppearance(apProvider(this, widget, font));
           this.updateWidgetAppearanceWithFont(widget, font, appearances);
         };
-        PDFTextField2.of = function(acroText, ref, doc) {
-          return new PDFTextField2(acroText, ref, doc);
+        PDFTextField2.of = function(acroText, ref2, doc) {
+          return new PDFTextField2(acroText, ref2, doc);
         };
         return PDFTextField2;
       })(PDFField_1.default)
@@ -19802,8 +19802,8 @@ var require_PDFForm = __commonJS({
           var allFields = this.acroForm.getAllFields();
           var fields = [];
           for (var idx = 0, len = allFields.length; idx < len; idx++) {
-            var _a = allFields[idx], acroField = _a[0], ref = _a[1];
-            var field = convertToPDFField(acroField, ref, this.doc);
+            var _a = allFields[idx], acroField = _a[0], ref2 = _a[1];
+            var field = convertToPDFField(acroField, ref2, this.doc);
             if (field)
               fields.push(field);
           }
@@ -20030,9 +20030,9 @@ var require_PDFForm = __commonJS({
           var refOrDict = widget.getNormalAppearance();
           if (refOrDict instanceof core_1.PDFDict && (field instanceof PDFCheckBox_1.default || field instanceof PDFRadioGroup_1.default)) {
             var value = field.acroField.getValue();
-            var ref = (_a = refOrDict.get(value)) !== null && _a !== void 0 ? _a : refOrDict.get(core_1.PDFName.of("Off"));
-            if (ref instanceof core_1.PDFRef) {
-              refOrDict = ref;
+            var ref2 = (_a = refOrDict.get(value)) !== null && _a !== void 0 ? _a : refOrDict.get(core_1.PDFName.of("Off"));
+            if (ref2 instanceof core_1.PDFRef) {
+              refOrDict = ref2;
             }
           }
           if (!(refOrDict instanceof core_1.PDFRef)) {
@@ -20067,10 +20067,10 @@ var require_PDFForm = __commonJS({
         PDFForm2.prototype.findNonTerminal = function(partialName, parent) {
           var fields = parent instanceof core_1.PDFAcroForm ? this.acroForm.getFields() : core_1.createPDFAcroFields(parent.Kids());
           for (var idx = 0, len = fields.length; idx < len; idx++) {
-            var _a = fields[idx], field = _a[0], ref = _a[1];
+            var _a = fields[idx], field = _a[0], ref2 = _a[1];
             if (field.getPartialName() === partialName) {
               if (field instanceof core_1.PDFAcroNonTerminal)
-                return [field, ref];
+                return [field, ref2];
               throw new errors_1.FieldAlreadyExistsError(partialName);
             }
           }
@@ -20083,22 +20083,22 @@ var require_PDFForm = __commonJS({
       })()
     );
     exports.default = PDFForm;
-    var convertToPDFField = function(field, ref, doc) {
+    var convertToPDFField = function(field, ref2, doc) {
       if (field instanceof core_1.PDFAcroPushButton)
-        return PDFButton_1.default.of(field, ref, doc);
+        return PDFButton_1.default.of(field, ref2, doc);
       if (field instanceof core_1.PDFAcroCheckBox)
-        return PDFCheckBox_1.default.of(field, ref, doc);
+        return PDFCheckBox_1.default.of(field, ref2, doc);
       if (field instanceof core_1.PDFAcroComboBox)
-        return PDFDropdown_1.default.of(field, ref, doc);
+        return PDFDropdown_1.default.of(field, ref2, doc);
       if (field instanceof core_1.PDFAcroListBox)
-        return PDFOptionList_1.default.of(field, ref, doc);
+        return PDFOptionList_1.default.of(field, ref2, doc);
       if (field instanceof core_1.PDFAcroText)
-        return PDFTextField_1.default.of(field, ref, doc);
+        return PDFTextField_1.default.of(field, ref2, doc);
       if (field instanceof core_1.PDFAcroRadioButton) {
-        return PDFRadioGroup_1.default.of(field, ref, doc);
+        return PDFRadioGroup_1.default.of(field, ref2, doc);
       }
       if (field instanceof core_1.PDFAcroSignature) {
-        return PDFSignature_1.default.of(field, ref, doc);
+        return PDFSignature_1.default.of(field, ref2, doc);
       }
       return void 0;
     };
@@ -20222,22 +20222,22 @@ var require_PDFEmbeddedFile = __commonJS({
     var PDFEmbeddedFile = (
       /** @class */
       (function() {
-        function PDFEmbeddedFile2(ref, doc, embedder) {
+        function PDFEmbeddedFile2(ref2, doc, embedder) {
           this.alreadyEmbedded = false;
-          this.ref = ref;
+          this.ref = ref2;
           this.doc = doc;
           this.embedder = embedder;
         }
         PDFEmbeddedFile2.prototype.embed = function() {
           return tslib_1.__awaiter(this, void 0, void 0, function() {
-            var ref, Names, EmbeddedFiles, EFNames, AF;
+            var ref2, Names, EmbeddedFiles, EFNames, AF;
             return tslib_1.__generator(this, function(_a) {
               switch (_a.label) {
                 case 0:
                   if (!!this.alreadyEmbedded) return [3, 2];
                   return [4, this.embedder.embedIntoContext(this.doc.context, this.ref)];
                 case 1:
-                  ref = _a.sent();
+                  ref2 = _a.sent();
                   if (!this.doc.catalog.has(core_1.PDFName.of("Names"))) {
                     this.doc.catalog.set(core_1.PDFName.of("Names"), this.doc.context.obj({}));
                   }
@@ -20251,12 +20251,12 @@ var require_PDFEmbeddedFile = __commonJS({
                   }
                   EFNames = EmbeddedFiles.lookup(core_1.PDFName.of("Names"), core_1.PDFArray);
                   EFNames.push(core_1.PDFHexString.fromText(this.embedder.fileName));
-                  EFNames.push(ref);
+                  EFNames.push(ref2);
                   if (!this.doc.catalog.has(core_1.PDFName.of("AF"))) {
                     this.doc.catalog.set(core_1.PDFName.of("AF"), this.doc.context.obj([]));
                   }
                   AF = this.doc.catalog.lookup(core_1.PDFName.of("AF"), core_1.PDFArray);
-                  AF.push(ref);
+                  AF.push(ref2);
                   this.alreadyEmbedded = true;
                   _a.label = 2;
                 case 2:
@@ -20268,8 +20268,8 @@ var require_PDFEmbeddedFile = __commonJS({
             });
           });
         };
-        PDFEmbeddedFile2.of = function(ref, doc, embedder) {
-          return new PDFEmbeddedFile2(ref, doc, embedder);
+        PDFEmbeddedFile2.of = function(ref2, doc, embedder) {
+          return new PDFEmbeddedFile2(ref2, doc, embedder);
         };
         return PDFEmbeddedFile2;
       })()
@@ -20288,15 +20288,15 @@ var require_PDFJavaScript = __commonJS({
     var PDFJavaScript = (
       /** @class */
       (function() {
-        function PDFJavaScript2(ref, doc, embedder) {
+        function PDFJavaScript2(ref2, doc, embedder) {
           this.alreadyEmbedded = false;
-          this.ref = ref;
+          this.ref = ref2;
           this.doc = doc;
           this.embedder = embedder;
         }
         PDFJavaScript2.prototype.embed = function() {
           return tslib_1.__awaiter(this, void 0, void 0, function() {
-            var _a, catalog, context, ref, Names, Javascript, JSNames;
+            var _a, catalog, context, ref2, Names, Javascript, JSNames;
             return tslib_1.__generator(this, function(_b) {
               switch (_b.label) {
                 case 0:
@@ -20304,7 +20304,7 @@ var require_PDFJavaScript = __commonJS({
                   _a = this.doc, catalog = _a.catalog, context = _a.context;
                   return [4, this.embedder.embedIntoContext(this.doc.context, this.ref)];
                 case 1:
-                  ref = _b.sent();
+                  ref2 = _b.sent();
                   if (!catalog.has(core_1.PDFName.of("Names"))) {
                     catalog.set(core_1.PDFName.of("Names"), context.obj({}));
                   }
@@ -20318,7 +20318,7 @@ var require_PDFJavaScript = __commonJS({
                   }
                   JSNames = Javascript.lookup(core_1.PDFName.of("Names"), core_1.PDFArray);
                   JSNames.push(core_1.PDFHexString.fromText(this.embedder.scriptName));
-                  JSNames.push(ref);
+                  JSNames.push(ref2);
                   this.alreadyEmbedded = true;
                   _b.label = 2;
                 case 2:
@@ -20330,8 +20330,8 @@ var require_PDFJavaScript = __commonJS({
             });
           });
         };
-        PDFJavaScript2.of = function(ref, doc, embedder) {
-          return new PDFJavaScript2(ref, doc, embedder);
+        PDFJavaScript2.of = function(ref2, doc, embedder) {
+          return new PDFJavaScript2(ref2, doc, embedder);
         };
         return PDFJavaScript2;
       })()
@@ -20357,7 +20357,7 @@ var require_JavaScriptEmbedder = __commonJS({
         JavaScriptEmbedder2.for = function(script, scriptName) {
           return new JavaScriptEmbedder2(script, scriptName);
         };
-        JavaScriptEmbedder2.prototype.embedIntoContext = function(context, ref) {
+        JavaScriptEmbedder2.prototype.embedIntoContext = function(context, ref2) {
           return tslib_1.__awaiter(this, void 0, void 0, function() {
             var jsActionDict;
             return tslib_1.__generator(this, function(_a) {
@@ -20366,9 +20366,9 @@ var require_JavaScriptEmbedder = __commonJS({
                 S: "JavaScript",
                 JS: PDFHexString_1.default.fromText(this.script)
               });
-              if (ref) {
-                context.assign(ref, jsActionDict);
-                return [2, ref];
+              if (ref2) {
+                context.assign(ref2, jsActionDict);
+                return [2, ref2];
               } else {
                 return [2, context.register(jsActionDict)];
               }
@@ -20414,11 +20414,11 @@ var require_PDFDocument = __commonJS({
           this.defaultWordBreaks = [" "];
           this.computePages = function() {
             var pages = [];
-            _this.catalog.Pages().traverse(function(node, ref) {
+            _this.catalog.Pages().traverse(function(node, ref2) {
               if (node instanceof core_1.PDFPageLeaf) {
                 var page = _this.pageMap.get(node);
                 if (!page) {
-                  page = PDFPage_1.default.of(node, ref, _this);
+                  page = PDFPage_1.default.of(node, ref2, _this);
                   _this.pageMap.set(node, page);
                 }
                 pages.push(page);
@@ -20521,11 +20521,11 @@ var require_PDFDocument = __commonJS({
           return subject.decodeText();
         };
         PDFDocument3.prototype.getKeywords = function() {
-          var keywords = this.getInfoDict().lookup(core_1.PDFName.Keywords);
-          if (!keywords)
+          var keywords2 = this.getInfoDict().lookup(core_1.PDFName.Keywords);
+          if (!keywords2)
             return void 0;
-          assertIsLiteralOrHexString(keywords);
-          return keywords.decodeText();
+          assertIsLiteralOrHexString(keywords2);
+          return keywords2.decodeText();
         };
         PDFDocument3.prototype.getCreator = function() {
           var creator = this.getInfoDict().lookup(core_1.PDFName.Creator);
@@ -20574,10 +20574,10 @@ var require_PDFDocument = __commonJS({
           var key = core_1.PDFName.of("Subject");
           this.getInfoDict().set(key, core_1.PDFHexString.fromText(subject));
         };
-        PDFDocument3.prototype.setKeywords = function(keywords) {
-          utils_1.assertIs(keywords, "keywords", [Array]);
+        PDFDocument3.prototype.setKeywords = function(keywords2) {
+          utils_1.assertIs(keywords2, "keywords", [Array]);
           var key = core_1.PDFName.of("Keywords");
-          this.getInfoDict().set(key, core_1.PDFHexString.fromText(keywords.join(" ")));
+          this.getInfoDict().set(key, core_1.PDFHexString.fromText(keywords2.join(" ")));
         };
         PDFDocument3.prototype.setCreator = function(creator) {
           utils_1.assertIs(creator, "creator", ["string"]);
@@ -20652,7 +20652,7 @@ var require_PDFDocument = __commonJS({
         };
         PDFDocument3.prototype.copyPages = function(srcDoc, indices) {
           return tslib_1.__awaiter(this, void 0, void 0, function() {
-            var copier, srcPages, copiedPages, idx, len, srcPage, copiedPage, ref;
+            var copier, srcPages, copiedPages, idx, len, srcPage, copiedPage, ref2;
             return tslib_1.__generator(this, function(_a) {
               switch (_a.label) {
                 case 0:
@@ -20667,8 +20667,8 @@ var require_PDFDocument = __commonJS({
                   for (idx = 0, len = indices.length; idx < len; idx++) {
                     srcPage = srcPages[indices[idx]];
                     copiedPage = copier.copy(srcPage.node);
-                    ref = this.context.register(copiedPage);
-                    copiedPages[idx] = PDFPage_1.default.of(copiedPage, ref, this);
+                    ref2 = this.context.register(copiedPage);
+                    copiedPages[idx] = PDFPage_1.default.of(copiedPage, ref2, this);
                   }
                   return [2, copiedPages];
               }
@@ -20721,8 +20721,8 @@ var require_PDFDocument = __commonJS({
           utils_1.assertIs(name, "name", ["string"]);
           utils_1.assertIs(script, "script", ["string"]);
           var embedder = JavaScriptEmbedder_1.default.for(script, name);
-          var ref = this.context.nextRef();
-          var javaScript = PDFJavaScript_1.default.of(ref, this, embedder);
+          var ref2 = this.context.nextRef();
+          var javaScript = PDFJavaScript_1.default.of(ref2, this, embedder);
           this.javaScripts.push(javaScript);
         };
         PDFDocument3.prototype.attach = function(attachment, name, options) {
@@ -20730,7 +20730,7 @@ var require_PDFDocument = __commonJS({
             options = {};
           }
           return tslib_1.__awaiter(this, void 0, void 0, function() {
-            var bytes, embedder, ref, embeddedFile;
+            var bytes, embedder, ref2, embeddedFile;
             return tslib_1.__generator(this, function(_a) {
               utils_1.assertIs(attachment, "attachment", ["string", Uint8Array, ArrayBuffer]);
               utils_1.assertIs(name, "name", ["string"]);
@@ -20743,8 +20743,8 @@ var require_PDFDocument = __commonJS({
               utils_1.assertIsOneOfOrUndefined(options.afRelationship, "options.afRelationship", FileEmbedder_1.AFRelationship);
               bytes = utils_1.toUint8Array(attachment);
               embedder = FileEmbedder_1.default.for(bytes, name, options);
-              ref = this.context.nextRef();
-              embeddedFile = PDFEmbeddedFile_1.default.of(ref, this, embedder);
+              ref2 = this.context.nextRef();
+              embeddedFile = PDFEmbeddedFile_1.default.of(ref2, this, embedder);
               this.embeddedFiles.push(embeddedFile);
               return [
                 2
@@ -20758,7 +20758,7 @@ var require_PDFDocument = __commonJS({
             options = {};
           }
           return tslib_1.__awaiter(this, void 0, void 0, function() {
-            var _a, subset, customName, features, embedder, bytes, fontkit, _b, ref, pdfFont;
+            var _a, subset, customName, features, embedder, bytes, fontkit, _b, ref2, pdfFont;
             return tslib_1.__generator(this, function(_c) {
               switch (_c.label) {
                 case 0:
@@ -20788,8 +20788,8 @@ var require_PDFDocument = __commonJS({
                 case 6:
                   throw new TypeError("`font` must be one of `StandardFonts | string | Uint8Array | ArrayBuffer`");
                 case 7:
-                  ref = this.context.nextRef();
-                  pdfFont = PDFFont_1.default.of(ref, this, embedder);
+                  ref2 = this.context.nextRef();
+                  pdfFont = PDFFont_1.default.of(ref2, this, embedder);
                   this.fonts.push(pdfFont);
                   return [2, pdfFont];
               }
@@ -20802,14 +20802,14 @@ var require_PDFDocument = __commonJS({
             throw new TypeError("`font` must be one of type `StandardFonts`");
           }
           var embedder = core_1.StandardFontEmbedder.for(font, customName);
-          var ref = this.context.nextRef();
-          var pdfFont = PDFFont_1.default.of(ref, this, embedder);
+          var ref2 = this.context.nextRef();
+          var pdfFont = PDFFont_1.default.of(ref2, this, embedder);
           this.fonts.push(pdfFont);
           return pdfFont;
         };
         PDFDocument3.prototype.embedJpg = function(jpg) {
           return tslib_1.__awaiter(this, void 0, void 0, function() {
-            var bytes, embedder, ref, pdfImage;
+            var bytes, embedder, ref2, pdfImage;
             return tslib_1.__generator(this, function(_a) {
               switch (_a.label) {
                 case 0:
@@ -20818,8 +20818,8 @@ var require_PDFDocument = __commonJS({
                   return [4, core_1.JpegEmbedder.for(bytes)];
                 case 1:
                   embedder = _a.sent();
-                  ref = this.context.nextRef();
-                  pdfImage = PDFImage_1.default.of(ref, this, embedder);
+                  ref2 = this.context.nextRef();
+                  pdfImage = PDFImage_1.default.of(ref2, this, embedder);
                   this.images.push(pdfImage);
                   return [2, pdfImage];
               }
@@ -20828,7 +20828,7 @@ var require_PDFDocument = __commonJS({
         };
         PDFDocument3.prototype.embedPng = function(png) {
           return tslib_1.__awaiter(this, void 0, void 0, function() {
-            var bytes, embedder, ref, pdfImage;
+            var bytes, embedder, ref2, pdfImage;
             return tslib_1.__generator(this, function(_a) {
               switch (_a.label) {
                 case 0:
@@ -20837,8 +20837,8 @@ var require_PDFDocument = __commonJS({
                   return [4, core_1.PngEmbedder.for(bytes)];
                 case 1:
                   embedder = _a.sent();
-                  ref = this.context.nextRef();
-                  pdfImage = PDFImage_1.default.of(ref, this, embedder);
+                  ref2 = this.context.nextRef();
+                  pdfImage = PDFImage_1.default.of(ref2, this, embedder);
                   this.images.push(pdfImage);
                   return [2, pdfImage];
               }
@@ -20900,7 +20900,7 @@ var require_PDFDocument = __commonJS({
             transformationMatrices = [];
           }
           return tslib_1.__awaiter(this, void 0, void 0, function() {
-            var idx, len, currPage, nextPage, context, maybeCopyPage, embeddedPages, idx, len, page, box, matrix, embedder, ref;
+            var idx, len, currPage, nextPage, context, maybeCopyPage, embeddedPages, idx, len, page, box, matrix, embedder, ref2;
             var _a;
             return tslib_1.__generator(this, function(_b) {
               switch (_b.label) {
@@ -20929,8 +20929,8 @@ var require_PDFDocument = __commonJS({
                   return [4, core_1.PDFPageEmbedder.for(page, box, matrix)];
                 case 2:
                   embedder = _b.sent();
-                  ref = this.context.nextRef();
-                  embeddedPages[idx] = PDFEmbeddedPage_1.default.of(ref, this, embedder);
+                  ref2 = this.context.nextRef();
+                  embeddedPages[idx] = PDFEmbeddedPage_1.default.of(ref2, this, embedder);
                   _b.label = 3;
                 case 3:
                   idx++;
@@ -21020,12 +21020,12 @@ var require_PDFDocument = __commonJS({
             });
           });
         };
-        PDFDocument3.prototype.findPageForAnnotationRef = function(ref) {
+        PDFDocument3.prototype.findPageForAnnotationRef = function(ref2) {
           var pages = this.getPages();
           for (var idx = 0, len = pages.length; idx < len; idx++) {
             var page = pages[idx];
             var annotations = page.node.Annots();
-            if ((annotations === null || annotations === void 0 ? void 0 : annotations.indexOf(ref)) !== void 0) {
+            if ((annotations === null || annotations === void 0 ? void 0 : annotations.indexOf(ref2)) !== void 0) {
               return page;
             }
           }
@@ -21138,17 +21138,17 @@ var require_PDFPage = __commonJS({
     var PDFPage = (
       /** @class */
       (function() {
-        function PDFPage2(leafNode, ref, doc) {
+        function PDFPage2(leafNode, ref2, doc) {
           this.fontSize = 24;
           this.fontColor = colors_1.rgb(0, 0, 0);
           this.lineHeight = 24;
           this.x = 0;
           this.y = 0;
           utils_1.assertIs(leafNode, "leafNode", [[core_1.PDFPageLeaf, "PDFPageLeaf"]]);
-          utils_1.assertIs(ref, "ref", [[core_1.PDFRef, "PDFRef"]]);
+          utils_1.assertIs(ref2, "ref", [[core_1.PDFRef, "PDFRef"]]);
           utils_1.assertIs(doc, "doc", [[PDFDocument_1.default, "PDFDocument"]]);
           this.node = leafNode;
-          this.ref = ref;
+          this.ref = ref2;
           this.doc = doc;
         }
         PDFPage2.prototype.setRotation = function(angle) {
@@ -21771,8 +21771,8 @@ var require_PDFPage = __commonJS({
             }
           }
         };
-        PDFPage2.of = function(leafNode, ref, doc) {
-          return new PDFPage2(leafNode, ref, doc);
+        PDFPage2.of = function(leafNode, ref2, doc) {
+          return new PDFPage2(leafNode, ref2, doc);
         };
         PDFPage2.create = function(doc) {
           utils_1.assertIs(doc, "doc", [[PDFDocument_1.default, "PDFDocument"]]);
@@ -21807,8 +21807,8 @@ var require_PDFButton = __commonJS({
       /** @class */
       (function(_super) {
         tslib_1.__extends(PDFButton2, _super);
-        function PDFButton2(acroPushButton, ref, doc) {
-          var _this = _super.call(this, acroPushButton, ref, doc) || this;
+        function PDFButton2(acroPushButton, ref2, doc) {
+          var _this = _super.call(this, acroPushButton, ref2, doc) || this;
           utils_1.assertIs(acroPushButton, "acroButton", [
             [core_1.PDFAcroPushButton, "PDFAcroPushButton"]
           ]);
@@ -21888,8 +21888,8 @@ var require_PDFButton = __commonJS({
           var appearances = appearances_1.normalizeAppearance(apProvider(this, widget, font));
           this.updateWidgetAppearanceWithFont(widget, font, appearances);
         };
-        PDFButton2.of = function(acroPushButton, ref, doc) {
-          return new PDFButton2(acroPushButton, ref, doc);
+        PDFButton2.of = function(acroPushButton, ref2, doc) {
+          return new PDFButton2(acroPushButton, ref2, doc);
         };
         return PDFButton2;
       })(PDFField_1.default)
@@ -22705,21 +22705,21 @@ var require_encoder = __commonJS({
         writeByte(value >> 8 & 255);
         writeByte(value & 255);
       }
-      function fDCTQuant(data, fdtbl) {
+      function fDCTQuant(data2, fdtbl) {
         var d0, d1, d2, d3, d4, d5, d6, d7;
         var dataOff = 0;
         var i;
         var I8 = 8;
         var I64 = 64;
         for (i = 0; i < I8; ++i) {
-          d0 = data[dataOff];
-          d1 = data[dataOff + 1];
-          d2 = data[dataOff + 2];
-          d3 = data[dataOff + 3];
-          d4 = data[dataOff + 4];
-          d5 = data[dataOff + 5];
-          d6 = data[dataOff + 6];
-          d7 = data[dataOff + 7];
+          d0 = data2[dataOff];
+          d1 = data2[dataOff + 1];
+          d2 = data2[dataOff + 2];
+          d3 = data2[dataOff + 3];
+          d4 = data2[dataOff + 4];
+          d5 = data2[dataOff + 5];
+          d6 = data2[dataOff + 6];
+          d7 = data2[dataOff + 7];
           var tmp0 = d0 + d7;
           var tmp7 = d0 - d7;
           var tmp1 = d1 + d6;
@@ -22732,11 +22732,11 @@ var require_encoder = __commonJS({
           var tmp13 = tmp0 - tmp3;
           var tmp11 = tmp1 + tmp2;
           var tmp12 = tmp1 - tmp2;
-          data[dataOff] = tmp10 + tmp11;
-          data[dataOff + 4] = tmp10 - tmp11;
+          data2[dataOff] = tmp10 + tmp11;
+          data2[dataOff + 4] = tmp10 - tmp11;
           var z1 = (tmp12 + tmp13) * 0.707106781;
-          data[dataOff + 2] = tmp13 + z1;
-          data[dataOff + 6] = tmp13 - z1;
+          data2[dataOff + 2] = tmp13 + z1;
+          data2[dataOff + 6] = tmp13 - z1;
           tmp10 = tmp4 + tmp5;
           tmp11 = tmp5 + tmp6;
           tmp12 = tmp6 + tmp7;
@@ -22746,22 +22746,22 @@ var require_encoder = __commonJS({
           var z3 = tmp11 * 0.707106781;
           var z11 = tmp7 + z3;
           var z13 = tmp7 - z3;
-          data[dataOff + 5] = z13 + z2;
-          data[dataOff + 3] = z13 - z2;
-          data[dataOff + 1] = z11 + z4;
-          data[dataOff + 7] = z11 - z4;
+          data2[dataOff + 5] = z13 + z2;
+          data2[dataOff + 3] = z13 - z2;
+          data2[dataOff + 1] = z11 + z4;
+          data2[dataOff + 7] = z11 - z4;
           dataOff += 8;
         }
         dataOff = 0;
         for (i = 0; i < I8; ++i) {
-          d0 = data[dataOff];
-          d1 = data[dataOff + 8];
-          d2 = data[dataOff + 16];
-          d3 = data[dataOff + 24];
-          d4 = data[dataOff + 32];
-          d5 = data[dataOff + 40];
-          d6 = data[dataOff + 48];
-          d7 = data[dataOff + 56];
+          d0 = data2[dataOff];
+          d1 = data2[dataOff + 8];
+          d2 = data2[dataOff + 16];
+          d3 = data2[dataOff + 24];
+          d4 = data2[dataOff + 32];
+          d5 = data2[dataOff + 40];
+          d6 = data2[dataOff + 48];
+          d7 = data2[dataOff + 56];
           var tmp0p2 = d0 + d7;
           var tmp7p2 = d0 - d7;
           var tmp1p2 = d1 + d6;
@@ -22774,11 +22774,11 @@ var require_encoder = __commonJS({
           var tmp13p2 = tmp0p2 - tmp3p2;
           var tmp11p2 = tmp1p2 + tmp2p2;
           var tmp12p2 = tmp1p2 - tmp2p2;
-          data[dataOff] = tmp10p2 + tmp11p2;
-          data[dataOff + 32] = tmp10p2 - tmp11p2;
+          data2[dataOff] = tmp10p2 + tmp11p2;
+          data2[dataOff + 32] = tmp10p2 - tmp11p2;
           var z1p2 = (tmp12p2 + tmp13p2) * 0.707106781;
-          data[dataOff + 16] = tmp13p2 + z1p2;
-          data[dataOff + 48] = tmp13p2 - z1p2;
+          data2[dataOff + 16] = tmp13p2 + z1p2;
+          data2[dataOff + 48] = tmp13p2 - z1p2;
           tmp10p2 = tmp4p2 + tmp5p2;
           tmp11p2 = tmp5p2 + tmp6p2;
           tmp12p2 = tmp6p2 + tmp7p2;
@@ -22788,15 +22788,15 @@ var require_encoder = __commonJS({
           var z3p2 = tmp11p2 * 0.707106781;
           var z11p2 = tmp7p2 + z3p2;
           var z13p2 = tmp7p2 - z3p2;
-          data[dataOff + 40] = z13p2 + z2p2;
-          data[dataOff + 24] = z13p2 - z2p2;
-          data[dataOff + 8] = z11p2 + z4p2;
-          data[dataOff + 56] = z11p2 - z4p2;
+          data2[dataOff + 40] = z13p2 + z2p2;
+          data2[dataOff + 24] = z13p2 - z2p2;
+          data2[dataOff + 8] = z11p2 + z4p2;
+          data2[dataOff + 56] = z11p2 - z4p2;
           dataOff++;
         }
         var fDCTQuant2;
         for (i = 0; i < I64; ++i) {
-          fDCTQuant2 = data[i] * fdtbl[i];
+          fDCTQuant2 = data2[i] * fdtbl[i];
           outputfDCTQuant[i] = fDCTQuant2 > 0 ? fDCTQuant2 + 0.5 | 0 : fDCTQuant2 - 0.5 | 0;
         }
         return outputfDCTQuant;
@@ -23089,9 +23089,9 @@ var require_encoder = __commonJS({
     function encode(imgData, qu) {
       if (typeof qu === "undefined") qu = 50;
       var encoder = new JPEGEncoder(qu);
-      var data = encoder.encode(imgData, qu);
+      var data2 = encoder.encode(imgData, qu);
       return {
-        data,
+        data: data2,
         width: imgData.width,
         height: imgData.height
       };
@@ -23212,22 +23212,22 @@ var require_decoder = __commonJS({
         }
         return code[0].children;
       }
-      function decodeScan(data, offset, frame, components, resetInterval, spectralStart, spectralEnd, successivePrev, successive, opts) {
+      function decodeScan(data2, offset2, frame, components, resetInterval, spectralStart, spectralEnd, successivePrev, successive, opts) {
         var precision = frame.precision;
         var samplesPerLine = frame.samplesPerLine;
         var scanLines = frame.scanLines;
         var mcusPerLine = frame.mcusPerLine;
         var progressive = frame.progressive;
         var maxH = frame.maxH, maxV = frame.maxV;
-        var startOffset = offset, bitsData = 0, bitsCount = 0;
+        var startOffset = offset2, bitsData = 0, bitsCount = 0;
         function readBit() {
           if (bitsCount > 0) {
             bitsCount--;
             return bitsData >> bitsCount & 1;
           }
-          bitsData = data[offset++];
+          bitsData = data2[offset2++];
           if (bitsData == 255) {
-            var nextByte = data[offset++];
+            var nextByte = data2[offset2++];
             if (nextByte) {
               throw new Error("unexpected marker: " + (bitsData << 8 | nextByte).toString(16));
             }
@@ -23435,25 +23435,25 @@ var require_decoder = __commonJS({
           }
           if (mcu === mcuExpected) {
             do {
-              if (data[offset] === 255) {
-                if (data[offset + 1] !== 0) {
+              if (data2[offset2] === 255) {
+                if (data2[offset2 + 1] !== 0) {
                   break;
                 }
               }
-              offset += 1;
-            } while (offset < data.length - 2);
+              offset2 += 1;
+            } while (offset2 < data2.length - 2);
           }
           bitsCount = 0;
-          marker = data[offset] << 8 | data[offset + 1];
+          marker = data2[offset2] << 8 | data2[offset2 + 1];
           if (marker < 65280) {
             throw new Error("marker was not found");
           }
           if (marker >= 65488 && marker <= 65495) {
-            offset += 2;
+            offset2 += 2;
           } else
             break;
         }
-        return offset - startOffset;
+        return offset2 - startOffset;
       }
       function buildComponentData(frame, component) {
         var lines = [];
@@ -23591,11 +23591,11 @@ var require_decoder = __commonJS({
             lines.push(new Uint8Array(samplesPerLine));
           for (var blockCol = 0; blockCol < blocksPerLine; blockCol++) {
             quantizeAndInverse(component.blocks[blockRow][blockCol], r, R);
-            var offset = 0, sample = blockCol << 3;
+            var offset2 = 0, sample = blockCol << 3;
             for (j = 0; j < 8; j++) {
               var line = lines[scanLine + j];
               for (i = 0; i < 8; i++)
-                line[sample + i] = r[offset++];
+                line[sample + i] = r[offset2++];
             }
           }
         }
@@ -23610,25 +23610,25 @@ var require_decoder = __commonJS({
           xhr.open("GET", path13, true);
           xhr.responseType = "arraybuffer";
           xhr.onload = (function() {
-            var data = new Uint8Array(xhr.response || xhr.mozResponseArrayBuffer);
-            this.parse(data);
+            var data2 = new Uint8Array(xhr.response || xhr.mozResponseArrayBuffer);
+            this.parse(data2);
             if (this.onload)
               this.onload();
           }).bind(this);
           xhr.send(null);
         },
-        parse: function parse(data) {
+        parse: function parse4(data2) {
           var maxResolutionInPixels = this.opts.maxResolutionInMP * 1e3 * 1e3;
-          var offset = 0, length = data.length;
+          var offset2 = 0, length = data2.length;
           function readUint16() {
-            var value = data[offset] << 8 | data[offset + 1];
-            offset += 2;
+            var value = data2[offset2] << 8 | data2[offset2 + 1];
+            offset2 += 2;
             return value;
           }
           function readDataBlock() {
             var length2 = readUint16();
-            var array = data.subarray(offset, offset + length2 - 2);
-            offset += array.length;
+            var array = data2.subarray(offset2, offset2 + length2 - 2);
+            offset2 += array.length;
             return array;
           }
           function prepareComponents(frame2) {
@@ -23756,15 +23756,15 @@ var require_decoder = __commonJS({
                 break;
               case 65499:
                 var quantizationTablesLength = readUint16();
-                var quantizationTablesEnd = quantizationTablesLength + offset - 2;
-                while (offset < quantizationTablesEnd) {
-                  var quantizationTableSpec = data[offset++];
+                var quantizationTablesEnd = quantizationTablesLength + offset2 - 2;
+                while (offset2 < quantizationTablesEnd) {
+                  var quantizationTableSpec = data2[offset2++];
                   requestMemoryAllocation(64 * 4);
                   var tableData = new Int32Array(64);
                   if (quantizationTableSpec >> 4 === 0) {
                     for (j = 0; j < 64; j++) {
                       var z = dctZigZag[j];
-                      tableData[z] = data[offset++];
+                      tableData[z] = data2[offset2++];
                     }
                   } else if (quantizationTableSpec >> 4 === 1) {
                     for (j = 0; j < 64; j++) {
@@ -23785,7 +23785,7 @@ var require_decoder = __commonJS({
                 frame = {};
                 frame.extended = fileMarker === 65473;
                 frame.progressive = fileMarker === 65474;
-                frame.precision = data[offset++];
+                frame.precision = data2[offset2++];
                 frame.scanLines = readUint16();
                 frame.samplesPerLine = readUint16();
                 frame.components = {};
@@ -23795,13 +23795,13 @@ var require_decoder = __commonJS({
                   var exceededAmount = Math.ceil((pixelsInFrame - maxResolutionInPixels) / 1e6);
                   throw new Error(`maxResolutionInMP limit exceeded by ${exceededAmount}MP`);
                 }
-                var componentsCount = data[offset++], componentId;
+                var componentsCount = data2[offset2++], componentId;
                 var maxH = 0, maxV = 0;
                 for (i = 0; i < componentsCount; i++) {
-                  componentId = data[offset];
-                  var h = data[offset + 1] >> 4;
-                  var v = data[offset + 1] & 15;
-                  var qId = data[offset + 2];
+                  componentId = data2[offset2];
+                  var h = data2[offset2 + 1] >> 4;
+                  var v = data2[offset2 + 1] & 15;
+                  var qId = data2[offset2 + 2];
                   if (h <= 0 || v <= 0) {
                     throw new Error("Invalid sampling factor, expected values above 0");
                   }
@@ -23811,7 +23811,7 @@ var require_decoder = __commonJS({
                     v,
                     quantizationIdx: qId
                   };
-                  offset += 3;
+                  offset2 += 3;
                 }
                 prepareComponents(frame);
                 frames.push(frame);
@@ -23819,16 +23819,16 @@ var require_decoder = __commonJS({
               case 65476:
                 var huffmanLength = readUint16();
                 for (i = 2; i < huffmanLength; ) {
-                  var huffmanTableSpec = data[offset++];
+                  var huffmanTableSpec = data2[offset2++];
                   var codeLengths = new Uint8Array(16);
                   var codeLengthSum = 0;
-                  for (j = 0; j < 16; j++, offset++) {
-                    codeLengthSum += codeLengths[j] = data[offset];
+                  for (j = 0; j < 16; j++, offset2++) {
+                    codeLengthSum += codeLengths[j] = data2[offset2];
                   }
                   requestMemoryAllocation(16 + codeLengthSum);
                   var huffmanValues = new Uint8Array(codeLengthSum);
-                  for (j = 0; j < codeLengthSum; j++, offset++)
-                    huffmanValues[j] = data[offset];
+                  for (j = 0; j < codeLengthSum; j++, offset2++)
+                    huffmanValues[j] = data2[offset2];
                   i += 17 + codeLengthSum;
                   (huffmanTableSpec >> 4 === 0 ? huffmanTablesDC : huffmanTablesAC)[huffmanTableSpec & 15] = buildHuffmanTable(codeLengths, huffmanValues);
                 }
@@ -23843,21 +23843,21 @@ var require_decoder = __commonJS({
                 break;
               case 65498:
                 var scanLength = readUint16();
-                var selectorsCount = data[offset++];
+                var selectorsCount = data2[offset2++];
                 var components = [], component;
                 for (i = 0; i < selectorsCount; i++) {
-                  component = frame.components[data[offset++]];
-                  var tableSpec = data[offset++];
+                  component = frame.components[data2[offset2++]];
+                  var tableSpec = data2[offset2++];
                   component.huffmanTableDC = huffmanTablesDC[tableSpec >> 4];
                   component.huffmanTableAC = huffmanTablesAC[tableSpec & 15];
                   components.push(component);
                 }
-                var spectralStart = data[offset++];
-                var spectralEnd = data[offset++];
-                var successiveApproximation = data[offset++];
+                var spectralStart = data2[offset2++];
+                var spectralEnd = data2[offset2++];
+                var successiveApproximation = data2[offset2++];
                 var processed = decodeScan(
-                  data,
-                  offset,
+                  data2,
+                  offset2,
                   frame,
                   components,
                   resetInterval,
@@ -23867,25 +23867,25 @@ var require_decoder = __commonJS({
                   successiveApproximation & 15,
                   this.opts
                 );
-                offset += processed;
+                offset2 += processed;
                 break;
               case 65535:
-                if (data[offset] !== 255) {
-                  offset--;
+                if (data2[offset2] !== 255) {
+                  offset2--;
                 }
                 break;
               default:
-                if (data[offset - 3] == 255 && data[offset - 2] >= 192 && data[offset - 2] <= 254) {
-                  offset -= 3;
+                if (data2[offset2 - 3] == 255 && data2[offset2 - 2] >= 192 && data2[offset2 - 2] <= 254) {
+                  offset2 -= 3;
                   break;
                 } else if (fileMarker === 224 || fileMarker == 225) {
                   if (malformedDataOffset !== -1) {
-                    throw new Error(`first unknown JPEG marker at offset ${malformedDataOffset.toString(16)}, second unknown JPEG marker ${fileMarker.toString(16)} at offset ${(offset - 1).toString(16)}`);
+                    throw new Error(`first unknown JPEG marker at offset ${malformedDataOffset.toString(16)}, second unknown JPEG marker ${fileMarker.toString(16)} at offset ${(offset2 - 1).toString(16)}`);
                   }
-                  malformedDataOffset = offset - 1;
+                  malformedDataOffset = offset2 - 1;
                   const nextOffset = readUint16();
-                  if (data[offset + nextOffset - 2] === 255) {
-                    offset += nextOffset - 2;
+                  if (data2[offset2 + nextOffset - 2] === 255) {
+                    offset2 += nextOffset - 2;
                     break;
                   }
                 }
@@ -23921,12 +23921,12 @@ var require_decoder = __commonJS({
           var component1, component2, component3, component4;
           var component1Line, component2Line, component3Line, component4Line;
           var x, y;
-          var offset = 0;
+          var offset2 = 0;
           var Y, Cb, Cr, K, C, M, Ye, R, G, B;
           var colorTransform;
           var dataLength = width * height * this.components.length;
           requestMemoryAllocation(dataLength);
-          var data = new Uint8Array(dataLength);
+          var data2 = new Uint8Array(dataLength);
           switch (this.components.length) {
             case 1:
               component1 = this.components[0];
@@ -23934,7 +23934,7 @@ var require_decoder = __commonJS({
                 component1Line = component1.lines[0 | y * component1.scaleY * scaleY];
                 for (x = 0; x < width; x++) {
                   Y = component1Line[0 | x * component1.scaleX * scaleX];
-                  data[offset++] = Y;
+                  data2[offset2++] = Y;
                 }
               }
               break;
@@ -23946,9 +23946,9 @@ var require_decoder = __commonJS({
                 component2Line = component2.lines[0 | y * component2.scaleY * scaleY];
                 for (x = 0; x < width; x++) {
                   Y = component1Line[0 | x * component1.scaleX * scaleX];
-                  data[offset++] = Y;
+                  data2[offset2++] = Y;
                   Y = component2Line[0 | x * component2.scaleX * scaleX];
-                  data[offset++] = Y;
+                  data2[offset2++] = Y;
                 }
               }
               break;
@@ -23978,9 +23978,9 @@ var require_decoder = __commonJS({
                     G = clampTo8bit(Y - 0.3441363 * (Cb - 128) - 0.71413636 * (Cr - 128));
                     B = clampTo8bit(Y + 1.772 * (Cb - 128));
                   }
-                  data[offset++] = R;
-                  data[offset++] = G;
-                  data[offset++] = B;
+                  data2[offset2++] = R;
+                  data2[offset2++] = G;
+                  data2[offset2++] = B;
                 }
               }
               break;
@@ -24016,29 +24016,29 @@ var require_decoder = __commonJS({
                     M = 255 - clampTo8bit(Y - 0.3441363 * (Cb - 128) - 0.71413636 * (Cr - 128));
                     Ye = 255 - clampTo8bit(Y + 1.772 * (Cb - 128));
                   }
-                  data[offset++] = 255 - C;
-                  data[offset++] = 255 - M;
-                  data[offset++] = 255 - Ye;
-                  data[offset++] = 255 - K;
+                  data2[offset2++] = 255 - C;
+                  data2[offset2++] = 255 - M;
+                  data2[offset2++] = 255 - Ye;
+                  data2[offset2++] = 255 - K;
                 }
               }
               break;
             default:
               throw new Error("Unsupported color mode");
           }
-          return data;
+          return data2;
         },
         copyToImageData: function copyToImageData(imageData, formatAsRGBA) {
           var width = imageData.width, height = imageData.height;
           var imageDataArray = imageData.data;
-          var data = this.getData(width, height);
+          var data2 = this.getData(width, height);
           var i = 0, j = 0, x, y;
           var Y, K, C, M, R, G, B;
           switch (this.components.length) {
             case 1:
               for (y = 0; y < height; y++) {
                 for (x = 0; x < width; x++) {
-                  Y = data[i++];
+                  Y = data2[i++];
                   imageDataArray[j++] = Y;
                   imageDataArray[j++] = Y;
                   imageDataArray[j++] = Y;
@@ -24051,9 +24051,9 @@ var require_decoder = __commonJS({
             case 3:
               for (y = 0; y < height; y++) {
                 for (x = 0; x < width; x++) {
-                  R = data[i++];
-                  G = data[i++];
-                  B = data[i++];
+                  R = data2[i++];
+                  G = data2[i++];
+                  B = data2[i++];
                   imageDataArray[j++] = R;
                   imageDataArray[j++] = G;
                   imageDataArray[j++] = B;
@@ -24066,10 +24066,10 @@ var require_decoder = __commonJS({
             case 4:
               for (y = 0; y < height; y++) {
                 for (x = 0; x < width; x++) {
-                  C = data[i++];
-                  M = data[i++];
-                  Y = data[i++];
-                  K = data[i++];
+                  C = data2[i++];
+                  M = data2[i++];
+                  Y = data2[i++];
+                  K = data2[i++];
                   R = 255 - clampTo8bit(C * (1 - K / 255) + K);
                   G = 255 - clampTo8bit(M * (1 - K / 255) + K);
                   B = 255 - clampTo8bit(Y * (1 - K / 255) + K);
@@ -24206,16 +24206,16 @@ var require_chunkstream = __commonJS({
         }.bind(this)
       );
     };
-    ChunkStream.prototype.write = function(data, encoding) {
+    ChunkStream.prototype.write = function(data2, encoding) {
       if (!this.writable) {
         this.emit("error", new Error("Stream not writable"));
         return false;
       }
       let dataBuffer;
-      if (Buffer.isBuffer(data)) {
-        dataBuffer = data;
+      if (Buffer.isBuffer(data2)) {
+        dataBuffer = data2;
       } else {
-        dataBuffer = Buffer.from(data, encoding || this._encoding);
+        dataBuffer = Buffer.from(data2, encoding || this._encoding);
       }
       this._buffers.push(dataBuffer);
       this._buffered += dataBuffer.length;
@@ -24225,9 +24225,9 @@ var require_chunkstream = __commonJS({
       }
       return this.writable && !this._paused;
     };
-    ChunkStream.prototype.end = function(data, encoding) {
-      if (data) {
-        this.write(data, encoding);
+    ChunkStream.prototype.end = function(data2, encoding) {
+      if (data2) {
+        this.write(data2, encoding);
       }
       this.writable = false;
       if (!this._buffers) {
@@ -24273,11 +24273,11 @@ var require_chunkstream = __commonJS({
       this._reads.shift();
       let pos = 0;
       let count = 0;
-      let data = Buffer.alloc(read.length);
+      let data2 = Buffer.alloc(read.length);
       while (pos < read.length) {
         let buf = this._buffers[count++];
         let len = Math.min(buf.length, read.length - pos);
-        buf.copy(data, pos, 0, len);
+        buf.copy(data2, pos, 0, len);
         pos += len;
         if (len !== buf.length) {
           this._buffers[--count] = buf.slice(len);
@@ -24287,7 +24287,7 @@ var require_chunkstream = __commonJS({
         this._buffers.splice(0, count);
       }
       this._buffered -= read.length;
-      read.func.call(this, data);
+      read.func.call(this, data2);
     };
     ChunkStream.prototype._process = function() {
       try {
@@ -24637,9 +24637,9 @@ var require_crc = __commonJS({
     var CrcCalculator = module.exports = function() {
       this._crc = -1;
     };
-    CrcCalculator.prototype.write = function(data) {
-      for (let i = 0; i < data.length; i++) {
-        this._crc = crcTable[(this._crc ^ data[i]) & 255] ^ this._crc >>> 8;
+    CrcCalculator.prototype.write = function(data2) {
+      for (let i = 0; i < data2.length; i++) {
+        this._crc = crcTable[(this._crc ^ data2[i]) & 255] ^ this._crc >>> 8;
       }
       return true;
     };
@@ -24662,7 +24662,7 @@ var require_parser = __commonJS({
     "use strict";
     var constants = require_constants2();
     var CrcCalculator = require_crc();
-    var Parser = module.exports = function(options, dependencies) {
+    var Parser3 = module.exports = function(options, dependencies) {
       this._options = options;
       options.checkCRC = options.checkCRC !== false;
       this._hasIHDR = false;
@@ -24690,27 +24690,27 @@ var require_parser = __commonJS({
       this.headersFinished = dependencies.headersFinished || function() {
       };
     };
-    Parser.prototype.start = function() {
+    Parser3.prototype.start = function() {
       this.read(constants.PNG_SIGNATURE.length, this._parseSignature.bind(this));
     };
-    Parser.prototype._parseSignature = function(data) {
+    Parser3.prototype._parseSignature = function(data2) {
       let signature = constants.PNG_SIGNATURE;
       for (let i = 0; i < signature.length; i++) {
-        if (data[i] !== signature[i]) {
+        if (data2[i] !== signature[i]) {
           this.error(new Error("Invalid file signature"));
           return;
         }
       }
       this.read(8, this._parseChunkBegin.bind(this));
     };
-    Parser.prototype._parseChunkBegin = function(data) {
-      let length = data.readUInt32BE(0);
-      let type = data.readUInt32BE(4);
+    Parser3.prototype._parseChunkBegin = function(data2) {
+      let length = data2.readUInt32BE(0);
+      let type = data2.readUInt32BE(4);
       let name = "";
       for (let i = 4; i < 8; i++) {
-        name += String.fromCharCode(data[i]);
+        name += String.fromCharCode(data2[i]);
       }
-      let ancillary = Boolean(data[4] & 32);
+      let ancillary = Boolean(data2[4] & 32);
       if (!this._hasIHDR && type !== constants.TYPE_IHDR) {
         this.error(new Error("Expected IHDR on beggining"));
         return;
@@ -24726,14 +24726,14 @@ var require_parser = __commonJS({
       }
       this.read(length + 4, this._skipChunk.bind(this));
     };
-    Parser.prototype._skipChunk = function() {
+    Parser3.prototype._skipChunk = function() {
       this.read(8, this._parseChunkBegin.bind(this));
     };
-    Parser.prototype._handleChunkEnd = function() {
+    Parser3.prototype._handleChunkEnd = function() {
       this.read(4, this._parseChunkEnd.bind(this));
     };
-    Parser.prototype._parseChunkEnd = function(data) {
-      let fileCrc = data.readInt32BE(0);
+    Parser3.prototype._parseChunkEnd = function(data2) {
+      let fileCrc = data2.readInt32BE(0);
       let calcCrc = this._crc.crc32();
       if (this._options.checkCRC && calcCrc !== fileCrc) {
         this.error(new Error("Crc error - " + fileCrc + " - " + calcCrc));
@@ -24743,18 +24743,18 @@ var require_parser = __commonJS({
         this.read(8, this._parseChunkBegin.bind(this));
       }
     };
-    Parser.prototype._handleIHDR = function(length) {
+    Parser3.prototype._handleIHDR = function(length) {
       this.read(length, this._parseIHDR.bind(this));
     };
-    Parser.prototype._parseIHDR = function(data) {
-      this._crc.write(data);
-      let width = data.readUInt32BE(0);
-      let height = data.readUInt32BE(4);
-      let depth = data[8];
-      let colorType = data[9];
-      let compr = data[10];
-      let filter = data[11];
-      let interlace = data[12];
+    Parser3.prototype._parseIHDR = function(data2) {
+      this._crc.write(data2);
+      let width = data2.readUInt32BE(0);
+      let height = data2.readUInt32BE(4);
+      let depth = data2[8];
+      let colorType = data2[9];
+      let compr = data2[10];
+      let filter = data2[11];
+      let interlace = data2[12];
       if (depth !== 8 && depth !== 4 && depth !== 2 && depth !== 1 && depth !== 16) {
         this.error(new Error("Unsupported bit depth " + depth));
         return;
@@ -24791,83 +24791,83 @@ var require_parser = __commonJS({
       });
       this._handleChunkEnd();
     };
-    Parser.prototype._handlePLTE = function(length) {
+    Parser3.prototype._handlePLTE = function(length) {
       this.read(length, this._parsePLTE.bind(this));
     };
-    Parser.prototype._parsePLTE = function(data) {
-      this._crc.write(data);
-      let entries = Math.floor(data.length / 3);
+    Parser3.prototype._parsePLTE = function(data2) {
+      this._crc.write(data2);
+      let entries = Math.floor(data2.length / 3);
       for (let i = 0; i < entries; i++) {
-        this._palette.push([data[i * 3], data[i * 3 + 1], data[i * 3 + 2], 255]);
+        this._palette.push([data2[i * 3], data2[i * 3 + 1], data2[i * 3 + 2], 255]);
       }
       this.palette(this._palette);
       this._handleChunkEnd();
     };
-    Parser.prototype._handleTRNS = function(length) {
+    Parser3.prototype._handleTRNS = function(length) {
       this.simpleTransparency();
       this.read(length, this._parseTRNS.bind(this));
     };
-    Parser.prototype._parseTRNS = function(data) {
-      this._crc.write(data);
+    Parser3.prototype._parseTRNS = function(data2) {
+      this._crc.write(data2);
       if (this._colorType === constants.COLORTYPE_PALETTE_COLOR) {
         if (this._palette.length === 0) {
           this.error(new Error("Transparency chunk must be after palette"));
           return;
         }
-        if (data.length > this._palette.length) {
+        if (data2.length > this._palette.length) {
           this.error(new Error("More transparent colors than palette size"));
           return;
         }
-        for (let i = 0; i < data.length; i++) {
-          this._palette[i][3] = data[i];
+        for (let i = 0; i < data2.length; i++) {
+          this._palette[i][3] = data2[i];
         }
         this.palette(this._palette);
       }
       if (this._colorType === constants.COLORTYPE_GRAYSCALE) {
-        this.transColor([data.readUInt16BE(0)]);
+        this.transColor([data2.readUInt16BE(0)]);
       }
       if (this._colorType === constants.COLORTYPE_COLOR) {
         this.transColor([
-          data.readUInt16BE(0),
-          data.readUInt16BE(2),
-          data.readUInt16BE(4)
+          data2.readUInt16BE(0),
+          data2.readUInt16BE(2),
+          data2.readUInt16BE(4)
         ]);
       }
       this._handleChunkEnd();
     };
-    Parser.prototype._handleGAMA = function(length) {
+    Parser3.prototype._handleGAMA = function(length) {
       this.read(length, this._parseGAMA.bind(this));
     };
-    Parser.prototype._parseGAMA = function(data) {
-      this._crc.write(data);
-      this.gamma(data.readUInt32BE(0) / constants.GAMMA_DIVISION);
+    Parser3.prototype._parseGAMA = function(data2) {
+      this._crc.write(data2);
+      this.gamma(data2.readUInt32BE(0) / constants.GAMMA_DIVISION);
       this._handleChunkEnd();
     };
-    Parser.prototype._handleIDAT = function(length) {
+    Parser3.prototype._handleIDAT = function(length) {
       if (!this._emittedHeadersFinished) {
         this._emittedHeadersFinished = true;
         this.headersFinished();
       }
       this.read(-length, this._parseIDAT.bind(this, length));
     };
-    Parser.prototype._parseIDAT = function(length, data) {
-      this._crc.write(data);
+    Parser3.prototype._parseIDAT = function(length, data2) {
+      this._crc.write(data2);
       if (this._colorType === constants.COLORTYPE_PALETTE_COLOR && this._palette.length === 0) {
         throw new Error("Expected palette not found");
       }
-      this.inflateData(data);
-      let leftOverLength = length - data.length;
+      this.inflateData(data2);
+      let leftOverLength = length - data2.length;
       if (leftOverLength > 0) {
         this._handleIDAT(leftOverLength);
       } else {
         this._handleChunkEnd();
       }
     };
-    Parser.prototype._handleIEND = function(length) {
+    Parser3.prototype._handleIEND = function(length) {
       this.read(length, this._parseIEND.bind(this));
     };
-    Parser.prototype._parseIEND = function(data) {
-      this._crc.write(data);
+    Parser3.prototype._parseIEND = function(data2) {
+      this._crc.write(data2);
       this._hasIEND = true;
       this._handleChunkEnd();
       if (this.finished) {
@@ -24888,11 +24888,11 @@ var require_bitmapper = __commonJS({
       },
       // 1 - L
       // 0: 0, 1: 0, 2: 0, 3: 0xff
-      function(pxData, data, pxPos, rawPos) {
-        if (rawPos === data.length) {
+      function(pxData, data2, pxPos, rawPos) {
+        if (rawPos === data2.length) {
           throw new Error("Ran out of data");
         }
-        let pixel = data[rawPos];
+        let pixel = data2[rawPos];
         pxData[pxPos] = pixel;
         pxData[pxPos + 1] = pixel;
         pxData[pxPos + 2] = pixel;
@@ -24900,37 +24900,37 @@ var require_bitmapper = __commonJS({
       },
       // 2 - LA
       // 0: 0, 1: 0, 2: 0, 3: 1
-      function(pxData, data, pxPos, rawPos) {
-        if (rawPos + 1 >= data.length) {
+      function(pxData, data2, pxPos, rawPos) {
+        if (rawPos + 1 >= data2.length) {
           throw new Error("Ran out of data");
         }
-        let pixel = data[rawPos];
+        let pixel = data2[rawPos];
         pxData[pxPos] = pixel;
         pxData[pxPos + 1] = pixel;
         pxData[pxPos + 2] = pixel;
-        pxData[pxPos + 3] = data[rawPos + 1];
+        pxData[pxPos + 3] = data2[rawPos + 1];
       },
       // 3 - RGB
       // 0: 0, 1: 1, 2: 2, 3: 0xff
-      function(pxData, data, pxPos, rawPos) {
-        if (rawPos + 2 >= data.length) {
+      function(pxData, data2, pxPos, rawPos) {
+        if (rawPos + 2 >= data2.length) {
           throw new Error("Ran out of data");
         }
-        pxData[pxPos] = data[rawPos];
-        pxData[pxPos + 1] = data[rawPos + 1];
-        pxData[pxPos + 2] = data[rawPos + 2];
+        pxData[pxPos] = data2[rawPos];
+        pxData[pxPos + 1] = data2[rawPos + 1];
+        pxData[pxPos + 2] = data2[rawPos + 2];
         pxData[pxPos + 3] = 255;
       },
       // 4 - RGBA
       // 0: 0, 1: 1, 2: 2, 3: 3
-      function(pxData, data, pxPos, rawPos) {
-        if (rawPos + 3 >= data.length) {
+      function(pxData, data2, pxPos, rawPos) {
+        if (rawPos + 3 >= data2.length) {
           throw new Error("Ran out of data");
         }
-        pxData[pxPos] = data[rawPos];
-        pxData[pxPos + 1] = data[rawPos + 1];
-        pxData[pxPos + 2] = data[rawPos + 2];
-        pxData[pxPos + 3] = data[rawPos + 3];
+        pxData[pxPos] = data2[rawPos];
+        pxData[pxPos + 1] = data2[rawPos + 1];
+        pxData[pxPos + 2] = data2[rawPos + 2];
+        pxData[pxPos + 3] = data2[rawPos + 3];
       }
     ];
     var pixelBppCustomMapper = [
@@ -24972,21 +24972,21 @@ var require_bitmapper = __commonJS({
         pxData[pxPos + 3] = pixelData[3];
       }
     ];
-    function bitRetriever(data, depth) {
+    function bitRetriever(data2, depth) {
       let leftOver = [];
       let i = 0;
       function split() {
-        if (i === data.length) {
+        if (i === data2.length) {
           throw new Error("Ran out of data");
         }
-        let byte = data[i];
+        let byte = data2[i];
         i++;
         let byte8, byte7, byte6, byte5, byte4, byte3, byte2, byte1;
         switch (depth) {
           default:
             throw new Error("unrecognised depth");
           case 16:
-            byte2 = data[i];
+            byte2 = data2[i];
             i++;
             leftOver.push((byte << 8) + byte2);
             break;
@@ -25028,20 +25028,20 @@ var require_bitmapper = __commonJS({
           leftOver.length = 0;
         },
         end: function() {
-          if (i !== data.length) {
+          if (i !== data2.length) {
             throw new Error("extra data found");
           }
         }
       };
     }
-    function mapImage8Bit(image, pxData, getPxPos, bpp, data, rawPos) {
+    function mapImage8Bit(image, pxData, getPxPos, bpp, data2, rawPos) {
       let imageWidth = image.width;
       let imageHeight = image.height;
       let imagePass = image.index;
       for (let y = 0; y < imageHeight; y++) {
         for (let x = 0; x < imageWidth; x++) {
           let pxPos = getPxPos(x, y, imagePass);
-          pixelBppMapper[bpp](pxData, data, pxPos, rawPos);
+          pixelBppMapper[bpp](pxData, data2, pxPos, rawPos);
           rawPos += bpp;
         }
       }
@@ -25060,7 +25060,7 @@ var require_bitmapper = __commonJS({
         bits.resetAfterLine();
       }
     }
-    exports.dataToBitMap = function(data, bitmapInfo) {
+    exports.dataToBitMap = function(data2, bitmapInfo) {
       let width = bitmapInfo.width;
       let height = bitmapInfo.height;
       let depth = bitmapInfo.depth;
@@ -25068,7 +25068,7 @@ var require_bitmapper = __commonJS({
       let interlace = bitmapInfo.interlace;
       let bits;
       if (depth !== 8) {
-        bits = bitRetriever(data, depth);
+        bits = bitRetriever(data2, depth);
       }
       let pxData;
       if (depth <= 8) {
@@ -25099,7 +25099,7 @@ var require_bitmapper = __commonJS({
             pxData,
             getPxPos,
             bpp,
-            data,
+            data2,
             rawPos
           );
         } else {
@@ -25114,7 +25114,7 @@ var require_bitmapper = __commonJS({
         }
       }
       if (depth === 8) {
-        if (rawPos !== data.length) {
+        if (rawPos !== data2.length) {
           throw new Error("extra data found");
         }
       } else {
@@ -25214,12 +25214,12 @@ var require_parser_async = __commonJS({
     var zlib2 = __require("zlib");
     var ChunkStream = require_chunkstream();
     var FilterAsync = require_filter_parse_async();
-    var Parser = require_parser();
+    var Parser3 = require_parser();
     var bitmapper = require_bitmapper();
     var formatNormaliser = require_format_normaliser();
     var ParserAsync = module.exports = function(options) {
       ChunkStream.call(this);
-      this._parser = new Parser(options, {
+      this._parser = new Parser3(options, {
         read: this.read.bind(this),
         error: this._handleError.bind(this),
         metadata: this._handleMetaData.bind(this),
@@ -25250,7 +25250,7 @@ var require_parser_async = __commonJS({
       }
       this.errord = true;
     };
-    ParserAsync.prototype._inflateData = function(data) {
+    ParserAsync.prototype._inflateData = function(data2) {
       if (!this._inflate) {
         if (this._bitmapInfo.interlace) {
           this._inflate = zlib2.createInflate();
@@ -25285,7 +25285,7 @@ var require_parser_async = __commonJS({
           this._inflate.on("end", this._filter.end.bind(this._filter));
         }
       }
-      this._inflate.write(data);
+      this._inflate.write(data2);
     };
     ParserAsync.prototype._handleMetaData = function(metaData) {
       this._metaData = metaData;
@@ -25360,7 +25360,7 @@ var require_bitpacker = __commonJS({
           return dataIn;
         }
       }
-      let data = options.bitDepth !== 16 ? dataIn : new Uint16Array(dataIn.buffer);
+      let data2 = options.bitDepth !== 16 ? dataIn : new Uint16Array(dataIn.buffer);
       let maxValue = 255;
       let inBpp = constants.COLORTYPE_TO_BPP_MAP[options.inputColorType];
       if (inBpp === 4 && !options.inputHasAlpha) {
@@ -25391,24 +25391,24 @@ var require_bitpacker = __commonJS({
         let alpha = maxValue;
         switch (options.inputColorType) {
           case constants.COLORTYPE_COLOR_ALPHA:
-            alpha = data[inIndex + 3];
-            red = data[inIndex];
-            green = data[inIndex + 1];
-            blue = data[inIndex + 2];
+            alpha = data2[inIndex + 3];
+            red = data2[inIndex];
+            green = data2[inIndex + 1];
+            blue = data2[inIndex + 2];
             break;
           case constants.COLORTYPE_COLOR:
-            red = data[inIndex];
-            green = data[inIndex + 1];
-            blue = data[inIndex + 2];
+            red = data2[inIndex];
+            green = data2[inIndex + 1];
+            blue = data2[inIndex + 2];
             break;
           case constants.COLORTYPE_ALPHA:
-            alpha = data[inIndex + 1];
-            red = data[inIndex];
+            alpha = data2[inIndex + 1];
+            red = data2[inIndex];
             green = red;
             blue = red;
             break;
           case constants.COLORTYPE_GRAYSCALE:
-            red = data[inIndex];
+            red = data2[inIndex];
             green = red;
             blue = red;
             break;
@@ -25438,7 +25438,7 @@ var require_bitpacker = __commonJS({
       }
       for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
-          let rgba = getRGBA2(data, inIndex);
+          let rgba = getRGBA2(data2, inIndex);
           switch (options.colorType) {
             case constants.COLORTYPE_COLOR_ALPHA:
             case constants.COLORTYPE_COLOR:
@@ -25683,19 +25683,19 @@ var require_packer = __commonJS({
     Packer.prototype.createDeflate = function() {
       return this._options.deflateFactory(this.getDeflateOptions());
     };
-    Packer.prototype.filterData = function(data, width, height) {
-      let packedData = bitPacker(data, width, height, this._options);
+    Packer.prototype.filterData = function(data2, width, height) {
+      let packedData = bitPacker(data2, width, height, this._options);
       let bpp = constants.COLORTYPE_TO_BPP_MAP[this._options.colorType];
       let filteredData = filter(packedData, width, height, this._options, bpp);
       return filteredData;
     };
-    Packer.prototype._packChunk = function(type, data) {
-      let len = data ? data.length : 0;
+    Packer.prototype._packChunk = function(type, data2) {
+      let len = data2 ? data2.length : 0;
       let buf = Buffer.alloc(len + 12);
       buf.writeUInt32BE(len, 0);
       buf.writeUInt32BE(type, 4);
-      if (data) {
-        data.copy(buf, 8);
+      if (data2) {
+        data2.copy(buf, 8);
       }
       buf.writeInt32BE(
         CrcStream.crc32(buf.slice(4, buf.length - 4)),
@@ -25719,8 +25719,8 @@ var require_packer = __commonJS({
       buf[12] = 0;
       return this._packChunk(constants.TYPE_IHDR, buf);
     };
-    Packer.prototype.packIDAT = function(data) {
-      return this._packChunk(constants.TYPE_IDAT, data);
+    Packer.prototype.packIDAT = function(data2) {
+      return this._packChunk(constants.TYPE_IDAT, data2);
     };
     Packer.prototype.packIEND = function() {
       return this._packChunk(constants.TYPE_IEND, null);
@@ -25744,13 +25744,13 @@ var require_packer_async = __commonJS({
       this.readable = true;
     };
     util.inherits(PackerAsync, Stream);
-    PackerAsync.prototype.pack = function(data, width, height, gamma) {
+    PackerAsync.prototype.pack = function(data2, width, height, gamma) {
       this.emit("data", Buffer.from(constants.PNG_SIGNATURE));
       this.emit("data", this._packer.packIHDR(width, height));
       if (gamma) {
         this.emit("data", this._packer.packGAMA(gamma));
       }
-      let filteredData = this._packer.filterData(data, width, height);
+      let filteredData = this._packer.filterData(data2, width, height);
       this._deflate.on("error", this.emit.bind(this, "error"));
       this._deflate.on(
         "data",
@@ -25981,7 +25981,7 @@ var require_parser_sync = __commonJS({
     }
     var SyncReader = require_sync_reader();
     var FilterSync = require_filter_parse_sync();
-    var Parser = require_parser();
+    var Parser3 = require_parser();
     var bitmapper = require_bitmapper();
     var formatNormaliser = require_format_normaliser();
     module.exports = function(buffer, options) {
@@ -26016,7 +26016,7 @@ var require_parser_sync = __commonJS({
         inflateDataList.push(inflatedData2);
       }
       let reader = new SyncReader(buffer);
-      let parser = new Parser(options, {
+      let parser = new Parser3(options, {
         read: reader.read.bind(reader),
         error: handleError,
         metadata: handleMetaData,
@@ -26113,10 +26113,10 @@ var require_packer_sync = __commonJS({
 var require_png_sync = __commonJS({
   "node_modules/pngjs/lib/png-sync.js"(exports) {
     "use strict";
-    var parse = require_parser_sync();
+    var parse4 = require_parser_sync();
     var pack = require_packer_sync();
     exports.read = function(buffer, options) {
-      return parse(buffer, options || {});
+      return parse4(buffer, options || {});
     };
     exports.write = function(png, options) {
       return pack(png, options);
@@ -26130,7 +26130,7 @@ var require_png2 = __commonJS({
     "use strict";
     var util = __require("util");
     var Stream = __require("stream");
-    var Parser = require_parser_async();
+    var Parser3 = require_parser_async();
     var Packer = require_packer_async();
     var PNGSync = require_png_sync();
     var PNG2 = exports.PNG = function(options) {
@@ -26144,16 +26144,16 @@ var require_png2 = __commonJS({
       }
       this.gamma = 0;
       this.readable = this.writable = true;
-      this._parser = new Parser(options);
+      this._parser = new Parser3(options);
       this._parser.on("error", this.emit.bind(this, "error"));
       this._parser.on("close", this._handleClose.bind(this));
       this._parser.on("metadata", this._metadata.bind(this));
       this._parser.on("gamma", this._gamma.bind(this));
       this._parser.on(
         "parsed",
-        function(data) {
-          this.data = data;
-          this.emit("parsed", data);
+        function(data2) {
+          this.data = data2;
+          this.emit("parsed", data2);
         }.bind(this)
       );
       this._packer = new Packer(options);
@@ -26176,7 +26176,7 @@ var require_png2 = __commonJS({
       );
       return this;
     };
-    PNG2.prototype.parse = function(data, callback) {
+    PNG2.prototype.parse = function(data2, callback) {
       if (callback) {
         let onParsed, onError;
         onParsed = function(parsedData) {
@@ -26191,15 +26191,15 @@ var require_png2 = __commonJS({
         this.once("parsed", onParsed);
         this.once("error", onError);
       }
-      this.end(data);
+      this.end(data2);
       return this;
     };
-    PNG2.prototype.write = function(data) {
-      this._parser.write(data);
+    PNG2.prototype.write = function(data2) {
+      this._parser.write(data2);
       return true;
     };
-    PNG2.prototype.end = function(data) {
-      this._parser.end(data);
+    PNG2.prototype.end = function(data2) {
+      this._parser.end(data2);
     };
     PNG2.prototype._metadata = function(metadata) {
       this.width = metadata.width;
@@ -28678,18 +28678,18 @@ function validateCapsuleAuthRequirements(definition) {
 function scopeGrantMatches(grant, requiredScope) {
   const parts = grant.split("*");
   if (parts.length === 1) return grant === requiredScope;
-  let offset = grant.startsWith("*") ? 0 : parts[0].length;
+  let offset2 = grant.startsWith("*") ? 0 : parts[0].length;
   if (!grant.startsWith("*") && !requiredScope.startsWith(parts[0])) return false;
   const suffix = grant.endsWith("*") ? "" : parts.at(-1) ?? "";
   const limit = requiredScope.length - suffix.length;
-  if (limit < offset || suffix && !requiredScope.endsWith(suffix)) return false;
+  if (limit < offset2 || suffix && !requiredScope.endsWith(suffix)) return false;
   const firstInterior = grant.startsWith("*") ? 0 : 1;
   const lastInterior = grant.endsWith("*") ? parts.length : parts.length - 1;
   for (const part of parts.slice(firstInterior, lastInterior)) {
     if (!part) continue;
-    const foundAt = requiredScope.indexOf(part, offset);
+    const foundAt = requiredScope.indexOf(part, offset2);
     if (foundAt === -1 || foundAt + part.length > limit) return false;
-    offset = foundAt + part.length;
+    offset2 = foundAt + part.length;
   }
   return true;
 }
@@ -29352,14 +29352,14 @@ async function verifyConsumerExpectation(recordPath, consumer, expected) {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
     throw error;
   });
-  const current = raw === null ? null : (() => {
+  const current2 = raw === null ? null : (() => {
     try {
       return JSON.parse(raw);
     } catch {
       return void 0;
     }
   })();
-  const matches = expected === null ? current === null : validConsumerRecord(current, consumer) && current.token === expected.token && current.identity === expected.identity;
+  const matches = expected === null ? current2 === null : validConsumerRecord(current2, consumer) && current2.token === expected.token && current2.identity === expected.identity;
   if (!matches) {
     throw publicTreeError("Public tree consumer ownership changed.", "Preserve the successor consumer and retry from its owning Container lifecycle.");
   }
@@ -29733,8 +29733,8 @@ function startOwnerHeartbeat(recordPath, record) {
   let inFlight = Promise.resolve();
   const heartbeatPath = ownerHeartbeatPath(recordPath, record.token);
   const refresh = async () => {
-    const current = await readFile4(recordPath, "utf8").then(JSON.parse).catch(() => null);
-    if (!validOwnerRecord(current) || current.token !== record.token) {
+    const current2 = await readFile4(recordPath, "utf8").then(JSON.parse).catch(() => null);
+    if (!validOwnerRecord(current2) || current2.token !== record.token) {
       stopped = true;
       clearInterval(timer);
       return;
@@ -30959,8 +30959,8 @@ async function updateCurrentUserPreferences(database, auth, patch) {
     const normalizedPatch = normalizePreferencesPatch(patch);
     const preferences = await database.adapter.withTransaction(async (tx) => {
       const row = await tx.readUserPreferences(auth.userId);
-      const current = row ? JSON.parse(row.value) : {};
-      const next = { ...current, ...normalizedPatch };
+      const current2 = row ? JSON.parse(row.value) : {};
+      const next = { ...current2, ...normalizedPatch };
       assertJsonCompatible(next);
       await tx.saveUserPreferences({
         userId: auth.userId,
@@ -31224,11 +31224,11 @@ function createCurrentUserAccessKeysApi(database, contextGetter) {
 }
 function createPrivilegedAccessKeysApi(database, contextGetter, transactionDatabaseFactory) {
   const requireContext = () => {
-    const current = contextGetter();
-    if (!current || !activePrivilegedAccessKeyContexts.has(current) || current.signal?.aborted) {
+    const current2 = contextGetter();
+    if (!current2 || !activePrivilegedAccessKeyContexts.has(current2) || current2.signal?.aborted) {
       throw commandError("Privileged Access-key access expired.", "Run the operation inside ctx.privileged.run(...).", "FORBIDDEN");
     }
-    return current;
+    return current2;
   };
   const requireId = (value) => {
     requireContext();
@@ -32034,15 +32034,15 @@ async function performDesired(database, _context, payload, kind) {
     throw error;
   }
   const acknowledged = await inTransaction(database, async (transaction) => {
-    const current = await desiredByIntent(transaction, snapshot.desired.intentId);
+    const current2 = await desiredByIntent(transaction, snapshot.desired.intentId);
     await releaseLane(transaction, snapshot.desired.teamId, claimToken, database);
-    if (!current) return false;
+    if (!current2) return false;
     await transaction.prepare(transaction.dialect.sql(
       "UPDATE [sporades_team_billing_desired_state] SET [status] = 'awaiting-observation', [providerAcknowledgedAt] = ?, [safeFailureCode] = NULL, [updatedAt] = ? WHERE [intentId] = ?"
-    )).run(nowIso(database), nowIso(database), current.intentId);
-    if (current.operationId) await transaction.prepare(transaction.dialect.sql(
+    )).run(nowIso(database), nowIso(database), current2.intentId);
+    if (current2.operationId) await transaction.prepare(transaction.dialect.sql(
       "UPDATE [sporades_team_billing_operations] SET [status] = 'awaiting-observation', [updatedAt] = ? WHERE [id] = ?"
-    )).run(nowIso(database), current.operationId);
+    )).run(nowIso(database), current2.operationId);
     return true;
   });
   return acknowledged ? { providerAcknowledged: true } : { superseded: true };
@@ -32317,14 +32317,14 @@ async function releaseLane(transaction, teamId, token, database) {
 async function releaseAfterFailure(database, desired, token, classified) {
   await inTransaction(database, async (transaction) => {
     await releaseLane(transaction, desired.teamId, token, database);
-    const current = await desiredByIntent(transaction, desired.intentId);
-    if (!current) return;
+    const current2 = await desiredByIntent(transaction, desired.intentId);
+    if (!current2) return;
     const updated = await transaction.prepare(transaction.dialect.sql(
       "UPDATE [sporades_team_billing_desired_state] SET [status] = ?, [safeFailureCode] = ?, [updatedAt] = ? WHERE [intentId] = ? AND [activeJobGenerationId] = ?"
     )).run(classified.retryable ? "queued" : "failed", classified.code, nowIso(database), desired.intentId, desired.activeJobGenerationId);
-    if (!classified.retryable && Number(updated?.changes ?? updated?.changesCount ?? 0) === 1 && current.operationId) await transaction.prepare(transaction.dialect.sql(
+    if (!classified.retryable && Number(updated?.changes ?? updated?.changesCount ?? 0) === 1 && current2.operationId) await transaction.prepare(transaction.dialect.sql(
       "UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = ?, [updatedAt] = ? WHERE [id] = ?"
-    )).run(classified.code, nowIso(database), current.operationId);
+    )).run(classified.code, nowIso(database), current2.operationId);
   });
 }
 async function attention(transaction, database, desired, code, deniedResult = false) {
@@ -33807,10 +33807,10 @@ async function performTeamBillingErasure(database, context, payload) {
         "UPDATE [sporades_team_billing_provider_lanes] SET [updatedAt] = [updatedAt] WHERE [teamId] = ? AND [claimToken] = ?"
       )).run(snapshot.teamId, claimToken);
       if (Number(laneOwned?.changes ?? laneOwned?.changesCount ?? 0) !== 1) return false;
-      const current = await transaction.prepare(transaction.dialect.sql(
+      const current2 = await transaction.prepare(transaction.dialect.sql(
         "SELECT [teamId], [erasureKey] FROM [sporades_team_billing_erasure_state] WHERE [operationId] = ? AND [activeJobGenerationId] = ?"
       )).get(snapshot.operationId, snapshot.generationId);
-      if (!current) {
+      if (!current2) {
         await transaction.prepare(transaction.dialect.sql(
           "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [claimToken] = ?"
         )).run(now(database), snapshot.teamId, claimToken);
@@ -33819,7 +33819,7 @@ async function performTeamBillingErasure(database, context, payload) {
       const digest = createHash5("sha256").update(JSON.stringify(canonical)).digest("hex");
       await transaction.prepare(transaction.dialect.sql(
         "INSERT INTO [sporades_team_billing_erasure_tombstones] ([erasureKey], [evidenceDigest], [providerQuiescedAt], [createdAt]) VALUES (?, ?, ?, ?)"
-      )).run(current.erasureKey, digest, canonical.providerObservedAt, now(database));
+      )).run(current2.erasureKey, digest, canonical.providerObservedAt, now(database));
       for (const entry of [
         ...canonical.checkouts.map((item) => ({ ...item, kind: "checkout" })),
         ...canonical.subscriptions.map((item) => ({ ...item, kind: "subscription" }))
@@ -33834,11 +33834,11 @@ async function performTeamBillingErasure(database, context, payload) {
         "sporades_team_billing_customers",
         "sporades_team_billing_desired_state",
         "sporades_team_billing_operations"
-      ]) await transaction.prepare(transaction.dialect.sql(`DELETE FROM [${table}] WHERE [teamId] = ?`)).run(current.teamId);
-      await transaction.prepare(transaction.dialect.sql("DELETE FROM [sporades_team_billing_erasure_state] WHERE [teamId] = ?")).run(current.teamId);
+      ]) await transaction.prepare(transaction.dialect.sql(`DELETE FROM [${table}] WHERE [teamId] = ?`)).run(current2.teamId);
+      await transaction.prepare(transaction.dialect.sql("DELETE FROM [sporades_team_billing_erasure_state] WHERE [teamId] = ?")).run(current2.teamId);
       const released = await transaction.prepare(transaction.dialect.sql(
         "DELETE FROM [sporades_team_billing_provider_lanes] WHERE [teamId] = ? AND [claimToken] = ?"
-      )).run(current.teamId, claimToken);
+      )).run(current2.teamId, claimToken);
       if (Number(released?.changes ?? released?.changesCount ?? 0) !== 1) throw retryable2("TEAM_BILLING_PROVIDER_LANE_LOST");
       return true;
     });
@@ -34338,7 +34338,7 @@ function parseScheduleExpression(value) {
         end = Number(match[2]);
       }
       if (start < ranges[index][0] || end > ranges[index][1] || start > end) throw commandError(`Invalid Schedule expression: ${value}`, "Keep each cron value inside its field range.");
-      for (let current = start; current <= end; current += step) values.add(index === 4 && current === 7 ? 0 : current);
+      for (let current2 = start; current2 <= end; current2 += step) values.add(index === 4 && current2 === 7 ? 0 : current2);
     }
     return values;
   });
@@ -34442,11 +34442,11 @@ async function ensureScheduleStorage(sqlite, scheduleStorageFault) {
         await adapter.prepare(migrationSql(
           "UPDATE [sporades_schedules] SET [generationToken]=? WHERE [name]=? AND ([generationToken] IS NULL OR [generationToken]='')"
         )).run(proposed, row.name);
-        const current = await adapter.prepare(migrationSql(
+        const current2 = await adapter.prepare(migrationSql(
           "SELECT [definitionFingerprint], [generationToken] FROM [sporades_schedules] WHERE [name]=?"
         )).get(row.name);
-        generationToken = current?.generationToken ?? proposed;
-        row.definitionFingerprint = current?.definitionFingerprint ?? row.definitionFingerprint;
+        generationToken = current2?.generationToken ?? proposed;
+        row.definitionFingerprint = current2?.definitionFingerprint ?? row.definitionFingerprint;
       }
       if (initializeLegacyLineage) {
         await adapter.prepare(migrationSql(
@@ -34577,17 +34577,17 @@ async function acquireSchedulePayloadFactoryLane(database, scheduleName) {
   const previous = database.schedulePayloadFactoryLanes.get(scheduleName);
   let unlock = () => {
   };
-  const current = new Promise((resolve) => {
+  const current2 = new Promise((resolve) => {
     unlock = resolve;
   });
-  database.schedulePayloadFactoryLanes.set(scheduleName, current);
+  database.schedulePayloadFactoryLanes.set(scheduleName, current2);
   if (previous) await previous;
   let released = false;
   return () => {
     if (released) return;
     released = true;
     unlock();
-    if (database.schedulePayloadFactoryLanes.get(scheduleName) === current) database.schedulePayloadFactoryLanes.delete(scheduleName);
+    if (database.schedulePayloadFactoryLanes.get(scheduleName) === current2) database.schedulePayloadFactoryLanes.delete(scheduleName);
   };
 }
 async function resolveSchedulePayload(database, definition, scheduledFor, context) {
@@ -35477,7 +35477,7 @@ function createPrivilegedAuditLogInput(details = {}) {
   const safeErrorCode = safePrivilegedAuditErrorCode(details.safeErrorCode ?? details.error, outcome);
   const correlation = normalizePrivilegedAuditCorrelation(details.correlation ?? details.correlationId ?? null);
   const release = details.release ?? null;
-  const data = {
+  const data2 = {
     schema: PRIVILEGED_AUDIT_SCHEMA,
     actorKind: normalizePrivilegedAuditActorKind(details.actorKind),
     operation: auditString(details.operation, "unknown"),
@@ -35492,8 +35492,8 @@ function createPrivilegedAuditLogInput(details = {}) {
     category: "audit",
     event: auditString(details.event, `privileged.${outcome}`),
     level: details.level ?? privilegedAuditLevelForOutcome(outcome),
-    message: auditString(details.message, `Privileged audit event ${outcome}: ${data.operation}`),
-    data,
+    message: auditString(details.message, `Privileged audit event ${outcome}: ${data2.operation}`),
+    data: data2,
     request: details.request ?? null,
     release,
     correlation
@@ -36104,18 +36104,18 @@ function createLocalFileStorageAdapter({ storagePath }) {
   return {
     engine: "local",
     storagePath,
-    async writeFileVersion({ fileId, version: version2, bytes }) {
+    async writeFileVersion({ fileId, version: version3, bytes }) {
       const { mkdir: mkdir8, writeFile: writeFile8 } = await import("node:fs/promises");
       await mkdir8(localFileStoragePath(storagePath, fileId), { recursive: true });
-      await writeFile8(localFileVersionPath(storagePath, fileId, version2), bytes);
+      await writeFile8(localFileVersionPath(storagePath, fileId, version3), bytes);
     },
-    async readFileVersion({ fileId, version: version2 }) {
+    async readFileVersion({ fileId, version: version3 }) {
       const { readFile: readFile10 } = await import("node:fs/promises");
-      return await readFile10(localFileVersionPath(storagePath, fileId, version2));
+      return await readFile10(localFileVersionPath(storagePath, fileId, version3));
     },
-    async openFileVersionStream({ fileId, version: version2 }) {
+    async openFileVersionStream({ fileId, version: version3 }) {
       const { createReadStream } = await import("node:fs");
-      const stream = createReadStream(localFileVersionPath(storagePath, fileId, version2));
+      const stream = createReadStream(localFileVersionPath(storagePath, fileId, version3));
       await new Promise((resolve, reject) => {
         const cleanup = () => {
           stream.removeListener("open", opened);
@@ -36135,9 +36135,9 @@ function createLocalFileStorageAdapter({ storagePath }) {
       });
       return stream;
     },
-    async deleteFileVersion({ fileId, version: version2 }) {
+    async deleteFileVersion({ fileId, version: version3 }) {
       const { rm: rm8 } = await import("node:fs/promises");
-      await rm8(localFileVersionPath(storagePath, fileId, version2), { force: true });
+      await rm8(localFileVersionPath(storagePath, fileId, version3), { force: true });
     },
     async checkHealth() {
       const { mkdir: mkdir8, rm: rm8, writeFile: writeFile8 } = await import("node:fs/promises");
@@ -36162,8 +36162,8 @@ function createLocalFileStorageAdapter({ storagePath }) {
 function localFileStoragePath(storagePath, fileId) {
   return `${storagePath}/${fileId}`;
 }
-function localFileVersionPath(storagePath, fileId, version2) {
-  return `${localFileStoragePath(storagePath, fileId)}/${version2}`;
+function localFileVersionPath(storagePath, fileId, version3) {
+  return `${localFileStoragePath(storagePath, fileId)}/${version3}`;
 }
 function createS3CompatibleFileStorageAdapter({
   endpoint,
@@ -36210,21 +36210,21 @@ function createS3CompatibleFileStorageAdapter({
     region,
     namespace: isolatedNamespace,
     objectKeyPrefix: `${isolatedNamespace}/files`,
-    async writeFileVersion({ fileId, version: version2, bytes }) {
+    async writeFileVersion({ fileId, version: version3, bytes }) {
       await ensureBucket();
       const result = await s3Request(config, {
         method: "PUT",
-        key: s3ObjectKey(isolatedNamespace, fileId, version2),
+        key: s3ObjectKey(isolatedNamespace, fileId, version3),
         body: bytes
       });
       if (result.statusCode < 200 || result.statusCode >= 300) {
         throw new Error(`S3-compatible file write failed with HTTP ${result.statusCode}.`);
       }
     },
-    async readFileVersion({ fileId, version: version2 }) {
+    async readFileVersion({ fileId, version: version3 }) {
       const result = await s3Request(config, {
         method: "GET",
-        key: s3ObjectKey(isolatedNamespace, fileId, version2)
+        key: s3ObjectKey(isolatedNamespace, fileId, version3)
       });
       if (result.statusCode === 404) {
         throw s3ObjectNotFoundError();
@@ -36234,10 +36234,10 @@ function createS3CompatibleFileStorageAdapter({
       }
       return result.body;
     },
-    async openFileVersionStream({ fileId, version: version2 }) {
+    async openFileVersionStream({ fileId, version: version3 }) {
       const response = await s3RequestStream(config, {
         method: "GET",
-        key: s3ObjectKey(isolatedNamespace, fileId, version2)
+        key: s3ObjectKey(isolatedNamespace, fileId, version3)
       });
       if (response.statusCode === 404) {
         response.resume();
@@ -36249,10 +36249,10 @@ function createS3CompatibleFileStorageAdapter({
       }
       return response;
     },
-    async deleteFileVersion({ fileId, version: version2 }) {
+    async deleteFileVersion({ fileId, version: version3 }) {
       const result = await s3Request(config, {
         method: "DELETE",
-        key: s3ObjectKey(isolatedNamespace, fileId, version2)
+        key: s3ObjectKey(isolatedNamespace, fileId, version3)
       });
       if (result.statusCode === 404) {
         return;
@@ -36273,8 +36273,8 @@ function createS3CompatibleFileStorageAdapter({
     }
   };
 }
-function s3ObjectKey(namespace, fileId, version2) {
-  return `${namespace}/files/${fileId}/${version2}`;
+function s3ObjectKey(namespace, fileId, version3) {
+  return `${namespace}/files/${fileId}/${version3}`;
 }
 async function s3Request(config, { method, key = null, body = null }) {
   const endpoint = new URL(config.endpoint);
@@ -36412,11 +36412,11 @@ function s3StorageNamespace(namespace) {
 function s3AmzDate(date) {
   return date.toISOString().replace(/[:-]|\.\d{3}/g, "");
 }
-function s3Hmac(key, data) {
-  return nodeCryptoModule2.createHmac("sha256", key).update(data).digest();
+function s3Hmac(key, data2) {
+  return nodeCryptoModule2.createHmac("sha256", key).update(data2).digest();
 }
-function s3Sha256Hex(data) {
-  return nodeCryptoModule2.createHash("sha256").update(data).digest("hex");
+function s3Sha256Hex(data2) {
+  return nodeCryptoModule2.createHash("sha256").update(data2).digest("hex");
 }
 function s3ObjectNotFoundError() {
   const error = new Error("S3-compatible file object not found.");
@@ -36561,7 +36561,7 @@ async function createPendingFileUpload(database, auth, message) {
       const existing = existingByReference ?? existingByPath;
       const fileId = existing?.id ?? (pendingByPath?.ownerId === auth.userId ? pendingByPath.fileId : null) ?? nodeCryptoModule2.randomUUID();
       const uploadId = nodeCryptoModule2.randomUUID();
-      const version2 = nodeCryptoModule2.randomUUID();
+      const version3 = nodeCryptoModule2.randomUUID();
       const name = normalizeFileName(input.name, target.path);
       const type = String(input.type ?? "application/octet-stream");
       await sqlite.deleteFileUploadsForPath(target.path);
@@ -36575,21 +36575,21 @@ async function createPendingFileUpload(database, auth, message) {
           path: target.path,
           name,
           type,
-          version: version2,
+          version: version3,
           expectedSize: size,
           createdAt: now2
         });
       } catch (error) {
         if (!isUniqueConstraintError(error)) throw error;
-        const current = await sqlite.selectPendingFileUploadByPath(target.path);
-        if (!current) throw error;
+        const current2 = await sqlite.selectPendingFileUploadByPath(target.path);
+        if (!current2) throw error;
         return {
           ok: true,
           data: {
-            uploadUrl: `/__sporades/uploads/${current.id}`,
+            uploadUrl: `/__sporades/uploads/${current2.id}`,
             method: "PUT",
             headers: {},
-            file: fileMetadataFromUpload(current)
+            file: fileMetadataFromUpload(current2)
           },
           error: null
         };
@@ -36607,7 +36607,7 @@ async function createPendingFileUpload(database, auth, message) {
             name,
             type,
             expectedSize: size,
-            version: version2
+            version: version3
           })
         },
         error: null
@@ -36874,10 +36874,10 @@ async function withFileUploadPathLock(path13, fn) {
   const key = String(path13);
   const previous = fileUploadPathLocks.get(key) ?? Promise.resolve();
   let release;
-  const current = new Promise((resolve) => {
+  const current2 = new Promise((resolve) => {
     release = resolve;
   });
-  const next = previous.then(() => current, () => current);
+  const next = previous.then(() => current2, () => current2);
   fileUploadPathLocks.set(key, next);
   try {
     await previous.catch(() => {
@@ -37067,8 +37067,8 @@ function ensureFileIngressColumns(sqlite) {
 function createStructuredFileError(message, hint) {
   return { message, hint };
 }
-async function removeFileVersionBestEffort(database, fileId, version2) {
-  await database.fileStorage.deleteFileVersion({ fileId, version: version2 }).catch(() => {
+async function removeFileVersionBestEffort(database, fileId, version3) {
+  await database.fileStorage.deleteFileVersion({ fileId, version: version3 }).catch(() => {
   });
 }
 
@@ -37233,7 +37233,7 @@ var __webpack_modules__ = {
     var globalThis2 = __webpack_require__2(4576);
     var isCallable = __webpack_require__2(4901);
     var isObject = __webpack_require__2(34);
-    var hasOwn = __webpack_require__2(9297);
+    var hasOwn2 = __webpack_require__2(9297);
     var classof = __webpack_require__2(6955);
     var tryToString = __webpack_require__2(6823);
     var createNonEnumerableProperty = __webpack_require__2(6699);
@@ -37279,18 +37279,18 @@ var __webpack_modules__ = {
     var isView = function isView2(it) {
       if (!isObject(it)) return false;
       var klass = classof(it);
-      return klass === "DataView" || hasOwn(TypedArrayConstructorsList, klass) || hasOwn(BigIntArrayConstructorsList, klass);
+      return klass === "DataView" || hasOwn2(TypedArrayConstructorsList, klass) || hasOwn2(BigIntArrayConstructorsList, klass);
     };
     var getTypedArrayConstructor = function(it) {
       var proto = getPrototypeOf(it);
       if (!isObject(proto)) return;
       var state = getInternalState(proto);
-      return state && hasOwn(state, TYPED_ARRAY_CONSTRUCTOR) ? state[TYPED_ARRAY_CONSTRUCTOR] : getTypedArrayConstructor(proto);
+      return state && hasOwn2(state, TYPED_ARRAY_CONSTRUCTOR) ? state[TYPED_ARRAY_CONSTRUCTOR] : getTypedArrayConstructor(proto);
     };
     var isTypedArray = function(it) {
       if (!isObject(it)) return false;
       var klass = classof(it);
-      return hasOwn(TypedArrayConstructorsList, klass) || hasOwn(BigIntArrayConstructorsList, klass);
+      return hasOwn2(TypedArrayConstructorsList, klass) || hasOwn2(BigIntArrayConstructorsList, klass);
     };
     var aTypedArray = function(it) {
       if (isTypedArray(it)) return it;
@@ -37304,7 +37304,7 @@ var __webpack_modules__ = {
       if (!DESCRIPTORS) return;
       if (forced) for (var ARRAY in TypedArrayConstructorsList) {
         var TypedArrayConstructor = globalThis2[ARRAY];
-        if (TypedArrayConstructor && hasOwn(TypedArrayConstructor.prototype, KEY)) try {
+        if (TypedArrayConstructor && hasOwn2(TypedArrayConstructor.prototype, KEY)) try {
           delete TypedArrayConstructor.prototype[KEY];
         } catch (error) {
           try {
@@ -37323,7 +37323,7 @@ var __webpack_modules__ = {
       if (setPrototypeOf) {
         if (forced) for (ARRAY in TypedArrayConstructorsList) {
           TypedArrayConstructor = globalThis2[ARRAY];
-          if (TypedArrayConstructor && hasOwn(TypedArrayConstructor, KEY)) try {
+          if (TypedArrayConstructor && hasOwn2(TypedArrayConstructor, KEY)) try {
             delete TypedArrayConstructor[KEY];
           } catch (error) {
           }
@@ -37370,7 +37370,7 @@ var __webpack_modules__ = {
     if (NATIVE_ARRAY_BUFFER_VIEWS && getPrototypeOf(Uint8ClampedArrayPrototype) !== TypedArrayPrototype) {
       setPrototypeOf(Uint8ClampedArrayPrototype, TypedArrayPrototype);
     }
-    if (DESCRIPTORS && !hasOwn(TypedArrayPrototype, TO_STRING_TAG)) {
+    if (DESCRIPTORS && !hasOwn2(TypedArrayPrototype, TO_STRING_TAG)) {
       TYPED_ARRAY_TAG_REQUIRED = true;
       defineBuiltInAccessor(TypedArrayPrototype, TO_STRING_TAG, {
         configurable: true,
@@ -37441,7 +37441,7 @@ var __webpack_modules__ = {
   /***/
   4527(module, __unused_webpack_exports, __webpack_require__2) {
     var DESCRIPTORS = __webpack_require__2(3724);
-    var isArray = __webpack_require__2(4376);
+    var isArray2 = __webpack_require__2(4376);
     var $TypeError = TypeError;
     var getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
     var SILENT_ON_NON_WRITABLE_LENGTH_SET = DESCRIPTORS && !(function() {
@@ -37453,7 +37453,7 @@ var __webpack_modules__ = {
       }
     })();
     module.exports = SILENT_ON_NON_WRITABLE_LENGTH_SET ? function(O, length) {
-      if (isArray(O) && !getOwnPropertyDescriptor(O, "length").writable) {
+      if (isArray2(O) && !getOwnPropertyDescriptor(O, "length").writable) {
         throw new $TypeError("Cannot set read only .length");
       }
       return O.length = length;
@@ -37499,10 +37499,10 @@ var __webpack_modules__ = {
   /***/
   2195(module, __unused_webpack_exports, __webpack_require__2) {
     var uncurryThis = __webpack_require__2(9504);
-    var toString = uncurryThis({}.toString);
+    var toString2 = uncurryThis({}.toString);
     var stringSlice = uncurryThis("".slice);
     module.exports = function(it) {
-      return stringSlice(toString(it), 8, -1);
+      return stringSlice(toString2(it), 8, -1);
     };
   },
   /***/
@@ -37529,7 +37529,7 @@ var __webpack_modules__ = {
   },
   /***/
   7740(module, __unused_webpack_exports, __webpack_require__2) {
-    var hasOwn = __webpack_require__2(9297);
+    var hasOwn2 = __webpack_require__2(9297);
     var ownKeys = __webpack_require__2(5031);
     var getOwnPropertyDescriptorModule = __webpack_require__2(7347);
     var definePropertyModule = __webpack_require__2(4913);
@@ -37539,7 +37539,7 @@ var __webpack_modules__ = {
       var getOwnPropertyDescriptor = getOwnPropertyDescriptorModule.f;
       for (var i = 0; i < keys.length; i++) {
         var key = keys[i];
-        if (!hasOwn(target, key) && !(exceptions && hasOwn(exceptions, key))) {
+        if (!hasOwn2(target, key) && !(exceptions && hasOwn2(exceptions, key))) {
           defineProperty(target, key, getOwnPropertyDescriptor(source, key));
         }
       }
@@ -37741,19 +37741,19 @@ var __webpack_modules__ = {
     var Deno = globalThis2.Deno;
     var versions = process2 && process2.versions || Deno && Deno.version;
     var v8 = versions && versions.v8;
-    var match, version2;
+    var match, version3;
     if (v8) {
       match = v8.split(".");
-      version2 = match[0] > 0 && match[0] < 4 ? 1 : +(match[0] + match[1]);
+      version3 = match[0] > 0 && match[0] < 4 ? 1 : +(match[0] + match[1]);
     }
-    if (!version2 && userAgent) {
+    if (!version3 && userAgent) {
       match = userAgent.match(/Edge\/(\d+)/);
       if (!match || match[1] >= 74) {
         match = userAgent.match(/Chrome\/(\d+)/);
-        if (match) version2 = +match[1];
+        if (match) version3 = +match[1];
       }
     }
-    module.exports = version2;
+    module.exports = version3;
   },
   /***/
   6193(module, __unused_webpack_exports, __webpack_require__2) {
@@ -37864,10 +37864,10 @@ var __webpack_modules__ = {
   /***/
   350(module, __unused_webpack_exports, __webpack_require__2) {
     var DESCRIPTORS = __webpack_require__2(3724);
-    var hasOwn = __webpack_require__2(9297);
+    var hasOwn2 = __webpack_require__2(9297);
     var FunctionPrototype = Function.prototype;
     var getDescriptor = DESCRIPTORS && Object.getOwnPropertyDescriptor;
-    var EXISTS = hasOwn(FunctionPrototype, "name");
+    var EXISTS = hasOwn2(FunctionPrototype, "name");
     var PROPER = EXISTS && function something() {
     }.name === "something";
     var CONFIGURABLE = EXISTS && (!DESCRIPTORS || DESCRIPTORS && getDescriptor(FunctionPrototype, "name").configurable);
@@ -38035,9 +38035,9 @@ var __webpack_modules__ = {
   9297(module, __unused_webpack_exports, __webpack_require__2) {
     var uncurryThis = __webpack_require__2(9504);
     var toObject = __webpack_require__2(8981);
-    var hasOwnProperty = uncurryThis({}.hasOwnProperty);
-    module.exports = Object.hasOwn || function hasOwn(it, key) {
-      return hasOwnProperty(toObject(it), key);
+    var hasOwnProperty2 = uncurryThis({}.hasOwnProperty);
+    module.exports = Object.hasOwn || function hasOwn2(it, key) {
+      return hasOwnProperty2(toObject(it), key);
     };
   },
   /***/
@@ -38109,7 +38109,7 @@ var __webpack_modules__ = {
     var globalThis2 = __webpack_require__2(4576);
     var isObject = __webpack_require__2(34);
     var createNonEnumerableProperty = __webpack_require__2(6699);
-    var hasOwn = __webpack_require__2(9297);
+    var hasOwn2 = __webpack_require__2(9297);
     var shared = __webpack_require__2(7629);
     var sharedKey = __webpack_require__2(6119);
     var hiddenKeys = __webpack_require__2(421);
@@ -38150,16 +38150,16 @@ var __webpack_modules__ = {
       var STATE = sharedKey("state");
       hiddenKeys[STATE] = true;
       set = function(it, metadata) {
-        if (hasOwn(it, STATE)) throw new TypeError2(OBJECT_ALREADY_INITIALIZED);
+        if (hasOwn2(it, STATE)) throw new TypeError2(OBJECT_ALREADY_INITIALIZED);
         metadata.facade = it;
         createNonEnumerableProperty(it, STATE, metadata);
         return metadata;
       };
       get = function(it) {
-        return hasOwn(it, STATE) ? it[STATE] : {};
+        return hasOwn2(it, STATE) ? it[STATE] : {};
       };
       has = function(it) {
-        return hasOwn(it, STATE);
+        return hasOwn2(it, STATE);
       };
     }
     module.exports = {
@@ -38183,7 +38183,7 @@ var __webpack_modules__ = {
   /***/
   4376(module, __unused_webpack_exports, __webpack_require__2) {
     var classof = __webpack_require__2(2195);
-    module.exports = Array.isArray || function isArray(argument) {
+    module.exports = Array.isArray || function isArray2(argument) {
       return classof(argument) === "Array";
     };
   },
@@ -38210,13 +38210,13 @@ var __webpack_modules__ = {
     var isCallable = __webpack_require__2(4901);
     var replacement = /#|\.prototype\./;
     var isForced = function(feature, detection) {
-      var value = data[normalize(feature)];
+      var value = data2[normalize(feature)];
       return value === POLYFILL ? true : value === NATIVE ? false : isCallable(detection) ? fails(detection) : !!detection;
     };
     var normalize = isForced.normalize = function(string) {
       return String(string).replace(replacement, ".").toLowerCase();
     };
-    var data = isForced.data = {};
+    var data2 = isForced.data = {};
     var NATIVE = isForced.NATIVE = "N";
     var POLYFILL = isForced.POLYFILL = "P";
     module.exports = isForced;
@@ -38572,7 +38572,7 @@ var __webpack_modules__ = {
     var uncurryThis = __webpack_require__2(9504);
     var fails = __webpack_require__2(9039);
     var isCallable = __webpack_require__2(4901);
-    var hasOwn = __webpack_require__2(9297);
+    var hasOwn2 = __webpack_require__2(9297);
     var DESCRIPTORS = __webpack_require__2(3724);
     var CONFIGURABLE_FUNCTION_NAME = __webpack_require__2(350).CONFIGURABLE;
     var inspectSource = __webpack_require__2(3706);
@@ -38595,26 +38595,26 @@ var __webpack_modules__ = {
       }
       if (options && options.getter) name = "get " + name;
       if (options && options.setter) name = "set " + name;
-      if (!hasOwn(value, "name") || CONFIGURABLE_FUNCTION_NAME && value.name !== name) {
+      if (!hasOwn2(value, "name") || CONFIGURABLE_FUNCTION_NAME && value.name !== name) {
         if (DESCRIPTORS) defineProperty(value, "name", { value: name, configurable: true });
         else value.name = name;
       }
-      if (CONFIGURABLE_LENGTH && options && hasOwn(options, "arity") && value.length !== options.arity) {
+      if (CONFIGURABLE_LENGTH && options && hasOwn2(options, "arity") && value.length !== options.arity) {
         defineProperty(value, "length", { value: options.arity });
       }
       try {
-        if (options && hasOwn(options, "constructor") && options.constructor) {
+        if (options && hasOwn2(options, "constructor") && options.constructor) {
           if (DESCRIPTORS) defineProperty(value, "prototype", { writable: false });
         } else if (value.prototype) value.prototype = void 0;
       } catch (error) {
       }
       var state = enforceInternalState(value);
-      if (!hasOwn(state, "source")) {
+      if (!hasOwn2(state, "source")) {
         state.source = join(TEMPLATE, typeof name == "string" ? name : "");
       }
       return value;
     };
-    Function.prototype.toString = makeBuiltIn(function toString() {
+    Function.prototype.toString = makeBuiltIn(function toString2() {
       return isCallable(this) && getInternalState(this).source || inspectSource(this);
     }, "toString");
   },
@@ -38670,9 +38670,9 @@ var __webpack_modules__ = {
   },
   /***/
   2603(module, __unused_webpack_exports, __webpack_require__2) {
-    var toString = __webpack_require__2(655);
+    var toString2 = __webpack_require__2(655);
     module.exports = function(argument, $default) {
-      return argument === void 0 ? arguments.length < 2 ? "" : $default : toString(argument);
+      return argument === void 0 ? arguments.length < 2 ? "" : $default : toString2(argument);
     };
   },
   /***/
@@ -38782,12 +38782,12 @@ var __webpack_modules__ = {
       P = toPropertyKey(P);
       anObject(Attributes);
       if (typeof O === "function" && P === "prototype" && "value" in Attributes && WRITABLE in Attributes && !Attributes[WRITABLE]) {
-        var current = $getOwnPropertyDescriptor(O, P);
-        if (current && current[WRITABLE]) {
+        var current2 = $getOwnPropertyDescriptor(O, P);
+        if (current2 && current2[WRITABLE]) {
           O[P] = Attributes.value;
           Attributes = {
-            configurable: CONFIGURABLE in Attributes ? Attributes[CONFIGURABLE] : current[CONFIGURABLE],
-            enumerable: ENUMERABLE in Attributes ? Attributes[ENUMERABLE] : current[ENUMERABLE],
+            configurable: CONFIGURABLE in Attributes ? Attributes[CONFIGURABLE] : current2[CONFIGURABLE],
+            enumerable: ENUMERABLE in Attributes ? Attributes[ENUMERABLE] : current2[ENUMERABLE],
             writable: false
           };
         }
@@ -38814,7 +38814,7 @@ var __webpack_modules__ = {
     var createPropertyDescriptor = __webpack_require__2(6980);
     var toIndexedObject = __webpack_require__2(5397);
     var toPropertyKey = __webpack_require__2(6969);
-    var hasOwn = __webpack_require__2(9297);
+    var hasOwn2 = __webpack_require__2(9297);
     var IE8_DOM_DEFINE = __webpack_require__2(5917);
     var $getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
     exports.f = DESCRIPTORS ? $getOwnPropertyDescriptor : function getOwnPropertyDescriptor(O, P) {
@@ -38824,7 +38824,7 @@ var __webpack_modules__ = {
         return $getOwnPropertyDescriptor(O, P);
       } catch (error) {
       }
-      if (hasOwn(O, P)) return createPropertyDescriptor(!call(propertyIsEnumerableModule.f, O, P), O[P]);
+      if (hasOwn2(O, P)) return createPropertyDescriptor(!call(propertyIsEnumerableModule.f, O, P), O[P]);
     };
   },
   /***/
@@ -38842,7 +38842,7 @@ var __webpack_modules__ = {
   },
   /***/
   2787(module, __unused_webpack_exports, __webpack_require__2) {
-    var hasOwn = __webpack_require__2(9297);
+    var hasOwn2 = __webpack_require__2(9297);
     var isCallable = __webpack_require__2(4901);
     var toObject = __webpack_require__2(8981);
     var sharedKey = __webpack_require__2(6119);
@@ -38852,7 +38852,7 @@ var __webpack_modules__ = {
     var ObjectPrototype = $Object.prototype;
     module.exports = CORRECT_PROTOTYPE_GETTER ? $Object.getPrototypeOf : function(O) {
       var object = toObject(O);
-      if (hasOwn(object, IE_PROTO)) return object[IE_PROTO];
+      if (hasOwn2(object, IE_PROTO)) return object[IE_PROTO];
       var constructor = object.constructor;
       if (isCallable(constructor) && object instanceof constructor) {
         return constructor.prototype;
@@ -38868,7 +38868,7 @@ var __webpack_modules__ = {
   /***/
   1828(module, __unused_webpack_exports, __webpack_require__2) {
     var uncurryThis = __webpack_require__2(9504);
-    var hasOwn = __webpack_require__2(9297);
+    var hasOwn2 = __webpack_require__2(9297);
     var toIndexedObject = __webpack_require__2(5397);
     var indexOf = __webpack_require__2(9617).indexOf;
     var hiddenKeys = __webpack_require__2(421);
@@ -38878,8 +38878,8 @@ var __webpack_modules__ = {
       var i = 0;
       var result = [];
       var key;
-      for (key in O) !hasOwn(hiddenKeys, key) && hasOwn(O, key) && push(result, key);
-      while (names.length > i) if (hasOwn(O, key = names[i++])) {
+      for (key in O) !hasOwn2(hiddenKeys, key) && hasOwn2(O, key) && push(result, key);
+      while (names.length > i) if (hasOwn2(O, key = names[i++])) {
         ~indexOf(result, key) || push(result, key);
       }
       return result;
@@ -38960,11 +38960,11 @@ var __webpack_modules__ = {
   /***/
   8235(module, __unused_webpack_exports, __webpack_require__2) {
     var uncurryThis = __webpack_require__2(9504);
-    var hasOwn = __webpack_require__2(9297);
+    var hasOwn2 = __webpack_require__2(9297);
     var $SyntaxError = SyntaxError;
     var $parseInt = parseInt;
     var fromCharCode = String.fromCharCode;
-    var at = uncurryThis("".charAt);
+    var at2 = uncurryThis("".charAt);
     var slice = uncurryThis("".slice);
     var exec = uncurryThis(/./.exec);
     var codePoints = {
@@ -38983,10 +38983,10 @@ var __webpack_modules__ = {
       var unterminated = true;
       var value = "";
       while (i < source.length) {
-        var chr = at(source, i);
+        var chr = at2(source, i);
         if (chr === "\\") {
           var twoChars = slice(source, i, i + 2);
-          if (hasOwn(codePoints, twoChars)) {
+          if (hasOwn2(codePoints, twoChars)) {
             value += codePoints[twoChars];
             i += 2;
           } else if (twoChars === "\\u") {
@@ -39493,9 +39493,9 @@ var __webpack_modules__ = {
     var uncurryThis = __webpack_require__2(9504);
     var id = 0;
     var postfix = Math.random();
-    var toString = uncurryThis(1.1.toString);
+    var toString2 = uncurryThis(1.1.toString);
     module.exports = function(key) {
-      return "Symbol(" + (key === void 0 ? "" : key) + ")_" + toString(++id + postfix, 36);
+      return "Symbol(" + (key === void 0 ? "" : key) + ")_" + toString2(++id + postfix, 36);
     };
   },
   /***/
@@ -39504,7 +39504,7 @@ var __webpack_modules__ = {
     var uncurryThis = __webpack_require__2(9504);
     var anObjectOrUndefined = __webpack_require__2(3972);
     var aString = __webpack_require__2(3463);
-    var hasOwn = __webpack_require__2(9297);
+    var hasOwn2 = __webpack_require__2(9297);
     var base64Map = __webpack_require__2(2804);
     var getAlphabetOption = __webpack_require__2(944);
     var notDetached = __webpack_require__2(5169);
@@ -39513,12 +39513,12 @@ var __webpack_modules__ = {
     var SyntaxError2 = globalThis2.SyntaxError;
     var TypeError2 = globalThis2.TypeError;
     var $Array = globalThis2.Array;
-    var at = uncurryThis("".charAt);
+    var at2 = uncurryThis("".charAt);
     var floor2 = Math.floor;
     var skipAsciiWhitespace = function(string, index) {
       var length = string.length;
       for (; index < length; index++) {
-        var chr = at(string, index);
+        var chr = at2(string, index);
         if (chr !== " " && chr !== "	" && chr !== "\n" && chr !== "\f" && chr !== "\r") break;
       }
       return index;
@@ -39528,7 +39528,7 @@ var __webpack_modules__ = {
       if (chunkLength < 4) {
         chunk += chunkLength === 2 ? "AA" : "A";
       }
-      var triplet = (alphabet[at(chunk, 0)] << 18) + (alphabet[at(chunk, 1)] << 12) + (alphabet[at(chunk, 2)] << 6) + alphabet[at(chunk, 3)];
+      var triplet = (alphabet[at2(chunk, 0)] << 18) + (alphabet[at2(chunk, 1)] << 12) + (alphabet[at2(chunk, 2)] << 6) + alphabet[at2(chunk, 3)];
       var chunkBytes = [
         triplet >> 16 & 255,
         triplet >> 8 & 255,
@@ -39590,7 +39590,7 @@ var __webpack_modules__ = {
           read = stringLength;
           break;
         }
-        var chr = at(string, index);
+        var chr = at2(string, index);
         ++index;
         if (chr === "=") {
           if (chunk.length < 2) {
@@ -39604,7 +39604,7 @@ var __webpack_modules__ = {
               }
               throw new SyntaxError2("Malformed padding: only one =");
             }
-            if (at(string, index) === "=") {
+            if (at2(string, index) === "=") {
               ++index;
               index = skipAsciiWhitespace(string, index);
             }
@@ -39616,7 +39616,7 @@ var __webpack_modules__ = {
           read = stringLength;
           break;
         }
-        if (!hasOwn(alphabet, chr)) {
+        if (!hasOwn2(alphabet, chr)) {
           throw new SyntaxError2("Unexpected character");
         }
         var remainingBytes = maxLength - written;
@@ -39733,7 +39733,7 @@ var __webpack_modules__ = {
   8227(module, __unused_webpack_exports, __webpack_require__2) {
     var globalThis2 = __webpack_require__2(4576);
     var shared = __webpack_require__2(5745);
-    var hasOwn = __webpack_require__2(9297);
+    var hasOwn2 = __webpack_require__2(9297);
     var uid = __webpack_require__2(3392);
     var NATIVE_SYMBOL = __webpack_require__2(4495);
     var USE_SYMBOL_AS_UID = __webpack_require__2(7040);
@@ -39741,8 +39741,8 @@ var __webpack_modules__ = {
     var WellKnownSymbolsStore = shared("wks");
     var createWellKnownSymbol = USE_SYMBOL_AS_UID ? Symbol2["for"] || Symbol2 : Symbol2 && Symbol2.withoutSetter || uid;
     module.exports = function(name) {
-      if (!hasOwn(WellKnownSymbolsStore, name)) {
-        WellKnownSymbolsStore[name] = NATIVE_SYMBOL && hasOwn(Symbol2, name) ? Symbol2[name] : createWellKnownSymbol("Symbol." + name);
+      if (!hasOwn2(WellKnownSymbolsStore, name)) {
+        WellKnownSymbolsStore[name] = NATIVE_SYMBOL && hasOwn2(Symbol2, name) ? Symbol2[name] : createWellKnownSymbol("Symbol." + name);
       }
       return WellKnownSymbolsStore[name];
     };
@@ -39812,7 +39812,7 @@ var __webpack_modules__ = {
     var defineBuiltInAccessor = __webpack_require__2(2106);
     var createProperty = __webpack_require__2(4659);
     var fails = __webpack_require__2(9039);
-    var hasOwn = __webpack_require__2(9297);
+    var hasOwn2 = __webpack_require__2(9297);
     var wellKnownSymbol = __webpack_require__2(8227);
     var IteratorPrototype = __webpack_require__2(7657).IteratorPrototype;
     var DESCRIPTORS = __webpack_require__2(3724);
@@ -39839,14 +39839,14 @@ var __webpack_modules__ = {
           set: function(replacement) {
             anObject(this);
             if (this === IteratorPrototype) throw new $TypeError("You can't redefine this property");
-            if (hasOwn(this, key)) this[key] = replacement;
+            if (hasOwn2(this, key)) this[key] = replacement;
             else createProperty(this, key, replacement);
           }
         });
       } else IteratorPrototype[key] = value;
     };
-    if (!hasOwn(IteratorPrototype, TO_STRING_TAG)) defineIteratorPrototypeAccessor(TO_STRING_TAG, ITERATOR);
-    if (FORCED || !hasOwn(IteratorPrototype, CONSTRUCTOR) || IteratorPrototype[CONSTRUCTOR] === Object) {
+    if (!hasOwn2(IteratorPrototype, TO_STRING_TAG)) defineIteratorPrototypeAccessor(TO_STRING_TAG, ITERATOR);
+    if (FORCED || !hasOwn2(IteratorPrototype, CONSTRUCTOR) || IteratorPrototype[CONSTRUCTOR] === Object) {
       defineIteratorPrototypeAccessor(CONSTRUCTOR, IteratorConstructor);
     }
     IteratorConstructor.prototype = IteratorPrototype;
@@ -40257,9 +40257,9 @@ var __webpack_modules__ = {
     var call = __webpack_require__2(9565);
     var isCallable = __webpack_require__2(4901);
     var isObject = __webpack_require__2(34);
-    var isArray = __webpack_require__2(4376);
-    var hasOwn = __webpack_require__2(9297);
-    var toString = __webpack_require__2(655);
+    var isArray2 = __webpack_require__2(4376);
+    var hasOwn2 = __webpack_require__2(9297);
+    var toString2 = __webpack_require__2(655);
     var lengthOfArrayLike = __webpack_require__2(6198);
     var createProperty = __webpack_require__2(4659);
     var fails = __webpack_require__2(9039);
@@ -40271,7 +40271,7 @@ var __webpack_modules__ = {
     var nativeParse = JSON2 && JSON2.parse;
     var enumerableOwnProperties = getBuiltIn("Object", "keys");
     var getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
-    var at = uncurryThis("".charAt);
+    var at2 = uncurryThis("".charAt);
     var slice = uncurryThis("".slice);
     var exec = uncurryThis(/./.exec);
     var push = uncurryThis([].push);
@@ -40282,13 +40282,13 @@ var __webpack_modules__ = {
     var PRIMITIVE = 0;
     var OBJECT = 1;
     var $parse = function(source, reviver) {
-      source = toString(source);
+      source = toString2(source);
       var context = new Context(source, 0);
       var root = context.parse();
       var value = root.value;
       var endIndex = context.skip(IS_WHITESPACE, root.end);
       if (endIndex < source.length) {
-        throw new SyntaxError2('Unexpected extra character: "' + at(source, endIndex) + '" after the parsed data at: ' + endIndex);
+        throw new SyntaxError2('Unexpected extra character: "' + at2(source, endIndex) + '" after the parsed data at: ' + endIndex);
       }
       return isCallable(reviver) ? internalize({ "": value }, "", reviver, root) : value;
     };
@@ -40298,7 +40298,7 @@ var __webpack_modules__ = {
       var context = unmodified && typeof node.source == "string" ? { source: node.source } : {};
       var elementRecordsLen, keys, len, i, P;
       if (isObject(val)) {
-        var nodeIsArray = isArray(val);
+        var nodeIsArray = isArray2(val);
         var nodes = unmodified ? node.nodes : nodeIsArray ? [] : {};
         if (nodeIsArray) {
           elementRecordsLen = nodes.length;
@@ -40311,7 +40311,7 @@ var __webpack_modules__ = {
           len = lengthOfArrayLike(keys);
           for (i = 0; i < len; i++) {
             P = keys[i];
-            internalizeProperty(val, P, internalize(val, P, reviver, hasOwn(nodes, P) ? nodes[P] : void 0));
+            internalizeProperty(val, P, internalize(val, P, reviver, hasOwn2(nodes, P) ? nodes[P] : void 0));
           }
         }
       }
@@ -40325,7 +40325,7 @@ var __webpack_modules__ = {
       if (value === void 0) delete object[key];
       else createProperty(object, key, value);
     };
-    var Node2 = function(value, end, source, nodes) {
+    var Node4 = function(value, end, source, nodes) {
       this.value = value;
       this.end = end;
       this.source = source;
@@ -40336,14 +40336,14 @@ var __webpack_modules__ = {
       this.index = index;
     };
     Context.prototype = {
-      fork: function(nextIndex) {
-        return new Context(this.source, nextIndex);
+      fork: function(nextIndex2) {
+        return new Context(this.source, nextIndex2);
       },
       parse: function() {
         var source = this.source;
         var i = this.skip(IS_WHITESPACE, this.index);
         var fork = this.fork(i);
-        var chr = at(source, i);
+        var chr = at2(source, i);
         if (exec(IS_NUMBER_START, chr)) return fork.number();
         switch (chr) {
           case "{":
@@ -40362,7 +40362,7 @@ var __webpack_modules__ = {
         throw new SyntaxError2('Unexpected character: "' + chr + '" at: ' + i);
       },
       node: function(type, value, start, end, nodes) {
-        return new Node2(value, end, type ? null : slice(this.source, start, end), nodes);
+        return new Node4(value, end, type ? null : slice(this.source, start, end), nodes);
       },
       object: function() {
         var source = this.source;
@@ -40373,7 +40373,7 @@ var __webpack_modules__ = {
         var closed = false;
         while (i < source.length) {
           i = this.until(['"', "}"], i);
-          if (at(source, i) === "}" && !expectKeypair) {
+          if (at2(source, i) === "}" && !expectKeypair) {
             i++;
             closed = true;
             break;
@@ -40387,7 +40387,7 @@ var __webpack_modules__ = {
           createProperty(nodes, key, result);
           createProperty(object, key, result.value);
           i = this.until([",", "}"], result.end);
-          var chr = at(source, i);
+          var chr = at2(source, i);
           if (chr === ",") {
             expectKeypair = true;
             i++;
@@ -40409,7 +40409,7 @@ var __webpack_modules__ = {
         var closed = false;
         while (i < source.length) {
           i = this.skip(IS_WHITESPACE, i);
-          if (at(source, i) === "]" && !expectElement) {
+          if (at2(source, i) === "]" && !expectElement) {
             i++;
             closed = true;
             break;
@@ -40418,10 +40418,10 @@ var __webpack_modules__ = {
           push(nodes, result);
           push(array, result.value);
           i = this.until([",", "]"], result.end);
-          if (at(source, i) === ",") {
+          if (at2(source, i) === ",") {
             expectElement = true;
             i++;
-          } else if (at(source, i) === "]") {
+          } else if (at2(source, i) === "]") {
             i++;
             closed = true;
             break;
@@ -40439,18 +40439,18 @@ var __webpack_modules__ = {
         var source = this.source;
         var startIndex = this.index;
         var i = startIndex;
-        if (at(source, i) === "-") i++;
-        if (at(source, i) === "0") i++;
-        else if (exec(IS_NON_ZERO_DIGIT, at(source, i))) i = this.skip(IS_DIGIT, i + 1);
+        if (at2(source, i) === "-") i++;
+        if (at2(source, i) === "0") i++;
+        else if (exec(IS_NON_ZERO_DIGIT, at2(source, i))) i = this.skip(IS_DIGIT, i + 1);
         else throw new SyntaxError2("Failed to parse number at: " + i);
-        if (at(source, i) === ".") {
+        if (at2(source, i) === ".") {
           var fractionStartIndex = i + 1;
           i = this.skip(IS_DIGIT, fractionStartIndex);
           if (fractionStartIndex === i) throw new SyntaxError2("Failed to parse number's fraction at: " + i);
         }
-        if (at(source, i) === "e" || at(source, i) === "E") {
+        if (at2(source, i) === "e" || at2(source, i) === "E") {
           i++;
-          if (at(source, i) === "+" || at(source, i) === "-") i++;
+          if (at2(source, i) === "+" || at2(source, i) === "-") i++;
           var exponentStartIndex = i;
           i = this.skip(IS_DIGIT, i);
           if (exponentStartIndex === i) throw new SyntaxError2("Failed to parse number's exponent value at: " + i);
@@ -40466,12 +40466,12 @@ var __webpack_modules__ = {
       },
       skip: function(regex, i) {
         var source = this.source;
-        for (; i < source.length; i++) if (!exec(regex, at(source, i))) break;
+        for (; i < source.length; i++) if (!exec(regex, at2(source, i))) break;
         return i;
       },
       until: function(array, i) {
         i = this.skip(IS_WHITESPACE, i);
-        var chr = at(this.source, i);
+        var chr = at2(this.source, i);
         for (var j = 0; j < array.length; j++) if (array[j] === chr) return i;
         throw new SyntaxError2('Unexpected character: "' + chr + '" at: ' + i);
       }
@@ -40488,7 +40488,7 @@ var __webpack_modules__ = {
       return 1 / nativeParse("-0 	") !== -Infinity;
     });
     $({ target: "JSON", stat: true, forced: NO_SOURCE_SUPPORT }, {
-      parse: function parse(text2, reviver) {
+      parse: function parse4(text2, reviver) {
         return PROPER_BASE_PARSE && !isCallable(reviver) ? nativeParse(text2) : $parse(text2, reviver);
       }
     });
@@ -40500,7 +40500,7 @@ var __webpack_modules__ = {
     var call = __webpack_require__2(9565);
     var uncurryThis = __webpack_require__2(9504);
     var fails = __webpack_require__2(9039);
-    var isArray = __webpack_require__2(4376);
+    var isArray2 = __webpack_require__2(4376);
     var isCallable = __webpack_require__2(4901);
     var isObject = __webpack_require__2(34);
     var create = __webpack_require__2(2360);
@@ -40509,8 +40509,8 @@ var __webpack_modules__ = {
     var classof = __webpack_require__2(2195);
     var thisNumberValue = __webpack_require__2(1240);
     var includes = __webpack_require__2(9617).includes;
-    var hasOwn = __webpack_require__2(9297);
-    var toString = __webpack_require__2(655);
+    var hasOwn2 = __webpack_require__2(9297);
+    var toString2 = __webpack_require__2(655);
     var parseJSONString = __webpack_require__2(8235);
     var uid = __webpack_require__2(3392);
     var NATIVE_SYMBOL = __webpack_require__2(4495);
@@ -40553,16 +40553,16 @@ var __webpack_modules__ = {
         if (!isSymbol(replaced)) return replaced;
       }, space);
     } : $stringify;
-    var fixIllFormedJSON = function(match, offset, string) {
-      var prev = charAt(string, offset - 1);
-      var next = charAt(string, offset + 1);
+    var fixIllFormedJSON = function(match, offset2, string) {
+      var prev = charAt(string, offset2 - 1);
+      var next = charAt(string, offset2 + 1);
       if (exec(leadingSurrogates, match) && !exec(trailingSurrogates, next) || exec(trailingSurrogates, match) && !exec(leadingSurrogates, prev)) {
         return "\\u" + numberToString(charCodeAt(match, 0), 16);
       }
       return match;
     };
     var getPropertyList = function(replacer) {
-      if (!isArray(replacer)) return;
+      if (!isArray2(replacer)) return;
       var rawLength = replacer.length;
       var propertyList = [];
       var addedKeys = create(null);
@@ -40570,9 +40570,9 @@ var __webpack_modules__ = {
         var element = replacer[i];
         var key;
         if (typeof element == "string") key = element;
-        else if (typeof element == "number" || classof(element) === "Number" || classof(element) === "String") key = toString(element);
+        else if (typeof element == "number" || classof(element) === "Number" || classof(element) === "String") key = toString2(element);
         else continue;
-        if (!hasOwn(addedKeys, key)) {
+        if (!hasOwn2(addedKeys, key)) {
           addedKeys[key] = true;
           push(propertyList, key);
         }
@@ -40592,7 +40592,7 @@ var __webpack_modules__ = {
       return kind === "Number" && hasInternalSlot(thisNumberValue, it) || kind === "String" && hasInternalSlot(stringValueOf, it) || kind === "Boolean" && hasInternalSlot(booleanValueOf, it) || !!bigIntValueOf && kind === "BigInt" && hasInternalSlot(bigIntValueOf, it);
     };
     var isSerializedAsObject = function(it) {
-      if (!isObject(it) || isCallable(it) || isArray(it)) return false;
+      if (!isObject(it) || isCallable(it) || isArray2(it)) return false;
       try {
         return !isBoxedPrimitive(it);
       } catch (error) {
@@ -40646,7 +40646,7 @@ var __webpack_modules__ = {
               return;
             }
             if (root) root = false;
-            else if (this !== currentOrdered && !isArray(this) && !includes(propertyList, key)) return;
+            else if (this !== currentOrdered && !isArray2(this) && !includes(propertyList, key)) return;
           } else if (replacerFunction) value = call(replacerFunction, this, key, value);
           if (isRawJSONValue(value)) {
             if (NATIVE_RAW_JSON) return value;
@@ -41154,26 +41154,26 @@ var __webpack_modules__ = {
         var result = $Array(omitPadding ? $floor(length / 3) * 4 + (length % 3 ? length % 3 + 1 : 0) : $ceil(length / 3) * 4);
         var written = 0;
         var triplet;
-        var at = function(shift) {
+        var at2 = function(shift) {
           return charAt(alphabet, triplet >> 6 * shift & 63);
         };
         for (; i + 2 < length; i += 3) {
           triplet = (array[i] << 16) + (array[i + 1] << 8) + array[i + 2];
-          result[written++] = at(3);
-          result[written++] = at(2);
-          result[written++] = at(1);
-          result[written++] = at(0);
+          result[written++] = at2(3);
+          result[written++] = at2(2);
+          result[written++] = at2(1);
+          result[written++] = at2(0);
         }
         if (i + 2 === length) {
           triplet = (array[i] << 16) + (array[i + 1] << 8);
-          result[written++] = at(3);
-          result[written++] = at(2);
-          result[written++] = at(1);
+          result[written++] = at2(3);
+          result[written++] = at2(2);
+          result[written++] = at2(1);
           if (!omitPadding) result[written++] = "=";
         } else if (i + 1 === length) {
           triplet = array[i] << 16;
-          result[written++] = at(3);
-          result[written++] = at(2);
+          result[written++] = at2(3);
+          result[written++] = at2(2);
           if (!omitPadding) {
             result[written++] = "=";
             result[written++] = "=";
@@ -41270,7 +41270,7 @@ var __webpack_modules__ = {
     var getBuiltIn = __webpack_require__2(7751);
     var createPropertyDescriptor = __webpack_require__2(6980);
     var defineProperty = __webpack_require__2(4913).f;
-    var hasOwn = __webpack_require__2(9297);
+    var hasOwn2 = __webpack_require__2(9297);
     var anInstance = __webpack_require__2(679);
     var inheritIfRequired = __webpack_require__2(3167);
     var normalizeStringArgument = __webpack_require__2(2603);
@@ -41309,10 +41309,10 @@ var __webpack_modules__ = {
       if (!IS_PURE) {
         defineProperty(PolyfilledDOMExceptionPrototype, "constructor", createPropertyDescriptor(1, PolyfilledDOMException));
       }
-      for (var key in DOMExceptionConstants) if (hasOwn(DOMExceptionConstants, key)) {
+      for (var key in DOMExceptionConstants) if (hasOwn2(DOMExceptionConstants, key)) {
         var constant = DOMExceptionConstants[key];
         var constantName = constant.s;
-        if (!hasOwn(PolyfilledDOMException, constantName)) {
+        if (!hasOwn2(PolyfilledDOMException, constantName)) {
           defineProperty(PolyfilledDOMException, constantName, createPropertyDescriptor(6, constant.c));
         }
       }
@@ -41323,14 +41323,14 @@ var __webpack_modules__ = {
     var $ = __webpack_require__2(6518);
     var getBuiltIn = __webpack_require__2(7751);
     var validateArgumentsLength = __webpack_require__2(2812);
-    var toString = __webpack_require__2(655);
+    var toString2 = __webpack_require__2(655);
     var USE_NATIVE_URL = __webpack_require__2(7416);
     var URL2 = getBuiltIn("URL");
     $({ target: "URL", stat: true, forced: !USE_NATIVE_URL }, {
-      parse: function parse(url) {
+      parse: function parse4(url) {
         var length = validateArgumentsLength(arguments.length, 1);
-        var urlString = toString(url);
-        var base = length < 2 || arguments[1] === void 0 ? void 0 : toString(arguments[1]);
+        var urlString = toString2(url);
+        var base = length < 2 || arguments[1] === void 0 ? void 0 : toString2(arguments[1]);
         try {
           return new URL2(urlString, base);
         } catch (error) {
@@ -43047,30 +43047,30 @@ function renderRichText({
   fragment.firstElementChild.classList.add("richText", className);
   container.append(fragment);
 }
-function makePathFromDrawOPS(data) {
+function makePathFromDrawOPS(data2) {
   const path13 = new Path2D();
-  if (!data) {
+  if (!data2) {
     return path13;
   }
-  for (let i = 0, ii = data.length; i < ii; ) {
-    switch (data[i++]) {
+  for (let i = 0, ii = data2.length; i < ii; ) {
+    switch (data2[i++]) {
       case DrawOPS.moveTo:
-        path13.moveTo(data[i++], data[i++]);
+        path13.moveTo(data2[i++], data2[i++]);
         break;
       case DrawOPS.lineTo:
-        path13.lineTo(data[i++], data[i++]);
+        path13.lineTo(data2[i++], data2[i++]);
         break;
       case DrawOPS.curveTo:
-        path13.bezierCurveTo(data[i++], data[i++], data[i++], data[i++], data[i++], data[i++]);
+        path13.bezierCurveTo(data2[i++], data2[i++], data2[i++], data2[i++], data2[i++], data2[i++]);
         break;
       case DrawOPS.quadraticCurveTo:
-        path13.quadraticCurveTo(data[i++], data[i++], data[i++], data[i++]);
+        path13.quadraticCurveTo(data2[i++], data2[i++], data2[i++], data2[i++]);
         break;
       case DrawOPS.closePath:
         path13.closePath();
         break;
       default:
-        warn(`Unrecognized drawing path operator: ${data[i - 1]}`);
+        warn(`Unrecognized drawing path operator: ${data2[i - 1]}`);
         break;
     }
   }
@@ -43467,16 +43467,16 @@ var ImageManager = class _ImageManager {
   }
   async #get(key, rawData) {
     this.#cache ||= /* @__PURE__ */ new Map();
-    let data = this.#cache.get(key);
-    if (data === null) {
+    let data2 = this.#cache.get(key);
+    if (data2 === null) {
       return null;
     }
-    if (data?.bitmap) {
-      data.refCounter += 1;
-      return data;
+    if (data2?.bitmap) {
+      data2.refCounter += 1;
+      return data2;
     }
     try {
-      data ||= {
+      data2 ||= {
         bitmap: null,
         id: `image_${this.#baseId}_${this.#id++}`,
         refCounter: 0,
@@ -43484,10 +43484,10 @@ var ImageManager = class _ImageManager {
       };
       let image;
       if (typeof rawData === "string") {
-        data.url = rawData;
+        data2.url = rawData;
         image = await fetchData(rawData, "blob");
       } else if (rawData instanceof File) {
-        image = data.file = rawData;
+        image = data2.file = rawData;
       } else if (rawData instanceof Blob) {
         image = rawData;
       }
@@ -43497,12 +43497,12 @@ var ImageManager = class _ImageManager {
         const imageElement = new Image();
         const imagePromise = new Promise((resolve, reject) => {
           imageElement.onload = () => {
-            data.bitmap = imageElement;
-            data.isSvg = true;
+            data2.bitmap = imageElement;
+            data2.isSvg = true;
             resolve();
           };
           fileReader.onload = async () => {
-            const url = data.svgUrl = fileReader.result;
+            const url = data2.svgUrl = fileReader.result;
             imageElement.src = await mustRemoveAspectRatioPromise ? `${url}#svgView(preserveAspectRatio(none))` : url;
           };
           imageElement.onerror = fileReader.onerror = reject;
@@ -43510,18 +43510,18 @@ var ImageManager = class _ImageManager {
         fileReader.readAsDataURL(image);
         await imagePromise;
       } else {
-        data.bitmap = await createImageBitmap(image);
+        data2.bitmap = await createImageBitmap(image);
       }
-      data.refCounter = 1;
+      data2.refCounter = 1;
     } catch (e) {
       warn(e);
-      data = null;
+      data2 = null;
     }
-    this.#cache.set(key, data);
-    if (data) {
-      this.#cache.set(data.id, data);
+    this.#cache.set(key, data2);
+    if (data2) {
+      this.#cache.set(data2.id, data2);
     }
-    return data;
+    return data2;
   }
   async getFromFile(file) {
     const {
@@ -43541,74 +43541,74 @@ var ImageManager = class _ImageManager {
   }
   async getFromId(id) {
     this.#cache ||= /* @__PURE__ */ new Map();
-    const data = this.#cache.get(id);
-    if (!data) {
+    const data2 = this.#cache.get(id);
+    if (!data2) {
       return null;
     }
-    if (data.bitmap) {
-      data.refCounter += 1;
-      return data;
+    if (data2.bitmap) {
+      data2.refCounter += 1;
+      return data2;
     }
-    if (data.file) {
-      return this.getFromFile(data.file);
+    if (data2.file) {
+      return this.getFromFile(data2.file);
     }
-    if (data.blobPromise) {
+    if (data2.blobPromise) {
       const {
         blobPromise
-      } = data;
-      delete data.blobPromise;
-      return this.getFromBlob(data.id, blobPromise);
+      } = data2;
+      delete data2.blobPromise;
+      return this.getFromBlob(data2.id, blobPromise);
     }
-    return this.getFromUrl(data.url);
+    return this.getFromUrl(data2.url);
   }
   getFromCanvas(id, canvas) {
     this.#cache ||= /* @__PURE__ */ new Map();
-    let data = this.#cache.get(id);
-    if (data?.bitmap) {
-      data.refCounter += 1;
-      return data;
+    let data2 = this.#cache.get(id);
+    if (data2?.bitmap) {
+      data2.refCounter += 1;
+      return data2;
     }
     const offscreen = new OffscreenCanvas(canvas.width, canvas.height);
     const ctx = offscreen.getContext("2d");
     ctx.drawImage(canvas, 0, 0);
-    data = {
+    data2 = {
       bitmap: offscreen.transferToImageBitmap(),
       id: `image_${this.#baseId}_${this.#id++}`,
       refCounter: 1,
       isSvg: false
     };
-    this.#cache.set(id, data);
-    this.#cache.set(data.id, data);
-    return data;
+    this.#cache.set(id, data2);
+    this.#cache.set(data2.id, data2);
+    return data2;
   }
   getSvgUrl(id) {
-    const data = this.#cache.get(id);
-    if (!data?.isSvg) {
+    const data2 = this.#cache.get(id);
+    if (!data2?.isSvg) {
       return null;
     }
-    return data.svgUrl;
+    return data2.svgUrl;
   }
   deleteId(id) {
     this.#cache ||= /* @__PURE__ */ new Map();
-    const data = this.#cache.get(id);
-    if (!data) {
+    const data2 = this.#cache.get(id);
+    if (!data2) {
       return;
     }
-    data.refCounter -= 1;
-    if (data.refCounter !== 0) {
+    data2.refCounter -= 1;
+    if (data2.refCounter !== 0) {
       return;
     }
     const {
       bitmap
-    } = data;
-    if (!data.url && !data.file) {
+    } = data2;
+    if (!data2.url && !data2.file) {
       const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
       const ctx = canvas.getContext("bitmaprenderer");
       ctx.transferFromImageBitmap(bitmap);
-      data.blobPromise = canvas.convertToBlob();
+      data2.blobPromise = canvas.convertToBlob();
     }
     bitmap.close?.();
-    data.bitmap = null;
+    data2.bitmap = null;
   }
   isValidId(id) {
     return id.startsWith(`image_${this.#baseId}_`);
@@ -44651,24 +44651,24 @@ var AnnotationEditorUIManager = class _AnnotationEditorUIManager {
         }
       }
     }
-    let data = clipboardData.getData("application/pdfjs");
-    if (!data) {
+    let data2 = clipboardData.getData("application/pdfjs");
+    if (!data2) {
       return;
     }
     try {
-      data = JSON.parse(data);
+      data2 = JSON.parse(data2);
     } catch (ex) {
       warn(`paste: "${ex.message}".`);
       return;
     }
-    if (!Array.isArray(data)) {
+    if (!Array.isArray(data2)) {
       return;
     }
     this.unselectAll();
     const layer = this.currentLayer;
     try {
       const newEditors = [];
-      for (const editor of data) {
+      for (const editor of data2) {
         const deserializedEditor = await layer.deserialize(editor);
         if (!deserializedEditor) {
           return;
@@ -44834,11 +44834,11 @@ var AnnotationEditorUIManager = class _AnnotationEditorUIManager {
       this.disableUserSelect(false);
     }
   }
-  registerEditorTypes(types) {
+  registerEditorTypes(types2) {
     if (this.#editorTypes) {
       return;
     }
-    this.#editorTypes = types;
+    this.#editorTypes = types2;
     for (const editorType of this.#editorTypes) {
       this.#dispatchUpdateUI(editorType.defaultPropertiesToUpdate);
     }
@@ -47125,11 +47125,11 @@ var AnnotationEditor = class _AnnotationEditor {
   get altTextData() {
     return this.#altText?.data;
   }
-  set altTextData(data) {
+  set altTextData(data2) {
     if (!this.#altText) {
       return;
     }
-    this.#altText.data = data;
+    this.#altText.data = data2;
   }
   get guessedAltText() {
     return this.#altText?.guessedText;
@@ -47652,20 +47652,20 @@ var AnnotationEditor = class _AnnotationEditor {
       popupRef: this._initialData?.popupRef || ""
     };
   }
-  static async deserialize(data, parent, uiManager) {
+  static async deserialize(data2, parent, uiManager) {
     const editor = new this.prototype.constructor({
       parent,
       id: uiManager.getId(),
       uiManager,
-      annotationElementId: data.annotationElementId,
-      creationDate: data.creationDate,
-      modificationDate: data.modificationDate
+      annotationElementId: data2.annotationElementId,
+      creationDate: data2.creationDate,
+      modificationDate: data2.modificationDate
     });
-    editor.rotation = data.rotation;
-    editor.#accessibilityData = data.accessibilityData;
-    editor._isCopy = data.isCopy || false;
+    editor.rotation = data2.rotation;
+    editor.#accessibilityData = data2.accessibilityData;
+    editor._isCopy = data2.isCopy || false;
     const [pageWidth, pageHeight] = editor.pageDimensions;
-    const [x, y, width, height] = editor.getRectInCurrentCoords(data.rect, pageHeight);
+    const [x, y, width, height] = editor.getRectInCurrentCoords(data2.rect, pageHeight);
     editor.x = x / pageWidth;
     editor.y = y / pageHeight;
     editor.width = width / pageWidth;
@@ -47960,18 +47960,18 @@ var AnnotationEditor = class _AnnotationEditor {
   get telemetryFinalData() {
     return null;
   }
-  _reportTelemetry(data, mustWait = false) {
+  _reportTelemetry(data2, mustWait = false) {
     if (mustWait) {
       this.#telemetryTimeouts ||= /* @__PURE__ */ new Map();
       const {
         action
-      } = data;
+      } = data2;
       let timeout = this.#telemetryTimeouts.get(action);
       if (timeout) {
         clearTimeout(timeout);
       }
       timeout = setTimeout(() => {
-        this._reportTelemetry(data);
+        this._reportTelemetry(data2);
         this.#telemetryTimeouts.delete(action);
         if (this.#telemetryTimeouts.size === 0) {
           this.#telemetryTimeouts = null;
@@ -47980,12 +47980,12 @@ var AnnotationEditor = class _AnnotationEditor {
       this.#telemetryTimeouts.set(action, timeout);
       return;
     }
-    data.type ||= this.editorType;
+    data2.type ||= this.editorType;
     this._uiManager._eventBus.dispatch("reporttelemetry", {
       source: this,
       details: {
         type: "editing",
-        data
+        data: data2
       }
     });
   }
@@ -48068,28 +48068,28 @@ var MurmurHash3_64 = class {
     this.h2 = seed ? seed & 4294967295 : SEED;
   }
   update(input) {
-    let data, length;
+    let data2, length;
     if (typeof input === "string") {
-      data = new Uint8Array(input.length * 2);
+      data2 = new Uint8Array(input.length * 2);
       length = 0;
       for (let i = 0, ii = input.length; i < ii; i++) {
         const code = input.charCodeAt(i);
         if (code <= 255) {
-          data[length++] = code;
+          data2[length++] = code;
         } else {
-          data[length++] = code >>> 8;
-          data[length++] = code & 255;
+          data2[length++] = code >>> 8;
+          data2[length++] = code & 255;
         }
       }
     } else if (ArrayBuffer.isView(input)) {
-      data = input.slice();
-      length = data.byteLength;
+      data2 = input.slice();
+      length = data2.byteLength;
     } else {
       throw new Error("Invalid data format, must be a string or TypedArray.");
     }
     const blockCounts = length >> 2;
     const tailLength = length - blockCounts * 4;
-    const dataUint32 = new Uint32Array(data.buffer, 0, blockCounts);
+    const dataUint32 = new Uint32Array(data2.buffer, 0, blockCounts);
     let k1 = 0, k2 = 0;
     let h1 = this.h1, h2 = this.h2;
     const C1 = 3432918353, C2 = 461845907;
@@ -48116,11 +48116,11 @@ var MurmurHash3_64 = class {
     k1 = 0;
     switch (tailLength) {
       case 3:
-        k1 ^= data[blockCounts * 4 + 2] << 16;
+        k1 ^= data2[blockCounts * 4 + 2] << 16;
       case 2:
-        k1 ^= data[blockCounts * 4 + 1] << 8;
+        k1 ^= data2[blockCounts * 4 + 1] << 8;
       case 1:
-        k1 ^= data[blockCounts * 4];
+        k1 ^= data2[blockCounts * 4];
         k1 = k1 * C1 & MASK_HIGH | k1 * C1_LOW & MASK_LOW;
         k1 = k1 << 15 | k1 >>> 17;
         k1 = k1 * C2 & MASK_HIGH | k1 * C2_LOW & MASK_LOW;
@@ -48317,10 +48317,10 @@ var AnnotationStorage = class {
   resetModifiedIds() {
     this.#modifiedIds = null;
   }
-  updateEditor(annotationId, data) {
+  updateEditor(annotationId, data2) {
     const value = this.#editorsMap?.get(annotationId);
     if (value) {
-      value.updateFromAnnotationLayer(data);
+      value.updateFromAnnotationLayer(data2);
       return true;
     }
     return false;
@@ -49335,15 +49335,15 @@ var FontLoader = class {
     return shadow(this, "_loadTestFont", testFont);
   }
   _prepareFontLoadEvent(font, request) {
-    function int32(data2, offset) {
-      return data2.charCodeAt(offset) << 24 | data2.charCodeAt(offset + 1) << 16 | data2.charCodeAt(offset + 2) << 8 | data2.charCodeAt(offset + 3) & 255;
+    function int32(data3, offset2) {
+      return data3.charCodeAt(offset2) << 24 | data3.charCodeAt(offset2 + 1) << 16 | data3.charCodeAt(offset2 + 2) << 8 | data3.charCodeAt(offset2 + 3) & 255;
     }
     function string32(value) {
       return String.fromCharCode(value >> 24 & 255, value >> 16 & 255, value >> 8 & 255, value & 255);
     }
-    function spliceString(s, offset, remove, insert) {
-      const chunk1 = s.substring(0, offset);
-      const chunk2 = s.substring(offset + remove);
+    function spliceString(s, offset2, remove, insert) {
+      const chunk1 = s.substring(0, offset2);
+      const chunk2 = s.substring(offset2 + remove);
       return chunk1 + insert + chunk2;
     }
     let i, ii;
@@ -49368,20 +49368,20 @@ var FontLoader = class {
       setTimeout(isFontReady.bind(null, name, callback));
     }
     const loadTestFontId = `lt${Date.now()}${this.loadTestFontId++}`;
-    let data = this._loadTestFont;
+    let data2 = this._loadTestFont;
     const COMMENT_OFFSET = 976;
-    data = spliceString(data, COMMENT_OFFSET, loadTestFontId.length, loadTestFontId);
+    data2 = spliceString(data2, COMMENT_OFFSET, loadTestFontId.length, loadTestFontId);
     const CFF_CHECKSUM_OFFSET = 16;
     const XXXX_VALUE = 1482184792;
-    let checksum = int32(data, CFF_CHECKSUM_OFFSET);
+    let checksum = int32(data2, CFF_CHECKSUM_OFFSET);
     for (i = 0, ii = loadTestFontId.length - 3; i < ii; i += 4) {
       checksum = checksum - XXXX_VALUE + int32(loadTestFontId, i) | 0;
     }
     if (i < loadTestFontId.length) {
       checksum = checksum - XXXX_VALUE + int32(loadTestFontId + "XXX", i) | 0;
     }
-    data = spliceString(data, CFF_CHECKSUM_OFFSET, 4, string32(checksum));
-    const url = `url(data:font/opentype;base64,${btoa(data)});`;
+    data2 = spliceString(data2, CFF_CHECKSUM_OFFSET, 4, string32(checksum));
+    const url = `url(data:font/opentype;base64,${btoa(data2)});`;
     const rule = `@font-face {font-family:"${loadTestFontId}";src:${url}}`;
     this.insertRule(rule);
     const div = this._document.createElement("div");
@@ -49592,12 +49592,12 @@ var CssFontInfo = class {
     const {
       decoder
     } = InfoUtils;
-    let offset = 0;
+    let offset2 = 0;
     for (let i = 0; i < index; i++) {
-      offset += this.#view.getUint32(offset) + 4;
+      offset2 += this.#view.getUint32(offset2) + 4;
     }
-    const length = this.#view.getUint32(offset);
-    return decoder.decode(new Uint8Array(this.#buffer, offset + 4, length));
+    const length = this.#view.getUint32(offset2);
+    return decoder.decode(new Uint8Array(this.#buffer, offset2 + 4, length));
   }
   get fontFamily() {
     return this.#readString(0);
@@ -49624,12 +49624,12 @@ var SystemFontInfo = class {
     const {
       decoder
     } = InfoUtils;
-    let offset = 5;
+    let offset2 = 5;
     for (let i = 0; i < index; i++) {
-      offset += this.#view.getUint32(offset) + 4;
+      offset2 += this.#view.getUint32(offset2) + 4;
     }
-    const length = this.#view.getUint32(offset);
-    return decoder.decode(new Uint8Array(this.#buffer, offset + 4, length));
+    const length = this.#view.getUint32(offset2);
+    return decoder.decode(new Uint8Array(this.#buffer, offset2 + 4, length));
   }
   get css() {
     return this.#readString(0);
@@ -49647,13 +49647,13 @@ var SystemFontInfo = class {
     const {
       decoder
     } = InfoUtils;
-    let offset = 1;
-    offset += 4 + this.#view.getUint32(offset);
-    const styleLength = this.#view.getUint32(offset);
-    const style = decoder.decode(new Uint8Array(this.#buffer, offset + 4, styleLength));
-    offset += 4 + styleLength;
-    const weightLength = this.#view.getUint32(offset);
-    const weight = decoder.decode(new Uint8Array(this.#buffer, offset + 4, weightLength));
+    let offset2 = 1;
+    offset2 += 4 + this.#view.getUint32(offset2);
+    const styleLength = this.#view.getUint32(offset2);
+    const style = decoder.decode(new Uint8Array(this.#buffer, offset2 + 4, styleLength));
+    offset2 += 4 + styleLength;
+    const weightLength = this.#view.getUint32(offset2);
+    const weight = decoder.decode(new Uint8Array(this.#buffer, offset2 + 4, weightLength));
     return {
       style,
       weight
@@ -49723,17 +49723,17 @@ var FontInfo = class {
   get descent() {
     return this.#readNumber(2);
   }
-  #readArray(offset, arrLen, lookupName, increment) {
-    const len = this.#view.getUint8(offset);
+  #readArray(offset2, arrLen, lookupName, increment) {
+    const len = this.#view.getUint8(offset2);
     if (len === 0) {
       return void 0;
     }
     assert(len === arrLen, "Invalid array length.");
-    offset += 1;
+    offset2 += 1;
     const arr = new Array(len);
     for (let i = 0; i < len; i++) {
-      arr[i] = this.#view[lookupName](offset, true);
-      offset += increment;
+      arr[i] = this.#view[lookupName](offset2, true);
+      offset2 += increment;
     }
     return arr;
   }
@@ -49751,12 +49751,12 @@ var FontInfo = class {
     const {
       decoder
     } = InfoUtils;
-    let offset = FONT_INFO.OFFSET_STRINGS + 4;
+    let offset2 = FONT_INFO.OFFSET_STRINGS + 4;
     for (let i = 0; i < index; i++) {
-      offset += this.#view.getUint32(offset) + 4;
+      offset2 += this.#view.getUint32(offset2) + 4;
     }
-    const length = this.#view.getUint32(offset);
-    return decoder.decode(new Uint8Array(this.#buffer, offset + 4, length));
+    const length = this.#view.getUint32(offset2);
+    return decoder.decode(new Uint8Array(this.#buffer, offset2 + 4, length));
   }
   get fallbackName() {
     return this.#readString(0);
@@ -49771,62 +49771,62 @@ var FontInfo = class {
     return this.#readString(3);
   }
   #getDataOffsets() {
-    let offset = FONT_INFO.OFFSET_STRINGS;
-    const stringsLength = this.#view.getUint32(offset);
-    offset += 4 + stringsLength;
-    const systemFontInfoLength = this.#view.getUint32(offset);
-    offset += 4 + systemFontInfoLength;
-    const cssFontInfoLength = this.#view.getUint32(offset);
-    offset += 4 + cssFontInfoLength;
-    const length = this.#view.getUint32(offset);
+    let offset2 = FONT_INFO.OFFSET_STRINGS;
+    const stringsLength = this.#view.getUint32(offset2);
+    offset2 += 4 + stringsLength;
+    const systemFontInfoLength = this.#view.getUint32(offset2);
+    offset2 += 4 + systemFontInfoLength;
+    const cssFontInfoLength = this.#view.getUint32(offset2);
+    offset2 += 4 + cssFontInfoLength;
+    const length = this.#view.getUint32(offset2);
     return {
-      offset,
+      offset: offset2,
       length
     };
   }
   get data() {
     const {
-      offset,
+      offset: offset2,
       length
     } = this.#getDataOffsets();
-    return length === 0 ? void 0 : new Uint8Array(this.#buffer, offset + 4, length);
+    return length === 0 ? void 0 : new Uint8Array(this.#buffer, offset2 + 4, length);
   }
   clearData() {
     const {
-      offset,
+      offset: offset2,
       length
     } = this.#getDataOffsets();
     if (length === 0) {
       return;
     }
-    this.#view.setUint32(offset, 0);
-    this.#buffer = new Uint8Array(this.#buffer, 0, offset + 4).slice().buffer;
+    this.#view.setUint32(offset2, 0);
+    this.#buffer = new Uint8Array(this.#buffer, 0, offset2 + 4).slice().buffer;
     this.#view = new DataView(this.#buffer);
   }
   get cssFontInfo() {
-    let offset = FONT_INFO.OFFSET_STRINGS;
-    const stringsLength = this.#view.getUint32(offset);
-    offset += 4 + stringsLength;
-    const systemFontInfoLength = this.#view.getUint32(offset);
-    offset += 4 + systemFontInfoLength;
-    const cssFontInfoLength = this.#view.getUint32(offset);
+    let offset2 = FONT_INFO.OFFSET_STRINGS;
+    const stringsLength = this.#view.getUint32(offset2);
+    offset2 += 4 + stringsLength;
+    const systemFontInfoLength = this.#view.getUint32(offset2);
+    offset2 += 4 + systemFontInfoLength;
+    const cssFontInfoLength = this.#view.getUint32(offset2);
     if (cssFontInfoLength === 0) {
       return null;
     }
     const cssFontInfoData = new Uint8Array(cssFontInfoLength);
-    cssFontInfoData.set(new Uint8Array(this.#buffer, offset + 4, cssFontInfoLength));
+    cssFontInfoData.set(new Uint8Array(this.#buffer, offset2 + 4, cssFontInfoLength));
     return new CssFontInfo(cssFontInfoData.buffer);
   }
   get systemFontInfo() {
-    let offset = FONT_INFO.OFFSET_STRINGS;
-    const stringsLength = this.#view.getUint32(offset);
-    offset += 4 + stringsLength;
-    const systemFontInfoLength = this.#view.getUint32(offset);
+    let offset2 = FONT_INFO.OFFSET_STRINGS;
+    const stringsLength = this.#view.getUint32(offset2);
+    offset2 += 4 + stringsLength;
+    const systemFontInfoLength = this.#view.getUint32(offset2);
     if (systemFontInfoLength === 0) {
       return null;
     }
     const systemFontInfoData = new Uint8Array(systemFontInfoLength);
-    systemFontInfoData.set(new Uint8Array(this.#buffer, offset + 4, systemFontInfoLength));
+    systemFontInfoData.set(new Uint8Array(this.#buffer, offset2 + 4, systemFontInfoLength));
     return new SystemFontInfo(systemFontInfoData.buffer);
   }
 };
@@ -49844,31 +49844,31 @@ var PatternInfo = class {
     const nCoord = dataView.getUint32(PATTERN_INFO.N_COORD, true);
     const nColor = dataView.getUint32(PATTERN_INFO.N_COLOR, true);
     const nStop = dataView.getUint32(PATTERN_INFO.N_STOP, true);
-    let offset = 20;
-    const coords = new Float32Array(this.buffer, offset, nCoord * 2);
-    offset += nCoord * 8;
-    const colors = new Uint8Array(this.buffer, offset, nColor * 4);
-    offset += nColor * 4;
+    let offset2 = 20;
+    const coords = new Float32Array(this.buffer, offset2, nCoord * 2);
+    offset2 += nCoord * 8;
+    const colors = new Uint8Array(this.buffer, offset2, nColor * 4);
+    offset2 += nColor * 4;
     const stops = [];
     for (let i = 0; i < nStop; ++i) {
-      const p = dataView.getFloat32(offset, true);
-      offset += 4;
-      const rgb = dataView.getUint32(offset, true);
-      offset += 4;
+      const p = dataView.getFloat32(offset2, true);
+      offset2 += 4;
+      const rgb = dataView.getUint32(offset2, true);
+      offset2 += 4;
       stops.push([p, `#${rgb.toString(16).padStart(6, "0")}`]);
     }
     let bbox = null;
     if (hasBBox) {
       bbox = [];
       for (let i = 0; i < 4; ++i) {
-        bbox.push(dataView.getFloat32(offset, true));
-        offset += 4;
+        bbox.push(dataView.getFloat32(offset2, true));
+        offset2 += 4;
       }
     }
     let background = null;
     if (hasBackground) {
-      background = new Uint8Array(this.buffer, offset, 3);
-      offset += 3;
+      background = new Uint8Array(this.buffer, offset2, 3);
+      offset2 += 3;
     }
     if (kind === 1) {
       return ["RadialAxial", "axial", bbox, stops, Array.from(coords.slice(0, 2)), Array.from(coords.slice(2, 4)), null, null];
@@ -50046,43 +50046,43 @@ var MessageHandler = class {
     });
   }
   #onMessage({
-    data
+    data: data2
   }) {
-    if (data.targetName !== this.sourceName) {
+    if (data2.targetName !== this.sourceName) {
       return;
     }
-    if (data.stream) {
-      this.#processStreamMessage(data);
+    if (data2.stream) {
+      this.#processStreamMessage(data2);
       return;
     }
-    if (data.callback) {
-      const callbackId = data.callbackId;
+    if (data2.callback) {
+      const callbackId = data2.callbackId;
       const capability = this.callbackCapabilities[callbackId];
       if (!capability) {
         throw new Error(`Cannot resolve callback ${callbackId}`);
       }
       delete this.callbackCapabilities[callbackId];
-      if (data.callback === CallbackKind.DATA) {
-        capability.resolve(data.data);
-      } else if (data.callback === CallbackKind.ERROR) {
-        capability.reject(wrapReason(data.reason));
+      if (data2.callback === CallbackKind.DATA) {
+        capability.resolve(data2.data);
+      } else if (data2.callback === CallbackKind.ERROR) {
+        capability.reject(wrapReason(data2.reason));
       } else {
         throw new Error("Unexpected callback case");
       }
       return;
     }
-    const action = this.actionHandler[data.action];
+    const action = this.actionHandler[data2.action];
     if (!action) {
-      throw new Error(`Unknown action from worker: ${data.action}`);
+      throw new Error(`Unknown action from worker: ${data2.action}`);
     }
-    if (data.callbackId) {
-      const sourceName = this.sourceName, targetName = data.sourceName, comObj = this.comObj;
-      Promise.try(action, data.data).then(function(result) {
+    if (data2.callbackId) {
+      const sourceName = this.sourceName, targetName = data2.sourceName, comObj = this.comObj;
+      Promise.try(action, data2.data).then(function(result) {
         comObj.postMessage({
           sourceName,
           targetName,
           callback: CallbackKind.DATA,
-          callbackId: data.callbackId,
+          callbackId: data2.callbackId,
           data: result
         });
       }, function(reason) {
@@ -50090,17 +50090,17 @@ var MessageHandler = class {
           sourceName,
           targetName,
           callback: CallbackKind.ERROR,
-          callbackId: data.callbackId,
+          callbackId: data2.callbackId,
           reason: wrapReason(reason)
         });
       });
       return;
     }
-    if (data.streamId) {
-      this.#createStreamSink(data);
+    if (data2.streamId) {
+      this.#createStreamSink(data2);
       return;
     }
-    action(data.data);
+    action(data2.data);
   }
   on(actionName, handler) {
     const ah = this.actionHandler;
@@ -50109,15 +50109,15 @@ var MessageHandler = class {
     }
     ah[actionName] = handler;
   }
-  send(actionName, data, transfers) {
+  send(actionName, data2, transfers) {
     this.comObj.postMessage({
       sourceName: this.sourceName,
       targetName: this.targetName,
       action: actionName,
-      data
+      data: data2
     }, transfers);
   }
-  sendWithPromise(actionName, data, transfers) {
+  sendWithPromise(actionName, data2, transfers) {
     const callbackId = this.callbackId++;
     const capability = Promise.withResolvers();
     this.callbackCapabilities[callbackId] = capability;
@@ -50127,14 +50127,14 @@ var MessageHandler = class {
         targetName: this.targetName,
         action: actionName,
         callbackId,
-        data
+        data: data2
       }, transfers);
     } catch (ex) {
       capability.reject(ex);
     }
     return capability.promise;
   }
-  sendWithStream(actionName, data, queueingStrategy, transfers) {
+  sendWithStream(actionName, data2, queueingStrategy, transfers) {
     const streamId = this.streamId++, sourceName = this.sourceName, targetName = this.targetName, comObj = this.comObj;
     return new ReadableStream({
       start: (controller) => {
@@ -50151,7 +50151,7 @@ var MessageHandler = class {
           targetName,
           action: actionName,
           streamId,
-          data,
+          data: data2,
           desiredSize: controller.desiredSize
         }, transfers);
         return startCapability.promise;
@@ -50184,9 +50184,9 @@ var MessageHandler = class {
       }
     }, queueingStrategy);
   }
-  #createStreamSink(data) {
-    const streamId = data.streamId, sourceName = this.sourceName, targetName = data.sourceName, comObj = this.comObj;
-    const self2 = this, action = this.actionHandler[data.action];
+  #createStreamSink(data2) {
+    const streamId = data2.streamId, sourceName = this.sourceName, targetName = data2.sourceName, comObj = this.comObj;
+    const self2 = this, action = this.actionHandler[data2.action];
     const streamSink = {
       enqueue(chunk, size = 1, transfers) {
         if (this.isCancelled) {
@@ -50237,13 +50237,13 @@ var MessageHandler = class {
       onPull: null,
       onCancel: null,
       isCancelled: false,
-      desiredSize: data.desiredSize,
+      desiredSize: data2.desiredSize,
       ready: null
     };
     streamSink.sinkCapability.resolve();
     streamSink.ready = streamSink.sinkCapability.promise;
     this.streamSinks[streamId] = streamSink;
-    Promise.try(action, data.data, streamSink).then(function() {
+    Promise.try(action, data2.data, streamSink).then(function() {
       comObj.postMessage({
         sourceName,
         targetName,
@@ -50261,22 +50261,22 @@ var MessageHandler = class {
       });
     });
   }
-  #processStreamMessage(data) {
-    const streamId = data.streamId, sourceName = this.sourceName, targetName = data.sourceName, comObj = this.comObj;
+  #processStreamMessage(data2) {
+    const streamId = data2.streamId, sourceName = this.sourceName, targetName = data2.sourceName, comObj = this.comObj;
     const streamController = this.streamControllers[streamId], streamSink = this.streamSinks[streamId];
-    switch (data.stream) {
+    switch (data2.stream) {
       case StreamKind.START_COMPLETE:
-        if (data.success) {
+        if (data2.success) {
           streamController.startCall.resolve();
         } else {
-          streamController.startCall.reject(wrapReason(data.reason));
+          streamController.startCall.reject(wrapReason(data2.reason));
         }
         break;
       case StreamKind.PULL_COMPLETE:
-        if (data.success) {
+        if (data2.success) {
           streamController.pullCall.resolve();
         } else {
-          streamController.pullCall.reject(wrapReason(data.reason));
+          streamController.pullCall.reject(wrapReason(data2.reason));
         }
         break;
       case StreamKind.PULL:
@@ -50290,10 +50290,10 @@ var MessageHandler = class {
           });
           break;
         }
-        if (streamSink.desiredSize <= 0 && data.desiredSize > 0) {
+        if (streamSink.desiredSize <= 0 && data2.desiredSize > 0) {
           streamSink.sinkCapability.resolve();
         }
-        streamSink.desiredSize = data.desiredSize;
+        streamSink.desiredSize = data2.desiredSize;
         Promise.try(streamSink.onPull || onFn).then(function() {
           comObj.postMessage({
             sourceName,
@@ -50317,7 +50317,7 @@ var MessageHandler = class {
         if (streamController.isClosed) {
           break;
         }
-        streamController.controller.enqueue(data.chunk);
+        streamController.controller.enqueue(data2.chunk);
         break;
       case StreamKind.CLOSE:
         assert(streamController, "close should have stream controller");
@@ -50330,14 +50330,14 @@ var MessageHandler = class {
         break;
       case StreamKind.ERROR:
         assert(streamController, "error should have stream controller");
-        streamController.controller.error(wrapReason(data.reason));
+        streamController.controller.error(wrapReason(data2.reason));
         this.#deleteStreamController(streamController, streamId);
         break;
       case StreamKind.CANCEL_COMPLETE:
-        if (data.success) {
+        if (data2.success) {
           streamController.cancelCall.resolve();
         } else {
-          streamController.cancelCall.reject(wrapReason(data.reason));
+          streamController.cancelCall.reject(wrapReason(data2.reason));
         }
         this.#deleteStreamController(streamController, streamId);
         break;
@@ -50345,7 +50345,7 @@ var MessageHandler = class {
         if (!streamSink) {
           break;
         }
-        const dataReason = wrapReason(data.reason);
+        const dataReason = wrapReason(data2.reason);
         Promise.try(streamSink.onCancel || onFn, dataReason).then(function() {
           comObj.postMessage({
             sourceName,
@@ -50423,8 +50423,8 @@ var BaseBinaryDataFactory = class {
 var DOMBinaryDataFactory = class extends BaseBinaryDataFactory {
   async _fetch(url, kind) {
     const type = kind === "cMapUrl" && !url.endsWith(".bcmap") ? "text" : "bytes";
-    const data = await fetchData(url, type);
-    return data instanceof Uint8Array ? data : stringToBytes(data);
+    const data2 = await fetchData(url, type);
+    return data2 instanceof Uint8Array ? data2 : stringToBytes(data2);
   }
 };
 var BaseCanvasFactory = class {
@@ -50927,8 +50927,8 @@ if (isNodeJS) {
 }
 async function node_utils_fetchData(url) {
   const fs2 = process.getBuiltinModule("fs/promises");
-  const data = await fs2.readFile(url);
-  return new Uint8Array(data);
+  const data2 = await fs2.readFile(url);
+  return new Uint8Array(data2);
 }
 var NodeFilterFactory = class extends BaseFilterFactory {
 };
@@ -51391,9 +51391,9 @@ var RadialAxialShadingPattern = class extends BaseShadingPattern {
     return pattern;
   }
 };
-function drawTriangle(data, context, p1, p2, p3, c1, c2, c3) {
+function drawTriangle(data2, context, p1, p2, p3, c1, c2, c3) {
   const coords = context.coords, colors = context.colors;
-  const bytes = data.data, rowSize = data.width * 4;
+  const bytes = data2.data, rowSize = data2.width * 4;
   let tmp;
   if (coords[p1 * 2 + 1] > coords[p2 * 2 + 1]) {
     tmp = p1;
@@ -51521,9 +51521,9 @@ var MeshShadingPattern = class extends BaseShadingPattern {
     if (isGPUReady() && this._vertexCount > 48) {
       tmpCanvas.context.drawImage(drawMeshWithGPU(this._posData, this._colData, this._vertexCount, context, backgroundColor, paddedWidth, paddedHeight, BORDER_SIZE), 0, 0);
     } else {
-      const data = tmpCanvas.context.createImageData(width, height);
+      const data2 = tmpCanvas.context.createImageData(width, height);
       if (backgroundColor) {
-        const bytes = data.data;
+        const bytes = data2.data;
         for (let i = 0, ii = bytes.length; i < ii; i += 4) {
           bytes[i] = backgroundColor[0];
           bytes[i + 1] = backgroundColor[1];
@@ -51532,9 +51532,9 @@ var MeshShadingPattern = class extends BaseShadingPattern {
         }
       }
       for (let i = 0, ii = this._vertexCount; i < ii; i += 3) {
-        drawTriangle(data, context, i, i + 1, i + 2, i, i + 1, i + 2);
+        drawTriangle(data2, context, i, i + 1, i + 2, i, i + 1, i + 2);
       }
-      tmpCanvas.context.putImageData(data, BORDER_SIZE, BORDER_SIZE);
+      tmpCanvas.context.putImageData(data2, BORDER_SIZE, BORDER_SIZE);
     }
     return {
       canvas: tmpCanvas.canvas,
@@ -51787,20 +51787,20 @@ var TilingPattern = class _TilingPattern {
     graphics.current.updateClipFromPath();
   }
   setFillAndStrokeStyleToContext(graphics, paintType, color) {
-    const context = graphics.ctx, current = graphics.current;
-    current.patternFill = current.patternStroke = false;
+    const context = graphics.ctx, current2 = graphics.current;
+    current2.patternFill = current2.patternStroke = false;
     switch (paintType) {
       case PaintType.COLORED:
         const {
           fillStyle,
           strokeStyle
         } = this.ctx;
-        context.fillStyle = current.fillColor = fillStyle;
-        context.strokeStyle = current.strokeColor = strokeStyle;
+        context.fillStyle = current2.fillColor = fillStyle;
+        context.strokeStyle = current2.strokeColor = strokeStyle;
         break;
       case PaintType.UNCOLORED:
         context.fillStyle = context.strokeStyle = color;
-        current.fillColor = current.strokeColor = color;
+        current2.fillColor = current2.strokeColor = color;
         break;
       default:
         throw new FormatError(`Unsupported paint type: ${paintType}`);
@@ -52140,10 +52140,10 @@ var CanvasGraphics = class _CanvasGraphics {
     this.dependencyTracker = dependencyTracker ?? null;
     this.imagesTracker = imagesTracker ?? null;
   }
-  getObject(opIdx, data, fallback = null) {
-    if (typeof data === "string") {
-      this.dependencyTracker?.recordNamedDependency(opIdx, data);
-      return data.startsWith("g_") ? this.commonObjs.get(data) : this.objs.get(data);
+  getObject(opIdx, data2, fallback = null) {
+    if (typeof data2 === "string") {
+      this.dependencyTracker?.recordNamedDependency(opIdx, data2);
+      return data2.startsWith("g_") ? this.commonObjs.get(data2) : this.objs.get(data2);
     }
     return fallback;
   }
@@ -52644,20 +52644,20 @@ var CanvasGraphics = class _CanvasGraphics {
     if (!filterApplied) {
       const img = pCtx.getImageData(0, 0, w, h);
       const {
-        data
+        data: data2
       } = img;
       const {
         transferMap
       } = filterSpec;
       if (filterSpec.subtype === "Luminosity") {
-        for (let i = 0, ii = data.length; i < ii; i += 4) {
-          const a = 0.3 * data[i] + 0.59 * data[i + 1] + 0.11 * data[i + 2] + 0.5 | 0;
-          data[i] = data[i + 1] = data[i + 2] = 0;
-          data[i + 3] = transferMap?.[a] ?? a;
+        for (let i = 0, ii = data2.length; i < ii; i += 4) {
+          const a = 0.3 * data2[i] + 0.59 * data2[i + 1] + 0.11 * data2[i + 2] + 0.5 | 0;
+          data2[i] = data2[i + 1] = data2[i + 2] = 0;
+          data2[i + 3] = transferMap?.[a] ?? a;
         }
       } else {
-        for (let i = 3, ii = data.length; i < ii; i += 4) {
-          data[i] = transferMap[data[i]];
+        for (let i = 3, ii = data2.length; i < ii; i += 4) {
+          data2[i] = transferMap[data2[i]];
         }
       }
       pCtx.putImageData(img, 0, 0);
@@ -53015,10 +53015,10 @@ var CanvasGraphics = class _CanvasGraphics {
     this._cachedScaleForStroking[0] = -1;
     this._cachedGetSinglePixelWidth = null;
   }
-  constructPath(opIdx, op, data, minMax) {
-    let [path13] = data;
+  constructPath(opIdx, op, data2, minMax) {
+    let [path13] = data2;
     if (!minMax) {
-      path13 ||= data[0] = new Path2D();
+      path13 ||= data2[0] = new Path2D();
       if (op !== OPS.stroke && op !== OPS.closeStroke) {
         this.current.tilingPatternDims = null;
       }
@@ -53030,7 +53030,7 @@ var CanvasGraphics = class _CanvasGraphics {
       this.dependencyTracker.resetBBox(opIdx).recordBBox(opIdx, this.ctx, minMax[0] - outerExtraSize, minMax[2] + outerExtraSize, minMax[1] - outerExtraSize, minMax[3] + outerExtraSize).recordDependencies(opIdx, ["transform"]);
     }
     if (!(path13 instanceof Path2D)) {
-      path13 = data[0] = makePathFromDrawOPS(path13);
+      path13 = data2[0] = makePathFromDrawOPS(path13);
     }
     Util.axialAlignedBoundingBox(minMax, getCurrentTransform(this.ctx), this.current.minMax);
     const tilingDims = this.current.tilingPatternDims;
@@ -53224,19 +53224,19 @@ var CanvasGraphics = class _CanvasGraphics {
   setFont(opIdx, fontRefName, size) {
     this.dependencyTracker?.recordSimpleData("font", opIdx).recordSimpleDataFromNamed("fontObj", fontRefName, opIdx);
     const fontObj = this.commonObjs.get(fontRefName);
-    const current = this.current;
+    const current2 = this.current;
     if (!fontObj) {
       throw new Error(`Can't find font for ${fontRefName}`);
     }
-    current.fontMatrix = fontObj.fontMatrix || FONT_IDENTITY_MATRIX;
-    if (current.fontMatrix[0] === 0 || current.fontMatrix[3] === 0) {
+    current2.fontMatrix = fontObj.fontMatrix || FONT_IDENTITY_MATRIX;
+    if (current2.fontMatrix[0] === 0 || current2.fontMatrix[3] === 0) {
       warn("Invalid font matrix for font " + fontRefName);
     }
     if (size < 0) {
       size = -size;
-      current.fontDirection = -1;
+      current2.fontDirection = -1;
     } else {
-      current.fontDirection = 1;
+      current2.fontDirection = 1;
     }
     this.current.font = fontObj;
     this.current.fontSize = size;
@@ -53276,12 +53276,12 @@ var CanvasGraphics = class _CanvasGraphics {
   setTextMatrix(opIdx, matrix) {
     this.dependencyTracker?.resetIncrementalData("sameLineText").recordSimpleData("textMatrix", opIdx);
     const {
-      current
+      current: current2
     } = this;
-    current.textMatrix = matrix;
-    current.textMatrixScale = Math.hypot(matrix[0], matrix[1]);
-    current.x = current.lineX = 0;
-    current.y = current.lineY = 0;
+    current2.textMatrix = matrix;
+    current2.textMatrixScale = Math.hypot(matrix[0], matrix[1]);
+    current2.x = current2.lineX = 0;
+    current2.y = current2.lineY = 0;
   }
   nextLine(opIdx) {
     this.moveText(opIdx, 0, this.current.leading);
@@ -53294,14 +53294,14 @@ var CanvasGraphics = class _CanvasGraphics {
   }
   paintChar(opIdx, character, x, y, patternFillTransform, patternStrokeTransform) {
     const ctx = this.ctx;
-    const current = this.current;
-    const font = current.font;
-    const textRenderingMode = current.textRenderingMode;
-    const fontSize = current.fontSize / current.fontSizeScale;
+    const current2 = this.current;
+    const font = current2.font;
+    const textRenderingMode = current2.textRenderingMode;
+    const fontSize = current2.fontSize / current2.fontSizeScale;
     const fillStrokeMode = textRenderingMode & TextRenderingMode.FILL_STROKE_MASK;
     const isAddToPathSet = !!(textRenderingMode & TextRenderingMode.ADD_TO_PATH_FLAG);
-    const patternFill = current.patternFill && !font.missingFile;
-    const patternStroke = current.patternStroke && !font.missingFile;
+    const patternFill = current2.patternFill && !font.missingFile;
+    const patternStroke = current2.patternStroke && !font.missingFile;
     let path13;
     if ((font.disableFontFace || isAddToPathSet || patternFill || patternStroke) && !font.missingFile) {
       path13 = font.getPathGenerator(this.commonObjs, character);
@@ -53372,11 +53372,11 @@ var CanvasGraphics = class _CanvasGraphics {
     const ctx = tmpCanvas.context;
     ctx.scale(1.5, 1);
     ctx.fillText("I", 0, 10);
-    const data = ctx.getImageData(0, 0, 10, 10).data;
+    const data2 = ctx.getImageData(0, 0, 10, 10).data;
     this.canvasFactory.destroy(tmpCanvas);
     let enabled = false;
-    for (let i = 3; i < data.length; i += 4) {
-      if (data[i] > 0 && data[i] < 255) {
+    for (let i = 3; i < data2.length; i += 4) {
+      if (data2[i] > 0 && data2[i] < 255) {
         enabled = true;
         break;
       }
@@ -53390,49 +53390,49 @@ var CanvasGraphics = class _CanvasGraphics {
         this.dependencyTracker.recordFutureForcedDependency("textClip", opIdx).inheritPendingDependenciesAsFutureForcedDependencies();
       }
     }
-    const current = this.current;
-    const font = current.font;
+    const current2 = this.current;
+    const font = current2.font;
     if (font.isType3Font) {
-      const started2 = this.#beginKnockoutElement(current.fillAlpha);
+      const started2 = this.#beginKnockoutElement(current2.fillAlpha);
       this.showType3Text(opIdx, glyphs);
       this.dependencyTracker?.recordShowTextOperation(opIdx);
       this.#endKnockoutElement(started2);
       return;
     }
-    const fontSize = current.fontSize;
+    const fontSize = current2.fontSize;
     if (fontSize === 0) {
       this.dependencyTracker?.recordOperation(opIdx);
       return;
     }
-    const started = this.#beginKnockoutElement(current.fillAlpha);
+    const started = this.#beginKnockoutElement(current2.fillAlpha);
     const ctx = this.ctx;
-    const fontSizeScale = current.fontSizeScale;
-    const charSpacing = current.charSpacing;
-    const wordSpacing = current.wordSpacing;
-    const fontDirection = current.fontDirection;
-    const textHScale = current.textHScale * fontDirection;
+    const fontSizeScale = current2.fontSizeScale;
+    const charSpacing = current2.charSpacing;
+    const wordSpacing = current2.wordSpacing;
+    const fontDirection = current2.fontDirection;
+    const textHScale = current2.textHScale * fontDirection;
     const glyphsLength = glyphs.length;
     const vertical = font.vertical;
     const spacingDir = vertical ? 1 : -1;
     const defaultVMetrics = font.defaultVMetrics;
-    const widthAdvanceScale = fontSize * current.fontMatrix[0];
-    const simpleFillText = current.textRenderingMode === TextRenderingMode.FILL && !font.disableFontFace && !current.patternFill;
+    const widthAdvanceScale = fontSize * current2.fontMatrix[0];
+    const simpleFillText = current2.textRenderingMode === TextRenderingMode.FILL && !font.disableFontFace && !current2.patternFill;
     ctx.save();
-    if (current.textMatrix) {
-      ctx.transform(...current.textMatrix);
+    if (current2.textMatrix) {
+      ctx.transform(...current2.textMatrix);
     }
-    ctx.translate(current.x, current.y + current.textRise);
+    ctx.translate(current2.x, current2.y + current2.textRise);
     if (fontDirection > 0) {
       ctx.scale(textHScale, -1);
     } else {
       ctx.scale(textHScale, 1);
     }
     let patternFillTransform, patternStrokeTransform;
-    const fillStrokeMode = current.textRenderingMode & TextRenderingMode.FILL_STROKE_MASK;
+    const fillStrokeMode = current2.textRenderingMode & TextRenderingMode.FILL_STROKE_MASK;
     const needsFill = fillStrokeMode === TextRenderingMode.FILL || fillStrokeMode === TextRenderingMode.FILL_STROKE;
     const needsStroke = fillStrokeMode === TextRenderingMode.STROKE || fillStrokeMode === TextRenderingMode.FILL_STROKE;
-    let lineWidth = current.lineWidth;
-    const scale = current.textMatrixScale;
+    let lineWidth = current2.lineWidth;
+    const scale = current2.textMatrixScale;
     if (scale === 0 || lineWidth === 0) {
       if (needsStroke) {
         lineWidth = this.getSinglePixelWidth();
@@ -53445,16 +53445,16 @@ var CanvasGraphics = class _CanvasGraphics {
       lineWidth /= fontSizeScale;
     }
     ctx.lineWidth = lineWidth;
-    if (needsFill && current.patternFill) {
+    if (needsFill && current2.patternFill) {
       ctx.save();
-      const pattern = current.fillColor.getPattern(ctx, this, getCurrentTransformInverse(ctx), PathType.FILL, opIdx);
+      const pattern = current2.fillColor.getPattern(ctx, this, getCurrentTransformInverse(ctx), PathType.FILL, opIdx);
       patternFillTransform = getCurrentTransform(ctx);
       ctx.restore();
       ctx.fillStyle = pattern;
     }
-    if (needsStroke && current.patternStroke) {
+    if (needsStroke && current2.patternStroke) {
       ctx.save();
-      const pattern = current.strokeColor.getPattern(ctx, this, getCurrentTransformInverse(ctx), PathType.STROKE, opIdx);
+      const pattern = current2.strokeColor.getPattern(ctx, this, getCurrentTransformInverse(ctx), PathType.STROKE, opIdx);
       patternStrokeTransform = getCurrentTransform(ctx);
       ctx.restore();
       ctx.strokeStyle = pattern;
@@ -53472,7 +53472,7 @@ var CanvasGraphics = class _CanvasGraphics {
         const measure = ctx.measureText(joinedChars);
         this.dependencyTracker.recordBBox(opIdx, this.ctx, -measure.actualBoundingBoxLeft, measure.actualBoundingBoxRight, -measure.actualBoundingBoxAscent, measure.actualBoundingBoxDescent).recordShowTextOperation(opIdx);
       }
-      current.x += width * widthAdvanceScale * textHScale;
+      current2.x += width * widthAdvanceScale * textHScale;
       ctx.restore();
       this.compose();
       this.#endKnockoutElement(started);
@@ -53538,9 +53538,9 @@ var CanvasGraphics = class _CanvasGraphics {
       }
     }
     if (vertical) {
-      current.y -= x;
+      current2.y -= x;
     } else {
-      current.x += x * textHScale;
+      current2.x += x * textHScale;
     }
     ctx.restore();
     this.compose();
@@ -53549,17 +53549,17 @@ var CanvasGraphics = class _CanvasGraphics {
   }
   showType3Text(opIdx, glyphs) {
     const ctx = this.ctx;
-    const current = this.current;
-    const font = current.font;
-    const fontSize = current.fontSize;
-    const fontDirection = current.fontDirection;
+    const current2 = this.current;
+    const font = current2.font;
+    const fontSize = current2.fontSize;
+    const fontDirection = current2.fontDirection;
     const spacingDir = font.vertical ? 1 : -1;
-    const charSpacing = current.charSpacing;
-    const wordSpacing = current.wordSpacing;
-    const textHScale = current.textHScale * fontDirection;
-    const fontMatrix = current.fontMatrix || FONT_IDENTITY_MATRIX;
+    const charSpacing = current2.charSpacing;
+    const wordSpacing = current2.wordSpacing;
+    const textHScale = current2.textHScale * fontDirection;
+    const fontMatrix = current2.fontMatrix || FONT_IDENTITY_MATRIX;
     const glyphsLength = glyphs.length;
-    const isTextInvisible = current.textRenderingMode === TextRenderingMode.INVISIBLE;
+    const isTextInvisible = current2.textRenderingMode === TextRenderingMode.INVISIBLE;
     let i, glyph, width, spacingLength;
     if (isTextInvisible || fontSize === 0) {
       return;
@@ -53567,10 +53567,10 @@ var CanvasGraphics = class _CanvasGraphics {
     this._cachedScaleForStroking[0] = -1;
     this._cachedGetSinglePixelWidth = null;
     ctx.save();
-    if (current.textMatrix) {
-      ctx.transform(...current.textMatrix);
+    if (current2.textMatrix) {
+      ctx.transform(...current2.textMatrix);
     }
-    ctx.translate(current.x, current.y + current.textRise);
+    ctx.translate(current2.x, current2.y + current2.textRise);
     ctx.scale(textHScale, fontDirection);
     const dependencyTracker = this.dependencyTracker;
     this.dependencyTracker = dependencyTracker ? new CanvasNestedDependencyTracker(dependencyTracker, opIdx) : null;
@@ -53579,7 +53579,7 @@ var CanvasGraphics = class _CanvasGraphics {
       if (typeof glyph === "number") {
         spacingLength = spacingDir * glyph * fontSize / 1e3;
         this.ctx.translate(spacingLength, 0);
-        current.x += spacingLength * textHScale;
+        current2.x += spacingLength * textHScale;
         continue;
       }
       const spacing = (glyph.isSpace ? wordSpacing : 0) + charSpacing;
@@ -53589,7 +53589,7 @@ var CanvasGraphics = class _CanvasGraphics {
       } else if (this.contentVisible) {
         this.save();
         if (operatorList.fnArray[0] === OPS.setCharWidth) {
-          current.fillAlpha = current.strokeAlpha = 1;
+          current2.fillAlpha = current2.strokeAlpha = 1;
           ctx.globalAlpha = 1;
         }
         ctx.scale(fontSize, fontSize);
@@ -53601,7 +53601,7 @@ var CanvasGraphics = class _CanvasGraphics {
       Util.applyTransform(p, fontMatrix);
       width = p[0] * fontSize + spacing;
       ctx.translate(width, 0);
-      current.x += width * textHScale;
+      current2.x += width * textHScale;
     }
     ctx.restore();
     if (dependencyTracker) {
@@ -53975,11 +53975,11 @@ var CanvasGraphics = class _CanvasGraphics {
     }
     const imageData = groupCtx.getImageData(0, 0, width, height);
     const {
-      data
+      data: data2
     } = imageData;
-    for (let i = 0, ii = data.length; i < ii; i += 4) {
-      const gray = data[i] * 0.2126 + data[i + 1] * 0.7152 + data[i + 2] * 0.0722 + 0.5 | 0;
-      data[i] = data[i + 1] = data[i + 2] = gray;
+    for (let i = 0, ii = data2.length; i < ii; i += 4) {
+      const gray = data2[i] * 0.2126 + data2[i + 1] * 0.7152 + data2[i + 2] * 0.0722 + 0.5 | 0;
+      data2[i] = data2[i + 1] = data2[i + 2] = gray;
     }
     groupCtx.putImageData(imageData, 0, 0);
   }
@@ -54126,7 +54126,7 @@ var CanvasGraphics = class _CanvasGraphics {
     this.dependencyTracker?.resetBBox(opIdx).recordDependencies(opIdx, Dependencies.transformAndFill);
     for (const image of images) {
       const {
-        data,
+        data: data2,
         width,
         height,
         transform
@@ -54134,7 +54134,7 @@ var CanvasGraphics = class _CanvasGraphics {
       const maskCanvas = this.canvasFactory.create(width, height);
       const maskCtx = maskCanvas.context;
       maskCtx.save();
-      const img = this.getObject(opIdx, data, image);
+      const img = this.getObject(opIdx, data2, image);
       putBinaryImageMask(maskCtx, img);
       maskCtx.globalCompositeOperation = "source-in";
       maskCtx.fillStyle = isPatternFill ? fillColor.getPattern(maskCtx, this, getCurrentTransformInverse(ctx), PathType.FILL, opIdx) : fillColor;
@@ -55614,16 +55614,16 @@ var OptionalContentConfig = class _OptionalContentConfig {
   #rawData;
   creator = null;
   name = null;
-  constructor(data, renderingIntent = RenderingIntentFlag.DISPLAY, groupState = null) {
-    this.#rawData = data;
+  constructor(data2, renderingIntent = RenderingIntentFlag.DISPLAY, groupState = null) {
+    this.#rawData = data2;
     this.renderingIntent = renderingIntent;
-    if (data === null) {
+    if (data2 === null) {
       return;
     }
-    this.name = data.name;
-    this.creator = data.creator;
-    this.#order = data.order;
-    for (const group of data.groups) {
+    this.name = data2.name;
+    this.creator = data2.creator;
+    this.#order = data2.order;
+    for (const group of data2.groups) {
       this.#groups.set(group.id, new OptionalContentGroup(renderingIntent, group));
     }
     if (groupState) {
@@ -55634,15 +55634,15 @@ var OptionalContentConfig = class _OptionalContentConfig {
         this.#groups.get(id)._setVisible(INTERNAL, group.visible, group.userSet);
       }
     } else {
-      if (data.baseState === "OFF") {
+      if (data2.baseState === "OFF") {
         for (const group of this.#groups.values()) {
           group._setVisible(INTERNAL, false);
         }
       }
-      for (const on of data.on) {
+      for (const on of data2.on) {
         this.#groups.get(on)._setVisible(INTERNAL, true);
       }
-      for (const off of data.off) {
+      for (const off of data2.off) {
         this.#groups.get(off)._setVisible(INTERNAL, false);
       }
     }
@@ -55842,11 +55842,11 @@ var OptionalContentConfig = class _OptionalContentConfig {
     };
   }
   static fromSerializable({
-    data,
+    data: data2,
     renderingIntent,
     groupState
   }) {
-    return new _OptionalContentConfig(data, renderingIntent, groupState);
+    return new _OptionalContentConfig(data2, renderingIntent, groupState);
   }
 };
 var PagesMapper = class {
@@ -56135,28 +56135,28 @@ var PDFObjects = class {
     this.#objs.delete(objId);
     return true;
   }
-  resolve(objId, data = null) {
+  resolve(objId, data2 = null) {
     const obj = this.#objs.getOrInsertComputed(objId, dataObj);
     if (obj.data !== INITIAL_DATA) {
       throw new Error(`Object already resolved ${objId}.`);
     }
-    obj.data = data;
+    obj.data = data2;
     obj.resolve();
   }
   clear() {
     for (const {
-      data
+      data: data2
     } of this.#objs.values()) {
-      data?.bitmap?.close();
+      data2?.bitmap?.close();
     }
     this.#objs.clear();
   }
   *[Symbol.iterator]() {
     for (const [objId, {
-      data
+      data: data2
     }] of this.#objs) {
-      if (data !== INITIAL_DATA) {
-        yield [objId, data];
+      if (data2 !== INITIAL_DATA) {
+        yield [objId, data2];
       }
     }
   }
@@ -56526,7 +56526,7 @@ function getDocument(src = {}) {
     docId
   } = task;
   const url = src.url ? getUrlProp(src.url) : null;
-  const data = src.data ? getDataProp(src.data) : null;
+  const data2 = src.data ? getDataProp(src.data) : null;
   const httpHeaders = src.httpHeaders || null;
   const withCredentials = src.withCredentials === true;
   const password = src.password ?? null;
@@ -56590,7 +56590,7 @@ function getDocument(src = {}) {
   const docParams = {
     docId,
     apiVersion: "6.3.289",
-    data,
+    data: data2,
     password,
     disableAutoFetch,
     rangeChunkSize,
@@ -56630,9 +56630,9 @@ function getDocument(src = {}) {
       throw new Error("Worker was destroyed");
     }
     docParams.evaluatorOptions.hasGPU = hasGPU;
-    const workerIdPromise = worker.messageHandler.sendWithPromise("GetDocRequest", docParams, data ? [data.buffer] : null);
+    const workerIdPromise = worker.messageHandler.sendWithPromise("GetDocRequest", docParams, data2 ? [data2.buffer] : null);
     let networkStream;
-    if (data) {
+    if (data2) {
     } else if (rangeTransport) {
       networkStream = new PDFDataTransportStream({
         pdfDataRangeTransport: rangeTransport,
@@ -56777,8 +56777,8 @@ var PDFDocumentProxy = class {
   getPage(pageNumber) {
     return this._transport.getPage(pageNumber);
   }
-  getPageIndex(ref) {
-    return this._transport.getPageIndex(ref);
+  getPageIndex(ref2) {
+    return this._transport.getPageIndex(ref2);
   }
   getDestinations() {
     return this._transport.getDestinations();
@@ -56807,8 +56807,8 @@ var PDFDocumentProxy = class {
   getAttachmentContent(id) {
     return this._transport.getAttachmentContent(id);
   }
-  getAnnotationsByType(types, pageIndexesToSkip) {
-    return this._transport.getAnnotationsByType(types, pageIndexesToSkip);
+  getAnnotationsByType(types2, pageIndexesToSkip) {
+    return this._transport.getAnnotationsByType(types2, pageIndexesToSkip);
   }
   getJSActions() {
     return this._transport.getDocJSActions();
@@ -56848,8 +56848,8 @@ var PDFDocumentProxy = class {
   cleanup(keepLoadedFonts = false) {
     return this._transport.startCleanup(keepLoadedFonts || this.isPureXfa);
   }
-  cachedPageNumber(ref) {
-    return this._transport.cachedPageNumber(ref);
+  cachedPageNumber(ref2) {
+    return this._transport.cachedPageNumber(ref2);
   }
   get loadingParams() {
     return this._transport.loadingParams;
@@ -57429,9 +57429,9 @@ var PDFWorker = class _PDFWorker {
       }, {
         signal: ac.signal
       });
-      messageHandler.on("test", (data) => {
+      messageHandler.on("test", (data2) => {
         ac.abort();
-        if (this.destroyed || !data) {
+        if (this.destroyed || !data2) {
           terminateEarly();
           return;
         }
@@ -57440,7 +57440,7 @@ var PDFWorker = class _PDFWorker {
         this.#webWorker = worker;
         this.#resolve();
       });
-      messageHandler.on("ready", (data) => {
+      messageHandler.on("ready", (data2) => {
         ac.abort();
         if (this.destroyed) {
           terminateEarly();
@@ -57567,8 +57567,8 @@ var WorkerTransport = class {
     this.#pageCache.set(_pageIndex, page);
     this.#pagePromises.set(_pageIndex, Promise.resolve(page));
   }
-  #cacheSimpleMethod(name, data = null) {
-    return this.#methodPromises.getOrInsertComputed(name, () => this.messageHandler.sendWithPromise(name, data));
+  #cacheSimpleMethod(name, data2 = null) {
+    return this.#methodPromises.getOrInsertComputed(name, () => this.messageHandler.sendWithPromise(name, data2));
   }
   #onProgress({
     loaded,
@@ -57670,7 +57670,7 @@ var WorkerTransport = class {
       messageHandler,
       loadingTask
     } = this;
-    messageHandler.on("GetReader", (data, sink) => {
+    messageHandler.on("GetReader", (data2, sink) => {
       assert(this.#networkStream, "GetReader - no `BasePDFStream` instance available.");
       this.#fullReader = this.#networkStream.getFullReader();
       this.#fullReader.onProgress = (evt) => this.#onProgress(evt);
@@ -57699,7 +57699,7 @@ var WorkerTransport = class {
         });
       };
     });
-    messageHandler.on("ReaderHeadersReady", async (data) => {
+    messageHandler.on("ReaderHeadersReady", async (data2) => {
       await this.#fullReader.headersReady;
       const {
         isStreamingSupported,
@@ -57715,9 +57715,9 @@ var WorkerTransport = class {
         contentLength
       };
     });
-    messageHandler.on("GetRangeReader", (data, sink) => {
+    messageHandler.on("GetRangeReader", (data2, sink) => {
       assert(this.#networkStream, "GetRangeReader - no `BasePDFStream` instance available.");
-      const rangeReader = this.#networkStream.getRangeReader(data.begin, data.end);
+      const rangeReader = this.#networkStream.getRangeReader(data2.begin, data2.end);
       if (!rangeReader) {
         sink.close();
         return;
@@ -57780,19 +57780,19 @@ var WorkerTransport = class {
       }
       return this.#passwordCapability.promise;
     });
-    messageHandler.on("DataLoaded", (data) => {
+    messageHandler.on("DataLoaded", (data2) => {
       this.#onProgress({
-        loaded: data.length,
-        total: data.length
+        loaded: data2.length,
+        total: data2.length
       });
-      this.downloadInfoCapability.resolve(data);
+      this.downloadInfoCapability.resolve(data2);
     });
-    messageHandler.on("StartRenderPage", (data) => {
+    messageHandler.on("StartRenderPage", (data2) => {
       if (this.destroyed) {
         return;
       }
-      const page = this.#pageCache.get(data.pageIndex);
-      page._startRenderPage(data.transparency, data.cacheKey);
+      const page = this.#pageCache.get(data2.pageIndex);
+      page._startRenderPage(data2.transparency, data2.cacheKey);
     });
     messageHandler.on("commonobj", ([id, type, exportedData]) => {
       if (this.destroyed) {
@@ -57827,16 +57827,16 @@ var WorkerTransport = class {
           } = exportedData;
           assert(imageRef, "The imageRef must be defined.");
           for (const pageProxy of this.#pageCache.values()) {
-            for (const [, data] of pageProxy.objs) {
-              if (data?.ref !== imageRef) {
+            for (const [, data2] of pageProxy.objs) {
+              if (data2?.ref !== imageRef) {
                 continue;
               }
-              if (!data.dataLen) {
+              if (!data2.dataLen) {
                 return null;
               }
-              const copy = structuredClone(data);
+              const copy = structuredClone(data2);
               this.commonObjs.resolve(id, copy);
-              return data.dataLen;
+              return data2.dataLen;
             }
           }
           break;
@@ -57876,20 +57876,20 @@ var WorkerTransport = class {
           throw new Error(`Got unknown object type ${type}`);
       }
     });
-    messageHandler.on("DocProgress", (data) => {
+    messageHandler.on("DocProgress", (data2) => {
       if (this.destroyed) {
         return;
       }
-      this.#onProgress(data);
+      this.#onProgress(data2);
     });
-    messageHandler.on("FetchBinaryData", async (data) => {
+    messageHandler.on("FetchBinaryData", async (data2) => {
       if (this.destroyed) {
         throw new Error("Worker was destroyed.");
       }
       if (!this.binaryDataFactory) {
         throw new Error("`BinaryDataFactory` not initialized, see the `useWorkerFetch` parameter.");
       }
-      return this.binaryDataFactory.fetch(data);
+      return this.binaryDataFactory.fetch(data2);
     });
   }
   getData() {
@@ -57990,13 +57990,13 @@ var WorkerTransport = class {
     this.#pagePromises.set(pageIndex, promise);
     return promise;
   }
-  async getPageIndex(ref) {
-    if (!isRefProxy(ref)) {
+  async getPageIndex(ref2) {
+    if (!isRefProxy(ref2)) {
       throw new Error("Invalid pageIndex request.");
     }
     const index = await this.messageHandler.sendWithPromise("GetPageIndex", {
-      num: ref.num,
-      gen: ref.gen
+      num: ref2.num,
+      gen: ref2.gen
     });
     const pageNumber = this.pagesMapper.getPageNumber(index + 1);
     if (pageNumber === 0) {
@@ -58057,9 +58057,9 @@ var WorkerTransport = class {
   getAttachmentContent(id) {
     return this.messageHandler.sendWithPromise("GetAttachmentContent", id);
   }
-  getAnnotationsByType(types, pageIndexesToSkip) {
+  getAnnotationsByType(types2, pageIndexesToSkip) {
     return this.messageHandler.sendWithPromise("GetAnnotationsByType", {
-      types,
+      types: types2,
       pageIndexesToSkip
     });
   }
@@ -58080,7 +58080,7 @@ var WorkerTransport = class {
     return this.messageHandler.sendWithPromise("GetOutline", null);
   }
   getOptionalContentConfig(renderingIntent) {
-    return this.#cacheSimpleMethod("GetOptionalContentConfig").then((data) => new OptionalContentConfig(data, renderingIntent));
+    return this.#cacheSimpleMethod("GetOptionalContentConfig").then((data2) => new OptionalContentConfig(data2, renderingIntent));
   }
   getPermissions() {
     return this.messageHandler.sendWithPromise("GetPermissions", null);
@@ -58117,11 +58117,11 @@ var WorkerTransport = class {
     this.filterFactory.destroy(true);
     TextLayer.cleanup();
   }
-  cachedPageNumber(ref) {
-    if (!isRefProxy(ref)) {
+  cachedPageNumber(ref2) {
+    if (!isRefProxy(ref2)) {
       return null;
     }
-    const refStr = ref.gen === 0 ? `${ref.num}R` : `${ref.num}R${ref.gen}`;
+    const refStr = ref2.gen === 0 ? `${ref2.num}R` : `${ref2.num}R${ref2.gen}`;
     const pageIndex = this.#pageRefCache.get(refStr);
     if (pageIndex >= 0) {
       const pageNumber = this.pagesMapper.getPageNumber(pageIndex + 1);
@@ -58840,13 +58840,13 @@ var AnnotationElement = class _AnnotationElement {
   }
   get commentData() {
     const {
-      data
+      data: data2
     } = this;
-    const editor = this.annotationStorage?.getEditor(data.id);
+    const editor = this.annotationStorage?.getEditor(data2.id);
     if (editor) {
       return editor.getData();
     }
-    return data;
+    return data2;
   }
   get hasCommentButton() {
     return this.enableComment && this.hasPopupElement;
@@ -58915,27 +58915,27 @@ var AnnotationElement = class _AnnotationElement {
   }
   get commentText() {
     const {
-      data
+      data: data2
     } = this;
-    return this.annotationStorage.getRawValue(`${AnnotationEditorPrefix}${data.id}`)?.popup?.contents || data.contentsObj?.str || "";
+    return this.annotationStorage.getRawValue(`${AnnotationEditorPrefix}${data2.id}`)?.popup?.contents || data2.contentsObj?.str || "";
   }
   set commentText(text2) {
     const {
-      data
+      data: data2
     } = this;
     const popup = {
       deleted: !text2,
       contents: text2 || ""
     };
-    if (!this.annotationStorage.updateEditor(data.id, {
+    if (!this.annotationStorage.updateEditor(data2.id, {
       popup
     })) {
-      this.annotationStorage.setValue(`${AnnotationEditorPrefix}${data.id}`, {
-        id: data.id,
-        annotationType: data.annotationType,
+      this.annotationStorage.setValue(`${AnnotationEditorPrefix}${data2.id}`, {
+        id: data2.id,
+        annotationType: data2.annotationType,
         page: this.parent.page,
         popup,
-        popupRef: data.popupRef,
+        popupRef: data2.popupRef,
         modificationDate: /* @__PURE__ */ new Date()
       });
     }
@@ -59018,14 +59018,14 @@ var AnnotationElement = class _AnnotationElement {
   }
   _createContainer(ignoreBorder) {
     const {
-      data,
+      data: data2,
       parent: {
         page,
         viewport
       }
     } = this;
     const container = document.createElement("section");
-    container.setAttribute("data-annotation-id", data.id);
+    container.setAttribute("data-annotation-id", data2.id);
     if (!(this instanceof WidgetAnnotationElement) && !(this instanceof LinkAnnotationElement) && !(this instanceof MediaAnnotationElement)) {
       container.tabIndex = 0;
     }
@@ -59034,17 +59034,17 @@ var AnnotationElement = class _AnnotationElement {
     } = container;
     style.zIndex = this.parent.zIndex;
     this.parent.zIndex += 2;
-    if (data.alternativeText) {
-      container.title = data.alternativeText;
+    if (data2.alternativeText) {
+      container.title = data2.alternativeText;
     }
-    if (data.noRotate) {
+    if (data2.noRotate) {
       container.classList.add("norotate");
     }
-    if (!data.rect || this instanceof PopupAnnotationElement) {
+    if (!data2.rect || this instanceof PopupAnnotationElement) {
       const {
         rotation: rotation2
-      } = data;
-      if (!data.hasOwnCanvas && rotation2 !== 0) {
+      } = data2;
+      if (!data2.hasOwnCanvas && rotation2 !== 0) {
         this.setRotation(rotation2, container);
       }
       return container;
@@ -59053,15 +59053,15 @@ var AnnotationElement = class _AnnotationElement {
       width,
       height
     } = this;
-    if (!ignoreBorder && data.borderStyle.width > 0) {
-      style.borderWidth = `${data.borderStyle.width}px`;
-      const horizontalRadius = data.borderStyle.horizontalCornerRadius;
-      const verticalRadius = data.borderStyle.verticalCornerRadius;
+    if (!ignoreBorder && data2.borderStyle.width > 0) {
+      style.borderWidth = `${data2.borderStyle.width}px`;
+      const horizontalRadius = data2.borderStyle.horizontalCornerRadius;
+      const verticalRadius = data2.borderStyle.verticalCornerRadius;
       if (horizontalRadius > 0 || verticalRadius > 0) {
         const radius = `calc(${horizontalRadius}px * var(--total-scale-factor)) / calc(${verticalRadius}px * var(--total-scale-factor))`;
         style.borderRadius = radius;
       }
-      switch (data.borderStyle.style) {
+      switch (data2.borderStyle.style) {
         case AnnotationBorderStyleType.SOLID:
           style.borderStyle = "solid";
           break;
@@ -59080,7 +59080,7 @@ var AnnotationElement = class _AnnotationElement {
         default:
           break;
       }
-      const borderColor = data.borderColor || null;
+      const borderColor = data2.borderColor || null;
       if (borderColor) {
         this.#hasBorder = true;
         style.borderColor = Util.makeHexColor(...borderColor);
@@ -59088,7 +59088,7 @@ var AnnotationElement = class _AnnotationElement {
         style.borderWidth = 0;
       }
     }
-    const rect = Util.normalizeRect([data.rect[0], page.view[3] - data.rect[1] + page.view[1], data.rect[2], page.view[3] - data.rect[3] + page.view[1]]);
+    const rect = Util.normalizeRect([data2.rect[0], page.view[3] - data2.rect[1] + page.view[1], data2.rect[2], page.view[3] - data2.rect[3] + page.view[1]]);
     const {
       pageWidth,
       pageHeight,
@@ -59099,8 +59099,8 @@ var AnnotationElement = class _AnnotationElement {
     style.top = `${100 * (rect[1] - pageY) / pageHeight}%`;
     const {
       rotation
-    } = data;
-    if (data.hasOwnCanvas || rotation === 0) {
+    } = data2;
+    if (data2.hasOwnCanvas || rotation === 0) {
       style.width = `${100 * width / pageWidth}%`;
       style.height = `${100 * height / pageHeight}%`;
     } else {
@@ -59308,7 +59308,7 @@ var AnnotationElement = class _AnnotationElement {
   }
   _createPopup(popupData = null) {
     const {
-      data
+      data: data2
     } = this;
     let contentsObj, modificationDate;
     if (popupData) {
@@ -59317,20 +59317,20 @@ var AnnotationElement = class _AnnotationElement {
       };
       modificationDate = popupData.date;
     } else {
-      contentsObj = data.contentsObj;
-      modificationDate = data.modificationDate;
+      contentsObj = data2.contentsObj;
+      modificationDate = data2.modificationDate;
     }
     this.#popupElement = new PopupAnnotationElement({
       data: {
-        color: data.color,
-        titleObj: data.titleObj,
+        color: data2.color,
+        titleObj: data2.titleObj,
         modificationDate,
         contentsObj,
-        richText: data.richText,
-        parentRect: data.rect,
+        richText: data2.richText,
+        parentRect: data2.rect,
         borderStyle: 0,
-        id: `popup_${data.id}`,
-        rotation: data.rotation,
+        id: `popup_${data2.id}`,
+        rotation: data2.rotation,
         noRotate: true
       },
       linkService: this.linkService,
@@ -59518,34 +59518,34 @@ var LinkAnnotationElement = class extends AnnotationElement {
   }
   render() {
     const {
-      data,
+      data: data2,
       linkService
     } = this;
     const link = document.createElement("a");
-    link.setAttribute("data-element-id", data.id);
+    link.setAttribute("data-element-id", data2.id);
     let isBound = false;
-    if (data.url) {
-      linkService.addLinkAttributes(link, data.url, data.newWindow);
+    if (data2.url) {
+      linkService.addLinkAttributes(link, data2.url, data2.newWindow);
       isBound = true;
-    } else if (data.action) {
-      this._bindNamedAction(link, data.action, data.overlaidText);
+    } else if (data2.action) {
+      this._bindNamedAction(link, data2.action, data2.overlaidText);
       isBound = true;
-    } else if (data.attachment) {
-      this.#bindAttachment(link, data.attachmentId, data.attachment, data.overlaidText, data.attachmentDest);
+    } else if (data2.attachment) {
+      this.#bindAttachment(link, data2.attachmentId, data2.attachment, data2.overlaidText, data2.attachmentDest);
       isBound = true;
-    } else if (data.setOCGState) {
-      this.#bindSetOCGState(link, data.setOCGState, data.overlaidText);
+    } else if (data2.setOCGState) {
+      this.#bindSetOCGState(link, data2.setOCGState, data2.overlaidText);
       isBound = true;
-    } else if (data.dest) {
-      this._bindLink(link, data.dest, data.overlaidText);
+    } else if (data2.dest) {
+      this._bindLink(link, data2.dest, data2.overlaidText);
       isBound = true;
     } else {
-      if (data.actions && (data.actions.has("Action") || data.actions.has("Mouse Up") || data.actions.has("Mouse Down")) && this.enableScripting && this.hasJSActions) {
-        this._bindJSAction(link, data);
+      if (data2.actions && (data2.actions.has("Action") || data2.actions.has("Mouse Up") || data2.actions.has("Mouse Down")) && this.enableScripting && this.hasJSActions) {
+        this._bindJSAction(link, data2);
         isBound = true;
       }
-      if (data.resetForm) {
-        this._bindResetFormAction(link, data.resetForm);
+      if (data2.resetForm) {
+        this._bindResetFormAction(link, data2.resetForm);
         isBound = true;
       } else if (this.isTooltipOnly && !isBound) {
         this._bindLink(link, "");
@@ -60033,13 +60033,13 @@ var TextWidgetAnnotationElement = class extends WidgetAnnotationElement {
               if (formattedValue !== null && formattedValue !== void 0 && event.target !== document.activeElement) {
                 event.target.value = formattedValue;
               }
-              const data = {
+              const data2 = {
                 formattedValue
               };
               if (hasDateOrTime) {
-                data.value = formattedValue;
+                data2.value = formattedValue;
               }
-              storage.setValue(id, data);
+              storage.setValue(id, data2);
             },
             selRange(event) {
               event.target.setSelectionRange(...event.detail.selRange);
@@ -60164,7 +60164,7 @@ var TextWidgetAnnotationElement = class extends WidgetAnnotationElement {
           element.addEventListener("beforeinput", (event) => {
             elementData.lastCommittedValue = null;
             const {
-              data,
+              data: data2,
               target
             } = event;
             const {
@@ -60209,7 +60209,7 @@ var TextWidgetAnnotationElement = class extends WidgetAnnotationElement {
                 id,
                 name: "Keystroke",
                 value,
-                change: data || "",
+                change: data2 || "",
                 willCommit: false,
                 selStart,
                 selEnd
@@ -60270,10 +60270,10 @@ var CheckboxWidgetAnnotationElement = class extends WidgetAnnotationElement {
   }
   render() {
     const storage = this.annotationStorage;
-    const data = this.data;
-    const id = data.id;
+    const data2 = this.data;
+    const id = data2.id;
     let value = storage.getValue(id, {
-      value: data.exportValue === data.fieldValue
+      value: data2.exportValue === data2.fieldValue
     }).value;
     if (typeof value === "string") {
       value = value !== "Off";
@@ -60285,14 +60285,14 @@ var CheckboxWidgetAnnotationElement = class extends WidgetAnnotationElement {
     const element = document.createElement("input");
     GetElementsByNameSet.add(element);
     element.setAttribute("data-element-id", id);
-    element.disabled = data.readOnly;
+    element.disabled = data2.readOnly;
     this._setRequired(element, this.data.required);
     element.type = "checkbox";
-    element.name = data.fieldName;
+    element.name = data2.fieldName;
     if (value) {
       element.setAttribute("checked", true);
     }
-    element.setAttribute("exportValue", data.exportValue);
+    element.setAttribute("exportValue", data2.exportValue);
     element.tabIndex = 0;
     element.addEventListener("change", (event) => {
       const {
@@ -60300,7 +60300,7 @@ var CheckboxWidgetAnnotationElement = class extends WidgetAnnotationElement {
         checked
       } = event.target;
       for (const checkbox of this._getElementsByName(name, id)) {
-        const curChecked = checked && checkbox.exportValue === data.exportValue;
+        const curChecked = checked && checkbox.exportValue === data2.exportValue;
         if (checkbox.domElement) {
           checkbox.domElement.checked = curChecked;
         }
@@ -60313,8 +60313,8 @@ var CheckboxWidgetAnnotationElement = class extends WidgetAnnotationElement {
       });
     });
     element.addEventListener("resetform", (event) => {
-      const defaultValue = data.defaultFieldValue || "Off";
-      event.target.checked = defaultValue === data.exportValue;
+      const defaultValue = data2.defaultFieldValue || "Off";
+      event.target.checked = defaultValue === data2.exportValue;
     });
     if (this.enableScripting && this.hasJSActions) {
       element.addEventListener("updatefromsandbox", (jsEvent) => {
@@ -60344,19 +60344,19 @@ var RadioButtonWidgetAnnotationElement = class extends WidgetAnnotationElement {
   render() {
     this.container.classList.add("buttonWidgetAnnotation", "radioButton");
     const storage = this.annotationStorage;
-    const data = this.data;
-    const id = data.id;
+    const data2 = this.data;
+    const id = data2.id;
     let value = storage.getValue(id, {
-      value: data.buttonValue !== null && data.fieldValue === data.buttonValue
+      value: data2.buttonValue !== null && data2.fieldValue === data2.buttonValue
     }).value;
     if (typeof value === "string") {
-      value = value !== data.buttonValue;
+      value = value !== data2.buttonValue;
       storage.setValue(id, {
         value
       });
     }
     if (value) {
-      for (const radio of this._getElementsByName(data.fieldName, id)) {
+      for (const radio of this._getElementsByName(data2.fieldName, id)) {
         storage.setValue(radio.id, {
           value: false
         });
@@ -60365,10 +60365,10 @@ var RadioButtonWidgetAnnotationElement = class extends WidgetAnnotationElement {
     const element = document.createElement("input");
     GetElementsByNameSet.add(element);
     element.setAttribute("data-element-id", id);
-    element.disabled = data.readOnly;
+    element.disabled = data2.readOnly;
     this._setRequired(element, this.data.required);
     element.type = "radio";
-    element.name = data.fieldName;
+    element.name = data2.fieldName;
     if (value) {
       element.setAttribute("checked", true);
     }
@@ -60388,11 +60388,11 @@ var RadioButtonWidgetAnnotationElement = class extends WidgetAnnotationElement {
       });
     });
     element.addEventListener("resetform", (event) => {
-      const defaultValue = data.defaultFieldValue;
-      event.target.checked = defaultValue !== null && defaultValue !== void 0 && defaultValue === data.buttonValue;
+      const defaultValue = data2.defaultFieldValue;
+      event.target.checked = defaultValue !== null && defaultValue !== void 0 && defaultValue === data2.buttonValue;
     });
     if (this.enableScripting && this.hasJSActions) {
-      const pdfButtonValue = data.buttonValue;
+      const pdfButtonValue = data2.buttonValue;
       element.addEventListener("updatefromsandbox", (jsEvent) => {
         const actions = {
           value: (event) => {
@@ -60669,16 +60669,16 @@ var ChoiceWidgetAnnotationElement = class extends WidgetAnnotationElement {
 var PopupAnnotationElement = class extends AnnotationElement {
   constructor(parameters) {
     const {
-      data,
+      data: data2,
       elements,
       parent
     } = parameters;
     const hasCommentManager = !!parent._commentManager;
     super(parameters, {
-      isRenderable: !hasCommentManager && AnnotationElement._hasPopupData(data)
+      isRenderable: !hasCommentManager && AnnotationElement._hasPopupData(data2)
     });
     this.elements = elements;
-    if (hasCommentManager && AnnotationElement._hasPopupData(data)) {
+    if (hasCommentManager && AnnotationElement._hasPopupData(data2)) {
       const popup = this.popup = this.#createPopup();
       for (const element of elements) {
         element.popup = popup;
@@ -61323,22 +61323,22 @@ var LineAnnotationElement = class extends AnnotationElement {
   render() {
     this.container.classList.add("lineAnnotation");
     const {
-      data,
+      data: data2,
       width,
       height
     } = this;
     const svg = this.svgFactory.create(width, height, true);
     const line = this.#line = this.svgFactory.createElement("svg:line");
-    line.setAttribute("x1", data.rect[2] - data.lineCoordinates[0]);
-    line.setAttribute("y1", data.rect[3] - data.lineCoordinates[1]);
-    line.setAttribute("x2", data.rect[2] - data.lineCoordinates[2]);
-    line.setAttribute("y2", data.rect[3] - data.lineCoordinates[3]);
-    line.setAttribute("stroke-width", data.borderStyle.width || 1);
+    line.setAttribute("x1", data2.rect[2] - data2.lineCoordinates[0]);
+    line.setAttribute("y1", data2.rect[3] - data2.lineCoordinates[1]);
+    line.setAttribute("x2", data2.rect[2] - data2.lineCoordinates[2]);
+    line.setAttribute("y2", data2.rect[3] - data2.lineCoordinates[3]);
+    line.setAttribute("stroke-width", data2.borderStyle.width || 1);
     line.setAttribute("stroke", "transparent");
     line.setAttribute("fill", "transparent");
     svg.append(line);
     this.container.append(svg);
-    if (!data.popupRef && this.hasPopupData) {
+    if (!data2.popupRef && this.hasPopupData) {
       this.hasOwnCommentButton = true;
       this._createPopup();
     }
@@ -61362,12 +61362,12 @@ var SquareAnnotationElement = class extends AnnotationElement {
   render() {
     this.container.classList.add("squareAnnotation");
     const {
-      data,
+      data: data2,
       width,
       height
     } = this;
     const svg = this.svgFactory.create(width, height, true);
-    const borderWidth = data.borderStyle.width;
+    const borderWidth = data2.borderStyle.width;
     const square = this.#square = this.svgFactory.createElement("svg:rect");
     square.setAttribute("x", borderWidth / 2);
     square.setAttribute("y", borderWidth / 2);
@@ -61378,7 +61378,7 @@ var SquareAnnotationElement = class extends AnnotationElement {
     square.setAttribute("fill", "transparent");
     svg.append(square);
     this.container.append(svg);
-    if (!data.popupRef && this.hasPopupData) {
+    if (!data2.popupRef && this.hasPopupData) {
       this.hasOwnCommentButton = true;
       this._createPopup();
     }
@@ -61402,12 +61402,12 @@ var CircleAnnotationElement = class extends AnnotationElement {
   render() {
     this.container.classList.add("circleAnnotation");
     const {
-      data,
+      data: data2,
       width,
       height
     } = this;
     const svg = this.svgFactory.create(width, height, true);
-    const borderWidth = data.borderStyle.width;
+    const borderWidth = data2.borderStyle.width;
     const circle = this.#circle = this.svgFactory.createElement("svg:ellipse");
     circle.setAttribute("cx", width / 2);
     circle.setAttribute("cy", height / 2);
@@ -61418,7 +61418,7 @@ var CircleAnnotationElement = class extends AnnotationElement {
     circle.setAttribute("fill", "transparent");
     svg.append(circle);
     this.container.append(svg);
-    if (!data.popupRef && this.hasPopupData) {
+    if (!data2.popupRef && this.hasPopupData) {
       this.hasOwnCommentButton = true;
       this._createPopup();
     }
@@ -61781,16 +61781,16 @@ var FileAttachmentAnnotationElement = class extends AnnotationElement {
     this.container.classList.add("fileAttachmentAnnotation");
     const {
       container,
-      data
+      data: data2
     } = this;
     let trigger;
-    if (data.hasAppearance || data.fillAlpha === 0) {
+    if (data2.hasAppearance || data2.fillAlpha === 0) {
       trigger = document.createElement("div");
     } else {
       trigger = document.createElement("img");
-      trigger.src = `${this.imageResourcesPath}annotation-${/paperclip/i.test(data.name) ? "paperclip" : "pushpin"}.svg`;
-      if (data.fillAlpha && data.fillAlpha < 1) {
-        trigger.style = `filter: opacity(${Math.round(data.fillAlpha * 100)}%);`;
+      trigger.src = `${this.imageResourcesPath}annotation-${/paperclip/i.test(data2.name) ? "paperclip" : "pushpin"}.svg`;
+      if (data2.fillAlpha && data2.fillAlpha < 1) {
+        trigger.style = `filter: opacity(${Math.round(data2.fillAlpha * 100)}%);`;
       }
     }
     trigger.addEventListener("dblclick", this.#download.bind(this));
@@ -61803,7 +61803,7 @@ var FileAttachmentAnnotationElement = class extends AnnotationElement {
         this.#download();
       }
     });
-    if (!data.popupRef && this.hasPopupData) {
+    if (!data2.popupRef && this.hasPopupData) {
       this.hasOwnCommentButton = true;
       this._createPopup();
     } else {
@@ -62006,39 +62006,39 @@ var AnnotationLayer = class _AnnotationLayer {
       parent: this,
       elements: null
     };
-    for (const data of annotations) {
-      if (data.noHTML) {
+    for (const data2 of annotations) {
+      if (data2.noHTML) {
         continue;
       }
-      const isPopupAnnotation = data.annotationType === AnnotationType.POPUP;
+      const isPopupAnnotation = data2.annotationType === AnnotationType.POPUP;
       if (!isPopupAnnotation) {
-        if (data.rect[2] === data.rect[0] || data.rect[3] === data.rect[1]) {
+        if (data2.rect[2] === data2.rect[0] || data2.rect[3] === data2.rect[1]) {
           continue;
         }
       } else {
-        const elements = popupToElements.get(data.id);
+        const elements = popupToElements.get(data2.id);
         if (!elements) {
           continue;
         }
         if (!this._commentManager) {
-          popupAnnotations.push(data);
+          popupAnnotations.push(data2);
           continue;
         }
         elementParams.elements = elements;
       }
-      elementParams.data = data;
+      elementParams.data = data2;
       const element = AnnotationElementFactory.create(elementParams);
       if (!element.isRenderable) {
         continue;
       }
       if (!isPopupAnnotation) {
         this.#elements.push(element);
-        if (data.popupRef) {
-          popupToElements.getOrInsertComputed(data.popupRef, makeArr).push(element);
+        if (data2.popupRef) {
+          popupToElements.getOrInsertComputed(data2.popupRef, makeArr).push(element);
         }
       }
       const rendered = element.render();
-      if (data.hidden) {
+      if (data2.hidden) {
         rendered.style.visibility = "hidden";
       }
       element.updateOC(optionalContentConfig);
@@ -62048,16 +62048,16 @@ var AnnotationLayer = class _AnnotationLayer {
       }
     }
     await this.#addElementsToDOM();
-    for (const data of popupAnnotations) {
-      const elements = elementParams.elements = popupToElements.get(data.id);
-      elementParams.data = data;
+    for (const data2 of popupAnnotations) {
+      const elements = elementParams.elements = popupToElements.get(data2.id);
+      elementParams.data = data2;
       const element = AnnotationElementFactory.create(elementParams);
       if (!element.isRenderable) {
         continue;
       }
       const rendered = element.render();
-      element.contentElement.id = `${AnnotationPrefix}${data.id}`;
-      if (data.hidden) {
+      element.contentElement.id = `${AnnotationPrefix}${data2.id}`;
+      if (data2.hidden) {
         rendered.style.visibility = "hidden";
       }
       elements.at(-1).container.after(rendered);
@@ -62155,15 +62155,15 @@ var AnnotationLayer = class _AnnotationLayer {
       svgFactory: new DOMSVGFactory(),
       parent: this
     };
-    for (const data of annotations) {
-      data.borderStyle ||= _AnnotationLayer._defaultBorderStyle;
-      elementParams.data = data;
+    for (const data2 of annotations) {
+      data2.borderStyle ||= _AnnotationLayer._defaultBorderStyle;
+      elementParams.data = data2;
       const element = AnnotationElementFactory.create(elementParams);
       if (!element.isRenderable) {
         continue;
       }
       element.render();
-      element.contentElement.id = `${AnnotationPrefix}${data.id}`;
+      element.contentElement.id = `${AnnotationPrefix}${data2.id}`;
       this.#elements.push(element);
     }
     await this.#addElementsToDOM();
@@ -62736,9 +62736,9 @@ var FreeTextEditor = class _FreeTextEditor extends AnnotationEditor {
   editorDivPaste(event) {
     const clipboardData = event.clipboardData || window.clipboardData;
     const {
-      types
+      types: types2
     } = clipboardData;
-    if (types.length === 1 && types[0] === "text/plain") {
+    if (types2.length === 1 && types2[0] === "text/plain") {
       return;
     }
     event.preventDefault();
@@ -62833,9 +62833,9 @@ var FreeTextEditor = class _FreeTextEditor extends AnnotationEditor {
     const padding = _FreeTextEditor._internalPadding * this.parentScale;
     return this.getRect(padding, padding);
   }
-  static async deserialize(data, parent, uiManager) {
+  static async deserialize(data2, parent, uiManager) {
     let initialData = null;
-    if (data instanceof FreeTextAnnotationElement) {
+    if (data2 instanceof FreeTextAnnotationElement) {
       const {
         data: {
           defaultAppearanceData: {
@@ -62858,11 +62858,11 @@ var FreeTextEditor = class _FreeTextEditor extends AnnotationEditor {
             pageNumber
           }
         }
-      } = data;
+      } = data2;
       if (!textContent?.length) {
         return null;
       }
-      initialData = data = {
+      initialData = data2 = {
         annotationType: AnnotationEditorType.FREETEXT,
         color: Array.from(fontColor),
         fontSize,
@@ -62881,13 +62881,13 @@ var FreeTextEditor = class _FreeTextEditor extends AnnotationEditor {
         modificationDate
       };
     }
-    const editor = await super.deserialize(data, parent, uiManager);
-    editor.#fontSize = data.fontSize;
-    editor.color = Util.makeHexColor(...data.color);
-    editor.#content = _FreeTextEditor.#deserializeContent(data.value);
+    const editor = await super.deserialize(data2, parent, uiManager);
+    editor.#fontSize = data2.fontSize;
+    editor.color = Util.makeHexColor(...data2.color);
+    editor.#content = _FreeTextEditor.#deserializeContent(data2.value);
     editor._initialData = initialData;
-    if (data.comment) {
-      editor.setCommentData(data);
+    if (data2.comment) {
+      editor.setCommentData(data2);
     }
     return editor;
   }
@@ -63763,7 +63763,7 @@ var DrawingEditor = class _DrawingEditor extends AnnotationEditor {
   static deserializeDraw(_pageX, _pageY, _pageWidth, _pageHeight, _innerMargin, _data, _uiManager) {
     unreachable("Not implemented");
   }
-  static async deserialize(data, parent, uiManager) {
+  static async deserialize(data2, parent, uiManager) {
     const {
       rawDims: {
         pageWidth,
@@ -63772,9 +63772,9 @@ var DrawingEditor = class _DrawingEditor extends AnnotationEditor {
         pageY
       }
     } = parent.viewport;
-    const drawOutlines = this.deserializeDraw(pageX, pageY, pageWidth, pageHeight, this._INNER_MARGIN, data, uiManager);
-    const editor = await super.deserialize(data, parent, uiManager);
-    editor.createDrawingOptions(data);
+    const drawOutlines = this.deserializeDraw(pageX, pageY, pageWidth, pageHeight, this._INNER_MARGIN, data2, uiManager);
+    const editor = await super.deserialize(data2, parent, uiManager);
+    editor.createDrawingOptions(data2);
     editor.#createDrawOutlines({
       drawOutlines
     });
@@ -64832,9 +64832,9 @@ var HighlightEditor = class _HighlightEditor extends DrawingEditor {
       color: this._uiManager.getNonHCMColorName(this.color)
     };
   }
-  static computeTelemetryFinalData(data) {
+  static computeTelemetryFinalData(data2) {
     return {
-      numberOfColors: data.get("color").size
+      numberOfColors: data2.get("color").size
     };
   }
   translateInPage(x, y) {
@@ -65005,10 +65005,10 @@ var HighlightEditor = class _HighlightEditor extends DrawingEditor {
       thickness: thickness || defaults.thickness
     });
   }
-  static deserializeDraw(pageX, pageY, pageWidth, pageHeight, _innerMargin, data, uiManager) {
+  static deserializeDraw(pageX, pageY, pageWidth, pageHeight, _innerMargin, data2, uiManager) {
     const {
       quadPoints
-    } = data;
+    } = data2;
     if (quadPoints) {
       const boxes = [];
       for (let i = 0, ii = quadPoints.length; i < ii; i += 8) {
@@ -65021,8 +65021,8 @@ var HighlightEditor = class _HighlightEditor extends DrawingEditor {
       }
       return HighlightOutline.build(boxes, uiManager.direction === "ltr");
     }
-    const thickness = data.thickness || this._defaultDrawingOptions.thickness;
-    const points = (data.inkLists || data.outlines.points)[0];
+    const thickness = data2.thickness || this._defaultDrawingOptions.thickness;
+    const points = (data2.inkLists || data2.outlines.points)[0];
     const outliner = new FreeHighlightOutliner(points[0] - pageX, pageHeight - (points[1] - pageY), [0, 0, pageWidth, pageHeight], 1, thickness / 2, true, 1e-3);
     for (let i = 0, ii = points.length; i < ii; i += 2) {
       outliner.add(points[i] - pageX, pageHeight - (points[i + 1] - pageY));
@@ -65031,9 +65031,9 @@ var HighlightEditor = class _HighlightEditor extends DrawingEditor {
     outlines.buildFocusOutline(thickness);
     return outlines;
   }
-  static async deserialize(data, parent, uiManager) {
+  static async deserialize(data2, parent, uiManager) {
     let initialData = null;
-    if (data instanceof HighlightAnnotationElement) {
+    if (data2 instanceof HighlightAnnotationElement) {
       const {
         data: {
           quadPoints,
@@ -65053,8 +65053,8 @@ var HighlightEditor = class _HighlightEditor extends DrawingEditor {
             pageNumber
           }
         }
-      } = data;
-      initialData = data = {
+      } = data2;
+      initialData = data2 = {
         annotationType: AnnotationEditorType.HIGHLIGHT,
         color: Array.from(color),
         opacity,
@@ -65071,7 +65071,7 @@ var HighlightEditor = class _HighlightEditor extends DrawingEditor {
         creationDate,
         modificationDate
       };
-    } else if (data instanceof InkAnnotationElement) {
+    } else if (data2 instanceof InkAnnotationElement) {
       const {
         data: {
           inkLists,
@@ -65093,8 +65093,8 @@ var HighlightEditor = class _HighlightEditor extends DrawingEditor {
             pageNumber
           }
         }
-      } = data;
-      initialData = data = {
+      } = data2;
+      initialData = data2 = {
         annotationType: AnnotationEditorType.HIGHLIGHT,
         color: Array.from(color),
         thickness,
@@ -65112,10 +65112,10 @@ var HighlightEditor = class _HighlightEditor extends DrawingEditor {
         modificationDate
       };
     }
-    const editor = await super.deserialize(data, parent, uiManager);
+    const editor = await super.deserialize(data2, parent, uiManager);
     editor._initialData = initialData;
-    if (data.comment) {
-      editor.setCommentData(data);
+    if (data2.comment) {
+      editor.setCommentData(data2);
     }
     return editor;
   }
@@ -65913,12 +65913,12 @@ var InkEditor = class _InkEditor extends DrawingEditor {
   }) {
     return new InkDrawOutliner(x, y, width, height, rotation, this._defaultDrawingOptions["stroke-width"]);
   }
-  static deserializeDraw(pageX, pageY, pageWidth, pageHeight, innerMargin, data) {
-    return InkDrawOutline.deserialize(pageX, pageY, pageWidth, pageHeight, innerMargin, data);
+  static deserializeDraw(pageX, pageY, pageWidth, pageHeight, innerMargin, data2) {
+    return InkDrawOutline.deserialize(pageX, pageY, pageWidth, pageHeight, innerMargin, data2);
   }
-  static async deserialize(data, parent, uiManager) {
+  static async deserialize(data2, parent, uiManager) {
     let initialData = null;
-    if (data instanceof InkAnnotationElement) {
+    if (data2 instanceof InkAnnotationElement) {
       const {
         data: {
           inkLists,
@@ -65941,8 +65941,8 @@ var InkEditor = class _InkEditor extends DrawingEditor {
             pageNumber
           }
         }
-      } = data;
-      initialData = data = {
+      } = data2;
+      initialData = data2 = {
         annotationType: AnnotationEditorType.INK,
         color: Array.from(color),
         thickness,
@@ -65964,10 +65964,10 @@ var InkEditor = class _InkEditor extends DrawingEditor {
         modificationDate
       };
     }
-    const editor = await super.deserialize(data, parent, uiManager);
+    const editor = await super.deserialize(data2, parent, uiManager);
     editor._initialData = initialData;
-    if (data.comment) {
-      editor.setCommentData(data);
+    if (data2.comment) {
+      editor.setCommentData(data2);
     }
     return editor;
   }
@@ -66134,10 +66134,10 @@ var SignatureExtractor = class {
     return 2 - j;
   }
   static #neighborIdToIndex = new Int32Array([0, 1, -1, 1, -1, 0, -1, -1, 0, -1, 1, -1, 1, 0, 1, 1]);
-  static #clockwiseNonZero(buf, width, i0, j0, i, j, offset) {
+  static #clockwiseNonZero(buf, width, i0, j0, i, j, offset2) {
     const id = this.#neighborIndexToId(i0, j0, i, j);
     for (let k = 0; k < 8; k++) {
-      const kk = (-k + id - offset + 16) % 8;
+      const kk = (-k + id - offset2 + 16) % 8;
       const shiftI = this.#neighborIdToIndex[2 * kk];
       const shiftJ = this.#neighborIdToIndex[2 * kk + 1];
       if (buf[(i0 + shiftI) * width + (j0 + shiftJ)] !== 0) {
@@ -66146,10 +66146,10 @@ var SignatureExtractor = class {
     }
     return -1;
   }
-  static #counterClockwiseNonZero(buf, width, i0, j0, i, j, offset) {
+  static #counterClockwiseNonZero(buf, width, i0, j0, i, j, offset2) {
     const id = this.#neighborIndexToId(i0, j0, i, j);
     for (let k = 0; k < 8; k++) {
-      const kk = (k + id + offset + 16) % 8;
+      const kk = (k + id + offset2 + 16) % 8;
       const shiftI = this.#neighborIdToIndex[2 * kk];
       const shiftJ = this.#neighborIdToIndex[2 * kk + 1];
       if (buf[(i0 + shiftI) * width + (j0 + shiftJ)] !== 0) {
@@ -66160,15 +66160,15 @@ var SignatureExtractor = class {
   }
   static #findContours(buf, width, height, threshold) {
     const N = buf.length;
-    const types = new Int32Array(N);
+    const types2 = new Int32Array(N);
     for (let i = 0; i < N; i++) {
-      types[i] = buf[i] <= threshold ? 1 : 0;
+      types2[i] = buf[i] <= threshold ? 1 : 0;
     }
     for (let i = 1; i < height - 1; i++) {
-      types[i * width] = types[i * width + width - 1] = 0;
+      types2[i * width] = types2[i * width + width - 1] = 0;
     }
     for (let i = 0; i < width; i++) {
-      types[i] = types[width * height - 1 - i] = 0;
+      types2[i] = types2[width * height - 1 - i] = 0;
     }
     let nbd = 1;
     let lnbd;
@@ -66177,16 +66177,16 @@ var SignatureExtractor = class {
       lnbd = 1;
       for (let j = 1; j < width - 1; j++) {
         const ij = i * width + j;
-        const pix = types[ij];
+        const pix = types2[ij];
         if (pix === 0) {
           continue;
         }
         let i2 = i;
         let j2 = j;
-        if (pix === 1 && types[ij - 1] === 0) {
+        if (pix === 1 && types2[ij - 1] === 0) {
           nbd += 1;
           j2 -= 1;
-        } else if (pix >= 1 && types[ij + 1] === 0) {
+        } else if (pix >= 1 && types2[ij + 1] === 0) {
           nbd += 1;
           j2 += 1;
           if (pix > 1) {
@@ -66221,11 +66221,11 @@ var SignatureExtractor = class {
         } else {
           contour.parent = isHole ? lnbd : contour0.parent;
         }
-        const k = this.#clockwiseNonZero(types, width, i, j, i2, j2, 0);
+        const k = this.#clockwiseNonZero(types2, width, i, j, i2, j2, 0);
         if (k === -1) {
-          types[ij] = -nbd;
-          if (types[ij] !== 1) {
-            lnbd = Math.abs(types[ij]);
+          types2[ij] = -nbd;
+          if (types2[ij] !== 1) {
+            lnbd = Math.abs(types2[ij]);
           }
           continue;
         }
@@ -66238,21 +66238,21 @@ var SignatureExtractor = class {
         let i3 = i;
         let j3 = j;
         while (true) {
-          const kk = this.#counterClockwiseNonZero(types, width, i3, j3, i2, j2, 1);
+          const kk = this.#counterClockwiseNonZero(types2, width, i3, j3, i2, j2, 1);
           shiftI = this.#neighborIdToIndex[2 * kk];
           shiftJ = this.#neighborIdToIndex[2 * kk + 1];
           const i4 = i3 + shiftI;
           const j4 = j3 + shiftJ;
           points.push(j4, i4);
           const ij3 = i3 * width + j3;
-          if (types[ij3 + 1] === 0) {
-            types[ij3] = -nbd;
-          } else if (types[ij3] === 1) {
-            types[ij3] = nbd;
+          if (types2[ij3 + 1] === 0) {
+            types2[ij3] = -nbd;
+          } else if (types2[ij3] === 1) {
+            types2[ij3] = nbd;
           }
           if (i4 === i && j4 === j && i3 === i1 && j3 === j1) {
-            if (types[ij] !== 1) {
-              lnbd = Math.abs(types[ij]);
+            if (types2[ij] !== 1) {
+              lnbd = Math.abs(types2[ij]);
             }
             break;
           } else {
@@ -66624,19 +66624,19 @@ var SignatureExtractor = class {
     const len = outlines.length;
     const headerLength = BASE_HEADER_LENGTH + POINTS_PROPERTIES_NUMBER * len;
     const header2 = new Uint32Array(headerLength);
-    let offset = 0;
-    header2[offset++] = headerLength * Uint32Array.BYTES_PER_ELEMENT + (outlinesLength - 2 * len) * bufferType.BYTES_PER_ELEMENT;
-    header2[offset++] = 0;
-    header2[offset++] = width;
-    header2[offset++] = height;
-    header2[offset++] = areContours ? 0 : 1;
-    header2[offset++] = Math.max(0, Math.floor(thickness ?? 0));
-    header2[offset++] = len;
-    header2[offset++] = bufferType.BYTES_PER_ELEMENT;
+    let offset2 = 0;
+    header2[offset2++] = headerLength * Uint32Array.BYTES_PER_ELEMENT + (outlinesLength - 2 * len) * bufferType.BYTES_PER_ELEMENT;
+    header2[offset2++] = 0;
+    header2[offset2++] = width;
+    header2[offset2++] = height;
+    header2[offset2++] = areContours ? 0 : 1;
+    header2[offset2++] = Math.max(0, Math.floor(thickness ?? 0));
+    header2[offset2++] = len;
+    header2[offset2++] = bufferType.BYTES_PER_ELEMENT;
     for (const points of outlines) {
-      header2[offset++] = points.length - 2;
-      header2[offset++] = points[0];
-      header2[offset++] = points[1];
+      header2[offset2++] = points.length - 2;
+      header2[offset2++] = points[0];
+      header2[offset2++] = points[1];
     }
     const cs = new CompressionStream("deflate-raw");
     const writer = cs.writable.getWriter();
@@ -66668,17 +66668,17 @@ var SignatureExtractor = class {
         await writer.close();
       }).catch(() => {
       });
-      let data = null;
-      let offset = 0;
+      let data2 = null;
+      let offset2 = 0;
       for await (const chunk of readable) {
-        data ||= new Uint8Array(new Uint32Array(chunk.buffer, 0, 4)[0]);
-        data.set(chunk, offset);
-        offset += chunk.length;
+        data2 ||= new Uint8Array(new Uint32Array(chunk.buffer, 0, 4)[0]);
+        data2.set(chunk, offset2);
+        offset2 += chunk.length;
       }
-      const header2 = new Uint32Array(data.buffer, 0, data.length >> 2);
-      const version2 = header2[1];
-      if (version2 !== 0) {
-        throw new Error(`Invalid version: ${version2}`);
+      const header2 = new Uint32Array(data2.buffer, 0, data2.length >> 2);
+      const version3 = header2[1];
+      if (version3 !== 0) {
+        throw new Error(`Invalid version: ${version3}`);
       }
       const width = header2[2];
       const height = header2[3];
@@ -66691,16 +66691,16 @@ var SignatureExtractor = class {
       let diffs;
       switch (bufferType) {
         case Int8Array.BYTES_PER_ELEMENT:
-          diffs = new Int8Array(data.buffer, diffsOffset);
+          diffs = new Int8Array(data2.buffer, diffsOffset);
           break;
         case Int16Array.BYTES_PER_ELEMENT:
-          diffs = new Int16Array(data.buffer, diffsOffset);
+          diffs = new Int16Array(data2.buffer, diffsOffset);
           break;
         case Int32Array.BYTES_PER_ELEMENT:
-          diffs = new Int32Array(data.buffer, diffsOffset);
+          diffs = new Int32Array(data2.buffer, diffsOffset);
           break;
       }
-      offset = 0;
+      offset2 = 0;
       for (let i = 0; i < numberOfDrawings; i++) {
         const len = header2[POINTS_PROPERTIES_NUMBER * i + BASE_HEADER_LENGTH];
         const points = new Float32Array(len + 2);
@@ -66709,7 +66709,7 @@ var SignatureExtractor = class {
           points[j] = header2[POINTS_PROPERTIES_NUMBER * i + BASE_HEADER_LENGTH + j + 1];
         }
         for (let j = 0; j < len; j++) {
-          points[j + 2] = points[j] + diffs[offset++];
+          points[j + 2] = points[j] + diffs[offset2++];
         }
       }
       return {
@@ -66797,8 +66797,8 @@ var SignatureEditor = class _SignatureEditor extends DrawingEditor {
       hasDescription: !!this.#description
     };
   }
-  static computeTelemetryFinalData(data) {
-    const hasDescriptionStats = data.get("hasDescription");
+  static computeTelemetryFinalData(data2) {
+    const hasDescriptionStats = data2.get("hasDescription");
     return {
       hasAltText: hasDescriptionStats.get(true) ?? 0,
       hasNoAltText: hasDescriptionStats.get(false) ?? 0
@@ -66927,14 +66927,14 @@ var SignatureEditor = class _SignatureEditor extends DrawingEditor {
   get toolbarButtons() {
     return this._uiManager.signatureManager ? [["editSignature", this._uiManager.signatureManager]] : super.toolbarButtons;
   }
-  addSignature(data, heightInPage, description, uuid) {
+  addSignature(data2, heightInPage, description, uuid) {
     const {
       x: savedX,
       y: savedY
     } = this;
     const {
       outline
-    } = this.#signatureData = data;
+    } = this.#signatureData = data2;
     this.#isExtracted = outline instanceof ContourDrawOutline;
     this.description = description;
     let drawingOptions;
@@ -67066,17 +67066,17 @@ var SignatureEditor = class _SignatureEditor extends DrawingEditor {
     }
     return serialized;
   }
-  static deserializeDraw(pageX, pageY, pageWidth, pageHeight, innerMargin, data) {
-    if (data.areContours) {
-      return ContourDrawOutline.deserialize(pageX, pageY, pageWidth, pageHeight, innerMargin, data);
+  static deserializeDraw(pageX, pageY, pageWidth, pageHeight, innerMargin, data2) {
+    if (data2.areContours) {
+      return ContourDrawOutline.deserialize(pageX, pageY, pageWidth, pageHeight, innerMargin, data2);
     }
-    return InkDrawOutline.deserialize(pageX, pageY, pageWidth, pageHeight, innerMargin, data);
+    return InkDrawOutline.deserialize(pageX, pageY, pageWidth, pageHeight, innerMargin, data2);
   }
-  static async deserialize(data, parent, uiManager) {
-    const editor = await super.deserialize(data, parent, uiManager);
-    editor.#isExtracted = data.areContours;
-    editor.description = data.accessibilityData?.alt || "";
-    editor.#signatureUUID = data.uuid;
+  static async deserialize(data2, parent, uiManager) {
+    const editor = await super.deserialize(data2, parent, uiManager);
+    editor.#isExtracted = data2.areContours;
+    editor.description = data2.accessibilityData?.alt || "";
+    editor.#signatureUUID = data2.uuid;
     return editor;
   }
 };
@@ -67128,25 +67128,25 @@ var StampEditor = class extends AnnotationEditor {
       hasAltText: !!this.altTextData?.altText
     };
   }
-  static computeTelemetryFinalData(data) {
-    const hasAltTextStats = data.get("hasAltText");
+  static computeTelemetryFinalData(data2) {
+    const hasAltTextStats = data2.get("hasAltText");
     return {
       hasAltText: hasAltTextStats.get(true) ?? 0,
       hasNoAltText: hasAltTextStats.get(false) ?? 0
     };
   }
-  #getBitmapFetched(data, fromId = false) {
-    if (!data) {
+  #getBitmapFetched(data2, fromId = false) {
+    if (!data2) {
       this.remove();
       return;
     }
-    this.#bitmap = data.bitmap;
+    this.#bitmap = data2.bitmap;
     if (!fromId) {
-      this.#bitmapId = data.id;
-      this.#isSvg = data.isSvg;
+      this.#bitmapId = data2.id;
+      this.#isSvg = data2.isSvg;
     }
-    if (data.file) {
-      this.#bitmapFileName = data.file.name;
+    if (data2.file) {
+      this.#bitmapFileName = data2.file.name;
     }
     this.#createCanvas();
   }
@@ -67192,17 +67192,17 @@ var StampEditor = class extends AnnotationEditor {
       throw new Error("ML isn't enabled for alt text.");
     }
     const {
-      data,
+      data: data2,
       width,
       height
     } = imageData || this.copyCanvas(null, null, true).imageData;
     const response = await mlManager.guess({
       name: "altText",
       request: {
-        data,
+        data: data2,
         width,
         height,
-        channels: data.length / (width * height)
+        channels: data2.length / (width * height)
       }
     });
     if (!response) {
@@ -67230,21 +67230,21 @@ var StampEditor = class extends AnnotationEditor {
   #getBitmap() {
     if (this.#bitmapId) {
       this._uiManager.enableWaiting(true);
-      this._uiManager.imageManager.getFromId(this.#bitmapId).then((data) => this.#getBitmapFetched(data, true)).finally(() => this.#getBitmapDone());
+      this._uiManager.imageManager.getFromId(this.#bitmapId).then((data2) => this.#getBitmapFetched(data2, true)).finally(() => this.#getBitmapDone());
       return;
     }
     if (this.#bitmapUrl) {
       const url = this.#bitmapUrl;
       this.#bitmapUrl = null;
       this._uiManager.enableWaiting(true);
-      this.#bitmapPromise = this._uiManager.imageManager.getFromUrl(url).then((data) => this.#getBitmapFetched(data)).finally(() => this.#getBitmapDone());
+      this.#bitmapPromise = this._uiManager.imageManager.getFromUrl(url).then((data2) => this.#getBitmapFetched(data2)).finally(() => this.#getBitmapDone());
       return;
     }
     if (this.#bitmapFile) {
       const file = this.#bitmapFile;
       this.#bitmapFile = null;
       this._uiManager.enableWaiting(true);
-      this.#bitmapPromise = this._uiManager.imageManager.getFromFile(file).then((data) => this.#getBitmapFetched(data)).finally(() => this.#getBitmapDone());
+      this.#bitmapPromise = this._uiManager.imageManager.getFromFile(file).then((data2) => this.#getBitmapFetched(data2)).finally(() => this.#getBitmapDone());
       return;
     }
     const input = document.createElement("input");
@@ -67257,14 +67257,14 @@ var StampEditor = class extends AnnotationEditor {
           this.remove();
         } else {
           this._uiManager.enableWaiting(true);
-          const data = await this._uiManager.imageManager.getFromFile(input.files[0]);
+          const data2 = await this._uiManager.imageManager.getFromFile(input.files[0]);
           this._reportTelemetry({
             action: "pdfjs.image.image_selected",
             data: {
               alt_text_modal: this._uiManager.useNewAltTextFlow
             }
           });
-          this.#getBitmapFetched(data);
+          this.#getBitmapFetched(data2);
         }
         resolve();
       }, {
@@ -67582,10 +67582,10 @@ var StampEditor = class extends AnnotationEditor {
     }
     return structuredClone(this.#bitmap);
   }
-  static async deserialize(data, parent, uiManager) {
+  static async deserialize(data2, parent, uiManager) {
     let initialData = null;
     let missingCanvas = false;
-    if (data instanceof StampAnnotationElement) {
+    if (data2 instanceof StampAnnotationElement) {
       const {
         data: {
           rect: rect2,
@@ -67605,10 +67605,10 @@ var StampEditor = class extends AnnotationEditor {
           }
         },
         canvas
-      } = data;
+      } = data2;
       let bitmapId2, bitmap2;
       if (canvas) {
-        delete data.canvas;
+        delete data2.canvas;
         ({
           id: bitmapId2,
           bitmap: bitmap2
@@ -67616,10 +67616,10 @@ var StampEditor = class extends AnnotationEditor {
         canvas.remove();
       } else {
         missingCanvas = true;
-        data._hasNoCanvas = true;
+        data2._hasNoCanvas = true;
       }
       const altText = (await parent._structTree.getAriaAttributes(`${AnnotationPrefix}${id}`))?.get("aria-label") || "";
-      initialData = data = {
+      initialData = data2 = {
         annotationType: AnnotationEditorType.STAMP,
         bitmapId: bitmapId2,
         bitmap: bitmap2,
@@ -67642,7 +67642,7 @@ var StampEditor = class extends AnnotationEditor {
         modificationDate
       };
     }
-    const editor = await super.deserialize(data, parent, uiManager);
+    const editor = await super.deserialize(data2, parent, uiManager);
     const {
       rect,
       bitmap,
@@ -67650,9 +67650,9 @@ var StampEditor = class extends AnnotationEditor {
       bitmapId,
       isSvg,
       accessibilityData
-    } = data;
+    } = data2;
     if (missingCanvas) {
-      uiManager.addMissingCanvas(data.id, editor);
+      uiManager.addMissingCanvas(data2.id, editor);
       editor.#missingCanvas = true;
     } else if (bitmapId && uiManager.imageManager.isValidId(bitmapId)) {
       editor.#bitmapId = bitmapId;
@@ -67670,8 +67670,8 @@ var StampEditor = class extends AnnotationEditor {
       editor.altTextData = accessibilityData;
     }
     editor._initialData = initialData;
-    if (data.comment) {
-      editor.setCommentData(data);
+    if (data2.comment) {
+      editor.setCommentData(data2);
     }
     editor.#hasBeenAddedInUndoStack = !!initialData;
     return editor;
@@ -68252,10 +68252,10 @@ var AnnotationEditorLayer = class _AnnotationEditorLayer {
       this.add(editor);
     }
   }
-  async deserialize(data) {
-    return await _AnnotationEditorLayer.#editorTypes.get(data.annotationType ?? data.annotationEditorType)?.deserialize(data, this, this.#uiManager) || null;
+  async deserialize(data2) {
+    return await _AnnotationEditorLayer.#editorTypes.get(data2.annotationType ?? data2.annotationEditorType)?.deserialize(data2, this, this.#uiManager) || null;
   }
-  createAndAddNewEditor(event, isCentered, data = {}) {
+  createAndAddNewEditor(event, isCentered, data2 = {}) {
     const id = this.#uiManager.getId();
     const editor = this.#createNewEditor({
       parent: this,
@@ -68264,7 +68264,7 @@ var AnnotationEditorLayer = class _AnnotationEditorLayer {
       y: event.offsetY,
       uiManager: this.#uiManager,
       isCentered,
-      ...data
+      ...data2
     });
     if (editor) {
       this.add(editor);
@@ -68293,8 +68293,8 @@ var AnnotationEditorLayer = class _AnnotationEditorLayer {
       offsetY
     };
   }
-  addNewEditor(data = {}) {
-    this.createAndAddNewEditor(this.#getCenterPoint(), true, data);
+  addNewEditor(data2 = {}) {
+    this.createAndAddNewEditor(this.#getCenterPoint(), true, data2);
   }
   setSelected(editor) {
     this.#uiManager.setSelected(editor);
@@ -68526,11 +68526,11 @@ function isPointBefore(nodeA, offsetA, nodeB, offsetB) {
   }
   return null;
 }
-function normalizeEdgeBoundary(container, offset, textLayer) {
-  if (container.nodeType !== Node.ELEMENT_NODE || !container.classList.contains("textLayer") || offset !== container.childNodes.length) {
+function normalizeEdgeBoundary(container, offset2, textLayer) {
+  if (container.nodeType !== Node.ELEMENT_NODE || !container.classList.contains("textLayer") || offset2 !== container.childNodes.length) {
     return {
       container,
-      offset
+      offset: offset2
     };
   }
   let lastNode = container.lastChild;
@@ -69058,8 +69058,8 @@ var DrawLayer = class _DrawLayer {
     this.#textLayerObserver?.disconnect();
     this.#textLayerObserver = null;
     if (this.#textLayer) {
-      const data = _DrawLayer.#textLayers.get(this.#textLayer);
-      if (data?.drawLayer === this) {
+      const data2 = _DrawLayer.#textLayers.get(this.#textLayer);
+      if (data2?.drawLayer === this) {
         _DrawLayer.#cleanupTextLayerSelection(this.#textLayer);
         _DrawLayer.#textLayers.delete(this.#textLayer);
         _DrawLayer.#textLayerSet.delete(this.#textLayer);
@@ -69243,6 +69243,5695 @@ globalThis.pdfjsLib = {
 
 // src/file-ingress-runtime.ts
 var import_pdf_lib = __toESM(require_cjs(), 1);
+
+// node_modules/acorn/dist/acorn.mjs
+var astralIdentifierCodes = [509, 0, 227, 0, 150, 4, 294, 9, 1368, 2, 2, 1, 6, 3, 41, 2, 5, 0, 166, 1, 574, 3, 9, 9, 7, 9, 32, 4, 318, 1, 78, 5, 71, 10, 50, 3, 123, 2, 54, 14, 32, 10, 3, 1, 11, 3, 46, 10, 8, 0, 46, 9, 7, 2, 37, 13, 2, 9, 6, 1, 45, 0, 13, 2, 49, 13, 9, 3, 2, 11, 83, 11, 7, 0, 3, 0, 158, 11, 6, 9, 7, 3, 56, 1, 2, 6, 3, 1, 3, 2, 10, 0, 11, 1, 3, 6, 4, 4, 68, 8, 2, 0, 3, 0, 2, 3, 2, 4, 2, 0, 15, 1, 83, 17, 10, 9, 5, 0, 82, 19, 13, 9, 214, 6, 3, 8, 28, 1, 83, 16, 16, 9, 82, 12, 9, 9, 7, 19, 58, 14, 5, 9, 243, 14, 166, 9, 71, 5, 2, 1, 3, 3, 2, 0, 2, 1, 13, 9, 120, 6, 3, 6, 4, 0, 29, 9, 41, 6, 2, 3, 9, 0, 10, 10, 47, 15, 199, 7, 137, 9, 54, 7, 2, 7, 17, 9, 57, 21, 2, 13, 123, 5, 4, 0, 2, 1, 2, 6, 2, 0, 9, 9, 49, 4, 2, 1, 2, 4, 9, 9, 55, 9, 266, 3, 10, 1, 2, 0, 49, 6, 4, 4, 14, 10, 5350, 0, 7, 14, 11465, 27, 2343, 9, 87, 9, 39, 4, 60, 6, 26, 9, 535, 9, 470, 0, 2, 54, 8, 3, 82, 0, 12, 1, 19628, 1, 4178, 9, 519, 45, 3, 22, 543, 4, 4, 5, 9, 7, 3, 6, 31, 3, 149, 2, 1418, 49, 513, 54, 5, 49, 9, 0, 15, 0, 23, 4, 2, 14, 1361, 6, 2, 16, 3, 6, 2, 1, 2, 4, 101, 0, 161, 6, 10, 9, 357, 0, 62, 13, 499, 13, 245, 1, 2, 9, 233, 0, 3, 0, 8, 1, 6, 0, 475, 6, 110, 6, 6, 9, 4759, 9, 787719, 239];
+var astralIdentifierStartCodes = [0, 11, 2, 25, 2, 18, 2, 1, 2, 14, 3, 13, 35, 122, 70, 52, 268, 28, 4, 48, 48, 31, 14, 29, 6, 37, 11, 29, 3, 35, 5, 7, 2, 4, 43, 157, 19, 35, 5, 35, 5, 39, 9, 51, 13, 10, 2, 14, 2, 6, 2, 1, 2, 10, 2, 14, 2, 6, 2, 1, 4, 51, 13, 310, 10, 21, 11, 7, 25, 5, 2, 41, 2, 8, 70, 5, 3, 0, 2, 43, 2, 1, 4, 0, 3, 22, 11, 22, 10, 30, 66, 18, 2, 1, 11, 21, 11, 25, 7, 25, 39, 55, 7, 1, 65, 0, 16, 3, 2, 2, 2, 28, 43, 28, 4, 28, 36, 7, 2, 27, 28, 53, 11, 21, 11, 18, 14, 17, 111, 72, 56, 50, 14, 50, 14, 35, 39, 27, 10, 22, 251, 41, 7, 1, 17, 5, 57, 28, 11, 0, 9, 21, 43, 17, 47, 20, 28, 22, 13, 52, 58, 1, 3, 0, 14, 44, 33, 24, 27, 35, 30, 0, 3, 0, 9, 34, 4, 0, 13, 47, 15, 3, 22, 0, 2, 0, 36, 17, 2, 24, 20, 1, 64, 6, 2, 0, 2, 3, 2, 14, 2, 9, 8, 46, 39, 7, 3, 1, 3, 21, 2, 6, 2, 1, 2, 4, 4, 0, 19, 0, 13, 4, 31, 9, 2, 0, 3, 0, 2, 37, 2, 0, 26, 0, 2, 0, 45, 52, 19, 3, 21, 2, 31, 47, 21, 1, 2, 0, 185, 46, 42, 3, 37, 47, 21, 0, 60, 42, 14, 0, 72, 26, 38, 6, 186, 43, 117, 63, 32, 7, 3, 0, 3, 7, 2, 1, 2, 23, 16, 0, 2, 0, 95, 7, 3, 38, 17, 0, 2, 0, 29, 0, 11, 39, 8, 0, 22, 0, 12, 45, 20, 0, 19, 72, 200, 32, 32, 8, 2, 36, 18, 0, 50, 29, 113, 6, 2, 1, 2, 37, 22, 0, 26, 5, 2, 1, 2, 31, 15, 0, 24, 43, 261, 18, 16, 0, 2, 12, 2, 33, 125, 0, 80, 921, 103, 110, 18, 195, 2637, 96, 16, 1071, 18, 5, 26, 3994, 6, 582, 6842, 29, 1763, 568, 8, 30, 18, 78, 18, 29, 19, 47, 17, 3, 32, 20, 6, 18, 433, 44, 212, 63, 33, 24, 3, 24, 45, 74, 6, 0, 67, 12, 65, 1, 2, 0, 15, 4, 10, 7381, 42, 31, 98, 114, 8702, 3, 2, 6, 2, 1, 2, 290, 16, 0, 30, 2, 3, 0, 15, 3, 9, 395, 2309, 106, 6, 12, 4, 8, 8, 9, 5991, 84, 2, 70, 2, 1, 3, 0, 3, 1, 3, 3, 2, 11, 2, 0, 2, 6, 2, 64, 2, 3, 3, 7, 2, 6, 2, 27, 2, 3, 2, 4, 2, 0, 4, 6, 2, 339, 3, 24, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 7, 1845, 30, 7, 5, 262, 61, 147, 44, 11, 6, 17, 0, 322, 29, 19, 43, 485, 27, 229, 29, 3, 0, 208, 30, 2, 2, 2, 1, 2, 6, 3, 4, 10, 1, 225, 6, 2, 3, 2, 1, 2, 14, 2, 196, 60, 67, 8, 0, 1205, 3, 2, 26, 2, 1, 2, 0, 3, 0, 2, 9, 2, 3, 2, 0, 2, 0, 7, 0, 5, 0, 2, 0, 2, 0, 2, 2, 2, 1, 2, 0, 3, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 1, 2, 0, 3, 3, 2, 6, 2, 3, 2, 3, 2, 0, 2, 9, 2, 16, 6, 2, 2, 4, 2, 16, 4421, 42719, 33, 4381, 3, 5773, 3, 7472, 16, 621, 2467, 541, 1507, 4938, 6, 8489];
+var nonASCIIidentifierChars = "\u200C\u200D\xB7\u0300-\u036F\u0387\u0483-\u0487\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4\u05C5\u05C7\u0610-\u061A\u064B-\u0669\u0670\u06D6-\u06DC\u06DF-\u06E4\u06E7\u06E8\u06EA-\u06ED\u06F0-\u06F9\u0711\u0730-\u074A\u07A6-\u07B0\u07C0-\u07C9\u07EB-\u07F3\u07FD\u0816-\u0819\u081B-\u0823\u0825-\u0827\u0829-\u082D\u0859-\u085B\u0897-\u089F\u08CA-\u08E1\u08E3-\u0903\u093A-\u093C\u093E-\u094F\u0951-\u0957\u0962\u0963\u0966-\u096F\u0981-\u0983\u09BC\u09BE-\u09C4\u09C7\u09C8\u09CB-\u09CD\u09D7\u09E2\u09E3\u09E6-\u09EF\u09FE\u0A01-\u0A03\u0A3C\u0A3E-\u0A42\u0A47\u0A48\u0A4B-\u0A4D\u0A51\u0A66-\u0A71\u0A75\u0A81-\u0A83\u0ABC\u0ABE-\u0AC5\u0AC7-\u0AC9\u0ACB-\u0ACD\u0AE2\u0AE3\u0AE6-\u0AEF\u0AFA-\u0AFF\u0B01-\u0B03\u0B3C\u0B3E-\u0B44\u0B47\u0B48\u0B4B-\u0B4D\u0B55-\u0B57\u0B62\u0B63\u0B66-\u0B6F\u0B82\u0BBE-\u0BC2\u0BC6-\u0BC8\u0BCA-\u0BCD\u0BD7\u0BE6-\u0BEF\u0C00-\u0C04\u0C3C\u0C3E-\u0C44\u0C46-\u0C48\u0C4A-\u0C4D\u0C55\u0C56\u0C62\u0C63\u0C66-\u0C6F\u0C81-\u0C83\u0CBC\u0CBE-\u0CC4\u0CC6-\u0CC8\u0CCA-\u0CCD\u0CD5\u0CD6\u0CE2\u0CE3\u0CE6-\u0CEF\u0CF3\u0D00-\u0D03\u0D3B\u0D3C\u0D3E-\u0D44\u0D46-\u0D48\u0D4A-\u0D4D\u0D57\u0D62\u0D63\u0D66-\u0D6F\u0D81-\u0D83\u0DCA\u0DCF-\u0DD4\u0DD6\u0DD8-\u0DDF\u0DE6-\u0DEF\u0DF2\u0DF3\u0E31\u0E34-\u0E3A\u0E47-\u0E4E\u0E50-\u0E59\u0EB1\u0EB4-\u0EBC\u0EC8-\u0ECE\u0ED0-\u0ED9\u0F18\u0F19\u0F20-\u0F29\u0F35\u0F37\u0F39\u0F3E\u0F3F\u0F71-\u0F84\u0F86\u0F87\u0F8D-\u0F97\u0F99-\u0FBC\u0FC6\u102B-\u103E\u1040-\u1049\u1056-\u1059\u105E-\u1060\u1062-\u1064\u1067-\u106D\u1071-\u1074\u1082-\u108D\u108F-\u109D\u135D-\u135F\u1369-\u1371\u1712-\u1715\u1732-\u1734\u1752\u1753\u1772\u1773\u17B4-\u17D3\u17DD\u17E0-\u17E9\u180B-\u180D\u180F-\u1819\u18A9\u1920-\u192B\u1930-\u193B\u1946-\u194F\u19D0-\u19DA\u1A17-\u1A1B\u1A55-\u1A5E\u1A60-\u1A7C\u1A7F-\u1A89\u1A90-\u1A99\u1AB0-\u1ABD\u1ABF-\u1ADD\u1AE0-\u1AEB\u1B00-\u1B04\u1B34-\u1B44\u1B50-\u1B59\u1B6B-\u1B73\u1B80-\u1B82\u1BA1-\u1BAD\u1BB0-\u1BB9\u1BE6-\u1BF3\u1C24-\u1C37\u1C40-\u1C49\u1C50-\u1C59\u1CD0-\u1CD2\u1CD4-\u1CE8\u1CED\u1CF4\u1CF7-\u1CF9\u1DC0-\u1DFF\u200C\u200D\u203F\u2040\u2054\u20D0-\u20DC\u20E1\u20E5-\u20F0\u2CEF-\u2CF1\u2D7F\u2DE0-\u2DFF\u302A-\u302F\u3099\u309A\u30FB\uA620-\uA629\uA66F\uA674-\uA67D\uA69E\uA69F\uA6F0\uA6F1\uA802\uA806\uA80B\uA823-\uA827\uA82C\uA880\uA881\uA8B4-\uA8C5\uA8D0-\uA8D9\uA8E0-\uA8F1\uA8FF-\uA909\uA926-\uA92D\uA947-\uA953\uA980-\uA983\uA9B3-\uA9C0\uA9D0-\uA9D9\uA9E5\uA9F0-\uA9F9\uAA29-\uAA36\uAA43\uAA4C\uAA4D\uAA50-\uAA59\uAA7B-\uAA7D\uAAB0\uAAB2-\uAAB4\uAAB7\uAAB8\uAABE\uAABF\uAAC1\uAAEB-\uAAEF\uAAF5\uAAF6\uABE3-\uABEA\uABEC\uABED\uABF0-\uABF9\uFB1E\uFE00-\uFE0F\uFE20-\uFE2F\uFE33\uFE34\uFE4D-\uFE4F\uFF10-\uFF19\uFF3F\uFF65";
+var nonASCIIidentifierStartChars = "\xAA\xB5\xBA\xC0-\xD6\xD8-\xF6\xF8-\u02C1\u02C6-\u02D1\u02E0-\u02E4\u02EC\u02EE\u0370-\u0374\u0376\u0377\u037A-\u037D\u037F\u0386\u0388-\u038A\u038C\u038E-\u03A1\u03A3-\u03F5\u03F7-\u0481\u048A-\u052F\u0531-\u0556\u0559\u0560-\u0588\u05D0-\u05EA\u05EF-\u05F2\u0620-\u064A\u066E\u066F\u0671-\u06D3\u06D5\u06E5\u06E6\u06EE\u06EF\u06FA-\u06FC\u06FF\u0710\u0712-\u072F\u074D-\u07A5\u07B1\u07CA-\u07EA\u07F4\u07F5\u07FA\u0800-\u0815\u081A\u0824\u0828\u0840-\u0858\u0860-\u086A\u0870-\u0887\u0889-\u088F\u08A0-\u08C9\u0904-\u0939\u093D\u0950\u0958-\u0961\u0971-\u0980\u0985-\u098C\u098F\u0990\u0993-\u09A8\u09AA-\u09B0\u09B2\u09B6-\u09B9\u09BD\u09CE\u09DC\u09DD\u09DF-\u09E1\u09F0\u09F1\u09FC\u0A05-\u0A0A\u0A0F\u0A10\u0A13-\u0A28\u0A2A-\u0A30\u0A32\u0A33\u0A35\u0A36\u0A38\u0A39\u0A59-\u0A5C\u0A5E\u0A72-\u0A74\u0A85-\u0A8D\u0A8F-\u0A91\u0A93-\u0AA8\u0AAA-\u0AB0\u0AB2\u0AB3\u0AB5-\u0AB9\u0ABD\u0AD0\u0AE0\u0AE1\u0AF9\u0B05-\u0B0C\u0B0F\u0B10\u0B13-\u0B28\u0B2A-\u0B30\u0B32\u0B33\u0B35-\u0B39\u0B3D\u0B5C\u0B5D\u0B5F-\u0B61\u0B71\u0B83\u0B85-\u0B8A\u0B8E-\u0B90\u0B92-\u0B95\u0B99\u0B9A\u0B9C\u0B9E\u0B9F\u0BA3\u0BA4\u0BA8-\u0BAA\u0BAE-\u0BB9\u0BD0\u0C05-\u0C0C\u0C0E-\u0C10\u0C12-\u0C28\u0C2A-\u0C39\u0C3D\u0C58-\u0C5A\u0C5C\u0C5D\u0C60\u0C61\u0C80\u0C85-\u0C8C\u0C8E-\u0C90\u0C92-\u0CA8\u0CAA-\u0CB3\u0CB5-\u0CB9\u0CBD\u0CDC-\u0CDE\u0CE0\u0CE1\u0CF1\u0CF2\u0D04-\u0D0C\u0D0E-\u0D10\u0D12-\u0D3A\u0D3D\u0D4E\u0D54-\u0D56\u0D5F-\u0D61\u0D7A-\u0D7F\u0D85-\u0D96\u0D9A-\u0DB1\u0DB3-\u0DBB\u0DBD\u0DC0-\u0DC6\u0E01-\u0E30\u0E32\u0E33\u0E40-\u0E46\u0E81\u0E82\u0E84\u0E86-\u0E8A\u0E8C-\u0EA3\u0EA5\u0EA7-\u0EB0\u0EB2\u0EB3\u0EBD\u0EC0-\u0EC4\u0EC6\u0EDC-\u0EDF\u0F00\u0F40-\u0F47\u0F49-\u0F6C\u0F88-\u0F8C\u1000-\u102A\u103F\u1050-\u1055\u105A-\u105D\u1061\u1065\u1066\u106E-\u1070\u1075-\u1081\u108E\u10A0-\u10C5\u10C7\u10CD\u10D0-\u10FA\u10FC-\u1248\u124A-\u124D\u1250-\u1256\u1258\u125A-\u125D\u1260-\u1288\u128A-\u128D\u1290-\u12B0\u12B2-\u12B5\u12B8-\u12BE\u12C0\u12C2-\u12C5\u12C8-\u12D6\u12D8-\u1310\u1312-\u1315\u1318-\u135A\u1380-\u138F\u13A0-\u13F5\u13F8-\u13FD\u1401-\u166C\u166F-\u167F\u1681-\u169A\u16A0-\u16EA\u16EE-\u16F8\u1700-\u1711\u171F-\u1731\u1740-\u1751\u1760-\u176C\u176E-\u1770\u1780-\u17B3\u17D7\u17DC\u1820-\u1878\u1880-\u18A8\u18AA\u18B0-\u18F5\u1900-\u191E\u1950-\u196D\u1970-\u1974\u1980-\u19AB\u19B0-\u19C9\u1A00-\u1A16\u1A20-\u1A54\u1AA7\u1B05-\u1B33\u1B45-\u1B4C\u1B83-\u1BA0\u1BAE\u1BAF\u1BBA-\u1BE5\u1C00-\u1C23\u1C4D-\u1C4F\u1C5A-\u1C7D\u1C80-\u1C8A\u1C90-\u1CBA\u1CBD-\u1CBF\u1CE9-\u1CEC\u1CEE-\u1CF3\u1CF5\u1CF6\u1CFA\u1D00-\u1DBF\u1E00-\u1F15\u1F18-\u1F1D\u1F20-\u1F45\u1F48-\u1F4D\u1F50-\u1F57\u1F59\u1F5B\u1F5D\u1F5F-\u1F7D\u1F80-\u1FB4\u1FB6-\u1FBC\u1FBE\u1FC2-\u1FC4\u1FC6-\u1FCC\u1FD0-\u1FD3\u1FD6-\u1FDB\u1FE0-\u1FEC\u1FF2-\u1FF4\u1FF6-\u1FFC\u2071\u207F\u2090-\u209C\u2102\u2107\u210A-\u2113\u2115\u2118-\u211D\u2124\u2126\u2128\u212A-\u2139\u213C-\u213F\u2145-\u2149\u214E\u2160-\u2188\u2C00-\u2CE4\u2CEB-\u2CEE\u2CF2\u2CF3\u2D00-\u2D25\u2D27\u2D2D\u2D30-\u2D67\u2D6F\u2D80-\u2D96\u2DA0-\u2DA6\u2DA8-\u2DAE\u2DB0-\u2DB6\u2DB8-\u2DBE\u2DC0-\u2DC6\u2DC8-\u2DCE\u2DD0-\u2DD6\u2DD8-\u2DDE\u3005-\u3007\u3021-\u3029\u3031-\u3035\u3038-\u303C\u3041-\u3096\u309B-\u309F\u30A1-\u30FA\u30FC-\u30FF\u3105-\u312F\u3131-\u318E\u31A0-\u31BF\u31F0-\u31FF\u3400-\u4DBF\u4E00-\uA48C\uA4D0-\uA4FD\uA500-\uA60C\uA610-\uA61F\uA62A\uA62B\uA640-\uA66E\uA67F-\uA69D\uA6A0-\uA6EF\uA717-\uA71F\uA722-\uA788\uA78B-\uA7DC\uA7F1-\uA801\uA803-\uA805\uA807-\uA80A\uA80C-\uA822\uA840-\uA873\uA882-\uA8B3\uA8F2-\uA8F7\uA8FB\uA8FD\uA8FE\uA90A-\uA925\uA930-\uA946\uA960-\uA97C\uA984-\uA9B2\uA9CF\uA9E0-\uA9E4\uA9E6-\uA9EF\uA9FA-\uA9FE\uAA00-\uAA28\uAA40-\uAA42\uAA44-\uAA4B\uAA60-\uAA76\uAA7A\uAA7E-\uAAAF\uAAB1\uAAB5\uAAB6\uAAB9-\uAABD\uAAC0\uAAC2\uAADB-\uAADD\uAAE0-\uAAEA\uAAF2-\uAAF4\uAB01-\uAB06\uAB09-\uAB0E\uAB11-\uAB16\uAB20-\uAB26\uAB28-\uAB2E\uAB30-\uAB5A\uAB5C-\uAB69\uAB70-\uABE2\uAC00-\uD7A3\uD7B0-\uD7C6\uD7CB-\uD7FB\uF900-\uFA6D\uFA70-\uFAD9\uFB00-\uFB06\uFB13-\uFB17\uFB1D\uFB1F-\uFB28\uFB2A-\uFB36\uFB38-\uFB3C\uFB3E\uFB40\uFB41\uFB43\uFB44\uFB46-\uFBB1\uFBD3-\uFD3D\uFD50-\uFD8F\uFD92-\uFDC7\uFDF0-\uFDFB\uFE70-\uFE74\uFE76-\uFEFC\uFF21-\uFF3A\uFF41-\uFF5A\uFF66-\uFFBE\uFFC2-\uFFC7\uFFCA-\uFFCF\uFFD2-\uFFD7\uFFDA-\uFFDC";
+var reservedWords = {
+  3: "abstract boolean byte char class double enum export extends final float goto implements import int interface long native package private protected public short static super synchronized throws transient volatile",
+  5: "class enum extends super const export import",
+  6: "enum",
+  strict: "implements interface let package private protected public static yield",
+  strictBind: "eval arguments"
+};
+var ecma5AndLessKeywords = "break case catch continue debugger default do else finally for function if return switch throw try var while with null true false instanceof typeof void delete new in this";
+var keywords$1 = {
+  5: ecma5AndLessKeywords,
+  "5module": ecma5AndLessKeywords + " export import",
+  6: ecma5AndLessKeywords + " const class extends export import super"
+};
+var keywordRelationalOperator = /^in(stanceof)?$/;
+var nonASCIIidentifierStart = new RegExp("[" + nonASCIIidentifierStartChars + "]");
+var nonASCIIidentifier = new RegExp("[" + nonASCIIidentifierStartChars + nonASCIIidentifierChars + "]");
+function isInAstralSet(code, set) {
+  var pos = 65536;
+  for (var i = 0; i < set.length; i += 2) {
+    pos += set[i];
+    if (pos > code) {
+      return false;
+    }
+    pos += set[i + 1];
+    if (pos >= code) {
+      return true;
+    }
+  }
+  return false;
+}
+function isIdentifierStart(code, astral) {
+  if (code < 65) {
+    return code === 36;
+  }
+  if (code < 91) {
+    return true;
+  }
+  if (code < 97) {
+    return code === 95;
+  }
+  if (code < 123) {
+    return true;
+  }
+  if (code <= 65535) {
+    return code >= 170 && nonASCIIidentifierStart.test(String.fromCharCode(code));
+  }
+  if (astral === false) {
+    return false;
+  }
+  return isInAstralSet(code, astralIdentifierStartCodes);
+}
+function isIdentifierChar(code, astral) {
+  if (code < 48) {
+    return code === 36;
+  }
+  if (code < 58) {
+    return true;
+  }
+  if (code < 65) {
+    return false;
+  }
+  if (code < 91) {
+    return true;
+  }
+  if (code < 97) {
+    return code === 95;
+  }
+  if (code < 123) {
+    return true;
+  }
+  if (code <= 65535) {
+    return code >= 170 && nonASCIIidentifier.test(String.fromCharCode(code));
+  }
+  if (astral === false) {
+    return false;
+  }
+  return isInAstralSet(code, astralIdentifierStartCodes) || isInAstralSet(code, astralIdentifierCodes);
+}
+var TokenType = function TokenType2(label, conf) {
+  if (conf === void 0) conf = {};
+  this.label = label;
+  this.keyword = conf.keyword;
+  this.beforeExpr = !!conf.beforeExpr;
+  this.startsExpr = !!conf.startsExpr;
+  this.isLoop = !!conf.isLoop;
+  this.isAssign = !!conf.isAssign;
+  this.prefix = !!conf.prefix;
+  this.postfix = !!conf.postfix;
+  this.binop = conf.binop || null;
+  this.updateContext = null;
+};
+function binop(name, prec) {
+  return new TokenType(name, { beforeExpr: true, binop: prec });
+}
+var beforeExpr = { beforeExpr: true };
+var startsExpr = { startsExpr: true };
+var keywords = {};
+function kw(name, options) {
+  if (options === void 0) options = {};
+  options.keyword = name;
+  return keywords[name] = new TokenType(name, options);
+}
+var types$1 = {
+  num: new TokenType("num", startsExpr),
+  regexp: new TokenType("regexp", startsExpr),
+  string: new TokenType("string", startsExpr),
+  name: new TokenType("name", startsExpr),
+  privateId: new TokenType("privateId", startsExpr),
+  eof: new TokenType("eof"),
+  // Punctuation token types.
+  bracketL: new TokenType("[", { beforeExpr: true, startsExpr: true }),
+  bracketR: new TokenType("]"),
+  braceL: new TokenType("{", { beforeExpr: true, startsExpr: true }),
+  braceR: new TokenType("}"),
+  parenL: new TokenType("(", { beforeExpr: true, startsExpr: true }),
+  parenR: new TokenType(")"),
+  comma: new TokenType(",", beforeExpr),
+  semi: new TokenType(";", beforeExpr),
+  colon: new TokenType(":", beforeExpr),
+  dot: new TokenType("."),
+  question: new TokenType("?", beforeExpr),
+  questionDot: new TokenType("?."),
+  arrow: new TokenType("=>", beforeExpr),
+  template: new TokenType("template"),
+  invalidTemplate: new TokenType("invalidTemplate"),
+  ellipsis: new TokenType("...", beforeExpr),
+  backQuote: new TokenType("`", startsExpr),
+  dollarBraceL: new TokenType("${", { beforeExpr: true, startsExpr: true }),
+  // Operators. These carry several kinds of properties to help the
+  // parser use them properly (the presence of these properties is
+  // what categorizes them as operators).
+  //
+  // `binop`, when present, specifies that this operator is a binary
+  // operator, and will refer to its precedence.
+  //
+  // `prefix` and `postfix` mark the operator as a prefix or postfix
+  // unary operator.
+  //
+  // `isAssign` marks all of `=`, `+=`, `-=` etcetera, which act as
+  // binary operators with a very low precedence, that should result
+  // in AssignmentExpression nodes.
+  eq: new TokenType("=", { beforeExpr: true, isAssign: true }),
+  assign: new TokenType("_=", { beforeExpr: true, isAssign: true }),
+  incDec: new TokenType("++/--", { prefix: true, postfix: true, startsExpr: true }),
+  prefix: new TokenType("!/~", { beforeExpr: true, prefix: true, startsExpr: true }),
+  logicalOR: binop("||", 1),
+  logicalAND: binop("&&", 2),
+  bitwiseOR: binop("|", 3),
+  bitwiseXOR: binop("^", 4),
+  bitwiseAND: binop("&", 5),
+  equality: binop("==/!=/===/!==", 6),
+  relational: binop("</>/<=/>=", 7),
+  bitShift: binop("<</>>/>>>", 8),
+  plusMin: new TokenType("+/-", { beforeExpr: true, binop: 9, prefix: true, startsExpr: true }),
+  modulo: binop("%", 10),
+  star: binop("*", 10),
+  slash: binop("/", 10),
+  starstar: new TokenType("**", { beforeExpr: true }),
+  coalesce: binop("??", 1),
+  // Keyword token types.
+  _break: kw("break"),
+  _case: kw("case", beforeExpr),
+  _catch: kw("catch"),
+  _continue: kw("continue"),
+  _debugger: kw("debugger"),
+  _default: kw("default", beforeExpr),
+  _do: kw("do", { isLoop: true, beforeExpr: true }),
+  _else: kw("else", beforeExpr),
+  _finally: kw("finally"),
+  _for: kw("for", { isLoop: true }),
+  _function: kw("function", startsExpr),
+  _if: kw("if"),
+  _return: kw("return", beforeExpr),
+  _switch: kw("switch"),
+  _throw: kw("throw", beforeExpr),
+  _try: kw("try"),
+  _var: kw("var"),
+  _const: kw("const"),
+  _while: kw("while", { isLoop: true }),
+  _with: kw("with"),
+  _new: kw("new", { beforeExpr: true, startsExpr: true }),
+  _this: kw("this", startsExpr),
+  _super: kw("super", startsExpr),
+  _class: kw("class", startsExpr),
+  _extends: kw("extends", beforeExpr),
+  _export: kw("export"),
+  _import: kw("import", startsExpr),
+  _null: kw("null", startsExpr),
+  _true: kw("true", startsExpr),
+  _false: kw("false", startsExpr),
+  _in: kw("in", { beforeExpr: true, binop: 7 }),
+  _instanceof: kw("instanceof", { beforeExpr: true, binop: 7 }),
+  _typeof: kw("typeof", { beforeExpr: true, prefix: true, startsExpr: true }),
+  _void: kw("void", { beforeExpr: true, prefix: true, startsExpr: true }),
+  _delete: kw("delete", { beforeExpr: true, prefix: true, startsExpr: true })
+};
+var lineBreak = /\r\n?|\n|\u2028|\u2029/;
+var lineBreakG = new RegExp(lineBreak.source, "g");
+function isNewLine(code) {
+  return code === 10 || code === 13 || code === 8232 || code === 8233;
+}
+function nextLineBreak(code, from, end) {
+  if (end === void 0) end = code.length;
+  for (var i = from; i < end; i++) {
+    var next = code.charCodeAt(i);
+    if (isNewLine(next)) {
+      return i < end - 1 && next === 13 && code.charCodeAt(i + 1) === 10 ? i + 2 : i + 1;
+    }
+  }
+  return -1;
+}
+var nonASCIIwhitespace = /[\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]/;
+var skipWhiteSpace = /(?:\s|\/\/.*|\/\*[^]*?\*\/)*/g;
+var ref = Object.prototype;
+var hasOwnProperty = ref.hasOwnProperty;
+var toString = ref.toString;
+var hasOwn = Object.hasOwn || (function(obj, propName) {
+  return hasOwnProperty.call(obj, propName);
+});
+var isArray = Array.isArray || (function(obj) {
+  return toString.call(obj) === "[object Array]";
+});
+var regexpCache = /* @__PURE__ */ Object.create(null);
+function wordsRegexp(words) {
+  return regexpCache[words] || (regexpCache[words] = new RegExp("^(?:" + words.replace(/ /g, "|") + ")$"));
+}
+function codePointToString(code) {
+  if (code <= 65535) {
+    return String.fromCharCode(code);
+  }
+  code -= 65536;
+  return String.fromCharCode((code >> 10) + 55296, (code & 1023) + 56320);
+}
+var loneSurrogate = /(?:[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:[^\uD800-\uDBFF]|^)[\uDC00-\uDFFF])/;
+var Position = function Position2(line, col) {
+  this.line = line;
+  this.column = col;
+};
+Position.prototype.offset = function offset(n) {
+  return new Position(this.line, this.column + n);
+};
+var SourceLocation = function SourceLocation2(p, start, end) {
+  this.start = start;
+  this.end = end;
+  if (p.sourceFile !== null) {
+    this.source = p.sourceFile;
+  }
+};
+function getLineInfo(input, offset2) {
+  for (var line = 1, cur = 0; ; ) {
+    var nextBreak = nextLineBreak(input, cur, offset2);
+    if (nextBreak < 0) {
+      return new Position(line, offset2 - cur);
+    }
+    ++line;
+    cur = nextBreak;
+  }
+}
+var defaultOptions = {
+  // `ecmaVersion` indicates the ECMAScript version to parse. Must be
+  // either 3, 5, 6 (or 2015), 7 (2016), 8 (2017), 9 (2018), 10
+  // (2019), 11 (2020), 12 (2021), 13 (2022), 14 (2023), or `"latest"`
+  // (the latest version the library supports). This influences
+  // support for strict mode, the set of reserved words, and support
+  // for new syntax features.
+  ecmaVersion: null,
+  // `sourceType` indicates the mode the code should be parsed in.
+  // Can be either `"script"`, `"module"` or `"commonjs"`. This influences global
+  // strict mode and parsing of `import` and `export` declarations.
+  sourceType: "script",
+  // When set to true, enable strict parsing mode even if `sourceType`
+  // is `"script"`.
+  strict: false,
+  // `onInsertedSemicolon` can be a callback that will be called when
+  // a semicolon is automatically inserted. It will be passed the
+  // position of the inserted semicolon as an offset, and if
+  // `locations` is enabled, it is given the location as a `{line,
+  // column}` object as second argument.
+  onInsertedSemicolon: null,
+  // `onTrailingComma` is similar to `onInsertedSemicolon`, but for
+  // trailing commas.
+  onTrailingComma: null,
+  // By default, reserved words are only enforced if ecmaVersion >= 5.
+  // Set `allowReserved` to a boolean value to explicitly turn this on
+  // an off. When this option has the value "never", reserved words
+  // and keywords can also not be used as property names.
+  allowReserved: null,
+  // When enabled, a return at the top level is not considered an
+  // error.
+  allowReturnOutsideFunction: false,
+  // When enabled, import/export statements are not constrained to
+  // appearing at the top of the program, and an import.meta expression
+  // in a script isn't considered an error.
+  allowImportExportEverywhere: false,
+  // By default, await identifiers are allowed to appear at the top-level scope only if ecmaVersion >= 2022.
+  // When enabled, await identifiers are allowed to appear at the top-level scope,
+  // but they are still not allowed in non-async functions.
+  allowAwaitOutsideFunction: null,
+  // When enabled, super identifiers are not constrained to
+  // appearing in methods and do not raise an error when they appear elsewhere.
+  allowSuperOutsideMethod: null,
+  // When enabled, hashbang directive in the beginning of file is
+  // allowed and treated as a line comment. Enabled by default when
+  // `ecmaVersion` >= 2023.
+  allowHashBang: false,
+  // By default, the parser will verify that private properties are
+  // only used in places where they are valid and have been declared.
+  // Set this to false to turn such checks off.
+  checkPrivateFields: true,
+  // When `locations` is on, `loc` properties holding objects with
+  // `start` and `end` properties in `{line, column}` form (with
+  // line being 1-based and column 0-based) will be attached to the
+  // nodes.
+  locations: false,
+  // A function can be passed as `onToken` option, which will
+  // cause Acorn to call that function with object in the same
+  // format as tokens returned from `tokenizer().getToken()`. Note
+  // that you are not allowed to call the parser from the
+  // callback—that will corrupt its internal state.
+  onToken: null,
+  // A function can be passed as `onComment` option, which will
+  // cause Acorn to call that function with `(block, text, start,
+  // end)` parameters whenever a comment is skipped. `block` is a
+  // boolean indicating whether this is a block (`/* */`) comment,
+  // `text` is the content of the comment, and `start` and `end` are
+  // character offsets that denote the start and end of the comment.
+  // When the `locations` option is on, two more parameters are
+  // passed, the full `{line, column}` locations of the start and
+  // end of the comments. Note that you are not allowed to call the
+  // parser from the callback—that will corrupt its internal state.
+  // When this option has an array as value, objects representing the
+  // comments are pushed to it.
+  onComment: null,
+  // Nodes have their start and end characters offsets recorded in
+  // `start` and `end` properties (directly on the node, rather than
+  // the `loc` object, which holds line/column data. To also add a
+  // [semi-standardized][range] `range` property holding a `[start,
+  // end]` array with the same numbers, set the `ranges` option to
+  // `true`.
+  //
+  // [range]: https://bugzilla.mozilla.org/show_bug.cgi?id=745678
+  ranges: false,
+  // It is possible to parse multiple files into a single AST by
+  // passing the tree produced by parsing the first file as
+  // `program` option in subsequent parses. This will add the
+  // toplevel forms of the parsed file to the `Program` (top) node
+  // of an existing parse tree.
+  program: null,
+  // When `locations` is on, you can pass this to record the source
+  // file in every node's `loc` object.
+  sourceFile: null,
+  // This value, if given, is stored in every node, whether
+  // `locations` is on or off.
+  directSourceFile: null,
+  // When enabled, parenthesized expressions are represented by
+  // (non-standard) ParenthesizedExpression nodes
+  preserveParens: false
+};
+var warnedAboutEcmaVersion = false;
+function getOptions(opts) {
+  var options = {};
+  for (var opt in defaultOptions) {
+    options[opt] = opts && hasOwn(opts, opt) ? opts[opt] : defaultOptions[opt];
+  }
+  if (options.ecmaVersion === "latest") {
+    options.ecmaVersion = 1e8;
+  } else if (options.ecmaVersion == null) {
+    if (!warnedAboutEcmaVersion && typeof console === "object" && console.warn) {
+      warnedAboutEcmaVersion = true;
+      console.warn("Since Acorn 8.0.0, options.ecmaVersion is required.\nDefaulting to 2020, but this will stop working in the future.");
+    }
+    options.ecmaVersion = 11;
+  } else if (options.ecmaVersion >= 2015) {
+    options.ecmaVersion -= 2009;
+  }
+  if (options.allowReserved == null) {
+    options.allowReserved = options.ecmaVersion < 5;
+  }
+  if (!opts || opts.allowHashBang == null) {
+    options.allowHashBang = options.ecmaVersion >= 14;
+  }
+  if (isArray(options.onToken)) {
+    var tokens = options.onToken;
+    options.onToken = function(token) {
+      return tokens.push(token);
+    };
+  }
+  if (isArray(options.onComment)) {
+    options.onComment = pushComment(options, options.onComment);
+  }
+  if (options.sourceType === "commonjs" && options.allowAwaitOutsideFunction) {
+    throw new Error("Cannot use allowAwaitOutsideFunction with sourceType: commonjs");
+  }
+  return options;
+}
+function pushComment(options, array) {
+  return function(block, text2, start, end, startLoc, endLoc) {
+    var comment = {
+      type: block ? "Block" : "Line",
+      value: text2,
+      start,
+      end
+    };
+    if (options.locations) {
+      comment.loc = new SourceLocation(this, startLoc, endLoc);
+    }
+    if (options.ranges) {
+      comment.range = [start, end];
+    }
+    array.push(comment);
+  };
+}
+var SCOPE_TOP = 1;
+var SCOPE_FUNCTION = 2;
+var SCOPE_ASYNC = 4;
+var SCOPE_GENERATOR = 8;
+var SCOPE_ARROW = 16;
+var SCOPE_SIMPLE_CATCH = 32;
+var SCOPE_SUPER = 64;
+var SCOPE_DIRECT_SUPER = 128;
+var SCOPE_CLASS_STATIC_BLOCK = 256;
+var SCOPE_CLASS_FIELD_INIT = 512;
+var SCOPE_SWITCH = 1024;
+var SCOPE_VAR = SCOPE_TOP | SCOPE_FUNCTION | SCOPE_CLASS_STATIC_BLOCK;
+function functionFlags(async, generator) {
+  return SCOPE_FUNCTION | (async ? SCOPE_ASYNC : 0) | (generator ? SCOPE_GENERATOR : 0);
+}
+var BIND_NONE = 0;
+var BIND_VAR = 1;
+var BIND_LEXICAL = 2;
+var BIND_FUNCTION = 3;
+var BIND_SIMPLE_CATCH = 4;
+var BIND_OUTSIDE = 5;
+var Parser = function Parser2(options, input, startPos) {
+  this.options = options = getOptions(options);
+  this.sourceFile = options.sourceFile;
+  this.keywords = wordsRegexp(keywords$1[options.ecmaVersion >= 6 ? 6 : options.sourceType === "module" ? "5module" : 5]);
+  var reserved = "";
+  if (options.allowReserved !== true) {
+    reserved = reservedWords[options.ecmaVersion >= 6 ? 6 : options.ecmaVersion === 5 ? 5 : 3];
+    if (options.sourceType === "module") {
+      reserved += " await";
+    }
+  }
+  this.reservedWords = wordsRegexp(reserved);
+  var reservedStrict = (reserved ? reserved + " " : "") + reservedWords.strict;
+  this.reservedWordsStrict = wordsRegexp(reservedStrict);
+  this.reservedWordsStrictBind = wordsRegexp(reservedStrict + " " + reservedWords.strictBind);
+  this.input = String(input);
+  this.containsEsc = false;
+  if (startPos) {
+    this.pos = startPos;
+    this.lineStart = this.input.lastIndexOf("\n", startPos - 1) + 1;
+    this.curLine = this.input.slice(0, this.lineStart).split(lineBreak).length;
+  } else {
+    this.pos = this.lineStart = 0;
+    this.curLine = 1;
+  }
+  this.type = types$1.eof;
+  this.value = null;
+  this.start = this.end = this.pos;
+  this.startLoc = this.endLoc = this.curPosition();
+  this.lastTokEndLoc = this.lastTokStartLoc = null;
+  this.lastTokStart = this.lastTokEnd = this.pos;
+  this.context = this.initialContext();
+  this.exprAllowed = true;
+  this.inModule = options.sourceType === "module";
+  this.strict = this.inModule || options.strict === true || this.strictDirective(this.pos);
+  this.potentialArrowAt = -1;
+  this.potentialArrowInForAwait = false;
+  this.yieldPos = this.awaitPos = this.awaitIdentPos = 0;
+  this.labels = [];
+  this.undefinedExports = /* @__PURE__ */ Object.create(null);
+  if (this.pos === 0 && options.allowHashBang && this.input.slice(0, 2) === "#!") {
+    this.skipLineComment(2);
+  }
+  this.scopeStack = [];
+  this.enterScope(
+    this.options.sourceType === "commonjs" ? SCOPE_FUNCTION : SCOPE_TOP
+  );
+  this.regexpState = null;
+  this.privateNameStack = [];
+};
+var prototypeAccessors = { inFunction: { configurable: true }, inGenerator: { configurable: true }, inAsync: { configurable: true }, canAwait: { configurable: true }, allowReturn: { configurable: true }, allowSuper: { configurable: true }, allowDirectSuper: { configurable: true }, treatFunctionsAsVar: { configurable: true }, allowNewDotTarget: { configurable: true }, allowUsing: { configurable: true }, inClassStaticBlock: { configurable: true } };
+Parser.prototype.parse = function parse() {
+  var this$1$1 = this;
+  var node = this.options.program || this.startNode();
+  this.nextToken();
+  return this.catchStackOverflow(function() {
+    return this$1$1.parseTopLevel(node);
+  });
+};
+prototypeAccessors.inFunction.get = function() {
+  return (this.currentVarScope().flags & SCOPE_FUNCTION) > 0;
+};
+prototypeAccessors.inGenerator.get = function() {
+  return (this.currentVarScope().flags & SCOPE_GENERATOR) > 0;
+};
+prototypeAccessors.inAsync.get = function() {
+  return (this.currentVarScope().flags & SCOPE_ASYNC) > 0;
+};
+prototypeAccessors.canAwait.get = function() {
+  for (var i = this.scopeStack.length - 1; i >= 0; i--) {
+    var ref2 = this.scopeStack[i];
+    var flags = ref2.flags;
+    if (flags & (SCOPE_CLASS_STATIC_BLOCK | SCOPE_CLASS_FIELD_INIT)) {
+      return false;
+    }
+    if (flags & SCOPE_FUNCTION) {
+      return (flags & SCOPE_ASYNC) > 0;
+    }
+  }
+  return this.inModule && this.options.ecmaVersion >= 13 || this.options.allowAwaitOutsideFunction;
+};
+prototypeAccessors.allowReturn.get = function() {
+  if (this.inFunction) {
+    return true;
+  }
+  if (this.options.allowReturnOutsideFunction && this.currentVarScope().flags & SCOPE_TOP) {
+    return true;
+  }
+  return false;
+};
+prototypeAccessors.allowSuper.get = function() {
+  var ref2 = this.currentThisScope();
+  var flags = ref2.flags;
+  return (flags & SCOPE_SUPER) > 0 || this.options.allowSuperOutsideMethod;
+};
+prototypeAccessors.allowDirectSuper.get = function() {
+  return (this.currentThisScope().flags & SCOPE_DIRECT_SUPER) > 0;
+};
+prototypeAccessors.treatFunctionsAsVar.get = function() {
+  return this.treatFunctionsAsVarInScope(this.currentScope());
+};
+prototypeAccessors.allowNewDotTarget.get = function() {
+  for (var i = this.scopeStack.length - 1; i >= 0; i--) {
+    var ref2 = this.scopeStack[i];
+    var flags = ref2.flags;
+    if (flags & (SCOPE_CLASS_STATIC_BLOCK | SCOPE_CLASS_FIELD_INIT) || flags & SCOPE_FUNCTION && !(flags & SCOPE_ARROW)) {
+      return true;
+    }
+  }
+  return false;
+};
+prototypeAccessors.allowUsing.get = function() {
+  var ref2 = this.currentScope();
+  var flags = ref2.flags;
+  if (flags & SCOPE_SWITCH) {
+    return false;
+  }
+  if (!this.inModule && flags & SCOPE_TOP) {
+    return false;
+  }
+  return true;
+};
+prototypeAccessors.inClassStaticBlock.get = function() {
+  return (this.currentVarScope().flags & SCOPE_CLASS_STATIC_BLOCK) > 0;
+};
+Parser.extend = function extend() {
+  var plugins = [], len = arguments.length;
+  while (len--) plugins[len] = arguments[len];
+  var cls = this;
+  for (var i = 0; i < plugins.length; i++) {
+    cls = plugins[i](cls);
+  }
+  return cls;
+};
+Parser.parse = function parse2(input, options) {
+  return new this(options, input).parse();
+};
+Parser.parseExpressionAt = function parseExpressionAt(input, pos, options) {
+  var parser = new this(options, input, pos);
+  parser.nextToken();
+  return parser.parseExpression();
+};
+Parser.tokenizer = function tokenizer(input, options) {
+  return new this(options, input);
+};
+Object.defineProperties(Parser.prototype, prototypeAccessors);
+var pp$9 = Parser.prototype;
+var literal = /^(?:'((?:\\[^]|[^'\\])*?)'|"((?:\\[^]|[^"\\])*?)")/;
+pp$9.strictDirective = function(start) {
+  if (this.options.ecmaVersion < 5) {
+    return false;
+  }
+  for (; ; ) {
+    skipWhiteSpace.lastIndex = start;
+    start += skipWhiteSpace.exec(this.input)[0].length;
+    var match = literal.exec(this.input.slice(start));
+    if (!match) {
+      return false;
+    }
+    if ((match[1] || match[2]) === "use strict") {
+      skipWhiteSpace.lastIndex = start + match[0].length;
+      var spaceAfter = skipWhiteSpace.exec(this.input), end = spaceAfter.index + spaceAfter[0].length;
+      var next = this.input.charAt(end);
+      return next === ";" || next === "}" || lineBreak.test(spaceAfter[0]) && !(/[(`.[+\-/*%<>=,?^&]/.test(next) || next === "!" && this.input.charAt(end + 1) === "=");
+    }
+    start += match[0].length;
+    skipWhiteSpace.lastIndex = start;
+    start += skipWhiteSpace.exec(this.input)[0].length;
+    if (this.input[start] === ";") {
+      start++;
+    }
+  }
+};
+pp$9.eat = function(type) {
+  if (this.type === type) {
+    this.next();
+    return true;
+  } else {
+    return false;
+  }
+};
+pp$9.isContextual = function(name) {
+  return this.type === types$1.name && this.value === name && !this.containsEsc;
+};
+pp$9.eatContextual = function(name) {
+  if (!this.isContextual(name)) {
+    return false;
+  }
+  this.next();
+  return true;
+};
+pp$9.catchStackOverflow = function(f) {
+  try {
+    return f();
+  } catch (e) {
+    if (e instanceof Error && (/\bstack\b.*\b(exceeded|overflow)\b/i.test(e.message) || /\btoo much recursion\b/i.test(e.message))) {
+      this.raise(this.start, "Not enough stack space to parse input");
+    } else {
+      throw e;
+    }
+  }
+};
+pp$9.expectContextual = function(name) {
+  if (!this.eatContextual(name)) {
+    this.unexpected();
+  }
+};
+pp$9.canInsertSemicolon = function() {
+  return this.type === types$1.eof || this.type === types$1.braceR || lineBreak.test(this.input.slice(this.lastTokEnd, this.start));
+};
+pp$9.insertSemicolon = function() {
+  if (this.canInsertSemicolon()) {
+    if (this.options.onInsertedSemicolon) {
+      this.options.onInsertedSemicolon(this.lastTokEnd, this.lastTokEndLoc);
+    }
+    return true;
+  }
+};
+pp$9.semicolon = function() {
+  if (!this.eat(types$1.semi) && !this.insertSemicolon()) {
+    this.unexpected();
+  }
+};
+pp$9.afterTrailingComma = function(tokType, notNext) {
+  if (this.type === tokType) {
+    if (this.options.onTrailingComma) {
+      this.options.onTrailingComma(this.lastTokStart, this.lastTokStartLoc);
+    }
+    if (!notNext) {
+      this.next();
+    }
+    return true;
+  }
+};
+pp$9.expect = function(type) {
+  this.eat(type) || this.unexpected();
+};
+pp$9.unexpected = function(pos) {
+  this.raise(pos != null ? pos : this.start, "Unexpected token");
+};
+var DestructuringErrors = function DestructuringErrors2() {
+  this.shorthandAssign = this.trailingComma = this.parenthesizedAssign = this.parenthesizedBind = this.doubleProto = -1;
+};
+pp$9.checkPatternErrors = function(refDestructuringErrors, isAssign) {
+  if (!refDestructuringErrors) {
+    return;
+  }
+  if (refDestructuringErrors.trailingComma > -1) {
+    this.raiseRecoverable(refDestructuringErrors.trailingComma, "Comma is not permitted after the rest element");
+  }
+  var parens = isAssign ? refDestructuringErrors.parenthesizedAssign : refDestructuringErrors.parenthesizedBind;
+  if (parens > -1) {
+    this.raiseRecoverable(parens, isAssign ? "Assigning to rvalue" : "Parenthesized pattern");
+  }
+};
+pp$9.checkExpressionErrors = function(refDestructuringErrors, andThrow) {
+  if (!refDestructuringErrors) {
+    return false;
+  }
+  var shorthandAssign = refDestructuringErrors.shorthandAssign;
+  var doubleProto = refDestructuringErrors.doubleProto;
+  if (!andThrow) {
+    return shorthandAssign >= 0 || doubleProto >= 0;
+  }
+  if (shorthandAssign >= 0) {
+    this.raise(shorthandAssign, "Shorthand property assignments are valid only in destructuring patterns");
+  }
+  if (doubleProto >= 0) {
+    this.raiseRecoverable(doubleProto, "Redefinition of __proto__ property");
+  }
+};
+pp$9.checkYieldAwaitInDefaultParams = function() {
+  if (this.yieldPos && (!this.awaitPos || this.yieldPos < this.awaitPos)) {
+    this.raise(this.yieldPos, "Yield expression cannot be a default value");
+  }
+  if (this.awaitPos) {
+    this.raise(this.awaitPos, "Await expression cannot be a default value");
+  }
+};
+pp$9.isSimpleAssignTarget = function(expr) {
+  if (expr.type === "ParenthesizedExpression") {
+    return this.isSimpleAssignTarget(expr.expression);
+  }
+  return expr.type === "Identifier" || expr.type === "MemberExpression";
+};
+var pp$8 = Parser.prototype;
+pp$8.parseTopLevel = function(node) {
+  var exports$1 = /* @__PURE__ */ Object.create(null);
+  if (!node.body) {
+    node.body = [];
+  }
+  while (this.type !== types$1.eof) {
+    var stmt = this.parseStatement(null, true, exports$1);
+    node.body.push(stmt);
+  }
+  if (this.inModule) {
+    for (var i = 0, list = Object.keys(this.undefinedExports); i < list.length; i += 1) {
+      var name = list[i];
+      this.raiseRecoverable(this.undefinedExports[name].start, "Export '" + name + "' is not defined");
+    }
+  }
+  this.adaptDirectivePrologue(node.body);
+  this.next();
+  node.sourceType = this.options.sourceType === "commonjs" ? "script" : this.options.sourceType;
+  return this.finishNode(node, "Program");
+};
+var loopLabel = { kind: "loop" };
+var switchLabel = { kind: "switch" };
+pp$8.isLet = function(context) {
+  if (this.options.ecmaVersion < 6 || !this.isContextual("let")) {
+    return false;
+  }
+  skipWhiteSpace.lastIndex = this.pos;
+  var skip = skipWhiteSpace.exec(this.input);
+  var next = this.pos + skip[0].length, nextCh = this.fullCharCodeAt(next);
+  if (nextCh === 91 || nextCh === 92) {
+    return true;
+  }
+  if (context) {
+    return false;
+  }
+  if (nextCh === 123) {
+    return true;
+  }
+  if (isIdentifierStart(nextCh)) {
+    var start = next;
+    do {
+      next += nextCh <= 65535 ? 1 : 2;
+    } while (isIdentifierChar(nextCh = this.fullCharCodeAt(next)));
+    if (nextCh === 92) {
+      return true;
+    }
+    var ident = this.input.slice(start, next);
+    if (!keywordRelationalOperator.test(ident)) {
+      return true;
+    }
+  }
+  return false;
+};
+pp$8.isAsyncFunction = function() {
+  if (this.options.ecmaVersion < 8 || !this.isContextual("async")) {
+    return false;
+  }
+  skipWhiteSpace.lastIndex = this.pos;
+  var skip = skipWhiteSpace.exec(this.input);
+  var next = this.pos + skip[0].length, after;
+  return !lineBreak.test(this.input.slice(this.pos, next)) && this.input.slice(next, next + 8) === "function" && (next + 8 === this.input.length || !(isIdentifierChar(after = this.fullCharCodeAt(next + 8)) || after === 92));
+};
+pp$8.isUsingKeyword = function(isAwaitUsing, isFor) {
+  if (this.options.ecmaVersion < 17 || !this.isContextual(isAwaitUsing ? "await" : "using")) {
+    return false;
+  }
+  skipWhiteSpace.lastIndex = this.pos;
+  var skip = skipWhiteSpace.exec(this.input);
+  var next = this.pos + skip[0].length;
+  if (lineBreak.test(this.input.slice(this.pos, next))) {
+    return false;
+  }
+  if (isAwaitUsing) {
+    var usingEndPos = next + 5, after;
+    if (this.input.slice(next, usingEndPos) !== "using" || usingEndPos === this.input.length || isIdentifierChar(after = this.fullCharCodeAt(usingEndPos)) || after === 92) {
+      return false;
+    }
+    skipWhiteSpace.lastIndex = usingEndPos;
+    var skipAfterUsing = skipWhiteSpace.exec(this.input);
+    next = usingEndPos + skipAfterUsing[0].length;
+    if (skipAfterUsing && lineBreak.test(this.input.slice(usingEndPos, next))) {
+      return false;
+    }
+  }
+  var ch = this.fullCharCodeAt(next);
+  if (!isIdentifierStart(ch) && ch !== 92) {
+    return false;
+  }
+  var idStart = next;
+  do {
+    next += ch <= 65535 ? 1 : 2;
+  } while (isIdentifierChar(ch = this.fullCharCodeAt(next)));
+  if (ch === 92) {
+    return true;
+  }
+  var id = this.input.slice(idStart, next);
+  if (keywordRelationalOperator.test(id)) {
+    return false;
+  }
+  if (isFor && !isAwaitUsing && id === "of") {
+    skipWhiteSpace.lastIndex = next;
+    var skipAfterOf = skipWhiteSpace.exec(this.input);
+    next = next + skipAfterOf[0].length;
+    if (this.input.charCodeAt(next) !== 61 || // Check for ==, === and => operators
+    (ch = this.input.charCodeAt(next + 1)) === 61 || ch === 62) {
+      return false;
+    }
+  }
+  return true;
+};
+pp$8.isAwaitUsing = function(isFor) {
+  return this.isUsingKeyword(true, isFor);
+};
+pp$8.isUsing = function(isFor) {
+  return this.isUsingKeyword(false, isFor);
+};
+pp$8.parseStatement = function(context, topLevel, exports$1) {
+  var starttype = this.type, node = this.startNode(), kind;
+  if (this.isLet(context)) {
+    starttype = types$1._var;
+    kind = "let";
+  }
+  switch (starttype) {
+    case types$1._break:
+    case types$1._continue:
+      return this.parseBreakContinueStatement(node, starttype.keyword);
+    case types$1._debugger:
+      return this.parseDebuggerStatement(node);
+    case types$1._do:
+      return this.parseDoStatement(node);
+    case types$1._for:
+      return this.parseForStatement(node);
+    case types$1._function:
+      if (context && (this.strict || context !== "if" && context !== "label") && this.options.ecmaVersion >= 6) {
+        this.unexpected();
+      }
+      return this.parseFunctionStatement(node, false, !context);
+    case types$1._class:
+      if (context) {
+        this.unexpected();
+      }
+      return this.parseClass(node, true);
+    case types$1._if:
+      return this.parseIfStatement(node);
+    case types$1._return:
+      return this.parseReturnStatement(node);
+    case types$1._switch:
+      return this.parseSwitchStatement(node);
+    case types$1._throw:
+      return this.parseThrowStatement(node);
+    case types$1._try:
+      return this.parseTryStatement(node);
+    case types$1._const:
+    case types$1._var:
+      kind = kind || this.value;
+      if (context && kind !== "var") {
+        this.unexpected();
+      }
+      return this.parseVarStatement(node, kind);
+    case types$1._while:
+      return this.parseWhileStatement(node);
+    case types$1._with:
+      return this.parseWithStatement(node);
+    case types$1.braceL:
+      return this.parseBlock(true, node);
+    case types$1.semi:
+      return this.parseEmptyStatement(node);
+    case types$1._export:
+    case types$1._import:
+      if (this.options.ecmaVersion > 10 && starttype === types$1._import) {
+        skipWhiteSpace.lastIndex = this.pos;
+        var skip = skipWhiteSpace.exec(this.input);
+        var next = this.pos + skip[0].length, nextCh = this.input.charCodeAt(next);
+        if (nextCh === 40 || nextCh === 46) {
+          return this.parseExpressionStatement(node, this.parseExpression());
+        }
+      }
+      if (!this.options.allowImportExportEverywhere) {
+        if (!topLevel) {
+          this.raise(this.start, "'import' and 'export' may only appear at the top level");
+        }
+        if (!this.inModule) {
+          this.raise(this.start, "'import' and 'export' may appear only with 'sourceType: module'");
+        }
+      }
+      return starttype === types$1._import ? this.parseImport(node) : this.parseExport(node, exports$1);
+    // If the statement does not start with a statement keyword or a
+    // brace, it's an ExpressionStatement or LabeledStatement. We
+    // simply start parsing an expression, and afterwards, if the
+    // next token is a colon and the expression was a simple
+    // Identifier node, we switch to interpreting it as a label.
+    default:
+      if (this.isAsyncFunction()) {
+        if (context) {
+          this.unexpected();
+        }
+        this.next();
+        return this.parseFunctionStatement(node, true, !context);
+      }
+      var usingKind = this.isAwaitUsing(false) ? "await using" : this.isUsing(false) ? "using" : null;
+      if (usingKind) {
+        if (!this.allowUsing) {
+          this.raise(this.start, "Using declaration cannot appear in the top level when source type is `script` or in the bare case statement");
+        }
+        if (context) {
+          this.raise(this.start, "Using declaration is not allowed in single-statement positions");
+        }
+        if (usingKind === "await using") {
+          if (!this.canAwait) {
+            this.raise(this.start, "Await using cannot appear outside of async function");
+          }
+          this.next();
+        }
+        this.next();
+        this.parseVar(node, false, usingKind);
+        this.semicolon();
+        return this.finishNode(node, "VariableDeclaration");
+      }
+      var maybeName = this.value, expr = this.parseExpression();
+      if (starttype === types$1.name && expr.type === "Identifier" && this.eat(types$1.colon)) {
+        return this.parseLabeledStatement(node, maybeName, expr, context);
+      } else {
+        return this.parseExpressionStatement(node, expr);
+      }
+  }
+};
+pp$8.parseBreakContinueStatement = function(node, keyword) {
+  var isBreak = keyword === "break";
+  this.next();
+  if (this.eat(types$1.semi) || this.insertSemicolon()) {
+    node.label = null;
+  } else if (this.type !== types$1.name) {
+    this.unexpected();
+  } else {
+    node.label = this.parseIdent();
+    this.semicolon();
+  }
+  var i = 0;
+  for (; i < this.labels.length; ++i) {
+    var lab = this.labels[i];
+    if (node.label == null || lab.name === node.label.name) {
+      if (lab.kind != null && (isBreak || lab.kind === "loop")) {
+        break;
+      }
+      if (node.label && isBreak) {
+        break;
+      }
+    }
+  }
+  if (i === this.labels.length) {
+    this.raise(node.start, "Unsyntactic " + keyword);
+  }
+  return this.finishNode(node, isBreak ? "BreakStatement" : "ContinueStatement");
+};
+pp$8.parseDebuggerStatement = function(node) {
+  this.next();
+  this.semicolon();
+  return this.finishNode(node, "DebuggerStatement");
+};
+pp$8.parseDoStatement = function(node) {
+  this.next();
+  this.labels.push(loopLabel);
+  node.body = this.parseStatement("do");
+  this.labels.pop();
+  this.expect(types$1._while);
+  node.test = this.parseParenExpression();
+  if (this.options.ecmaVersion >= 6) {
+    this.eat(types$1.semi);
+  } else {
+    this.semicolon();
+  }
+  return this.finishNode(node, "DoWhileStatement");
+};
+pp$8.parseForStatement = function(node) {
+  this.next();
+  var awaitAt = this.options.ecmaVersion >= 9 && this.canAwait && this.eatContextual("await") ? this.lastTokStart : -1;
+  this.labels.push(loopLabel);
+  this.enterScope(0);
+  this.expect(types$1.parenL);
+  if (this.type === types$1.semi) {
+    if (awaitAt > -1) {
+      this.unexpected(awaitAt);
+    }
+    return this.parseFor(node, null);
+  }
+  var isLet = this.isLet();
+  if (this.type === types$1._var || this.type === types$1._const || isLet) {
+    var init$1 = this.startNode(), kind = isLet ? "let" : this.value;
+    this.next();
+    this.parseVar(init$1, true, kind);
+    this.finishNode(init$1, "VariableDeclaration");
+    return this.parseForAfterInit(node, init$1, awaitAt);
+  }
+  var startsWithLet = this.isContextual("let"), isForOf = false;
+  var usingKind = this.isUsing(true) ? "using" : this.isAwaitUsing(true) ? "await using" : null;
+  if (usingKind) {
+    var init$2 = this.startNode();
+    this.next();
+    if (usingKind === "await using") {
+      if (!this.canAwait) {
+        this.raise(this.start, "Await using cannot appear outside of async function");
+      }
+      this.next();
+    }
+    this.parseVar(init$2, true, usingKind);
+    this.finishNode(init$2, "VariableDeclaration");
+    return this.parseForAfterInit(node, init$2, awaitAt);
+  }
+  var containsEsc = this.containsEsc;
+  var refDestructuringErrors = new DestructuringErrors();
+  var initPos = this.start;
+  var init = awaitAt > -1 ? this.parseExprSubscripts(refDestructuringErrors, "await") : this.parseExpression(true, refDestructuringErrors);
+  if (this.type === types$1._in || (isForOf = this.options.ecmaVersion >= 6 && this.isContextual("of"))) {
+    if (awaitAt > -1) {
+      if (this.type === types$1._in) {
+        this.unexpected(awaitAt);
+      }
+      node.await = true;
+    } else if (isForOf && this.options.ecmaVersion >= 8) {
+      if (init.start === initPos && !containsEsc && init.type === "Identifier" && init.name === "async") {
+        this.unexpected();
+      } else if (this.options.ecmaVersion >= 9) {
+        node.await = false;
+      }
+    }
+    if (startsWithLet && isForOf) {
+      this.raise(init.start, "The left-hand side of a for-of loop may not start with 'let'.");
+    }
+    this.toAssignable(init, false, refDestructuringErrors);
+    this.checkLValPattern(init);
+    return this.parseForIn(node, init);
+  } else {
+    this.checkExpressionErrors(refDestructuringErrors, true);
+  }
+  if (awaitAt > -1) {
+    this.unexpected(awaitAt);
+  }
+  return this.parseFor(node, init);
+};
+pp$8.parseForAfterInit = function(node, init, awaitAt) {
+  if ((this.type === types$1._in || this.options.ecmaVersion >= 6 && this.isContextual("of")) && init.declarations.length === 1) {
+    if (this.type === types$1._in) {
+      if ((init.kind === "using" || init.kind === "await using") && !init.declarations[0].init) {
+        this.raise(this.start, "Using declaration is not allowed in for-in loops");
+      }
+      if (this.options.ecmaVersion >= 9 && awaitAt > -1) {
+        this.unexpected(awaitAt);
+      }
+    } else if (this.options.ecmaVersion >= 9) {
+      node.await = awaitAt > -1;
+    }
+    return this.parseForIn(node, init);
+  }
+  if (awaitAt > -1) {
+    this.unexpected(awaitAt);
+  }
+  return this.parseFor(node, init);
+};
+pp$8.parseFunctionStatement = function(node, isAsync, declarationPosition) {
+  this.next();
+  return this.parseFunction(node, FUNC_STATEMENT | (declarationPosition ? 0 : FUNC_HANGING_STATEMENT), false, isAsync);
+};
+pp$8.parseIfStatement = function(node) {
+  this.next();
+  node.test = this.parseParenExpression();
+  node.consequent = this.parseStatement("if");
+  node.alternate = this.eat(types$1._else) ? this.parseStatement("if") : null;
+  return this.finishNode(node, "IfStatement");
+};
+pp$8.parseReturnStatement = function(node) {
+  if (!this.allowReturn) {
+    this.raise(this.start, "'return' outside of function");
+  }
+  this.next();
+  if (this.eat(types$1.semi) || this.insertSemicolon()) {
+    node.argument = null;
+  } else {
+    node.argument = this.parseExpression();
+    this.semicolon();
+  }
+  return this.finishNode(node, "ReturnStatement");
+};
+pp$8.parseSwitchStatement = function(node) {
+  this.next();
+  node.discriminant = this.parseParenExpression();
+  node.cases = [];
+  this.expect(types$1.braceL);
+  this.labels.push(switchLabel);
+  this.enterScope(SCOPE_SWITCH);
+  var cur;
+  for (var sawDefault = false; this.type !== types$1.braceR; ) {
+    if (this.type === types$1._case || this.type === types$1._default) {
+      var isCase = this.type === types$1._case;
+      if (cur) {
+        this.finishNode(cur, "SwitchCase");
+      }
+      node.cases.push(cur = this.startNode());
+      cur.consequent = [];
+      this.next();
+      if (isCase) {
+        cur.test = this.parseExpression();
+      } else {
+        if (sawDefault) {
+          this.raiseRecoverable(this.lastTokStart, "Multiple default clauses");
+        }
+        sawDefault = true;
+        cur.test = null;
+      }
+      this.expect(types$1.colon);
+    } else {
+      if (!cur) {
+        this.unexpected();
+      }
+      cur.consequent.push(this.parseStatement(null));
+    }
+  }
+  this.exitScope();
+  if (cur) {
+    this.finishNode(cur, "SwitchCase");
+  }
+  this.next();
+  this.labels.pop();
+  return this.finishNode(node, "SwitchStatement");
+};
+pp$8.parseThrowStatement = function(node) {
+  this.next();
+  if (lineBreak.test(this.input.slice(this.lastTokEnd, this.start))) {
+    this.raise(this.lastTokEnd, "Illegal newline after throw");
+  }
+  node.argument = this.parseExpression();
+  this.semicolon();
+  return this.finishNode(node, "ThrowStatement");
+};
+var empty$1 = [];
+pp$8.parseCatchClauseParam = function() {
+  var param = this.parseBindingAtom();
+  var simple = param.type === "Identifier";
+  this.enterScope(simple ? SCOPE_SIMPLE_CATCH : 0);
+  this.checkLValPattern(param, simple ? BIND_SIMPLE_CATCH : BIND_LEXICAL);
+  this.expect(types$1.parenR);
+  return param;
+};
+pp$8.parseTryStatement = function(node) {
+  this.next();
+  node.block = this.parseBlock();
+  node.handler = null;
+  if (this.type === types$1._catch) {
+    var clause = this.startNode();
+    this.next();
+    if (this.eat(types$1.parenL)) {
+      clause.param = this.parseCatchClauseParam();
+    } else {
+      if (this.options.ecmaVersion < 10) {
+        this.unexpected();
+      }
+      clause.param = null;
+      this.enterScope(0);
+    }
+    clause.body = this.parseBlock(false);
+    this.exitScope();
+    node.handler = this.finishNode(clause, "CatchClause");
+  }
+  node.finalizer = this.eat(types$1._finally) ? this.parseBlock() : null;
+  if (!node.handler && !node.finalizer) {
+    this.raise(node.start, "Missing catch or finally clause");
+  }
+  return this.finishNode(node, "TryStatement");
+};
+pp$8.parseVarStatement = function(node, kind, allowMissingInitializer) {
+  this.next();
+  this.parseVar(node, false, kind, allowMissingInitializer);
+  this.semicolon();
+  return this.finishNode(node, "VariableDeclaration");
+};
+pp$8.parseWhileStatement = function(node) {
+  this.next();
+  node.test = this.parseParenExpression();
+  this.labels.push(loopLabel);
+  node.body = this.parseStatement("while");
+  this.labels.pop();
+  return this.finishNode(node, "WhileStatement");
+};
+pp$8.parseWithStatement = function(node) {
+  if (this.strict) {
+    this.raise(this.start, "'with' in strict mode");
+  }
+  this.next();
+  node.object = this.parseParenExpression();
+  node.body = this.parseStatement("with");
+  return this.finishNode(node, "WithStatement");
+};
+pp$8.parseEmptyStatement = function(node) {
+  this.next();
+  return this.finishNode(node, "EmptyStatement");
+};
+pp$8.parseLabeledStatement = function(node, maybeName, expr, context) {
+  for (var i$1 = 0, list = this.labels; i$1 < list.length; i$1 += 1) {
+    var label = list[i$1];
+    if (label.name === maybeName) {
+      this.raise(expr.start, "Label '" + maybeName + "' is already declared");
+    }
+  }
+  var kind = this.type.isLoop ? "loop" : this.type === types$1._switch ? "switch" : null;
+  for (var i = this.labels.length - 1; i >= 0; i--) {
+    var label$1 = this.labels[i];
+    if (label$1.statementStart === node.start) {
+      label$1.statementStart = this.start;
+      label$1.kind = kind;
+    } else {
+      break;
+    }
+  }
+  this.labels.push({ name: maybeName, kind, statementStart: this.start });
+  node.body = this.parseStatement(context ? context.indexOf("label") === -1 ? context + "label" : context : "label");
+  this.labels.pop();
+  node.label = expr;
+  return this.finishNode(node, "LabeledStatement");
+};
+pp$8.parseExpressionStatement = function(node, expr) {
+  node.expression = expr;
+  this.semicolon();
+  return this.finishNode(node, "ExpressionStatement");
+};
+pp$8.parseBlock = function(createNewLexicalScope, node, exitStrict) {
+  if (createNewLexicalScope === void 0) createNewLexicalScope = true;
+  if (node === void 0) node = this.startNode();
+  node.body = [];
+  this.expect(types$1.braceL);
+  if (createNewLexicalScope) {
+    this.enterScope(0);
+  }
+  while (this.type !== types$1.braceR) {
+    var stmt = this.parseStatement(null);
+    node.body.push(stmt);
+  }
+  if (exitStrict) {
+    this.strict = false;
+  }
+  this.next();
+  if (createNewLexicalScope) {
+    this.exitScope();
+  }
+  return this.finishNode(node, "BlockStatement");
+};
+pp$8.parseFor = function(node, init) {
+  node.init = init;
+  this.expect(types$1.semi);
+  node.test = this.type === types$1.semi ? null : this.parseExpression();
+  this.expect(types$1.semi);
+  node.update = this.type === types$1.parenR ? null : this.parseExpression();
+  this.expect(types$1.parenR);
+  node.body = this.parseStatement("for");
+  this.exitScope();
+  this.labels.pop();
+  return this.finishNode(node, "ForStatement");
+};
+pp$8.parseForIn = function(node, init) {
+  var isForIn = this.type === types$1._in;
+  this.next();
+  if (init.type === "VariableDeclaration" && init.declarations[0].init != null && (!isForIn || this.options.ecmaVersion < 8 || this.strict || init.kind !== "var" || init.declarations[0].id.type !== "Identifier")) {
+    this.raise(
+      init.start,
+      (isForIn ? "for-in" : "for-of") + " loop variable declaration may not have an initializer"
+    );
+  }
+  node.left = init;
+  node.right = isForIn ? this.parseExpression() : this.parseMaybeAssign();
+  this.expect(types$1.parenR);
+  node.body = this.parseStatement("for");
+  this.exitScope();
+  this.labels.pop();
+  return this.finishNode(node, isForIn ? "ForInStatement" : "ForOfStatement");
+};
+pp$8.parseVar = function(node, isFor, kind, allowMissingInitializer) {
+  node.declarations = [];
+  node.kind = kind;
+  for (; ; ) {
+    var decl = this.startNode();
+    this.parseVarId(decl, kind);
+    if (this.eat(types$1.eq)) {
+      decl.init = this.parseMaybeAssign(isFor);
+    } else if (!allowMissingInitializer && kind === "const" && !(this.type === types$1._in || this.options.ecmaVersion >= 6 && this.isContextual("of"))) {
+      this.unexpected();
+    } else if (!allowMissingInitializer && (kind === "using" || kind === "await using") && this.options.ecmaVersion >= 17 && this.type !== types$1._in && !this.isContextual("of")) {
+      this.raise(this.lastTokEnd, "Missing initializer in " + kind + " declaration");
+    } else if (!allowMissingInitializer && decl.id.type !== "Identifier" && !(isFor && (this.type === types$1._in || this.isContextual("of")))) {
+      this.raise(this.lastTokEnd, "Complex binding patterns require an initialization value");
+    } else {
+      decl.init = null;
+    }
+    node.declarations.push(this.finishNode(decl, "VariableDeclarator"));
+    if (!this.eat(types$1.comma)) {
+      break;
+    }
+  }
+  return node;
+};
+pp$8.parseVarId = function(decl, kind) {
+  decl.id = kind === "using" || kind === "await using" ? this.parseIdent() : this.parseBindingAtom();
+  this.checkLValPattern(decl.id, kind === "var" ? BIND_VAR : BIND_LEXICAL, false);
+};
+var FUNC_STATEMENT = 1;
+var FUNC_HANGING_STATEMENT = 2;
+var FUNC_NULLABLE_ID = 4;
+pp$8.parseFunction = function(node, statement, allowExpressionBody, isAsync, forInit) {
+  this.initFunction(node);
+  if (this.options.ecmaVersion >= 9 || this.options.ecmaVersion >= 6 && !isAsync) {
+    if (this.type === types$1.star && statement & FUNC_HANGING_STATEMENT) {
+      this.unexpected();
+    }
+    node.generator = this.eat(types$1.star);
+  }
+  if (this.options.ecmaVersion >= 8) {
+    node.async = !!isAsync;
+  }
+  if (statement & FUNC_STATEMENT) {
+    node.id = statement & FUNC_NULLABLE_ID && this.type !== types$1.name ? null : this.parseIdent();
+    if (node.id && !(statement & FUNC_HANGING_STATEMENT)) {
+      this.checkLValSimple(node.id, this.strict || node.generator || node.async ? this.treatFunctionsAsVar ? BIND_VAR : BIND_LEXICAL : BIND_FUNCTION);
+    }
+  }
+  var oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
+  this.yieldPos = 0;
+  this.awaitPos = 0;
+  this.awaitIdentPos = 0;
+  this.enterScope(functionFlags(node.async, node.generator));
+  if (!(statement & FUNC_STATEMENT)) {
+    node.id = this.type === types$1.name ? this.parseIdent() : null;
+  }
+  this.parseFunctionParams(node);
+  this.parseFunctionBody(node, allowExpressionBody, false, forInit);
+  this.yieldPos = oldYieldPos;
+  this.awaitPos = oldAwaitPos;
+  this.awaitIdentPos = oldAwaitIdentPos;
+  return this.finishNode(node, statement & FUNC_STATEMENT ? "FunctionDeclaration" : "FunctionExpression");
+};
+pp$8.parseFunctionParams = function(node) {
+  this.expect(types$1.parenL);
+  node.params = this.parseBindingList(types$1.parenR, false, this.options.ecmaVersion >= 8);
+  this.checkYieldAwaitInDefaultParams();
+};
+pp$8.parseClass = function(node, isStatement) {
+  this.next();
+  var oldStrict = this.strict;
+  this.strict = true;
+  this.parseClassId(node, isStatement);
+  this.parseClassSuper(node);
+  var privateNameMap = this.enterClassBody();
+  var classBody = this.startNode();
+  var hadConstructor = false;
+  classBody.body = [];
+  this.expect(types$1.braceL);
+  while (this.type !== types$1.braceR) {
+    var element = this.parseClassElement(node.superClass !== null);
+    if (element) {
+      classBody.body.push(element);
+      if (element.type === "MethodDefinition" && element.kind === "constructor") {
+        if (hadConstructor) {
+          this.raiseRecoverable(element.start, "Duplicate constructor in the same class");
+        }
+        hadConstructor = true;
+      } else if (element.key && element.key.type === "PrivateIdentifier" && isPrivateNameConflicted(privateNameMap, element)) {
+        this.raiseRecoverable(element.key.start, "Identifier '#" + element.key.name + "' has already been declared");
+      }
+    }
+  }
+  this.strict = oldStrict;
+  this.next();
+  node.body = this.finishNode(classBody, "ClassBody");
+  this.exitClassBody();
+  return this.finishNode(node, isStatement ? "ClassDeclaration" : "ClassExpression");
+};
+pp$8.parseClassElement = function(constructorAllowsSuper) {
+  if (this.eat(types$1.semi)) {
+    return null;
+  }
+  var ecmaVersion = this.options.ecmaVersion;
+  var node = this.startNode();
+  var keyName = "";
+  var isGenerator = false;
+  var isAsync = false;
+  var kind = "method";
+  var isStatic = false;
+  if (this.eatContextual("static")) {
+    if (ecmaVersion >= 13 && this.eat(types$1.braceL)) {
+      this.parseClassStaticBlock(node);
+      return node;
+    }
+    if (this.isClassElementNameStart() || this.type === types$1.star) {
+      isStatic = true;
+    } else {
+      keyName = "static";
+    }
+  }
+  node.static = isStatic;
+  if (!keyName && ecmaVersion >= 8 && this.eatContextual("async")) {
+    if ((this.isClassElementNameStart() || this.type === types$1.star) && !this.canInsertSemicolon()) {
+      isAsync = true;
+    } else {
+      keyName = "async";
+    }
+  }
+  if (!keyName && (ecmaVersion >= 9 || !isAsync) && this.eat(types$1.star)) {
+    isGenerator = true;
+  }
+  if (!keyName && !isAsync && !isGenerator) {
+    var lastValue = this.value;
+    if (this.eatContextual("get") || this.eatContextual("set")) {
+      if (this.isClassElementNameStart()) {
+        kind = lastValue;
+      } else {
+        keyName = lastValue;
+      }
+    }
+  }
+  if (keyName) {
+    node.computed = false;
+    node.key = this.startNodeAt(this.lastTokStart, this.lastTokStartLoc);
+    node.key.name = keyName;
+    this.finishNode(node.key, "Identifier");
+  } else {
+    this.parseClassElementName(node);
+  }
+  if (ecmaVersion < 13 || this.type === types$1.parenL || kind !== "method" || isGenerator || isAsync) {
+    var isConstructor = !node.static && checkKeyName(node, "constructor");
+    var allowsDirectSuper = isConstructor && constructorAllowsSuper;
+    if (isConstructor && kind !== "method") {
+      this.raise(node.key.start, "Constructor can't have get/set modifier");
+    }
+    node.kind = isConstructor ? "constructor" : kind;
+    this.parseClassMethod(node, isGenerator, isAsync, allowsDirectSuper);
+  } else {
+    this.parseClassField(node);
+  }
+  return node;
+};
+pp$8.isClassElementNameStart = function() {
+  return this.type === types$1.name || this.type === types$1.privateId || this.type === types$1.num || this.type === types$1.string || this.type === types$1.bracketL || this.type.keyword;
+};
+pp$8.parseClassElementName = function(element) {
+  if (this.type === types$1.privateId) {
+    if (this.value === "constructor") {
+      this.raise(this.start, "Classes can't have an element named '#constructor'");
+    }
+    element.computed = false;
+    element.key = this.parsePrivateIdent();
+  } else {
+    this.parsePropertyName(element);
+  }
+};
+pp$8.parseClassMethod = function(method, isGenerator, isAsync, allowsDirectSuper) {
+  var key = method.key;
+  if (method.kind === "constructor") {
+    if (isGenerator) {
+      this.raise(key.start, "Constructor can't be a generator");
+    }
+    if (isAsync) {
+      this.raise(key.start, "Constructor can't be an async method");
+    }
+  } else if (method.static && checkKeyName(method, "prototype")) {
+    this.raise(key.start, "Classes may not have a static property named prototype");
+  }
+  var value = method.value = this.parseMethod(isGenerator, isAsync, allowsDirectSuper);
+  if (method.kind === "get" && value.params.length !== 0) {
+    this.raiseRecoverable(value.start, "getter should have no params");
+  }
+  if (method.kind === "set" && value.params.length !== 1) {
+    this.raiseRecoverable(value.start, "setter should have exactly one param");
+  }
+  if (method.kind === "set" && value.params[0].type === "RestElement") {
+    this.raiseRecoverable(value.params[0].start, "Setter cannot use rest params");
+  }
+  return this.finishNode(method, "MethodDefinition");
+};
+pp$8.parseClassField = function(field) {
+  if (checkKeyName(field, "constructor")) {
+    this.raise(field.key.start, "Classes can't have a field named 'constructor'");
+  } else if (field.static && checkKeyName(field, "prototype")) {
+    this.raise(field.key.start, "Classes can't have a static field named 'prototype'");
+  }
+  if (this.eat(types$1.eq)) {
+    this.enterScope(SCOPE_CLASS_FIELD_INIT | SCOPE_SUPER);
+    field.value = this.parseMaybeAssign();
+    this.exitScope();
+  } else {
+    field.value = null;
+  }
+  this.semicolon();
+  return this.finishNode(field, "PropertyDefinition");
+};
+pp$8.parseClassStaticBlock = function(node) {
+  node.body = [];
+  var oldLabels = this.labels;
+  this.labels = [];
+  this.enterScope(SCOPE_CLASS_STATIC_BLOCK | SCOPE_SUPER);
+  while (this.type !== types$1.braceR) {
+    var stmt = this.parseStatement(null);
+    node.body.push(stmt);
+  }
+  this.next();
+  this.exitScope();
+  this.labels = oldLabels;
+  return this.finishNode(node, "StaticBlock");
+};
+pp$8.parseClassId = function(node, isStatement) {
+  if (this.type === types$1.name) {
+    node.id = this.parseIdent();
+    if (isStatement) {
+      this.checkLValSimple(node.id, BIND_LEXICAL, false);
+    }
+  } else {
+    if (isStatement === true) {
+      this.unexpected();
+    }
+    node.id = null;
+  }
+};
+pp$8.parseClassSuper = function(node) {
+  node.superClass = this.eat(types$1._extends) ? this.parseExprSubscripts(null, false) : null;
+};
+pp$8.enterClassBody = function() {
+  var element = { declared: /* @__PURE__ */ Object.create(null), used: [] };
+  this.privateNameStack.push(element);
+  return element.declared;
+};
+pp$8.exitClassBody = function() {
+  var ref2 = this.privateNameStack.pop();
+  var declared = ref2.declared;
+  var used = ref2.used;
+  if (!this.options.checkPrivateFields) {
+    return;
+  }
+  var len = this.privateNameStack.length;
+  var parent = len === 0 ? null : this.privateNameStack[len - 1];
+  for (var i = 0; i < used.length; ++i) {
+    var id = used[i];
+    if (!hasOwn(declared, id.name)) {
+      if (parent) {
+        parent.used.push(id);
+      } else {
+        this.raiseRecoverable(id.start, "Private field '#" + id.name + "' must be declared in an enclosing class");
+      }
+    }
+  }
+};
+function isPrivateNameConflicted(privateNameMap, element) {
+  var name = element.key.name;
+  var curr = privateNameMap[name];
+  var next = "true";
+  if (element.type === "MethodDefinition" && (element.kind === "get" || element.kind === "set")) {
+    next = (element.static ? "s" : "i") + element.kind;
+  }
+  if (curr === "iget" && next === "iset" || curr === "iset" && next === "iget" || curr === "sget" && next === "sset" || curr === "sset" && next === "sget") {
+    privateNameMap[name] = "true";
+    return false;
+  } else if (!curr) {
+    privateNameMap[name] = next;
+    return false;
+  } else {
+    return true;
+  }
+}
+function checkKeyName(node, name) {
+  var computed = node.computed;
+  var key = node.key;
+  return !computed && (key.type === "Identifier" && key.name === name || key.type === "Literal" && key.value === name);
+}
+pp$8.parseExportAllDeclaration = function(node, exports$1) {
+  if (this.options.ecmaVersion >= 11) {
+    if (this.eatContextual("as")) {
+      node.exported = this.parseModuleExportName();
+      this.checkExport(exports$1, node.exported, this.lastTokStart);
+    } else {
+      node.exported = null;
+    }
+  }
+  this.expectContextual("from");
+  if (this.type !== types$1.string) {
+    this.unexpected();
+  }
+  node.source = this.parseExprAtom();
+  if (this.options.ecmaVersion >= 16) {
+    node.attributes = this.parseWithClause();
+  }
+  this.semicolon();
+  return this.finishNode(node, "ExportAllDeclaration");
+};
+pp$8.parseExport = function(node, exports$1) {
+  this.next();
+  if (this.eat(types$1.star)) {
+    return this.parseExportAllDeclaration(node, exports$1);
+  }
+  if (this.eat(types$1._default)) {
+    this.checkExport(exports$1, "default", this.lastTokStart);
+    node.declaration = this.parseExportDefaultDeclaration();
+    return this.finishNode(node, "ExportDefaultDeclaration");
+  }
+  if (this.shouldParseExportStatement()) {
+    node.declaration = this.parseExportDeclaration(node);
+    if (node.declaration.type === "VariableDeclaration") {
+      this.checkVariableExport(exports$1, node.declaration.declarations);
+    } else {
+      this.checkExport(exports$1, node.declaration.id, node.declaration.id.start);
+    }
+    node.specifiers = [];
+    node.source = null;
+    if (this.options.ecmaVersion >= 16) {
+      node.attributes = [];
+    }
+  } else {
+    node.declaration = null;
+    node.specifiers = this.parseExportSpecifiers(exports$1);
+    if (this.eatContextual("from")) {
+      if (this.type !== types$1.string) {
+        this.unexpected();
+      }
+      node.source = this.parseExprAtom();
+      if (this.options.ecmaVersion >= 16) {
+        node.attributes = this.parseWithClause();
+      }
+    } else {
+      for (var i = 0, list = node.specifiers; i < list.length; i += 1) {
+        var spec = list[i];
+        this.checkUnreserved(spec.local);
+        this.checkLocalExport(spec.local);
+        if (spec.local.type === "Literal") {
+          this.raise(spec.local.start, "A string literal cannot be used as an exported binding without `from`.");
+        }
+      }
+      node.source = null;
+      if (this.options.ecmaVersion >= 16) {
+        node.attributes = [];
+      }
+    }
+    this.semicolon();
+  }
+  return this.finishNode(node, "ExportNamedDeclaration");
+};
+pp$8.parseExportDeclaration = function(node) {
+  return this.parseStatement(null);
+};
+pp$8.parseExportDefaultDeclaration = function() {
+  var isAsync;
+  if (this.type === types$1._function || (isAsync = this.isAsyncFunction())) {
+    var fNode = this.startNode();
+    this.next();
+    if (isAsync) {
+      this.next();
+    }
+    return this.parseFunction(fNode, FUNC_STATEMENT | FUNC_NULLABLE_ID, false, isAsync);
+  } else if (this.type === types$1._class) {
+    var cNode = this.startNode();
+    return this.parseClass(cNode, "nullableID");
+  } else {
+    var declaration = this.parseMaybeAssign();
+    this.semicolon();
+    return declaration;
+  }
+};
+pp$8.checkExport = function(exports$1, name, pos) {
+  if (!exports$1) {
+    return;
+  }
+  if (typeof name !== "string") {
+    name = name.type === "Identifier" ? name.name : name.value;
+  }
+  if (hasOwn(exports$1, name)) {
+    this.raiseRecoverable(pos, "Duplicate export '" + name + "'");
+  }
+  exports$1[name] = true;
+};
+pp$8.checkPatternExport = function(exports$1, pat) {
+  var type = pat.type;
+  if (type === "Identifier") {
+    this.checkExport(exports$1, pat, pat.start);
+  } else if (type === "ObjectPattern") {
+    for (var i = 0, list = pat.properties; i < list.length; i += 1) {
+      var prop = list[i];
+      this.checkPatternExport(exports$1, prop);
+    }
+  } else if (type === "ArrayPattern") {
+    for (var i$1 = 0, list$1 = pat.elements; i$1 < list$1.length; i$1 += 1) {
+      var elt = list$1[i$1];
+      if (elt) {
+        this.checkPatternExport(exports$1, elt);
+      }
+    }
+  } else if (type === "Property") {
+    this.checkPatternExport(exports$1, pat.value);
+  } else if (type === "AssignmentPattern") {
+    this.checkPatternExport(exports$1, pat.left);
+  } else if (type === "RestElement") {
+    this.checkPatternExport(exports$1, pat.argument);
+  }
+};
+pp$8.checkVariableExport = function(exports$1, decls) {
+  if (!exports$1) {
+    return;
+  }
+  for (var i = 0, list = decls; i < list.length; i += 1) {
+    var decl = list[i];
+    this.checkPatternExport(exports$1, decl.id);
+  }
+};
+pp$8.shouldParseExportStatement = function() {
+  return this.type.keyword === "var" || this.type.keyword === "const" || this.type.keyword === "class" || this.type.keyword === "function" || this.isLet() || this.isAsyncFunction();
+};
+pp$8.parseExportSpecifier = function(exports$1) {
+  var node = this.startNode();
+  node.local = this.parseModuleExportName();
+  node.exported = this.eatContextual("as") ? this.parseModuleExportName() : node.local;
+  this.checkExport(
+    exports$1,
+    node.exported,
+    node.exported.start
+  );
+  return this.finishNode(node, "ExportSpecifier");
+};
+pp$8.parseExportSpecifiers = function(exports$1) {
+  var nodes = [], first = true;
+  this.expect(types$1.braceL);
+  while (!this.eat(types$1.braceR)) {
+    if (!first) {
+      this.expect(types$1.comma);
+      if (this.afterTrailingComma(types$1.braceR)) {
+        break;
+      }
+    } else {
+      first = false;
+    }
+    nodes.push(this.parseExportSpecifier(exports$1));
+  }
+  return nodes;
+};
+pp$8.parseImport = function(node) {
+  this.next();
+  if (this.type === types$1.string) {
+    node.specifiers = empty$1;
+    node.source = this.parseExprAtom();
+  } else {
+    node.specifiers = this.parseImportSpecifiers();
+    this.expectContextual("from");
+    node.source = this.type === types$1.string ? this.parseExprAtom() : this.unexpected();
+  }
+  if (this.options.ecmaVersion >= 16) {
+    node.attributes = this.parseWithClause();
+  }
+  this.semicolon();
+  return this.finishNode(node, "ImportDeclaration");
+};
+pp$8.parseImportSpecifier = function() {
+  var node = this.startNode();
+  node.imported = this.parseModuleExportName();
+  if (this.eatContextual("as")) {
+    node.local = this.parseIdent();
+  } else {
+    this.checkUnreserved(node.imported);
+    node.local = node.imported;
+  }
+  this.checkLValSimple(node.local, BIND_LEXICAL);
+  return this.finishNode(node, "ImportSpecifier");
+};
+pp$8.parseImportDefaultSpecifier = function() {
+  var node = this.startNode();
+  node.local = this.parseIdent();
+  this.checkLValSimple(node.local, BIND_LEXICAL);
+  return this.finishNode(node, "ImportDefaultSpecifier");
+};
+pp$8.parseImportNamespaceSpecifier = function() {
+  var node = this.startNode();
+  this.next();
+  this.expectContextual("as");
+  node.local = this.parseIdent();
+  this.checkLValSimple(node.local, BIND_LEXICAL);
+  return this.finishNode(node, "ImportNamespaceSpecifier");
+};
+pp$8.parseImportSpecifiers = function() {
+  var nodes = [], first = true;
+  if (this.type === types$1.name) {
+    nodes.push(this.parseImportDefaultSpecifier());
+    if (!this.eat(types$1.comma)) {
+      return nodes;
+    }
+  }
+  if (this.type === types$1.star) {
+    nodes.push(this.parseImportNamespaceSpecifier());
+    return nodes;
+  }
+  this.expect(types$1.braceL);
+  while (!this.eat(types$1.braceR)) {
+    if (!first) {
+      this.expect(types$1.comma);
+      if (this.afterTrailingComma(types$1.braceR)) {
+        break;
+      }
+    } else {
+      first = false;
+    }
+    nodes.push(this.parseImportSpecifier());
+  }
+  return nodes;
+};
+pp$8.parseWithClause = function() {
+  var nodes = [];
+  if (!this.eat(types$1._with)) {
+    return nodes;
+  }
+  this.expect(types$1.braceL);
+  var attributeKeys = {};
+  var first = true;
+  while (!this.eat(types$1.braceR)) {
+    if (!first) {
+      this.expect(types$1.comma);
+      if (this.afterTrailingComma(types$1.braceR)) {
+        break;
+      }
+    } else {
+      first = false;
+    }
+    var attr = this.parseImportAttribute();
+    var keyName = attr.key.type === "Identifier" ? attr.key.name : attr.key.value;
+    if (hasOwn(attributeKeys, keyName)) {
+      this.raiseRecoverable(attr.key.start, "Duplicate attribute key '" + keyName + "'");
+    }
+    attributeKeys[keyName] = true;
+    nodes.push(attr);
+  }
+  return nodes;
+};
+pp$8.parseImportAttribute = function() {
+  var node = this.startNode();
+  node.key = this.type === types$1.string ? this.parseExprAtom() : this.parseIdent(this.options.allowReserved !== "never");
+  this.expect(types$1.colon);
+  if (this.type !== types$1.string) {
+    this.unexpected();
+  }
+  node.value = this.parseExprAtom();
+  return this.finishNode(node, "ImportAttribute");
+};
+pp$8.parseModuleExportName = function() {
+  if (this.options.ecmaVersion >= 13 && this.type === types$1.string) {
+    var stringLiteral = this.parseLiteral(this.value);
+    if (loneSurrogate.test(stringLiteral.value)) {
+      this.raise(stringLiteral.start, "An export name cannot include a lone surrogate.");
+    }
+    return stringLiteral;
+  }
+  return this.parseIdent(true);
+};
+pp$8.adaptDirectivePrologue = function(statements) {
+  for (var i = 0; i < statements.length && this.isDirectiveCandidate(statements[i]); ++i) {
+    statements[i].directive = statements[i].expression.raw.slice(1, -1);
+  }
+};
+pp$8.isDirectiveCandidate = function(statement) {
+  return this.options.ecmaVersion >= 5 && statement.type === "ExpressionStatement" && statement.expression.type === "Literal" && typeof statement.expression.value === "string" && // Reject parenthesized strings.
+  (this.input[statement.start] === '"' || this.input[statement.start] === "'");
+};
+var pp$7 = Parser.prototype;
+pp$7.toAssignable = function(node, isBinding, refDestructuringErrors) {
+  if (this.options.ecmaVersion >= 6 && node) {
+    switch (node.type) {
+      case "Identifier":
+        if (this.inAsync && node.name === "await") {
+          this.raise(node.start, "Cannot use 'await' as identifier inside an async function");
+        }
+        break;
+      case "ObjectPattern":
+      case "ArrayPattern":
+      case "AssignmentPattern":
+      case "RestElement":
+        break;
+      case "ObjectExpression":
+        node.type = "ObjectPattern";
+        if (refDestructuringErrors) {
+          this.checkPatternErrors(refDestructuringErrors, true);
+        }
+        for (var i = 0, list = node.properties; i < list.length; i += 1) {
+          var prop = list[i];
+          this.toAssignable(prop, isBinding);
+          if (prop.type === "RestElement" && (prop.argument.type === "ArrayPattern" || prop.argument.type === "ObjectPattern")) {
+            this.raise(prop.argument.start, "Unexpected token");
+          }
+        }
+        break;
+      case "Property":
+        if (node.kind !== "init") {
+          this.raise(node.key.start, "Object pattern can't contain getter or setter");
+        }
+        this.toAssignable(node.value, isBinding);
+        break;
+      case "ArrayExpression":
+        node.type = "ArrayPattern";
+        if (refDestructuringErrors) {
+          this.checkPatternErrors(refDestructuringErrors, true);
+        }
+        this.toAssignableList(node.elements, isBinding);
+        break;
+      case "SpreadElement":
+        node.type = "RestElement";
+        this.toAssignable(node.argument, isBinding);
+        if (node.argument.type === "AssignmentPattern") {
+          this.raise(node.argument.start, "Rest elements cannot have a default value");
+        }
+        break;
+      case "AssignmentExpression":
+        if (node.operator !== "=") {
+          this.raise(node.left.end, "Only '=' operator can be used for specifying default value.");
+        }
+        node.type = "AssignmentPattern";
+        delete node.operator;
+        this.toAssignable(node.left, isBinding);
+        break;
+      case "ParenthesizedExpression":
+        this.toAssignable(node.expression, isBinding, refDestructuringErrors);
+        break;
+      case "ChainExpression":
+        this.raiseRecoverable(node.start, "Optional chaining cannot appear in left-hand side");
+        break;
+      case "MemberExpression":
+        if (!isBinding) {
+          break;
+        }
+      default:
+        this.raise(node.start, "Assigning to rvalue");
+    }
+  } else if (refDestructuringErrors) {
+    this.checkPatternErrors(refDestructuringErrors, true);
+  }
+  return node;
+};
+pp$7.toAssignableList = function(exprList, isBinding) {
+  var end = exprList.length;
+  for (var i = 0; i < end; i++) {
+    var elt = exprList[i];
+    if (elt) {
+      this.toAssignable(elt, isBinding);
+    }
+  }
+  if (end) {
+    var last = exprList[end - 1];
+    if (this.options.ecmaVersion === 6 && isBinding && last && last.type === "RestElement" && last.argument.type !== "Identifier") {
+      this.unexpected(last.argument.start);
+    }
+  }
+  return exprList;
+};
+pp$7.parseSpread = function(refDestructuringErrors) {
+  var node = this.startNode();
+  this.next();
+  node.argument = this.parseMaybeAssign(false, refDestructuringErrors);
+  return this.finishNode(node, "SpreadElement");
+};
+pp$7.parseRestBinding = function() {
+  var node = this.startNode();
+  this.next();
+  if (this.options.ecmaVersion === 6 && this.type !== types$1.name) {
+    this.unexpected();
+  }
+  node.argument = this.parseBindingAtom();
+  return this.finishNode(node, "RestElement");
+};
+pp$7.parseBindingAtom = function() {
+  if (this.options.ecmaVersion >= 6) {
+    switch (this.type) {
+      case types$1.bracketL:
+        var node = this.startNode();
+        this.next();
+        node.elements = this.parseBindingList(types$1.bracketR, true, true);
+        return this.finishNode(node, "ArrayPattern");
+      case types$1.braceL:
+        return this.parseObj(true);
+    }
+  }
+  return this.parseIdent();
+};
+pp$7.parseBindingList = function(close, allowEmpty, allowTrailingComma, allowModifiers) {
+  var elts = [], first = true;
+  while (!this.eat(close)) {
+    if (first) {
+      first = false;
+    } else {
+      this.expect(types$1.comma);
+    }
+    if (allowEmpty && this.type === types$1.comma) {
+      elts.push(null);
+    } else if (allowTrailingComma && this.afterTrailingComma(close)) {
+      break;
+    } else if (this.type === types$1.ellipsis) {
+      var rest = this.parseRestBinding();
+      this.parseBindingListItem(rest);
+      elts.push(rest);
+      if (this.type === types$1.comma) {
+        this.raiseRecoverable(this.start, "Comma is not permitted after the rest element");
+      }
+      this.expect(close);
+      break;
+    } else {
+      elts.push(this.parseAssignableListItem(allowModifiers));
+    }
+  }
+  return elts;
+};
+pp$7.parseAssignableListItem = function(allowModifiers) {
+  var elem = this.parseMaybeDefault(this.start, this.startLoc);
+  this.parseBindingListItem(elem);
+  return elem;
+};
+pp$7.parseBindingListItem = function(param) {
+  return param;
+};
+pp$7.parseMaybeDefault = function(startPos, startLoc, left) {
+  left = left || this.parseBindingAtom();
+  if (this.options.ecmaVersion < 6 || !this.eat(types$1.eq)) {
+    return left;
+  }
+  var node = this.startNodeAt(startPos, startLoc);
+  node.left = left;
+  node.right = this.parseMaybeAssign();
+  return this.finishNode(node, "AssignmentPattern");
+};
+pp$7.checkLValSimple = function(expr, bindingType, checkClashes) {
+  if (bindingType === void 0) bindingType = BIND_NONE;
+  var isBind = bindingType !== BIND_NONE;
+  switch (expr.type) {
+    case "Identifier":
+      if (this.strict && this.reservedWordsStrictBind.test(expr.name)) {
+        this.raiseRecoverable(expr.start, (isBind ? "Binding " : "Assigning to ") + expr.name + " in strict mode");
+      }
+      if (isBind) {
+        if (bindingType === BIND_LEXICAL && expr.name === "let") {
+          this.raiseRecoverable(expr.start, "let is disallowed as a lexically bound name");
+        }
+        if (checkClashes) {
+          if (hasOwn(checkClashes, expr.name)) {
+            this.raiseRecoverable(expr.start, "Argument name clash");
+          }
+          checkClashes[expr.name] = true;
+        }
+        if (bindingType !== BIND_OUTSIDE) {
+          this.declareName(expr.name, bindingType, expr.start);
+        }
+      }
+      break;
+    case "ChainExpression":
+      this.raiseRecoverable(expr.start, "Optional chaining cannot appear in left-hand side");
+      break;
+    case "MemberExpression":
+      if (isBind) {
+        this.raiseRecoverable(expr.start, "Binding member expression");
+      }
+      break;
+    case "ParenthesizedExpression":
+      if (isBind) {
+        this.raiseRecoverable(expr.start, "Binding parenthesized expression");
+      }
+      return this.checkLValSimple(expr.expression, bindingType, checkClashes);
+    default:
+      this.raise(expr.start, (isBind ? "Binding" : "Assigning to") + " rvalue");
+  }
+};
+pp$7.checkLValPattern = function(expr, bindingType, checkClashes) {
+  if (bindingType === void 0) bindingType = BIND_NONE;
+  switch (expr.type) {
+    case "ObjectPattern":
+      for (var i = 0, list = expr.properties; i < list.length; i += 1) {
+        var prop = list[i];
+        this.checkLValInnerPattern(prop, bindingType, checkClashes);
+      }
+      break;
+    case "ArrayPattern":
+      for (var i$1 = 0, list$1 = expr.elements; i$1 < list$1.length; i$1 += 1) {
+        var elem = list$1[i$1];
+        if (elem) {
+          this.checkLValInnerPattern(elem, bindingType, checkClashes);
+        }
+      }
+      break;
+    default:
+      this.checkLValSimple(expr, bindingType, checkClashes);
+  }
+};
+pp$7.checkLValInnerPattern = function(expr, bindingType, checkClashes) {
+  if (bindingType === void 0) bindingType = BIND_NONE;
+  switch (expr.type) {
+    case "Property":
+      this.checkLValInnerPattern(expr.value, bindingType, checkClashes);
+      break;
+    case "AssignmentPattern":
+      this.checkLValPattern(expr.left, bindingType, checkClashes);
+      break;
+    case "RestElement":
+      this.checkLValPattern(expr.argument, bindingType, checkClashes);
+      break;
+    default:
+      this.checkLValPattern(expr, bindingType, checkClashes);
+  }
+};
+var TokContext = function TokContext2(token, isExpr, preserveSpace, override, generator) {
+  this.token = token;
+  this.isExpr = !!isExpr;
+  this.preserveSpace = !!preserveSpace;
+  this.override = override;
+  this.generator = !!generator;
+};
+var types = {
+  b_stat: new TokContext("{", false),
+  b_expr: new TokContext("{", true),
+  b_tmpl: new TokContext("${", false),
+  p_stat: new TokContext("(", false),
+  p_expr: new TokContext("(", true),
+  q_tmpl: new TokContext("`", true, true, function(p) {
+    return p.tryReadTemplateToken();
+  }),
+  f_stat: new TokContext("function", false),
+  f_expr: new TokContext("function", true),
+  f_expr_gen: new TokContext("function", true, false, null, true),
+  f_gen: new TokContext("function", false, false, null, true)
+};
+var pp$6 = Parser.prototype;
+pp$6.initialContext = function() {
+  return [types.b_stat];
+};
+pp$6.curContext = function() {
+  return this.context[this.context.length - 1];
+};
+pp$6.braceIsBlock = function(prevType) {
+  var parent = this.curContext();
+  if (parent === types.f_expr || parent === types.f_stat) {
+    return true;
+  }
+  if (prevType === types$1.colon && (parent === types.b_stat || parent === types.b_expr)) {
+    return !parent.isExpr;
+  }
+  if (prevType === types$1._return || prevType === types$1.name && this.exprAllowed) {
+    return lineBreak.test(this.input.slice(this.lastTokEnd, this.start));
+  }
+  if (prevType === types$1._else || prevType === types$1.semi || prevType === types$1.eof || prevType === types$1.parenR || prevType === types$1.arrow) {
+    return true;
+  }
+  if (prevType === types$1.braceL) {
+    return parent === types.b_stat;
+  }
+  if (prevType === types$1._var || prevType === types$1._const || prevType === types$1.name) {
+    return false;
+  }
+  return !this.exprAllowed;
+};
+pp$6.inGeneratorContext = function() {
+  for (var i = this.context.length - 1; i >= 1; i--) {
+    var context = this.context[i];
+    if (context.token === "function") {
+      return context.generator;
+    }
+  }
+  return false;
+};
+pp$6.updateContext = function(prevType) {
+  var update, type = this.type;
+  if (type.keyword && prevType === types$1.dot) {
+    this.exprAllowed = false;
+  } else if (update = type.updateContext) {
+    update.call(this, prevType);
+  } else {
+    this.exprAllowed = type.beforeExpr;
+  }
+};
+pp$6.overrideContext = function(tokenCtx) {
+  if (this.curContext() !== tokenCtx) {
+    this.context[this.context.length - 1] = tokenCtx;
+  }
+};
+types$1.parenR.updateContext = types$1.braceR.updateContext = function() {
+  if (this.context.length === 1) {
+    this.exprAllowed = true;
+    return;
+  }
+  var out = this.context.pop();
+  if (out === types.b_stat && this.curContext().token === "function") {
+    out = this.context.pop();
+  }
+  this.exprAllowed = !out.isExpr;
+};
+types$1.braceL.updateContext = function(prevType) {
+  this.context.push(this.braceIsBlock(prevType) ? types.b_stat : types.b_expr);
+  this.exprAllowed = true;
+};
+types$1.dollarBraceL.updateContext = function() {
+  this.context.push(types.b_tmpl);
+  this.exprAllowed = true;
+};
+types$1.parenL.updateContext = function(prevType) {
+  var statementParens = prevType === types$1._if || prevType === types$1._for || prevType === types$1._with || prevType === types$1._while;
+  this.context.push(statementParens ? types.p_stat : types.p_expr);
+  this.exprAllowed = true;
+};
+types$1.incDec.updateContext = function() {
+};
+types$1._function.updateContext = types$1._class.updateContext = function(prevType) {
+  if (prevType.beforeExpr && prevType !== types$1._else && !(prevType === types$1.semi && this.curContext() !== types.p_stat) && !(prevType === types$1._return && lineBreak.test(this.input.slice(this.lastTokEnd, this.start))) && !((prevType === types$1.colon || prevType === types$1.braceL) && this.curContext() === types.b_stat)) {
+    this.context.push(types.f_expr);
+  } else {
+    this.context.push(types.f_stat);
+  }
+  this.exprAllowed = false;
+};
+types$1.colon.updateContext = function() {
+  if (this.curContext().token === "function") {
+    this.context.pop();
+  }
+  this.exprAllowed = true;
+};
+types$1.backQuote.updateContext = function() {
+  if (this.curContext() === types.q_tmpl) {
+    this.context.pop();
+  } else {
+    this.context.push(types.q_tmpl);
+  }
+  this.exprAllowed = false;
+};
+types$1.star.updateContext = function(prevType) {
+  if (prevType === types$1._function) {
+    var index = this.context.length - 1;
+    if (this.context[index] === types.f_expr) {
+      this.context[index] = types.f_expr_gen;
+    } else {
+      this.context[index] = types.f_gen;
+    }
+  }
+  this.exprAllowed = true;
+};
+types$1.name.updateContext = function(prevType) {
+  var allowed = false;
+  if (this.options.ecmaVersion >= 6 && prevType !== types$1.dot) {
+    if (this.value === "of" && !this.exprAllowed || this.value === "yield" && this.inGeneratorContext()) {
+      allowed = true;
+    }
+  }
+  this.exprAllowed = allowed;
+};
+var pp$5 = Parser.prototype;
+pp$5.checkPropClash = function(prop, propHash, refDestructuringErrors) {
+  if (this.options.ecmaVersion >= 9 && prop.type === "SpreadElement") {
+    return;
+  }
+  if (this.options.ecmaVersion >= 6 && (prop.computed || prop.method || prop.shorthand)) {
+    return;
+  }
+  var key = prop.key;
+  var name;
+  switch (key.type) {
+    case "Identifier":
+      name = key.name;
+      break;
+    case "Literal":
+      name = String(key.value);
+      break;
+    default:
+      return;
+  }
+  var kind = prop.kind;
+  if (this.options.ecmaVersion >= 6) {
+    if (name === "__proto__" && kind === "init") {
+      if (propHash.proto) {
+        if (refDestructuringErrors) {
+          if (refDestructuringErrors.doubleProto < 0) {
+            refDestructuringErrors.doubleProto = key.start;
+          }
+        } else {
+          this.raiseRecoverable(key.start, "Redefinition of __proto__ property");
+        }
+      }
+      propHash.proto = true;
+    }
+    return;
+  }
+  name = "$" + name;
+  var other = propHash[name];
+  if (other) {
+    var redefinition;
+    if (kind === "init") {
+      redefinition = this.strict && other.init || other.get || other.set;
+    } else {
+      redefinition = other.init || other[kind];
+    }
+    if (redefinition) {
+      this.raiseRecoverable(key.start, "Redefinition of property");
+    }
+  } else {
+    other = propHash[name] = {
+      init: false,
+      get: false,
+      set: false
+    };
+  }
+  other[kind] = true;
+};
+pp$5.parseExpression = function(forInit, refDestructuringErrors) {
+  var this$1$1 = this;
+  return this.catchStackOverflow(function() {
+    var startPos = this$1$1.start, startLoc = this$1$1.startLoc;
+    var expr = this$1$1.parseMaybeAssign(forInit, refDestructuringErrors);
+    if (this$1$1.type === types$1.comma) {
+      var node = this$1$1.startNodeAt(startPos, startLoc);
+      node.expressions = [expr];
+      while (this$1$1.eat(types$1.comma)) {
+        node.expressions.push(this$1$1.parseMaybeAssign(forInit, refDestructuringErrors));
+      }
+      return this$1$1.finishNode(node, "SequenceExpression");
+    }
+    return expr;
+  });
+};
+pp$5.parseMaybeAssign = function(forInit, refDestructuringErrors, afterLeftParse) {
+  if (this.isContextual("yield")) {
+    if (this.inGenerator) {
+      return this.parseYield(forInit);
+    } else {
+      this.exprAllowed = false;
+    }
+  }
+  var ownDestructuringErrors = false, oldParenAssign = -1, oldTrailingComma = -1, oldDoubleProto = -1;
+  if (refDestructuringErrors) {
+    oldParenAssign = refDestructuringErrors.parenthesizedAssign;
+    oldTrailingComma = refDestructuringErrors.trailingComma;
+    oldDoubleProto = refDestructuringErrors.doubleProto;
+    refDestructuringErrors.parenthesizedAssign = refDestructuringErrors.trailingComma = -1;
+  } else {
+    refDestructuringErrors = new DestructuringErrors();
+    ownDestructuringErrors = true;
+  }
+  var startPos = this.start, startLoc = this.startLoc;
+  if (this.type === types$1.parenL || this.type === types$1.name) {
+    this.potentialArrowAt = this.start;
+    this.potentialArrowInForAwait = forInit === "await";
+  }
+  var left = this.parseMaybeConditional(forInit, refDestructuringErrors);
+  if (afterLeftParse) {
+    left = afterLeftParse.call(this, left, startPos, startLoc);
+  }
+  if (this.type.isAssign) {
+    var node = this.startNodeAt(startPos, startLoc);
+    node.operator = this.value;
+    if (this.type === types$1.eq) {
+      left = this.toAssignable(left, false, refDestructuringErrors);
+    }
+    if (!ownDestructuringErrors) {
+      refDestructuringErrors.parenthesizedAssign = refDestructuringErrors.trailingComma = refDestructuringErrors.doubleProto = -1;
+    }
+    if (refDestructuringErrors.shorthandAssign >= left.start) {
+      refDestructuringErrors.shorthandAssign = -1;
+    }
+    if (this.type === types$1.eq) {
+      this.checkLValPattern(left);
+    } else {
+      this.checkLValSimple(left);
+    }
+    node.left = left;
+    this.next();
+    node.right = this.parseMaybeAssign(forInit);
+    if (oldDoubleProto > -1) {
+      refDestructuringErrors.doubleProto = oldDoubleProto;
+    }
+    return this.finishNode(node, "AssignmentExpression");
+  } else {
+    if (ownDestructuringErrors) {
+      this.checkExpressionErrors(refDestructuringErrors, true);
+    }
+  }
+  if (oldParenAssign > -1) {
+    refDestructuringErrors.parenthesizedAssign = oldParenAssign;
+  }
+  if (oldTrailingComma > -1) {
+    refDestructuringErrors.trailingComma = oldTrailingComma;
+  }
+  return left;
+};
+pp$5.parseMaybeConditional = function(forInit, refDestructuringErrors) {
+  var startPos = this.start, startLoc = this.startLoc;
+  var expr = this.parseExprOps(forInit, refDestructuringErrors);
+  if (this.checkExpressionErrors(refDestructuringErrors)) {
+    return expr;
+  }
+  if (!(expr.type === "ArrowFunctionExpression" && expr.start === startPos) && this.eat(types$1.question)) {
+    var node = this.startNodeAt(startPos, startLoc);
+    node.test = expr;
+    node.consequent = this.parseMaybeAssign();
+    this.expect(types$1.colon);
+    node.alternate = this.parseMaybeAssign(forInit);
+    return this.finishNode(node, "ConditionalExpression");
+  }
+  return expr;
+};
+pp$5.parseExprOps = function(forInit, refDestructuringErrors) {
+  var startPos = this.start, startLoc = this.startLoc;
+  var expr = this.parseMaybeUnary(refDestructuringErrors, false, false, forInit);
+  if (this.checkExpressionErrors(refDestructuringErrors)) {
+    return expr;
+  }
+  return expr.start === startPos && expr.type === "ArrowFunctionExpression" ? expr : this.parseExprOp(expr, startPos, startLoc, -1, forInit);
+};
+pp$5.parseExprOp = function(left, leftStartPos, leftStartLoc, minPrec, forInit) {
+  var prec = this.type.binop;
+  if (prec != null && (!forInit || this.type !== types$1._in)) {
+    if (prec > minPrec) {
+      var logical = this.type === types$1.logicalOR || this.type === types$1.logicalAND;
+      var coalesce = this.type === types$1.coalesce;
+      if (coalesce) {
+        prec = types$1.logicalAND.binop;
+      }
+      var op = this.value;
+      this.next();
+      var startPos = this.start, startLoc = this.startLoc;
+      var right = this.parseExprOp(this.parseMaybeUnary(null, false, false, forInit), startPos, startLoc, prec, forInit);
+      var node = this.buildBinary(leftStartPos, leftStartLoc, left, right, op, logical || coalesce);
+      if (logical && this.type === types$1.coalesce || coalesce && (this.type === types$1.logicalOR || this.type === types$1.logicalAND)) {
+        this.raiseRecoverable(this.start, "Logical expressions and coalesce expressions cannot be mixed. Wrap either by parentheses");
+      }
+      return this.parseExprOp(node, leftStartPos, leftStartLoc, minPrec, forInit);
+    }
+  }
+  return left;
+};
+pp$5.buildBinary = function(startPos, startLoc, left, right, op, logical) {
+  if (right.type === "PrivateIdentifier") {
+    this.raise(right.start, "Private identifier can only be left side of binary expression");
+  }
+  var node = this.startNodeAt(startPos, startLoc);
+  node.left = left;
+  node.operator = op;
+  node.right = right;
+  return this.finishNode(node, logical ? "LogicalExpression" : "BinaryExpression");
+};
+pp$5.parseMaybeUnary = function(refDestructuringErrors, sawUnary, incDec, forInit) {
+  var startPos = this.start, startLoc = this.startLoc, expr;
+  if (this.isContextual("await") && this.canAwait) {
+    expr = this.parseAwait(forInit);
+    sawUnary = true;
+  } else if (this.type.prefix) {
+    var node = this.startNode(), update = this.type === types$1.incDec;
+    node.operator = this.value;
+    node.prefix = true;
+    this.next();
+    node.argument = this.parseMaybeUnary(null, true, update, forInit);
+    this.checkExpressionErrors(refDestructuringErrors, true);
+    if (update) {
+      this.checkLValSimple(node.argument);
+    } else if (this.strict && node.operator === "delete" && isLocalVariableAccess(node.argument)) {
+      this.raiseRecoverable(node.start, "Deleting local variable in strict mode");
+    } else if (node.operator === "delete" && isPrivateFieldAccess(node.argument)) {
+      this.raiseRecoverable(node.start, "Private fields can not be deleted");
+    } else {
+      sawUnary = true;
+    }
+    expr = this.finishNode(node, update ? "UpdateExpression" : "UnaryExpression");
+  } else if (!sawUnary && this.type === types$1.privateId) {
+    if ((forInit || this.privateNameStack.length === 0) && this.options.checkPrivateFields) {
+      this.unexpected();
+    }
+    expr = this.parsePrivateIdent();
+    if (this.type !== types$1._in) {
+      this.unexpected();
+    }
+  } else {
+    expr = this.parseExprSubscripts(refDestructuringErrors, forInit);
+    if (this.checkExpressionErrors(refDestructuringErrors)) {
+      return expr;
+    }
+    while (this.type.postfix && !this.canInsertSemicolon()) {
+      var node$1 = this.startNodeAt(startPos, startLoc);
+      node$1.operator = this.value;
+      node$1.prefix = false;
+      node$1.argument = expr;
+      this.checkLValSimple(expr);
+      this.next();
+      expr = this.finishNode(node$1, "UpdateExpression");
+    }
+  }
+  if (!incDec && this.eat(types$1.starstar)) {
+    if (sawUnary) {
+      this.unexpected(this.lastTokStart);
+    } else {
+      return this.buildBinary(startPos, startLoc, expr, this.parseMaybeUnary(null, false, false, forInit), "**", false);
+    }
+  } else {
+    return expr;
+  }
+};
+function isLocalVariableAccess(node) {
+  return node.type === "Identifier" || node.type === "ParenthesizedExpression" && isLocalVariableAccess(node.expression);
+}
+function isPrivateFieldAccess(node) {
+  return node.type === "MemberExpression" && node.property.type === "PrivateIdentifier" || node.type === "ChainExpression" && isPrivateFieldAccess(node.expression) || node.type === "ParenthesizedExpression" && isPrivateFieldAccess(node.expression);
+}
+pp$5.parseExprSubscripts = function(refDestructuringErrors, forInit) {
+  var startPos = this.start, startLoc = this.startLoc;
+  var expr = this.parseExprAtom(refDestructuringErrors, forInit);
+  if (expr.type === "ArrowFunctionExpression" && this.input.slice(this.lastTokStart, this.lastTokEnd) !== ")") {
+    return expr;
+  }
+  var result = this.parseSubscripts(expr, startPos, startLoc, false, forInit);
+  if (refDestructuringErrors && result.type === "MemberExpression") {
+    if (refDestructuringErrors.parenthesizedAssign >= result.start) {
+      refDestructuringErrors.parenthesizedAssign = -1;
+    }
+    if (refDestructuringErrors.parenthesizedBind >= result.start) {
+      refDestructuringErrors.parenthesizedBind = -1;
+    }
+    if (refDestructuringErrors.trailingComma >= result.start) {
+      refDestructuringErrors.trailingComma = -1;
+    }
+  }
+  return result;
+};
+pp$5.parseSubscripts = function(base, startPos, startLoc, noCalls, forInit) {
+  var maybeAsyncArrow = this.options.ecmaVersion >= 8 && base.type === "Identifier" && base.name === "async" && this.lastTokEnd === base.end && !this.canInsertSemicolon() && base.end - base.start === 5 && this.potentialArrowAt === base.start;
+  var optionalChained = false;
+  while (true) {
+    var element = this.parseSubscript(base, startPos, startLoc, noCalls, maybeAsyncArrow, optionalChained, forInit);
+    if (element.optional) {
+      optionalChained = true;
+    }
+    if (element === base || element.type === "ArrowFunctionExpression") {
+      if (optionalChained) {
+        var chainNode = this.startNodeAt(startPos, startLoc);
+        chainNode.expression = element;
+        element = this.finishNode(chainNode, "ChainExpression");
+      }
+      return element;
+    }
+    base = element;
+  }
+};
+pp$5.shouldParseAsyncArrow = function() {
+  return !this.canInsertSemicolon() && this.eat(types$1.arrow);
+};
+pp$5.parseSubscriptAsyncArrow = function(startPos, startLoc, exprList, forInit) {
+  return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), exprList, true, forInit);
+};
+pp$5.parseSubscript = function(base, startPos, startLoc, noCalls, maybeAsyncArrow, optionalChained, forInit) {
+  var optionalSupported = this.options.ecmaVersion >= 11;
+  var optional = optionalSupported && this.eat(types$1.questionDot);
+  if (noCalls && optional) {
+    this.raise(this.lastTokStart, "Optional chaining cannot appear in the callee of new expressions");
+  }
+  var computed = this.eat(types$1.bracketL);
+  if (computed || optional && this.type !== types$1.parenL && this.type !== types$1.backQuote || this.eat(types$1.dot)) {
+    var node = this.startNodeAt(startPos, startLoc);
+    node.object = base;
+    if (computed) {
+      node.property = this.parseExpression();
+      this.expect(types$1.bracketR);
+    } else if (this.type === types$1.privateId && base.type !== "Super") {
+      node.property = this.parsePrivateIdent();
+    } else {
+      node.property = this.parseIdent(this.options.allowReserved !== "never");
+    }
+    node.computed = !!computed;
+    if (optionalSupported) {
+      node.optional = optional;
+    }
+    base = this.finishNode(node, "MemberExpression");
+  } else if (!noCalls && this.eat(types$1.parenL)) {
+    var refDestructuringErrors = new DestructuringErrors(), oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
+    this.yieldPos = 0;
+    this.awaitPos = 0;
+    this.awaitIdentPos = 0;
+    var exprList = this.parseExprList(types$1.parenR, this.options.ecmaVersion >= 8, false, refDestructuringErrors);
+    if (maybeAsyncArrow && !optional && this.shouldParseAsyncArrow()) {
+      this.checkPatternErrors(refDestructuringErrors, false);
+      this.checkYieldAwaitInDefaultParams();
+      if (this.awaitIdentPos > 0) {
+        this.raise(this.awaitIdentPos, "Cannot use 'await' as identifier inside an async function");
+      }
+      this.yieldPos = oldYieldPos;
+      this.awaitPos = oldAwaitPos;
+      this.awaitIdentPos = oldAwaitIdentPos;
+      return this.parseSubscriptAsyncArrow(startPos, startLoc, exprList, forInit);
+    }
+    this.checkExpressionErrors(refDestructuringErrors, true);
+    this.yieldPos = oldYieldPos || this.yieldPos;
+    this.awaitPos = oldAwaitPos || this.awaitPos;
+    this.awaitIdentPos = oldAwaitIdentPos || this.awaitIdentPos;
+    var node$1 = this.startNodeAt(startPos, startLoc);
+    node$1.callee = base;
+    node$1.arguments = exprList;
+    if (optionalSupported) {
+      node$1.optional = optional;
+    }
+    base = this.finishNode(node$1, "CallExpression");
+  } else if (this.type === types$1.backQuote) {
+    if (optional || optionalChained) {
+      this.raise(this.start, "Optional chaining cannot appear in the tag of tagged template expressions");
+    }
+    var node$2 = this.startNodeAt(startPos, startLoc);
+    node$2.tag = base;
+    node$2.quasi = this.parseTemplate({ isTagged: true });
+    base = this.finishNode(node$2, "TaggedTemplateExpression");
+  }
+  return base;
+};
+pp$5.parseExprAtom = function(refDestructuringErrors, forInit, forNew) {
+  if (this.type === types$1.slash) {
+    this.readRegexp();
+  }
+  var node, canBeArrow = this.potentialArrowAt === this.start;
+  switch (this.type) {
+    case types$1._super:
+      if (!this.allowSuper) {
+        this.raise(this.start, "'super' keyword outside a method");
+      }
+      node = this.startNode();
+      this.next();
+      if (this.type === types$1.parenL && !this.allowDirectSuper) {
+        this.raise(node.start, "super() call outside constructor of a subclass");
+      }
+      if (this.type !== types$1.dot && this.type !== types$1.bracketL && this.type !== types$1.parenL) {
+        this.unexpected();
+      }
+      return this.finishNode(node, "Super");
+    case types$1._this:
+      node = this.startNode();
+      this.next();
+      return this.finishNode(node, "ThisExpression");
+    case types$1.name:
+      var startPos = this.start, startLoc = this.startLoc, containsEsc = this.containsEsc;
+      var id = this.parseIdent(false);
+      if (this.options.ecmaVersion >= 8 && !containsEsc && id.name === "async" && !this.canInsertSemicolon() && this.eat(types$1._function)) {
+        this.overrideContext(types.f_expr);
+        return this.parseFunction(this.startNodeAt(startPos, startLoc), 0, false, true, forInit);
+      }
+      if (canBeArrow && !this.canInsertSemicolon()) {
+        if (this.eat(types$1.arrow)) {
+          return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), [id], false, forInit);
+        }
+        if (this.options.ecmaVersion >= 8 && id.name === "async" && this.type === types$1.name && !containsEsc && (!this.potentialArrowInForAwait || this.value !== "of" || this.containsEsc)) {
+          id = this.parseIdent(false);
+          if (this.canInsertSemicolon() || !this.eat(types$1.arrow)) {
+            this.unexpected();
+          }
+          return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), [id], true, forInit);
+        }
+      }
+      return id;
+    case types$1.regexp:
+      var value = this.value;
+      node = this.parseLiteral(value.value);
+      node.regex = { pattern: value.pattern, flags: value.flags };
+      return node;
+    case types$1.num:
+    case types$1.string:
+      return this.parseLiteral(this.value);
+    case types$1._null:
+    case types$1._true:
+    case types$1._false:
+      node = this.startNode();
+      node.value = this.type === types$1._null ? null : this.type === types$1._true;
+      node.raw = this.type.keyword;
+      this.next();
+      return this.finishNode(node, "Literal");
+    case types$1.parenL:
+      var start = this.start, expr = this.parseParenAndDistinguishExpression(canBeArrow, forInit);
+      if (refDestructuringErrors) {
+        if (refDestructuringErrors.parenthesizedAssign < 0 && !this.isSimpleAssignTarget(expr)) {
+          refDestructuringErrors.parenthesizedAssign = start;
+        }
+        if (refDestructuringErrors.parenthesizedBind < 0) {
+          refDestructuringErrors.parenthesizedBind = start;
+        }
+      }
+      return expr;
+    case types$1.bracketL:
+      node = this.startNode();
+      this.next();
+      node.elements = this.parseExprList(types$1.bracketR, true, true, refDestructuringErrors);
+      return this.finishNode(node, "ArrayExpression");
+    case types$1.braceL:
+      this.overrideContext(types.b_expr);
+      return this.parseObj(false, refDestructuringErrors);
+    case types$1._function:
+      node = this.startNode();
+      this.next();
+      return this.parseFunction(node, 0);
+    case types$1._class:
+      return this.parseClass(this.startNode(), false);
+    case types$1._new:
+      return this.parseNew();
+    case types$1.backQuote:
+      return this.parseTemplate();
+    case types$1._import:
+      if (this.options.ecmaVersion >= 11) {
+        return this.parseExprImport(forNew);
+      } else {
+        return this.unexpected();
+      }
+    default:
+      return this.parseExprAtomDefault();
+  }
+};
+pp$5.parseExprAtomDefault = function() {
+  this.unexpected();
+};
+pp$5.parseExprImport = function(forNew) {
+  var node = this.startNode();
+  if (this.containsEsc) {
+    this.raiseRecoverable(this.start, "Escape sequence in keyword import");
+  }
+  this.next();
+  if (this.type === types$1.parenL && !forNew) {
+    return this.parseDynamicImport(node);
+  } else if (this.type === types$1.dot) {
+    var meta = this.startNodeAt(node.start, node.loc && node.loc.start);
+    meta.name = "import";
+    node.meta = this.finishNode(meta, "Identifier");
+    return this.parseImportMeta(node);
+  } else {
+    this.unexpected();
+  }
+};
+pp$5.parseDynamicImport = function(node) {
+  this.next();
+  node.source = this.parseMaybeAssign();
+  if (this.options.ecmaVersion >= 16) {
+    if (!this.eat(types$1.parenR)) {
+      this.expect(types$1.comma);
+      if (!this.afterTrailingComma(types$1.parenR)) {
+        node.options = this.parseMaybeAssign();
+        if (!this.eat(types$1.parenR)) {
+          this.expect(types$1.comma);
+          if (!this.afterTrailingComma(types$1.parenR)) {
+            this.unexpected();
+          }
+        }
+      } else {
+        node.options = null;
+      }
+    } else {
+      node.options = null;
+    }
+  } else {
+    if (!this.eat(types$1.parenR)) {
+      var errorPos = this.start;
+      if (this.eat(types$1.comma) && this.eat(types$1.parenR)) {
+        this.raiseRecoverable(errorPos, "Trailing comma is not allowed in import()");
+      } else {
+        this.unexpected(errorPos);
+      }
+    }
+  }
+  return this.finishNode(node, "ImportExpression");
+};
+pp$5.parseImportMeta = function(node) {
+  this.next();
+  var containsEsc = this.containsEsc;
+  node.property = this.parseIdent(true);
+  if (node.property.name !== "meta") {
+    this.raiseRecoverable(node.property.start, "The only valid meta property for import is 'import.meta'");
+  }
+  if (containsEsc) {
+    this.raiseRecoverable(node.start, "'import.meta' must not contain escaped characters");
+  }
+  if (this.options.sourceType !== "module" && !this.options.allowImportExportEverywhere) {
+    this.raiseRecoverable(node.start, "Cannot use 'import.meta' outside a module");
+  }
+  return this.finishNode(node, "MetaProperty");
+};
+pp$5.parseLiteral = function(value) {
+  var node = this.startNode();
+  node.value = value;
+  node.raw = this.input.slice(this.start, this.end);
+  if (node.raw.charCodeAt(node.raw.length - 1) === 110) {
+    node.bigint = node.value != null ? node.value.toString() : node.raw.slice(0, -1).replace(/_/g, "");
+  }
+  this.next();
+  return this.finishNode(node, "Literal");
+};
+pp$5.parseParenExpression = function() {
+  this.expect(types$1.parenL);
+  var val = this.parseExpression();
+  this.expect(types$1.parenR);
+  return val;
+};
+pp$5.shouldParseArrow = function(exprList) {
+  return !this.canInsertSemicolon();
+};
+pp$5.parseParenAndDistinguishExpression = function(canBeArrow, forInit) {
+  var startPos = this.start, startLoc = this.startLoc, val, allowTrailingComma = this.options.ecmaVersion >= 8;
+  if (this.options.ecmaVersion >= 6) {
+    this.next();
+    var innerStartPos = this.start, innerStartLoc = this.startLoc;
+    var exprList = [], first = true, lastIsComma = false;
+    var refDestructuringErrors = new DestructuringErrors(), oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, spreadStart;
+    this.yieldPos = 0;
+    this.awaitPos = 0;
+    while (this.type !== types$1.parenR) {
+      first ? first = false : this.expect(types$1.comma);
+      if (allowTrailingComma && this.afterTrailingComma(types$1.parenR, true)) {
+        lastIsComma = true;
+        break;
+      } else if (this.type === types$1.ellipsis) {
+        spreadStart = this.start;
+        exprList.push(this.parseParenItem(this.parseRestBinding()));
+        if (this.type === types$1.comma) {
+          this.raiseRecoverable(
+            this.start,
+            "Comma is not permitted after the rest element"
+          );
+        }
+        break;
+      } else {
+        exprList.push(this.parseMaybeAssign(false, refDestructuringErrors, this.parseParenItem));
+      }
+    }
+    var innerEndPos = this.lastTokEnd, innerEndLoc = this.lastTokEndLoc;
+    this.expect(types$1.parenR);
+    if (canBeArrow && this.shouldParseArrow(exprList) && this.eat(types$1.arrow)) {
+      this.checkPatternErrors(refDestructuringErrors, false);
+      this.checkYieldAwaitInDefaultParams();
+      this.yieldPos = oldYieldPos;
+      this.awaitPos = oldAwaitPos;
+      return this.parseParenArrowList(startPos, startLoc, exprList, forInit);
+    }
+    if (!exprList.length || lastIsComma) {
+      this.unexpected(this.lastTokStart);
+    }
+    if (spreadStart) {
+      this.unexpected(spreadStart);
+    }
+    this.checkExpressionErrors(refDestructuringErrors, true);
+    this.yieldPos = oldYieldPos || this.yieldPos;
+    this.awaitPos = oldAwaitPos || this.awaitPos;
+    if (exprList.length > 1) {
+      val = this.startNodeAt(innerStartPos, innerStartLoc);
+      val.expressions = exprList;
+      this.finishNodeAt(val, "SequenceExpression", innerEndPos, innerEndLoc);
+    } else {
+      val = exprList[0];
+    }
+  } else {
+    val = this.parseParenExpression();
+  }
+  if (this.options.preserveParens) {
+    var par = this.startNodeAt(startPos, startLoc);
+    par.expression = val;
+    return this.finishNode(par, "ParenthesizedExpression");
+  } else {
+    return val;
+  }
+};
+pp$5.parseParenItem = function(item) {
+  return item;
+};
+pp$5.parseParenArrowList = function(startPos, startLoc, exprList, forInit) {
+  return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), exprList, false, forInit);
+};
+var empty = [];
+pp$5.parseNew = function() {
+  if (this.containsEsc) {
+    this.raiseRecoverable(this.start, "Escape sequence in keyword new");
+  }
+  var node = this.startNode();
+  this.next();
+  if (this.options.ecmaVersion >= 6 && this.type === types$1.dot) {
+    var meta = this.startNodeAt(node.start, node.loc && node.loc.start);
+    meta.name = "new";
+    node.meta = this.finishNode(meta, "Identifier");
+    this.next();
+    var containsEsc = this.containsEsc;
+    node.property = this.parseIdent(true);
+    if (node.property.name !== "target") {
+      this.raiseRecoverable(node.property.start, "The only valid meta property for new is 'new.target'");
+    }
+    if (containsEsc) {
+      this.raiseRecoverable(node.start, "'new.target' must not contain escaped characters");
+    }
+    if (!this.allowNewDotTarget) {
+      this.raiseRecoverable(node.start, "'new.target' can only be used in functions and class static block");
+    }
+    return this.finishNode(node, "MetaProperty");
+  }
+  var startPos = this.start, startLoc = this.startLoc;
+  node.callee = this.parseSubscripts(this.parseExprAtom(null, false, true), startPos, startLoc, true, false);
+  if (node.callee.type === "Super") {
+    this.raiseRecoverable(startPos, "Invalid use of 'super'");
+  }
+  if (this.eat(types$1.parenL)) {
+    node.arguments = this.parseExprList(types$1.parenR, this.options.ecmaVersion >= 8, false);
+  } else {
+    node.arguments = empty;
+  }
+  return this.finishNode(node, "NewExpression");
+};
+pp$5.parseTemplateElement = function(ref2) {
+  var isTagged = ref2.isTagged;
+  var elem = this.startNode();
+  if (this.type === types$1.invalidTemplate) {
+    if (!isTagged) {
+      this.raiseRecoverable(this.start, "Bad escape sequence in untagged template literal");
+    }
+    elem.value = {
+      raw: this.value.replace(/\r\n?/g, "\n"),
+      cooked: null
+    };
+  } else {
+    elem.value = {
+      raw: this.input.slice(this.start, this.end).replace(/\r\n?/g, "\n"),
+      cooked: this.value
+    };
+  }
+  this.next();
+  elem.tail = this.type === types$1.backQuote;
+  return this.finishNode(elem, "TemplateElement");
+};
+pp$5.parseTemplate = function(ref2) {
+  if (ref2 === void 0) ref2 = {};
+  var isTagged = ref2.isTagged;
+  if (isTagged === void 0) isTagged = false;
+  var node = this.startNode();
+  this.next();
+  node.expressions = [];
+  var curElt = this.parseTemplateElement({ isTagged });
+  node.quasis = [curElt];
+  while (!curElt.tail) {
+    if (this.type === types$1.eof) {
+      this.raise(this.pos, "Unterminated template literal");
+    }
+    this.expect(types$1.dollarBraceL);
+    node.expressions.push(this.parseExpression());
+    this.expect(types$1.braceR);
+    node.quasis.push(curElt = this.parseTemplateElement({ isTagged }));
+  }
+  this.next();
+  return this.finishNode(node, "TemplateLiteral");
+};
+pp$5.isAsyncProp = function(prop) {
+  return !prop.computed && prop.key.type === "Identifier" && prop.key.name === "async" && (this.type === types$1.name || this.type === types$1.num || this.type === types$1.string || this.type === types$1.bracketL || this.type.keyword || this.options.ecmaVersion >= 9 && this.type === types$1.star) && !lineBreak.test(this.input.slice(this.lastTokEnd, this.start));
+};
+pp$5.parseObj = function(isPattern, refDestructuringErrors) {
+  var node = this.startNode(), first = true, propHash = {};
+  node.properties = [];
+  this.next();
+  while (!this.eat(types$1.braceR)) {
+    if (!first) {
+      this.expect(types$1.comma);
+      if (this.options.ecmaVersion >= 5 && this.afterTrailingComma(types$1.braceR)) {
+        break;
+      }
+    } else {
+      first = false;
+    }
+    var prop = this.parseProperty(isPattern, refDestructuringErrors);
+    if (!isPattern) {
+      this.checkPropClash(prop, propHash, refDestructuringErrors);
+    }
+    node.properties.push(prop);
+  }
+  return this.finishNode(node, isPattern ? "ObjectPattern" : "ObjectExpression");
+};
+pp$5.parseProperty = function(isPattern, refDestructuringErrors) {
+  var prop = this.startNode(), isGenerator, isAsync, startPos, startLoc;
+  if (this.options.ecmaVersion >= 9 && this.eat(types$1.ellipsis)) {
+    if (isPattern) {
+      prop.argument = this.parseIdent(false);
+      if (this.type === types$1.comma) {
+        this.raiseRecoverable(this.start, "Comma is not permitted after the rest element");
+      }
+      return this.finishNode(prop, "RestElement");
+    }
+    prop.argument = this.parseMaybeAssign(false, refDestructuringErrors);
+    if (this.type === types$1.comma && refDestructuringErrors && refDestructuringErrors.trailingComma < 0) {
+      refDestructuringErrors.trailingComma = this.start;
+    }
+    return this.finishNode(prop, "SpreadElement");
+  }
+  if (this.options.ecmaVersion >= 6) {
+    prop.method = false;
+    prop.shorthand = false;
+    if (isPattern || refDestructuringErrors) {
+      startPos = this.start;
+      startLoc = this.startLoc;
+    }
+    if (!isPattern) {
+      isGenerator = this.eat(types$1.star);
+    }
+  }
+  var containsEsc = this.containsEsc;
+  this.parsePropertyName(prop);
+  if (!isPattern && !containsEsc && this.options.ecmaVersion >= 8 && !isGenerator && this.isAsyncProp(prop)) {
+    isAsync = true;
+    isGenerator = this.options.ecmaVersion >= 9 && this.eat(types$1.star);
+    this.parsePropertyName(prop);
+  } else {
+    isAsync = false;
+  }
+  this.parsePropertyValue(prop, isPattern, isGenerator, isAsync, startPos, startLoc, refDestructuringErrors, containsEsc);
+  return this.finishNode(prop, "Property");
+};
+pp$5.parseGetterSetter = function(prop) {
+  var kind = prop.key.name;
+  this.parsePropertyName(prop);
+  prop.value = this.parseMethod(false);
+  prop.kind = kind;
+  var paramCount = prop.kind === "get" ? 0 : 1;
+  if (prop.value.params.length !== paramCount) {
+    var start = prop.value.start;
+    if (prop.kind === "get") {
+      this.raiseRecoverable(start, "getter should have no params");
+    } else {
+      this.raiseRecoverable(start, "setter should have exactly one param");
+    }
+  } else {
+    if (prop.kind === "set" && prop.value.params[0].type === "RestElement") {
+      this.raiseRecoverable(prop.value.params[0].start, "Setter cannot use rest params");
+    }
+  }
+};
+pp$5.parsePropertyValue = function(prop, isPattern, isGenerator, isAsync, startPos, startLoc, refDestructuringErrors, containsEsc) {
+  if ((isGenerator || isAsync) && this.type === types$1.colon) {
+    this.unexpected();
+  }
+  if (this.eat(types$1.colon)) {
+    prop.value = isPattern ? this.parseMaybeDefault(this.start, this.startLoc) : this.parseMaybeAssign(false, refDestructuringErrors);
+    prop.kind = "init";
+  } else if (this.options.ecmaVersion >= 6 && this.type === types$1.parenL) {
+    if (isPattern) {
+      this.unexpected();
+    }
+    prop.method = true;
+    prop.value = this.parseMethod(isGenerator, isAsync);
+    prop.kind = "init";
+  } else if (!isPattern && !containsEsc && this.options.ecmaVersion >= 5 && !prop.computed && prop.key.type === "Identifier" && (prop.key.name === "get" || prop.key.name === "set") && (this.type !== types$1.comma && this.type !== types$1.braceR && this.type !== types$1.eq)) {
+    if (isGenerator || isAsync) {
+      this.unexpected();
+    }
+    this.parseGetterSetter(prop);
+  } else if (this.options.ecmaVersion >= 6 && !prop.computed && prop.key.type === "Identifier") {
+    if (isGenerator || isAsync) {
+      this.unexpected();
+    }
+    this.checkUnreserved(prop.key);
+    if (prop.key.name === "await" && !this.awaitIdentPos) {
+      this.awaitIdentPos = startPos;
+    }
+    if (isPattern) {
+      prop.value = this.parseMaybeDefault(startPos, startLoc, this.copyNode(prop.key));
+    } else if (this.type === types$1.eq && refDestructuringErrors) {
+      if (refDestructuringErrors.shorthandAssign < 0) {
+        refDestructuringErrors.shorthandAssign = this.start;
+      }
+      prop.value = this.parseMaybeDefault(startPos, startLoc, this.copyNode(prop.key));
+    } else {
+      prop.value = this.copyNode(prop.key);
+    }
+    prop.kind = "init";
+    prop.shorthand = true;
+  } else {
+    this.unexpected();
+  }
+};
+pp$5.parsePropertyName = function(prop) {
+  if (this.options.ecmaVersion >= 6) {
+    if (this.eat(types$1.bracketL)) {
+      prop.computed = true;
+      prop.key = this.parseMaybeAssign();
+      this.expect(types$1.bracketR);
+      return prop.key;
+    } else {
+      prop.computed = false;
+    }
+  }
+  return prop.key = this.type === types$1.num || this.type === types$1.string ? this.parseExprAtom() : this.parseIdent(this.options.allowReserved !== "never");
+};
+pp$5.initFunction = function(node) {
+  node.id = null;
+  if (this.options.ecmaVersion >= 6) {
+    node.generator = node.expression = false;
+  }
+  if (this.options.ecmaVersion >= 8) {
+    node.async = false;
+  }
+};
+pp$5.parseMethod = function(isGenerator, isAsync, allowDirectSuper) {
+  var node = this.startNode(), oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
+  this.initFunction(node);
+  if (this.options.ecmaVersion >= 6) {
+    node.generator = isGenerator;
+  }
+  if (this.options.ecmaVersion >= 8) {
+    node.async = !!isAsync;
+  }
+  this.yieldPos = 0;
+  this.awaitPos = 0;
+  this.awaitIdentPos = 0;
+  this.enterScope(functionFlags(isAsync, node.generator) | SCOPE_SUPER | (allowDirectSuper ? SCOPE_DIRECT_SUPER : 0));
+  this.expect(types$1.parenL);
+  node.params = this.parseBindingList(types$1.parenR, false, this.options.ecmaVersion >= 8);
+  this.checkYieldAwaitInDefaultParams();
+  this.parseFunctionBody(node, false, true, false);
+  this.yieldPos = oldYieldPos;
+  this.awaitPos = oldAwaitPos;
+  this.awaitIdentPos = oldAwaitIdentPos;
+  return this.finishNode(node, "FunctionExpression");
+};
+pp$5.parseArrowExpression = function(node, params, isAsync, forInit) {
+  var oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
+  this.enterScope(functionFlags(isAsync, false) | SCOPE_ARROW);
+  this.initFunction(node);
+  if (this.options.ecmaVersion >= 8) {
+    node.async = !!isAsync;
+  }
+  this.yieldPos = 0;
+  this.awaitPos = 0;
+  this.awaitIdentPos = 0;
+  node.params = this.toAssignableList(params, true);
+  this.parseFunctionBody(node, true, false, forInit);
+  this.yieldPos = oldYieldPos;
+  this.awaitPos = oldAwaitPos;
+  this.awaitIdentPos = oldAwaitIdentPos;
+  return this.finishNode(node, "ArrowFunctionExpression");
+};
+pp$5.parseFunctionBody = function(node, isArrowFunction, isMethod, forInit) {
+  var isExpression = isArrowFunction && this.type !== types$1.braceL;
+  var oldStrict = this.strict, useStrict = false;
+  if (isExpression) {
+    node.body = this.parseMaybeAssign(forInit);
+    node.expression = true;
+    this.checkParams(node, false);
+  } else {
+    var nonSimple = this.options.ecmaVersion >= 7 && !this.isSimpleParamList(node.params);
+    if (!oldStrict || nonSimple) {
+      useStrict = this.strictDirective(this.end);
+      if (useStrict && nonSimple) {
+        this.raiseRecoverable(node.start, "Illegal 'use strict' directive in function with non-simple parameter list");
+      }
+    }
+    var oldLabels = this.labels;
+    this.labels = [];
+    if (useStrict) {
+      this.strict = true;
+    }
+    this.checkParams(node, !oldStrict && !useStrict && !isArrowFunction && !isMethod && this.isSimpleParamList(node.params));
+    if (this.strict && node.id) {
+      this.checkLValSimple(node.id, BIND_OUTSIDE);
+    }
+    node.body = this.parseBlock(false, void 0, useStrict && !oldStrict);
+    node.expression = false;
+    this.adaptDirectivePrologue(node.body.body);
+    this.labels = oldLabels;
+  }
+  this.exitScope();
+};
+pp$5.isSimpleParamList = function(params) {
+  for (var i = 0, list = params; i < list.length; i += 1) {
+    var param = list[i];
+    if (param.type !== "Identifier") {
+      return false;
+    }
+  }
+  return true;
+};
+pp$5.checkParams = function(node, allowDuplicates) {
+  var nameHash = /* @__PURE__ */ Object.create(null);
+  for (var i = 0, list = node.params; i < list.length; i += 1) {
+    var param = list[i];
+    this.checkLValInnerPattern(param, BIND_VAR, allowDuplicates ? null : nameHash);
+  }
+};
+pp$5.parseExprList = function(close, allowTrailingComma, allowEmpty, refDestructuringErrors) {
+  var elts = [], first = true;
+  while (!this.eat(close)) {
+    if (!first) {
+      this.expect(types$1.comma);
+      if (allowTrailingComma && this.afterTrailingComma(close)) {
+        break;
+      }
+    } else {
+      first = false;
+    }
+    var elt = void 0;
+    if (allowEmpty && this.type === types$1.comma) {
+      elt = null;
+    } else if (this.type === types$1.ellipsis) {
+      elt = this.parseSpread(refDestructuringErrors);
+      if (refDestructuringErrors && this.type === types$1.comma && refDestructuringErrors.trailingComma < 0) {
+        refDestructuringErrors.trailingComma = this.start;
+      }
+    } else {
+      elt = this.parseMaybeAssign(false, refDestructuringErrors);
+    }
+    elts.push(elt);
+  }
+  return elts;
+};
+pp$5.checkUnreserved = function(ref2) {
+  var start = ref2.start;
+  var end = ref2.end;
+  var name = ref2.name;
+  if (this.inGenerator && name === "yield") {
+    this.raiseRecoverable(start, "Cannot use 'yield' as identifier inside a generator");
+  }
+  if (this.inAsync && name === "await") {
+    this.raiseRecoverable(start, "Cannot use 'await' as identifier inside an async function");
+  }
+  if (!(this.currentThisScope().flags & SCOPE_VAR) && name === "arguments") {
+    this.raiseRecoverable(start, "Cannot use 'arguments' in class field initializer");
+  }
+  if (this.inClassStaticBlock && (name === "arguments" || name === "await")) {
+    this.raise(start, "Cannot use " + name + " in class static initialization block");
+  }
+  if (this.keywords.test(name)) {
+    this.raise(start, "Unexpected keyword '" + name + "'");
+  }
+  if (this.options.ecmaVersion < 6 && this.input.slice(start, end).indexOf("\\") !== -1) {
+    return;
+  }
+  var re = this.strict ? this.reservedWordsStrict : this.reservedWords;
+  if (re.test(name)) {
+    if (!this.inAsync && name === "await") {
+      this.raiseRecoverable(start, "Cannot use keyword 'await' outside an async function");
+    }
+    this.raiseRecoverable(start, "The keyword '" + name + "' is reserved");
+  }
+};
+pp$5.parseIdent = function(liberal) {
+  var node = this.parseIdentNode();
+  this.next(!!liberal);
+  this.finishNode(node, "Identifier");
+  if (!liberal) {
+    this.checkUnreserved(node);
+    if (node.name === "await" && !this.awaitIdentPos) {
+      this.awaitIdentPos = node.start;
+    }
+  }
+  return node;
+};
+pp$5.parseIdentNode = function() {
+  var node = this.startNode();
+  if (this.type === types$1.name) {
+    node.name = this.value;
+  } else if (this.type.keyword) {
+    node.name = this.type.keyword;
+    if ((node.name === "class" || node.name === "function") && (this.lastTokEnd !== this.lastTokStart + 1 || this.input.charCodeAt(this.lastTokStart) !== 46)) {
+      this.context.pop();
+    }
+    this.type = types$1.name;
+  } else {
+    this.unexpected();
+  }
+  return node;
+};
+pp$5.parsePrivateIdent = function() {
+  var node = this.startNode();
+  if (this.type === types$1.privateId) {
+    node.name = this.value;
+  } else {
+    this.unexpected();
+  }
+  this.next();
+  this.finishNode(node, "PrivateIdentifier");
+  if (this.options.checkPrivateFields) {
+    if (this.privateNameStack.length === 0) {
+      this.raise(node.start, "Private field '#" + node.name + "' must be declared in an enclosing class");
+    } else {
+      this.privateNameStack[this.privateNameStack.length - 1].used.push(node);
+    }
+  }
+  return node;
+};
+pp$5.parseYield = function(forInit) {
+  if (!this.yieldPos) {
+    this.yieldPos = this.start;
+  }
+  var node = this.startNode();
+  this.next();
+  if (this.type === types$1.semi || this.canInsertSemicolon() || this.type !== types$1.star && !this.type.startsExpr) {
+    node.delegate = false;
+    node.argument = null;
+  } else {
+    node.delegate = this.eat(types$1.star);
+    node.argument = this.parseMaybeAssign(forInit);
+  }
+  return this.finishNode(node, "YieldExpression");
+};
+pp$5.parseAwait = function(forInit) {
+  if (!this.awaitPos) {
+    this.awaitPos = this.start;
+  }
+  var node = this.startNode();
+  this.next();
+  node.argument = this.parseMaybeUnary(null, true, false, forInit);
+  return this.finishNode(node, "AwaitExpression");
+};
+var pp$4 = Parser.prototype;
+pp$4.raise = function(pos, message) {
+  var loc = getLineInfo(this.input, pos);
+  message += " (" + loc.line + ":" + loc.column + ")";
+  if (this.sourceFile) {
+    message += " in " + this.sourceFile;
+  }
+  var err = new SyntaxError(message);
+  err.pos = pos;
+  err.loc = loc;
+  err.raisedAt = this.pos;
+  throw err;
+};
+pp$4.raiseRecoverable = pp$4.raise;
+pp$4.curPosition = function() {
+  if (this.options.locations) {
+    return new Position(this.curLine, this.pos - this.lineStart);
+  }
+};
+var pp$3 = Parser.prototype;
+var Scope = function Scope2(flags) {
+  this.flags = flags;
+  this.var = [];
+  this.lexical = [];
+  this.functions = [];
+};
+pp$3.enterScope = function(flags) {
+  this.scopeStack.push(new Scope(flags));
+};
+pp$3.exitScope = function() {
+  this.scopeStack.pop();
+};
+pp$3.treatFunctionsAsVarInScope = function(scope) {
+  return scope.flags & SCOPE_FUNCTION || !this.inModule && scope.flags & SCOPE_TOP;
+};
+pp$3.declareName = function(name, bindingType, pos) {
+  var redeclared = false;
+  if (bindingType === BIND_LEXICAL) {
+    var scope = this.currentScope();
+    redeclared = scope.lexical.indexOf(name) > -1 || scope.functions.indexOf(name) > -1 || scope.var.indexOf(name) > -1;
+    scope.lexical.push(name);
+    if (this.inModule && scope.flags & SCOPE_TOP) {
+      delete this.undefinedExports[name];
+    }
+  } else if (bindingType === BIND_SIMPLE_CATCH) {
+    var scope$1 = this.currentScope();
+    scope$1.lexical.push(name);
+  } else if (bindingType === BIND_FUNCTION) {
+    var scope$2 = this.currentScope();
+    if (this.treatFunctionsAsVar) {
+      redeclared = scope$2.lexical.indexOf(name) > -1;
+    } else {
+      redeclared = scope$2.lexical.indexOf(name) > -1 || scope$2.var.indexOf(name) > -1;
+    }
+    scope$2.functions.push(name);
+  } else {
+    for (var i = this.scopeStack.length - 1; i >= 0; --i) {
+      var scope$3 = this.scopeStack[i];
+      if (scope$3.lexical.indexOf(name) > -1 && !(scope$3.flags & SCOPE_SIMPLE_CATCH && scope$3.lexical[0] === name) || !this.treatFunctionsAsVarInScope(scope$3) && scope$3.functions.indexOf(name) > -1) {
+        redeclared = true;
+        break;
+      }
+      scope$3.var.push(name);
+      if (this.inModule && scope$3.flags & SCOPE_TOP) {
+        delete this.undefinedExports[name];
+      }
+      if (scope$3.flags & SCOPE_VAR) {
+        break;
+      }
+    }
+  }
+  if (redeclared) {
+    this.raiseRecoverable(pos, "Identifier '" + name + "' has already been declared");
+  }
+};
+pp$3.checkLocalExport = function(id) {
+  if (this.scopeStack[0].lexical.indexOf(id.name) === -1 && this.scopeStack[0].var.indexOf(id.name) === -1) {
+    this.undefinedExports[id.name] = id;
+  }
+};
+pp$3.currentScope = function() {
+  return this.scopeStack[this.scopeStack.length - 1];
+};
+pp$3.currentVarScope = function() {
+  for (var i = this.scopeStack.length - 1; ; i--) {
+    var scope = this.scopeStack[i];
+    if (scope.flags & (SCOPE_VAR | SCOPE_CLASS_FIELD_INIT | SCOPE_CLASS_STATIC_BLOCK)) {
+      return scope;
+    }
+  }
+};
+pp$3.currentThisScope = function() {
+  for (var i = this.scopeStack.length - 1; ; i--) {
+    var scope = this.scopeStack[i];
+    if (scope.flags & (SCOPE_VAR | SCOPE_CLASS_FIELD_INIT | SCOPE_CLASS_STATIC_BLOCK) && !(scope.flags & SCOPE_ARROW)) {
+      return scope;
+    }
+  }
+};
+var Node2 = function Node3(parser, pos, loc) {
+  this.type = "";
+  this.start = pos;
+  this.end = 0;
+  if (parser.options.locations) {
+    this.loc = new SourceLocation(parser, loc);
+  }
+  if (parser.options.directSourceFile) {
+    this.sourceFile = parser.options.directSourceFile;
+  }
+  if (parser.options.ranges) {
+    this.range = [pos, 0];
+  }
+};
+var pp$2 = Parser.prototype;
+pp$2.startNode = function() {
+  return new Node2(this, this.start, this.startLoc);
+};
+pp$2.startNodeAt = function(pos, loc) {
+  return new Node2(this, pos, loc);
+};
+function finishNodeAt(node, type, pos, loc) {
+  node.type = type;
+  node.end = pos;
+  if (this.options.locations) {
+    node.loc.end = loc;
+  }
+  if (this.options.ranges) {
+    node.range[1] = pos;
+  }
+  return node;
+}
+pp$2.finishNode = function(node, type) {
+  return finishNodeAt.call(this, node, type, this.lastTokEnd, this.lastTokEndLoc);
+};
+pp$2.finishNodeAt = function(node, type, pos, loc) {
+  return finishNodeAt.call(this, node, type, pos, loc);
+};
+pp$2.copyNode = function(node) {
+  var newNode = new Node2(this, node.start, this.startLoc);
+  for (var prop in node) {
+    newNode[prop] = node[prop];
+  }
+  return newNode;
+};
+var scriptValuesAddedInUnicode = "Berf Beria_Erfe Gara Garay Gukh Gurung_Khema Hrkt Katakana_Or_Hiragana Kawi Kirat_Rai Krai Nag_Mundari Nagm Ol_Onal Onao Sidetic Sidt Sunu Sunuwar Tai_Yo Tayo Todhri Todr Tolong_Siki Tols Tulu_Tigalari Tutg Unknown Zzzz";
+var ecma9BinaryProperties = "ASCII ASCII_Hex_Digit AHex Alphabetic Alpha Any Assigned Bidi_Control Bidi_C Bidi_Mirrored Bidi_M Case_Ignorable CI Cased Changes_When_Casefolded CWCF Changes_When_Casemapped CWCM Changes_When_Lowercased CWL Changes_When_NFKC_Casefolded CWKCF Changes_When_Titlecased CWT Changes_When_Uppercased CWU Dash Default_Ignorable_Code_Point DI Deprecated Dep Diacritic Dia Emoji Emoji_Component Emoji_Modifier Emoji_Modifier_Base Emoji_Presentation Extender Ext Grapheme_Base Gr_Base Grapheme_Extend Gr_Ext Hex_Digit Hex IDS_Binary_Operator IDSB IDS_Trinary_Operator IDST ID_Continue IDC ID_Start IDS Ideographic Ideo Join_Control Join_C Logical_Order_Exception LOE Lowercase Lower Math Noncharacter_Code_Point NChar Pattern_Syntax Pat_Syn Pattern_White_Space Pat_WS Quotation_Mark QMark Radical Regional_Indicator RI Sentence_Terminal STerm Soft_Dotted SD Terminal_Punctuation Term Unified_Ideograph UIdeo Uppercase Upper Variation_Selector VS White_Space space XID_Continue XIDC XID_Start XIDS";
+var ecma10BinaryProperties = ecma9BinaryProperties + " Extended_Pictographic";
+var ecma11BinaryProperties = ecma10BinaryProperties;
+var ecma12BinaryProperties = ecma11BinaryProperties + " EBase EComp EMod EPres ExtPict";
+var ecma13BinaryProperties = ecma12BinaryProperties;
+var ecma14BinaryProperties = ecma13BinaryProperties;
+var unicodeBinaryProperties = {
+  9: ecma9BinaryProperties,
+  10: ecma10BinaryProperties,
+  11: ecma11BinaryProperties,
+  12: ecma12BinaryProperties,
+  13: ecma13BinaryProperties,
+  14: ecma14BinaryProperties
+};
+var ecma14BinaryPropertiesOfStrings = "Basic_Emoji Emoji_Keycap_Sequence RGI_Emoji_Modifier_Sequence RGI_Emoji_Flag_Sequence RGI_Emoji_Tag_Sequence RGI_Emoji_ZWJ_Sequence RGI_Emoji";
+var unicodeBinaryPropertiesOfStrings = {
+  9: "",
+  10: "",
+  11: "",
+  12: "",
+  13: "",
+  14: ecma14BinaryPropertiesOfStrings
+};
+var unicodeGeneralCategoryValues = "Cased_Letter LC Close_Punctuation Pe Connector_Punctuation Pc Control Cc cntrl Currency_Symbol Sc Dash_Punctuation Pd Decimal_Number Nd digit Enclosing_Mark Me Final_Punctuation Pf Format Cf Initial_Punctuation Pi Letter L Letter_Number Nl Line_Separator Zl Lowercase_Letter Ll Mark M Combining_Mark Math_Symbol Sm Modifier_Letter Lm Modifier_Symbol Sk Nonspacing_Mark Mn Number N Open_Punctuation Ps Other C Other_Letter Lo Other_Number No Other_Punctuation Po Other_Symbol So Paragraph_Separator Zp Private_Use Co Punctuation P punct Separator Z Space_Separator Zs Spacing_Mark Mc Surrogate Cs Symbol S Titlecase_Letter Lt Unassigned Cn Uppercase_Letter Lu";
+var ecma9ScriptValues = "Adlam Adlm Ahom Anatolian_Hieroglyphs Hluw Arabic Arab Armenian Armn Avestan Avst Balinese Bali Bamum Bamu Bassa_Vah Bass Batak Batk Bengali Beng Bhaiksuki Bhks Bopomofo Bopo Brahmi Brah Braille Brai Buginese Bugi Buhid Buhd Canadian_Aboriginal Cans Carian Cari Caucasian_Albanian Aghb Chakma Cakm Cham Cham Cherokee Cher Common Zyyy Coptic Copt Qaac Cuneiform Xsux Cypriot Cprt Cyrillic Cyrl Deseret Dsrt Devanagari Deva Duployan Dupl Egyptian_Hieroglyphs Egyp Elbasan Elba Ethiopic Ethi Georgian Geor Glagolitic Glag Gothic Goth Grantha Gran Greek Grek Gujarati Gujr Gurmukhi Guru Han Hani Hangul Hang Hanunoo Hano Hatran Hatr Hebrew Hebr Hiragana Hira Imperial_Aramaic Armi Inherited Zinh Qaai Inscriptional_Pahlavi Phli Inscriptional_Parthian Prti Javanese Java Kaithi Kthi Kannada Knda Katakana Kana Kayah_Li Kali Kharoshthi Khar Khmer Khmr Khojki Khoj Khudawadi Sind Lao Laoo Latin Latn Lepcha Lepc Limbu Limb Linear_A Lina Linear_B Linb Lisu Lisu Lycian Lyci Lydian Lydi Mahajani Mahj Malayalam Mlym Mandaic Mand Manichaean Mani Marchen Marc Masaram_Gondi Gonm Meetei_Mayek Mtei Mende_Kikakui Mend Meroitic_Cursive Merc Meroitic_Hieroglyphs Mero Miao Plrd Modi Mongolian Mong Mro Mroo Multani Mult Myanmar Mymr Nabataean Nbat New_Tai_Lue Talu Newa Newa Nko Nkoo Nushu Nshu Ogham Ogam Ol_Chiki Olck Old_Hungarian Hung Old_Italic Ital Old_North_Arabian Narb Old_Permic Perm Old_Persian Xpeo Old_South_Arabian Sarb Old_Turkic Orkh Oriya Orya Osage Osge Osmanya Osma Pahawh_Hmong Hmng Palmyrene Palm Pau_Cin_Hau Pauc Phags_Pa Phag Phoenician Phnx Psalter_Pahlavi Phlp Rejang Rjng Runic Runr Samaritan Samr Saurashtra Saur Sharada Shrd Shavian Shaw Siddham Sidd SignWriting Sgnw Sinhala Sinh Sora_Sompeng Sora Soyombo Soyo Sundanese Sund Syloti_Nagri Sylo Syriac Syrc Tagalog Tglg Tagbanwa Tagb Tai_Le Tale Tai_Tham Lana Tai_Viet Tavt Takri Takr Tamil Taml Tangut Tang Telugu Telu Thaana Thaa Thai Thai Tibetan Tibt Tifinagh Tfng Tirhuta Tirh Ugaritic Ugar Vai Vaii Warang_Citi Wara Yi Yiii Zanabazar_Square Zanb";
+var ecma10ScriptValues = ecma9ScriptValues + " Dogra Dogr Gunjala_Gondi Gong Hanifi_Rohingya Rohg Makasar Maka Medefaidrin Medf Old_Sogdian Sogo Sogdian Sogd";
+var ecma11ScriptValues = ecma10ScriptValues + " Elymaic Elym Nandinagari Nand Nyiakeng_Puachue_Hmong Hmnp Wancho Wcho";
+var ecma12ScriptValues = ecma11ScriptValues + " Chorasmian Chrs Diak Dives_Akuru Khitan_Small_Script Kits Yezi Yezidi";
+var ecma13ScriptValues = ecma12ScriptValues + " Cypro_Minoan Cpmn Old_Uyghur Ougr Tangsa Tnsa Toto Vithkuqi Vith";
+var ecma14ScriptValues = ecma13ScriptValues + " " + scriptValuesAddedInUnicode;
+var unicodeScriptValues = {
+  9: ecma9ScriptValues,
+  10: ecma10ScriptValues,
+  11: ecma11ScriptValues,
+  12: ecma12ScriptValues,
+  13: ecma13ScriptValues,
+  14: ecma14ScriptValues
+};
+var data = {};
+function buildUnicodeData(ecmaVersion) {
+  var d = data[ecmaVersion] = {
+    binary: wordsRegexp(unicodeBinaryProperties[ecmaVersion] + " " + unicodeGeneralCategoryValues),
+    binaryOfStrings: wordsRegexp(unicodeBinaryPropertiesOfStrings[ecmaVersion]),
+    nonBinary: {
+      General_Category: wordsRegexp(unicodeGeneralCategoryValues),
+      Script: wordsRegexp(unicodeScriptValues[ecmaVersion])
+    }
+  };
+  d.nonBinary.Script_Extensions = d.nonBinary.Script;
+  d.nonBinary.gc = d.nonBinary.General_Category;
+  d.nonBinary.sc = d.nonBinary.Script;
+  d.nonBinary.scx = d.nonBinary.Script_Extensions;
+}
+for (i = 0, list = [9, 10, 11, 12, 13, 14]; i < list.length; i += 1) {
+  ecmaVersion = list[i];
+  buildUnicodeData(ecmaVersion);
+}
+var ecmaVersion;
+var i;
+var list;
+var pp$1 = Parser.prototype;
+var BranchID = function BranchID2(parent, base) {
+  this.parent = parent;
+  this.base = base || this;
+};
+BranchID.prototype.separatedFrom = function separatedFrom(alt) {
+  for (var self2 = this; self2; self2 = self2.parent) {
+    for (var other = alt; other; other = other.parent) {
+      if (self2.base === other.base && self2 !== other) {
+        return true;
+      }
+    }
+  }
+  return false;
+};
+BranchID.prototype.sibling = function sibling() {
+  return new BranchID(this.parent, this.base);
+};
+var RegExpValidationState = function RegExpValidationState2(parser) {
+  this.parser = parser;
+  this.validFlags = "gim" + (parser.options.ecmaVersion >= 6 ? "uy" : "") + (parser.options.ecmaVersion >= 9 ? "s" : "") + (parser.options.ecmaVersion >= 13 ? "d" : "") + (parser.options.ecmaVersion >= 15 ? "v" : "");
+  this.unicodeProperties = data[parser.options.ecmaVersion >= 14 ? 14 : parser.options.ecmaVersion];
+  this.source = "";
+  this.flags = "";
+  this.start = 0;
+  this.switchU = false;
+  this.switchV = false;
+  this.switchN = false;
+  this.pos = 0;
+  this.lastIntValue = 0;
+  this.lastStringValue = "";
+  this.lastAssertionIsQuantifiable = false;
+  this.numCapturingParens = 0;
+  this.maxBackReference = 0;
+  this.groupNames = /* @__PURE__ */ Object.create(null);
+  this.backReferenceNames = [];
+  this.branchID = null;
+};
+RegExpValidationState.prototype.reset = function reset(start, pattern, flags) {
+  var unicodeSets = flags.indexOf("v") !== -1;
+  var unicode = flags.indexOf("u") !== -1;
+  this.start = start | 0;
+  this.source = pattern + "";
+  this.flags = flags;
+  if (unicodeSets && this.parser.options.ecmaVersion >= 15) {
+    this.switchU = true;
+    this.switchV = true;
+    this.switchN = true;
+  } else {
+    this.switchU = unicode && this.parser.options.ecmaVersion >= 6;
+    this.switchV = false;
+    this.switchN = unicode && this.parser.options.ecmaVersion >= 9;
+  }
+};
+RegExpValidationState.prototype.raise = function raise(message) {
+  this.parser.raiseRecoverable(this.start, "Invalid regular expression: /" + this.source + "/: " + message);
+};
+RegExpValidationState.prototype.at = function at(i, forceU) {
+  if (forceU === void 0) forceU = false;
+  var s = this.source;
+  var l = s.length;
+  if (i >= l) {
+    return -1;
+  }
+  var c = s.charCodeAt(i);
+  if (!(forceU || this.switchU) || c <= 55295 || c >= 57344 || i + 1 >= l) {
+    return c;
+  }
+  var next = s.charCodeAt(i + 1);
+  return next >= 56320 && next <= 57343 ? (c << 10) + next - 56613888 : c;
+};
+RegExpValidationState.prototype.nextIndex = function nextIndex(i, forceU) {
+  if (forceU === void 0) forceU = false;
+  var s = this.source;
+  var l = s.length;
+  if (i >= l) {
+    return l;
+  }
+  var c = s.charCodeAt(i), next;
+  if (!(forceU || this.switchU) || c <= 55295 || c >= 57344 || i + 1 >= l || (next = s.charCodeAt(i + 1)) < 56320 || next > 57343) {
+    return i + 1;
+  }
+  return i + 2;
+};
+RegExpValidationState.prototype.current = function current(forceU) {
+  if (forceU === void 0) forceU = false;
+  return this.at(this.pos, forceU);
+};
+RegExpValidationState.prototype.lookahead = function lookahead(forceU) {
+  if (forceU === void 0) forceU = false;
+  return this.at(this.nextIndex(this.pos, forceU), forceU);
+};
+RegExpValidationState.prototype.advance = function advance(forceU) {
+  if (forceU === void 0) forceU = false;
+  this.pos = this.nextIndex(this.pos, forceU);
+};
+RegExpValidationState.prototype.eat = function eat(ch, forceU) {
+  if (forceU === void 0) forceU = false;
+  if (this.current(forceU) === ch) {
+    this.advance(forceU);
+    return true;
+  }
+  return false;
+};
+RegExpValidationState.prototype.eatChars = function eatChars(chs, forceU) {
+  if (forceU === void 0) forceU = false;
+  var pos = this.pos;
+  for (var i = 0, list = chs; i < list.length; i += 1) {
+    var ch = list[i];
+    var current2 = this.at(pos, forceU);
+    if (current2 === -1 || current2 !== ch) {
+      return false;
+    }
+    pos = this.nextIndex(pos, forceU);
+  }
+  this.pos = pos;
+  return true;
+};
+pp$1.validateRegExpFlags = function(state) {
+  var validFlags = state.validFlags;
+  var flags = state.flags;
+  var u = false;
+  var v = false;
+  for (var i = 0; i < flags.length; i++) {
+    var flag = flags.charAt(i);
+    if (validFlags.indexOf(flag) === -1) {
+      this.raise(state.start, "Invalid regular expression flag");
+    }
+    if (flags.indexOf(flag, i + 1) > -1) {
+      this.raise(state.start, "Duplicate regular expression flag");
+    }
+    if (flag === "u") {
+      u = true;
+    }
+    if (flag === "v") {
+      v = true;
+    }
+  }
+  if (this.options.ecmaVersion >= 15 && u && v) {
+    this.raise(state.start, "Invalid regular expression flag");
+  }
+};
+function hasProp(obj) {
+  for (var _ in obj) {
+    return true;
+  }
+  return false;
+}
+pp$1.validateRegExpPattern = function(state) {
+  this.regexp_pattern(state);
+  if (!state.switchN && this.options.ecmaVersion >= 9 && hasProp(state.groupNames)) {
+    state.switchN = true;
+    this.regexp_pattern(state);
+  }
+};
+pp$1.regexp_pattern = function(state) {
+  state.pos = 0;
+  state.lastIntValue = 0;
+  state.lastStringValue = "";
+  state.lastAssertionIsQuantifiable = false;
+  state.numCapturingParens = 0;
+  state.maxBackReference = 0;
+  state.groupNames = /* @__PURE__ */ Object.create(null);
+  state.backReferenceNames.length = 0;
+  state.branchID = null;
+  this.regexp_disjunction(state);
+  if (state.pos !== state.source.length) {
+    if (state.eat(
+      41
+      /* ) */
+    )) {
+      state.raise("Unmatched ')'");
+    }
+    if (state.eat(
+      93
+      /* ] */
+    ) || state.eat(
+      125
+      /* } */
+    )) {
+      state.raise("Lone quantifier brackets");
+    }
+  }
+  if (state.maxBackReference > state.numCapturingParens) {
+    state.raise("Invalid escape");
+  }
+  for (var i = 0, list = state.backReferenceNames; i < list.length; i += 1) {
+    var name = list[i];
+    if (!state.groupNames[name]) {
+      state.raise("Invalid named capture referenced");
+    }
+  }
+};
+pp$1.regexp_disjunction = function(state) {
+  var trackDisjunction = this.options.ecmaVersion >= 16;
+  if (trackDisjunction) {
+    state.branchID = new BranchID(state.branchID, null);
+  }
+  this.regexp_alternative(state);
+  while (state.eat(
+    124
+    /* | */
+  )) {
+    if (trackDisjunction) {
+      state.branchID = state.branchID.sibling();
+    }
+    this.regexp_alternative(state);
+  }
+  if (trackDisjunction) {
+    state.branchID = state.branchID.parent;
+  }
+  if (this.regexp_eatQuantifier(state, true)) {
+    state.raise("Nothing to repeat");
+  }
+  if (state.eat(
+    123
+    /* { */
+  )) {
+    state.raise("Lone quantifier brackets");
+  }
+};
+pp$1.regexp_alternative = function(state) {
+  while (state.pos < state.source.length && this.regexp_eatTerm(state)) {
+  }
+};
+pp$1.regexp_eatTerm = function(state) {
+  if (this.regexp_eatAssertion(state)) {
+    if (state.lastAssertionIsQuantifiable && this.regexp_eatQuantifier(state)) {
+      if (state.switchU) {
+        state.raise("Invalid quantifier");
+      }
+    }
+    return true;
+  }
+  if (state.switchU ? this.regexp_eatAtom(state) : this.regexp_eatExtendedAtom(state)) {
+    this.regexp_eatQuantifier(state);
+    return true;
+  }
+  return false;
+};
+pp$1.regexp_eatAssertion = function(state) {
+  var start = state.pos;
+  state.lastAssertionIsQuantifiable = false;
+  if (state.eat(
+    94
+    /* ^ */
+  ) || state.eat(
+    36
+    /* $ */
+  )) {
+    return true;
+  }
+  if (state.eat(
+    92
+    /* \ */
+  )) {
+    if (state.eat(
+      66
+      /* B */
+    ) || state.eat(
+      98
+      /* b */
+    )) {
+      return true;
+    }
+    state.pos = start;
+  }
+  if (state.eat(
+    40
+    /* ( */
+  ) && state.eat(
+    63
+    /* ? */
+  )) {
+    var lookbehind = false;
+    if (this.options.ecmaVersion >= 9) {
+      lookbehind = state.eat(
+        60
+        /* < */
+      );
+    }
+    if (state.eat(
+      61
+      /* = */
+    ) || state.eat(
+      33
+      /* ! */
+    )) {
+      this.regexp_disjunction(state);
+      if (!state.eat(
+        41
+        /* ) */
+      )) {
+        state.raise("Unterminated group");
+      }
+      state.lastAssertionIsQuantifiable = !lookbehind;
+      return true;
+    }
+  }
+  state.pos = start;
+  return false;
+};
+pp$1.regexp_eatQuantifier = function(state, noError) {
+  if (noError === void 0) noError = false;
+  if (this.regexp_eatQuantifierPrefix(state, noError)) {
+    state.eat(
+      63
+      /* ? */
+    );
+    return true;
+  }
+  return false;
+};
+pp$1.regexp_eatQuantifierPrefix = function(state, noError) {
+  return state.eat(
+    42
+    /* * */
+  ) || state.eat(
+    43
+    /* + */
+  ) || state.eat(
+    63
+    /* ? */
+  ) || this.regexp_eatBracedQuantifier(state, noError);
+};
+pp$1.regexp_eatBracedQuantifier = function(state, noError) {
+  var start = state.pos;
+  if (state.eat(
+    123
+    /* { */
+  )) {
+    var min = 0, max = -1;
+    if (this.regexp_eatDecimalDigits(state)) {
+      min = state.lastIntValue;
+      if (state.eat(
+        44
+        /* , */
+      ) && this.regexp_eatDecimalDigits(state)) {
+        max = state.lastIntValue;
+      }
+      if (state.eat(
+        125
+        /* } */
+      )) {
+        if (max !== -1 && max < min && !noError) {
+          state.raise("numbers out of order in {} quantifier");
+        }
+        return true;
+      }
+    }
+    if (state.switchU && !noError) {
+      state.raise("Incomplete quantifier");
+    }
+    state.pos = start;
+  }
+  return false;
+};
+pp$1.regexp_eatAtom = function(state) {
+  return this.regexp_eatPatternCharacters(state) || state.eat(
+    46
+    /* . */
+  ) || this.regexp_eatReverseSolidusAtomEscape(state) || this.regexp_eatCharacterClass(state) || this.regexp_eatUncapturingGroup(state) || this.regexp_eatCapturingGroup(state);
+};
+pp$1.regexp_eatReverseSolidusAtomEscape = function(state) {
+  var start = state.pos;
+  if (state.eat(
+    92
+    /* \ */
+  )) {
+    if (this.regexp_eatAtomEscape(state)) {
+      return true;
+    }
+    state.pos = start;
+  }
+  return false;
+};
+pp$1.regexp_eatUncapturingGroup = function(state) {
+  var start = state.pos;
+  if (state.eat(
+    40
+    /* ( */
+  )) {
+    if (state.eat(
+      63
+      /* ? */
+    )) {
+      if (this.options.ecmaVersion >= 16) {
+        var addModifiers = this.regexp_eatModifiers(state);
+        var hasHyphen = state.eat(
+          45
+          /* - */
+        );
+        if (addModifiers || hasHyphen) {
+          for (var i = 0; i < addModifiers.length; i++) {
+            var modifier = addModifiers.charAt(i);
+            if (addModifiers.indexOf(modifier, i + 1) > -1) {
+              state.raise("Duplicate regular expression modifiers");
+            }
+          }
+          if (hasHyphen) {
+            var removeModifiers = this.regexp_eatModifiers(state);
+            if (!addModifiers && !removeModifiers && state.current() === 58) {
+              state.raise("Invalid regular expression modifiers");
+            }
+            for (var i$1 = 0; i$1 < removeModifiers.length; i$1++) {
+              var modifier$1 = removeModifiers.charAt(i$1);
+              if (removeModifiers.indexOf(modifier$1, i$1 + 1) > -1 || addModifiers.indexOf(modifier$1) > -1) {
+                state.raise("Duplicate regular expression modifiers");
+              }
+            }
+          }
+        }
+      }
+      if (state.eat(
+        58
+        /* : */
+      )) {
+        this.regexp_disjunction(state);
+        if (state.eat(
+          41
+          /* ) */
+        )) {
+          return true;
+        }
+        state.raise("Unterminated group");
+      }
+    }
+    state.pos = start;
+  }
+  return false;
+};
+pp$1.regexp_eatCapturingGroup = function(state) {
+  if (state.eat(
+    40
+    /* ( */
+  )) {
+    if (this.options.ecmaVersion >= 9) {
+      this.regexp_groupSpecifier(state);
+    } else if (state.current() === 63) {
+      state.raise("Invalid group");
+    }
+    this.regexp_disjunction(state);
+    if (state.eat(
+      41
+      /* ) */
+    )) {
+      state.numCapturingParens += 1;
+      return true;
+    }
+    state.raise("Unterminated group");
+  }
+  return false;
+};
+pp$1.regexp_eatModifiers = function(state) {
+  var modifiers = "";
+  var ch = 0;
+  while ((ch = state.current()) !== -1 && isRegularExpressionModifier(ch)) {
+    modifiers += codePointToString(ch);
+    state.advance();
+  }
+  return modifiers;
+};
+function isRegularExpressionModifier(ch) {
+  return ch === 105 || ch === 109 || ch === 115;
+}
+pp$1.regexp_eatExtendedAtom = function(state) {
+  return state.eat(
+    46
+    /* . */
+  ) || this.regexp_eatReverseSolidusAtomEscape(state) || this.regexp_eatCharacterClass(state) || this.regexp_eatUncapturingGroup(state) || this.regexp_eatCapturingGroup(state) || this.regexp_eatInvalidBracedQuantifier(state) || this.regexp_eatExtendedPatternCharacter(state);
+};
+pp$1.regexp_eatInvalidBracedQuantifier = function(state) {
+  if (this.regexp_eatBracedQuantifier(state, true)) {
+    state.raise("Nothing to repeat");
+  }
+  return false;
+};
+pp$1.regexp_eatSyntaxCharacter = function(state) {
+  var ch = state.current();
+  if (isSyntaxCharacter(ch)) {
+    state.lastIntValue = ch;
+    state.advance();
+    return true;
+  }
+  return false;
+};
+function isSyntaxCharacter(ch) {
+  return ch === 36 || ch >= 40 && ch <= 43 || ch === 46 || ch === 63 || ch >= 91 && ch <= 94 || ch >= 123 && ch <= 125;
+}
+pp$1.regexp_eatPatternCharacters = function(state) {
+  var start = state.pos;
+  var ch = 0;
+  while ((ch = state.current()) !== -1 && !isSyntaxCharacter(ch)) {
+    state.advance();
+  }
+  return state.pos !== start;
+};
+pp$1.regexp_eatExtendedPatternCharacter = function(state) {
+  var ch = state.current();
+  if (ch !== -1 && ch !== 36 && !(ch >= 40 && ch <= 43) && ch !== 46 && ch !== 63 && ch !== 91 && ch !== 94 && ch !== 124) {
+    state.advance();
+    return true;
+  }
+  return false;
+};
+pp$1.regexp_groupSpecifier = function(state) {
+  if (state.eat(
+    63
+    /* ? */
+  )) {
+    if (!this.regexp_eatGroupName(state)) {
+      state.raise("Invalid group");
+    }
+    var trackDisjunction = this.options.ecmaVersion >= 16;
+    var known = state.groupNames[state.lastStringValue];
+    if (known) {
+      if (trackDisjunction) {
+        for (var i = 0, list = known; i < list.length; i += 1) {
+          var altID = list[i];
+          if (!altID.separatedFrom(state.branchID)) {
+            state.raise("Duplicate capture group name");
+          }
+        }
+      } else {
+        state.raise("Duplicate capture group name");
+      }
+    }
+    if (trackDisjunction) {
+      (known || (state.groupNames[state.lastStringValue] = [])).push(state.branchID);
+    } else {
+      state.groupNames[state.lastStringValue] = true;
+    }
+  }
+};
+pp$1.regexp_eatGroupName = function(state) {
+  state.lastStringValue = "";
+  if (state.eat(
+    60
+    /* < */
+  )) {
+    if (this.regexp_eatRegExpIdentifierName(state) && state.eat(
+      62
+      /* > */
+    )) {
+      return true;
+    }
+    state.raise("Invalid capture group name");
+  }
+  return false;
+};
+pp$1.regexp_eatRegExpIdentifierName = function(state) {
+  state.lastStringValue = "";
+  if (this.regexp_eatRegExpIdentifierStart(state)) {
+    state.lastStringValue += codePointToString(state.lastIntValue);
+    while (this.regexp_eatRegExpIdentifierPart(state)) {
+      state.lastStringValue += codePointToString(state.lastIntValue);
+    }
+    return true;
+  }
+  return false;
+};
+pp$1.regexp_eatRegExpIdentifierStart = function(state) {
+  var start = state.pos;
+  var forceU = this.options.ecmaVersion >= 11;
+  var ch = state.current(forceU);
+  state.advance(forceU);
+  if (ch === 92 && this.regexp_eatRegExpUnicodeEscapeSequence(state, forceU)) {
+    ch = state.lastIntValue;
+  }
+  if (isRegExpIdentifierStart(ch)) {
+    state.lastIntValue = ch;
+    return true;
+  }
+  state.pos = start;
+  return false;
+};
+function isRegExpIdentifierStart(ch) {
+  return isIdentifierStart(ch, true) || ch === 36 || ch === 95;
+}
+pp$1.regexp_eatRegExpIdentifierPart = function(state) {
+  var start = state.pos;
+  var forceU = this.options.ecmaVersion >= 11;
+  var ch = state.current(forceU);
+  state.advance(forceU);
+  if (ch === 92 && this.regexp_eatRegExpUnicodeEscapeSequence(state, forceU)) {
+    ch = state.lastIntValue;
+  }
+  if (isRegExpIdentifierPart(ch)) {
+    state.lastIntValue = ch;
+    return true;
+  }
+  state.pos = start;
+  return false;
+};
+function isRegExpIdentifierPart(ch) {
+  return isIdentifierChar(ch, true) || ch === 36 || ch === 95 || ch === 8204 || ch === 8205;
+}
+pp$1.regexp_eatAtomEscape = function(state) {
+  if (this.regexp_eatBackReference(state) || this.regexp_eatCharacterClassEscape(state) || this.regexp_eatCharacterEscape(state) || state.switchN && this.regexp_eatKGroupName(state)) {
+    return true;
+  }
+  if (state.switchU) {
+    if (state.current() === 99) {
+      state.raise("Invalid unicode escape");
+    }
+    state.raise("Invalid escape");
+  }
+  return false;
+};
+pp$1.regexp_eatBackReference = function(state) {
+  var start = state.pos;
+  if (this.regexp_eatDecimalEscape(state)) {
+    var n = state.lastIntValue;
+    if (state.switchU) {
+      if (n > state.maxBackReference) {
+        state.maxBackReference = n;
+      }
+      return true;
+    }
+    if (n <= state.numCapturingParens) {
+      return true;
+    }
+    state.pos = start;
+  }
+  return false;
+};
+pp$1.regexp_eatKGroupName = function(state) {
+  if (state.eat(
+    107
+    /* k */
+  )) {
+    if (this.regexp_eatGroupName(state)) {
+      state.backReferenceNames.push(state.lastStringValue);
+      return true;
+    }
+    state.raise("Invalid named reference");
+  }
+  return false;
+};
+pp$1.regexp_eatCharacterEscape = function(state) {
+  return this.regexp_eatControlEscape(state) || this.regexp_eatCControlLetter(state) || this.regexp_eatZero(state) || this.regexp_eatHexEscapeSequence(state) || this.regexp_eatRegExpUnicodeEscapeSequence(state, false) || !state.switchU && this.regexp_eatLegacyOctalEscapeSequence(state) || this.regexp_eatIdentityEscape(state);
+};
+pp$1.regexp_eatCControlLetter = function(state) {
+  var start = state.pos;
+  if (state.eat(
+    99
+    /* c */
+  )) {
+    if (this.regexp_eatControlLetter(state)) {
+      return true;
+    }
+    state.pos = start;
+  }
+  return false;
+};
+pp$1.regexp_eatZero = function(state) {
+  if (state.current() === 48 && !isDecimalDigit(state.lookahead())) {
+    state.lastIntValue = 0;
+    state.advance();
+    return true;
+  }
+  return false;
+};
+pp$1.regexp_eatControlEscape = function(state) {
+  var ch = state.current();
+  if (ch === 116) {
+    state.lastIntValue = 9;
+    state.advance();
+    return true;
+  }
+  if (ch === 110) {
+    state.lastIntValue = 10;
+    state.advance();
+    return true;
+  }
+  if (ch === 118) {
+    state.lastIntValue = 11;
+    state.advance();
+    return true;
+  }
+  if (ch === 102) {
+    state.lastIntValue = 12;
+    state.advance();
+    return true;
+  }
+  if (ch === 114) {
+    state.lastIntValue = 13;
+    state.advance();
+    return true;
+  }
+  return false;
+};
+pp$1.regexp_eatControlLetter = function(state) {
+  var ch = state.current();
+  if (isControlLetter(ch)) {
+    state.lastIntValue = ch % 32;
+    state.advance();
+    return true;
+  }
+  return false;
+};
+function isControlLetter(ch) {
+  return ch >= 65 && ch <= 90 || ch >= 97 && ch <= 122;
+}
+pp$1.regexp_eatRegExpUnicodeEscapeSequence = function(state, forceU) {
+  if (forceU === void 0) forceU = false;
+  var start = state.pos;
+  var switchU = forceU || state.switchU;
+  if (state.eat(
+    117
+    /* u */
+  )) {
+    if (this.regexp_eatFixedHexDigits(state, 4)) {
+      var lead = state.lastIntValue;
+      if (switchU && lead >= 55296 && lead <= 56319) {
+        var leadSurrogateEnd = state.pos;
+        if (state.eat(
+          92
+          /* \ */
+        ) && state.eat(
+          117
+          /* u */
+        ) && this.regexp_eatFixedHexDigits(state, 4)) {
+          var trail = state.lastIntValue;
+          if (trail >= 56320 && trail <= 57343) {
+            state.lastIntValue = (lead - 55296) * 1024 + (trail - 56320) + 65536;
+            return true;
+          }
+        }
+        state.pos = leadSurrogateEnd;
+        state.lastIntValue = lead;
+      }
+      return true;
+    }
+    if (switchU && state.eat(
+      123
+      /* { */
+    ) && this.regexp_eatHexDigits(state) && state.eat(
+      125
+      /* } */
+    ) && isValidUnicode(state.lastIntValue)) {
+      return true;
+    }
+    if (switchU) {
+      state.raise("Invalid unicode escape");
+    }
+    state.pos = start;
+  }
+  return false;
+};
+function isValidUnicode(ch) {
+  return ch >= 0 && ch <= 1114111;
+}
+pp$1.regexp_eatIdentityEscape = function(state) {
+  if (state.switchU) {
+    if (this.regexp_eatSyntaxCharacter(state)) {
+      return true;
+    }
+    if (state.eat(
+      47
+      /* / */
+    )) {
+      state.lastIntValue = 47;
+      return true;
+    }
+    return false;
+  }
+  var ch = state.current();
+  if (ch !== 99 && (!state.switchN || ch !== 107)) {
+    state.lastIntValue = ch;
+    state.advance();
+    return true;
+  }
+  return false;
+};
+pp$1.regexp_eatDecimalEscape = function(state) {
+  state.lastIntValue = 0;
+  var ch = state.current();
+  if (ch >= 49 && ch <= 57) {
+    do {
+      state.lastIntValue = 10 * state.lastIntValue + (ch - 48);
+      state.advance();
+    } while ((ch = state.current()) >= 48 && ch <= 57);
+    return true;
+  }
+  return false;
+};
+var CharSetNone = 0;
+var CharSetOk = 1;
+var CharSetString = 2;
+pp$1.regexp_eatCharacterClassEscape = function(state) {
+  var ch = state.current();
+  if (isCharacterClassEscape(ch)) {
+    state.lastIntValue = -1;
+    state.advance();
+    return CharSetOk;
+  }
+  var negate = false;
+  if (state.switchU && this.options.ecmaVersion >= 9 && ((negate = ch === 80) || ch === 112)) {
+    state.lastIntValue = -1;
+    state.advance();
+    var result;
+    if (state.eat(
+      123
+      /* { */
+    ) && (result = this.regexp_eatUnicodePropertyValueExpression(state)) && state.eat(
+      125
+      /* } */
+    )) {
+      if (negate && result === CharSetString) {
+        state.raise("Invalid property name");
+      }
+      return result;
+    }
+    state.raise("Invalid property name");
+  }
+  return CharSetNone;
+};
+function isCharacterClassEscape(ch) {
+  return ch === 100 || ch === 68 || ch === 115 || ch === 83 || ch === 119 || ch === 87;
+}
+pp$1.regexp_eatUnicodePropertyValueExpression = function(state) {
+  var start = state.pos;
+  if (this.regexp_eatUnicodePropertyName(state) && state.eat(
+    61
+    /* = */
+  )) {
+    var name = state.lastStringValue;
+    if (this.regexp_eatUnicodePropertyValue(state)) {
+      var value = state.lastStringValue;
+      this.regexp_validateUnicodePropertyNameAndValue(state, name, value);
+      return CharSetOk;
+    }
+  }
+  state.pos = start;
+  if (this.regexp_eatLoneUnicodePropertyNameOrValue(state)) {
+    var nameOrValue = state.lastStringValue;
+    return this.regexp_validateUnicodePropertyNameOrValue(state, nameOrValue);
+  }
+  return CharSetNone;
+};
+pp$1.regexp_validateUnicodePropertyNameAndValue = function(state, name, value) {
+  if (!hasOwn(state.unicodeProperties.nonBinary, name)) {
+    state.raise("Invalid property name");
+  }
+  if (!state.unicodeProperties.nonBinary[name].test(value)) {
+    state.raise("Invalid property value");
+  }
+};
+pp$1.regexp_validateUnicodePropertyNameOrValue = function(state, nameOrValue) {
+  if (state.unicodeProperties.binary.test(nameOrValue)) {
+    return CharSetOk;
+  }
+  if (state.switchV && state.unicodeProperties.binaryOfStrings.test(nameOrValue)) {
+    return CharSetString;
+  }
+  state.raise("Invalid property name");
+};
+pp$1.regexp_eatUnicodePropertyName = function(state) {
+  var ch = 0;
+  state.lastStringValue = "";
+  while (isUnicodePropertyNameCharacter(ch = state.current())) {
+    state.lastStringValue += codePointToString(ch);
+    state.advance();
+  }
+  return state.lastStringValue !== "";
+};
+function isUnicodePropertyNameCharacter(ch) {
+  return isControlLetter(ch) || ch === 95;
+}
+pp$1.regexp_eatUnicodePropertyValue = function(state) {
+  var ch = 0;
+  state.lastStringValue = "";
+  while (isUnicodePropertyValueCharacter(ch = state.current())) {
+    state.lastStringValue += codePointToString(ch);
+    state.advance();
+  }
+  return state.lastStringValue !== "";
+};
+function isUnicodePropertyValueCharacter(ch) {
+  return isUnicodePropertyNameCharacter(ch) || isDecimalDigit(ch);
+}
+pp$1.regexp_eatLoneUnicodePropertyNameOrValue = function(state) {
+  return this.regexp_eatUnicodePropertyValue(state);
+};
+pp$1.regexp_eatCharacterClass = function(state) {
+  if (state.eat(
+    91
+    /* [ */
+  )) {
+    var negate = state.eat(
+      94
+      /* ^ */
+    );
+    var result = this.regexp_classContents(state);
+    if (!state.eat(
+      93
+      /* ] */
+    )) {
+      state.raise("Unterminated character class");
+    }
+    if (negate && result === CharSetString) {
+      state.raise("Negated character class may contain strings");
+    }
+    return true;
+  }
+  return false;
+};
+pp$1.regexp_classContents = function(state) {
+  if (state.current() === 93) {
+    return CharSetOk;
+  }
+  if (state.switchV) {
+    return this.regexp_classSetExpression(state);
+  }
+  this.regexp_nonEmptyClassRanges(state);
+  return CharSetOk;
+};
+pp$1.regexp_nonEmptyClassRanges = function(state) {
+  while (this.regexp_eatClassAtom(state)) {
+    var left = state.lastIntValue;
+    if (state.eat(
+      45
+      /* - */
+    ) && this.regexp_eatClassAtom(state)) {
+      var right = state.lastIntValue;
+      if (state.switchU && (left === -1 || right === -1)) {
+        state.raise("Invalid character class");
+      }
+      if (left !== -1 && right !== -1 && left > right) {
+        state.raise("Range out of order in character class");
+      }
+    }
+  }
+};
+pp$1.regexp_eatClassAtom = function(state) {
+  var start = state.pos;
+  if (state.eat(
+    92
+    /* \ */
+  )) {
+    if (this.regexp_eatClassEscape(state)) {
+      return true;
+    }
+    if (state.switchU) {
+      var ch$1 = state.current();
+      if (ch$1 === 99 || isOctalDigit(ch$1)) {
+        state.raise("Invalid class escape");
+      }
+      state.raise("Invalid escape");
+    }
+    state.pos = start;
+  }
+  var ch = state.current();
+  if (ch !== 93) {
+    state.lastIntValue = ch;
+    state.advance();
+    return true;
+  }
+  return false;
+};
+pp$1.regexp_eatClassEscape = function(state) {
+  var start = state.pos;
+  if (state.eat(
+    98
+    /* b */
+  )) {
+    state.lastIntValue = 8;
+    return true;
+  }
+  if (state.switchU && state.eat(
+    45
+    /* - */
+  )) {
+    state.lastIntValue = 45;
+    return true;
+  }
+  if (!state.switchU && state.eat(
+    99
+    /* c */
+  )) {
+    if (this.regexp_eatClassControlLetter(state)) {
+      return true;
+    }
+    state.pos = start;
+  }
+  return this.regexp_eatCharacterClassEscape(state) || this.regexp_eatCharacterEscape(state);
+};
+pp$1.regexp_classSetExpression = function(state) {
+  var result = CharSetOk, subResult;
+  if (this.regexp_eatClassSetRange(state)) ;
+  else if (subResult = this.regexp_eatClassSetOperand(state)) {
+    if (subResult === CharSetString) {
+      result = CharSetString;
+    }
+    var start = state.pos;
+    while (state.eatChars(
+      [38, 38]
+      /* && */
+    )) {
+      if (state.current() !== 38 && (subResult = this.regexp_eatClassSetOperand(state))) {
+        if (subResult !== CharSetString) {
+          result = CharSetOk;
+        }
+        continue;
+      }
+      state.raise("Invalid character in character class");
+    }
+    if (start !== state.pos) {
+      return result;
+    }
+    while (state.eatChars(
+      [45, 45]
+      /* -- */
+    )) {
+      if (this.regexp_eatClassSetOperand(state)) {
+        continue;
+      }
+      state.raise("Invalid character in character class");
+    }
+    if (start !== state.pos) {
+      return result;
+    }
+  } else {
+    state.raise("Invalid character in character class");
+  }
+  for (; ; ) {
+    if (this.regexp_eatClassSetRange(state)) {
+      continue;
+    }
+    subResult = this.regexp_eatClassSetOperand(state);
+    if (!subResult) {
+      return result;
+    }
+    if (subResult === CharSetString) {
+      result = CharSetString;
+    }
+  }
+};
+pp$1.regexp_eatClassSetRange = function(state) {
+  var start = state.pos;
+  if (this.regexp_eatClassSetCharacter(state)) {
+    var left = state.lastIntValue;
+    if (state.eat(
+      45
+      /* - */
+    ) && this.regexp_eatClassSetCharacter(state)) {
+      var right = state.lastIntValue;
+      if (left !== -1 && right !== -1 && left > right) {
+        state.raise("Range out of order in character class");
+      }
+      return true;
+    }
+    state.pos = start;
+  }
+  return false;
+};
+pp$1.regexp_eatClassSetOperand = function(state) {
+  if (this.regexp_eatClassSetCharacter(state)) {
+    return CharSetOk;
+  }
+  return this.regexp_eatClassStringDisjunction(state) || this.regexp_eatNestedClass(state);
+};
+pp$1.regexp_eatNestedClass = function(state) {
+  var start = state.pos;
+  if (state.eat(
+    91
+    /* [ */
+  )) {
+    var negate = state.eat(
+      94
+      /* ^ */
+    );
+    var result = this.regexp_classContents(state);
+    if (state.eat(
+      93
+      /* ] */
+    )) {
+      if (negate && result === CharSetString) {
+        state.raise("Negated character class may contain strings");
+      }
+      return result;
+    }
+    state.pos = start;
+  }
+  if (state.eat(
+    92
+    /* \ */
+  )) {
+    var result$1 = this.regexp_eatCharacterClassEscape(state);
+    if (result$1) {
+      return result$1;
+    }
+    state.pos = start;
+  }
+  return null;
+};
+pp$1.regexp_eatClassStringDisjunction = function(state) {
+  var start = state.pos;
+  if (state.eatChars(
+    [92, 113]
+    /* \q */
+  )) {
+    if (state.eat(
+      123
+      /* { */
+    )) {
+      var result = this.regexp_classStringDisjunctionContents(state);
+      if (state.eat(
+        125
+        /* } */
+      )) {
+        return result;
+      }
+    } else {
+      state.raise("Invalid escape");
+    }
+    state.pos = start;
+  }
+  return null;
+};
+pp$1.regexp_classStringDisjunctionContents = function(state) {
+  var result = this.regexp_classString(state);
+  while (state.eat(
+    124
+    /* | */
+  )) {
+    if (this.regexp_classString(state) === CharSetString) {
+      result = CharSetString;
+    }
+  }
+  return result;
+};
+pp$1.regexp_classString = function(state) {
+  var count = 0;
+  while (this.regexp_eatClassSetCharacter(state)) {
+    count++;
+  }
+  return count === 1 ? CharSetOk : CharSetString;
+};
+pp$1.regexp_eatClassSetCharacter = function(state) {
+  var start = state.pos;
+  if (state.eat(
+    92
+    /* \ */
+  )) {
+    if (this.regexp_eatCharacterEscape(state) || this.regexp_eatClassSetReservedPunctuator(state)) {
+      return true;
+    }
+    if (state.eat(
+      98
+      /* b */
+    )) {
+      state.lastIntValue = 8;
+      return true;
+    }
+    state.pos = start;
+    return false;
+  }
+  var ch = state.current();
+  if (ch < 0 || ch === state.lookahead() && isClassSetReservedDoublePunctuatorCharacter(ch)) {
+    return false;
+  }
+  if (isClassSetSyntaxCharacter(ch)) {
+    return false;
+  }
+  state.advance();
+  state.lastIntValue = ch;
+  return true;
+};
+function isClassSetReservedDoublePunctuatorCharacter(ch) {
+  return ch === 33 || ch >= 35 && ch <= 38 || ch >= 42 && ch <= 44 || ch === 46 || ch >= 58 && ch <= 64 || ch === 94 || ch === 96 || ch === 126;
+}
+function isClassSetSyntaxCharacter(ch) {
+  return ch === 40 || ch === 41 || ch === 45 || ch === 47 || ch >= 91 && ch <= 93 || ch >= 123 && ch <= 125;
+}
+pp$1.regexp_eatClassSetReservedPunctuator = function(state) {
+  var ch = state.current();
+  if (isClassSetReservedPunctuator(ch)) {
+    state.lastIntValue = ch;
+    state.advance();
+    return true;
+  }
+  return false;
+};
+function isClassSetReservedPunctuator(ch) {
+  return ch === 33 || ch === 35 || ch === 37 || ch === 38 || ch === 44 || ch === 45 || ch >= 58 && ch <= 62 || ch === 64 || ch === 96 || ch === 126;
+}
+pp$1.regexp_eatClassControlLetter = function(state) {
+  var ch = state.current();
+  if (isDecimalDigit(ch) || ch === 95) {
+    state.lastIntValue = ch % 32;
+    state.advance();
+    return true;
+  }
+  return false;
+};
+pp$1.regexp_eatHexEscapeSequence = function(state) {
+  var start = state.pos;
+  if (state.eat(
+    120
+    /* x */
+  )) {
+    if (this.regexp_eatFixedHexDigits(state, 2)) {
+      return true;
+    }
+    if (state.switchU) {
+      state.raise("Invalid escape");
+    }
+    state.pos = start;
+  }
+  return false;
+};
+pp$1.regexp_eatDecimalDigits = function(state) {
+  var start = state.pos;
+  var ch = 0;
+  state.lastIntValue = 0;
+  while (isDecimalDigit(ch = state.current())) {
+    state.lastIntValue = 10 * state.lastIntValue + (ch - 48);
+    state.advance();
+  }
+  return state.pos !== start;
+};
+function isDecimalDigit(ch) {
+  return ch >= 48 && ch <= 57;
+}
+pp$1.regexp_eatHexDigits = function(state) {
+  var start = state.pos;
+  var ch = 0;
+  state.lastIntValue = 0;
+  while (isHexDigit(ch = state.current())) {
+    state.lastIntValue = 16 * state.lastIntValue + hexToInt(ch);
+    state.advance();
+  }
+  return state.pos !== start;
+};
+function isHexDigit(ch) {
+  return ch >= 48 && ch <= 57 || ch >= 65 && ch <= 70 || ch >= 97 && ch <= 102;
+}
+function hexToInt(ch) {
+  if (ch >= 65 && ch <= 70) {
+    return 10 + (ch - 65);
+  }
+  if (ch >= 97 && ch <= 102) {
+    return 10 + (ch - 97);
+  }
+  return ch - 48;
+}
+pp$1.regexp_eatLegacyOctalEscapeSequence = function(state) {
+  if (this.regexp_eatOctalDigit(state)) {
+    var n1 = state.lastIntValue;
+    if (this.regexp_eatOctalDigit(state)) {
+      var n2 = state.lastIntValue;
+      if (n1 <= 3 && this.regexp_eatOctalDigit(state)) {
+        state.lastIntValue = n1 * 64 + n2 * 8 + state.lastIntValue;
+      } else {
+        state.lastIntValue = n1 * 8 + n2;
+      }
+    } else {
+      state.lastIntValue = n1;
+    }
+    return true;
+  }
+  return false;
+};
+pp$1.regexp_eatOctalDigit = function(state) {
+  var ch = state.current();
+  if (isOctalDigit(ch)) {
+    state.lastIntValue = ch - 48;
+    state.advance();
+    return true;
+  }
+  state.lastIntValue = 0;
+  return false;
+};
+function isOctalDigit(ch) {
+  return ch >= 48 && ch <= 55;
+}
+pp$1.regexp_eatFixedHexDigits = function(state, length) {
+  var start = state.pos;
+  state.lastIntValue = 0;
+  for (var i = 0; i < length; ++i) {
+    var ch = state.current();
+    if (!isHexDigit(ch)) {
+      state.pos = start;
+      return false;
+    }
+    state.lastIntValue = 16 * state.lastIntValue + hexToInt(ch);
+    state.advance();
+  }
+  return true;
+};
+var Token = function Token2(p) {
+  this.type = p.type;
+  this.value = p.value;
+  this.start = p.start;
+  this.end = p.end;
+  if (p.options.locations) {
+    this.loc = new SourceLocation(p, p.startLoc, p.endLoc);
+  }
+  if (p.options.ranges) {
+    this.range = [p.start, p.end];
+  }
+};
+var pp = Parser.prototype;
+pp.next = function(ignoreEscapeSequenceInKeyword) {
+  if (!ignoreEscapeSequenceInKeyword && this.type.keyword && this.containsEsc) {
+    this.raiseRecoverable(this.start, "Escape sequence in keyword " + this.type.keyword);
+  }
+  if (this.options.onToken) {
+    this.options.onToken(new Token(this));
+  }
+  this.lastTokEnd = this.end;
+  this.lastTokStart = this.start;
+  this.lastTokEndLoc = this.endLoc;
+  this.lastTokStartLoc = this.startLoc;
+  this.nextToken();
+};
+pp.getToken = function() {
+  this.next();
+  return new Token(this);
+};
+if (typeof Symbol !== "undefined") {
+  pp[Symbol.iterator] = function() {
+    var this$1$1 = this;
+    return {
+      next: function() {
+        var token = this$1$1.getToken();
+        return {
+          done: token.type === types$1.eof,
+          value: token
+        };
+      }
+    };
+  };
+}
+pp.nextToken = function() {
+  var curContext = this.curContext();
+  if (!curContext || !curContext.preserveSpace) {
+    this.skipSpace();
+  }
+  this.start = this.pos;
+  if (this.options.locations) {
+    this.startLoc = this.curPosition();
+  }
+  if (this.pos >= this.input.length) {
+    return this.finishToken(types$1.eof);
+  }
+  if (curContext.override) {
+    return curContext.override(this);
+  } else {
+    this.readToken(this.fullCharCodeAtPos());
+  }
+};
+pp.readToken = function(code) {
+  if (isIdentifierStart(code, this.options.ecmaVersion >= 6) || code === 92) {
+    return this.readWord();
+  }
+  return this.getTokenFromCode(code);
+};
+pp.fullCharCodeAt = function(pos) {
+  var code = this.input.charCodeAt(pos);
+  if (code <= 55295 || code >= 56320) {
+    return code;
+  }
+  var next = this.input.charCodeAt(pos + 1);
+  return next <= 56319 || next >= 57344 ? code : (code << 10) + next - 56613888;
+};
+pp.fullCharCodeAtPos = function() {
+  return this.fullCharCodeAt(this.pos);
+};
+pp.skipBlockComment = function() {
+  var startLoc = this.options.onComment && this.curPosition();
+  var start = this.pos, end = this.input.indexOf("*/", this.pos += 2);
+  if (end === -1) {
+    this.raise(this.pos - 2, "Unterminated comment");
+  }
+  this.pos = end + 2;
+  if (this.options.locations) {
+    for (var nextBreak = void 0, pos = start; (nextBreak = nextLineBreak(this.input, pos, this.pos)) > -1; ) {
+      ++this.curLine;
+      pos = this.lineStart = nextBreak;
+    }
+  }
+  if (this.options.onComment) {
+    this.options.onComment(
+      true,
+      this.input.slice(start + 2, end),
+      start,
+      this.pos,
+      startLoc,
+      this.curPosition()
+    );
+  }
+};
+pp.skipLineComment = function(startSkip) {
+  var start = this.pos;
+  var startLoc = this.options.onComment && this.curPosition();
+  var ch = this.input.charCodeAt(this.pos += startSkip);
+  while (this.pos < this.input.length && !isNewLine(ch)) {
+    ch = this.input.charCodeAt(++this.pos);
+  }
+  if (this.options.onComment) {
+    this.options.onComment(
+      false,
+      this.input.slice(start + startSkip, this.pos),
+      start,
+      this.pos,
+      startLoc,
+      this.curPosition()
+    );
+  }
+};
+pp.skipSpace = function() {
+  loop: while (this.pos < this.input.length) {
+    var ch = this.input.charCodeAt(this.pos);
+    switch (ch) {
+      case 32:
+      case 160:
+        ++this.pos;
+        break;
+      case 13:
+        if (this.input.charCodeAt(this.pos + 1) === 10) {
+          ++this.pos;
+        }
+      case 10:
+      case 8232:
+      case 8233:
+        ++this.pos;
+        if (this.options.locations) {
+          ++this.curLine;
+          this.lineStart = this.pos;
+        }
+        break;
+      case 47:
+        switch (this.input.charCodeAt(this.pos + 1)) {
+          case 42:
+            this.skipBlockComment();
+            break;
+          case 47:
+            this.skipLineComment(2);
+            break;
+          default:
+            break loop;
+        }
+        break;
+      default:
+        if (ch > 8 && ch < 14 || ch >= 5760 && nonASCIIwhitespace.test(String.fromCharCode(ch))) {
+          ++this.pos;
+        } else {
+          break loop;
+        }
+    }
+  }
+};
+pp.finishToken = function(type, val) {
+  this.end = this.pos;
+  if (this.options.locations) {
+    this.endLoc = this.curPosition();
+  }
+  var prevType = this.type;
+  this.type = type;
+  this.value = val;
+  this.updateContext(prevType);
+};
+pp.readToken_dot = function() {
+  var next = this.input.charCodeAt(this.pos + 1);
+  if (next >= 48 && next <= 57) {
+    return this.readNumber(true);
+  }
+  var next2 = this.input.charCodeAt(this.pos + 2);
+  if (this.options.ecmaVersion >= 6 && next === 46 && next2 === 46) {
+    this.pos += 3;
+    return this.finishToken(types$1.ellipsis);
+  } else {
+    ++this.pos;
+    return this.finishToken(types$1.dot);
+  }
+};
+pp.readToken_slash = function() {
+  var next = this.input.charCodeAt(this.pos + 1);
+  if (this.exprAllowed) {
+    ++this.pos;
+    return this.readRegexp();
+  }
+  if (next === 61) {
+    return this.finishOp(types$1.assign, 2);
+  }
+  return this.finishOp(types$1.slash, 1);
+};
+pp.readToken_mult_modulo_exp = function(code) {
+  var next = this.input.charCodeAt(this.pos + 1);
+  var size = 1;
+  var tokentype = code === 42 ? types$1.star : types$1.modulo;
+  if (this.options.ecmaVersion >= 7 && code === 42 && next === 42) {
+    ++size;
+    tokentype = types$1.starstar;
+    next = this.input.charCodeAt(this.pos + 2);
+  }
+  if (next === 61) {
+    return this.finishOp(types$1.assign, size + 1);
+  }
+  return this.finishOp(tokentype, size);
+};
+pp.readToken_pipe_amp = function(code) {
+  var next = this.input.charCodeAt(this.pos + 1);
+  if (next === code) {
+    if (this.options.ecmaVersion >= 12) {
+      var next2 = this.input.charCodeAt(this.pos + 2);
+      if (next2 === 61) {
+        return this.finishOp(types$1.assign, 3);
+      }
+    }
+    return this.finishOp(code === 124 ? types$1.logicalOR : types$1.logicalAND, 2);
+  }
+  if (next === 61) {
+    return this.finishOp(types$1.assign, 2);
+  }
+  return this.finishOp(code === 124 ? types$1.bitwiseOR : types$1.bitwiseAND, 1);
+};
+pp.readToken_caret = function() {
+  var next = this.input.charCodeAt(this.pos + 1);
+  if (next === 61) {
+    return this.finishOp(types$1.assign, 2);
+  }
+  return this.finishOp(types$1.bitwiseXOR, 1);
+};
+pp.readToken_plus_min = function(code) {
+  var next = this.input.charCodeAt(this.pos + 1);
+  if (next === code) {
+    if (next === 45 && !this.inModule && this.input.charCodeAt(this.pos + 2) === 62 && (this.lastTokEnd === 0 || lineBreak.test(this.input.slice(this.lastTokEnd, this.pos)))) {
+      this.skipLineComment(3);
+      this.skipSpace();
+      return this.nextToken();
+    }
+    return this.finishOp(types$1.incDec, 2);
+  }
+  if (next === 61) {
+    return this.finishOp(types$1.assign, 2);
+  }
+  return this.finishOp(types$1.plusMin, 1);
+};
+pp.readToken_lt_gt = function(code) {
+  var next = this.input.charCodeAt(this.pos + 1);
+  var size = 1;
+  if (next === code) {
+    size = code === 62 && this.input.charCodeAt(this.pos + 2) === 62 ? 3 : 2;
+    if (this.input.charCodeAt(this.pos + size) === 61) {
+      return this.finishOp(types$1.assign, size + 1);
+    }
+    return this.finishOp(types$1.bitShift, size);
+  }
+  if (next === 33 && code === 60 && !this.inModule && this.input.charCodeAt(this.pos + 2) === 45 && this.input.charCodeAt(this.pos + 3) === 45) {
+    this.skipLineComment(4);
+    this.skipSpace();
+    return this.nextToken();
+  }
+  if (next === 61) {
+    size = 2;
+  }
+  return this.finishOp(types$1.relational, size);
+};
+pp.readToken_eq_excl = function(code) {
+  var next = this.input.charCodeAt(this.pos + 1);
+  if (next === 61) {
+    return this.finishOp(types$1.equality, this.input.charCodeAt(this.pos + 2) === 61 ? 3 : 2);
+  }
+  if (code === 61 && next === 62 && this.options.ecmaVersion >= 6) {
+    this.pos += 2;
+    return this.finishToken(types$1.arrow);
+  }
+  return this.finishOp(code === 61 ? types$1.eq : types$1.prefix, 1);
+};
+pp.readToken_question = function() {
+  var ecmaVersion = this.options.ecmaVersion;
+  if (ecmaVersion >= 11) {
+    var next = this.input.charCodeAt(this.pos + 1);
+    if (next === 46) {
+      var next2 = this.input.charCodeAt(this.pos + 2);
+      if (next2 < 48 || next2 > 57) {
+        return this.finishOp(types$1.questionDot, 2);
+      }
+    }
+    if (next === 63) {
+      if (ecmaVersion >= 12) {
+        var next2$1 = this.input.charCodeAt(this.pos + 2);
+        if (next2$1 === 61) {
+          return this.finishOp(types$1.assign, 3);
+        }
+      }
+      return this.finishOp(types$1.coalesce, 2);
+    }
+  }
+  return this.finishOp(types$1.question, 1);
+};
+pp.readToken_numberSign = function() {
+  var ecmaVersion = this.options.ecmaVersion;
+  var code = 35;
+  if (ecmaVersion >= 13) {
+    ++this.pos;
+    code = this.fullCharCodeAtPos();
+    if (isIdentifierStart(code, true) || code === 92) {
+      return this.finishToken(types$1.privateId, this.readWord1());
+    }
+  }
+  this.raise(this.pos, "Unexpected character '" + codePointToString(code) + "'");
+};
+pp.getTokenFromCode = function(code) {
+  switch (code) {
+    // The interpretation of a dot depends on whether it is followed
+    // by a digit or another two dots.
+    case 46:
+      return this.readToken_dot();
+    // Punctuation tokens.
+    case 40:
+      ++this.pos;
+      return this.finishToken(types$1.parenL);
+    case 41:
+      ++this.pos;
+      return this.finishToken(types$1.parenR);
+    case 59:
+      ++this.pos;
+      return this.finishToken(types$1.semi);
+    case 44:
+      ++this.pos;
+      return this.finishToken(types$1.comma);
+    case 91:
+      ++this.pos;
+      return this.finishToken(types$1.bracketL);
+    case 93:
+      ++this.pos;
+      return this.finishToken(types$1.bracketR);
+    case 123:
+      ++this.pos;
+      return this.finishToken(types$1.braceL);
+    case 125:
+      ++this.pos;
+      return this.finishToken(types$1.braceR);
+    case 58:
+      ++this.pos;
+      return this.finishToken(types$1.colon);
+    case 96:
+      if (this.options.ecmaVersion < 6) {
+        break;
+      }
+      ++this.pos;
+      return this.finishToken(types$1.backQuote);
+    case 48:
+      var next = this.input.charCodeAt(this.pos + 1);
+      if (next === 120 || next === 88) {
+        return this.readRadixNumber(16);
+      }
+      if (this.options.ecmaVersion >= 6) {
+        if (next === 111 || next === 79) {
+          return this.readRadixNumber(8);
+        }
+        if (next === 98 || next === 66) {
+          return this.readRadixNumber(2);
+        }
+      }
+    // Anything else beginning with a digit is an integer, octal
+    // number, or float.
+    case 49:
+    case 50:
+    case 51:
+    case 52:
+    case 53:
+    case 54:
+    case 55:
+    case 56:
+    case 57:
+      return this.readNumber(false);
+    // Quotes produce strings.
+    case 34:
+    case 39:
+      return this.readString(code);
+    // Operators are parsed inline in tiny state machines. '=' (61) is
+    // often referred to. `finishOp` simply skips the amount of
+    // characters it is given as second argument, and returns a token
+    // of the type given by its first argument.
+    case 47:
+      return this.readToken_slash();
+    case 37:
+    case 42:
+      return this.readToken_mult_modulo_exp(code);
+    case 124:
+    case 38:
+      return this.readToken_pipe_amp(code);
+    case 94:
+      return this.readToken_caret();
+    case 43:
+    case 45:
+      return this.readToken_plus_min(code);
+    case 60:
+    case 62:
+      return this.readToken_lt_gt(code);
+    case 61:
+    case 33:
+      return this.readToken_eq_excl(code);
+    case 63:
+      return this.readToken_question();
+    case 126:
+      return this.finishOp(types$1.prefix, 1);
+    case 35:
+      return this.readToken_numberSign();
+  }
+  this.raise(this.pos, "Unexpected character '" + codePointToString(code) + "'");
+};
+pp.finishOp = function(type, size) {
+  var str = this.input.slice(this.pos, this.pos + size);
+  this.pos += size;
+  return this.finishToken(type, str);
+};
+pp.readRegexp = function() {
+  var escaped, inClass, start = this.pos;
+  for (; ; ) {
+    if (this.pos >= this.input.length) {
+      this.raise(start, "Unterminated regular expression");
+    }
+    var ch = this.input.charAt(this.pos);
+    if (lineBreak.test(ch)) {
+      this.raise(start, "Unterminated regular expression");
+    }
+    if (!escaped) {
+      if (ch === "[") {
+        inClass = true;
+      } else if (ch === "]" && inClass) {
+        inClass = false;
+      } else if (ch === "/" && !inClass) {
+        break;
+      }
+      escaped = ch === "\\";
+    } else {
+      escaped = false;
+    }
+    ++this.pos;
+  }
+  var pattern = this.input.slice(start, this.pos);
+  ++this.pos;
+  var flagsStart = this.pos;
+  var flags = this.readWord1();
+  if (this.containsEsc) {
+    this.unexpected(flagsStart);
+  }
+  var state = this.regexpState || (this.regexpState = new RegExpValidationState(this));
+  state.reset(start, pattern, flags);
+  this.validateRegExpFlags(state);
+  this.validateRegExpPattern(state);
+  var value = null;
+  try {
+    value = new RegExp(pattern, flags);
+  } catch (e) {
+  }
+  return this.finishToken(types$1.regexp, { pattern, flags, value });
+};
+pp.readInt = function(radix, len, maybeLegacyOctalNumericLiteral) {
+  var allowSeparators = this.options.ecmaVersion >= 12 && len === void 0;
+  var isLegacyOctalNumericLiteral = maybeLegacyOctalNumericLiteral && this.input.charCodeAt(this.pos) === 48;
+  var start = this.pos, total = 0, lastCode = 0;
+  for (var i = 0, e = len == null ? Infinity : len; i < e; ++i, ++this.pos) {
+    var code = this.input.charCodeAt(this.pos), val = void 0;
+    if (allowSeparators && code === 95) {
+      if (isLegacyOctalNumericLiteral) {
+        this.raiseRecoverable(this.pos, "Numeric separator is not allowed in legacy octal numeric literals");
+      }
+      if (lastCode === 95) {
+        this.raiseRecoverable(this.pos, "Numeric separator must be exactly one underscore");
+      }
+      if (i === 0) {
+        this.raiseRecoverable(this.pos, "Numeric separator is not allowed at the first of digits");
+      }
+      lastCode = code;
+      continue;
+    }
+    if (code >= 97) {
+      val = code - 97 + 10;
+    } else if (code >= 65) {
+      val = code - 65 + 10;
+    } else if (code >= 48 && code <= 57) {
+      val = code - 48;
+    } else {
+      val = Infinity;
+    }
+    if (val >= radix) {
+      break;
+    }
+    lastCode = code;
+    total = total * radix + val;
+  }
+  if (allowSeparators && lastCode === 95) {
+    this.raiseRecoverable(this.pos - 1, "Numeric separator is not allowed at the last of digits");
+  }
+  if (this.pos === start || len != null && this.pos - start !== len) {
+    return null;
+  }
+  return total;
+};
+function stringToNumber(str, isLegacyOctalNumericLiteral) {
+  if (isLegacyOctalNumericLiteral) {
+    return parseInt(str, 8);
+  }
+  return parseFloat(str.replace(/_/g, ""));
+}
+function stringToBigInt(str) {
+  if (typeof BigInt !== "function") {
+    return null;
+  }
+  return BigInt(str.replace(/_/g, ""));
+}
+pp.readRadixNumber = function(radix) {
+  var start = this.pos;
+  this.pos += 2;
+  var val = this.readInt(radix);
+  if (val == null) {
+    this.raise(this.start + 2, "Expected number in radix " + radix);
+  }
+  if (this.options.ecmaVersion >= 11 && this.input.charCodeAt(this.pos) === 110) {
+    val = stringToBigInt(this.input.slice(start, this.pos));
+    ++this.pos;
+  } else if (isIdentifierStart(this.fullCharCodeAtPos())) {
+    this.raise(this.pos, "Identifier directly after number");
+  }
+  return this.finishToken(types$1.num, val);
+};
+pp.readNumber = function(startsWithDot) {
+  var start = this.pos;
+  if (!startsWithDot && this.readInt(10, void 0, true) === null) {
+    this.raise(start, "Invalid number");
+  }
+  var octal = this.pos - start >= 2 && this.input.charCodeAt(start) === 48;
+  if (octal && this.strict) {
+    this.raise(start, "Invalid number");
+  }
+  var next = this.input.charCodeAt(this.pos);
+  if (!octal && !startsWithDot && this.options.ecmaVersion >= 11 && next === 110) {
+    var val$1 = stringToBigInt(this.input.slice(start, this.pos));
+    ++this.pos;
+    if (isIdentifierStart(this.fullCharCodeAtPos())) {
+      this.raise(this.pos, "Identifier directly after number");
+    }
+    return this.finishToken(types$1.num, val$1);
+  }
+  if (octal && /[89]/.test(this.input.slice(start, this.pos))) {
+    octal = false;
+  }
+  if (next === 46 && !octal) {
+    ++this.pos;
+    this.readInt(10);
+    next = this.input.charCodeAt(this.pos);
+  }
+  if ((next === 69 || next === 101) && !octal) {
+    next = this.input.charCodeAt(++this.pos);
+    if (next === 43 || next === 45) {
+      ++this.pos;
+    }
+    if (this.readInt(10) === null) {
+      this.raise(start, "Invalid number");
+    }
+  }
+  if (isIdentifierStart(this.fullCharCodeAtPos())) {
+    this.raise(this.pos, "Identifier directly after number");
+  }
+  var val = stringToNumber(this.input.slice(start, this.pos), octal);
+  return this.finishToken(types$1.num, val);
+};
+pp.readCodePoint = function() {
+  var ch = this.input.charCodeAt(this.pos), code;
+  if (ch === 123) {
+    if (this.options.ecmaVersion < 6) {
+      this.unexpected();
+    }
+    var codePos = ++this.pos;
+    code = this.readHexChar(this.input.indexOf("}", this.pos) - this.pos);
+    ++this.pos;
+    if (code > 1114111) {
+      this.invalidStringToken(codePos, "Code point out of bounds");
+    }
+  } else {
+    code = this.readHexChar(4);
+  }
+  return code;
+};
+pp.readString = function(quote) {
+  var out = "", chunkStart = ++this.pos;
+  for (; ; ) {
+    if (this.pos >= this.input.length) {
+      this.raise(this.start, "Unterminated string constant");
+    }
+    var ch = this.input.charCodeAt(this.pos);
+    if (ch === quote) {
+      break;
+    }
+    if (ch === 92) {
+      out += this.input.slice(chunkStart, this.pos);
+      out += this.readEscapedChar(false);
+      chunkStart = this.pos;
+    } else if (ch === 8232 || ch === 8233) {
+      if (this.options.ecmaVersion < 10) {
+        this.raise(this.start, "Unterminated string constant");
+      }
+      ++this.pos;
+      if (this.options.locations) {
+        this.curLine++;
+        this.lineStart = this.pos;
+      }
+    } else {
+      if (isNewLine(ch)) {
+        this.raise(this.start, "Unterminated string constant");
+      }
+      ++this.pos;
+    }
+  }
+  out += this.input.slice(chunkStart, this.pos++);
+  return this.finishToken(types$1.string, out);
+};
+var INVALID_TEMPLATE_ESCAPE_ERROR = {};
+pp.tryReadTemplateToken = function() {
+  this.inTemplateElement = true;
+  try {
+    this.readTmplToken();
+  } catch (err) {
+    if (err === INVALID_TEMPLATE_ESCAPE_ERROR) {
+      this.readInvalidTemplateToken();
+    } else {
+      throw err;
+    }
+  }
+  this.inTemplateElement = false;
+};
+pp.invalidStringToken = function(position, message) {
+  if (this.inTemplateElement && this.options.ecmaVersion >= 9) {
+    throw INVALID_TEMPLATE_ESCAPE_ERROR;
+  } else {
+    this.raise(position, message);
+  }
+};
+pp.readTmplToken = function() {
+  var out = "", chunkStart = this.pos;
+  for (; ; ) {
+    if (this.pos >= this.input.length) {
+      this.raise(this.start, "Unterminated template");
+    }
+    var ch = this.input.charCodeAt(this.pos);
+    if (ch === 96 || ch === 36 && this.input.charCodeAt(this.pos + 1) === 123) {
+      if (this.pos === this.start && (this.type === types$1.template || this.type === types$1.invalidTemplate)) {
+        if (ch === 36) {
+          this.pos += 2;
+          return this.finishToken(types$1.dollarBraceL);
+        } else {
+          ++this.pos;
+          return this.finishToken(types$1.backQuote);
+        }
+      }
+      out += this.input.slice(chunkStart, this.pos);
+      return this.finishToken(types$1.template, out);
+    }
+    if (ch === 92) {
+      out += this.input.slice(chunkStart, this.pos);
+      out += this.readEscapedChar(true);
+      chunkStart = this.pos;
+    } else if (isNewLine(ch)) {
+      out += this.input.slice(chunkStart, this.pos);
+      ++this.pos;
+      switch (ch) {
+        case 13:
+          if (this.input.charCodeAt(this.pos) === 10) {
+            ++this.pos;
+          }
+        case 10:
+          out += "\n";
+          break;
+        default:
+          out += String.fromCharCode(ch);
+          break;
+      }
+      if (this.options.locations) {
+        ++this.curLine;
+        this.lineStart = this.pos;
+      }
+      chunkStart = this.pos;
+    } else {
+      ++this.pos;
+    }
+  }
+};
+pp.readInvalidTemplateToken = function() {
+  for (; this.pos < this.input.length; this.pos++) {
+    switch (this.input[this.pos]) {
+      case "\\":
+        ++this.pos;
+        break;
+      case "$":
+        if (this.input[this.pos + 1] !== "{") {
+          break;
+        }
+      // fall through
+      case "`":
+        return this.finishToken(types$1.invalidTemplate, this.input.slice(this.start, this.pos));
+      case "\r":
+        if (this.input[this.pos + 1] === "\n") {
+          ++this.pos;
+        }
+      // fall through
+      case "\n":
+      case "\u2028":
+      case "\u2029":
+        ++this.curLine;
+        this.lineStart = this.pos + 1;
+        break;
+    }
+  }
+  this.raise(this.start, "Unterminated template");
+};
+pp.readEscapedChar = function(inTemplate) {
+  var ch = this.input.charCodeAt(++this.pos);
+  ++this.pos;
+  switch (ch) {
+    case 110:
+      return "\n";
+    // 'n' -> '\n'
+    case 114:
+      return "\r";
+    // 'r' -> '\r'
+    case 120:
+      return String.fromCharCode(this.readHexChar(2));
+    // 'x'
+    case 117:
+      return codePointToString(this.readCodePoint());
+    // 'u'
+    case 116:
+      return "	";
+    // 't' -> '\t'
+    case 98:
+      return "\b";
+    // 'b' -> '\b'
+    case 118:
+      return "\v";
+    // 'v' -> '\u000b'
+    case 102:
+      return "\f";
+    // 'f' -> '\f'
+    case 13:
+      if (this.input.charCodeAt(this.pos) === 10) {
+        ++this.pos;
+      }
+    // '\r\n'
+    case 10:
+      if (this.options.locations) {
+        this.lineStart = this.pos;
+        ++this.curLine;
+      }
+      return "";
+    case 56:
+    case 57:
+      if (this.strict) {
+        this.invalidStringToken(
+          this.pos - 1,
+          "Invalid escape sequence"
+        );
+      }
+      if (inTemplate) {
+        var codePos = this.pos - 1;
+        this.invalidStringToken(
+          codePos,
+          "Invalid escape sequence in template string"
+        );
+      }
+    default:
+      if (ch >= 48 && ch <= 55) {
+        var octalStr = this.input.substr(this.pos - 1, 3).match(/^[0-7]+/)[0];
+        var octal = parseInt(octalStr, 8);
+        if (octal > 255) {
+          octalStr = octalStr.slice(0, -1);
+          octal = parseInt(octalStr, 8);
+        }
+        this.pos += octalStr.length - 1;
+        ch = this.input.charCodeAt(this.pos);
+        if ((octalStr !== "0" || ch === 56 || ch === 57) && (this.strict || inTemplate)) {
+          this.invalidStringToken(
+            this.pos - 1 - octalStr.length,
+            inTemplate ? "Octal literal in template string" : "Octal literal in strict mode"
+          );
+        }
+        return String.fromCharCode(octal);
+      }
+      if (isNewLine(ch)) {
+        if (this.options.locations) {
+          this.lineStart = this.pos;
+          ++this.curLine;
+        }
+        return "";
+      }
+      return String.fromCharCode(ch);
+  }
+};
+pp.readHexChar = function(len) {
+  var codePos = this.pos;
+  var n = this.readInt(16, len);
+  if (n === null) {
+    this.invalidStringToken(codePos, "Bad character escape sequence");
+  }
+  return n;
+};
+pp.readWord1 = function() {
+  this.containsEsc = false;
+  var word = "", first = true, chunkStart = this.pos;
+  var astral = this.options.ecmaVersion >= 6;
+  while (this.pos < this.input.length) {
+    var ch = this.fullCharCodeAtPos();
+    if (isIdentifierChar(ch, astral)) {
+      this.pos += ch <= 65535 ? 1 : 2;
+    } else if (ch === 92) {
+      this.containsEsc = true;
+      word += this.input.slice(chunkStart, this.pos);
+      var escStart = this.pos;
+      if (this.input.charCodeAt(++this.pos) !== 117) {
+        this.invalidStringToken(this.pos, "Expecting Unicode escape sequence \\uXXXX");
+      }
+      ++this.pos;
+      var esc = this.readCodePoint();
+      if (!(first ? isIdentifierStart : isIdentifierChar)(esc, astral)) {
+        this.invalidStringToken(escStart, "Invalid Unicode escape");
+      }
+      word += codePointToString(esc);
+      chunkStart = this.pos;
+    } else {
+      break;
+    }
+    first = false;
+  }
+  return word + this.input.slice(chunkStart, this.pos);
+};
+pp.readWord = function() {
+  var word = this.readWord1();
+  var type = types$1.name;
+  if (this.keywords.test(word)) {
+    type = keywords[word];
+  }
+  return this.finishToken(type, word);
+};
+var version2 = "8.17.0";
+Parser.acorn = {
+  Parser,
+  version: version2,
+  defaultOptions,
+  Position,
+  SourceLocation,
+  getLineInfo,
+  Node: Node2,
+  TokenType,
+  tokTypes: types$1,
+  keywordTypes: keywords,
+  TokContext,
+  tokContexts: types,
+  isIdentifierChar,
+  isIdentifierStart,
+  Token,
+  isNewLine,
+  lineBreak,
+  lineBreakG,
+  nonASCIIwhitespace
+};
+function parse3(input, options) {
+  return Parser.parse(input, options);
+}
+
+// src/file-ingress-runtime.ts
 var import_jpeg_js = __toESM(require_jpeg_js(), 1);
 var import_pngjs = __toESM(require_png2(), 1);
 var crypto2 = process.getBuiltinModule("node:crypto");
@@ -69254,8 +74943,8 @@ var leaseTtlMs = 10 * 60 * 1e3;
 var ingressClaimAuditRetentionMs = 24 * 60 * 60 * 1e3;
 var ingressClaimAuditPruneLimit = 50;
 var clamavMaximumStreamBytes = 10 * 1024 * 1024;
-function isSupportedInspectionNodeVersion(version2) {
-  const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(version2);
+function isSupportedInspectionNodeVersion(version3) {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(version3);
   if (!match) return false;
   const major = Number(match[1]);
   const minor = Number(match[2]);
@@ -69364,7 +75053,7 @@ function crc32(bytes) {
 }
 function validPng(bytes) {
   if (bytes.length < 45 || !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return false;
-  let offset = 8;
+  let offset2 = 8;
   let index = 0;
   let sawIdat = false;
   let idatEnded = false;
@@ -69374,23 +75063,23 @@ function validPng(bytes) {
   let height = 0;
   let rowBytes = 0;
   const idatChunks = [];
-  while (offset + 12 <= bytes.length) {
-    const length = bytes.readUInt32BE(offset);
-    if (length > bytes.length - offset - 12) return false;
-    const type = bytes.subarray(offset + 4, offset + 8).toString("ascii");
-    const data = bytes.subarray(offset + 8, offset + 8 + length);
-    const storedCrc = bytes.readUInt32BE(offset + 8 + length);
-    if (crc32(bytes.subarray(offset + 4, offset + 8 + length)) !== storedCrc) return false;
+  while (offset2 + 12 <= bytes.length) {
+    const length = bytes.readUInt32BE(offset2);
+    if (length > bytes.length - offset2 - 12) return false;
+    const type = bytes.subarray(offset2 + 4, offset2 + 8).toString("ascii");
+    const data2 = bytes.subarray(offset2 + 8, offset2 + 8 + length);
+    const storedCrc = bytes.readUInt32BE(offset2 + 8 + length);
+    if (crc32(bytes.subarray(offset2 + 4, offset2 + 8 + length)) !== storedCrc) return false;
     if (index === 0) {
-      if (type !== "IHDR" || length !== 13 || data.readUInt32BE(0) === 0 || data.readUInt32BE(4) === 0 || data[10] !== 0 || data[11] !== 0 || data[12] !== 0) return false;
-      width = data.readUInt32BE(0);
-      height = data.readUInt32BE(4);
-      colorType = data[9];
+      if (type !== "IHDR" || length !== 13 || data2.readUInt32BE(0) === 0 || data2.readUInt32BE(4) === 0 || data2[10] !== 0 || data2[11] !== 0 || data2[12] !== 0) return false;
+      width = data2.readUInt32BE(0);
+      height = data2.readUInt32BE(4);
+      colorType = data2[9];
       if (width > 1e4 || height > 1e4 || width * height > 25e6) return false;
       const allowed = /* @__PURE__ */ new Set(["0:1", "0:2", "0:4", "0:8", "0:16", "2:8", "2:16", "3:1", "3:2", "3:4", "3:8", "4:8", "4:16", "6:8", "6:16"]);
-      if (!allowed.has(`${colorType}:${data[8]}`)) return false;
+      if (!allowed.has(`${colorType}:${data2[8]}`)) return false;
       const channels = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 }[colorType];
-      rowBytes = Math.ceil(width * channels * data[8] / 8);
+      rowBytes = Math.ceil(width * channels * data2[8] / 8);
       if ((rowBytes + 1) * height > 1e8) return false;
     }
     if (type === "PLTE") {
@@ -69400,11 +75089,11 @@ function validPng(bytes) {
     if (type === "IDAT") {
       if (idatEnded || colorType === 3 && !sawPlte) return false;
       sawIdat = true;
-      idatChunks.push(data);
+      idatChunks.push(data2);
     } else if (sawIdat && type !== "IEND") idatEnded = true;
     if (/^[A-Z]/.test(type[0]) && !["IHDR", "PLTE", "IDAT", "IEND"].includes(type)) return false;
     if (type === "IEND") {
-      if (!(length === 0 && sawIdat && offset + 12 === bytes.length)) return false;
+      if (!(length === 0 && sawIdat && offset2 + 12 === bytes.length)) return false;
       try {
         const inflated = zlib.inflateSync(Buffer.concat(idatChunks), { maxOutputLength: (rowBytes + 1) * height });
         if (inflated.length !== (rowBytes + 1) * height) return false;
@@ -69416,23 +75105,23 @@ function validPng(bytes) {
       }
     }
     if (type === "IHDR" && index !== 0) return false;
-    offset += 12 + length;
+    offset2 += 12 + length;
     index += 1;
   }
   return false;
 }
 function validJpeg(bytes) {
   if (bytes.length < 8 || bytes[0] !== 255 || bytes[1] !== 216) return false;
-  let offset = 2;
+  let offset2 = 2;
   let sawFrame = false;
   let sawScan = false;
-  while (offset < bytes.length) {
-    if (bytes[offset++] !== 255) return false;
-    while (offset < bytes.length && bytes[offset] === 255) offset += 1;
-    if (offset >= bytes.length) return false;
-    const marker = bytes[offset++];
+  while (offset2 < bytes.length) {
+    if (bytes[offset2++] !== 255) return false;
+    while (offset2 < bytes.length && bytes[offset2] === 255) offset2 += 1;
+    if (offset2 >= bytes.length) return false;
+    const marker = bytes[offset2++];
     if (marker === 217) {
-      if (!sawScan || offset !== bytes.length) return false;
+      if (!sawScan || offset2 !== bytes.length) return false;
       try {
         const decoded = import_jpeg_js.default.decode(bytes, { useTArray: true, maxResolutionInMP: 25, maxMemoryUsageInMB: 64 });
         return decoded.width > 0 && decoded.height > 0 && decoded.width * decoded.height <= 25e6 && decoded.data.length === decoded.width * decoded.height * 4;
@@ -69441,27 +75130,27 @@ function validJpeg(bytes) {
       }
     }
     if (marker === 0 || marker === 216 || marker === 1 || marker >= 208 && marker <= 215) return false;
-    if (offset + 2 > bytes.length) return false;
-    const length = bytes.readUInt16BE(offset);
-    if (length < 2 || offset + length > bytes.length) return false;
-    const data = bytes.subarray(offset + 2, offset + length);
-    offset += length;
+    if (offset2 + 2 > bytes.length) return false;
+    const length = bytes.readUInt16BE(offset2);
+    if (length < 2 || offset2 + length > bytes.length) return false;
+    const data2 = bytes.subarray(offset2 + 2, offset2 + length);
+    offset2 += length;
     if ([192, 193, 194].includes(marker)) {
-      if (data.length < 6 || data[0] !== 8 || data.readUInt16BE(1) === 0 || data.readUInt16BE(3) === 0 || data[5] < 1 || data.length !== 6 + data[5] * 3) return false;
+      if (data2.length < 6 || data2[0] !== 8 || data2.readUInt16BE(1) === 0 || data2.readUInt16BE(3) === 0 || data2[5] < 1 || data2.length !== 6 + data2[5] * 3) return false;
       sawFrame = true;
     }
     if (marker === 218) {
-      if (!sawFrame || data.length < 6 || data[0] < 1 || data.length !== 1 + data[0] * 2 + 3) return false;
+      if (!sawFrame || data2.length < 6 || data2[0] < 1 || data2.length !== 1 + data2[0] * 2 + 3) return false;
       sawScan = true;
-      while (offset < bytes.length) {
-        if (bytes[offset++] !== 255) continue;
-        if (offset >= bytes.length) return false;
-        const next = bytes[offset];
+      while (offset2 < bytes.length) {
+        if (bytes[offset2++] !== 255) continue;
+        if (offset2 >= bytes.length) return false;
+        const next = bytes[offset2];
         if (next === 0 || next >= 208 && next <= 215) {
-          offset += 1;
+          offset2 += 1;
           continue;
         }
-        offset -= 1;
+        offset2 -= 1;
         break;
       }
     }
@@ -69491,9 +75180,9 @@ async function validatePdfIngress(bytes, options = {}) {
         for (let hop = 0; hop < 16; hop += 1) {
           if (value instanceof import_pdf_lib.PDFName) return value.asString();
           if (!(value instanceof import_pdf_lib.PDFRef)) return null;
-          const ref = value.toString();
-          if (refs.has(ref)) return null;
-          refs.add(ref);
+          const ref2 = value.toString();
+          if (refs.has(ref2)) return null;
+          refs.add(ref2);
           try {
             value = parsed.context.lookup(value);
           } catch {
@@ -69568,6 +75257,63 @@ async function validatePdfIngress(bytes, options = {}) {
   }
 }
 var maximumContentPolicyTextBytes = 1024 * 1024;
+var maximumContentPolicyAstNodes = 1e5;
+var maximumContentPolicyAstDepth = 256;
+var executableJavaScriptNodes = /* @__PURE__ */ new Set([
+  "ArrowFunctionExpression",
+  "AssignmentExpression",
+  "AwaitExpression",
+  "CallExpression",
+  "ClassDeclaration",
+  "ClassExpression",
+  "DebuggerStatement",
+  "DoWhileStatement",
+  "ExportAllDeclaration",
+  "ExportDefaultDeclaration",
+  "ExportNamedDeclaration",
+  "ForInStatement",
+  "ForOfStatement",
+  "ForStatement",
+  "FunctionDeclaration",
+  "FunctionExpression",
+  "IfStatement",
+  "ImportDeclaration",
+  "ImportExpression",
+  "MemberExpression",
+  "NewExpression",
+  "SwitchStatement",
+  "TaggedTemplateExpression",
+  "ThrowStatement",
+  "TryStatement",
+  "UpdateExpression",
+  "VariableDeclaration",
+  "WhileStatement",
+  "WithStatement",
+  "YieldExpression"
+]);
+function hasExecutableJavaScriptSemantics(text2) {
+  let root;
+  try {
+    root = parse3(text2, { ecmaVersion: "latest", sourceType: "module", allowAwaitOutsideFunction: true });
+  } catch {
+    return false;
+  }
+  const pending = [{ node: root, depth: 0 }];
+  let visited = 0;
+  while (pending.length > 0) {
+    const { node, depth } = pending.pop();
+    visited += 1;
+    if (visited > maximumContentPolicyAstNodes || depth > maximumContentPolicyAstDepth) return true;
+    if (executableJavaScriptNodes.has(node.type)) return true;
+    if (node.type === "UnaryExpression" && node.operator === "delete") return true;
+    for (const value of Object.values(node)) {
+      if (Array.isArray(value)) {
+        for (const child of value) if (child && typeof child === "object" && typeof child.type === "string") pending.push({ node: child, depth: depth + 1 });
+      } else if (value && typeof value === "object" && typeof value.type === "string") pending.push({ node: value, depth: depth + 1 });
+    }
+  }
+  return false;
+}
 function safeUntrustedText(bytes) {
   if (bytes.length > maximumContentPolicyTextBytes) return false;
   const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -69580,14 +75326,7 @@ function safeUntrustedText(bytes) {
   if (!text2 || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text2) || /<\s*(?:!doctype|\?xml|html\b|head\b|body\b|script\b|svg\b|[a-z][\w:-]*\s+[^>]*>)/i.test(text2) || /<\s*([a-z][\w:-]*)\b[^>]*>[\s\S]*<\/\s*\1\s*>/i.test(text2)) return false;
   if (/(?:^|\n)\s*(?:#!|sudo\b|rm\s+-|curl\b|wget\b|bash\b|sh\b|python\b|node\b|chmod\b|eval\b|exec\b|echo\b|source\b|\.\s+[^\s]+|export\s+\w+=|set\s+-[eux]|if\s+\[|for\s+\w+\s+in\b)/im.test(text2)) return false;
   if (/\b(?:print|open|compile|__import__|subprocess\.(?:run|call|Popen)|os\.system)\s*\(/.test(text2)) return false;
-  const javascriptSignal = /(?:\b(?:const|let|var|function|class|import|export)\b|=>|\brequire\s*\(|\bprocess\.|(?:^|[;{}\n])\s*(?:await\s+)?(?:new\s+)?[A-Za-z_$][\w$]*(?:\s*(?:\?\.|\.)\s*[A-Za-z_$][\w$]*)*\s*(?:\?\.)?\s*\()/m;
-  if (javascriptSignal.test(text2)) {
-    try {
-      new Function(text2);
-      return false;
-    } catch {
-    }
-  }
+  if (hasExecutableJavaScriptSemantics(text2)) return false;
   return true;
 }
 async function contentPolicyOutcome(row, bytes) {
@@ -69633,11 +75372,11 @@ async function verifiedClamavSignature(database) {
       await terminateChild(child);
       continue;
     }
-    const version2 = /^Version:\s*(\d{1,12})\s*$/mi.exec(result.stdout)?.[1];
+    const version3 = /^Version:\s*(\d{1,12})\s*$/mi.exec(result.stdout)?.[1];
     const built = /^Build time:\s*(.{1,80})\s*$/mi.exec(result.stdout)?.[1];
     const verified = /^Verification(?:\s*:)?\s*OK\.?\s*$/mi.test(result.stdout);
     const builtAt = built ? new Date(built.replace(/ (\d{2})-(\d{2}) /, " $1:$2 ")) : null;
-    if (verified && version2 && builtAt && Number.isFinite(builtAt.getTime())) return { version: `daily:${version2}`, updatedAt: builtAt.toISOString() };
+    if (verified && version3 && builtAt && Number.isFinite(builtAt.getTime())) return { version: `daily:${version3}`, updatedAt: builtAt.toISOString() };
   }
   return null;
 }
@@ -69687,8 +75426,8 @@ async function clamavInstream(database, bytes) {
     const timer = setTimeout(() => finish("inconclusive"), timeoutMs);
     socket.once("connect", () => {
       socket.write(Buffer.from("zINSTREAM\0"));
-      for (let offset = 0; offset < bytes.length; offset += 64 * 1024) {
-        const chunk = bytes.subarray(offset, Math.min(bytes.length, offset + 64 * 1024));
+      for (let offset2 = 0; offset2 < bytes.length; offset2 += 64 * 1024) {
+        const chunk = bytes.subarray(offset2, Math.min(bytes.length, offset2 + 64 * 1024));
         const length = Buffer.alloc(4);
         length.writeUInt32BE(chunk.length);
         socket.write(length);
@@ -69829,8 +75568,8 @@ async function checkClamavRuntime(database) {
     database.clamavReady = false;
     return { ok: false };
   }
-  const current = await currentLoadedClamavSignature(database);
-  const pong = current ? await clamavSocketCommand(database, Buffer.from("zPING\0"), 16, 500) : null;
+  const current2 = await currentLoadedClamavSignature(database);
+  const pong = current2 ? await clamavSocketCommand(database, Buffer.from("zPING\0"), 16, 500) : null;
   database.clamavReady = pong === "PONG";
   return { ok: database.clamavReady };
 }
@@ -69877,9 +75616,9 @@ function ingressAuthorityDenied() {
   return Object.assign(new Error("File ingress authority is unavailable."), { code: "INGRESS_AUTHORITY_DENIED" });
 }
 var ingressAuditCodes = /* @__PURE__ */ new Set(["INVALID_MULTIPART", "MULTIPART_LIMIT_EXCEEDED", "INVALID_MULTIPART_REQUEST_KEY", "INVALID_MULTIPART_PART_KEY", "INGRESS_AUTHORITY_DENIED", "INGRESS_LEASE_EXPIRED", "INGRESS_PATH_DENIED", "INGRESS_DESCRIPTOR_CONFLICT", "INGRESS_STAGING_INCOMPLETE", "INGRESS_ORPHAN_CLEANUP_FAILED", "FILE_PATH_EXISTS"]);
-async function emitIngressAudit(database, event, data) {
+async function emitIngressAudit(database, event, data2) {
   try {
-    await database.log?.emit?.({ category: "platform", event: `file.ingress.${event}`, level: event === "failed" || event === "cleanup-failed" ? "warn" : "info", message: "Multipart ingress lifecycle event", data: { schema: "v1", ...data } });
+    await database.log?.emit?.({ category: "platform", event: `file.ingress.${event}`, level: event === "failed" || event === "cleanup-failed" ? "warn" : "info", message: "Multipart ingress lifecycle event", data: { schema: "v1", ...data2 } });
   } catch {
   }
 }
@@ -69945,8 +75684,8 @@ async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes
         continue;
       }
       if (state === "body") {
-        const at = pending.indexOf(marker);
-        if (at < 0) {
+        const at2 = pending.indexOf(marker);
+        if (at2 < 0) {
           const take = Math.max(0, pending.length - marker.length + 1);
           if (take) {
             pieces.push(pending.subarray(0, take));
@@ -69956,30 +75695,30 @@ async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes
           }
           break;
         }
-        if (pending.length < at + marker.length + 2) {
-          if (at) {
-            pieces.push(pending.subarray(0, at));
-            size += at;
+        if (pending.length < at2 + marker.length + 2) {
+          if (at2) {
+            pieces.push(pending.subarray(0, at2));
+            size += at2;
             if (size > partLimit) throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
-            pending = pending.subarray(at);
+            pending = pending.subarray(at2);
           }
           break;
         }
-        const suffix = pending.subarray(at + marker.length, at + marker.length + 2).toString();
+        const suffix = pending.subarray(at2 + marker.length, at2 + marker.length + 2).toString();
         if (suffix !== "\r\n" && suffix !== "--") {
-          const take = at + marker.length;
+          const take = at2 + marker.length;
           pieces.push(pending.subarray(0, take));
           size += take;
           if (size > partLimit) throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
           pending = pending.subarray(take);
           continue;
         }
-        if (at) {
-          pieces.push(pending.subarray(0, at));
-          size += at;
+        if (at2) {
+          pieces.push(pending.subarray(0, at2));
+          size += at2;
         }
         if (size > partLimit) throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
-        pending = pending.subarray(at + marker.length);
+        pending = pending.subarray(at2 + marker.length);
         state = "separator";
         continue;
       }
@@ -70090,8 +75829,8 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
         const published = await publishStagedReceipt(database, row);
         if (published) row = published;
         else {
-          const current = await receipt(database, row.key);
-          if (current?.state === "complete" && current.leaseId === row.leaseId) row = current;
+          const current2 = await receipt(database, row.key);
+          if (current2?.state === "complete" && current2.leaseId === row.leaseId) row = current2;
           else {
             const primary = Object.assign(new Error("Multipart ingress staging lost its publication lease."), { code: "INGRESS_STAGING_INCOMPLETE" });
             try {
@@ -70386,15 +76125,15 @@ function createEndpointFileResponseApi(ingressApi, enabled) {
   const attachment = enabled ? {
     attachment(reference, options) {
       const fileId = exactIdentifier(reference?.id);
-      const version2 = exactIdentifier(reference?.version);
+      const version3 = exactIdentifier(reference?.version);
       const filename = safePresentationFilename(options?.filename);
-      if (!fileId || !version2 || !filename) {
+      if (!fileId || !version3 || !filename) {
         const error = new Error("Invalid endpoint File attachment response.");
         error.code = "INVALID_ENDPOINT_FILE_ATTACHMENT";
         throw error;
       }
       const response = Object.freeze({});
-      attachmentResponseDetails.set(response, Object.freeze({ fileId, version: version2, filename, authority }));
+      attachmentResponseDetails.set(response, Object.freeze({ fileId, version: version3, filename, authority }));
       return response;
     }
   } : {};
@@ -71543,8 +77282,8 @@ function normalizeTeamJoinTtl(value) {
   return value;
 }
 function parseTeamJoinCode(code) {
-  const [version2, selector, verifier, signature, ...rest] = typeof code === "string" ? code.split(".") : [];
-  if (version2 !== "v1" || rest.length > 0 || !/^[A-Za-z0-9_-]{16,64}$/.test(selector ?? "") || !/^[A-Za-z0-9_-]{32,128}$/.test(verifier ?? "") || !/^[A-Za-z0-9_-]{32,128}$/.test(signature ?? "")) return null;
+  const [version3, selector, verifier, signature, ...rest] = typeof code === "string" ? code.split(".") : [];
+  if (version3 !== "v1" || rest.length > 0 || !/^[A-Za-z0-9_-]{16,64}$/.test(selector ?? "") || !/^[A-Za-z0-9_-]{32,128}$/.test(verifier ?? "") || !/^[A-Za-z0-9_-]{32,128}$/.test(signature ?? "")) return null;
   return { selector, verifier, signature };
 }
 function hashTeamJoinVerifier(verifier) {
@@ -73687,14 +79426,14 @@ async function loadMicrosoftJwks(database, discovery, forceRefresh = false, obse
   }
   state.lastAccess = cacheRoot.nextAccess++;
   if (!(state.missingKidCooldowns instanceof Map)) state.missingKidCooldowns = /* @__PURE__ */ new Map();
-  const rememberMissingKid = (jwks, missingKid2, at) => {
+  const rememberMissingKid = (jwks, missingKid2, at2) => {
     if (typeof missingKid2 !== "string") return;
     for (const [cachedKid, cooldown] of state.missingKidCooldowns) {
-      if (!Number.isFinite(cooldown) || cooldown <= at) state.missingKidCooldowns.delete(cachedKid);
+      if (!Number.isFinite(cooldown) || cooldown <= at2) state.missingKidCooldowns.delete(cachedKid);
     }
     const found = Array.isArray(jwks?.keys) && jwks.keys.some((value) => isPlainRecord2(value) && value.kid === missingKid2);
     state.missingKidCooldowns.delete(missingKid2);
-    if (!found) state.missingKidCooldowns.set(missingKid2, at + 1e4);
+    if (!found) state.missingKidCooldowns.set(missingKid2, at2 + 1e4);
     while (state.missingKidCooldowns.size > 64) {
       state.missingKidCooldowns.delete(state.missingKidCooldowns.keys().next().value);
     }
@@ -74096,11 +79835,11 @@ function currentEmailSignInThrottleState(database, email, session, scope = EMAIL
   pruneEmailSignInThrottleState(attempts, now2);
   const keys = emailSignInThrottleKeys(email, session);
   const entries = keys.map((key) => {
-    const current = attempts.get(key);
+    const current2 = attempts.get(key);
     return {
       key,
-      count: current?.count ?? 0,
-      resetAt: current?.resetAt ?? now2 + EMAIL_SIGN_IN_THROTTLE_WINDOW_MS
+      count: current2?.count ?? 0,
+      resetAt: current2?.resetAt ?? now2 + EMAIL_SIGN_IN_THROTTLE_WINDOW_MS
     };
   });
   return {
@@ -74112,8 +79851,8 @@ function currentEmailSignInThrottleState(database, email, session, scope = EMAIL
 }
 function recordFailedEmailSignInAttempt(database, email, session, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
   const attempts = createEmailSignInThrottleState(database, scope);
-  const current = currentEmailSignInThrottleState(database, email, session, scope);
-  for (const entry of current.entries) {
+  const current2 = currentEmailSignInThrottleState(database, email, session, scope);
+  for (const entry of current2.entries) {
     attempts.set(entry.key, {
       count: entry.count + 1,
       resetAt: entry.resetAt
@@ -74808,12 +80547,12 @@ async function routeSporadesAuth(database, request, response) {
       let authorized = false;
       try {
         authorized = await database.adapter.withTransaction(async (tx) => {
-          const current = await tx.readAuthSessionWithUser(stateRow.sessionToken);
+          const current2 = await tx.readAuthSessionWithUser(stateRow.sessionToken);
           const identity = subject ? await tx.findAuthIdentityByProviderSubject(provider, subject) : null;
-          if (!freshnessVerified || !policy || !current || current.token !== stateRow.sessionToken || current.userId !== stateRow.reauthUserId || !current.isAuthenticated || current.isGuest || Date.parse(current.expiresAt) <= now2.getTime() || identity?.userId !== current.userId) return false;
-          const currentAuth = sessionFromRow(current).auth;
+          if (!freshnessVerified || !policy || !current2 || current2.token !== stateRow.sessionToken || current2.userId !== stateRow.reauthUserId || !current2.isAuthenticated || current2.isGuest || Date.parse(current2.expiresAt) <= now2.getTime() || identity?.userId !== current2.userId) return false;
+          const currentAuth = sessionFromRow(current2).auth;
           if (!await database.authorizeReauthentication(tx, currentAuth, stateRow.reauthPurpose)) return false;
-          await tx.replaceReauthenticationProof({ id: nodeCryptoModule3.randomUUID(), userId: current.userId, sessionToken: stateRow.sessionToken, purpose: stateRow.reauthPurpose, createdAt: now2.toISOString(), expiresAt: new Date(now2.getTime() + policy.maxAgeSeconds * 1e3).toISOString() });
+          await tx.replaceReauthenticationProof({ id: nodeCryptoModule3.randomUUID(), userId: current2.userId, sessionToken: stateRow.sessionToken, purpose: stateRow.reauthPurpose, createdAt: now2.toISOString(), expiresAt: new Date(now2.getTime() + policy.maxAgeSeconds * 1e3).toISOString() });
           return true;
         });
       } catch {
@@ -75048,14 +80787,14 @@ async function oauthRegistrationKeyForUnseal(adapter, keyId) {
 async function retireOAuthRegistrationKeys(database, options = {}) {
   const now2 = Number.isFinite(options.now) ? Number(options.now) : Date.now();
   return await withAuthTransaction(database, async (adapter) => {
-    const current = await reconcileOAuthRegistrationKeysOnAdapter(adapter, now2);
+    const current2 = await reconcileOAuthRegistrationKeysOnAdapter(adapter, now2);
     const rows = await adapter.prepare(adapter.dialect.sql(
       "SELECT [key], [value] FROM [sporades] WHERE [key] LIKE ? ORDER BY [key]"
     )).all("oauth-registration-key:retain:%");
     const retired = [];
     for (const row of rows) {
       const keyId = String(row.key).slice("oauth-registration-key:retain:".length);
-      if (!oauthRegistrationKeyId(keyId) || keyId === current.keyId) continue;
+      if (!oauthRegistrationKeyId(keyId) || keyId === current2.keyId) continue;
       let retainUntil = null;
       try {
         retainUntil = oauthRegistrationInstant(JSON.parse(String(row.value))?.expiresAt);
@@ -75070,7 +80809,7 @@ async function retireOAuthRegistrationKeys(database, options = {}) {
     }
     const aliasRow = await adapter.readSystemMetadata(OAUTH_REGISTRATION_ALIAS_KEY);
     if (aliasRow && !oauthRegistrationAlias(aliasRow.value, now2)) await deleteOAuthRegistrationMetadata(adapter, OAUTH_REGISTRATION_ALIAS_KEY);
-    return { activeKeyId: current.keyId, retired };
+    return { activeKeyId: current2.keyId, retired };
   });
 }
 function oauthRegistrationAad(row) {
@@ -75392,15 +81131,15 @@ function validateEmailWebhooksConfig(webhooks) {
   ]) {
     const input = webhooksData.get(provider);
     if (input === void 0) continue;
-    const data = captureMailConfigData(
+    const data2 = captureMailConfigData(
       input,
       ["enabled", "path", "secretEnv"],
       `Invalid ${provider} webhook configuration.`,
       `Configure \`mail.webhooks.${provider}\` with optional enabled, path, and secretEnv values.`
     );
-    const enabled = data.get("enabled") ?? true;
-    const path13 = data.get("path") ?? defaultPath;
-    const secretEnv = data.get("secretEnv") ?? defaultSecretEnv;
+    const enabled = data2.get("enabled") ?? true;
+    const path13 = data2.get("path") ?? defaultPath;
+    const secretEnv = data2.get("secretEnv") ?? defaultSecretEnv;
     if (typeof enabled !== "boolean") {
       invalidMailConfig(`Invalid ${provider} webhook enabled flag.`, `Set \`mail.webhooks.${provider}.enabled\` to true or false.`);
     }
@@ -76090,15 +81829,15 @@ function normalizeMailgunProvider(provider) {
       const trackingAllowed = /* @__PURE__ */ new Set(["enabled", "clicks", "opens", "pixelLocationTop"]);
       const unknown = entries.map(([field]) => field).filter((field) => !trackingAllowed.has(field)).sort();
       if (unknown.length > 0) unsupported(`tracking.${unknown[0]}`);
-      const data = new Map(entries);
+      const data2 = new Map(entries);
       for (const [field, name] of [
         ["enabled", "X-Mailgun-Track"],
         ["clicks", "X-Mailgun-Track-Clicks"],
         ["opens", "X-Mailgun-Track-Opens"],
         ["pixelLocationTop", "X-Mailgun-Track-Pixel-Location-Top"]
       ]) {
-        if (!data.has(field)) continue;
-        const value = data.get(field);
+        if (!data2.has(field)) continue;
+        const value = data2.get(field);
         if (field === "clicks") {
           if (typeof value !== "boolean" && value !== "htmlonly") {
             invalid("Pass `provider.tracking.clicks` as a boolean or `htmlonly`.");
@@ -76522,15 +82261,15 @@ function encodeMimeHeaderValue(value, quoteAscii = false) {
     return quoteAscii ? `"${text2.replace(/(["\\])/g, "\\$1")}"` : text2;
   }
   const chunks = [];
-  let current = "";
+  let current2 = "";
   for (const character of text2) {
-    if (current && Buffer.byteLength(current + character) > 39) {
-      chunks.push(current);
-      current = "";
+    if (current2 && Buffer.byteLength(current2 + character) > 39) {
+      chunks.push(current2);
+      current2 = "";
     }
-    current += character;
+    current2 += character;
   }
-  if (current) chunks.push(current);
+  if (current2) chunks.push(current2);
   return chunks.map((chunk) => `=?UTF-8?B?${Buffer.from(chunk).toString("base64")}?=`).join(" ");
 }
 function foldMimeHeader(name, value) {
@@ -76693,24 +82432,24 @@ function mailjetProviderEventId(raw, event, seconds, identity) {
 }
 function normalizeMailjetEvent(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
-  const data = raw;
-  if (typeof data.event !== "string" || !data.event.trim()) return false;
-  const providerKind = data.event.trim().toLowerCase();
+  const data2 = raw;
+  if (typeof data2.event !== "string" || !data2.event.trim()) return false;
+  const providerKind = data2.event.trim().toLowerCase();
   const kind = MAILJET_EVENT_KINDS[providerKind];
   if (!kind) return null;
-  const seconds = Number(data.time);
-  const identity = mailjetMessageIdentity(data);
+  const seconds = Number(data2.time);
+  const identity = mailjetMessageIdentity(data2);
   if (!Number.isFinite(seconds) || seconds <= 0 || !identity) return false;
-  const providerEventId = mailjetProviderEventId(data, providerKind, seconds, identity);
+  const providerEventId = mailjetProviderEventId(data2, providerKind, seconds, identity);
   const occurredAt = new Date(seconds * 1e3).toISOString();
   return {
     provider: "mailjet",
     kind,
     providerEventId,
     occurredAt,
-    ...text(data.CustomID).trim() ? { correlationId: text(data.CustomID).trim() } : {},
-    ...text(data.email).trim() ? { recipient: text(data.email).trim().toLowerCase() } : {},
-    raw: data
+    ...text(data2.CustomID).trim() ? { correlationId: text(data2.CustomID).trim() } : {},
+    ...text(data2.email).trim() ? { recipient: text(data2.email).trim().toLowerCase() } : {},
+    raw: data2
   };
 }
 function parseMailjetEvents(body) {
@@ -76753,23 +82492,23 @@ function smtp2goCorrelationId(raw) {
 }
 function normalizeSmtp2goEvent(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
-  const data = raw;
-  if (typeof data.event !== "string" || !data.event.trim()) return false;
-  const providerKind = data.event.trim().toLowerCase();
+  const data2 = raw;
+  if (typeof data2.event !== "string" || !data2.event.trim()) return false;
+  const providerKind = data2.event.trim().toLowerCase();
   const kind = SMTP2GO_EVENT_KINDS[providerKind];
   if (!kind) return null;
-  const providerEventId = typeof data.id === "string" ? data.id.trim() : "";
-  const occurredAt = smtp2goOccurredAt(data.time);
+  const providerEventId = typeof data2.id === "string" ? data2.id.trim() : "";
+  const occurredAt = smtp2goOccurredAt(data2.time);
   if (!providerEventId || !occurredAt) return false;
-  const correlationId = smtp2goCorrelationId(data);
+  const correlationId = smtp2goCorrelationId(data2);
   return {
     provider: "smtp2go",
     kind,
     providerEventId,
     occurredAt,
     ...correlationId ? { correlationId } : {},
-    ...text(data.rcpt).trim() ? { recipient: text(data.rcpt).trim().toLowerCase() } : {},
-    raw: data
+    ...text(data2.rcpt).trim() ? { recipient: text(data2.rcpt).trim().toLowerCase() } : {},
+    raw: data2
   };
 }
 function parseSmtp2goEvents(body) {
@@ -76791,43 +82530,43 @@ function parseSingleProviderEvent(body, normalize) {
 }
 function normalizePostmarkEvent(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
-  const data = raw;
-  if (typeof data.RecordType !== "string" || !data.RecordType.trim()) return false;
-  const recordType = data.RecordType.trim();
-  const geo = data.Geo && typeof data.Geo === "object" && !Array.isArray(data.Geo) ? data.Geo : {};
+  const data2 = raw;
+  if (typeof data2.RecordType !== "string" || !data2.RecordType.trim()) return false;
+  const recordType = data2.RecordType.trim();
+  const geo = data2.Geo && typeof data2.Geo === "object" && !Array.isArray(data2.Geo) ? data2.Geo : {};
   const descriptor = {
     Delivery: { kind: "delivered", timestamp: "DeliveredAt", recipient: "Recipient", identityDiscriminator: "" },
-    Bounce: { kind: "bounced", timestamp: "BouncedAt", recipient: "Email", identityDiscriminator: text(data.Type) },
+    Bounce: { kind: "bounced", timestamp: "BouncedAt", recipient: "Email", identityDiscriminator: text(data2.Type) },
     Open: {
       kind: "opened",
       timestamp: "ReceivedAt",
       recipient: "Recipient",
-      identityDiscriminator: JSON.stringify([data.FirstOpen, text(data.UserAgent), text(geo.IP)])
+      identityDiscriminator: JSON.stringify([data2.FirstOpen, text(data2.UserAgent), text(geo.IP)])
     },
     Click: {
       kind: "clicked",
       timestamp: "ReceivedAt",
       recipient: "Recipient",
-      identityDiscriminator: JSON.stringify([text(data.OriginalLink), text(data.ClickLocation)])
+      identityDiscriminator: JSON.stringify([text(data2.OriginalLink), text(data2.ClickLocation)])
     },
     SpamComplaint: { kind: "complained", timestamp: "BouncedAt", recipient: "Email", identityDiscriminator: "" },
     SubscriptionChange: {
-      kind: data.SuppressSending === false ? "resubscribed" : data.SuppressSending === true && data.SuppressionReason === "ManualSuppression" && data.Origin === "Recipient" ? "unsubscribed" : data.SuppressSending === true && data.SuppressionReason === "HardBounce" ? "bounced" : data.SuppressSending === true && data.SuppressionReason === "SpamComplaint" ? "complained" : data.SuppressSending === true ? "blocked" : "",
+      kind: data2.SuppressSending === false ? "resubscribed" : data2.SuppressSending === true && data2.SuppressionReason === "ManualSuppression" && data2.Origin === "Recipient" ? "unsubscribed" : data2.SuppressSending === true && data2.SuppressionReason === "HardBounce" ? "bounced" : data2.SuppressSending === true && data2.SuppressionReason === "SpamComplaint" ? "complained" : data2.SuppressSending === true ? "blocked" : "",
       timestamp: "ChangedAt",
       recipient: "Recipient",
-      identityDiscriminator: `${text(data.SuppressSending)}:${text(data.SuppressionReason)}:${text(data.Origin)}`
+      identityDiscriminator: `${text(data2.SuppressSending)}:${text(data2.SuppressionReason)}:${text(data2.Origin)}`
     }
   }[recordType];
   if (!descriptor) return null;
   if (!descriptor.kind) return false;
-  const messageId = typeof data.MessageID === "string" ? data.MessageID.trim() : "";
-  const timestamp = data[descriptor.timestamp];
+  const messageId = typeof data2.MessageID === "string" ? data2.MessageID.trim() : "";
+  const timestamp = data2[descriptor.timestamp];
   const milliseconds = typeof timestamp === "string" ? Date.parse(timestamp) : NaN;
   if (recordType !== "SubscriptionChange" && !messageId || !Number.isFinite(milliseconds)) return false;
   const occurredAt = new Date(milliseconds).toISOString();
-  const recipient = text(data[descriptor.recipient]).trim().toLowerCase();
+  const recipient = text(data2[descriptor.recipient]).trim().toLowerCase();
   if (!recipient) return false;
-  const metadata = data.Metadata && typeof data.Metadata === "object" && !Array.isArray(data.Metadata) ? data.Metadata : {};
+  const metadata = data2.Metadata && typeof data2.Metadata === "object" && !Array.isArray(data2.Metadata) ? data2.Metadata : {};
   const correlationKey = Object.keys(metadata).find((key) => key.toLowerCase() === "correlationid");
   const correlationId = correlationKey ? text(metadata[correlationKey]).trim() : "";
   const identity = createHash7("sha256").update(JSON.stringify([recordType, messageId || null, occurredAt, recipient, descriptor.identityDiscriminator])).digest("hex");
@@ -76838,7 +82577,7 @@ function normalizePostmarkEvent(raw) {
     occurredAt,
     ...correlationId ? { correlationId } : {},
     ...recipient ? { recipient } : {},
-    raw: data
+    raw: data2
   };
 }
 function parsePostmarkEvents(body) {
@@ -76846,21 +82585,21 @@ function parsePostmarkEvents(body) {
 }
 function normalizeMailgunWebhook(raw) {
   const body = parsedJsonObject(raw);
-  const data = parsedJsonObject(body?.["event-data"]);
-  if (!body || !data || typeof data.event !== "string" || !data.event.trim()) return false;
-  const providerKind = data.event.trim().toLowerCase();
-  const kind = providerKind === "accepted" ? "deferred" : providerKind === "delivered" ? "delivered" : providerKind === "opened" ? "opened" : providerKind === "clicked" ? "clicked" : providerKind === "unsubscribed" ? "unsubscribed" : providerKind === "complained" ? "complained" : providerKind === "failed" && data.severity === "temporary" ? "deferred" : providerKind === "failed" && data.severity === "permanent" ? data.reason === "suppress-complaint" ? "complained" : data.reason === "suppress-unsubscribe" ? "unsubscribed" : ["espblock", "policy", "blocklist"].includes(text(data.reason).toLowerCase()) ? "blocked" : "bounced" : "";
+  const data2 = parsedJsonObject(body?.["event-data"]);
+  if (!body || !data2 || typeof data2.event !== "string" || !data2.event.trim()) return false;
+  const providerKind = data2.event.trim().toLowerCase();
+  const kind = providerKind === "accepted" ? "deferred" : providerKind === "delivered" ? "delivered" : providerKind === "opened" ? "opened" : providerKind === "clicked" ? "clicked" : providerKind === "unsubscribed" ? "unsubscribed" : providerKind === "complained" ? "complained" : providerKind === "failed" && data2.severity === "temporary" ? "deferred" : providerKind === "failed" && data2.severity === "permanent" ? data2.reason === "suppress-complaint" ? "complained" : data2.reason === "suppress-unsubscribe" ? "unsubscribed" : ["espblock", "policy", "blocklist"].includes(text(data2.reason).toLowerCase()) ? "blocked" : "bounced" : "";
   if (!kind) return providerKind === "failed" ? false : null;
-  const providerId = typeof data.id === "string" ? data.id.trim() : "";
-  const seconds = typeof data.timestamp === "number" ? data.timestamp : Number(data.timestamp);
+  const providerId = typeof data2.id === "string" ? data2.id.trim() : "";
+  const seconds = typeof data2.timestamp === "number" ? data2.timestamp : Number(data2.timestamp);
   if (!providerId || !Number.isFinite(seconds) || seconds <= 0) return false;
   const occurredAt = new Date(seconds * 1e3).toISOString();
-  const recipient = text(data.recipient).trim().toLowerCase();
-  const variables = parsedJsonObject(data["user-variables"]) ?? {};
+  const recipient = text(data2.recipient).trim().toLowerCase();
+  const variables = parsedJsonObject(data2["user-variables"]) ?? {};
   const correlationKey = Object.keys(variables).find((key) => key.toLowerCase() === "correlationid");
   const correlationId = correlationKey ? text(variables[correlationKey]).trim() : "";
-  const account = parsedJsonObject(data.account) ?? {};
-  const domain = parsedJsonObject(data.domain) ?? {};
+  const account = parsedJsonObject(data2.account) ?? {};
+  const domain = parsedJsonObject(data2.domain) ?? {};
   const accountId = text(account.id).trim();
   const domainName = text(domain.name).trim().toLowerCase();
   if (!accountId || !domainName) return false;
@@ -76888,7 +82627,7 @@ async function dispatchVerifiedEmailEvents(ctx, events, subscription) {
     }, (privilegedContext) => subscription.handler(privilegedContext, event));
   }
 }
-function createProviderEmailEventEndpoint(name, config, serverEnv, subscription, verify2, parse, rejectionStatus = { unverified: 401, malformed: 400 }) {
+function createProviderEmailEventEndpoint(name, config, serverEnv, subscription, verify2, parse4, rejectionStatus = { unverified: 401, malformed: 400 }) {
   return {
     name,
     runtimeOwnedEmailEvent: true,
@@ -76902,7 +82641,7 @@ function createProviderEmailEventEndpoint(name, config, serverEnv, subscription,
       if (!verify2(ctx, secret)) {
         return { status: rejectionStatus.unverified, body: { ok: false, accepted: 0, ignored: 0 } };
       }
-      const parsed = parse(ctx.request?.body);
+      const parsed = parse4(ctx.request?.body);
       if (parsed.malformed) {
         return { status: rejectionStatus.malformed, body: { ok: false, accepted: 0, ignored: 0 } };
       }
@@ -79625,39 +85364,39 @@ function wakePostgresWaiters(waiters) {
 }
 function postgresParseRowDescription(body) {
   const fields = [];
-  let offset = 0;
-  const count = body.readInt16BE(offset);
-  offset += 2;
+  let offset2 = 0;
+  const count = body.readInt16BE(offset2);
+  offset2 += 2;
   for (let index = 0; index < count; index += 1) {
-    const nameEnd = body.indexOf(0, offset);
-    const name = body.subarray(offset, nameEnd).toString("utf8");
-    offset = nameEnd + 1;
-    offset += 6;
-    const dataTypeID = body.readInt32BE(offset);
-    offset += 4;
-    offset += 8;
+    const nameEnd = body.indexOf(0, offset2);
+    const name = body.subarray(offset2, nameEnd).toString("utf8");
+    offset2 = nameEnd + 1;
+    offset2 += 6;
+    const dataTypeID = body.readInt32BE(offset2);
+    offset2 += 4;
+    offset2 += 8;
     fields.push({ name, dataTypeID });
   }
   return fields;
 }
 function postgresParseDataRow(body, fields) {
   const row = {};
-  let offset = 0;
-  const count = body.readInt16BE(offset);
-  offset += 2;
+  let offset2 = 0;
+  const count = body.readInt16BE(offset2);
+  offset2 += 2;
   for (let index = 0; index < count; index += 1) {
     const field = fields[index];
     if (!field) {
       throw new Error("Postgres protocol error: data row did not match row description.");
     }
-    const length = body.readInt32BE(offset);
-    offset += 4;
+    const length = body.readInt32BE(offset2);
+    offset2 += 4;
     if (length === -1) {
       row[field.name] = null;
       continue;
     }
-    const raw = body.subarray(offset, offset + length).toString("utf8");
-    offset += length;
+    const raw = body.subarray(offset2, offset2 + length).toString("utf8");
+    offset2 += length;
     row[field.name] = postgresValueFromText(raw, field.dataTypeID);
   }
   return row;
@@ -79680,13 +85419,13 @@ function postgresRowCountFromCommand(tag) {
 }
 function postgresErrorFromBody(body) {
   const fields = {};
-  let offset = 0;
-  while (offset < body.length && body[offset] !== 0) {
-    const type = String.fromCharCode(body[offset]);
-    offset += 1;
-    const end = body.indexOf(0, offset);
-    fields[type] = body.subarray(offset, end).toString("utf8");
-    offset = end + 1;
+  let offset2 = 0;
+  while (offset2 < body.length && body[offset2] !== 0) {
+    const type = String.fromCharCode(body[offset2]);
+    offset2 += 1;
+    const end = body.indexOf(0, offset2);
+    fields[type] = body.subarray(offset2, end).toString("utf8");
+    offset2 = end + 1;
   }
   const error = new Error(fields.M ?? "Postgres query failed.");
   if (fields.C) error.code = fields.C;
@@ -81613,10 +87352,10 @@ async function finishSupersededRetainedScheduleOccurrence(database, row, adapter
   armRetainedScheduleRecoveryAfterCommit(database, result.recoveryAt);
   return result;
 }
-function earliestScheduleRecoveryAt(current, candidate) {
-  if (candidate === null) return current;
-  if (current === null) return candidate;
-  return Date.parse(candidate) < Date.parse(current) ? candidate : current;
+function earliestScheduleRecoveryAt(current2, candidate) {
+  if (candidate === null) return current2;
+  if (current2 === null) return candidate;
+  return Date.parse(candidate) < Date.parse(current2) ? candidate : current2;
 }
 function armRetainedScheduleRecoveryAfterCommit(database, recoveryAt) {
   if (recoveryAt !== null) schedulePendingOccurrenceRecovery(database, recoveryAt);
@@ -81637,13 +87376,13 @@ async function finishRetainedScheduleOccurrence(database, row, errorCode3, adapt
     "UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=NULL, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [scheduledFor]=? AND ([definitionFingerprint]=? OR ([definitionFingerprint] IS NULL AND ? IS NULL)) AND ([generationToken]=? OR ([generationToken] IS NULL AND ? IS NULL)) AND ([claimToken]=? OR ([claimToken] IS NULL AND ? IS NULL)) AND ([claimExpiresAt]=? OR ([claimExpiresAt] IS NULL AND ? IS NULL))" + liveGenerationGuard
   )).run(errorCode3, completedAt, row.id, row.scheduledFor, definitionFingerprint, definitionFingerprint, generationToken, generationToken, row.claimToken, row.claimToken, row.claimExpiresAt, row.claimExpiresAt, ...liveGenerationParams);
   if (Number(result.changes) === 1) return { finished: true, recoveryAt: null };
-  const current = await adapter.prepare(sql(
+  const current2 = await adapter.prepare(sql(
     "SELECT [status], [claimExpiresAt] FROM [sporades_schedule_occurrences] WHERE [id]=?"
   )).get(row.id);
-  if (current?.status === "pending") {
+  if (current2?.status === "pending") {
     const nowMs = database.clock.now().getTime();
-    const retainedExpiry = isCanonicalJobTimestamp(current.claimExpiresAt) ? Date.parse(current.claimExpiresAt) : Number.NaN;
-    const retryAt = Number.isFinite(retainedExpiry) && retainedExpiry > nowMs ? current.claimExpiresAt : new Date(nowMs + SCHEDULE_RECOVERY_RETRY_MS).toISOString();
+    const retainedExpiry = isCanonicalJobTimestamp(current2.claimExpiresAt) ? Date.parse(current2.claimExpiresAt) : Number.NaN;
+    const retryAt = Number.isFinite(retainedExpiry) && retainedExpiry > nowMs ? current2.claimExpiresAt : new Date(nowMs + SCHEDULE_RECOVERY_RETRY_MS).toISOString();
     return { finished: false, recoveryAt: retryAt };
   }
   return { finished: false, recoveryAt: null };
@@ -82009,8 +87748,8 @@ function requirePathModule() {
 }
 function createRuntimeLogger(database, context = {}) {
   const write = (level, args) => {
-    const [message, data, ...rest] = args;
-    const structuredData = data !== void 0 && rest.length === 0 ? data : rest.length > 0 ? { data, args: rest } : null;
+    const [message, data2, ...rest] = args;
+    const structuredData = data2 !== void 0 && rest.length === 0 ? data2 : rest.length > 0 ? { data: data2, args: rest } : null;
     const attributedData = context.attribution ? {
       ...structuredData && typeof structuredData === "object" && !Array.isArray(structuredData) ? structuredData : structuredData === null ? {} : { value: structuredData },
       ...context.attribution
@@ -84059,8 +89798,8 @@ async function runClientAccessKeyOperation(database, auth, message, sessionToken
   const accessKeys = createCurrentUserAccessKeysApi(database, () => context);
   const operation = message.type.slice("accessKeys.".length);
   try {
-    const data = operation === "list" ? await accessKeys.list(message.options) : operation === "issue" ? await accessKeys.issue(message.input) : operation === "rotate" ? await accessKeys.rotate(message.accessKeyId, message.options) : operation === "revoke" ? await accessKeys.revoke(message.accessKeyId) : await accessKeys.delete(message.accessKeyId);
-    return { data, error: null };
+    const data2 = operation === "list" ? await accessKeys.list(message.options) : operation === "issue" ? await accessKeys.issue(message.input) : operation === "rotate" ? await accessKeys.rotate(message.accessKeyId, message.options) : operation === "revoke" ? await accessKeys.revoke(message.accessKeyId) : await accessKeys.delete(message.accessKeyId);
+    return { data: data2, error: null };
   } catch (error) {
     if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
     const publicError = publicAccessKeyManagementError(error);
@@ -84488,13 +90227,13 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
           expiresAt = new Date(now2.getTime() + policy.maxAgeSeconds * 1e3).toISOString();
           try {
             await database.adapter.withTransaction(async (tx) => {
-              const current = await tx.readAuthSessionWithUser(client.session.token);
+              const current2 = await tx.readAuthSessionWithUser(client.session.token);
               const credential = await tx.findEmailCredentialWithUser(normalized.email);
-              if (!current || current.token !== client.session.token || current.userId !== client.session.auth.userId || !current.isAuthenticated || current.isGuest || Date.parse(current.expiresAt) <= now2.getTime() || credential?.userId !== current.userId || !verifyEmailPassword(normalized.password, credential.passwordSalt, credential.passwordHash)) return;
-              const currentAuth = { userId: current.userId, displayName: current.displayName, email: current.email, picture: current.picture, isAuthenticated: Boolean(current.isAuthenticated), isGuest: Boolean(current.isGuest), provider: current.provider };
+              if (!current2 || current2.token !== client.session.token || current2.userId !== client.session.auth.userId || !current2.isAuthenticated || current2.isGuest || Date.parse(current2.expiresAt) <= now2.getTime() || credential?.userId !== current2.userId || !verifyEmailPassword(normalized.password, credential.passwordSalt, credential.passwordHash)) return;
+              const currentAuth = { userId: current2.userId, displayName: current2.displayName, email: current2.email, picture: current2.picture, isAuthenticated: Boolean(current2.isAuthenticated), isGuest: Boolean(current2.isGuest), provider: current2.provider };
               if (!await tx.claimEmailCredentialVersion(normalized.email, credential.passwordHash, credential.passwordSalt)) return;
               if (!await database.authorizeReauthentication(tx, currentAuth, purpose)) return;
-              await tx.replaceReauthenticationProof({ id: randomUUID7(), userId: current.userId, sessionToken: current.token, purpose, createdAt: now2.toISOString(), expiresAt });
+              await tx.replaceReauthenticationProof({ id: randomUUID7(), userId: current2.userId, sessionToken: current2.token, purpose, createdAt: now2.toISOString(), expiresAt });
               ok = true;
               await tx.clearEmailReauthenticationAttempts(reauthenticationThrottleKeys);
             });
@@ -84649,8 +90388,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     }
     if (message.type === "teams.list") {
       try {
-        const data = await listCurrentUserTeams(database, client.session.auth);
-        sendJson(client, { id: message.id ?? null, type: "teams.list.result", data, error: null });
+        const data2 = await listCurrentUserTeams(database, client.session.auth);
+        sendJson(client, { id: message.id ?? null, type: "teams.list.result", data: data2, error: null });
       } catch (error) {
         if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
         sendJson(client, {
@@ -84668,8 +90407,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     }
     if (message.type === "teamBilling.get") {
       try {
-        const data = await readCurrentUserTeamBilling(database, client.session.auth, message.teamId);
-        sendJson(client, { id: message.id ?? null, type: "teamBilling.get.result", data, error: null });
+        const data2 = await readCurrentUserTeamBilling(database, client.session.auth, message.teamId);
+        sendJson(client, { id: message.id ?? null, type: "teamBilling.get.result", data: data2, error: null });
       } catch (error) {
         sendJson(client, {
           id: message.id ?? null,
@@ -84687,8 +90426,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     if (message.type === "teamBilling.startCheckout") {
       try {
         const input = message.input;
-        const data = await startTeamBillingCheckout(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey);
-        sendJson(client, { id: message.id ?? null, type: "teamBilling.startCheckout.result", data, error: null });
+        const data2 = await startTeamBillingCheckout(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey);
+        sendJson(client, { id: message.id ?? null, type: "teamBilling.startCheckout.result", data: data2, error: null });
       } catch (error) {
         sendJson(client, {
           id: message.id ?? null,
@@ -84706,8 +90445,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     if (message.type === "teamBilling.openPortal") {
       try {
         const input = message.input;
-        const data = await startTeamBillingPortal(database, client.session.auth, input?.teamId, input?.requestId);
-        sendJson(client, { id: message.id ?? null, type: "teamBilling.openPortal.result", data, error: null });
+        const data2 = await startTeamBillingPortal(database, client.session.auth, input?.teamId, input?.requestId);
+        sendJson(client, { id: message.id ?? null, type: "teamBilling.openPortal.result", data: data2, error: null });
       } catch (error) {
         sendJson(client, {
           id: message.id ?? null,
@@ -84725,8 +90464,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     if (message.type === "teamBilling.requestPlanTransition") {
       try {
         const input = message.input;
-        const data = await requestTeamBillingPlanTransition(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey);
-        sendJson(client, { id: message.id ?? null, type: "teamBilling.requestPlanTransition.result", data, error: null });
+        const data2 = await requestTeamBillingPlanTransition(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey);
+        sendJson(client, { id: message.id ?? null, type: "teamBilling.requestPlanTransition.result", data: data2, error: null });
       } catch (error) {
         const code = ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED", "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS"].includes(error?.code) ? error.code : "TEAM_BILLING_DENIED";
         sendJson(client, {
@@ -84745,8 +90484,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     if (message.type === "teamBilling.prepareErasure") {
       try {
         const input = message.input;
-        const data = await prepareTeamBillingErasure(database, client.session.auth, input?.teamId, input?.requestId);
-        sendJson(client, { id: message.id ?? null, type: "teamBilling.prepareErasure.result", data, error: null });
+        const data2 = await prepareTeamBillingErasure(database, client.session.auth, input?.teamId, input?.requestId);
+        sendJson(client, { id: message.id ?? null, type: "teamBilling.prepareErasure.result", data: data2, error: null });
       } catch (error) {
         sendJson(client, {
           id: message.id ?? null,
@@ -84763,8 +90502,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     }
     if (message.type === "teams.create") {
       try {
-        const data = await createAdditionalTeam(database, client.session.auth, message.name);
-        sendJson(client, { id: message.id ?? null, type: "teams.create.result", data, error: null });
+        const data2 = await createAdditionalTeam(database, client.session.auth, message.name);
+        sendJson(client, { id: message.id ?? null, type: "teams.create.result", data: data2, error: null });
       } catch (error) {
         if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
         sendJson(client, {
@@ -84782,8 +90521,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     }
     if (message.type === "teams.rename") {
       try {
-        const data = await renameCurrentUserTeam(database, client.session.auth, message.teamId, message.name);
-        sendJson(client, { id: message.id ?? null, type: "teams.rename.result", data, error: null });
+        const data2 = await renameCurrentUserTeam(database, client.session.auth, message.teamId, message.name);
+        sendJson(client, { id: message.id ?? null, type: "teams.rename.result", data: data2, error: null });
       } catch (error) {
         if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
         sendJson(client, {
@@ -84801,8 +90540,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     }
     if (message.type === "teams.listMembers") {
       try {
-        const data = await listTeamMembers(database, client.session.auth, message.teamId, { cursor: message.cursor, limit: message.limit });
-        sendJson(client, { id: message.id ?? null, type: "teams.listMembers.result", data, error: null });
+        const data2 = await listTeamMembers(database, client.session.auth, message.teamId, { cursor: message.cursor, limit: message.limit });
+        sendJson(client, { id: message.id ?? null, type: "teams.listMembers.result", data: data2, error: null });
       } catch (error) {
         if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
         sendJson(client, {
@@ -84820,8 +90559,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     }
     if (message.type === "teams.countMembers") {
       try {
-        const data = await countTeamMembers(database, client.session.auth, message.teamId);
-        sendJson(client, { id: message.id ?? null, type: "teams.countMembers.result", data, error: null });
+        const data2 = await countTeamMembers(database, client.session.auth, message.teamId);
+        sendJson(client, { id: message.id ?? null, type: "teams.countMembers.result", data: data2, error: null });
       } catch (error) {
         if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
         sendJson(client, {
@@ -84839,8 +90578,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     }
     if (message.type === "teams.updateApplicationRoles") {
       try {
-        const data = await updateTeamMemberApplicationRoles(database, client.session.auth, message.teamId, message.userId, { add: message.add, remove: message.remove });
-        sendJson(client, { id: message.id ?? null, type: "teams.updateApplicationRoles.result", data, error: null });
+        const data2 = await updateTeamMemberApplicationRoles(database, client.session.auth, message.teamId, message.userId, { add: message.add, remove: message.remove });
+        sendJson(client, { id: message.id ?? null, type: "teams.updateApplicationRoles.result", data: data2, error: null });
       } catch (error) {
         sendJson(client, { id: message.id ?? null, type: "error", data: null, error: { ...error?.code ? { code: error.code } : {}, message: error?.message ?? "Could not update Team application roles.", hint: error?.hint ?? "Sign in with a Team administrator account and retry." } });
       }
@@ -84848,8 +90587,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     }
     if (message.type === "teams.createJoinLink") {
       try {
-        const data = await createTeamJoinLink(database, client.session.auth, message.teamId, message.email, { ttlSeconds: message.ttlSeconds });
-        sendJson(client, { id: message.id ?? null, type: "teams.createJoinLink.result", data, error: null });
+        const data2 = await createTeamJoinLink(database, client.session.auth, message.teamId, message.email, { ttlSeconds: message.ttlSeconds });
+        sendJson(client, { id: message.id ?? null, type: "teams.createJoinLink.result", data: data2, error: null });
       } catch (error) {
         sendJson(client, { id: message.id ?? null, type: "error", data: null, error: { ...error?.code ? { code: error.code } : {}, message: error?.message ?? "Could not create Join link.", hint: error?.hint ?? "Sign in with a Team administrator account and retry." } });
       }
@@ -84857,8 +90596,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     }
     if (message.type === "teams.listJoinLinks") {
       try {
-        const data = await listTeamJoinLinks(database, client.session.auth, message.teamId);
-        sendJson(client, { id: message.id ?? null, type: "teams.listJoinLinks.result", data, error: null });
+        const data2 = await listTeamJoinLinks(database, client.session.auth, message.teamId);
+        sendJson(client, { id: message.id ?? null, type: "teams.listJoinLinks.result", data: data2, error: null });
       } catch (error) {
         sendJson(client, { id: message.id ?? null, type: "error", data: null, error: { ...error?.code ? { code: error.code } : {}, message: error?.message ?? "Could not list Join links.", hint: error?.hint ?? "Sign in with a Team administrator account and retry." } });
       }
@@ -84866,27 +90605,27 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     }
     if (message.type === "teams.revokeJoinLink") {
       try {
-        const data = await revokeTeamJoinLink(database, client.session.auth, message.teamId, message.joinLinkId);
-        sendJson(client, { id: message.id ?? null, type: "teams.revokeJoinLink.result", data, error: null });
+        const data2 = await revokeTeamJoinLink(database, client.session.auth, message.teamId, message.joinLinkId);
+        sendJson(client, { id: message.id ?? null, type: "teams.revokeJoinLink.result", data: data2, error: null });
       } catch (error) {
         sendJson(client, { id: message.id ?? null, type: "error", data: null, error: { ...error?.code ? { code: error.code } : {}, message: error?.message ?? "Could not revoke Join link.", hint: error?.hint ?? "Sign in with a Team administrator account and retry." } });
       }
       return;
     }
     if (message.type === "teams.inspectJoinLink") {
-      const data = await inspectTeamJoinLink(database, message.code);
-      sendJson(client, { id: message.id ?? null, type: "teams.inspectJoinLink.result", data, error: null });
+      const data2 = await inspectTeamJoinLink(database, message.code);
+      sendJson(client, { id: message.id ?? null, type: "teams.inspectJoinLink.result", data: data2, error: null });
       return;
     }
     if (message.type === "teams.validateJoinLink") {
-      const data = await validateTeamJoinLink(database, client.session.auth, message.code);
-      sendJson(client, { id: message.id ?? null, type: "teams.validateJoinLink.result", data, error: null });
+      const data2 = await validateTeamJoinLink(database, client.session.auth, message.code);
+      sendJson(client, { id: message.id ?? null, type: "teams.validateJoinLink.result", data: data2, error: null });
       return;
     }
     if (message.type === "teams.join") {
       try {
-        const data = await joinCurrentUserTeam(database, client.session.auth, message.code);
-        sendJson(client, { id: message.id ?? null, type: "teams.join.result", data, error: null });
+        const data2 = await joinCurrentUserTeam(database, client.session.auth, message.code);
+        sendJson(client, { id: message.id ?? null, type: "teams.join.result", data: data2, error: null });
       } catch (error) {
         sendJson(client, { id: message.id ?? null, type: "error", data: null, error: { ...error?.code ? { code: error.code } : {}, message: error?.message ?? "Could not join this Team.", hint: error?.hint ?? "Use a current Join link for this linked account." } });
       }
@@ -84894,8 +90633,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     }
     if (message.type === "teams.promote" || message.type === "teams.demote" || message.type === "teams.removeMember" || message.type === "teams.leave" || message.type === "teams.delete") {
       try {
-        const data = message.type === "teams.promote" ? await promoteTeamMember(database, client.session.auth, message.teamId, message.userId) : message.type === "teams.demote" ? await demoteTeamMember(database, client.session.auth, message.teamId, message.userId) : message.type === "teams.removeMember" ? await removeTeamMember(database, client.session.auth, message.teamId, message.userId) : message.type === "teams.leave" ? await leaveCurrentUserTeam(database, client.session.auth, message.teamId) : await deleteCurrentUserTeam(database, client.session.auth, message.teamId);
-        sendJson(client, { id: message.id ?? null, type: `${message.type}.result`, data, error: null });
+        const data2 = message.type === "teams.promote" ? await promoteTeamMember(database, client.session.auth, message.teamId, message.userId) : message.type === "teams.demote" ? await demoteTeamMember(database, client.session.auth, message.teamId, message.userId) : message.type === "teams.removeMember" ? await removeTeamMember(database, client.session.auth, message.teamId, message.userId) : message.type === "teams.leave" ? await leaveCurrentUserTeam(database, client.session.auth, message.teamId) : await deleteCurrentUserTeam(database, client.session.auth, message.teamId);
+        sendJson(client, { id: message.id ?? null, type: `${message.type}.result`, data: data2, error: null });
       } catch (error) {
         sendJson(client, { id: message.id ?? null, type: "error", data: null, error: { ...error?.code ? { code: error.code } : {}, message: error?.message ?? "Could not update Team membership.", hint: error?.hint ?? "Sign in with a Team administrator account and retry." } });
       }
@@ -85103,13 +90842,13 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       const result = await runQuery(database, client.session.auth, subscription.name, subscription.args, {
         sessionToken: client.session.token
       });
-      const data = subscription.style === "direct" ? result.data ?? result.rows : { rows: result.data ?? result.rows };
+      const data2 = subscription.style === "direct" ? result.data ?? result.rows : { rows: result.data ?? result.rows };
       if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation) return;
       sendJson(client, {
         id: subscription.id,
         type: "query.result",
         query: subscription.name,
-        data,
+        data: data2,
         error: result.error
       });
     } catch (error) {
@@ -85183,7 +90922,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     const userId = scope?.userId ?? senderAuth.userId;
     return [...clients].filter((candidate) => candidate.session.auth.userId === userId);
   }
-  function notifyPreferencesUpdated(sender, data) {
+  function notifyPreferencesUpdated(sender, data2) {
     for (const client of clients) {
       if (client === sender || client.session.auth.userId !== sender.session.auth.userId) {
         continue;
@@ -85191,7 +90930,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       sendJson(client, {
         id: null,
         type: "preferences.updated",
-        data,
+        data: data2,
         error: null
       });
     }
@@ -85257,22 +90996,22 @@ function drainWebSocketFrames(client, onMessage) {
     const opcode = firstByte & 15;
     const masked = (secondByte & 128) !== 0;
     let length = secondByte & 127;
-    let offset = 2;
+    let offset2 = 2;
     if (length === 126) {
-      if (client.buffer.length < offset + 2) return;
-      length = client.buffer.readUInt16BE(offset);
-      offset += 2;
+      if (client.buffer.length < offset2 + 2) return;
+      length = client.buffer.readUInt16BE(offset2);
+      offset2 += 2;
     } else if (length === 127) {
-      if (client.buffer.length < offset + 8) return;
-      length = Number(client.buffer.readBigUInt64BE(offset));
-      offset += 8;
+      if (client.buffer.length < offset2 + 8) return;
+      length = Number(client.buffer.readBigUInt64BE(offset2));
+      offset2 += 8;
     }
     const maskLength = masked ? 4 : 0;
-    if (client.buffer.length < offset + maskLength + length) return;
-    const mask = masked ? client.buffer.subarray(offset, offset + 4) : null;
-    offset += maskLength;
-    const payload = client.buffer.subarray(offset, offset + length);
-    client.buffer = client.buffer.subarray(offset + length);
+    if (client.buffer.length < offset2 + maskLength + length) return;
+    const mask = masked ? client.buffer.subarray(offset2, offset2 + 4) : null;
+    offset2 += maskLength;
+    const payload = client.buffer.subarray(offset2, offset2 + length);
+    client.buffer = client.buffer.subarray(offset2 + length);
     if (opcode === 8) {
       closeWebSocketClient(client);
       return;
@@ -85406,9 +91145,9 @@ async function runCustomQuery(database, context, queryName, args, resolvedHandle
   }
   try {
     const queryHandler = resolvedHandler ?? materializeHandler(handler);
-    const data = await queryHandler(context, ...args);
-    assertJsonCompatible(data);
-    return { data, error: null };
+    const data2 = await queryHandler(context, ...args);
+    assertJsonCompatible(data2);
+    return { data: data2, error: null };
   } catch (error) {
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
@@ -85586,7 +91325,7 @@ async function runCustomMutation(database, context, mutationName, args, resolved
   }
   return { ok: true, data: result ?? null, error: null };
 }
-async function runAppMessage(database, auth, messageName, data, options = {}) {
+async function runAppMessage(database, auth, messageName, data2, options = {}) {
   if (!messageName) {
     return {
       data: null,
@@ -85619,8 +91358,8 @@ async function runAppMessage(database, auth, messageName, data, options = {}) {
     };
   }
   try {
-    if (data !== void 0) {
-      assertJsonCompatible(data);
+    if (data2 !== void 0) {
+      assertJsonCompatible(data2);
     }
     const messageHandler = materializeHandler(handler);
     admitCredentialHandler(messageHandler, { auth, credential: { kind: "session" } }, "message");
@@ -85630,7 +91369,7 @@ async function runAppMessage(database, auth, messageName, data, options = {}) {
       try {
         context = createMessageContext(transactionDatabase, auth, options.sendAppMessage, options.sessionToken);
         context = await applyContextMiddleware(transactionDatabase, context, "message");
-        const result = await messageHandler(context, data);
+        const result = await messageHandler(context, data2);
         if (result !== void 0) {
           assertJsonCompatible(result);
         }
@@ -86087,11 +91826,11 @@ function createCurrentUserJobApi(database, contextGetter) {
   };
 }
 function createPrivilegedJobApi(database, contextGetter) {
-  const current = createCurrentUserJobApi(database, contextGetter);
+  const current2 = createCurrentUserJobApi(database, contextGetter);
   return {
     async enqueue(handler, payload, options = {}) {
       assertActivePrivilegedJobAccess(contextGetter);
-      return await current.enqueue(handler, payload, options);
+      return await current2.enqueue(handler, payload, options);
     },
     async get(id) {
       assertActivePrivilegedJobAccess(contextGetter);
@@ -89776,7 +95515,7 @@ function commandResult(command, args, timeoutMs) {
     let stdout = "";
     let stderr = "";
     let settled = false;
-    const append = (current, chunk) => (current + chunk.toString("utf8")).slice(-8192);
+    const append = (current2, chunk) => (current2 + chunk.toString("utf8")).slice(-8192);
     child.stdout.on("data", (chunk) => {
       stdout = append(stdout, chunk);
     });
@@ -91333,24 +97072,24 @@ function isValidOpenSshPublicKeyBlob(keyType, blob) {
     return Boolean(exponent && exponent.value.length > 0 && modulus && modulus.value.length > 0 && modulus.offset === blob.length);
   }
   if (keyType === "ssh-dss") {
-    let offset = first.offset;
+    let offset2 = first.offset;
     for (let index = 0; index < 4; index += 1) {
-      const part = readSshString(blob, offset);
+      const part = readSshString(blob, offset2);
       if (!part || part.value.length === 0) {
         return false;
       }
-      offset = part.offset;
+      offset2 = part.offset;
     }
-    return offset === blob.length;
+    return offset2 === blob.length;
   }
   return keyType.includes("-cert-v01@openssh.com") && first.offset < blob.length;
 }
-function readSshString(blob, offset) {
-  if (offset + 4 > blob.length) {
+function readSshString(blob, offset2) {
+  if (offset2 + 4 > blob.length) {
     return null;
   }
-  const length = blob.readUInt32BE(offset);
-  const start = offset + 4;
+  const length = blob.readUInt32BE(offset2);
+  const start = offset2 + 4;
   const end = start + length;
   if (length <= 0 || end > blob.length) {
     return null;
@@ -91714,9 +97453,9 @@ async function resolveHostedDoctorTarget(options) {
       }
     };
   }
-  const current = await runHostJsonCommand(["host", "current", "--host", alias, "--json"], options.projectDir);
-  if (!current.ok) {
-    const message = current.error?.message ?? "Host profile could not be resolved.";
+  const current2 = await runHostJsonCommand(["host", "current", "--host", alias, "--json"], options.projectDir);
+  if (!current2.ok) {
+    const message = current2.error?.message ?? "Host profile could not be resolved.";
     const unknown = message.match(/^Unknown Host profile alias: (.+)$/);
     return {
       ok: false,
@@ -91727,13 +97466,13 @@ async function resolveHostedDoctorTarget(options) {
         status: "fail",
         severity: "error",
         message,
-        hint: current.error?.hint ?? "Add or select a Host profile, then rerun `sporades doctor --session hosted`.",
+        hint: current2.error?.hint ?? "Add or select a Host profile, then rerun `sporades doctor --session hosted`.",
         commands: unknown ? [`sporades host add ${unknown[1]} --server <ssh-target> --domain <hosted-domain>`] : ["sporades host current --json", "sporades host add <alias> --server <ssh-target> --domain <hosted-domain>"],
         details: { alias, subname }
       }
     };
   }
-  const resolvedAlias = current.data?.alias ?? alias;
+  const resolvedAlias = current2.data?.alias ?? alias;
   return {
     ok: true,
     alias: resolvedAlias,
@@ -91749,7 +97488,7 @@ async function resolveHostedDoctorTarget(options) {
         alias: resolvedAlias,
         subname,
         fromRemoteBinding: !options.host || !options.subname,
-        hostedUrl: current.data?.profile?.domain ? `${current.data.profile.scheme ?? "https"}://${subname}.${current.data.profile.domain}` : null
+        hostedUrl: current2.data?.profile?.domain ? `${current2.data.profile.scheme ?? "https"}://${subname}.${current2.data.profile.domain}` : null
       }
     }
   };
@@ -91973,27 +97712,27 @@ function hostedSshStateCheck(result, commands) {
       details: result.data ?? null
     };
   }
-  const data = result.data ?? {};
-  const enabled = Boolean(data.enabled);
-  const ready = enabled && data.running && data.host && data.port;
+  const data2 = result.data ?? {};
+  const enabled = Boolean(data2.enabled);
+  const ready = enabled && data2.running && data2.host && data2.port;
   return {
     id: "doctor.hosted.ssh",
     title: "Hosted Capsule SSH state",
     scope: "hosted",
     status: ready ? "pass" : "warn",
     severity: ready ? "info" : "warning",
-    message: ready ? "Hosted Capsule SSH inspection reports an effective loopback SSH state." : `Hosted Capsule SSH is unavailable (${data.reason ?? "unknown"}).`,
+    message: ready ? "Hosted Capsule SSH inspection reports an effective loopback SSH state." : `Hosted Capsule SSH is unavailable (${data2.reason ?? "unknown"}).`,
     hint: ready ? "Use SSH only as a compatibility and emergency access path; prefer structured Sporades commands for normal inspection." : `Inspect effective SSH state with \`${commands.hostSsh}\`.`,
     commands: [commands.hostSsh],
     details: {
       enabled,
-      running: Boolean(data.running),
-      reason: data.reason ?? null,
-      host: data.host ?? null,
-      port: data.port ?? null,
-      user: data.user ?? null,
-      keyCount: data.keyCount ?? 0,
-      fingerprints: Array.isArray(data.fingerprints) ? data.fingerprints : []
+      running: Boolean(data2.running),
+      reason: data2.reason ?? null,
+      host: data2.host ?? null,
+      port: data2.port ?? null,
+      user: data2.user ?? null,
+      keyCount: data2.keyCount ?? 0,
+      fingerprints: Array.isArray(data2.fingerprints) ? data2.fingerprints : []
     }
   };
 }
@@ -92649,12 +98388,12 @@ function summarizeDoctorChecks(checks) {
 function doctorShouldExitNonZero(checks, strict) {
   return checks.some((check) => check.status === "fail" || strict && check.status === "warn");
 }
-function renderDoctorHumanOutput(data) {
+function renderDoctorHumanOutput(data2) {
   const lines = ["Sporades doctor"];
   const bySeverity = /* @__PURE__ */ new Map([
-    ["error", data.checks.filter((check) => check.severity === "error")],
-    ["warning", data.checks.filter((check) => check.severity === "warning")],
-    ["info", data.checks.filter((check) => check.severity === "info")]
+    ["error", data2.checks.filter((check) => check.severity === "error")],
+    ["warning", data2.checks.filter((check) => check.severity === "warning")],
+    ["info", data2.checks.filter((check) => check.severity === "info")]
   ]);
   for (const [severity, checks] of bySeverity) {
     if (checks.length === 0) {
@@ -94681,7 +100420,7 @@ async function startDevSession(options) {
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config, { publishPorts: true });
   const capsuleServiceEnv = await startCapsuleServices(capsuleServices, options.projectDir, {
     wait: true,
-    emit: (data, error) => emitDevEvent(options, data, error)
+    emit: (data2, error) => emitDevEvent(options, data2, error)
   });
   let runtimeServiceEnv = capsuleServiceEnv;
   const inspectionToken = createDevInspectionToken();
@@ -95006,7 +100745,7 @@ async function startDevSession(options) {
       rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false, devClientRefresh: true });
       const nextCapsuleServiceEnv = await startCapsuleServices(nextCapsuleServices, options.projectDir, {
         wait: true,
-        emit: (data, error) => emitDevEvent(options, data, error)
+        emit: (data2, error) => emitDevEvent(options, data2, error)
       }).catch((error) => {
         throw tagDevRebuildError(error, "services", nextConfig);
       });
@@ -95409,25 +101148,25 @@ function collectPathSignature(filePath, entries) {
   }
   entries.push(`${filePath}:file:${stats.ino}:${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}`);
 }
-function emitDevEvent(options, data, error = null) {
+function emitDevEvent(options, data2, error = null) {
   if (options.json) {
     writeResult({
       ok: error === null,
-      data,
+      data: data2,
       error
     });
     return;
   }
-  switch (data.event) {
+  switch (data2.event) {
     case "started":
-      process.stdout.write(`Sporades dev session started at ${data.url}
+      process.stdout.write(`Sporades dev session started at ${data2.url}
 Use Ctrl-C to exit
 `);
       return;
     case "rebuild":
-      if (data.status === "started") return;
-      if (data.status === "success") {
-        process.stdout.write(`Sporades dev session rebuilt at ${data.url}
+      if (data2.status === "started") return;
+      if (data2.status === "success") {
+        process.stdout.write(`Sporades dev session rebuilt at ${data2.url}
 `);
         return;
       }
@@ -95435,13 +101174,13 @@ Use Ctrl-C to exit
     case "service":
       return;
     case "fatal":
-      process.stdout.write(`Sporades dev runtime fatal event: ${error?.message ?? data.fatal?.message ?? "unknown error"}
+      process.stdout.write(`Sporades dev runtime fatal event: ${error?.message ?? data2.fatal?.message ?? "unknown error"}
 `);
       return;
     case "restart":
-      switch (data.status) {
+      switch (data2.status) {
         case "success":
-          process.stdout.write(`Sporades dev runtime restarted at ${data.url}
+          process.stdout.write(`Sporades dev runtime restarted at ${data2.url}
 `);
           return;
         case "exhausted":
@@ -95454,8 +101193,8 @@ Use Ctrl-C to exit
           return;
       }
     default:
-      if (data.status === "success") {
-        process.stdout.write(`Sporades dev session rebuilt at ${data.url}
+      if (data2.status === "success") {
+        process.stdout.write(`Sporades dev session rebuilt at ${data2.url}
 `);
         return;
       }
@@ -95808,18 +101547,18 @@ async function readPortableSealedServerEnvEnvelope(filePath) {
   }
   return envelope;
 }
-async function writeEnvResult(options, data) {
+async function writeEnvResult(options, data2) {
   if (options.json) {
-    writeResult({ ok: true, data, error: null });
+    writeResult({ ok: true, data: data2, error: null });
     return;
   }
-  process.stdout.write(`${JSON.stringify(data, null, 2)}
+  process.stdout.write(`${JSON.stringify(data2, null, 2)}
 `);
 }
 async function ensureHostProfileEnvKey(config, alias) {
-  const current = config.profiles[alias].sealedServerEnv;
-  if (current?.publicKey && current?.privateKey) {
-    return current;
+  const current2 = config.profiles[alias].sealedServerEnv;
+  if (current2?.publicKey && current2?.privateKey) {
+    return current2;
   }
   const { publicKey, privateKey } = generateKeyPairSync2("rsa", {
     modulusLength: 2048,
@@ -95985,7 +101724,7 @@ async function manageHost(options) {
       await mkdir7(path12.dirname(bindingPath), { recursive: true });
       await writeFile7(bindingPath, `${JSON.stringify(binding, null, 2)}
 `);
-      const data = {
+      const data2 = {
         ...result.data,
         bindingPath,
         binding,
@@ -95993,7 +101732,7 @@ async function manageHost(options) {
         authoritative: result.data?.authoritative ?? true
       };
       if (options.json) {
-        writeResult({ ok: true, data, error: null });
+        writeResult({ ok: true, data: data2, error: null });
       } else {
         process.stdout.write(`Hosted Capsule registered: ${binding.hostedUrl}
 `);
@@ -96241,17 +101980,17 @@ async function manageHost(options) {
       if (!result.ok) {
         throw commandError4(result.error.message, result.error.hint);
       }
-      const data = result.data;
-      if (!data.enabled) {
-        process.stdout.write(`Hosted Capsule SSH disabled: ${data.reason ?? "no-authorized-keys"}.
+      const data2 = result.data;
+      if (!data2.enabled) {
+        process.stdout.write(`Hosted Capsule SSH disabled: ${data2.reason ?? "no-authorized-keys"}.
 `);
-      } else if (!data.running) {
-        process.stdout.write(`Hosted Capsule SSH configured, but the Capsule is not running: ${data.reason ?? "capsule-stopped"}.
+      } else if (!data2.running) {
+        process.stdout.write(`Hosted Capsule SSH configured, but the Capsule is not running: ${data2.reason ?? "capsule-stopped"}.
 `);
-      } else if (!data.port) {
+      } else if (!data2.port) {
         process.stdout.write("Hosted Capsule SSH configured, but port 22 is not published on the Host server loopback interface.\n");
       } else {
-        process.stdout.write(`Hosted Capsule SSH enabled for ${data.user}@${data.host}:${data.port} on the Host server loopback interface (${data.keyCount} authorized key${data.keyCount === 1 ? "" : "s"}).
+        process.stdout.write(`Hosted Capsule SSH enabled for ${data2.user}@${data2.host}:${data2.port} on the Host server loopback interface (${data2.keyCount} authorized key${data2.keyCount === 1 ? "" : "s"}).
 `);
       }
       return;
@@ -96388,21 +102127,21 @@ function redactHostPushSshState(result) {
   if (!result.ok || !result.data) {
     return result;
   }
-  const data = JSON.parse(JSON.stringify(result.data));
-  if (data.release && typeof data.release === "object") {
-    delete data.release.ssh;
-    if (Array.isArray(data.release.files)) {
-      data.release.files = data.release.files.filter((file) => file !== ".sporades/ssh/authorized_keys");
+  const data2 = JSON.parse(JSON.stringify(result.data));
+  if (data2.release && typeof data2.release === "object") {
+    delete data2.release.ssh;
+    if (Array.isArray(data2.release.files)) {
+      data2.release.files = data2.release.files.filter((file) => file !== ".sporades/ssh/authorized_keys");
     }
   }
-  if (data.lifecycle && typeof data.lifecycle === "object") {
-    delete data.lifecycle.ssh;
-    delete data.lifecycle.auditEvents;
-    if (Object.keys(data.lifecycle).length === 0) {
-      delete data.lifecycle;
+  if (data2.lifecycle && typeof data2.lifecycle === "object") {
+    delete data2.lifecycle.ssh;
+    delete data2.lifecycle.auditEvents;
+    if (Object.keys(data2.lifecycle).length === 0) {
+      delete data2.lifecycle;
     }
   }
-  return { ...result, data };
+  return { ...result, data: data2 };
 }
 async function resolveLocalContainerSshAccessForAudit(config, projectDir, surface, targetResourceKind) {
   try {
@@ -96776,38 +102515,38 @@ async function inspectLocalContainerSsh(options) {
   const bindingPath = path12.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
-    const data2 = localContainerSshState({
+    const data3 = localContainerSshState({
       enabled: false,
       running: false,
       reason: "no-container-session"
     });
     if (options.json) {
-      writeResult({ ok: true, data: data2, error: null });
+      writeResult({ ok: true, data: data3, error: null });
     } else {
       process.stdout.write("Container SSH disabled: no local Container session. Run `sporades deploy`.\n");
     }
-    await emitLocalContainerSshInspectionAudit(config, options.projectDir, data2);
+    await emitLocalContainerSshInspectionAudit(config, options.projectDir, data3);
     return;
   }
   const intended = binding.ssh ?? { enabled: false, reason: "no-authorized-keys" };
   if (!intended.enabled) {
-    const data2 = localContainerSshState({
+    const data3 = localContainerSshState({
       enabled: false,
       running: false,
       reason: intended.reason ?? "no-authorized-keys"
     });
     if (options.json) {
-      writeResult({ ok: true, data: data2, error: null });
+      writeResult({ ok: true, data: data3, error: null });
     } else {
       process.stdout.write("Container SSH disabled: no authorized keys configured. Add `ssh.authorizedKeys` and run `sporades deploy`.\n");
     }
-    await emitLocalContainerSshInspectionAudit(config, options.projectDir, data2);
+    await emitLocalContainerSshInspectionAudit(config, options.projectDir, data3);
     return;
   }
   const inspected = inspectDockerContainer(options.projectDir, binding.containerId);
   const running = Boolean(inspected?.State?.Running);
   const port = inspectedSshPort(inspected);
-  const data = localContainerSshState({
+  const data2 = localContainerSshState({
     enabled: true,
     running,
     user: intended.user ?? SPORADES_BASE_IMAGE.runtimeUser,
@@ -96820,20 +102559,20 @@ async function inspectLocalContainerSsh(options) {
     reason: running ? port ? null : "port-not-published" : "container-stopped"
   });
   if (options.json) {
-    writeResult({ ok: true, data, error: null });
-  } else if (!data.enabled) {
+    writeResult({ ok: true, data: data2, error: null });
+  } else if (!data2.enabled) {
     process.stdout.write("Container SSH disabled.\n");
-  } else if (!data.running) {
+  } else if (!data2.running) {
     process.stdout.write("Container SSH configured, but the Container session is stopped. Run `sporades deploy restart`.\n");
-  } else if (!data.port) {
+  } else if (!data2.port) {
     process.stdout.write("Container SSH configured, but port 22 is not published. Run `sporades deploy`.\n");
   } else {
-    process.stdout.write(`Container SSH enabled for ${data.user}@${data.host}:${data.port} (${data.keyCount} authorized key${data.keyCount === 1 ? "" : "s"}).
+    process.stdout.write(`Container SSH enabled for ${data2.user}@${data2.host}:${data2.port} (${data2.keyCount} authorized key${data2.keyCount === 1 ? "" : "s"}).
 `);
   }
-  await emitLocalContainerSshInspectionAudit(config, options.projectDir, data);
+  await emitLocalContainerSshInspectionAudit(config, options.projectDir, data2);
 }
-async function emitLocalContainerSshInspectionAudit(config, projectDir, data) {
+async function emitLocalContainerSshInspectionAudit(config, projectDir, data2) {
   await emitCliSshAuditEvent(config, projectDir, {
     event: "ssh.state.inspected",
     operation: "ssh.container.inspect",
@@ -96841,7 +102580,7 @@ async function emitLocalContainerSshInspectionAudit(config, projectDir, data) {
     targetResourceKind: "container-ssh-state",
     outcome: "completed",
     message: "Container SSH state inspected.",
-    metadata: sshAuditMetadata(data)
+    metadata: sshAuditMetadata(data2)
   });
 }
 function localContainerSshState(overrides) {
@@ -97759,15 +103498,15 @@ function createHostReleaseId(now2 = /* @__PURE__ */ new Date()) {
   const timestamp = now2.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
   return `${timestamp}-${randomBytes8(4).toString("hex")}`;
 }
-function normaliseHostLogEntries(data) {
-  if (!Array.isArray(data?.entries)) {
+function normaliseHostLogEntries(data2) {
+  if (!Array.isArray(data2?.entries)) {
     return [];
   }
-  return data.entries.map((entry) => String(entry));
+  return data2.entries.map((entry) => String(entry));
 }
-function formatHostedCapsuleList(data, profile) {
-  const capsules = normaliseHostedCapsules(data);
-  const domain = data?.host?.domain ?? profile.domain;
+function formatHostedCapsuleList(data2, profile) {
+  const capsules = normaliseHostedCapsules(data2);
+  const domain = data2?.host?.domain ?? profile.domain;
   if (capsules.length === 0) {
     return `No Hosted Capsules registered for ${domain}.
 `;
@@ -97798,11 +103537,11 @@ function formatHostedCapsuleList(data, profile) {
 ${rows.map(line).join("\n")}
 `;
 }
-function normaliseHostedCapsules(data) {
-  if (!Array.isArray(data?.capsules)) {
+function normaliseHostedCapsules(data2) {
+  if (!Array.isArray(data2?.capsules)) {
     return [];
   }
-  return data.capsules.map((capsule) => ({
+  return data2.capsules.map((capsule) => ({
     subname: String(capsule?.subname ?? ""),
     hostedUrl: String(capsule?.hostedUrl ?? ""),
     registry: capsule?.registry ?? null,
@@ -97816,9 +103555,9 @@ function formatCapsuleRegistryStatus(registry) {
 function formatCapsuleRelease(release) {
   return String(release?.id ?? release?.releaseId ?? release?.version ?? "none");
 }
-function formatHostedCapsuleReleases(data) {
-  const releases = Array.isArray(data?.releases) ? data.releases : [];
-  const subname = data?.capsule?.subname ?? "Hosted Capsule";
+function formatHostedCapsuleReleases(data2) {
+  const releases = Array.isArray(data2?.releases) ? data2.releases : [];
+  const subname = data2?.capsule?.subname ?? "Hosted Capsule";
   if (releases.length === 0) {
     return `No releases recorded for ${subname}.
 `;
@@ -98231,7 +103970,7 @@ async function printLocalCapsuleServiceStatus(options, surface) {
   const config = await readProjectConfig(options.projectDir);
   const capsuleServices = localCapsuleServicesFromConfig2(config, options.projectDir);
   const binding = surface === "deploy" ? await readContainerBinding(path12.join(options.projectDir, CONTAINER_BINDING_FILE)) : null;
-  const data = {
+  const data2 = {
     ...binding?.containerId ? {
       container: {
         containerId: binding.containerId,
@@ -98242,10 +103981,10 @@ async function printLocalCapsuleServiceStatus(options, surface) {
     services: await localCapsuleServicesStatus(capsuleServices, options.projectDir)
   };
   if (options.json) {
-    writeResult({ ok: true, data, error: null });
+    writeResult({ ok: true, data: data2, error: null });
     return;
   }
-  for (const [name, service] of Object.entries(data.services)) {
+  for (const [name, service] of Object.entries(data2.services)) {
     process.stdout.write(`${name}: ${service.status}${service.health ? ` (${service.health})` : ""}
 `);
   }

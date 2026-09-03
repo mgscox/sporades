@@ -507,10 +507,14 @@ That deliberately creates false positives for support notes containing code;
 such material should be pasted as quoted ticket text or explicitly handled by
 a future reviewed evidence policy, never treated as an executable channel.
 Strict-text inspection is capped at 1 MiB before UTF-8 decoding or JavaScript
-compilation. High-confidence JavaScript declaration or statement-start call
-shapes are rejected only when Node can compile the complete text as a program;
-this catches call-only programs such as `alert("x")` and member calls while
-ordinary prose containing parentheses remains text.
+parsing. Sporades uses its pinned production JavaScript parser on the complete
+text, then walks the syntax tree under fixed node and depth budgets without
+executing the upload. Programs containing calls, construction, dynamic or
+static imports, assignments, declarations, control flow, or similar executable
+semantics are rejected. This covers comments, parentheses, computed or optional
+member access, and Unicode escapes around call-only programs such as
+`alert("x")`; ordinary prose, including prose containing parentheses or quoted
+call text, remains text when it is not a complete executable program.
 
 The `clamav` inspector is runtime-owned and communicates only with clamd's
 fixed Unix-domain socket inside the Capsule container. There is no TCP,
