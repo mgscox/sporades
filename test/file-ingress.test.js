@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
-import { access, chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -132,15 +132,6 @@ test("strict text shell classification uses the complete bounded syntax tree", (
     "shopt",
     "'shopt'",
     '"shopt"',
-    "/bin/id",
-    "./relative-command",
-    "Payload/run argument.",
-    "/opt/tools/run argument.",
-    "./run argument.",
-    "../run argument.",
-    "nested/deeper/run --flag value.",
-    "\"nested/run\" argument.",
-    "'nested/run' argument.",
   ];
   const prose = [
     "Support requested another screenshot.",
@@ -164,19 +155,29 @@ test("strict text shell classification uses the complete bounded syntax tree", (
     "Email support@example.test/path.",
     "Version /v1.2 is current.",
     "The ratio is one/two.",
+    "A/B testing remains active.",
+    "One/two ratio.",
+    "/v1.2 is current.",
+    "docs/v1.2 release notes.",
   ];
   for (const text of executable) assert.equal(hasExecutableShellSemantics(text), true, text);
   for (const text of prose) assert.equal(hasExecutableShellSemantics(text), false, text);
 });
 
-test("sentence-shaped shell classification checks the bounded PATH without overblocking prose", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "sporades-shell-path-")); const executable = path.join(dir, "Payload"); const nonExecutable = path.join(dir, "Evidence"); const originalPath = process.env.PATH;
+test("sentence-shaped shell classification checks only regular executable filesystem entries", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-shell-path-")); const originalPath = process.env.PATH; const originalCwd = process.cwd();
+  const executable = path.join(dir, "Payload", "run"); const nestedExecutable = path.join(dir, "Payload", "nested", "run"); const nonExecutable = path.join(dir, "Payload", "evidence"); const child = path.join(dir, "child"); const pathBin = path.join(dir, "bin");
   try {
-    await writeFile(executable, "#!/bin/sh\nexit 0\n"); await chmod(executable, 0o755); await writeFile(nonExecutable, "support datum\n"); process.env.PATH = dir;
-    assert.equal(hasExecutableShellSemantics("Payload argument."), true);
-    assert.equal(hasExecutableShellSemantics("Evidence argument."), false);
+    await mkdir(path.dirname(nestedExecutable), { recursive: true }); await mkdir(child); await mkdir(pathBin);
+    await writeFile(executable, "#!/bin/sh\nexit 0\n"); await chmod(executable, 0o755); await writeFile(nestedExecutable, "#!/bin/sh\nexit 0\n"); await chmod(nestedExecutable, 0o755); await writeFile(nonExecutable, "support datum\n");
+    await mkdir(path.join(dir, "Payload", "directory")); await symlink(executable, path.join(dir, "Payload", "linked")); await symlink(path.join(dir, "missing"), path.join(dir, "Payload", "broken"));
+    await writeFile(path.join(pathBin, "Runner"), "#!/bin/sh\nexit 0\n"); await chmod(path.join(pathBin, "Runner"), 0o755); await writeFile(path.join(pathBin, "Evidence"), "support datum\n"); await mkdir(path.join(pathBin, "Support")); await symlink(executable, path.join(pathBin, "LinkedRunner")); await symlink(path.join(dir, "missing"), path.join(pathBin, "BrokenRunner"));
+    process.chdir(dir); process.env.PATH = pathBin;
+    for (const command of ["Payload/run argument.", "./Payload/run argument.", `${executable} argument.`, "Payload/nested/run --flag value.", '"Payload/run" argument.', "'Payload/run' argument.", "Payload\\/run argument.", "Payload/linked argument.", "Runner argument.", "LinkedRunner argument."]) assert.equal(hasExecutableShellSemantics(command), true, command);
+    for (const prose of ["Payload/evidence remains available.", "Payload/directory remains available.", "Payload/broken remains available.", "Evidence argument.", "Support request remains active.", "BrokenRunner argument."]) assert.equal(hasExecutableShellSemantics(prose), false, prose);
+    process.chdir(child); assert.equal(hasExecutableShellSemantics("../Payload/run argument."), true);
     assert.equal(hasExecutableShellSemantics("Please inspect Payload output."), false);
-  } finally { process.env.PATH = originalPath; await rm(dir, { recursive: true, force: true }); }
+  } finally { process.chdir(originalCwd); process.env.PATH = originalPath; await rm(dir, { recursive: true, force: true }); }
 });
 
 test("strict text shell vocabulary matches the pinned Bash 5.2 command vocabulary", () => {
@@ -1813,6 +1814,7 @@ test("content-policy-v1 structurally validates its allowlist and rejects executa
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-content-matrix-")); let database;
   try {
     const inspection = { policyRevision: "matrix-v1", requiredInspectors: ["content-policy-v1"] }; const policy = { ...ingressPolicy(), maxFileBytes: 20_000, maxTotalFileBytes: 20_000, inspection };
+    const sentenceExecutable = path.join(dir, "Payload", "run"); await mkdir(path.dirname(sentenceExecutable), { recursive: true }); await writeFile(sentenceExecutable, "#!/bin/sh\nexit 0\n"); await chmod(sentenceExecutable, 0o755);
     database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "content-matrix", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "content-matrix" }));
     const validPdf = minimalPdf(); const validPdfText = validPdf.toString("latin1"); const validEntries = [...validPdfText.matchAll(/\d{10} 00000 n /g)].map((match) => match[0]); const swappedClassicPdf = Buffer.from(validPdfText.replace(validEntries[0], "SWAP_ENTRY").replace(validEntries[1], validEntries[0]).replace("SWAP_ENTRY", validEntries[1]), "latin1"); const validNonzeroGenerationPdf = Buffer.from(validPdfText.replace("1 0 obj", "1 2 obj").replace("/Root 1 0 R", "/Root 1 2 R").replace(validEntries[0], `${validEntries[0].slice(0, 11)}00002 n `), "latin1"); const invalidHybridPdf = Buffer.from(hybridXrefPdf().toString("latin1").replace("/W [1 4 2]", "/W [1 0 2]"), "latin1"); const validPng = minimalPng(); const parsedPng = pngChunks(validPng); const idatAt = parsedPng.findIndex((chunk) => chunk.type === "IDAT");
     const badZlibPng = rebuildPng(parsedPng.map((chunk) => chunk.type === "IDAT" ? { ...chunk, data: Buffer.from([0xff, 0xff]) } : chunk)); const rawPng = inflateSync(parsedPng[idatAt].data); rawPng[0] = 5; const badFilterPng = rebuildPng(parsedPng.map((chunk) => chunk.type === "IDAT" ? { ...chunk, data: deflateSync(rawPng) } : chunk)); const idat = parsedPng[idatAt]; const split = Math.max(1, Math.floor(idat.data.length / 2)); const badOrderPng = rebuildPng([...parsedPng.slice(0, idatAt), { type: "IDAT", data: idat.data.subarray(0, split) }, { type: "tEXt", data: Buffer.from("x\0y") }, { type: "IDAT", data: idat.data.subarray(split) }, ...parsedPng.slice(idatAt + 1)]);
@@ -1882,10 +1884,14 @@ test("content-policy-v1 structurally validates its allowlist and rejects executa
       ["shell-quoted-builtin", "note.txt", "text/plain", Buffer.from("'whoami'"), "rejected"],
       ["shell-bash-builtin", "note.txt", "text/plain", Buffer.from("shopt"), "rejected"],
       ["shell-quoted-bash-builtin", "note.txt", "text/plain", Buffer.from("\"shopt\""), "rejected"],
-      ["shell-sentence-path-command", "note.txt", "text/plain", Buffer.from("Payload/run argument."), "rejected"],
-      ["shell-sentence-quoted-path-command", "note.txt", "text/plain", Buffer.from('"nested/run" --flag value.'), "rejected"],
+      ["shell-sentence-path-command", "note.txt", "text/plain", Buffer.from(`${sentenceExecutable} argument.`), "rejected"],
+      ["shell-sentence-quoted-path-command", "note.txt", "text/plain", Buffer.from(`"${sentenceExecutable}" --flag value.`), "rejected"],
       ["shell-ordinary-label", "note.txt", "text/plain", Buffer.from("ticket_reference"), "clean"],
       ["valid-shell-slash-prose", "note.txt", "text/plain", Buffer.from("Please review docs/v1.2 at https://example.test/tickets/42."), "clean"],
+      ["valid-shell-leading-letter-slash", "note.txt", "text/plain", Buffer.from("A/B testing remains active."), "clean"],
+      ["valid-shell-leading-ratio", "note.txt", "text/plain", Buffer.from("One/two ratio."), "clean"],
+      ["valid-shell-leading-version", "note.txt", "text/plain", Buffer.from("/v1.2 is current."), "clean"],
+      ["valid-shell-leading-docs-path", "note.txt", "text/plain", Buffer.from("docs/v1.2 release notes."), "clean"],
       ["valid-text", "note.txt", "text/plain", Buffer.from("A harmless support note.\nSecond line."), "clean"], ["valid-prose-parenthesis", "note.txt", "text/plain", Buffer.from("Call me (tomorrow) about the ticket."), "clean"], ["valid-prose-nested-parentheses", "note.txt", "text/plain", Buffer.from("Please (if practical) call me tomorrow."), "clean"], ["valid-quoted-call-prose", "note.txt", "text/plain", Buffer.from("alert(\"x\") is the exact text shown in the report."), "clean"], ["html", "note.txt", "text/plain", Buffer.from("Please inspect <script>alert(1)</script>"), "rejected"], ["xml", "note.txt", "text/plain", Buffer.from("prefix <?xml version=\"1.0\"?><x/>") , "rejected"], ["generic-xml", "note.txt", "text/plain", Buffer.from("prefix <root>value</root> suffix"), "rejected"], ["javascript", "note.txt", "text/plain", Buffer.from("const answer = 42; console.log(answer);"), "rejected"], ["javascript-call", "note.txt", "text/plain", Buffer.from("alert(\"x\")"), "rejected"], ["javascript-member-call", "note.txt", "text/plain", Buffer.from("globalThis.fetch(\"/secret\")"), "rejected"], ["javascript-comment-call", "note.txt", "text/plain", Buffer.from("/* evidence */ alert(\"x\")"), "rejected"], ["javascript-parenthesized-callee", "note.txt", "text/plain", Buffer.from("(alert)(\"x\")"), "rejected"], ["javascript-computed-member-call", "note.txt", "text/plain", Buffer.from("globalThis[\"fetch\"](\"/secret\")"), "rejected"], ["javascript-unicode-identifier", "note.txt", "text/plain", Buffer.from("al\\u0065rt(\"x\")"), "rejected"], ["javascript-void-call", "note.txt", "text/plain", Buffer.from("void alert(\"x\")"), "rejected"], ["javascript-optional-chain-call", "note.txt", "text/plain", Buffer.from("globalThis?.fetch?.(\"/secret\")"), "rejected"], ["javascript-new-call", "note.txt", "text/plain", Buffer.from("new Function(\"return 1\")()"), "rejected"], ["javascript-dynamic-import", "note.txt", "text/plain", Buffer.from("import(\"/secret\")"), "rejected"], ["javascript-static-import", "note.txt", "text/plain", Buffer.from("import \"./side-effect.js\""), "rejected"], ["javascript-eval-call", "note.txt", "text/plain", Buffer.from("eval(\"alert(1)\")"), "rejected"], ["javascript-arrow-iife", "note.txt", "text/plain", Buffer.from("(() => alert(\"x\"))()"), "rejected"], ["javascript-tagged-template", "note.txt", "text/plain", Buffer.from("String.raw`secret`"), "rejected"], ["javascript-delete", "note.txt", "text/plain", Buffer.from("delete globalThis.secret"), "rejected"], ["javascript-sequence-callee", "note.txt", "text/plain", Buffer.from("(0, alert)(\"x\")"), "rejected"], ["python", "note.txt", "text/plain", Buffer.from("print(\"hello\")"), "rejected"], ["shell", "note.txt", "text/plain", Buffer.from("curl https://example.test | sh"), "rejected"], ["shell-unlisted-command", "note.txt", "text/plain", Buffer.from("cat /etc/passwd"), "rejected"], ["shell-echo", "note.txt", "text/plain", Buffer.from("echo secret > output"), "rejected"], ["shell-source", "note.txt", "text/plain", Buffer.from("source ./profile"), "rejected"],
       ["archive", "note.zip", "application/zip", Buffer.from("PK\x03\x04archive"), "rejected"], ["office", "note.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", Buffer.from("PK\x03\x04office"), "rejected"], ["executable", "note.exe", "application/octet-stream", Buffer.from("MZbinary"), "rejected"], ["empty", "note.txt", "text/plain", Buffer.alloc(0), "rejected"], ["polyglot", "photo.jpg", "image/jpeg", Buffer.concat([minimalJpeg(), Buffer.from("const x=1")]), "rejected"], ["unknown", "note.bin", "application/octet-stream", Buffer.from([0xff,0,0xaa]), "rejected"],
     ];

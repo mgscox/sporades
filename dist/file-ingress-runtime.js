@@ -1482,19 +1482,27 @@ function shellCommandCanRun(name) {
         return true;
     if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(name))
         return false;
+    const regularExecutable = (candidate) => {
+        if (Buffer.byteLength(candidate, "utf8") > 4096)
+            return false;
+        try {
+            fs.accessSync(candidate, fs.constants.X_OK);
+            return fs.statSync(candidate).isFile();
+        }
+        catch {
+            return false;
+        }
+    };
     if (name.includes("/"))
-        return true;
+        return regularExecutable(name);
     if (Buffer.byteLength(name, "utf8") > 255)
         return false;
     for (const entry of String(process.env.PATH ?? "").split(":").slice(0, 128)) {
         const directory = entry || process.cwd();
         if (Buffer.byteLength(directory, "utf8") > 4096)
             continue;
-        try {
-            fs.accessSync(`${directory.replace(/\/$/, "")}/${name}`, fs.constants.X_OK);
+        if (regularExecutable(`${directory.replace(/\/$/, "")}/${name}`))
             return true;
-        }
-        catch { }
     }
     return false;
 }
@@ -1514,6 +1522,20 @@ function hasRunnableParsedShellCommand(statement) {
     const command = statement?.command;
     return statement?.type === "Statement" && command?.type === "Command"
         && isLiteralShellWord(command.name) && shellCommandCanRun(command.name.value);
+}
+function isNonRunnablePathSentence(text, root) {
+    if (!Array.isArray(root?.commands) || root.commands.length !== 1)
+        return false;
+    const statement = root.commands[0];
+    const command = statement?.command;
+    const trimmed = text.trim();
+    return statement?.type === "Statement" && statement.background !== true
+        && Array.isArray(statement.redirects) && statement.redirects.length === 0
+        && command?.type === "Command" && Array.isArray(command.prefix) && command.prefix.length === 0
+        && Array.isArray(command.redirects) && command.redirects.length === 0
+        && isLiteralShellWord(command.name) && command.name.value.includes("/")
+        && Array.isArray(command.suffix) && command.suffix.length > 0 && command.suffix.every(isLiteralShellWord)
+        && /^[^;&|<>$`\\]*[.!?]$/.test(trimmed) && /\s/.test(trimmed);
 }
 export function hasExecutableShellSemantics(text) {
     if (Buffer.byteLength(text, "utf8") > maximumContentPolicyTextBytes || !isJavaScriptRawInputWithinBounds(text))
@@ -1571,7 +1593,7 @@ export function hasExecutableShellSemantics(text) {
     // command word first while leaving slash-bearing arguments and URLs as prose.
     if (!syntaxError && Array.isArray(root.commands) && root.commands.some(hasRunnableParsedShellCommand))
         return true;
-    if (isSentenceShapedText(text))
+    if (isSentenceShapedText(text) || (!syntaxError && isNonRunnablePathSentence(text, root)))
         return false;
     if (!Array.isArray(root.commands) || root.commands.length === 0)
         return false;
