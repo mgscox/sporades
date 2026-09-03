@@ -1067,14 +1067,17 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     database.shutdown = () => {
         if (database.__shutdownPromise)
             return database.__shutdownPromise;
-        database.__shutdownPromise = (async () => {
-            let shutdownError;
-            let mailCloseError;
-            let shutdownRejected = false;
-            let mailCloseRejected = false;
+        const shutdownPromise = (async () => {
+            const failures = [];
+            let workerSettlement;
             try {
                 database.__scheduleStopped = true;
-                const workerSettlement = stopCurrentUserJobWorker(database);
+                workerSettlement = stopCurrentUserJobWorker(database);
+            }
+            catch (error) {
+                failures.push(error);
+            }
+            try {
                 abortSchedulePayloadFactories(database);
                 for (const timer of database.__scheduleTimers ?? [])
                     database.clock.clearTimer(timer);
@@ -1082,39 +1085,56 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 database.__scheduleRecoveryTimer = null;
                 database.__scheduleRecoveryDueAt = null;
                 database.__scheduleLegacyDiscoveryTimer = null;
-                if (workerSettlement)
+            }
+            catch (error) {
+                failures.push(error);
+            }
+            if (workerSettlement) {
+                try {
                     await workerSettlement;
+                }
+                catch (error) {
+                    failures.push(error);
+                }
+            }
+            try {
                 await settleActiveScheduleWork(database);
-                if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== undefined) {
+            }
+            catch (error) {
+                failures.push(error);
+            }
+            if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== undefined) {
+                try {
                     if (typeof database.lifecycleHooks.shutdown !== "function")
                         throw commandError("Invalid Capsule shutdown hook.", "Declare hooks.shutdown as a function.");
                     await database.lifecycleHooks.shutdown(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false }));
                 }
+                catch (error) {
+                    failures.push(error);
+                }
+            }
+            try {
+                await shutdownClamavRuntime(database);
             }
             catch (error) {
-                shutdownRejected = true;
-                shutdownError = error;
+                failures.push(error);
             }
-            finally {
-                await shutdownClamavRuntime(database);
-                database.__runtimeInitialized = false;
-            }
+            database.__runtimeInitialized = false;
             try {
                 await database.mail.close();
             }
             catch (error) {
-                mailCloseRejected = true;
-                mailCloseError = error;
+                failures.push(error);
             }
-            if (shutdownRejected && mailCloseRejected) {
-                throw new AggregateError([shutdownError, mailCloseError], "Runtime shutdown and mail closure both failed.");
-            }
-            if (shutdownRejected)
-                throw shutdownError;
-            if (mailCloseRejected)
-                throw mailCloseError;
+            if (failures.length === 1)
+                throw failures[0];
+            if (failures.length > 1)
+                throw new AggregateError(failures, "Multiple runtime resources failed to shut down.");
         })();
-        return database.__shutdownPromise;
+        database.__shutdownPromise = shutdownPromise;
+        shutdownPromise.catch(() => { if (database.__shutdownPromise === shutdownPromise)
+            database.__shutdownPromise = null; });
+        return shutdownPromise;
     };
     database.log = createRuntimeLogSink({
         database: sqlite,

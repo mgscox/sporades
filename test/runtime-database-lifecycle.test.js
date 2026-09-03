@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -6,6 +7,18 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { mutation } from "../dist/server.js";
+
+function retryableClamavChild() {
+  const child = new EventEmitter();
+  Object.assign(child, { exitCode: null, signalCode: null, signals: [], canExit: false });
+  child.kill = function (signal) {
+    this.signals.push(signal);
+    if (!this.canExit) return;
+    this.signalCode = signal;
+    this.emit("exit", null, signal);
+  };
+  return child;
+}
 
 test("runtime database shutdown always attempts close and preserves lifecycle failures", async () => {
   const runtime = await import("../dist/server-runtime-source.js");
@@ -52,6 +65,86 @@ test("real runtime shutdown aggregates a hook failure with mail closure failure"
         && error.errors[0] === hookError
         && error.errors[1] === mailError,
     );
+  } finally {
+    database.mail.close = originalMailClose;
+    await Promise.resolve().then(() => database.close()).catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("real runtime shutdown closes mail and permits retry when owned ClamAV cleanup fails", async () => {
+  const runtime = await import("../dist/server-runtime-source.js");
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-runtime-shutdown-clamav-retry-"));
+  const database = await runtime.openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "close" }, {});
+  const child = retryableClamavChild();
+  const originalMailClose = database.mail.close.bind(database.mail);
+  let mailCloseCalls = 0;
+  try {
+    await database.init();
+    database.__clamavProcess = child;
+    database.__clamavTest = { terminateTimeoutMs: 0 };
+    database.mail.close = () => { mailCloseCalls += 1; return originalMailClose(); };
+
+    await assert.rejects(
+      database.shutdown(),
+      (error) => error instanceof AggregateError
+        && error.errors[0]?.code === "CLAMAV_CHILD_TERMINATION_FAILED",
+    );
+    assert.equal(database.__runtimeInitialized, false);
+    assert.equal(database.__clamavProcess, child, "failed scanner ownership must remain available for retry");
+    assert.equal(mailCloseCalls, 1);
+
+    child.canExit = true;
+    await database.shutdown();
+    assert.equal(database.__clamavProcess, null);
+    assert.equal(mailCloseCalls, 2);
+  } finally {
+    database.mail.close = originalMailClose;
+    await Promise.resolve().then(() => database.close()).catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("real runtime shutdown preserves lifecycle, ClamAV, and mail failures in teardown order", async () => {
+  const runtime = await import("../dist/server-runtime-source.js");
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-runtime-shutdown-aggregate-"));
+  const lifecycleError = new Error("shutdown hook failed");
+  const mailError = new Error("mail close failed");
+  const calls = [];
+  const database = await runtime.openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "close" }, {
+    hooks: { shutdown() { calls.push("lifecycle"); throw lifecycleError; } },
+  });
+  const child = retryableClamavChild();
+  const originalMailClose = database.mail.close.bind(database.mail);
+  let rejectMailClose = true;
+  try {
+    await database.init();
+    database.__clamavProcess = child;
+    database.__clamavTest = { terminateTimeoutMs: 0 };
+    database.mail.close = () => {
+      calls.push("mail");
+      if (rejectMailClose) throw mailError;
+      return originalMailClose();
+    };
+
+    await assert.rejects(
+      database.shutdown(),
+      (error) => error instanceof AggregateError
+        && error.errors.length === 3
+        && error.errors[0] === lifecycleError
+        && error.errors[1] instanceof AggregateError
+        && error.errors[1].errors[0]?.code === "CLAMAV_CHILD_TERMINATION_FAILED"
+        && error.errors[2] === mailError,
+    );
+    assert.deepEqual(calls, ["lifecycle", "mail"]);
+    assert.equal(database.__runtimeInitialized, false);
+    assert.equal(database.__clamavProcess, child);
+
+    child.canExit = true;
+    rejectMailClose = false;
+    await database.shutdown();
+    assert.deepEqual(calls, ["lifecycle", "mail", "mail"], "a cleanup retry must not repeat the lifecycle hook");
+    assert.equal(database.__clamavProcess, null);
   } finally {
     database.mail.close = originalMailClose;
     await Promise.resolve().then(() => database.close()).catch(() => {});
