@@ -75,7 +75,7 @@ import {
 } from "../server-runtime-source.js";
 import { scaffoldFiles } from "../templates/scaffold-template.js";
 import { resolveSporadesPackageRoot } from "../package-root.js";
-import { startDevClamavSidecar } from "../dev-clamav-sidecar.js";
+import { devRuntimeRequiresClamav, retireDevClamavSidecarIfUnused, startDevClamavSidecar } from "../dev-clamav-sidecar.js";
 import {
   CAPSULE_SERVICES_COMPOSE_FILE,
   CAPSULE_SERVICES_STATE_DIR,
@@ -2695,7 +2695,7 @@ async function stripeTeamBillingProviderFactory(config: LooseRecord) {
 async function createDevRuntime(options: LooseRecord): Promise<any> {
   let clamavSidecar: any;
   const attachRequiredSidecar = async (candidate: any) => {
-    if (!candidate.endpoints?.some((item: any) => item?.options?.body?.multipart?.inspection?.requiredInspectors?.includes("clamav"))) return false;
+    if (!devRuntimeRequiresClamav(candidate)) return false;
     if (!clamavSidecar) clamavSidecar = await startDevClamavSidecar({ projectDir: options.projectDir, dockerfile: path.join(resolveSporadesPackageRoot(), "Dockerfile.base"), buildContext: resolveSporadesPackageRoot() });
     clamavSidecar.attach(candidate); return true;
   };
@@ -2749,6 +2749,7 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
           await candidateSidecar.stop();
         },
       );
+      clamavSidecar = await retireDevClamavSidecarIfUnused(clamavSidecar, database);
     },
     async shutdown() {
       const settled = await Promise.allSettled([shutdownAndCloseDatabase(database), clamavSidecar?.stop?.()].filter(Boolean)); const failures = settled.filter((item) => item.status === "rejected").map((item: any) => item.reason); if (failures.length === 1) throw failures[0]; if (failures.length > 1) throw new AggregateError(failures, "Dev runtime and scanner shutdown both failed.");

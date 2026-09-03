@@ -5,6 +5,15 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import path from "node:path";
 import { SPORADES_BASE_IMAGE } from "./base-image.js";
+export function devRuntimeRequiresClamav(database) {
+    return Boolean(database.endpoints?.some((item) => item?.options?.body?.multipart?.inspection?.requiredInspectors?.includes("clamav")));
+}
+export async function retireDevClamavSidecarIfUnused(sidecar, database) {
+    if (!sidecar || devRuntimeRequiresClamav(database))
+        return sidecar;
+    await sidecar.stop();
+    return undefined;
+}
 function commandResult(command, args, timeoutMs) {
     return new Promise((resolve) => {
         const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -126,7 +135,6 @@ export async function startDevClamavSidecar(options) {
         async stop() {
             if (stopped)
                 return;
-            stopped = true;
             const failures = [];
             for (const socket of proxySockets)
                 socket.destroy();
@@ -164,6 +172,7 @@ export async function startDevClamavSidecar(options) {
                 throw failures[0];
             if (failures.length > 1)
                 throw new AggregateError(failures, "Dev File inspection cleanup failed.");
+            stopped = true;
         },
     };
 }

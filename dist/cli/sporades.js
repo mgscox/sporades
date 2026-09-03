@@ -17,7 +17,7 @@ import { restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-po
 import { createSqliteDatabaseAdapter, createLogEnvelope, createPrivilegedAuditLogInput, createPostgresConnection, createWebSocketHub, dumpDatabase, handleFileHttpRoute, injectPageConnectionToken, listDatabaseTables, openDevDatabase, prepareHttpSecurity, readJsonRequest, routeEndpoint, routeRuntimeHealth, routeSporadesAuth, runReadOnlyQuery, shutdownHttpServerAndRuntime, simulateLocalIdentitySession, readJsonlLogEvents, replacePreparedRuntimeDatabase, shutdownAndCloseDatabase, validateReadOnlyInspectionSql, writeUnhandledHttpError, } from "../server-runtime-source.js";
 import { scaffoldFiles } from "../templates/scaffold-template.js";
 import { resolveSporadesPackageRoot } from "../package-root.js";
-import { startDevClamavSidecar } from "../dev-clamav-sidecar.js";
+import { devRuntimeRequiresClamav, retireDevClamavSidecarIfUnused, startDevClamavSidecar } from "../dev-clamav-sidecar.js";
 import { CAPSULE_SERVICES_COMPOSE_FILE, CAPSULE_SERVICES_STATE_DIR, capsuleServicesComposeModel, validateCapsuleServicesConfig, writeCapsuleServicesCompose, } from "../capsule-services.js";
 import { createHostBootstrapRequest, createHostDeleteRequest, createHostLifecycleRequest, createHostRegistrationRequest, createHostReleaseRequest, createHostRuntimeHealthRequest, createHostStatsRequest, createHostUnregisterRequest, } from "./host-request-builders.js";
 import { renderCliHelp } from "./cli-help.js";
@@ -2317,7 +2317,7 @@ async function stripeTeamBillingProviderFactory(config) {
 async function createDevRuntime(options) {
     let clamavSidecar;
     const attachRequiredSidecar = async (candidate) => {
-        if (!candidate.endpoints?.some((item) => item?.options?.body?.multipart?.inspection?.requiredInspectors?.includes("clamav")))
+        if (!devRuntimeRequiresClamav(candidate))
             return false;
         if (!clamavSidecar)
             clamavSidecar = await startDevClamavSidecar({ projectDir: options.projectDir, dockerfile: path.join(resolveSporadesPackageRoot(), "Dockerfile.base"), buildContext: resolveSporadesPackageRoot() });
@@ -2360,6 +2360,7 @@ async function createDevRuntime(options) {
                 clamavSidecar = undefined;
                 await candidateSidecar.stop();
             });
+            clamavSidecar = await retireDevClamavSidecarIfUnused(clamavSidecar, database);
         },
         async shutdown() {
             const settled = await Promise.allSettled([shutdownAndCloseDatabase(database), clamavSidecar?.stop?.()].filter(Boolean));

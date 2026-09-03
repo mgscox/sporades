@@ -105608,6 +105608,14 @@ import { mkdir as mkdir4, mkdtemp, rm as rm5 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import path8 from "node:path";
+function devRuntimeRequiresClamav(database) {
+  return Boolean(database.endpoints?.some((item) => item?.options?.body?.multipart?.inspection?.requiredInspectors?.includes("clamav")));
+}
+async function retireDevClamavSidecarIfUnused(sidecar, database) {
+  if (!sidecar || devRuntimeRequiresClamav(database)) return sidecar;
+  await sidecar.stop();
+  return void 0;
+}
 function commandResult(command, args, timeoutMs) {
   return new Promise((resolve) => {
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -105766,7 +105774,6 @@ ${removed.stderr}`)) failures.push(new Error("Dev File inspection container clea
     },
     async stop() {
       if (stopped) return;
-      stopped = true;
       const failures = [];
       for (const socket of proxySockets) socket.destroy();
       proxySockets.clear();
@@ -105797,6 +105804,7 @@ ${removed.stderr}`)) failures.push(new Error("Dev File inspection container clea
       if (residue.code === 0) failures.push(new Error("Dev File inspection container remained after cleanup."));
       if (failures.length === 1) throw failures[0];
       if (failures.length > 1) throw new AggregateError(failures, "Dev File inspection cleanup failed.");
+      stopped = true;
     }
   };
 }
@@ -111038,7 +111046,7 @@ async function stripeTeamBillingProviderFactory(config) {
 async function createDevRuntime(options) {
   let clamavSidecar;
   const attachRequiredSidecar = async (candidate) => {
-    if (!candidate.endpoints?.some((item) => item?.options?.body?.multipart?.inspection?.requiredInspectors?.includes("clamav"))) return false;
+    if (!devRuntimeRequiresClamav(candidate)) return false;
     if (!clamavSidecar) clamavSidecar = await startDevClamavSidecar({ projectDir: options.projectDir, dockerfile: path12.join(resolveSporadesPackageRoot(), "Dockerfile.base"), buildContext: resolveSporadesPackageRoot() });
     clamavSidecar.attach(candidate);
     return true;
@@ -111095,6 +111103,7 @@ async function createDevRuntime(options) {
           await candidateSidecar.stop();
         }
       );
+      clamavSidecar = await retireDevClamavSidecarIfUnused(clamavSidecar, database);
     },
     async shutdown() {
       const settled = await Promise.allSettled([shutdownAndCloseDatabase(database), clamavSidecar?.stop?.()].filter(Boolean));

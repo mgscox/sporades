@@ -4,7 +4,23 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { startDevClamavSidecar } from "../dist/dev-clamav-sidecar.js";
+import { retireDevClamavSidecarIfUnused, startDevClamavSidecar } from "../dist/dev-clamav-sidecar.js";
+
+test("Dev ClamAV sidecar retirement follows the successfully promoted runtime's final policy", async () => {
+  const calls = [];
+  const sidecar = { async stop() { calls.push("stop"); } };
+  const required = { endpoints: [{ options: { body: { multipart: { inspection: { requiredInspectors: ["clamav"] } } } } }] };
+  assert.equal(await retireDevClamavSidecarIfUnused(sidecar, required), sidecar);
+  assert.deepEqual(calls, []);
+  assert.equal(await retireDevClamavSidecarIfUnused(sidecar, { endpoints: [] }), undefined);
+  assert.deepEqual(calls, ["stop"]);
+
+  const stopError = new Error("sidecar stop failed");
+  const failing = { async stop() { throw stopError; } };
+  let retained = failing;
+  await assert.rejects(async () => { retained = await retireDevClamavSidecarIfUnused(retained, { endpoints: [] }); }, (error) => error === stopError);
+  assert.equal(retained, failing, "failed retirement remains reachable for shutdown retry");
+});
 
 test("Dev ClamAV sidecar is exact-task scoped, UID-safe, Unix-only, and residue-free", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-dev-clamav-unit-")); const docker = path.join(dir, "docker.mjs"); const log = path.join(dir, "calls.jsonl"); const state = path.join(dir, "state.json");

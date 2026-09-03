@@ -1932,7 +1932,7 @@ async function evaluateCapsuleHealth(request, options = {}) {
     catch {
         return healthFailure(request, health, "route-failure", "Hosted Capsule route did not respond to runtime health.", "Check DNS, Caddy, and the Hosted Capsule route, then retry health.");
     }
-    if (!response.ok) {
+    if (!response.ok && response.status !== 503) {
         return healthFailure(request, health, "route-failure", "Hosted Capsule route returned an HTTP failure for runtime health.", "Check Caddy routing and Hosted Capsule logs, then retry health.", { statusCode: response.status });
     }
     let body;
@@ -1940,10 +1940,16 @@ async function evaluateCapsuleHealth(request, options = {}) {
         body = JSON.parse(await response.text());
     }
     catch {
+        if (!response.ok) {
+            return healthFailure(request, health, "route-failure", "Hosted Capsule route returned an HTTP failure for runtime health.", "Check Caddy routing and Hosted Capsule logs, then retry health.", { statusCode: response.status });
+        }
         return healthFailure(request, health, "runtime-failure", "Hosted Capsule runtime health returned invalid JSON.", "Check Hosted Capsule logs, then retry health.");
     }
     const runtime = normaliseRuntimeHealthBody(body);
     if (!runtime.valid) {
+        if (!response.ok) {
+            return healthFailure(request, health, "route-failure", "Hosted Capsule route returned an HTTP failure for runtime health.", "Check Caddy routing and Hosted Capsule logs, then retry health.", { statusCode: response.status });
+        }
         return healthFailure(request, health, "runtime-failure", "Hosted Capsule runtime health had an unexpected shape.", "Update the Hosted Capsule release and retry health.");
     }
     if (!runtime.checks.sqlite.ok) {

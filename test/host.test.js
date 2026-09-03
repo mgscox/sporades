@@ -7920,6 +7920,7 @@ test("sporades host helper reports structured Hosted Capsule runtime health fail
       },
       {
         failure: "file-inspection-failure",
+        statusCode: 503,
         body: { ok: false, data: { runtime: { ready: false }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: false } } }, error: null },
       },
     ];
@@ -7929,7 +7930,7 @@ test("sporades host helper reports structured Hosted Capsule runtime health fail
       const docker = await installFakeDocker(path.join(dir, `${responseCase.failure}-docker`));
       await withHttpServer((request, response) => {
         assert.equal(request.headers["x-sporades-host-probe"], "a".repeat(64));
-        response.writeHead(200, { "content-type": "application/json" });
+        response.writeHead(responseCase.statusCode ?? 200, { "content-type": "application/json" });
         response.end(JSON.stringify(responseCase.body));
       }, async (port) => {
         const domain = `localhost:${port}`;

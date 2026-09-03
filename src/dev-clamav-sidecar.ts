@@ -9,6 +9,16 @@ import { SPORADES_BASE_IMAGE } from "./base-image.js";
 
 type RecordLike = Record<string, any>;
 
+export function devRuntimeRequiresClamav(database: RecordLike) {
+  return Boolean(database.endpoints?.some((item: any) => item?.options?.body?.multipart?.inspection?.requiredInspectors?.includes("clamav")));
+}
+
+export async function retireDevClamavSidecarIfUnused(sidecar: any, database: RecordLike) {
+  if (!sidecar || devRuntimeRequiresClamav(database)) return sidecar;
+  await sidecar.stop();
+  return undefined;
+}
+
 function commandResult(command: string, args: string[], timeoutMs: number) {
   return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] }); let stdout = ""; let stderr = ""; let settled = false;
@@ -77,13 +87,14 @@ export async function startDevClamavSidecar(options: RecordLike) {
     descriptor,
     attach(database: RecordLike) { database.__clamavDevSidecar = descriptor; },
     async stop() {
-      if (stopped) return; stopped = true; const failures: unknown[] = [];
+      if (stopped) return; const failures: unknown[] = [];
       for (const socket of proxySockets) socket.destroy(); proxySockets.clear(); if (proxy) await new Promise<void>((resolve) => proxy.close(() => resolve())); for (const bridge of bridges) { try { bridge.kill("SIGTERM"); } catch {} } bridges.clear();
       const removed = await commandResult(options.dockerCommand ?? "docker", ["rm", "-f", containerName], 30_000); if (removed.code !== 0 && !/No such container/i.test(`${removed.stdout}\n${removed.stderr}`)) failures.push(new Error("Dev File inspection container cleanup failed."));
       if (!await waitForExit(child, 5_000)) { try { child.kill("SIGKILL"); } catch {} if (!await waitForExit(child, 5_000)) failures.push(new Error("Dev File inspection process did not exit.")); }
       try { await rm(socketDir, { recursive: true, force: true }); } catch (error) { failures.push(error); }
       const residue = await commandResult(options.dockerCommand ?? "docker", ["container", "inspect", containerName], 30_000); if (residue.code === 0) failures.push(new Error("Dev File inspection container remained after cleanup."));
       if (failures.length === 1) throw failures[0]; if (failures.length > 1) throw new AggregateError(failures, "Dev File inspection cleanup failed.");
+      stopped = true;
     },
   };
 }

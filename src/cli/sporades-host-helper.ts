@@ -2174,7 +2174,7 @@ async function evaluateCapsuleHealth(request: HostHelperRequest, options: { time
     );
   }
 
-  if (!response.ok) {
+  if (!response.ok && response.status !== 503) {
     return healthFailure(
       request,
       health,
@@ -2189,6 +2189,16 @@ async function evaluateCapsuleHealth(request: HostHelperRequest, options: { time
   try {
     body = JSON.parse(await response.text());
   } catch {
+    if (!response.ok) {
+      return healthFailure(
+        request,
+        health,
+        "route-failure",
+        "Hosted Capsule route returned an HTTP failure for runtime health.",
+        "Check Caddy routing and Hosted Capsule logs, then retry health.",
+        { statusCode: response.status },
+      );
+    }
     return healthFailure(
       request,
       health,
@@ -2200,6 +2210,16 @@ async function evaluateCapsuleHealth(request: HostHelperRequest, options: { time
 
   const runtime = normaliseRuntimeHealthBody(body);
   if (!runtime.valid) {
+    if (!response.ok) {
+      return healthFailure(
+        request,
+        health,
+        "route-failure",
+        "Hosted Capsule route returned an HTTP failure for runtime health.",
+        "Check Caddy routing and Hosted Capsule logs, then retry health.",
+        { statusCode: response.status },
+      );
+    }
     return healthFailure(
       request,
       health,
