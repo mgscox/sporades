@@ -47,11 +47,24 @@ async function ensureBaseImage(dockerCommand, dockerfile, buildContext) {
     if (built.code !== 0)
         throw Object.assign(new Error("Required Dev File inspection image is unavailable."), { code: "FILE_INSPECTION_UNAVAILABLE" });
 }
-function waitForExit(child, timeoutMs) {
-    if (!child || child.exitCode !== null)
+function devClamavChildTerminated(child) {
+    return Boolean(child) && (child.exitCode !== null || child.signalCode != null || child.__sporadesClamavTerminated === true);
+}
+export function waitForDevClamavChildExit(child, timeoutMs) {
+    if (!child || devClamavChildTerminated(child))
         return Promise.resolve(true);
-    return new Promise((resolve) => { let settled = false; const finish = (value) => { if (settled)
+    return new Promise((resolve) => { let settled = false; const finish = (value) => { if (value)
+        child.__sporadesClamavTerminated = true; if (settled)
         return; settled = true; clearTimeout(timer); resolve(value); }; const timer = setTimeout(() => finish(false), timeoutMs); child.once("close", () => finish(true)); child.once("error", () => finish(true)); });
+}
+export async function ensureDevClamavChildExit(child, timeoutMs) {
+    if (await waitForDevClamavChildExit(child, timeoutMs))
+        return true;
+    try {
+        child.kill("SIGKILL");
+    }
+    catch { }
+    return await waitForDevClamavChildExit(child, timeoutMs);
 }
 export async function startDevClamavSidecar(options) {
     const dataRoot = path.join(options.projectDir, ".sporades", "clamav");
@@ -114,14 +127,8 @@ export async function startDevClamavSidecar(options) {
             const removed = await commandResult(options.dockerCommand ?? "docker", ["rm", "-f", containerName], 30_000);
             if (removed.code !== 0 && !/No such container/i.test(`${removed.stdout}\n${removed.stderr}`))
                 failures.push(new Error("Dev File inspection container cleanup failed."));
-            if (!await waitForExit(child, 5_000)) {
-                try {
-                    child.kill("SIGKILL");
-                }
-                catch { }
-                if (!await waitForExit(child, 5_000))
-                    failures.push(new Error("Dev File inspection process did not exit."));
-            }
+            if (!await ensureDevClamavChildExit(child, 5_000))
+                failures.push(new Error("Dev File inspection process did not exit."));
         }
         try {
             await rm(socketDir, { recursive: true, force: true });
@@ -156,14 +163,8 @@ export async function startDevClamavSidecar(options) {
             const removed = await commandResult(options.dockerCommand ?? "docker", ["rm", "-f", containerName], 30_000);
             if (removed.code !== 0 && !/No such container/i.test(`${removed.stdout}\n${removed.stderr}`))
                 failures.push(new Error("Dev File inspection container cleanup failed."));
-            if (!await waitForExit(child, 5_000)) {
-                try {
-                    child.kill("SIGKILL");
-                }
-                catch { }
-                if (!await waitForExit(child, 5_000))
-                    failures.push(new Error("Dev File inspection process did not exit."));
-            }
+            if (!await ensureDevClamavChildExit(child, 5_000))
+                failures.push(new Error("Dev File inspection process did not exit."));
             try {
                 await rm(socketDir, { recursive: true, force: true });
             }

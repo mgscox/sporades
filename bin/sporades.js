@@ -85338,14 +85338,6 @@ function hasExecutablePythonSemantics(text2) {
     }
   }
 }
-function isPlainQuotedText(text2) {
-  const trimmed = text2.trim();
-  if (trimmed.length < 2) return false;
-  if (trimmed.startsWith("'") && trimmed.endsWith("'")) return !trimmed.slice(1, -1).includes("'");
-  if (!trimmed.startsWith('"') || !trimmed.endsWith('"')) return false;
-  const interior = trimmed.slice(1, -1);
-  return !interior.includes('"') && !/[\\$`]/.test(interior);
-}
 function isSentenceShapedText(text2) {
   const lines = text2.trim().split(/\r?\n/).filter((line) => line.trim().length > 0);
   return lines.length > 0 && lines.every((line) => {
@@ -85353,12 +85345,96 @@ function isSentenceShapedText(text2) {
     return /^[A-Z][^;&|<>$`\\]*[.!?]$/.test(trimmed) && /\s/.test(trimmed);
   });
 }
-function isHarmlessShellWord(text2) {
-  return /^[A-Za-z_][A-Za-z0-9_.-]*$/.test(text2.trim());
+var shellBuiltinNames = /* @__PURE__ */ new Set([
+  ".",
+  ":",
+  "alias",
+  "bg",
+  "bind",
+  "break",
+  "builtin",
+  "caller",
+  "cd",
+  "command",
+  "compgen",
+  "complete",
+  "compopt",
+  "continue",
+  "declare",
+  "dirs",
+  "disown",
+  "echo",
+  "enable",
+  "eval",
+  "exec",
+  "exit",
+  "export",
+  "false",
+  "fc",
+  "fg",
+  "getopts",
+  "hash",
+  "help",
+  "history",
+  "jobs",
+  "kill",
+  "let",
+  "local",
+  "logout",
+  "mapfile",
+  "popd",
+  "printf",
+  "pushd",
+  "pwd",
+  "read",
+  "readarray",
+  "readonly",
+  "return",
+  "set",
+  "shift",
+  "source",
+  "suspend",
+  "test",
+  "times",
+  "trap",
+  "true",
+  "type",
+  "typeset",
+  "ulimit",
+  "umask",
+  "unalias",
+  "unset",
+  "wait"
+]);
+function isLiteralShellWord(word) {
+  if (!word || typeof word.value !== "string" || typeof word.text !== "string") return false;
+  const literalPart = (part) => part?.type === "Literal" || part?.type === "SingleQuoted" || part?.type === "DoubleQuoted" && Array.isArray(part.parts) && part.parts.every(literalPart);
+  if (Array.isArray(word.parts) && !word.parts.every(literalPart)) return false;
+  return !/[$`*?\[\]{}~]/.test(word.text.replace(/^(['"])([\s\S]*)\1$/, "$2"));
+}
+function shellCommandCanRun(name2) {
+  if (shellBuiltinNames.has(name2)) return true;
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(name2)) return false;
+  if (name2.includes("/")) return true;
+  if (Buffer.byteLength(name2, "utf8") > 255) return false;
+  for (const entry of String(process.env.PATH ?? "").split(":").slice(0, 128)) {
+    const directory = entry || process.cwd();
+    if (Buffer.byteLength(directory, "utf8") > 4096) continue;
+    try {
+      fs.accessSync(`${directory.replace(/\/$/, "")}/${name2}`, fs.constants.X_OK);
+      return true;
+    } catch {
+    }
+  }
+  return false;
+}
+function isPlainShellDatum(statement) {
+  const command = statement?.command;
+  return statement?.type === "Statement" && statement.background !== true && Array.isArray(statement.redirects) && statement.redirects.length === 0 && command?.type === "Command" && Array.isArray(command.prefix) && command.prefix.length === 0 && Array.isArray(command.suffix) && command.suffix.length === 0 && Array.isArray(command.redirects) && command.redirects.length === 0 && isLiteralShellWord(command.name) && !shellCommandCanRun(command.name.value);
 }
 function hasExecutableShellSemantics(text2) {
   if (Buffer.byteLength(text2, "utf8") > maximumContentPolicyTextBytes || !isJavaScriptRawInputWithinBounds(text2)) return true;
-  if (isPlainQuotedText(text2) || isSentenceShapedText(text2) || isHarmlessShellWord(text2)) return false;
+  if (isSentenceShapedText(text2)) return false;
   let root;
   try {
     root = parse4(text2);
@@ -85393,7 +85469,7 @@ function hasExecutableShellSemantics(text2) {
     return true;
   }
   if (!Array.isArray(root.commands) || root.commands.length === 0) return false;
-  if (!syntaxError) return true;
+  if (!syntaxError) return root.commands.length !== 1 || !isPlainShellDatum(root.commands[0]);
   const hasCommandBoundary = (suffix) => {
     for (let index = 0; index < suffix.length; index += 1) {
       if (suffix[index] === ";") return true;
@@ -85407,7 +85483,7 @@ function hasExecutableShellSemantics(text2) {
   };
   return root.commands.some((statement) => {
     if (statement?.type !== "Statement" || !statement.command || !Number.isInteger(statement.pos) || !Number.isInteger(statement.end) || statement.end <= statement.pos || statement.end > firstErrorAt) return false;
-    return statement.background === true || hasCommandBoundary(text2.slice(statement.end, firstErrorAt));
+    return !isPlainShellDatum(statement) && (statement.background === true || hasCommandBoundary(text2.slice(statement.end, firstErrorAt)));
   });
 }
 function safeUntrustedText(bytes) {
@@ -105682,11 +105758,15 @@ async function ensureBaseImage(dockerCommand, dockerfile, buildContext) {
   const built = await commandResult(dockerCommand, ["build", "-f", dockerfile, "-t", SPORADES_BASE_IMAGE.image, buildContext], 10 * 6e4);
   if (built.code !== 0) throw Object.assign(new Error("Required Dev File inspection image is unavailable."), { code: "FILE_INSPECTION_UNAVAILABLE" });
 }
-function waitForExit(child, timeoutMs) {
-  if (!child || child.exitCode !== null) return Promise.resolve(true);
+function devClamavChildTerminated(child) {
+  return Boolean(child) && (child.exitCode !== null || child.signalCode != null || child.__sporadesClamavTerminated === true);
+}
+function waitForDevClamavChildExit(child, timeoutMs) {
+  if (!child || devClamavChildTerminated(child)) return Promise.resolve(true);
   return new Promise((resolve) => {
     let settled = false;
     const finish = (value) => {
+      if (value) child.__sporadesClamavTerminated = true;
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -105696,6 +105776,14 @@ function waitForExit(child, timeoutMs) {
     child.once("close", () => finish(true));
     child.once("error", () => finish(true));
   });
+}
+async function ensureDevClamavChildExit(child, timeoutMs) {
+  if (await waitForDevClamavChildExit(child, timeoutMs)) return true;
+  try {
+    child.kill("SIGKILL");
+  } catch {
+  }
+  return await waitForDevClamavChildExit(child, timeoutMs);
 }
 async function startDevClamavSidecar(options) {
   const dataRoot = path8.join(options.projectDir, ".sporades", "clamav");
@@ -105780,13 +105868,7 @@ async function startDevClamavSidecar(options) {
       const removed = await commandResult(options.dockerCommand ?? "docker", ["rm", "-f", containerName], 3e4);
       if (removed.code !== 0 && !/No such container/i.test(`${removed.stdout}
 ${removed.stderr}`)) failures.push(new Error("Dev File inspection container cleanup failed."));
-      if (!await waitForExit(child, 5e3)) {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-        }
-        if (!await waitForExit(child, 5e3)) failures.push(new Error("Dev File inspection process did not exit."));
-      }
+      if (!await ensureDevClamavChildExit(child, 5e3)) failures.push(new Error("Dev File inspection process did not exit."));
     }
     try {
       await rm5(socketDir, { recursive: true, force: true });
@@ -105818,13 +105900,7 @@ ${removed.stderr}`)) failures.push(new Error("Dev File inspection container clea
       const removed = await commandResult(options.dockerCommand ?? "docker", ["rm", "-f", containerName], 3e4);
       if (removed.code !== 0 && !/No such container/i.test(`${removed.stdout}
 ${removed.stderr}`)) failures.push(new Error("Dev File inspection container cleanup failed."));
-      if (!await waitForExit(child, 5e3)) {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-        }
-        if (!await waitForExit(child, 5e3)) failures.push(new Error("Dev File inspection process did not exit."));
-      }
+      if (!await ensureDevClamavChildExit(child, 5e3)) failures.push(new Error("Dev File inspection process did not exit."));
       try {
         await rm5(socketDir, { recursive: true, force: true });
       } catch (error) {

@@ -2,6 +2,8 @@ type RecordLike = Record<string, any>;
 export declare function devRuntimeRequiresClamav(database: RecordLike): boolean;
 export declare function releaseDevClamavSidecar(sidecar: any): Promise<undefined>;
 export declare function retireDevClamavSidecarIfUnused(sidecar: any, database: RecordLike): Promise<any>;
+export declare function waitForDevClamavChildExit(child: any, timeoutMs: number): Promise<boolean>;
+export declare function ensureDevClamavChildExit(child: any, timeoutMs: number): Promise<boolean>;
 export declare function startDevClamavSidecar(options: RecordLike): Promise<{
     descriptor: {
         containerName: string;

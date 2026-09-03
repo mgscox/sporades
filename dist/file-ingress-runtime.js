@@ -588,17 +588,6 @@ export function hasExecutablePythonSemantics(text) {
         }
     }
 }
-function isPlainQuotedText(text) {
-    const trimmed = text.trim();
-    if (trimmed.length < 2)
-        return false;
-    if (trimmed.startsWith("'") && trimmed.endsWith("'"))
-        return !trimmed.slice(1, -1).includes("'");
-    if (!trimmed.startsWith('"') || !trimmed.endsWith('"'))
-        return false;
-    const interior = trimmed.slice(1, -1);
-    return !interior.includes('"') && !/[\\$`]/.test(interior);
-}
 function isSentenceShapedText(text) {
     const lines = text.trim().split(/\r?\n/).filter((line) => line.trim().length > 0);
     return lines.length > 0 && lines.every((line) => {
@@ -606,13 +595,56 @@ function isSentenceShapedText(text) {
         return /^[A-Z][^;&|<>$`\\]*[.!?]$/.test(trimmed) && /\s/.test(trimmed);
     });
 }
-function isHarmlessShellWord(text) {
-    return /^[A-Za-z_][A-Za-z0-9_.-]*$/.test(text.trim());
+const shellBuiltinNames = new Set([
+    ".", ":", "alias", "bg", "bind", "break", "builtin", "caller", "cd", "command", "compgen", "complete", "compopt", "continue", "declare", "dirs", "disown", "echo", "enable", "eval", "exec", "exit", "export", "false", "fc", "fg", "getopts", "hash", "help", "history", "jobs", "kill", "let", "local", "logout", "mapfile", "popd", "printf", "pushd", "pwd", "read", "readarray", "readonly", "return", "set", "shift", "source", "suspend", "test", "times", "trap", "true", "type", "typeset", "ulimit", "umask", "unalias", "unset", "wait",
+]);
+function isLiteralShellWord(word) {
+    if (!word || typeof word.value !== "string" || typeof word.text !== "string")
+        return false;
+    const literalPart = (part) => part?.type === "Literal"
+        || part?.type === "SingleQuoted"
+        || (part?.type === "DoubleQuoted" && Array.isArray(part.parts) && part.parts.every(literalPart));
+    if (Array.isArray(word.parts) && !word.parts.every(literalPart))
+        return false;
+    return !/[$`*?\[\]{}~]/.test(word.text.replace(/^(['"])([\s\S]*)\1$/, "$2"));
+}
+function shellCommandCanRun(name) {
+    if (shellBuiltinNames.has(name))
+        return true;
+    if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(name))
+        return false;
+    if (name.includes("/"))
+        return true;
+    if (Buffer.byteLength(name, "utf8") > 255)
+        return false;
+    for (const entry of String(process.env.PATH ?? "").split(":").slice(0, 128)) {
+        const directory = entry || process.cwd();
+        if (Buffer.byteLength(directory, "utf8") > 4096)
+            continue;
+        try {
+            fs.accessSync(`${directory.replace(/\/$/, "")}/${name}`, fs.constants.X_OK);
+            return true;
+        }
+        catch { }
+    }
+    return false;
+}
+function isPlainShellDatum(statement) {
+    const command = statement?.command;
+    // Shell grammar calls every bare/quoted token a command. Preserve plain data
+    // only when the complete AST is one literal, effect-free token which cannot
+    // name a builtin, PATH executable, or filesystem command path here.
+    return statement?.type === "Statement" && statement.background !== true
+        && Array.isArray(statement.redirects) && statement.redirects.length === 0
+        && command?.type === "Command" && Array.isArray(command.prefix) && command.prefix.length === 0
+        && Array.isArray(command.suffix) && command.suffix.length === 0
+        && Array.isArray(command.redirects) && command.redirects.length === 0
+        && isLiteralShellWord(command.name) && !shellCommandCanRun(command.name.value);
 }
 export function hasExecutableShellSemantics(text) {
     if (Buffer.byteLength(text, "utf8") > maximumContentPolicyTextBytes || !isJavaScriptRawInputWithinBounds(text))
         return true;
-    if (isPlainQuotedText(text) || isSentenceShapedText(text) || isHarmlessShellWord(text))
+    if (isSentenceShapedText(text))
         return false;
     let root;
     try {
@@ -661,7 +693,7 @@ export function hasExecutableShellSemantics(text) {
     if (!Array.isArray(root.commands) || root.commands.length === 0)
         return false;
     if (!syntaxError)
-        return true;
+        return root.commands.length !== 1 || !isPlainShellDatum(root.commands[0]);
     const hasCommandBoundary = (suffix) => {
         for (let index = 0; index < suffix.length; index += 1) {
             if (suffix[index] === ";")
@@ -681,7 +713,7 @@ export function hasExecutableShellSemantics(text) {
     return root.commands.some((statement) => {
         if (statement?.type !== "Statement" || !statement.command || !Number.isInteger(statement.pos) || !Number.isInteger(statement.end) || statement.end <= statement.pos || statement.end > firstErrorAt)
             return false;
-        return statement.background === true || hasCommandBoundary(text.slice(statement.end, firstErrorAt));
+        return !isPlainShellDatum(statement) && (statement.background === true || hasCommandBoundary(text.slice(statement.end, firstErrorAt)));
     });
 }
 function safeUntrustedText(bytes) {

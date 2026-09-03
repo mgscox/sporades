@@ -42,9 +42,19 @@ async function ensureBaseImage(dockerCommand: string, dockerfile: string, buildC
   if (built.code !== 0) throw Object.assign(new Error("Required Dev File inspection image is unavailable."), { code: "FILE_INSPECTION_UNAVAILABLE" });
 }
 
-function waitForExit(child: any, timeoutMs: number) {
-  if (!child || child.exitCode !== null) return Promise.resolve(true);
-  return new Promise<boolean>((resolve) => { let settled = false; const finish = (value: boolean) => { if (settled) return; settled = true; clearTimeout(timer); resolve(value); }; const timer = setTimeout(() => finish(false), timeoutMs); child.once("close", () => finish(true)); child.once("error", () => finish(true)); });
+function devClamavChildTerminated(child: any) {
+  return Boolean(child) && (child.exitCode !== null || child.signalCode != null || child.__sporadesClamavTerminated === true);
+}
+
+export function waitForDevClamavChildExit(child: any, timeoutMs: number) {
+  if (!child || devClamavChildTerminated(child)) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => { let settled = false; const finish = (value: boolean) => { if (value) child.__sporadesClamavTerminated = true; if (settled) return; settled = true; clearTimeout(timer); resolve(value); }; const timer = setTimeout(() => finish(false), timeoutMs); child.once("close", () => finish(true)); child.once("error", () => finish(true)); });
+}
+
+export async function ensureDevClamavChildExit(child: any, timeoutMs: number) {
+  if (await waitForDevClamavChildExit(child, timeoutMs)) return true;
+  try { child.kill("SIGKILL"); } catch {}
+  return await waitForDevClamavChildExit(child, timeoutMs);
 }
 
 export async function startDevClamavSidecar(options: RecordLike) {
@@ -81,7 +91,7 @@ export async function startDevClamavSidecar(options: RecordLike) {
     if (child) {
       const removed = await commandResult(options.dockerCommand ?? "docker", ["rm", "-f", containerName], 30_000);
       if (removed.code !== 0 && !/No such container/i.test(`${removed.stdout}\n${removed.stderr}`)) failures.push(new Error("Dev File inspection container cleanup failed."));
-      if (!await waitForExit(child, 5_000)) { try { child.kill("SIGKILL"); } catch {} if (!await waitForExit(child, 5_000)) failures.push(new Error("Dev File inspection process did not exit.")); }
+      if (!await ensureDevClamavChildExit(child, 5_000)) failures.push(new Error("Dev File inspection process did not exit."));
     }
     try { await rm(socketDir, { recursive: true, force: true }); } catch (cleanupError) { failures.push(cleanupError); }
     if (failures.length) throw new AggregateError([error, ...failures], "Dev File inspection startup and cleanup both failed.");
@@ -95,7 +105,7 @@ export async function startDevClamavSidecar(options: RecordLike) {
       if (stopped) return; const failures: unknown[] = [];
       for (const socket of proxySockets) socket.destroy(); proxySockets.clear(); if (proxy) await new Promise<void>((resolve) => proxy.close(() => resolve())); for (const bridge of bridges) { try { bridge.kill("SIGTERM"); } catch {} } bridges.clear();
       const removed = await commandResult(options.dockerCommand ?? "docker", ["rm", "-f", containerName], 30_000); if (removed.code !== 0 && !/No such container/i.test(`${removed.stdout}\n${removed.stderr}`)) failures.push(new Error("Dev File inspection container cleanup failed."));
-      if (!await waitForExit(child, 5_000)) { try { child.kill("SIGKILL"); } catch {} if (!await waitForExit(child, 5_000)) failures.push(new Error("Dev File inspection process did not exit.")); }
+      if (!await ensureDevClamavChildExit(child, 5_000)) failures.push(new Error("Dev File inspection process did not exit."));
       try { await rm(socketDir, { recursive: true, force: true }); } catch (error) { failures.push(error); }
       const residue = await commandResult(options.dockerCommand ?? "docker", ["container", "inspect", containerName], 30_000); if (residue.code === 0) failures.push(new Error("Dev File inspection container remained after cleanup."));
       if (failures.length === 1) throw failures[0]; if (failures.length > 1) throw new AggregateError(failures, "Dev File inspection cleanup failed.");
