@@ -5,6 +5,7 @@ import { ensureFileBucket, fileMetadataFromRow, normalizeAbsoluteFilePath } from
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRef, PDFStream } from "pdf-lib";
 import { parse, tokenizer } from "acorn";
+import { parser as pythonParser } from "@lezer/python";
 import jpeg from "jpeg-js";
 import { PNG } from "pngjs";
 
@@ -202,6 +203,10 @@ const maximumContentPolicyTextBytes = 1024 * 1024;
 const maximumContentPolicyTokens = 100_000;
 const maximumContentPolicyAstNodes = 100_000;
 const maximumContentPolicyAstDepth = 256;
+// Lezer adds wrapper nodes around every Python grouping. The raw structural
+// budget has already capped delimiter nesting at 256, so twice that allowance
+// keeps the documented raw boundary usable while retaining a hard tree bound.
+const maximumPythonContentPolicyAstDepth = maximumContentPolicyAstDepth * 2;
 const maximumContentPolicyParserRecursion = 256;
 const recursiveJavaScriptGrammarLabels = new Set([
   "new", "=>", "?", "...", "**",
@@ -303,16 +308,40 @@ export function hasExecutableJavaScriptSemantics(text: string) {
   }
   return false;
 }
+const executablePythonNodes = new Set([
+  "AwaitExpression", "CallExpression", "ComprehensionExpression",
+  "ArrayComprehensionExpression", "DictionaryComprehensionExpression", "SetComprehensionExpression",
+  "LambdaExpression", "NamedExpression", "YieldExpression",
+]);
+export function hasExecutablePythonSemantics(text: string) {
+  if (Buffer.byteLength(text, "utf8") > maximumContentPolicyTextBytes || !isJavaScriptRawInputWithinBounds(text)) return true;
+  let cursor;
+  try { cursor = pythonParser.parse(text).cursor(); }
+  catch { return true; }
+  let depth = 0; let visited = 0; let syntaxError = false; let executable = false;
+  while (true) {
+    visited += 1;
+    if (visited > maximumContentPolicyAstNodes || depth > maximumPythonContentPolicyAstDepth) return true;
+    const name = cursor.name;
+    if (cursor.type.isError) syntaxError = true;
+    if ((name.endsWith("Statement") && name !== "ExpressionStatement")
+      || name.endsWith("Definition") || executablePythonNodes.has(name)) executable = true;
+    if (cursor.firstChild()) { depth += 1; continue; }
+    while (!cursor.nextSibling()) {
+      if (!cursor.parent()) return !syntaxError && executable;
+      depth -= 1;
+    }
+  }
+}
 function safeUntrustedText(bytes: Buffer) {
   if (bytes.length > maximumContentPolicyTextBytes) return false;
   const decoder = new TextDecoder("utf-8", { fatal: true }); let text = ""; try { text = decoder.decode(bytes); } catch { return false; }
   if (!text || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text) || /<\s*(?:!doctype|\?xml|html\b|head\b|body\b|script\b|svg\b|[a-z][\w:-]*\s+[^>]*>)/i.test(text) || /<\s*([a-z][\w:-]*)\b[^>]*>[\s\S]*<\/\s*\1\s*>/i.test(text)) return false;
   if (/(?:^|\n)\s*(?:#!|sudo\b|rm\s+-|curl\b|wget\b|bash\b|sh\b|python\b|node\b|chmod\b|eval\b|exec\b|echo\b|source\b|\.\s+[^\s]+|export\s+\w+=|set\s+-[eux]|if\s+\[|for\s+\w+\s+in\b)/im.test(text)) return false;
-  if (/\b(?:print|open|compile|__import__|subprocess\.(?:run|call|Popen)|os\.system)\s*\(/.test(text)) return false;
   // Acorn parses but never executes the upload. Whole-program parsing handles
   // comments, escapes, computed or parenthesized callees, and optional chains;
   // the iterative traversal fails closed at fixed node and depth budgets.
-  if (hasExecutableJavaScriptSemantics(text)) return false;
+  if (hasExecutableJavaScriptSemantics(text) || hasExecutablePythonSemantics(text)) return false;
   return true;
 }
 async function contentPolicyOutcome(row: RecordLike, bytes: Buffer) {

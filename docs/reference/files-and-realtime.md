@@ -507,8 +507,8 @@ That deliberately creates false positives for support notes containing code;
 such material should be pasted as quoted ticket text or explicitly handled by
 a future reviewed evidence policy, never treated as an executable channel.
 Strict-text inspection is capped at 1 MiB before UTF-8 decoding or JavaScript
-parsing. Sporades uses its pinned production JavaScript parser on the complete
-text without executing the upload. Before invoking that dependency, a
+and Python parsing. Sporades uses pinned production parsers on the complete
+text without executing the upload. Before invoking either dependency, a
 dependency-free, context-free iterative scan caps aggregate raw `()`, `[]`,
 and `{}` nesting at 256. Every opener increases the depth and every closer
 reduces it without trying to interpret matching, quotes, comments, templates,
@@ -536,6 +536,15 @@ semantics are rejected. This covers comments, parentheses, computed or optional
 member access, and Unicode escapes around call-only programs such as
 `alert("x")`; ordinary prose, including prose containing parentheses or quoted
 call text, remains text when it is not a complete executable program.
+Sporades also parses the complete text with pinned `@lezer/python`. An
+iterative full-tree walk is capped at 100,000 nodes and 512 levels (the extra
+levels account for Lezer wrapper nodes above the already-bounded 256 raw
+delimiter levels). Error-free Python programs containing statements,
+definitions, decorators, imports, assignments, calls, lambdas, comprehensions,
+`async`/`await`, or `yield` are rejected. Trees containing a syntax-error node
+remain eligible as malformed prose, so ordinary sentences and quoted or
+incomplete code references are not broadly classified as Python. Unexpected
+parser failures and any traversal-budget exhaustion fail closed.
 
 The `clamav` inspector is runtime-owned and communicates only with clamd's
 fixed Unix-domain socket inside the Capsule container. There is no TCP,
