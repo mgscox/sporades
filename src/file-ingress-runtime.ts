@@ -15,6 +15,7 @@ const crypto = process.getBuiltinModule("node:crypto");
 const zlib = process.getBuiltinModule("node:zlib");
 const net = process.getBuiltinModule("node:net");
 const fs = process.getBuiltinModule("node:fs");
+const pathRuntime = process.getBuiltinModule("node:path");
 const childProcess = process.getBuiltinModule("node:child_process");
 const leaseTtlMs = 10 * 60 * 1000;
 const ingressClaimAuditRetentionMs = 24 * 60 * 60 * 1000;
@@ -767,27 +768,114 @@ function exactShellVocabularyToken(text: string) {
   }
   return null;
 }
-function isLiteralShellWord(word: RecordLike) {
+function isStaticShellWord(word: RecordLike) {
   if (!word || typeof word.value !== "string" || typeof word.text !== "string") return false;
   const literalPart = (part: RecordLike): boolean => part?.type === "Literal"
     || part?.type === "SingleQuoted"
     || (part?.type === "DoubleQuoted" && Array.isArray(part.parts) && part.parts.every(literalPart));
   if (Array.isArray(word.parts) && !word.parts.every(literalPart)) return false;
+  return true;
+}
+function isLiteralShellWord(word: RecordLike) {
+  if (!isStaticShellWord(word)) return false;
   return !/[$`*?\[\]{}~]/.test(word.text.replace(/^(['"])([\s\S]*)\1$/, "$2"));
+}
+function isRegularExecutableShellPath(candidate: string) {
+  if (Buffer.byteLength(candidate, "utf8") > 4096) return false;
+  try { fs.accessSync(candidate, fs.constants.X_OK); return fs.statSync(candidate).isFile(); } catch { return false; }
 }
 function shellCommandCanRun(name: string) {
   if (bashCommandNames.has(name)) return true;
   if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(name)) return false;
-  const regularExecutable = (candidate: string) => {
-    if (Buffer.byteLength(candidate, "utf8") > 4096) return false;
-    try { fs.accessSync(candidate, fs.constants.X_OK); return fs.statSync(candidate).isFile(); } catch { return false; }
-  };
-  if (name.includes("/")) return regularExecutable(name);
+  if (name.includes("/")) return isRegularExecutableShellPath(name);
   if (Buffer.byteLength(name, "utf8") > 255) return false;
   for (const entry of String(process.env.PATH ?? "").split(":").slice(0, 128)) {
     const directory = entry || process.cwd();
     if (Buffer.byteLength(directory, "utf8") > 4096) continue;
-    if (regularExecutable(`${directory.replace(/\/$/, "")}/${name}`)) return true;
+    if (isRegularExecutableShellPath(`${directory.replace(/\/$/, "")}/${name}`)) return true;
+  }
+  return false;
+}
+function shellWordHasPathExpansion(word: RecordLike) {
+  const raw = String(word?.text ?? ""); let quote = "";
+  for (let index = 0; index < raw.length; index += 1) {
+    const character = raw[index];
+    if (character === "\\" && quote !== "'") { index += 1; continue; }
+    if (character === "'" || character === '"') { if (!quote) quote = character; else if (quote === character) quote = ""; continue; }
+    if (quote) continue;
+    const currentUserTilde = process.env.USER && (raw === `~${process.env.USER}` || raw.startsWith(`~${process.env.USER}/`));
+    if ((index === 0 && character === "~" && (raw[index + 1] === "/" || raw.length === 1 || currentUserTilde)) || character === "*" || character === "?" || character === "[") return true;
+    if (character === "{" && raw.indexOf(",", index + 1) >= 0 && raw.indexOf("}", index + 1) > raw.indexOf(",", index + 1)) return true;
+  }
+  return false;
+}
+function boundedBraceExpansion(pattern: string) {
+  let patterns = [pattern];
+  for (let depth = 0; depth < 8; depth += 1) {
+    let expanded = false; const next: string[] = [];
+    for (const candidate of patterns) {
+      const match = /\{([^{}]{0,512})\}/.exec(candidate); const alternatives = match?.[1].split(",");
+      if (!match || !alternatives || alternatives.length < 2) { next.push(candidate); continue; }
+      expanded = true;
+      for (const alternative of alternatives) {
+        next.push(candidate.slice(0, match.index) + alternative + candidate.slice(match.index + match[0].length));
+        if (next.length > 64) return null;
+      }
+    }
+    patterns = next;
+    if (!expanded) return patterns;
+  }
+  return null;
+}
+function shellGlobSegment(segment: string) {
+  let source = "^"; let active = false;
+  for (let index = 0; index < segment.length; index += 1) {
+    const character = segment[index];
+    if (character === "*") { source += "[^/]*"; active = true; continue; }
+    if (character === "?") { source += "[^/]"; active = true; continue; }
+    if (character === "[") {
+      const close = segment.indexOf("]", index + 1);
+      if (close > index + 1 && close - index <= 66) { const body = segment.slice(index + 1, close).replace(/^!/, "^").replace(/\\/g, "\\\\"); source += `[${body}]`; active = true; index = close; continue; }
+    }
+    source += character.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+  }
+  if (!active) return null;
+  try { return new RegExp(`${source}$`); } catch { return null; }
+}
+function expandedShellCommandCanRun(pattern: string) {
+  if (Buffer.byteLength(pattern, "utf8") > 4096) return true;
+  const braces = boundedBraceExpansion(pattern); if (!braces) return true;
+  let visited = 0;
+  for (let candidate of braces) {
+    let roots: string[]; let segments: string[];
+    const currentUserTilde = process.env.USER && (candidate === `~${process.env.USER}` || candidate.startsWith(`~${process.env.USER}/`));
+    if (candidate === "~" || candidate.startsWith("~/") || currentUserTilde) {
+      const home = String(process.env.HOME ?? ""); if (!home || Buffer.byteLength(home, "utf8") > 4096) continue;
+      const prefixLength = candidate[1] === "/" ? 2 : currentUserTilde ? String(process.env.USER).length + 2 : 1;
+      roots = [home]; segments = candidate.length < prefixLength ? [] : candidate.slice(prefixLength).split("/");
+    } else {
+      const absolute = candidate.startsWith("/"); roots = [absolute ? "/" : process.cwd()]; segments = candidate.split("/").filter((segment, index) => !(absolute && index === 0));
+    }
+    if (segments.length > 128) return true;
+    for (const segment of segments) {
+      if (!segment || segment === ".") continue;
+      if (segment === "..") { roots = roots.map((root: string) => pathRuntime.dirname(root)); continue; }
+      const matcher = shellGlobSegment(segment); const next: string[] = [];
+      for (const root of roots) {
+        if (!matcher) next.push(pathRuntime.join(root, segment));
+        else {
+          let names: string[]; try { names = fs.readdirSync(root); } catch { continue; }
+          if (names.length > 1024) return true;
+          for (const name of names) {
+            visited += 1; if (visited > 4096) return true;
+            if ((!segment.startsWith(".") && name.startsWith(".")) || !matcher.test(name)) continue;
+            next.push(pathRuntime.join(root, name)); if (next.length > 64) return true;
+          }
+        }
+      }
+      roots = next; if (roots.length === 0) break;
+    }
+    if (roots.some(isRegularExecutableShellPath)) return true;
   }
   return false;
 }
@@ -806,18 +894,19 @@ function isPlainShellDatum(statement: RecordLike) {
 function hasRunnableParsedShellCommand(statement: RecordLike) {
   const command = statement?.command;
   return statement?.type === "Statement" && command?.type === "Command"
-    && isLiteralShellWord(command.name) && shellCommandCanRun(command.name.value);
+    && ((isStaticShellWord(command.name) && !shellWordHasPathExpansion(command.name) && shellCommandCanRun(command.name.value))
+      || (shellWordHasPathExpansion(command.name) && expandedShellCommandCanRun(command.name.value)));
 }
 function isNonRunnablePathSentence(text: string, root: RecordLike) {
   if (!Array.isArray(root?.commands) || root.commands.length !== 1) return false;
-  const statement = root.commands[0]; const command = statement?.command; const trimmed = text.trim();
+  const statement = root.commands[0]; const command = statement?.command; const trimmed = text.trim(); const prose = trimmed.replace(/\\([*?\[\]{}])/g, "$1");
   return statement?.type === "Statement" && statement.background !== true
     && Array.isArray(statement.redirects) && statement.redirects.length === 0
     && command?.type === "Command" && Array.isArray(command.prefix) && command.prefix.length === 0
     && Array.isArray(command.redirects) && command.redirects.length === 0
-    && isLiteralShellWord(command.name) && command.name.value.includes("/")
+    && typeof command.name?.value === "string" && command.name.value.includes("/")
     && Array.isArray(command.suffix) && command.suffix.length > 0 && command.suffix.every(isLiteralShellWord)
-    && /^[^;&|<>$`\\]*[.!?]$/.test(trimmed) && /\s/.test(trimmed);
+    && /^[^;&|<>$`\\]*[.!?]$/.test(prose) && /\s/.test(prose);
 }
 export function hasExecutableShellSemantics(text: string) {
   if (Buffer.byteLength(text, "utf8") > maximumContentPolicyTextBytes || !isJavaScriptRawInputWithinBounds(text)) return true;

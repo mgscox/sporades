@@ -74298,6 +74298,7 @@ var crypto2 = process.getBuiltinModule("node:crypto");
 var zlib = process.getBuiltinModule("node:zlib");
 var net = process.getBuiltinModule("node:net");
 var fs = process.getBuiltinModule("node:fs");
+var pathRuntime = process.getBuiltinModule("node:path");
 var childProcess = process.getBuiltinModule("node:child_process");
 var leaseTtlMs = 10 * 60 * 1e3;
 var ingressClaimAuditRetentionMs = 24 * 60 * 60 * 1e3;
