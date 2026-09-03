@@ -8,11 +8,16 @@ import { SPORADES_BASE_IMAGE } from "./base-image.js";
 export function devRuntimeRequiresClamav(database) {
     return Boolean(database.endpoints?.some((item) => item?.options?.body?.multipart?.inspection?.requiredInspectors?.includes("clamav")));
 }
+export async function releaseDevClamavSidecar(sidecar) {
+    if (!sidecar)
+        return undefined;
+    await sidecar.stop();
+    return undefined;
+}
 export async function retireDevClamavSidecarIfUnused(sidecar, database) {
     if (!sidecar || devRuntimeRequiresClamav(database))
         return sidecar;
-    await sidecar.stop();
-    return undefined;
+    return await releaseDevClamavSidecar(sidecar);
 }
 function commandResult(command, args, timeoutMs) {
     return new Promise((resolve) => {

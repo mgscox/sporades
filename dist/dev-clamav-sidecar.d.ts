@@ -1,5 +1,6 @@
 type RecordLike = Record<string, any>;
 export declare function devRuntimeRequiresClamav(database: RecordLike): boolean;
+export declare function releaseDevClamavSidecar(sidecar: any): Promise<undefined>;
 export declare function retireDevClamavSidecarIfUnused(sidecar: any, database: RecordLike): Promise<any>;
 export declare function startDevClamavSidecar(options: RecordLike): Promise<{
     descriptor: {

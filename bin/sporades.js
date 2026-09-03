@@ -105611,10 +105611,14 @@ import path8 from "node:path";
 function devRuntimeRequiresClamav(database) {
   return Boolean(database.endpoints?.some((item) => item?.options?.body?.multipart?.inspection?.requiredInspectors?.includes("clamav")));
 }
-async function retireDevClamavSidecarIfUnused(sidecar, database) {
-  if (!sidecar || devRuntimeRequiresClamav(database)) return sidecar;
+async function releaseDevClamavSidecar(sidecar) {
+  if (!sidecar) return void 0;
   await sidecar.stop();
   return void 0;
+}
+async function retireDevClamavSidecarIfUnused(sidecar, database) {
+  if (!sidecar || devRuntimeRequiresClamav(database)) return sidecar;
+  return await releaseDevClamavSidecar(sidecar);
 }
 function commandResult(command, args, timeoutMs) {
   return new Promise((resolve) => {
@@ -111098,9 +111102,7 @@ async function createDevRuntime(options) {
         attachRequiredSidecar,
         async () => {
           if (!sidecarWasAbsent || !clamavSidecar) return;
-          const candidateSidecar = clamavSidecar;
-          clamavSidecar = void 0;
-          await candidateSidecar.stop();
+          clamavSidecar = await releaseDevClamavSidecar(clamavSidecar);
         }
       );
       clamavSidecar = await retireDevClamavSidecarIfUnused(clamavSidecar, database);

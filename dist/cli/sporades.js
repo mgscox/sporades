@@ -17,7 +17,7 @@ import { restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-po
 import { createSqliteDatabaseAdapter, createLogEnvelope, createPrivilegedAuditLogInput, createPostgresConnection, createWebSocketHub, dumpDatabase, handleFileHttpRoute, injectPageConnectionToken, listDatabaseTables, openDevDatabase, prepareHttpSecurity, readJsonRequest, routeEndpoint, routeRuntimeHealth, routeSporadesAuth, runReadOnlyQuery, shutdownHttpServerAndRuntime, simulateLocalIdentitySession, readJsonlLogEvents, replacePreparedRuntimeDatabase, shutdownAndCloseDatabase, validateReadOnlyInspectionSql, writeUnhandledHttpError, } from "../server-runtime-source.js";
 import { scaffoldFiles } from "../templates/scaffold-template.js";
 import { resolveSporadesPackageRoot } from "../package-root.js";
-import { devRuntimeRequiresClamav, retireDevClamavSidecarIfUnused, startDevClamavSidecar } from "../dev-clamav-sidecar.js";
+import { devRuntimeRequiresClamav, releaseDevClamavSidecar, retireDevClamavSidecarIfUnused, startDevClamavSidecar } from "../dev-clamav-sidecar.js";
 import { CAPSULE_SERVICES_COMPOSE_FILE, CAPSULE_SERVICES_STATE_DIR, capsuleServicesComposeModel, validateCapsuleServicesConfig, writeCapsuleServicesCompose, } from "../capsule-services.js";
 import { createHostBootstrapRequest, createHostDeleteRequest, createHostLifecycleRequest, createHostRegistrationRequest, createHostReleaseRequest, createHostRuntimeHealthRequest, createHostStatsRequest, createHostUnregisterRequest, } from "./host-request-builders.js";
 import { renderCliHelp } from "./cli-help.js";
@@ -2356,9 +2356,7 @@ async function createDevRuntime(options) {
             database = await replacePreparedRuntimeDatabase(database, nextDatabase, attachRequiredSidecar, async () => {
                 if (!sidecarWasAbsent || !clamavSidecar)
                     return;
-                const candidateSidecar = clamavSidecar;
-                clamavSidecar = undefined;
-                await candidateSidecar.stop();
+                clamavSidecar = await releaseDevClamavSidecar(clamavSidecar);
             });
             clamavSidecar = await retireDevClamavSidecarIfUnused(clamavSidecar, database);
         },

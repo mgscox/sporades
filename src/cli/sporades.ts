@@ -75,7 +75,7 @@ import {
 } from "../server-runtime-source.js";
 import { scaffoldFiles } from "../templates/scaffold-template.js";
 import { resolveSporadesPackageRoot } from "../package-root.js";
-import { devRuntimeRequiresClamav, retireDevClamavSidecarIfUnused, startDevClamavSidecar } from "../dev-clamav-sidecar.js";
+import { devRuntimeRequiresClamav, releaseDevClamavSidecar, retireDevClamavSidecarIfUnused, startDevClamavSidecar } from "../dev-clamav-sidecar.js";
 import {
   CAPSULE_SERVICES_COMPOSE_FILE,
   CAPSULE_SERVICES_STATE_DIR,
@@ -2744,9 +2744,7 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
         attachRequiredSidecar,
         async () => {
           if (!sidecarWasAbsent || !clamavSidecar) return;
-          const candidateSidecar = clamavSidecar;
-          clamavSidecar = undefined;
-          await candidateSidecar.stop();
+          clamavSidecar = await releaseDevClamavSidecar(clamavSidecar);
         },
       );
       clamavSidecar = await retireDevClamavSidecarIfUnused(clamavSidecar, database);

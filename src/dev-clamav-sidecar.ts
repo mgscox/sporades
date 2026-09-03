@@ -13,10 +13,15 @@ export function devRuntimeRequiresClamav(database: RecordLike) {
   return Boolean(database.endpoints?.some((item: any) => item?.options?.body?.multipart?.inspection?.requiredInspectors?.includes("clamav")));
 }
 
-export async function retireDevClamavSidecarIfUnused(sidecar: any, database: RecordLike) {
-  if (!sidecar || devRuntimeRequiresClamav(database)) return sidecar;
+export async function releaseDevClamavSidecar(sidecar: any) {
+  if (!sidecar) return undefined;
   await sidecar.stop();
   return undefined;
+}
+
+export async function retireDevClamavSidecarIfUnused(sidecar: any, database: RecordLike) {
+  if (!sidecar || devRuntimeRequiresClamav(database)) return sidecar;
+  return await releaseDevClamavSidecar(sidecar);
 }
 
 function commandResult(command: string, args: string[], timeoutMs: number) {

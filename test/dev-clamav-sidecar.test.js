@@ -4,7 +4,31 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { retireDevClamavSidecarIfUnused, startDevClamavSidecar } from "../dist/dev-clamav-sidecar.js";
+import { releaseDevClamavSidecar, retireDevClamavSidecarIfUnused, startDevClamavSidecar } from "../dist/dev-clamav-sidecar.js";
+import { replacePreparedRuntimeDatabase } from "../dist/server-runtime-source.js";
+
+test("failed hot-add rollback retains sidecar ownership until cleanup succeeds", async () => {
+  const replacementError = new Error("candidate init failed");
+  const stopError = new Error("sidecar stop failed");
+  let stopAttempts = 0;
+  const candidateSidecar = { async stop() { stopAttempts += 1; if (stopAttempts === 1) throw stopError; } };
+  let sidecar = candidateSidecar;
+  const candidate = { async init() { throw replacementError; }, async close() {} };
+
+  await assert.rejects(
+    replacePreparedRuntimeDatabase(
+      {},
+      candidate,
+      async () => {},
+      async () => { sidecar = await releaseDevClamavSidecar(sidecar); },
+    ),
+    (error) => error instanceof AggregateError && error.errors[0] === replacementError && error.errors[1] === stopError,
+  );
+  assert.equal(sidecar, candidateSidecar, "failed cleanup must retain the owned sidecar handle");
+  sidecar = await releaseDevClamavSidecar(sidecar);
+  assert.equal(sidecar, undefined);
+  assert.equal(stopAttempts, 2);
+});
 
 test("Dev ClamAV sidecar retirement follows the successfully promoted runtime's final policy", async () => {
   const calls = [];
