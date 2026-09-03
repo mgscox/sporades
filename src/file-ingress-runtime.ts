@@ -539,7 +539,7 @@ function loadPdfJsModule() {
 }
 export async function validatePdfIngress(bytes: Buffer, options: RecordLike = {}) {
   if (bytes.length < 16 || bytes.subarray(0, 5).toString("ascii") !== "%PDF-" || !validPdfTerminalBoundary(bytes)) return false;
-  let task: any; let timer: any; let expired = false; const timeoutMs = Number.isInteger(options.timeoutMs) ? Math.max(1, Math.min(2_000, options.timeoutMs)) : 2_000; const deadline = Date.now() + timeoutMs; const deadlineExpired = () => expired || Date.now() >= deadline;
+  let task: any; let timer: any; let expired = false; const timeoutMs = Number.isInteger(options.timeoutMs) ? Math.max(1, Math.min(2_000, options.timeoutMs)) : 2_000; const deadline = process.hrtime.bigint() + BigInt(timeoutMs) * 1_000_000n; const deadlineExpired = () => expired || process.hrtime.bigint() >= deadline;
   try {
     const workflow = (async () => {
       const { getDocument } = await loadPdfJsModule();
@@ -618,7 +618,7 @@ export async function validatePdfIngress(bytes: Buffer, options: RecordLike = {}
       for (let page = 1; page <= (document as any).numPages; page += 1) { if (deadlineExpired()) return false; await options.beforeOperatorList?.(page); if (deadlineExpired()) return false; const currentPage = await (document as any).getPage(page); if (deadlineExpired()) return false; const [operators, actions, annotations] = await Promise.all([currentPage.getOperatorList(), currentPage.getJSActions?.(), currentPage.getAnnotations?.({ intent: "display" })]); if (deadlineExpired() || hasEntries(actions)) return false; if (Array.isArray(annotations) && annotations.some((annotation: RecordLike) => annotation?.action || annotation?.attachment || annotation?.file || annotation?.unsafeUrl || annotation?.annotationType === 17)) return false; void operators; }
       return !deadlineExpired();
     })();
-    return await Promise.race([workflow, new Promise<boolean>((resolve) => { timer = setTimeout(() => { expired = true; try { task?.destroy?.(); } catch {} resolve(false); }, Math.max(0, deadline - Date.now())); })]);
+    return await Promise.race([workflow, new Promise<boolean>((resolve) => { const remaining = deadline - process.hrtime.bigint(); timer = setTimeout(() => { expired = true; try { task?.destroy?.(); } catch {} resolve(false); }, remaining > 0n ? Number(remaining) / 1_000_000 : 0); })]);
   } catch { return false; } finally { expired = true; clearTimeout(timer); try { await task?.destroy?.(); } catch {} }
 }
 const maximumContentPolicyTextBytes = 1024 * 1024;

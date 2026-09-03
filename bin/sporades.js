@@ -85827,8 +85827,8 @@ async function validatePdfIngress(bytes, options = {}) {
   let timer;
   let expired = false;
   const timeoutMs = Number.isInteger(options.timeoutMs) ? Math.max(1, Math.min(2e3, options.timeoutMs)) : 2e3;
-  const deadline = Date.now() + timeoutMs;
-  const deadlineExpired = () => expired || Date.now() >= deadline;
+  const deadline = process.hrtime.bigint() + BigInt(timeoutMs) * 1000000n;
+  const deadlineExpired = () => expired || process.hrtime.bigint() >= deadline;
   try {
     const workflow = (async () => {
       const { getDocument: getDocument2 } = await loadPdfJsModule();
@@ -85925,6 +85925,7 @@ async function validatePdfIngress(bytes, options = {}) {
       return !deadlineExpired();
     })();
     return await Promise.race([workflow, new Promise((resolve) => {
+      const remaining = deadline - process.hrtime.bigint();
       timer = setTimeout(() => {
         expired = true;
         try {
@@ -85932,7 +85933,7 @@ async function validatePdfIngress(bytes, options = {}) {
         } catch {
         }
         resolve(false);
-      }, Math.max(0, deadline - Date.now()));
+      }, remaining > 0n ? Number(remaining) / 1e6 : 0);
     })]);
   } catch {
     return false;

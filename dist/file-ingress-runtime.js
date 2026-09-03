@@ -1128,8 +1128,8 @@ export async function validatePdfIngress(bytes, options = {}) {
     let timer;
     let expired = false;
     const timeoutMs = Number.isInteger(options.timeoutMs) ? Math.max(1, Math.min(2_000, options.timeoutMs)) : 2_000;
-    const deadline = Date.now() + timeoutMs;
-    const deadlineExpired = () => expired || Date.now() >= deadline;
+    const deadline = process.hrtime.bigint() + BigInt(timeoutMs) * 1000000n;
+    const deadlineExpired = () => expired || process.hrtime.bigint() >= deadline;
     try {
         const workflow = (async () => {
             const { getDocument } = await loadPdfJsModule();
@@ -1275,10 +1275,10 @@ export async function validatePdfIngress(bytes, options = {}) {
             }
             return !deadlineExpired();
         })();
-        return await Promise.race([workflow, new Promise((resolve) => { timer = setTimeout(() => { expired = true; try {
+        return await Promise.race([workflow, new Promise((resolve) => { const remaining = deadline - process.hrtime.bigint(); timer = setTimeout(() => { expired = true; try {
                 task?.destroy?.();
             }
-            catch { } resolve(false); }, Math.max(0, deadline - Date.now())); })]);
+            catch { } resolve(false); }, remaining > 0n ? Number(remaining) / 1_000_000 : 0); })]);
     }
     catch {
         return false;
