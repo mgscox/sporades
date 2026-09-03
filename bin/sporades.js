@@ -75263,6 +75263,20 @@ var maximumContentPolicyTextBytes = 1024 * 1024;
 var maximumContentPolicyTokens = 1e5;
 var maximumContentPolicyAstNodes = 1e5;
 var maximumContentPolicyAstDepth = 256;
+var maximumContentPolicyParserRecursion = 256;
+var recursiveJavaScriptGrammarLabels = /* @__PURE__ */ new Set([
+  "new",
+  "=>",
+  "?",
+  "...",
+  "**",
+  "if",
+  "else",
+  "for",
+  "while",
+  "with",
+  "do"
+]);
 var executableJavaScriptNodes = /* @__PURE__ */ new Set([
   "ArrowFunctionExpression",
   "AssignmentExpression",
@@ -75305,7 +75319,8 @@ function isAcornStackExhaustion(error) {
 function boundedJavaScriptPreparse(text2) {
   const closingFor = /* @__PURE__ */ new Map([["(", ")"], ["[", "]"], ["{", "}"], ["${", "}"]]);
   const closings = [];
-  let prefixDepth = 0;
+  let recursiveGrammarTokens = 0;
+  let unmatchedConditionals = 0;
   let tokens = 0;
   try {
     const input = tokenizer2(text2, { ecmaVersion: "latest", sourceType: "module" });
@@ -75314,12 +75329,20 @@ function boundedJavaScriptPreparse(text2) {
       const label = token.type.label;
       tokens += 1;
       if (tokens > maximumContentPolicyTokens) return "exhausted";
-      prefixDepth = token.type.prefix ? prefixDepth + 1 : 0;
-      if (prefixDepth > maximumContentPolicyAstDepth) return "exhausted";
+      const type = token.type;
+      const value = token.value;
+      const contextualRecursion = label === "name" && (value === "await" || value === "yield");
+      const unmatchedLabel = label === ":" && unmatchedConditionals === 0;
+      if (label === "?") unmatchedConditionals += 1;
+      else if (label === ":" && unmatchedConditionals > 0) unmatchedConditionals -= 1;
+      if (type.prefix || type.binop != null || type.isAssign || contextualRecursion || recursiveJavaScriptGrammarLabels.has(label) || unmatchedLabel) {
+        recursiveGrammarTokens += 1;
+        if (recursiveGrammarTokens > maximumContentPolicyParserRecursion) return "exhausted";
+      }
       const closing = closingFor.get(label);
       if (closing) {
         closings.push(closing);
-        if (closings.length > maximumContentPolicyAstDepth) return "exhausted";
+        if (closings.length > maximumContentPolicyParserRecursion) return "exhausted";
       } else if (closings.at(-1) === label) {
         closings.pop();
       }

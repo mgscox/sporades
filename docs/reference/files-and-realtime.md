@@ -509,8 +509,14 @@ a future reviewed evidence policy, never treated as an executable channel.
 Strict-text inspection is capped at 1 MiB before UTF-8 decoding or JavaScript
 parsing. Sporades uses its pinned production JavaScript parser on the complete
 text without executing the upload. A flat token pass caps work at 100,000
-tokens, 256 nested delimiters, and 256 consecutive prefix operators before the
-recursive parse; the syntax tree is then walked under 100,000-node and
+tokens, 256 nested delimiters, and 256 recursive-grammar tokens before the
+recursive parse. The grammar budget covers prefix operators, contextual
+`await`/`yield`, construction, arrows, conditionals, assignments, binary and
+exponentiation operators, nested statement bodies, and labels. Acorn's other
+recursive expression and statement paths enter through delimiters; member,
+call, and comma-list continuations are iterative. Comments, regular-expression
+bodies, and template raw text remain opaque tokenizer tokens rather than
+grammar signals. The syntax tree is then walked under 100,000-node and
 256-depth budgets. These independent bounds reject parser stack-exhaustion
 inputs without depending only on diagnostic wording. Unknown parser failures
 fail closed, while structurally ordinary syntax errors remain non-executable

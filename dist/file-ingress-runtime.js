@@ -394,6 +394,11 @@ const maximumContentPolicyTextBytes = 1024 * 1024;
 const maximumContentPolicyTokens = 100_000;
 const maximumContentPolicyAstNodes = 100_000;
 const maximumContentPolicyAstDepth = 256;
+const maximumContentPolicyParserRecursion = 256;
+const recursiveJavaScriptGrammarLabels = new Set([
+    "new", "=>", "?", "...", "**",
+    "if", "else", "for", "while", "with", "do",
+]);
 const executableJavaScriptNodes = new Set([
     "ArrowFunctionExpression", "AssignmentExpression", "AwaitExpression", "CallExpression",
     "ClassDeclaration", "ClassExpression",
@@ -419,7 +424,8 @@ function isAcornStackExhaustion(error) {
 function boundedJavaScriptPreparse(text) {
     const closingFor = new Map([["(", ")"], ["[", "]"], ["{", "}"], ["${", "}"]]);
     const closings = [];
-    let prefixDepth = 0;
+    let recursiveGrammarTokens = 0;
+    let unmatchedConditionals = 0;
     let tokens = 0;
     try {
         const input = tokenizer(text, { ecmaVersion: "latest", sourceType: "module" });
@@ -429,13 +435,24 @@ function boundedJavaScriptPreparse(text) {
             tokens += 1;
             if (tokens > maximumContentPolicyTokens)
                 return "exhausted";
-            prefixDepth = token.type.prefix ? prefixDepth + 1 : 0;
-            if (prefixDepth > maximumContentPolicyAstDepth)
-                return "exhausted";
+            const type = token.type;
+            const value = token.value;
+            const contextualRecursion = label === "name" && (value === "await" || value === "yield");
+            const unmatchedLabel = label === ":" && unmatchedConditionals === 0;
+            if (label === "?")
+                unmatchedConditionals += 1;
+            else if (label === ":" && unmatchedConditionals > 0)
+                unmatchedConditionals -= 1;
+            if (type.prefix || type.binop != null || type.isAssign || contextualRecursion
+                || recursiveJavaScriptGrammarLabels.has(label) || unmatchedLabel) {
+                recursiveGrammarTokens += 1;
+                if (recursiveGrammarTokens > maximumContentPolicyParserRecursion)
+                    return "exhausted";
+            }
             const closing = closingFor.get(label);
             if (closing) {
                 closings.push(closing);
-                if (closings.length > maximumContentPolicyAstDepth)
+                if (closings.length > maximumContentPolicyParserRecursion)
                     return "exhausted";
             }
             else if (closings.at(-1) === label) {
@@ -448,6 +465,9 @@ function boundedJavaScriptPreparse(text) {
     catch (error) {
         return isStructuredAcornSyntaxError(error) && !isAcornStackExhaustion(error) ? "invalid" : "exhausted";
     }
+}
+export function isJavaScriptParserInputWithinBounds(text) {
+    return boundedJavaScriptPreparse(text) !== "exhausted";
 }
 export function hasExecutableJavaScriptSemantics(text) {
     const preparse = boundedJavaScriptPreparse(text);
