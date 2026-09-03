@@ -66,15 +66,30 @@ export async function attachRequiredDevClamavSidecar(sidecar: any, database: Rec
   return { sidecar: selected, attached: true };
 }
 
-export function waitForDevClamavChildExit(child: any, timeoutMs: number) {
-  if (!child || devClamavChildTerminated(child)) return Promise.resolve(true);
-  return new Promise<boolean>((resolve) => { let settled = false; const finish = (value: boolean) => { if (value) child.__sporadesClamavTerminated = true; if (settled) return; settled = true; clearTimeout(timer); resolve(value); }; const timer = setTimeout(() => finish(false), timeoutMs); child.once("close", () => finish(true)); child.once("error", () => finish(true)); });
-}
+type DevClamavTiming = { now?: () => number; delay?: (milliseconds: number) => Promise<void> };
+function devClamavNow(timing?: DevClamavTiming) { return timing?.now?.() ?? Date.now(); }
 
-export async function ensureDevClamavChildExit(child: any, timeoutMs: number) {
-  if (await waitForDevClamavChildExit(child, timeoutMs)) return true;
-  try { child.kill("SIGKILL"); } catch {}
-  return await waitForDevClamavChildExit(child, timeoutMs);
+function waitForDevClamavChildExitAttempt(child: any, timeoutMs: number, timing?: DevClamavTiming, signal?: string) {
+  if (!child || devClamavChildTerminated(child)) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    let settled = false; let timer: ReturnType<typeof setTimeout> | undefined;
+    const remove = () => { child.removeListener?.("exit", onExit); child.removeListener?.("close", onClose); child.removeListener?.("error", onError); };
+    const finish = (value: boolean) => { if (settled) return; settled = true; if (timer) clearTimeout(timer); remove(); if (value) child.__sporadesClamavTerminated = true; resolve(value || devClamavChildTerminated(child)); };
+    const onExit = () => finish(true); const onClose = () => finish(true); const onError = () => finish(false);
+    child.once("exit", onExit); child.once("close", onClose); child.once("error", onError);
+    if (signal) { try { child.kill(signal); } catch { if (!devClamavChildTerminated(child)) { finish(false); return; } } }
+    if (settled || devClamavChildTerminated(child)) { finish(true); return; }
+    const remaining = Math.max(0, timeoutMs);
+    if (timing?.delay) Promise.resolve(timing.delay(remaining)).then(() => finish(false), () => finish(false));
+    else timer = setTimeout(() => finish(false), remaining);
+  });
+}
+export function waitForDevClamavChildExit(child: any, timeoutMs: number, timing?: DevClamavTiming) { return waitForDevClamavChildExitAttempt(child, timeoutMs, timing); }
+
+export async function ensureDevClamavChildExit(child: any, timeoutMs: number, timing?: DevClamavTiming) {
+  const startedAt = devClamavNow(timing); const deadline = startedAt + Math.max(0, timeoutMs); const firstWait = Math.floor(Math.max(0, timeoutMs) / 2);
+  if (await waitForDevClamavChildExit(child, firstWait, timing)) return true;
+  return await waitForDevClamavChildExitAttempt(child, Math.max(0, deadline - devClamavNow(timing)), timing, "SIGKILL");
 }
 
 export async function startDevClamavSidecar(options: RecordLike) {

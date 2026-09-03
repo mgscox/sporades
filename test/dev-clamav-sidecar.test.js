@@ -3,6 +3,7 @@ import { access, chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { EventEmitter } from "node:events";
 
 import { attachRequiredDevClamavSidecar, ensureDevClamavChildExit, releaseDevClamavSidecar, retireDevClamavSidecarIfUnused, startDevClamavSidecar, waitForDevClamavChildExit } from "../dist/dev-clamav-sidecar.js";
 import { replacePreparedRuntimeDatabase } from "../dist/server-runtime-source.js";
@@ -72,12 +73,13 @@ test("Dev rebuild attachment replaces a terminated ClamAV sidecar without losing
 
 test("Dev ClamAV child exit handling is immediate for dead children and escalates only a live child", async () => {
   const child = ({ signalCode = null, latched = false, killExits = false } = {}) => {
-    const listeners = new Map(); const signals = []; let listenerCount = 0;
+    const listeners = new Map(); const signals = [];
     return {
       exitCode: null, signalCode, __sporadesClamavTerminated: latched, signals,
-      get listenerCount() { return listenerCount; },
-      once(name, listener) { listenerCount += 1; listeners.set(name, listener); },
-      emit(name) { listeners.get(name)?.(); },
+      get listenerCount() { return listeners.size; },
+      once(name, listener) { listeners.set(name, listener); },
+      removeListener(name, listener) { if (listeners.get(name) === listener) listeners.delete(name); },
+      emit(name) { const listener = listeners.get(name); listeners.delete(name); listener?.(); },
       kill(signal) { signals.push(signal); if (killExits) { this.signalCode = signal; this.emit("close"); } },
     };
   };
@@ -91,15 +93,26 @@ test("Dev ClamAV child exit handling is immediate for dead children and escalate
 
   const live = child();
   const waiting = waitForDevClamavChildExit(live, 10_000);
-  assert.equal(live.listenerCount, 2);
+  assert.equal(live.listenerCount, 3);
   live.emit("close");
   assert.equal(await waiting, true);
   assert.equal(await waitForDevClamavChildExit(live, 10_000), true);
-  assert.equal(live.listenerCount, 2, "the close latch prevents a second wait");
+  assert.equal(live.listenerCount, 0, "the close latch prevents a second wait");
 
   const escalated = child({ killExits: true });
   assert.equal(await ensureDevClamavChildExit(escalated, 0), true);
   assert.deepEqual(escalated.signals, ["SIGKILL"]);
+
+  const errored = new EventEmitter(); Object.assign(errored, { exitCode: null, signalCode: null });
+  const errorWait = waitForDevClamavChildExit(errored, 0); errored.emit("error", new Error("signal failure"));
+  assert.equal(await errorWait, false); assert.equal(errored.listenerCount("exit"), 0); assert.equal(errored.listenerCount("close"), 0); assert.equal(errored.listenerCount("error"), 0);
+  errored.kill = function () { this.emit("error", new Error("kill denied")); };
+  assert.equal(await ensureDevClamavChildExit(errored, 0), false); assert.equal(errored.listenerCount("error"), 0);
+
+  let now = 0; const delays = []; const stubborn = new EventEmitter(); Object.assign(stubborn, { exitCode: null, signalCode: null, signals: [] }); stubborn.kill = function (signal) { this.signals.push(signal); };
+  assert.equal(await ensureDevClamavChildExit(stubborn, 100, { now: () => now, delay: async (milliseconds) => { delays.push(milliseconds); now += milliseconds; } }), false);
+  assert.equal(now, 100); assert.deepEqual(delays, [50, 50]); assert.deepEqual(stubborn.signals, ["SIGKILL"]);
+  assert.equal(stubborn.listenerCount("exit"), 0); assert.equal(stubborn.listenerCount("close"), 0); assert.equal(stubborn.listenerCount("error"), 0);
 });
 
 test("Dev ClamAV sidecar is exact-task scoped, UID-safe, Unix-only, and residue-free", async () => {

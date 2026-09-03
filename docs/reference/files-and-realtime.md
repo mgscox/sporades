@@ -635,9 +635,12 @@ both processes after `SIGTERM` and uses a bounded `SIGKILL` fallback, including
 partial-startup failure paths. Managed and Dev startup share one absolute
 120-second readiness window: database verification, socket probes, and retry
 delays are each capped by the time still remaining, so repeated slow probes
-cannot multiply that window. If a child is still live after both shutdown
-deadlines, cleanup fails visibly and retains the owned child reference for a
-later shutdown or rollback retry.
+cannot multiply that window. `SIGTERM` and the bounded `SIGKILL` fallback share
+one absolute shutdown deadline; exit or close evidence is required before an
+owned child is cleared. A process error marks health unavailable but is not
+itself proof that the child exited. If a child is still live at the deadline,
+cleanup fails visibly and retains the owned child reference for a later
+shutdown or rollback retry.
 Signatures older than 24 hours, missing databases, daemon/socket failure,
 timeouts, malformed or oversized replies, scan limits, infection, and every
 other inconclusive outcome fail closed. Operators should monitor runtime

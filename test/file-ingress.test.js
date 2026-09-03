@@ -1590,27 +1590,29 @@ test("signal-terminated ClamAV children permanently degrade health before scanne
     const sidecarDatabase = { clamavRequired: true, clamavReady: true, __clamavDevSidecar: { process: sidecarProcess, externallyManaged: true }, __clamavTest: testState };
     assert.deepEqual(await checkClamavRuntime(sidecarDatabase), { ok: false }); assert.equal(sidecarDatabase.clamavReady, false);
     assert.equal(commands, 0);
-    for (const event of ["exit", "error"]) {
-      const daemon = alive(); const updater = alive(); const database = { clamavRequired: true, clamavReady: true, __clamavProcess: daemon, __clamavUpdateProcess: updater, __clamavTest: testState };
-      assert.deepEqual(await checkClamavRuntime(database), { ok: true }); const before = commands;
-      (event === "exit" ? daemon : updater).emit(event, event === "exit" ? 0 : new Error("child failed"));
-      assert.deepEqual(await checkClamavRuntime(database), { ok: false }, `${event} latch`); assert.equal(commands, before, `${event} latch probes`);
-    }
+    const exitedDaemon = alive(); const exitedUpdater = alive(); const exitedDatabase = { clamavRequired: true, clamavReady: true, __clamavProcess: exitedDaemon, __clamavUpdateProcess: exitedUpdater, __clamavTest: testState };
+    assert.deepEqual(await checkClamavRuntime(exitedDatabase), { ok: true }); const beforeExit = commands; exitedDaemon.emit("exit", 0);
+    assert.deepEqual(await checkClamavRuntime(exitedDatabase), { ok: false }); assert.equal(commands, beforeExit, "exit latch prevents probes");
+
+    const erroredDaemon = alive(); const erroredUpdater = alive(); const erroredDatabase = { clamavRequired: true, clamavReady: true, __clamavProcess: erroredDaemon, __clamavUpdateProcess: erroredUpdater, __clamavTest: testState };
+    assert.deepEqual(await checkClamavRuntime(erroredDatabase), { ok: true }); erroredUpdater.emit("error", new Error("child error")); assert.equal(erroredDatabase.clamavReady, false);
+    assert.deepEqual(await checkClamavRuntime(erroredDatabase), { ok: true }, "an error without exit evidence is not terminal");
   } finally { await new Promise((resolve) => server.close(resolve)); await rm(dir, { recursive: true, force: true }); }
 });
 
 test("ClamAV shutdown skips already-dead children and deterministically escalates only live children", async () => {
   const child = ({ signalCode = null, latched = false, termExits = false } = {}) => {
-    const listeners = new Map(); const signals = []; let listenerCount = 0;
+    const listeners = new Map(); const signals = [];
     return {
       exitCode: null, signalCode, __sporadesClamavTerminated: latched, signals,
-      get listenerCount() { return listenerCount; },
-      once(name, listener) { listenerCount += 1; listeners.set(name, listener); },
+      get listenerCount() { return listeners.size; },
+      once(name, listener) { listeners.set(name, listener); },
+      removeListener(name, listener) { if (listeners.get(name) === listener) listeners.delete(name); },
       kill(signal) {
         signals.push(signal);
         if ((signal === "SIGTERM" && termExits) || signal === "SIGKILL") {
           this.exitCode = 0;
-          listeners.get("exit")?.(0);
+          const listener = listeners.get("exit"); listeners.delete("exit"); listener?.(0);
         }
       },
     };
@@ -1623,12 +1625,12 @@ test("ClamAV shutdown skips already-dead children and deterministically escalate
   const termExit = child({ termExits: true });
   await shutdownClamavRuntime({ __clamavProcess: termExit, __clamavTest: { terminateTimeoutMs: 0 } });
   assert.deepEqual(termExit.signals, ["SIGTERM"]);
-  assert.equal(termExit.listenerCount, 2);
+  assert.equal(termExit.listenerCount, 0);
 
   const escalated = child();
   await shutdownClamavRuntime({ __clamavProcess: escalated, __clamavTest: { terminateTimeoutMs: 0 } });
   assert.deepEqual(escalated.signals, ["SIGTERM", "SIGKILL"]);
-  assert.equal(escalated.listenerCount, 2);
+  assert.equal(escalated.listenerCount, 0);
 });
 
 test("ClamAV readiness consumes one absolute deadline across probes and retry delays", async () => {
@@ -1645,6 +1647,8 @@ test("ClamAV readiness consumes one absolute deadline across probes and retry de
     return { ready, elapsed: now - 1000, timeouts, delays };
   };
   assert.deepEqual(await run({ budget: 0, probeCosts: [], outcomes: [] }), { ready: false, elapsed: 0, timeouts: [], delays: [] });
+  assert.deepEqual(await run({ budget: 50, probeCosts: [49], outcomes: [true] }), { ready: true, elapsed: 49, timeouts: [50], delays: [] });
+  assert.deepEqual(await run({ budget: 50, probeCosts: [51], outcomes: [true] }), { ready: false, elapsed: 50, timeouts: [50], delays: [] });
   assert.deepEqual(await run({ budget: 250, probeCosts: [120, 20], outcomes: [false, true] }), { ready: true, elapsed: 240, timeouts: [250, 30], delays: [100] });
   assert.deepEqual(await run({ budget: 250, probeCosts: [200, 200], outcomes: [false, false] }), { ready: false, elapsed: 250, timeouts: [250], delays: [50] });
 
@@ -1668,6 +1672,21 @@ test("ClamAV shutdown retains stubborn children for a later successful cleanup r
   daemon.allowExit(); updater.allowExit(); await shutdownClamavRuntime(database);
   assert.equal(database.__clamavProcess, null); assert.equal(database.__clamavUpdateProcess, null);
   assert.deepEqual(daemon.signals, ["SIGTERM", "SIGKILL", "SIGTERM", "SIGKILL"]);
+
+  const signalError = new EventEmitter(); Object.assign(signalError, { exitCode: null, signalCode: null, signals: [], canExit: false });
+  signalError.kill = function (signal) { this.signals.push(signal); if (this.canExit) { this.signalCode = signal; this.emit("close", null, signal); } else this.emit("error", Object.assign(new Error("signal denied"), { code: "EPERM" })); };
+  const errorDatabase = { __clamavProcess: signalError, __clamavTest: { terminateTimeoutMs: 0 } };
+  await assert.rejects(shutdownClamavRuntime(errorDatabase), AggregateError); assert.equal(errorDatabase.__clamavProcess, signalError);
+  assert.equal(signalError.listenerCount("exit"), 0); assert.equal(signalError.listenerCount("close"), 0); assert.equal(signalError.listenerCount("error"), 0);
+  signalError.canExit = true; await shutdownClamavRuntime(errorDatabase); assert.equal(errorDatabase.__clamavProcess, null);
+
+  let now = 0; const delays = []; const timed = new EventEmitter(); Object.assign(timed, { exitCode: null, signalCode: null, signals: [] }); timed.kill = function (signal) { this.signals.push(signal); };
+  const timedDatabase = { __clamavProcess: timed, __clamavTest: { terminateTimeoutMs: 100, now: () => now, delay: async (milliseconds) => { delays.push(milliseconds); now += milliseconds; } } };
+  await assert.rejects(shutdownClamavRuntime(timedDatabase), AggregateError);
+  assert.equal(now, 100); assert.deepEqual(delays, [50, 50]); assert.deepEqual(timed.signals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(timed.listenerCount("exit"), 0); assert.equal(timed.listenerCount("close"), 0); assert.equal(timed.listenerCount("error"), 0);
+  await assert.rejects(shutdownClamavRuntime(timedDatabase), AggregateError); assert.equal(now, 200); assert.deepEqual(delays, [50, 50, 50, 50]);
+  assert.equal(timed.listenerCount("exit"), 0); assert.equal(timed.listenerCount("close"), 0); assert.equal(timed.listenerCount("error"), 0);
 });
 
 test("ClamAV health requires a bounded PING and shutdown awaits both managed children", async () => {

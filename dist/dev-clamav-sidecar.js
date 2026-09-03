@@ -70,21 +70,54 @@ export async function attachRequiredDevClamavSidecar(sidecar, database, createSi
     selected.attach(database);
     return { sidecar: selected, attached: true };
 }
-export function waitForDevClamavChildExit(child, timeoutMs) {
+function devClamavNow(timing) { return timing?.now?.() ?? Date.now(); }
+function waitForDevClamavChildExitAttempt(child, timeoutMs, timing, signal) {
     if (!child || devClamavChildTerminated(child))
         return Promise.resolve(true);
-    return new Promise((resolve) => { let settled = false; const finish = (value) => { if (value)
-        child.__sporadesClamavTerminated = true; if (settled)
-        return; settled = true; clearTimeout(timer); resolve(value); }; const timer = setTimeout(() => finish(false), timeoutMs); child.once("close", () => finish(true)); child.once("error", () => finish(true)); });
+    return new Promise((resolve) => {
+        let settled = false;
+        let timer;
+        const remove = () => { child.removeListener?.("exit", onExit); child.removeListener?.("close", onClose); child.removeListener?.("error", onError); };
+        const finish = (value) => { if (settled)
+            return; settled = true; if (timer)
+            clearTimeout(timer); remove(); if (value)
+            child.__sporadesClamavTerminated = true; resolve(value || devClamavChildTerminated(child)); };
+        const onExit = () => finish(true);
+        const onClose = () => finish(true);
+        const onError = () => finish(false);
+        child.once("exit", onExit);
+        child.once("close", onClose);
+        child.once("error", onError);
+        if (signal) {
+            try {
+                child.kill(signal);
+            }
+            catch {
+                if (!devClamavChildTerminated(child)) {
+                    finish(false);
+                    return;
+                }
+            }
+        }
+        if (settled || devClamavChildTerminated(child)) {
+            finish(true);
+            return;
+        }
+        const remaining = Math.max(0, timeoutMs);
+        if (timing?.delay)
+            Promise.resolve(timing.delay(remaining)).then(() => finish(false), () => finish(false));
+        else
+            timer = setTimeout(() => finish(false), remaining);
+    });
 }
-export async function ensureDevClamavChildExit(child, timeoutMs) {
-    if (await waitForDevClamavChildExit(child, timeoutMs))
+export function waitForDevClamavChildExit(child, timeoutMs, timing) { return waitForDevClamavChildExitAttempt(child, timeoutMs, timing); }
+export async function ensureDevClamavChildExit(child, timeoutMs, timing) {
+    const startedAt = devClamavNow(timing);
+    const deadline = startedAt + Math.max(0, timeoutMs);
+    const firstWait = Math.floor(Math.max(0, timeoutMs) / 2);
+    if (await waitForDevClamavChildExit(child, firstWait, timing))
         return true;
-    try {
-        child.kill("SIGKILL");
-    }
-    catch { }
-    return await waitForDevClamavChildExit(child, timeoutMs);
+    return await waitForDevClamavChildExitAttempt(child, Math.max(0, deadline - devClamavNow(timing)), timing, "SIGKILL");
 }
 export async function startDevClamavSidecar(options) {
     const dataRoot = path.join(options.projectDir, ".sporades", "clamav");

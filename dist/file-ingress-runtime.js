@@ -1628,7 +1628,7 @@ async function verifiedClamavSignature(database, deadline = Number.POSITIVE_INFI
             : childProcess.spawn("/usr/bin/sigtool", ["--info", path], { stdio: ["ignore", "pipe", "ignore"] });
         const result = await collectBoundedToolOutput(child, Math.min(5_000, remaining));
         if (!result.ok) {
-            await terminateChild(child, Math.min(clamavTerminateTimeout(database), clamavRemaining(database, deadline)));
+            await terminateChild(child, Math.min(clamavTerminateTimeout(database), clamavRemaining(database, deadline)), database);
             continue;
         }
         const version = /^Version:\s*(\d{1,12})\s*$/mi.exec(result.stdout)?.[1];
@@ -1700,31 +1700,59 @@ async function clamavInstream(database, bytes) {
 function waitForChild(child, timeoutMs) { if (clamavChildTerminated(child))
     return Promise.resolve(child?.exitCode === 0); return new Promise((resolve) => { let settled = false; const finish = (ok) => { if (settled)
     return; settled = true; clearTimeout(timer); resolve(ok); }; const timer = setTimeout(() => finish(false), Math.max(0, timeoutMs)); child.once("exit", (code) => finish(code === 0)); child.once("error", () => finish(false)); }); }
-async function terminateChild(child, timeoutMs = 5_000) {
+function signalChildUntil(database, child, signal, deadline) {
+    if (clamavChildTerminated(child))
+        return Promise.resolve(true);
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        let timer;
+        const remove = () => { child.removeListener?.("exit", onExit); child.removeListener?.("close", onClose); child.removeListener?.("error", onError); };
+        const finish = (value) => { if (settled)
+            return; settled = true; if (timer)
+            clearTimeout(timer); remove(); resolve(value || clamavChildTerminated(child)); };
+        const fail = (error) => { if (settled)
+            return; settled = true; if (timer)
+            clearTimeout(timer); remove(); reject(error); };
+        const onExit = () => { child.__sporadesClamavTerminated = true; finish(true); };
+        const onClose = () => { child.__sporadesClamavTerminated = true; finish(true); };
+        const onError = () => finish(false);
+        child.once("exit", onExit);
+        child.once("close", onClose);
+        child.once("error", onError);
+        try {
+            child.kill(signal);
+        }
+        catch (error) {
+            if (clamavChildTerminated(child))
+                finish(true);
+            else
+                fail(error);
+            return;
+        }
+        if (settled || clamavChildTerminated(child)) {
+            finish(true);
+            return;
+        }
+        const remaining = clamavRemaining(database, deadline);
+        if (remaining <= 0) {
+            finish(false);
+            return;
+        }
+        if (database.__clamavTest?.delay)
+            Promise.resolve(database.__clamavTest.delay(remaining)).then(() => finish(false), fail);
+        else
+            timer = setTimeout(() => finish(false), remaining);
+    });
+}
+async function terminateChild(child, timeoutMs = 5_000, database = {}) {
     if (!child || clamavChildTerminated(child))
         return;
-    const exited = new Promise((resolve) => { child.once("exit", () => resolve(true)); child.once("error", () => resolve(true)); });
-    const wait = () => new Promise((resolve) => { let settled = false; const finish = (value) => { if (settled)
-        return; settled = true; clearTimeout(timer); resolve(value); }; const timer = setTimeout(() => finish(false), Math.max(0, timeoutMs)); exited.then(() => finish(true)); });
-    try {
-        child.kill("SIGTERM");
-    }
-    catch (error) {
-        if (clamavChildTerminated(child))
-            return;
-        throw error;
-    }
-    if (clamavChildTerminated(child) || await wait())
+    const startedAt = clamavNow(database);
+    const deadline = startedAt + Math.max(0, timeoutMs);
+    const termDeadline = startedAt + Math.floor(Math.max(0, timeoutMs) / 2);
+    if (await signalChildUntil(database, child, "SIGTERM", termDeadline))
         return;
-    try {
-        child.kill("SIGKILL");
-    }
-    catch (error) {
-        if (clamavChildTerminated(child))
-            return;
-        throw error;
-    }
-    if (clamavChildTerminated(child) || await wait())
+    if (await signalChildUntil(database, child, "SIGKILL", deadline))
         return;
     throw Object.assign(new Error("ClamAV child did not terminate after SIGKILL."), { code: "CLAMAV_CHILD_TERMINATION_FAILED" });
 }
@@ -1733,8 +1761,10 @@ function observeClamavChild(database, child) {
     if (!child || child.__sporadesClamavObserved)
         return;
     child.__sporadesClamavObserved = true;
-    const failed = () => { child.__sporadesClamavTerminated = true; database.clamavReady = false; };
-    child.once?.("exit", failed);
+    const terminated = () => { child.__sporadesClamavTerminated = true; database.clamavReady = false; };
+    const failed = () => { database.clamavReady = false; };
+    child.once?.("exit", terminated);
+    child.once?.("close", terminated);
     child.once?.("error", failed);
 }
 function clamavChildTerminated(child) { return Boolean(child) && (child.exitCode !== null || child.signalCode != null || child.__sporadesClamavTerminated === true); }
@@ -1770,7 +1800,7 @@ export async function waitForClamavReadiness(database, child, deadline, socketPa
         if (clamavChildTerminated(child))
             return false;
         const exists = database.__clamavTest?.socketExists?.(socketPath) ?? fs.existsSync(socketPath ?? database.__clamavDevSidecar?.socketPath ?? "/tmp/sporades-clamd.sock");
-        if (exists && await probeClamavReadiness(database, deadline))
+        if (exists && await probeClamavReadiness(database, deadline) && clamavRemaining(database, deadline) > 0)
             return true;
         const remaining = clamavRemaining(database, deadline);
         if (remaining <= 0)
@@ -1781,7 +1811,7 @@ export async function waitForClamavReadiness(database, child, deadline, socketPa
 }
 async function stopOwnedClamavChildren(database) {
     const owned = [["__clamavProcess", database.__clamavProcess], ["__clamavUpdateProcess", database.__clamavUpdateProcess]].filter(([, child]) => child);
-    const results = await Promise.allSettled(owned.map(([, child]) => terminateChild(child, clamavTerminateTimeout(database))));
+    const results = await Promise.allSettled(owned.map(([, child]) => terminateChild(child, clamavTerminateTimeout(database), database)));
     const failures = [];
     results.forEach((result, index) => { const [key, child] = owned[index]; if (result.status === "fulfilled") {
         if (database[key] === child)
@@ -1823,7 +1853,7 @@ export async function initializeClamavRuntime(database) {
     database.__clamavUpdateProcess = update;
     const updateCompleted = await waitForChild(update, clamavRemaining(database, deadline));
     if (!updateCompleted)
-        await terminateChild(update, Math.min(clamavTerminateTimeout(database), clamavRemaining(database, deadline)));
+        await terminateChild(update, Math.min(clamavTerminateTimeout(database), clamavRemaining(database, deadline)), database);
     database.__clamavUpdateProcess = null;
     const signature = await verifiedClamavSignature(database, deadline);
     if (!isCurrentClamavSignature(signature, clamavNow(database)))

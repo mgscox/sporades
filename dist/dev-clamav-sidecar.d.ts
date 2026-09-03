@@ -7,8 +7,12 @@ export declare function attachRequiredDevClamavSidecar(sidecar: any, database: R
     sidecar: any;
     attached: boolean;
 }>;
-export declare function waitForDevClamavChildExit(child: any, timeoutMs: number): Promise<boolean>;
-export declare function ensureDevClamavChildExit(child: any, timeoutMs: number): Promise<boolean>;
+type DevClamavTiming = {
+    now?: () => number;
+    delay?: (milliseconds: number) => Promise<void>;
+};
+export declare function waitForDevClamavChildExit(child: any, timeoutMs: number, timing?: DevClamavTiming): Promise<boolean>;
+export declare function ensureDevClamavChildExit(child: any, timeoutMs: number, timing?: DevClamavTiming): Promise<boolean>;
 export declare function startDevClamavSidecar(options: RecordLike): Promise<{
     descriptor: {
         containerName: string;
