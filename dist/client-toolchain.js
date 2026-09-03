@@ -491,10 +491,39 @@ function boundedBuildMessage(error, projectRoots = []) {
     let message = typeof errorDetails(firstError).text === "string"
         ? String(errorDetails(firstError).text)
         : typeof details.message === "string" ? details.message : "unknown error";
-    for (const projectRoot of canonicalDiagnosticRoots(projectRoots)) {
-        message = message.split(projectRoot).join("<project>");
-    }
+    message = redactBuildProjectRoots(message, projectRoots);
     return message.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 1200);
+}
+function redactBuildProjectRoots(message, projectRoots) {
+    const absoluteRoots = new Set();
+    const relativeRoots = new Set();
+    for (const projectRoot of projectRoots) {
+        const resolved = path.resolve(projectRoot);
+        for (const root of [resolved, path.isAbsolute(projectRoot) ? projectRoot : ""]) {
+            if (!root)
+                continue;
+            absoluteRoots.add(root);
+            absoluteRoots.add(root.replaceAll("\\", "/"));
+            absoluteRoots.add(root.replaceAll("/", "\\"));
+        }
+        const relative = path.relative(process.cwd(), resolved);
+        if (!relative || relative === ".")
+            continue;
+        for (const root of [relative, relative.replaceAll("\\", "/"), relative.replaceAll("/", "\\")]) {
+            relativeRoots.add(root);
+            relativeRoots.add(`./${root}`);
+            relativeRoots.add(`.\\${root}`);
+        }
+    }
+    let redacted = message;
+    for (const root of [...absoluteRoots].filter(Boolean).sort((left, right) => right.length - left.length)) {
+        redacted = redacted.split(root).join("<project>");
+    }
+    for (const root of [...relativeRoots].filter(Boolean).sort((left, right) => right.length - left.length)) {
+        const escaped = root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        redacted = redacted.replace(new RegExp(`(^|[^A-Za-z0-9_.\\/\\\\-])${escaped}(?=[/\\\\])`, "g"), "$1<project>");
+    }
+    return redacted;
 }
 function canonicalDiagnosticRoots(projectRoots) {
     return [...new Set(projectRoots.flatMap((projectRoot) => {

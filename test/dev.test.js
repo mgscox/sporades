@@ -630,6 +630,55 @@ test("client toolchains reject the server-only Stripe integration boundary", asy
   }
 });
 
+test("Vite build diagnostics redact short relative project roots only as path prefixes", async () => {
+  for (const projectName of ["a", "app"]) {
+    const projectDir = path.join(process.cwd(), projectName);
+    const clientDir = path.join(projectDir, "client");
+    const clientSourcePath = path.join(clientDir, "index.tsx");
+    const indexHtmlPath = path.join(projectDir, "index.html");
+    const relativeSource = `${projectName}/client/index.tsx`;
+    const windowsRelativeSource = relativeSource.replaceAll("/", "\\");
+    const windowsAbsoluteSource = clientSourcePath.replaceAll("/", "\\");
+    const readableProse = "A capable app can map an application and adapt a banner";
+    await assert.rejects(access(projectDir), (error) => error.code === "ENOENT");
+    try {
+      await mkdir(clientDir, { recursive: true });
+      await writeFile(clientSourcePath, "export {}\n");
+      await writeFile(indexHtmlPath, '<script type="module" src="/client/index.tsx"></script>\n');
+      await writeFile(
+        path.join(projectDir, "vite.config.mjs"),
+        `throw new Error(${JSON.stringify(`${readableProse}; absolute=${clientSourcePath}?mode=build; windows=${windowsAbsoluteSource}:7:3; stack=(${relativeSource}:8:4); quoted='${windowsRelativeSource}'`)});\n`,
+      );
+
+      await assert.rejects(
+        buildClientToolchain({
+          projectDir,
+          frameworkConfig: { framework: "react", entry: "index.tsx", loader: "tsx", jsxImportSource: "react", jsxRuntimeImport: "react/jsx-runtime" },
+          toolchain: "vite",
+          clientSource: "export {}\n",
+          clientSourcePath,
+          indexHtml: await readFile(indexHtmlPath, "utf8"),
+          indexHtmlPath,
+        }),
+        (error) => {
+          assert.match(error.message, new RegExp(readableProse));
+          assert.match(error.message, /absolute=<project>\/client\/index\.tsx\?mode=build/);
+          assert.match(error.message, /windows=<project>\\client\\index\.tsx:7:3/);
+          assert.match(error.message, /stack=\(<project>\/client\/index\.tsx:8:4\)/);
+          assert.match(error.message, /quoted='<project>\\client\\index\.tsx'/);
+          assert.equal(error.message.includes(projectDir), false);
+          assert.equal(error.message.includes(windowsAbsoluteSource), false);
+          assert.equal(error.message.includes(relativeSource), false);
+          assert.equal(error.message.includes(windowsRelativeSource), false);
+          return true;
+        },
+      );
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  }
+});
+
 async function installVue(projectDir) {
   await installProjectVueToolchain(projectDir, repoRoot);
 }
