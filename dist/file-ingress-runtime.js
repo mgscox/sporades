@@ -54,6 +54,24 @@ async function acquireReceipt(database, candidate) {
         throw new Error("Ingress receipt acquisition did not return a winner.");
     return { row, winner: false };
 }
+function sameIngressRetryDescriptor(left, right) {
+    return left?.fieldName === right?.fieldName && left?.name === right?.name && left?.type === right?.type && Number(left?.size) === Number(right?.size) && left?.digest === right?.digest &&
+        left?.authorityKind === right?.authorityKind && (left?.authorityKind === "capsule-principal" || left?.actorId === right?.actorId) && left?.authorityId === right?.authorityId && left?.ownerId === right?.ownerId &&
+        (left?.principalNamespace ?? null) === (right?.principalNamespace ?? null) && (left?.principalKeyDigest ?? null) === (right?.principalKeyDigest ?? null) &&
+        left?.endpointMethod === right?.endpointMethod && left?.endpointPath === right?.endpointPath && left?.requestKey === right?.requestKey && left?.partKey === right?.partKey;
+}
+async function refreshReceiptInspection(database, row, inspection) {
+    const refreshed = { ...row, inspection };
+    const updatedAt = new Date().toISOString();
+    const sql = database.adapter.dialect.sql("UPDATE [sporades_file_ingress] SET [payload] = ?, [updatedAt] = ? WHERE [key] = ? AND [leaseId] = ? AND [state] = ? AND [payload] = ?");
+    const updated = await database.adapter.prepare(sql).run(JSON.stringify(refreshed), updatedAt, row.key, row.leaseId, row.state, JSON.stringify(row));
+    if (Number(updated?.changes ?? 0) > 0)
+        return refreshed;
+    const current = await receipt(database, row.key);
+    if (!current || !sameIngressRetryDescriptor(current, row) || current.leaseId !== row.leaseId || !["leased", "complete"].includes(current.state))
+        throw idempotencyConflict("Ingress receipt changed while inspection evidence was refreshed.");
+    return current;
+}
 async function awaitCompletedStagingReceipt(database, key) {
     const maximumDeadline = Date.now() + leaseTtlMs;
     for (let attempt = 0; Date.now() < maximumDeadline; attempt += 1) {
@@ -2149,9 +2167,6 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
             const digest = crypto.createHash("sha256").update(body).digest("hex");
             const now = new Date();
             const candidate = { key, leaseId: crypto.randomUUID(), partId: crypto.createHash("sha256").update(key).digest("hex"), fieldName, name: safeName(filename), type, size: body.length, digest, fileId: crypto.randomUUID(), version: crypto.randomUUID(), state: "staging", actorId, authorityKind: authority.kind, authorityId, ownerId: authority.ownerId, ...(authority.kind === "capsule-principal" ? { principalNamespace: authority.namespace, principalKeyDigest: authority.keyDigest } : {}), endpointMethod: String(endpoint.options.method), endpointPath: String(endpoint.options.path), requestKey, partKey: stablePartKey, expiresAt: new Date(now.getTime() + leaseTtlMs).toISOString() };
-            const inspection = await inspectIngressLease(database, policy.inspection, candidate, body);
-            if (inspection)
-                Object.assign(candidate, { inspection });
             // Pre-authority receipts used the raw actor ID in their durable key. Keep that key and
             // its derived part/object identities intact: renaming only the key would strand retries,
             // while regenerating the part would duplicate staged bytes.
@@ -2168,8 +2183,24 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
                 ? { row: legacyRow, winner: false }
                 : await acquireReceipt(database, candidate);
             let row = acquired.row;
-            if (row.digest !== digest || row.name !== candidate.name || row.type !== type || row.size !== body.length)
+            if (!sameIngressRetryDescriptor(row, candidate))
                 throw Object.assign(new Error("Multipart retry descriptor conflicts with the original part."), { code: "INGRESS_DESCRIPTOR_CONFLICT" });
+            if (!acquired.winner && row.state === "staging")
+                row = await awaitCompletedStagingReceipt(database, row.key);
+            if (!row || !sameIngressRetryDescriptor(row, candidate))
+                throw Object.assign(new Error("Multipart retry descriptor conflicts with the original part."), { code: "INGRESS_DESCRIPTOR_CONFLICT" });
+            if ((acquired.winner && row.state !== "staging") || (!acquired.winner && row.state !== "leased" && row.state !== "complete"))
+                throw Object.assign(new Error("Multipart ingress staging did not complete."), { code: "INGRESS_STAGING_INCOMPLETE" });
+            const inspection = await inspectIngressLease(database, policy.inspection, row, body);
+            const freshInspectionIsClean = inspection ? inspectionEvidenceIsCurrent(database, { ...row, inspection }, policy.inspection) : true;
+            if (inspection) {
+                if (acquired.winner)
+                    Object.assign(row, { inspection });
+                else
+                    row = await refreshReceiptInspection(database, row, inspection);
+            }
+            if (row.state === "complete" && !freshInspectionIsClean)
+                throw inspectionRequiredError();
             if (acquired.winner) {
                 wonReceipts.push(row);
                 await database.fileStorage.writeFileVersion({ fileId: row.fileId, version: row.version, bytes: body });
@@ -2191,9 +2222,6 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
                         throw primary;
                     }
                 }
-            }
-            else if (row.state === "staging") {
-                row = await awaitCompletedStagingReceipt(database, row.key);
             }
             if (!row || (row.state !== "leased" && row.state !== "complete"))
                 throw Object.assign(new Error("Multipart ingress staging did not complete."), { code: "INGRESS_STAGING_INCOMPLETE" });
@@ -2307,6 +2335,8 @@ export function createEndpointIngressApi(database, endpoint, endpointRequest, co
                 if (row.state === "complete") {
                     if (!sameFileDescriptor(row.file, expectedFile))
                         throw idempotencyConflict();
+                    if (!inspectionEvidenceIsCurrent(database, row, inspectionPolicy))
+                        throw inspectionRequiredError();
                     return fileMetadataFromRow(row.file);
                 }
                 if (row.state === "expired" || Date.parse(row.expiresAt) <= Date.now())

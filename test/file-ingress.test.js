@@ -1919,6 +1919,78 @@ test("a clean required verdict must remain current and exactly match the staged 
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("a completed pre-inspection receipt requires fresh current ClamAV evidence before idempotent replay", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-completed-reinspection-")); let database;
+  const databasePath = path.join(dir, "data.db"); const filesPath = path.join(dir, "files");
+  const requestKey = "completed-reinspection"; const bytes = Buffer.from("stable completed bytes");
+  const request = (boundary) => ({ headers: { "content-type": `multipart/form-data; boundary=${boundary}`, "idempotency-key": requestKey }, async *[Symbol.asyncIterator]() { yield multipartBinary(boundary, "claim.txt", "text/plain", bytes); } });
+  const legacyEndpoint = { options: { method: "POST", path: "/completed-reinspection", body: { multipart: ingressPolicy() } } };
+  const inspection = { policyRevision: "completed-clamav-v2", maxVerdictAgeMs: 60_000, requiredInspectors: ["clamav"] };
+  const inspectedEndpoint = { options: { ...legacyEndpoint.options, body: { multipart: { ...ingressPolicy(), inspection } } } };
+  const endpointRequest = (boundary) => ({ headers: request(boundary).headers });
+  const api = (endpoint) => createEndpointIngressApi(database, endpoint, { __ingressRequestKey: requestKey, __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
+  const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`); let scanner;
+  try {
+    database = await openDevDatabase(databasePath, "", {}, { name: "completed-reinspection", files: { storagePath: filesPath } }, capsule({ name: "completed-reinspection" }));
+    const firstRequest = request("completed-old");
+    const first = await stageMultipartIngress(database, legacyEndpoint, firstRequest, endpointRequest("completed-old"), { userId: "claim-user" });
+    const originalFile = await api(legacyEndpoint).claim(first.multipart.files[0], { path: "/attachments/completed.txt" });
+    database.__clamavTest = { socketPath, loadedSignature: "daily:42", signature: { version: "daily:42", updatedAt: new Date().toISOString() } };
+
+    scanner = await fakeClamSocket(socketPath, { response: "stream: Malware FOUND\0" });
+    const rejectedRequest = request("completed-reject");
+    await assert.rejects(stageMultipartIngress(database, inspectedEndpoint, rejectedRequest, endpointRequest("completed-reject"), { userId: "claim-user" }), { code: "INGRESS_INSPECTION_REQUIRED" });
+    let stored = JSON.parse((await database.adapter.selectIngressByLease(first.multipart.files[0].leaseId)).payload);
+    assert.equal(stored.inspection.policyRevision, "completed-clamav-v2"); assert.equal(stored.inspection.verdicts[0].outcome, "rejected");
+
+    await new Promise((resolve) => scanner.server.close(resolve)); scanner = await fakeClamSocket(socketPath, { response: "stream: OK\0" });
+    const cleanRequest = request("completed-clean");
+    const clean = await stageMultipartIngress(database, inspectedEndpoint, cleanRequest, endpointRequest("completed-clean"), { userId: "claim-user" });
+    const replayed = await api(inspectedEndpoint).claim(clean.multipart.files[0], { path: "/attachments/completed.txt" });
+    assert.equal(replayed.id, originalFile.id); assert.equal(replayed.version, originalFile.version);
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress_audit_outbox]").get()).count), 1);
+
+    await database.close();
+    database = await openDevDatabase(databasePath, "", {}, { name: "completed-reinspection", files: { storagePath: filesPath } }, capsule({ name: "completed-reinspection" }));
+    const afterRestart = await api(inspectedEndpoint).claim(clean.multipart.files[0], { path: "/attachments/completed.txt" });
+    assert.equal(afterRestart.id, originalFile.id);
+    stored = JSON.parse((await database.adapter.selectIngressByLease(clean.multipart.files[0].leaseId)).payload);
+    assert.equal(stored.inspection.verdicts[0].outcome, "clean");
+  } finally { if (scanner) await new Promise((resolve) => scanner.server.close(resolve)); await database?.close(); await rm(socketPath, { force: true }); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("stable retries atomically refresh a matching leased receipt's inspection without accepting descriptor changes", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-leased-reinspection-")); let database;
+  const databasePath = path.join(dir, "data.db"); const filesPath = path.join(dir, "files"); const requestKey = "leased-reinspection";
+  const endpoint = (revision) => ({ options: { method: "POST", path: "/leased-reinspection", body: { multipart: { ...ingressPolicy(), inspection: { policyRevision: revision, maxVerdictAgeMs: 60_000, requiredInspectors: ["clamav"] } } } } });
+  const request = (boundary, bytes = "stable leased bytes") => ({ headers: { "content-type": `multipart/form-data; boundary=${boundary}`, "idempotency-key": requestKey }, async *[Symbol.asyncIterator]() { yield multipartBinary(boundary, "claim.txt", "text/plain", Buffer.from(bytes)); } });
+  const stage = async (activeEndpoint, boundary, bytes) => { const incoming = request(boundary, bytes); return await stageMultipartIngress(database, activeEndpoint, incoming, { headers: incoming.headers }, { userId: "claim-user" }); };
+  const api = (activeEndpoint) => createEndpointIngressApi(database, activeEndpoint, { __ingressRequestKey: requestKey, __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
+  const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`); let scanner; let scannerCalls = 0;
+  try {
+    database = await openDevDatabase(databasePath, "", {}, { name: "leased-reinspection", files: { storagePath: filesPath } }, capsule({ name: "leased-reinspection" }));
+    database.__clamavTest = { socketPath, timeoutMs: 5, loadedSignature: "daily:42", signature: { version: "daily:42", updatedAt: new Date().toISOString() } };
+    const v1 = endpoint("leased-clamav-v1"); const initial = await stage(v1, "leased-v1"); const lease = initial.multipart.files[0];
+    await assert.rejects(api(v1).claim(lease, { path: "/attachments/leased.txt" }), { code: "INGRESS_INSPECTION_REQUIRED" });
+
+    scanner = await fakeClamSocket(socketPath, { response: "stream: OK\0", onRequest: () => { scannerCalls += 1; } });
+    const v2 = endpoint("leased-clamav-v2"); const callsBeforeConflict = scannerCalls;
+    await assert.rejects(stage(v2, "leased-conflict", "different bytes"), { code: "INGRESS_DESCRIPTOR_CONFLICT" });
+    assert.equal(scannerCalls, callsBeforeConflict, "a descriptor mismatch must fail before scanner work or evidence publication");
+
+    const retries = await Promise.all(Array.from({ length: 12 }, (_, index) => stage(v2, `leased-clean-${index}`)));
+    assert.deepEqual([...new Set(retries.map((retry) => retry.multipart.files[0].leaseId))], [lease.leaseId]);
+    const refreshed = JSON.parse((await database.adapter.selectIngressByLease(lease.leaseId)).payload);
+    assert.equal(refreshed.state, "leased"); assert.equal(refreshed.inspection.policyRevision, "leased-clamav-v2"); assert.equal(refreshed.inspection.verdicts[0].outcome, "clean");
+
+    await database.close();
+    database = await openDevDatabase(databasePath, "", {}, { name: "leased-reinspection", files: { storagePath: filesPath } }, capsule({ name: "leased-reinspection" }));
+    const claimed = await api(v2).claim(lease, { path: "/attachments/leased.txt" });
+    assert.equal(claimed.path, "/attachments/leased.txt");
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress_audit_outbox]").get()).count), 1);
+  } finally { if (scanner) await new Promise((resolve) => scanner.server.close(resolve)); await database?.close(); await rm(socketPath, { force: true }); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("an inspected lease cannot substitute its inspected name or MIME type at claim", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-inspected-descriptor-")); let database;
   try {
