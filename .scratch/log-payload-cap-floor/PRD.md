@@ -1,6 +1,6 @@
 # Log payload cap floor
 
-Status: ready-for-agent
+Status: ready-for-human
 
 ## Source Planning
 
