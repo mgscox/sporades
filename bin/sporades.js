@@ -69484,6 +69484,25 @@ async function validatePdfIngress(bytes, options = {}) {
       const actionBearingKeys = /* @__PURE__ */ new Set(["/OpenAction", "/AA", "/A", "/Next"]);
       const forbiddenStructureKeys = /* @__PURE__ */ new Set(["/JavaScript", "/EmbeddedFiles", "/EF"]);
       const actionSubtypes = /* @__PURE__ */ new Set(["/GoTo", "/GoToR", "/GoToE", "/Launch", "/Thread", "/URI", "/Sound", "/Movie", "/Hide", "/Named", "/SubmitForm", "/ResetForm", "/ImportData", "/JavaScript", "/SetOCGState", "/Rendition", "/Trans", "/GoTo3DView"]);
+      const semanticName = (candidate, key) => {
+        let value = candidate.get(import_pdf_lib.PDFName.of(key));
+        if (value === void 0) return void 0;
+        const refs = /* @__PURE__ */ new Set();
+        for (let hop = 0; hop < 16; hop += 1) {
+          if (value instanceof import_pdf_lib.PDFName) return value.asString();
+          if (!(value instanceof import_pdf_lib.PDFRef)) return null;
+          const ref = value.toString();
+          if (refs.has(ref)) return null;
+          refs.add(ref);
+          try {
+            value = parsed.context.lookup(value);
+          } catch {
+            return null;
+          }
+          if (value === void 0) return null;
+        }
+        return null;
+      };
       const visit = (candidate, depth = 0, actionContext = false) => {
         if (depth > 128 || ++visitedCount > 1e5) return false;
         if (actionContext) return false;
@@ -69502,10 +69521,11 @@ async function validatePdfIngress(bytes, options = {}) {
           return true;
         }
         if (!(candidate instanceof import_pdf_lib.PDFDict)) return true;
-        const type = candidate.get(import_pdf_lib.PDFName.of("Type"));
-        if (type === import_pdf_lib.PDFName.of("Action") || type === import_pdf_lib.PDFName.of("Filespec") || type === import_pdf_lib.PDFName.of("EmbeddedFile")) return false;
-        const subtype = candidate.get(import_pdf_lib.PDFName.of("S"));
-        if (subtype instanceof import_pdf_lib.PDFName && actionSubtypes.has(subtype.asString())) return false;
+        const type = semanticName(candidate, "Type");
+        if (type === null || type === "/Action" || type === "/Filespec" || type === "/EmbeddedFile") return false;
+        const subtype = semanticName(candidate, "S");
+        if (subtype === null) return false;
+        if (subtype !== void 0 && actionSubtypes.has(subtype)) return false;
         for (const [key, value] of candidate.entries()) {
           const name = key.asString();
           if (forbiddenStructureKeys.has(name) || name === "/JS") return false;

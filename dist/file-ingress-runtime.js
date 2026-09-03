@@ -274,6 +274,31 @@ export async function validatePdfIngress(bytes, options = {}) {
             const actionBearingKeys = new Set(["/OpenAction", "/AA", "/A", "/Next"]);
             const forbiddenStructureKeys = new Set(["/JavaScript", "/EmbeddedFiles", "/EF"]);
             const actionSubtypes = new Set(["/GoTo", "/GoToR", "/GoToE", "/Launch", "/Thread", "/URI", "/Sound", "/Movie", "/Hide", "/Named", "/SubmitForm", "/ResetForm", "/ImportData", "/JavaScript", "/SetOCGState", "/Rendition", "/Trans", "/GoTo3DView"]);
+            const semanticName = (candidate, key) => {
+                let value = candidate.get(PDFName.of(key));
+                if (value === undefined)
+                    return undefined;
+                const refs = new Set();
+                for (let hop = 0; hop < 16; hop += 1) {
+                    if (value instanceof PDFName)
+                        return value.asString();
+                    if (!(value instanceof PDFRef))
+                        return null;
+                    const ref = value.toString();
+                    if (refs.has(ref))
+                        return null;
+                    refs.add(ref);
+                    try {
+                        value = parsed.context.lookup(value);
+                    }
+                    catch {
+                        return null;
+                    }
+                    if (value === undefined)
+                        return null;
+                }
+                return null;
+            };
             const visit = (candidate, depth = 0, actionContext = false) => {
                 if (depth > 128 || ++visitedCount > 100_000)
                     return false;
@@ -304,14 +329,16 @@ export async function validatePdfIngress(bytes, options = {}) {
                 }
                 if (!(candidate instanceof PDFDict))
                     return true;
-                const type = candidate.get(PDFName.of("Type"));
-                if (type === PDFName.of("Action") || type === PDFName.of("Filespec") || type === PDFName.of("EmbeddedFile"))
+                const type = semanticName(candidate, "Type");
+                if (type === null || type === "/Action" || type === "/Filespec" || type === "/EmbeddedFile")
                     return false;
-                const subtype = candidate.get(PDFName.of("S"));
+                const subtype = semanticName(candidate, "S");
+                if (subtype === null)
+                    return false;
                 // /S is shared by many benign PDF structures (border styles,
                 // transparency groups, and more). It is action semantics only for a
                 // standardized action subtype or in an action-bearing context.
-                if (subtype instanceof PDFName && actionSubtypes.has(subtype.asString()))
+                if (subtype !== undefined && actionSubtypes.has(subtype))
                     return false;
                 for (const [key, value] of candidate.entries()) {
                     const name = key.asString();
