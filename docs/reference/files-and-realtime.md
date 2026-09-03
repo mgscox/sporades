@@ -508,7 +508,11 @@ remain unique. In either representation generation numbers are limited to
 0 through 65535, and object 0 must be the generation-65535 free entry.
 Cross-reference streams require a real `/Type /XRef`, bounded `/Size`,
 consistent `/W` and `/Index` ranges, exact raw or Flate-decoded records, and an
-entry that identifies the stream itself. Flate is accepted as the direct
+entry that identifies the stream itself. Compressed entries must resolve to an
+effective in-use `/Type /ObjStm` with bounded `/N` and `/First`; its raw or
+Flate-decoded object-number table must match every requested index. Effective
+free entries must form one bounded, acyclic chain from object 0 back to the 0
+sentinel, never through an in-use or compressed entry. Flate is accepted as the direct
 `/FlateDecode` name or the standard single-element `[/FlateDecode]` array;
 unsupported or multiple filter chains fail closed. Hybrid tables must point
 through one in-range `/XRefStm` to a genuine same-revision cross-reference

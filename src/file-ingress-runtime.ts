@@ -344,6 +344,60 @@ function pdfRevisionObjectsOnly(bytes: Buffer, start: number, end: number, refer
   }
   return cursor === end;
 }
+function pdfObjectStreamNumbers(bytes: Buffer, entry: Extract<PdfXrefEntry, { type: 1 }>) {
+  const head = /^(\d{1,10})[\x00\x09\x0a\x0c\x0d\x20]+(\d{1,10})[\x00\x09\x0a\x0c\x0d\x20]+obj(?:[\x00\x09\x0a\x0c\x0d\x20]|$)/.exec(bytes.subarray(entry.offset, Math.min(bytes.length, entry.offset + 80)).toString("latin1"));
+  if (!head || Number(head[2]) !== entry.generation) return null;
+  let cursor = skipPdfTrivia(bytes, entry.offset + head[0].length, bytes.length); if (cursor < 0) return null;
+  const dictionary = pdfDictionary(bytes, cursor, new Set(["Length", "N", "First"]), new Set(["Type"]), new Set(), new Set(["Filter"]));
+  const length = dictionary?.values.get("Length"); const count = dictionary?.values.get("N"); const first = dictionary?.values.get("First");
+  if (!dictionary || dictionary.names.get("Type") !== "ObjStm" || length === undefined || count === undefined || count < 1 || count > 100_000 || first === undefined || first > 24_000_000) return null;
+  cursor = skipPdfTrivia(bytes, dictionary.end, bytes.length); if (cursor < 0 || !pdfKeywordAt(bytes, cursor, "stream")) return null;
+  cursor += 6; if (bytes[cursor] === 13 && bytes[cursor + 1] === 10) cursor += 2; else if (bytes[cursor] === 10 || bytes[cursor] === 13) cursor += 1; else return null;
+  const streamStart = cursor; cursor += length; if (cursor > bytes.length) return null;
+  let decoded: Buffer;
+  try {
+    const filters = dictionary.nameLists.get("Filter");
+    if (filters === undefined) decoded = bytes.subarray(streamStart, cursor);
+    else if (filters.length === 1 && filters[0] === "FlateDecode") decoded = zlib.inflateSync(bytes.subarray(streamStart, cursor), { maxOutputLength: 24_000_001 });
+    else return null;
+  } catch { return null; }
+  if (decoded.length > 24_000_000 || first > decoded.length) return null;
+  const objectNumbers: number[] = []; const seen = new Set<number>(); let headerAt = 0; let previousOffset = -1;
+  for (let index = 0; index < count; index += 1) {
+    headerAt = skipPdfTrivia(decoded, headerAt, first); if (headerAt < 0) return null;
+    const pair = /^(\d{1,10})[\x00\x09\x0a\x0c\x0d\x20]+(\d{1,20})(?=[\x00\x09\x0a\x0c\x0d\x20]|$)/.exec(decoded.subarray(headerAt, Math.min(first, headerAt + 80)).toString("latin1"));
+    if (!pair) return null;
+    const objectNumber = Number(pair[1]); const objectOffset = Number(pair[2]);
+    if (!Number.isSafeInteger(objectNumber) || objectNumber < 1 || seen.has(objectNumber) || !Number.isSafeInteger(objectOffset) || objectOffset <= previousOffset || first + objectOffset >= decoded.length) return null;
+    seen.add(objectNumber); objectNumbers.push(objectNumber); previousOffset = objectOffset; headerAt += pair[0].length;
+  }
+  if (previousOffset < 0 || skipPdfTrivia(decoded, headerAt, first) !== first) return null;
+  if (bytes[cursor] === 13 && bytes[cursor + 1] === 10) cursor += 2; else if (bytes[cursor] === 10 || bytes[cursor] === 13) cursor += 1;
+  if (!pdfKeywordAt(bytes, cursor, "endstream")) return null;
+  cursor = skipPdfTrivia(bytes, cursor + 9, bytes.length); if (cursor < 0 || !pdfKeywordAt(bytes, cursor, "endobj")) return null;
+  return objectNumbers;
+}
+function validPdfEffectiveXref(bytes: Buffer, size: number, entries: Map<number, PdfXrefEntry>) {
+  const head = entries.get(0); if (!head || head.type !== 0 || head.generation !== 65_535) return false;
+  const linkedFree = new Set<number>(); let freeAt = head.nextFree;
+  while (freeAt !== 0) {
+    if (freeAt >= size || linkedFree.has(freeAt)) return false;
+    const entry = entries.get(freeAt); if (!entry || entry.type !== 0) return false;
+    linkedFree.add(freeAt); freeAt = entry.nextFree;
+  }
+  for (const [objectNumber, entry] of entries) if (objectNumber !== 0 && entry.type === 0 && !linkedFree.has(objectNumber)) return false;
+  const objectStreams = new Map<number, number[]>();
+  for (const [objectNumber, entry] of entries) if (entry.type === 2) {
+    const container = entries.get(entry.objectStream); if (!container || container.type !== 1) return false;
+    let objectNumbers = objectStreams.get(entry.objectStream);
+    if (!objectNumbers) { objectNumbers = pdfObjectStreamNumbers(bytes, container) ?? undefined; if (!objectNumbers) return false; objectStreams.set(entry.objectStream, objectNumbers); }
+    if (entry.index >= objectNumbers.length || objectNumbers[entry.index] !== objectNumber) return false;
+  }
+  for (const [containerNumber, objectNumbers] of objectStreams) for (let index = 0; index < objectNumbers.length; index += 1) {
+    const entry = entries.get(objectNumbers[index]); if (!entry || entry.type !== 2 || entry.objectStream !== containerNumber || entry.index !== index) return false;
+  }
+  return true;
+}
 function validPdfTerminalBoundary(bytes: Buffer) {
   // Each accepted EOF is tied to the xref section which immediately precedes
   // its startxref footer. Following /Prev proves that the terminal section is
@@ -357,13 +411,13 @@ function validPdfTerminalBoundary(bytes: Buffer) {
   const absoluteFooterStart = Math.max(0, terminalMarker - 160) + footerStart.index;
   const pointerMatch = /startxref[\x00\x09\x0a\x0c\x0d\x20]+(\d{1,20})/.exec(footerStart[0]);
   if (!pointerMatch) return false;
-  let offset = Number(pointerMatch[1]); const seen = new Set<number>(); const chain: Array<{ offset: number; end: number; prev?: number; size: number; maxObject: number; objectOffsets?: Set<number> }> = []; let revisions = 0;
+  let offset = Number(pointerMatch[1]); const seen = new Set<number>(); const chain: Array<{ offset: number; end: number; prev?: number; size: number; maxObject: number; entries: Map<number, PdfXrefEntry>; objectOffsets?: Set<number> }> = []; let revisions = 0;
   while (++revisions <= 256) {
     if (seen.has(offset)) return false; seen.add(offset);
     const section = pdfXrefSection(bytes, offset); if (!section) return false;
     const footer = pdfFooterAfter(bytes, section.end, bytes.length); if (!footer || footer.pointer !== offset) return false;
     if (revisions === 1 && footer.start !== absoluteFooterStart) return false;
-    chain.push({ offset, end: footer.end, prev: section.prev, size: section.size, maxObject: section.maxObject, objectOffsets: section.objectOffsets });
+    chain.push({ offset, end: footer.end, prev: section.prev, size: section.size, maxObject: section.maxObject, entries: section.entries, objectOffsets: section.objectOffsets });
     if (section.prev === undefined) {
       const earlierFooter = /startxref[\x00\x09\x0a\x0c\x0d\x20]+\d{1,20}[\x00\x09\x0a\x0c\x0d\x20]+%%EOF/.test(bytes.subarray(0, offset).toString("latin1"));
       if (earlierFooter) return false;
@@ -374,7 +428,10 @@ function validPdfTerminalBoundary(bytes: Buffer) {
         if (current.size !== Math.max(previous.size, current.maxObject + 1)) return false;
         if (!pdfRevisionObjectsOnly(bytes, previous.end, current.offset, current.objectOffsets)) return false;
       }
-      return chain.at(-1)!.size === chain.at(-1)!.maxObject + 1;
+      if (chain.at(-1)!.size !== chain.at(-1)!.maxObject + 1) return false;
+      const effective = new Map<number, PdfXrefEntry>();
+      for (const revision of chain) for (const [objectNumber, entry] of revision.entries) if (!effective.has(objectNumber)) effective.set(objectNumber, entry);
+      return validPdfEffectiveXref(bytes, chain[0].size, effective);
     }
     if (section.prev >= offset) return false;
     offset = section.prev;
