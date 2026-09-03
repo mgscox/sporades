@@ -61154,11 +61154,12 @@ async function verifyInstalledPublicTree(request, timeoutMs) {
   return lastFailure;
 }
 function readVerificationHealthTimeoutMs(request) {
-  const value = Number(request.verification?.healthTimeoutMs ?? 1e4);
+  const scannerStartupMs = request.release?.inspection?.requiredInspectors?.includes("clamav") ? 16e4 : 1e4;
+  const value = Number(request.verification?.healthTimeoutMs ?? scannerStartupMs);
   if (!Number.isFinite(value) || value < 1) {
-    return 1e4;
+    return scannerStartupMs;
   }
-  return Math.min(value, 6e4);
+  return Math.min(value, 18e4);
 }
 async function routeVerifiedFailureToUnavailable(request, releaseId, message) {
   const lifecycle = normaliseLifecycle(request);
@@ -61684,6 +61685,16 @@ async function evaluateCapsuleHealth(request, options = {}) {
       "file-storage-failure",
       "Hosted Capsule file storage health check failed.",
       "Check the Hosted Capsule data volume permissions, then retry health.",
+      { runtime: runtime.safe }
+    );
+  }
+  if (runtime.checks.fileInspection && !runtime.checks.fileInspection.ok) {
+    return healthFailure(
+      request,
+      health,
+      "file-inspection-failure",
+      "Hosted Capsule file inspection health check failed.",
+      "Check the managed ClamAV daemon and signature freshness, then retry health.",
       { runtime: runtime.safe }
     );
   }
@@ -62513,13 +62524,15 @@ function normaliseRuntimeHealthBody(body) {
   const checks = body?.data?.checks;
   const sqlite = checks?.sqlite;
   const fileStorage = checks?.fileStorage;
+  const fileInspection = checks?.fileInspection;
   const ready = body?.data?.runtime?.ready;
-  const valid = typeof body?.ok === "boolean" && typeof ready === "boolean" && typeof sqlite?.ok === "boolean" && typeof fileStorage?.ok === "boolean";
+  const valid = typeof body?.ok === "boolean" && typeof ready === "boolean" && typeof sqlite?.ok === "boolean" && typeof fileStorage?.ok === "boolean" && (fileInspection === void 0 || typeof fileInspection?.ok === "boolean");
   const safe = {
     ready: ready === true,
     checks: {
       sqlite: { ok: sqlite?.ok === true },
-      fileStorage: { ok: fileStorage?.ok === true }
+      fileStorage: { ok: fileStorage?.ok === true },
+      ...fileInspection === void 0 ? {} : { fileInspection: { ok: fileInspection?.ok === true } }
     }
   };
   return { valid, ready: ready === true, checks: safe.checks, safe };

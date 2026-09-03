@@ -1631,11 +1631,12 @@ async function verifyInstalledPublicTree(request: HostHelperRequest, timeoutMs: 
 }
 
 function readVerificationHealthTimeoutMs(request: HostHelperRequest) {
-  const value = Number(request.verification?.healthTimeoutMs ?? 10_000);
+  const scannerStartupMs = request.release?.inspection?.requiredInspectors?.includes("clamav") ? 160_000 : 10_000;
+  const value = Number(request.verification?.healthTimeoutMs ?? scannerStartupMs);
   if (!Number.isFinite(value) || value < 1) {
-    return 10_000;
+    return scannerStartupMs;
   }
-  return Math.min(value, 60_000);
+  return Math.min(value, 180_000);
 }
 
 async function routeVerifiedFailureToUnavailable(request: HostHelperRequest, releaseId: string, message: string) {
@@ -2224,6 +2225,16 @@ async function evaluateCapsuleHealth(request: HostHelperRequest, options: { time
       "file-storage-failure",
       "Hosted Capsule file storage health check failed.",
       "Check the Hosted Capsule data volume permissions, then retry health.",
+      { runtime: runtime.safe },
+    );
+  }
+  if (runtime.checks.fileInspection && !runtime.checks.fileInspection.ok) {
+    return healthFailure(
+      request,
+      health,
+      "file-inspection-failure",
+      "Hosted Capsule file inspection health check failed.",
+      "Check the managed ClamAV daemon and signature freshness, then retry health.",
       { runtime: runtime.safe },
     );
   }
@@ -3126,13 +3137,16 @@ function normaliseRuntimeHealthBody(body: any) {
   const checks = body?.data?.checks;
   const sqlite = checks?.sqlite;
   const fileStorage = checks?.fileStorage;
+  const fileInspection = checks?.fileInspection;
   const ready = body?.data?.runtime?.ready;
-  const valid = typeof body?.ok === "boolean" && typeof ready === "boolean" && typeof sqlite?.ok === "boolean" && typeof fileStorage?.ok === "boolean";
+  const valid = typeof body?.ok === "boolean" && typeof ready === "boolean" && typeof sqlite?.ok === "boolean" && typeof fileStorage?.ok === "boolean"
+    && (fileInspection === undefined || typeof fileInspection?.ok === "boolean");
   const safe = {
     ready: ready === true,
     checks: {
       sqlite: { ok: sqlite?.ok === true },
       fileStorage: { ok: fileStorage?.ok === true },
+      ...(fileInspection === undefined ? {} : { fileInspection: { ok: fileInspection?.ok === true } }),
     },
   };
   return { valid, ready: ready === true, checks: safe.checks, safe };

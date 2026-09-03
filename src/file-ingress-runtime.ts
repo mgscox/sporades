@@ -138,8 +138,8 @@ export async function validatePdfIngress(bytes: Buffer, options: RecordLike = {}
       const [document, parsed] = await Promise.all([task.promise, PDFDocument.load(bytes, { ignoreEncryption: false, throwOnInvalidObject: true, updateMetadata: false })]);
       if ((document as any).numPages < 1 || (document as any).numPages > 100) return false;
       const visitedObjects = new WeakSet<object>(); const visitedRefs = new Set<string>(); let visitedCount = 0;
-      const actionBearingKeys = new Set(["/OpenAction", "/AA", "/A", "/Next"]);
-      const forbiddenStructureKeys = new Set(["/JavaScript", "/EmbeddedFiles", "/EF"]);
+      const actionBearingKeys = new Set(["/OpenAction", "/AA", "/A"]);
+      const forbiddenStructureKeys = new Set(["/JavaScript", "/EmbeddedFiles", "/EF", "/XFA"]);
       const actionSubtypes = new Set(["/GoTo", "/GoToR", "/GoToE", "/Launch", "/Thread", "/URI", "/Sound", "/Movie", "/Hide", "/Named", "/SubmitForm", "/ResetForm", "/ImportData", "/JavaScript", "/SetOCGState", "/Rendition", "/Trans", "/GoTo3DView"]);
       const semanticName = (candidate: PDFDict, key: string): string | undefined | null => {
         let value = candidate.get(PDFName.of(key));
@@ -158,7 +158,7 @@ export async function validatePdfIngress(bytes: Buffer, options: RecordLike = {}
       };
       const visit = (candidate: any, depth = 0, actionContext = false): boolean => {
         if (depth > 128 || ++visitedCount > 100_000) return false;
-        // OpenAction, AA, A, and Next values are action-bearing by definition.
+        // OpenAction, AA, and A values are action-bearing by definition.
         // Reject the whole reachable value even when it is indirect, an array,
         // or a dictionary that legally omits /Type /Action and /S.
         if (actionContext) return false;
@@ -179,6 +179,9 @@ export async function validatePdfIngress(bytes: Buffer, options: RecordLike = {}
         for (const [key, value] of candidate.entries()) {
           const name = key.asString();
           if (forbiddenStructureKeys.has(name) || name === "/JS") return false;
+          // /Next is also the ordinary sibling pointer in outline trees. It is
+          // an action chain only after this dictionary has independently been
+          // classified as an action; those dictionaries are rejected above.
           if (!visit(value, depth + 1, actionBearingKeys.has(name))) return false;
         }
         return true;

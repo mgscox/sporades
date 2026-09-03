@@ -69481,8 +69481,8 @@ async function validatePdfIngress(bytes, options = {}) {
       const visitedObjects = /* @__PURE__ */ new WeakSet();
       const visitedRefs = /* @__PURE__ */ new Set();
       let visitedCount = 0;
-      const actionBearingKeys = /* @__PURE__ */ new Set(["/OpenAction", "/AA", "/A", "/Next"]);
-      const forbiddenStructureKeys = /* @__PURE__ */ new Set(["/JavaScript", "/EmbeddedFiles", "/EF"]);
+      const actionBearingKeys = /* @__PURE__ */ new Set(["/OpenAction", "/AA", "/A"]);
+      const forbiddenStructureKeys = /* @__PURE__ */ new Set(["/JavaScript", "/EmbeddedFiles", "/EF", "/XFA"]);
       const actionSubtypes = /* @__PURE__ */ new Set(["/GoTo", "/GoToR", "/GoToE", "/Launch", "/Thread", "/URI", "/Sound", "/Movie", "/Hide", "/Named", "/SubmitForm", "/ResetForm", "/ImportData", "/JavaScript", "/SetOCGState", "/Rendition", "/Trans", "/GoTo3DView"]);
       const semanticName = (candidate, key) => {
         let value = candidate.get(import_pdf_lib.PDFName.of(key));
@@ -90303,6 +90303,7 @@ function createHostReleaseRequest(options) {
       fingerprints: options.sshAccess.fingerprints
     } : null,
     baseImage: baseImageMetadata(options.updatePolicyMode),
+    inspection: options.requiredInspectors?.length ? { requiredInspectors: [...options.requiredInspectors] } : null,
     files,
     directories: {
       capsule: registration.directories.capsule,
@@ -97573,6 +97574,8 @@ async function createHostReleaseArchive(options) {
   const remoteArchive = posixJoin2(options.profile.remoteRoot, "incoming", `${releaseId}.tar.gz`);
   const sealedServerEnv = await createHostReleaseSealedServerEnv(options);
   const publicFiles = await listHostedPublicFiles(options.bundle.staticFiles.publicDir);
+  const capsuleDefinition = await importCapsuleDefinition(options.bundle.serverRuntime.capsuleModuleSource);
+  const requiredInspectors = [...new Set(Object.values(capsuleDefinition?.endpoints ?? {}).flatMap((endpoint) => endpoint?.options?.body?.multipart?.inspection?.requiredInspectors ?? []))].filter((inspector) => inspector === "content-policy-v1" || inspector === "clamav");
   const releaseRequest = createHostReleaseRequest({
     alias: options.alias,
     profile: options.profile,
@@ -97585,7 +97588,8 @@ async function createHostReleaseArchive(options) {
     sealedServerEnv,
     sshAccess: options.sshAccess,
     updatePolicyMode: readBaseImageUpdatePolicy(options.projectConfig),
-    publicFiles
+    publicFiles,
+    requiredInspectors
   });
   await rm7(packageDir, { recursive: true, force: true });
   await mkdir7(path12.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true });

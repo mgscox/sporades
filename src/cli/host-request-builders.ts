@@ -44,6 +44,9 @@ export function createHostReleaseRequest(options: LooseRecord): HostHelperReleas
       }
       : null,
     baseImage: baseImageMetadata(options.updatePolicyMode),
+    inspection: options.requiredInspectors?.length
+      ? { requiredInspectors: [...options.requiredInspectors] }
+      : null,
     files,
     directories: {
       capsule: registration.directories.capsule,

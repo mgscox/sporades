@@ -341,6 +341,15 @@ new current release and checks the Hosted Capsule runtime health route:
 sporades host push --host personal --subname team-notes --verify --json
 ```
 
+When the built Capsule declares the required `clamav` inspector, the release
+request carries only that bounded inspector name. Hosted verification then
+allows up to 160 seconds for the initial official signature download and
+daemon readiness, instead of applying the ordinary 10-second route window to
+a cold scanner. Other Capsules retain the 10-second default. An explicit
+verification timeout remains bounded and overrides either default. Runtime
+health output preserves the safe `checks.fileInspection.ok` boolean without
+exposing daemon topology, signatures, or malware names.
+
 By default, verification failure records the failed release and routes the
 Capsule to the Hosted Capsule unavailable response. Automatic fallback to the
 previous release is deliberately opt-in and only applies during release

@@ -4633,6 +4633,10 @@ async function createHostReleaseArchive(options) {
     const remoteArchive = posixJoin(options.profile.remoteRoot, "incoming", `${releaseId}.tar.gz`);
     const sealedServerEnv = await createHostReleaseSealedServerEnv(options);
     const publicFiles = await listHostedPublicFiles(options.bundle.staticFiles.publicDir);
+    const capsuleDefinition = await importCapsuleDefinition(options.bundle.serverRuntime.capsuleModuleSource);
+    const requiredInspectors = [...new Set(Object.values(capsuleDefinition?.endpoints ?? {})
+            .flatMap((endpoint) => endpoint?.options?.body?.multipart?.inspection?.requiredInspectors ?? []))]
+        .filter((inspector) => inspector === "content-policy-v1" || inspector === "clamav");
     const releaseRequest = createHostReleaseRequest({
         alias: options.alias,
         profile: options.profile,
@@ -4646,6 +4650,7 @@ async function createHostReleaseArchive(options) {
         sshAccess: options.sshAccess,
         updatePolicyMode: readBaseImageUpdatePolicy(options.projectConfig),
         publicFiles,
+        requiredInspectors,
     });
     await rm(packageDir, { recursive: true, force: true });
     await mkdir(path.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true });

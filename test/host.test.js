@@ -12,7 +12,7 @@ import { connect } from "node:net";
 import { createWebSocketHub, openDevDatabase, prepareHttpSecurity, routeRuntimeHealth } from "../dist/server-runtime-source.js";
 import { CLIENT_CAPABILITIES, CLIENT_TEMPLATES } from "../dist/client-capabilities.js";
 import { validateReleaseArchive } from "../dist/cli/host-helper-archive.js";
-import { createHostLifecycleRequest } from "../dist/cli/host-request-builders.js";
+import { createHostLifecycleRequest, createHostReleaseRequest } from "../dist/cli/host-request-builders.js";
 import { installProjectVueToolchain } from "./support/project-vue-toolchain.js";
 import { installProjectSvelteToolchain } from "./support/project-svelte-toolchain.js";
 import { installProjectSolidToolchain } from "./support/project-solid-toolchain.js";
@@ -34,6 +34,20 @@ function buildHostLifecycle(remoteRoot, domain, subname, scheme = "https") {
     { updatePolicyMode: "manual" },
   );
 }
+
+test("Hosted release requests carry only bounded required inspector metadata", () => {
+  const base = {
+    alias: "personal", profile: { domain: "capsules.example.dev", remoteRoot: "/srv/sporades" }, subname: "team-notes",
+    binding: { hostedUrl: "https://team-notes.capsules.example.dev", remoteCapsuleId: "capsules.example.dev/team-notes" },
+    releaseId: "20260903T010203Z-deadbeef", remoteArchive: "/srv/sporades/incoming/release.tar.gz",
+    bundle: { containerMounts: { serverEnv: null } }, publicFiles: ["public/index.html"], restart: true,
+    updatePolicyMode: "manual", sealedServerEnv: null, sshAccess: { enabled: false },
+  };
+  assert.deepEqual(createHostReleaseRequest({ ...base, requiredInspectors: ["content-policy-v1", "clamav"] }).inspection, {
+    requiredInspectors: ["content-policy-v1", "clamav"],
+  });
+  assert.equal(createHostReleaseRequest({ ...base, requiredInspectors: [] }).inspection, null);
+});
 
 async function withTempDir(fn) {
   const dir = await mkdtemp(path.join(await realpath(tmpdir()), "sporades-host-"));
@@ -6587,6 +6601,7 @@ test("sporades host helper checks Hosted Capsule runtime health with a Host-owne
             checks: {
               sqlite: { ok: true },
               fileStorage: { ok: true },
+              fileInspection: { ok: true },
             },
           },
           error: null,
@@ -6647,6 +6662,7 @@ test("sporades host helper checks Hosted Capsule runtime health with a Host-owne
             checks: {
               sqlite: { ok: true },
               fileStorage: { ok: true },
+              fileInspection: { ok: true },
             },
           },
         },
@@ -7890,6 +7906,10 @@ test("sporades host helper reports structured Hosted Capsule runtime health fail
       {
         failure: "file-storage-failure",
         body: { ok: false, data: { runtime: { ready: false }, checks: { sqlite: { ok: true }, fileStorage: { ok: false } } }, error: null },
+      },
+      {
+        failure: "file-inspection-failure",
+        body: { ok: false, data: { runtime: { ready: false }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: false } } }, error: null },
       },
     ];
 
@@ -10937,6 +10957,7 @@ test("sporades host helper verifies a pushed Hosted Capsule release after restar
             checks: {
               sqlite: { ok: true },
               fileStorage: { ok: true },
+              fileInspection: { ok: true },
             },
           },
           error: null,
@@ -10977,6 +10998,7 @@ test("sporades host helper verifies a pushed Hosted Capsule release after restar
       assert.equal(output.data.verification.state, "verified");
       assert.equal(output.data.verification.health.route.responding, true);
       assert.equal(output.data.verification.health.runtime.ready, true);
+      assert.deepEqual(output.data.verification.health.runtime.checks.fileInspection, { ok: true });
       assert.deepEqual(output.data.verification.health.public, {
         url: `http://${fixture.subname}.${fixture.domain}/`,
         path: "/",
@@ -11056,6 +11078,30 @@ test("sporades host helper waits for a newly started Capsule route to serve its 
       assert.equal(output.data.verification.state, "verified");
       assert.equal(output.data.verification.health.public.statusCode, 200);
       assert.equal(publicAttempts, 2);
+    });
+  });
+});
+
+test("ClamAV-declaring release verification allows a cold scanner to exceed the legacy ten-second window", async () => {
+  await withTempDir(async (dir) => {
+    const startedAt = Date.now();
+    await withHttpServer((request, response) => {
+      if (request.url === "/" && Date.now() - startedAt < 10_100) {
+        response.writeHead(502, { "content-type": "text/plain" }); response.end("scanner starting"); return;
+      }
+      if (request.url === "/") {
+        response.writeHead(200, { "content-type": "text/html" }); response.end("<main>ready</main>"); return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true, data: { runtime: { ready: true }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: true } } }, error: null }));
+    }, async (port) => {
+      const fixture = await writeHostedCapsuleInstallFixture(dir, { rootName: "verify-cold-clamav", domain: `localhost:${port}`, scheme: "http" });
+      fixture.release.inspection = { requiredInspectors: ["clamav"] };
+      const docker = await installFakeDocker(path.join(dir, "verify-cold-clamav-docker"));
+      const install = await runHostHelper({ action: "capsule.release.install", host: { alias: "personal", domain: fixture.domain, scheme: "http", remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname }, release: fixture.release, lifecycle: fixture.lifecycle, verification: { enabled: true } }, { cwd: dir, env: docker.env });
+      assert.equal(install.code, 0, install.stderr);
+      assert.equal(JSON.parse(install.stdout).data.verified, true);
+      assert.ok(Date.now() - startedAt >= 10_000);
     });
   });
 });

@@ -271,8 +271,8 @@ export async function validatePdfIngress(bytes, options = {}) {
             const visitedObjects = new WeakSet();
             const visitedRefs = new Set();
             let visitedCount = 0;
-            const actionBearingKeys = new Set(["/OpenAction", "/AA", "/A", "/Next"]);
-            const forbiddenStructureKeys = new Set(["/JavaScript", "/EmbeddedFiles", "/EF"]);
+            const actionBearingKeys = new Set(["/OpenAction", "/AA", "/A"]);
+            const forbiddenStructureKeys = new Set(["/JavaScript", "/EmbeddedFiles", "/EF", "/XFA"]);
             const actionSubtypes = new Set(["/GoTo", "/GoToR", "/GoToE", "/Launch", "/Thread", "/URI", "/Sound", "/Movie", "/Hide", "/Named", "/SubmitForm", "/ResetForm", "/ImportData", "/JavaScript", "/SetOCGState", "/Rendition", "/Trans", "/GoTo3DView"]);
             const semanticName = (candidate, key) => {
                 let value = candidate.get(PDFName.of(key));
@@ -302,7 +302,7 @@ export async function validatePdfIngress(bytes, options = {}) {
             const visit = (candidate, depth = 0, actionContext = false) => {
                 if (depth > 128 || ++visitedCount > 100_000)
                     return false;
-                // OpenAction, AA, A, and Next values are action-bearing by definition.
+                // OpenAction, AA, and A values are action-bearing by definition.
                 // Reject the whole reachable value even when it is indirect, an array,
                 // or a dictionary that legally omits /Type /Action and /S.
                 if (actionContext)
@@ -344,6 +344,9 @@ export async function validatePdfIngress(bytes, options = {}) {
                     const name = key.asString();
                     if (forbiddenStructureKeys.has(name) || name === "/JS")
                         return false;
+                    // /Next is also the ordinary sibling pointer in outline trees. It is
+                    // an action chain only after this dictionary has independently been
+                    // classified as an action; those dictionaries are rejected above.
                     if (!visit(value, depth + 1, actionBearingKeys.has(name)))
                         return false;
                 }
