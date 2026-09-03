@@ -690,6 +690,73 @@ test("Vite build diagnostics redact short relative project roots only as path pr
   }
 });
 
+test("Vite build diagnostics redact filesystem-equivalent NFC and NFD project paths", async (t) => {
+  const nfcName = "é-normalized-app";
+  const nfdName = nfcName.normalize("NFD");
+  const nfcProjectDir = path.join(process.cwd(), nfcName);
+  const nfdProjectDir = path.join(process.cwd(), nfdName);
+  await assert.rejects(access(nfcProjectDir), (error) => error.code === "ENOENT");
+  await assert.rejects(access(nfdProjectDir), (error) => error.code === "ENOENT");
+  try {
+    await mkdir(path.join(nfcProjectDir, "client"), { recursive: true });
+    const [nfcStat, nfdStat] = await Promise.all([lstat(nfcProjectDir), lstat(nfdProjectDir).catch(() => null)]);
+    const normalizationEquivalent = Boolean(nfdStat && nfcStat.dev === nfdStat.dev && nfcStat.ino === nfdStat.ino);
+    if (process.platform === "darwin") assert.equal(normalizationEquivalent, true, "APFS must resolve the alternate normalization spelling to the same project");
+    else if (!normalizationEquivalent) t.diagnostic("Filesystem does not alias normalization-equivalent names; redaction behavior remains covered.");
+
+    const nfcAbsoluteSource = path.join(nfcProjectDir, "client", "index.tsx");
+    const nfdAbsoluteSource = path.join(nfdProjectDir, "client", "index.tsx");
+    const nfcIndexHtml = path.join(nfcProjectDir, "index.html");
+    await writeFile(nfcAbsoluteSource, "export {}\n");
+    await writeFile(nfcIndexHtml, '<script type="module" src="/client/index.tsx"></script>\n');
+    const nfcRelativeSource = `${nfcName}/client/index.tsx`;
+    const nfdRelativeSource = `${nfdName}/client/index.tsx`;
+    const nfcWindowsAbsolute = nfcAbsoluteSource.replaceAll("/", "\\");
+    const nfdWindowsAbsolute = nfdAbsoluteSource.replaceAll("/", "\\");
+    const nfcWindowsRelative = nfcRelativeSource.replaceAll("/", "\\");
+    const nfdWindowsRelative = nfdRelativeSource.replaceAll("/", "\\");
+    const adjacentProse = `café${nfcRelativeSource}|e\u0301${nfdRelativeSource}`;
+    const diagnostic = [
+      `adjacent=${adjacentProse}`,
+      `nfc-absolute=${nfcAbsoluteSource}?mode=build`,
+      `nfd-absolute=${nfdAbsoluteSource}:4:2`,
+      `nfc-windows-absolute=${nfcWindowsAbsolute}:5:3`,
+      `nfd-windows-absolute=${nfdWindowsAbsolute}?mode=build`,
+      `nfc-relative=(${nfcRelativeSource}:6:4)`,
+      `nfd-relative=?file=${nfdRelativeSource}`,
+      `nfc-windows-relative='${nfcWindowsRelative}'`,
+      `nfd-windows-relative= ${nfdWindowsRelative}`,
+    ].join("; ");
+    await writeFile(path.join(nfcProjectDir, "vite.config.mjs"), `throw new Error(${JSON.stringify(diagnostic)});\n`);
+
+    await assert.rejects(
+      buildClientToolchain({
+        projectDir: nfcProjectDir,
+        frameworkConfig: { framework: "react", entry: "index.tsx", loader: "tsx", jsxImportSource: "react", jsxRuntimeImport: "react/jsx-runtime" },
+        toolchain: "vite",
+        clientSource: "export {}\n",
+        clientSourcePath: nfcAbsoluteSource,
+        indexHtml: await readFile(nfcIndexHtml, "utf8"),
+        indexHtmlPath: nfcIndexHtml,
+      }),
+      (error) => {
+        assert.equal(error.message.includes(`adjacent=${adjacentProse}`), true);
+        assert.match(error.message, /nfc-absolute=<project>\/client\/index\.tsx\?mode=build/);
+        assert.match(error.message, /nfd-absolute=<project>\/client\/index\.tsx:4:2/);
+        assert.match(error.message, /nfc-windows-absolute=<project>\\client\\index\.tsx:5:3/);
+        assert.match(error.message, /nfd-windows-absolute=<project>\\client\\index\.tsx\?mode=build/);
+        assert.match(error.message, /nfc-relative=\(<project>\/client\/index\.tsx:6:4\)/);
+        assert.match(error.message, /nfd-relative=\?file=<project>\/client\/index\.tsx/);
+        assert.match(error.message, /nfc-windows-relative='<project>\\client\\index\.tsx'/);
+        assert.match(error.message, /nfd-windows-relative= <project>\\client\\index\.tsx/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(nfcProjectDir, { recursive: true, force: true });
+  }
+});
+
 async function installVue(projectDir) {
   await installProjectVueToolchain(projectDir, repoRoot);
 }

@@ -28227,16 +28227,20 @@ function redactBuildProjectRoots(message, projectRoots) {
     const resolved = path.resolve(projectRoot);
     for (const root of [resolved, path.isAbsolute(projectRoot) ? projectRoot : ""]) {
       if (!root) continue;
-      absoluteRoots.add(root);
-      absoluteRoots.add(root.replaceAll("\\", "/"));
-      absoluteRoots.add(root.replaceAll("/", "\\"));
+      for (const normalizedRoot of diagnosticNormalizationForms(root)) {
+        absoluteRoots.add(normalizedRoot);
+        absoluteRoots.add(normalizedRoot.replaceAll("\\", "/"));
+        absoluteRoots.add(normalizedRoot.replaceAll("/", "\\"));
+      }
     }
     const relative = path.relative(process.cwd(), resolved);
     if (!relative || relative === ".") continue;
-    for (const root of [relative, relative.replaceAll("\\", "/"), relative.replaceAll("/", "\\")]) {
-      relativeRoots.add(root);
-      relativeRoots.add(`./${root}`);
-      relativeRoots.add(`.\\${root}`);
+    for (const normalizedRoot of diagnosticNormalizationForms(relative)) {
+      for (const root of [normalizedRoot, normalizedRoot.replaceAll("\\", "/"), normalizedRoot.replaceAll("/", "\\")]) {
+        relativeRoots.add(root);
+        relativeRoots.add(`./${root}`);
+        relativeRoots.add(`.\\${root}`);
+      }
     }
   }
   let redacted = message;
@@ -28248,6 +28252,9 @@ function redactBuildProjectRoots(message, projectRoots) {
     redacted = redacted.replace(new RegExp(`(^|[^\\p{L}\\p{M}\\p{N}\\p{Pc}.\\/\\\\-])${escaped}(?=[/\\\\])`, "gu"), "$1<project>");
   }
   return redacted;
+}
+function diagnosticNormalizationForms(value) {
+  return [.../* @__PURE__ */ new Set([value, value.normalize("NFC"), value.normalize("NFD")])];
 }
 function canonicalDiagnosticRoots(projectRoots) {
   return [...new Set(projectRoots.flatMap((projectRoot) => {
