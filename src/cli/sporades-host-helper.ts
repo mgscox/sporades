@@ -1788,7 +1788,8 @@ async function startCapsule(request: HostHelperRequest, options: LooseRecord = {
   await recordReleaseStartAttempt(request, releaseId);
 
   ensureHostedBaseImage(lifecycle);
-  const runArgs = await dockerRunArgs(lifecycle, releaseId);
+  const runtimeProbe = await ensureRuntimeProbeCredential(request);
+  const runArgs = await dockerRunArgs(lifecycle, releaseId, runtimeProbe);
   const run = runDocker(runArgs);
   if (!run.ok) {
     await recordFailedStartAndUnavailableRoute(request, lifecycle, releaseId, "Hosted Capsule container failed to start.");
@@ -1841,7 +1842,6 @@ async function startCapsule(request: HostHelperRequest, options: LooseRecord = {
     return null;
   }
 
-  const runtimeProbe = await ensureRuntimeProbeCredential(request);
   const runningRoute = loopbackRunningRoute({ ...lifecycle.routes.running, runtimeProbe }, publishedPort);
   try {
     await writeRunningRoute(lifecycle, runningRoute);
@@ -3127,7 +3127,7 @@ async function ensureRuntimeProbeCredential(request: HostHelperRequest): Promise
 function readRuntimeProbeCredential(record: any) {
   const header = record?.runtimeProbe?.header;
   const token = record?.runtimeProbe?.token;
-  if (header !== RUNTIME_PROBE_HEADER || typeof token !== "string" || token.length === 0) {
+  if (header !== RUNTIME_PROBE_HEADER || typeof token !== "string" || !/^[a-f0-9]{64}$/.test(token)) {
     return null;
   }
   return { header, token };
@@ -4487,7 +4487,7 @@ function parseDockerByteSize(value: unknown) {
   return Math.round(amount * multipliers[unit]);
 }
 
-async function dockerRunArgs(lifecycle: HostedCapsuleLifecycle, releaseId: string) {
+async function dockerRunArgs(lifecycle: HostedCapsuleLifecycle, releaseId: string, runtimeProbe: any) {
   const args = [
     "run",
     "--detach",
@@ -4563,6 +4563,8 @@ async function dockerRunArgs(lifecycle: HostedCapsuleLifecycle, releaseId: strin
     "SPORADES_SECURITY_SESSION=hosted",
     "--env",
     "SPORADES_CLAMAV_MANAGED=1",
+    "--env",
+    `SPORADES_RUNTIME_PROBE_TOKEN=${runtimeProbe.token}`,
     "--env",
     `SPORADES_PUBLIC_ORIGIN=${lifecycle.hostedUrl}`,
     "--env",

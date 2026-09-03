@@ -828,6 +828,9 @@ test("sporades deploy --json bundles and starts a container session", async () =
     assert(runCall.args.includes("com.sporades.base-image.version=0.2.0-node22-alpine"));
     assert(runCall.args.includes("com.sporades.base-image.update-policy=host-managed"));
     assert(runCall.args.includes("SPORADES_LOG_STDOUT=1"));
+    const runtimeProbeEnv = runCall.args.find((arg) => arg.startsWith("SPORADES_RUNTIME_PROBE_TOKEN="));
+    assert.match(runtimeProbeEnv ?? "", /^SPORADES_RUNTIME_PROBE_TOKEN=[a-f0-9]{64}$/);
+    assert.doesNotMatch(deployResult.stdout + deployResult.stderr, /SPORADES_RUNTIME_PROBE_TOKEN=/);
     const imageIndex = runCall.args.indexOf("ghcr.io/sporades/sporades-base:0.2.0-node22-alpine");
     assert(imageIndex > -1);
     assert.deepEqual(runCall.args.slice(imageIndex), [

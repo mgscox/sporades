@@ -506,8 +506,8 @@ This includes generic XML and common JavaScript, Python, and shell source forms.
 That deliberately creates false positives for support notes containing code;
 such material should be pasted as quoted ticket text or explicitly handled by
 a future reviewed evidence policy, never treated as an executable channel.
-Strict-text inspection is capped at 1 MiB before UTF-8 decoding or JavaScript
-and Python parsing. Sporades uses pinned production parsers on the complete
+Strict-text inspection is capped at 1 MiB before UTF-8 decoding or JavaScript,
+Python, and shell parsing. Sporades uses pinned production parsers on the complete
 text without executing the upload. Before invoking either dependency, a
 dependency-free, context-free iterative scan caps aggregate raw `()`, `[]`,
 and `{}` nesting at 256. Every opener increases the depth and every closer
@@ -545,6 +545,17 @@ definitions, decorators, imports, assignments, calls, lambdas, comprehensions,
 remain eligible as malformed prose, so ordinary sentences and quoted or
 incomplete code references are not broadly classified as Python. Unexpected
 parser failures and any traversal-budget exhaustion fail closed.
+Sporades then parses POSIX/Bash-like input with pinned `unbash@4.0.11`, whose
+typed syntax tree and recovery errors are traversed iteratively under the same
+100,000-node and 512-level caps. An error-free program containing a command,
+assignment, pipeline, substitution, redirect, function, or control structure
+is rejected; syntax-error trees remain eligible as malformed prose. Because a
+bare prose phrase is also a syntactically valid shell command, the classifier
+pre-accepts only narrowly bounded sentence-shaped prose, whole quoted text,
+and harmless single words before parsing. This is intentionally conservative:
+ambiguous command-shaped text is rejected rather than guessed safe. Unexpected
+parser failures and traversal-budget exhaustion fail closed, and no uploaded
+program is executed.
 
 The `clamav` inspector is runtime-owned and communicates only with clamd's
 fixed Unix-domain socket inside the Capsule container. There is no TCP,
@@ -554,8 +565,16 @@ customer bytes never leave the deployment. A Capsule declaring `clamav`
 starts the managed daemon during runtime initialization and is not healthy
 until fresh signatures and a bounded `PING` over that socket succeed. Runtime
 health repeats that socket probe, degrades immediately when clamd or the
-signature updater exits, and recovers from a transient probe or reload mismatch
-once the same live daemon again reports a current loaded database. Capsules that omit it do not
+signature updater exits or signals, and never marks a terminated child healthy
+again. A transient probe or reload mismatch can recover only while the same
+children remain live and again report a current loaded database. The private
+health route verifies an exact runtime-owned 256-bit credential before any
+signature or socket work. Dev reuses its private session inspection credential;
+local Containers receive a fresh credential, and Hosted Capsules receive the
+credential stored in their protected Host registry and Caddy route. It is not
+reported in CLI output or logs. Capsules that omit ClamAV preserve the legacy
+nonempty private-probe contract for compatibility because that route performs
+only the inexpensive legacy checks. Capsules that omit it do not
 start clamd and retain legacy startup behaviour.
 
 The Base image includes ClamAV, which increases image size, while enabling it
@@ -586,10 +605,14 @@ container's private clamd Unix socket; this avoids bind-mounted socket mode
 changes that the virtual filesystem cannot safely preserve. It publishes no
 port: customer bytes cross only the two Unix-socket endpoints and the exact
 container process bridge, while the container's network access is used solely
-by `freshclam` for public signatures. Hot runtime
-replacement reuses the same session-owned sidecar and signature data. Dev
-shutdown, signals, failed startup, and a failed first clamav-requiring rebuild
-remove only that exact labelled container and temporary socket directory;
+by `freshclam` for public signatures. Hot runtime replacement reuses the same
+session-owned sidecar and signature data. The first sidecar attachment is part
+of the candidate transaction: if image preparation or startup fails, Sporades
+closes the candidate database, removes that exact new sidecar and socket, keeps
+the prior runtime active, and permits a later rebuild to retry. Cleanup failures
+are aggregated rather than hiding the original startup error. Dev shutdown,
+signals, failed startup, and a failed first clamav-requiring rebuild remove
+only that exact labelled container and temporary socket directory;
 another Dev session is never selected by prefix or global process cleanup.
 Capsules that do not declare `clamav` start no sidecar and retain the legacy Dev
 path. Docker must therefore be available when a Dev Capsule explicitly requires

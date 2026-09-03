@@ -214,6 +214,65 @@ test("runtime replacement preserves activation preflight and candidate cleanup f
   ]);
 });
 
+test("candidate preparation failure closes the candidate, removes its sidecar, preserves the old runtime, and permits retry", async () => {
+  const runtime = await import("../dist/server-runtime-source.js");
+  const calls = [];
+  const preparationError = new Error("scanner image unavailable");
+  const current = {
+    async shutdown() { calls.push("current.shutdown"); },
+    async close() { calls.push("current.close"); },
+  };
+  const failedCandidate = {
+    async close() { calls.push("failed.close"); },
+  };
+  let sidecar = { async stop() { calls.push("sidecar.stop"); } };
+
+  await assert.rejects(
+    runtime.replacePreparedRuntimeDatabase(
+      current,
+      failedCandidate,
+      async () => { calls.push("prepare.failed"); throw preparationError; },
+      async () => { const candidateSidecar = sidecar; sidecar = null; await candidateSidecar?.stop(); },
+    ),
+    (error) => error === preparationError,
+  );
+  assert.deepEqual(calls, ["prepare.failed", "sidecar.stop", "failed.close"]);
+
+  const retryCandidate = {
+    async init() { calls.push("retry.init"); },
+    async shutdown() { calls.push("retry.shutdown"); },
+    async close() { calls.push("retry.close"); },
+    clock: { now: () => new Date("2030-01-01T00:00:00.000Z"), setTimer: () => 1, clearTimer() {} },
+  };
+  const promoted = await runtime.replacePreparedRuntimeDatabase(
+    current,
+    retryCandidate,
+    async () => { calls.push("prepare.retry"); },
+    async () => {},
+  );
+  assert.equal(promoted, retryCandidate);
+  assert.deepEqual(calls.slice(3), ["prepare.retry", "retry.init", "current.shutdown", "current.close"]);
+});
+
+test("candidate preparation failure aggregates candidate and sidecar cleanup errors", async () => {
+  const runtime = await import("../dist/server-runtime-source.js");
+  const preparationError = new Error("scanner startup failed");
+  const sidecarError = new Error("scanner cleanup failed");
+  const closeError = new Error("candidate close failed");
+  await assert.rejects(
+    runtime.replacePreparedRuntimeDatabase(
+      {},
+      { async close() { throw closeError; } },
+      async () => { throw preparationError; },
+      async () => { throw sidecarError; },
+    ),
+    (error) => error instanceof AggregateError
+      && error.errors[0] === preparationError
+      && error.errors.includes(sidecarError)
+      && error.errors.includes(closeError),
+  );
+});
+
 test("runtime replacement promotes a request-capable candidate when Job activation degrades after teardown", async (t) => {
   const runtime = await import("../dist/server-runtime-source.js");
   const auth = { userId: "replacement-user", displayName: "Replacement", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "anonymous" };

@@ -6565,6 +6565,8 @@ test("sporades host helper starts the current release in Docker and routes throu
     const record = JSON.parse(await readFile(registryRecordPath, "utf8"));
     assert.equal(record.runtimeProbe.header, "x-sporades-host-probe");
     assert.match(record.runtimeProbe.token, /^[a-f0-9]{64}$/);
+    assert(runCall.args.includes(`SPORADES_RUNTIME_PROBE_TOKEN=${record.runtimeProbe.token}`));
+    assert.doesNotMatch(start.stdout + start.stderr, new RegExp(record.runtimeProbe.token));
     assert.equal(JSON.stringify(output).includes(record.runtimeProbe.token), false);
     assert.equal(JSON.stringify(output).includes("SECRET_TOKEN"), false);
     const preparedDataDir = await stat(dataDir);
@@ -6591,7 +6593,7 @@ test("sporades host helper checks Hosted Capsule runtime health with a Host-owne
 
     await withHttpServer((request, response) => {
       assert.equal(request.url, "/__sporades/health/runtime");
-      assert.equal(request.headers["x-sporades-host-probe"], "probe-secret");
+      assert.equal(request.headers["x-sporades-host-probe"], "a".repeat(64));
       response.writeHead(200, { "content-type": "application/json" });
       response.end(
         JSON.stringify({
@@ -6621,7 +6623,7 @@ test("sporades host helper checks Hosted Capsule runtime health with a Host-owne
           hostedUrl,
           status: "running",
           currentRelease: { id: "20260630T221500Z-feedface" },
-          runtimeProbe: { header: "x-sporades-host-probe", token: "probe-secret" },
+          runtimeProbe: { header: "x-sporades-host-probe", token: "a".repeat(64) },
         })}\n`,
       );
 
@@ -6668,7 +6670,7 @@ test("sporades host helper checks Hosted Capsule runtime health with a Host-owne
         },
         error: null,
       });
-      assert.equal(health.stdout.includes("probe-secret"), false);
+      assert.equal(health.stdout.includes("a".repeat(64)), false);
     });
   });
 });
@@ -6685,7 +6687,7 @@ test("sporades host helper refreshes a stale loopback route after Docker restart
 
     await withHttpServer((request, response) => {
       assert.equal(request.url, "/__sporades/health/runtime");
-      assert.equal(request.headers["x-sporades-host-probe"], "probe-secret");
+      assert.equal(request.headers["x-sporades-host-probe"], "a".repeat(64));
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({
         ok: true,
@@ -6709,7 +6711,7 @@ test("sporades host helper refreshes a stale loopback route after Docker restart
           `team-notes.${domain} {`,
           "  @sporadesRuntimeProbe {",
           "    path /__sporades/health/runtime",
-          "    header x-sporades-host-probe probe-secret",
+          `    header x-sporades-host-probe ${"a".repeat(64)}`,
           "  }",
           "  handle @sporadesRuntimeProbe {",
           "    reverse_proxy 127.0.0.1:49153 {",
@@ -6732,7 +6734,7 @@ test("sporades host helper refreshes a stale loopback route after Docker restart
           hostedUrl,
           status: "running",
           currentRelease: { id: "20260630T221500Z-feedface" },
-          runtimeProbe: { header: "x-sporades-host-probe", token: "probe-secret" },
+          runtimeProbe: { header: "x-sporades-host-probe", token: "a".repeat(64) },
         })}\n`,
       );
 
@@ -6750,7 +6752,7 @@ test("sporades host helper refreshes a stale loopback route after Docker restart
       const route = await readFile(routeFile, "utf8");
       assert.equal((route.match(/reverse_proxy 127\.0\.0\.1:49154/g) ?? []).length, 2);
       assert.doesNotMatch(route, /127\.0\.0\.1:49153/);
-      assert.match(route, /header x-sporades-host-probe probe-secret/);
+      assert.match(route, new RegExp(`header x-sporades-host-probe ${"a".repeat(64)}`));
       assert.deepEqual(
         (await docker.caddyCalls()).map((call) => call.args),
         [
@@ -6816,7 +6818,7 @@ test("sporades host helper serializes two stale health route repairs across help
           hostedUrl,
           status: "running",
           currentRelease: { id: "20260630T221500Z-feedface" },
-          runtimeProbe: { header: "x-sporades-host-probe", token: "probe-secret" },
+          runtimeProbe: { header: "x-sporades-host-probe", token: "a".repeat(64) },
         })}\n`,
       );
       const request = {
@@ -6911,7 +6913,7 @@ test("sporades host helper serializes stale health repair against route removal"
           hostedUrl: `http://team-notes.${domain}`,
           status: "running",
           currentRelease: { id: "20260630T221500Z-feedface" },
-          runtimeProbe: { header: "x-sporades-host-probe", token: "probe-secret" },
+          runtimeProbe: { header: "x-sporades-host-probe", token: "a".repeat(64) },
         })}\n`,
       );
       const healthRequest = {
@@ -6999,7 +7001,7 @@ test("sporades host helper serializes stale health repair against a concurrent s
           status: "running",
           currentRelease: { id: "20260630T221500Z-feedface" },
           releases: [{ id: "20260630T221500Z-feedface", state: "started", current: true, startAttempts: [] }],
-          runtimeProbe: { header: "x-sporades-host-probe", token: "probe-secret" },
+          runtimeProbe: { header: "x-sporades-host-probe", token: "a".repeat(64) },
         })}\n`,
       );
       const baseRequest = {
@@ -7705,7 +7707,7 @@ test("sporades host helper does not send the runtime probe credential to caller-
     let maliciousRequests = 0;
 
     await withHttpServer((request, response) => {
-      assert.equal(request.headers["x-sporades-host-probe"], "probe-secret");
+      assert.equal(request.headers["x-sporades-host-probe"], "a".repeat(64));
       response.writeHead(200, { "content-type": "application/json" });
       response.end(
         JSON.stringify({
@@ -7739,7 +7741,7 @@ test("sporades host helper does not send the runtime probe credential to caller-
             hostedUrl,
             status: "running",
             currentRelease: { id: "20260630T221500Z-feedface" },
-            runtimeProbe: { header: "x-sporades-host-probe", token: "probe-secret" },
+            runtimeProbe: { header: "x-sporades-host-probe", token: "a".repeat(64) },
           })}\n`,
         );
 
@@ -7761,7 +7763,7 @@ test("sporades host helper does not send the runtime probe credential to caller-
         assert.equal(health.code, 0, health.stderr);
         assert.equal(JSON.parse(health.stdout).ok, true);
         assert.equal(maliciousRequests, 0);
-        assert.equal(health.stdout.includes("probe-secret"), false);
+        assert.equal(health.stdout.includes("a".repeat(64)), false);
       });
     });
   });
@@ -7788,6 +7790,15 @@ test("Sporades runtime health rejects unauthenticated probes and returns safe re
       const unauthenticated = await fetch(`http://127.0.0.1:${port}/__sporades/health/runtime`);
       assert.equal(unauthenticated.status, 404);
       assert.equal(await unauthenticated.text(), "Not found");
+
+      database.clamavRequired = true;
+      database.runtimeProbeToken = "a".repeat(64);
+      const forged = await fetch(`http://127.0.0.1:${port}/__sporades/health/runtime`, {
+        headers: { "x-sporades-host-probe": "probe-secret" },
+      });
+      assert.equal(forged.status, 404);
+      assert.equal(await forged.text(), "Not found");
+      database.clamavRequired = false;
 
       const authenticated = await fetch(`http://127.0.0.1:${port}/__sporades/health/runtime`, {
         headers: { "x-sporades-host-probe": "probe-secret" },
@@ -7835,7 +7846,7 @@ test("sporades host helper reports structured Hosted Capsule runtime health fail
           hostedUrl: `${scheme}://team-notes.${domain}`,
           status: "running",
           currentRelease: { id: "20260630T221500Z-feedface" },
-          runtimeProbe: { header: "x-sporades-host-probe", token: "probe-secret" },
+          runtimeProbe: { header: "x-sporades-host-probe", token: "a".repeat(64) },
           ...recordOverrides,
         })}\n`,
       );
@@ -7917,7 +7928,7 @@ test("sporades host helper reports structured Hosted Capsule runtime health fail
       const root = path.join(baseRoot, responseCase.failure);
       const docker = await installFakeDocker(path.join(dir, `${responseCase.failure}-docker`));
       await withHttpServer((request, response) => {
-        assert.equal(request.headers["x-sporades-host-probe"], "probe-secret");
+        assert.equal(request.headers["x-sporades-host-probe"], "a".repeat(64));
         response.writeHead(200, { "content-type": "application/json" });
         response.end(JSON.stringify(responseCase.body));
       }, async (port) => {
@@ -7933,7 +7944,7 @@ test("sporades host helper reports structured Hosted Capsule runtime health fail
         const output = JSON.parse(result.stdout);
         assert.equal(output.ok, false);
         assert.equal(output.data.failure, responseCase.failure);
-        assert.equal(result.stdout.includes("probe-secret"), false);
+        assert.equal(result.stdout.includes("a".repeat(64)), false);
         assert.equal(result.stdout.includes(baseRoot), false);
       });
     }
@@ -9836,13 +9847,14 @@ test("sporades host helper fails start when Docker does not report a usable loop
     assert.equal(record.releases[0].id, "20260630T221500Z-feedface");
     assert.equal(record.releases[0].state, "failed");
     assert.equal(record.releases[0].failure.message, "Docker did not report a loopback published port for Hosted Capsule.");
+    assert.match(record.runtimeProbe.token, /^[a-f0-9]{64}$/);
     assert.deepEqual(
       (await docker.calls()).map((call) => call.args),
       [
         ["stop", "sporades-capsules-example-dev-team-notes"],
         ["rm", "sporades-capsules-example-dev-team-notes"],
         ["image", "inspect", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine"],
-        ["run", "--detach", "--name", "sporades-capsules-example-dev-team-notes", "--network", "sporades-hosted-capsules", "--restart", "on-failure:3", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=5", "--label", "com.sporades.managed=true", "--label", "com.sporades.hosted-domain=capsules.example.dev", "--label", "com.sporades.capsule-subname=team-notes", "--label", "com.sporades.capsule-id=capsules.example.dev/team-notes", "--label", "com.sporades.base-image.name=sporades-base", "--label", "com.sporades.base-image.version=0.2.0-node22-alpine", "--label", "com.sporades.base-image.update-policy=host-managed", "--label", "com.sporades.release-id=20260630T221500Z-feedface", "--volume", `${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`, "--volume", `${path.join(capsuleDir, "current", "public")}:/app/public:ro`, "--volume", `${path.join(capsuleDir, "current", "sporades.json")}:/app/sporades.json:ro`, "--volume", `${path.join(capsuleDir, "data")}:/app/data:rw`, "--workdir", "/app", "--env", "PORT=4000", "--env", "SPORADES_LOG_STDOUT=1", "--env", "SPORADES_SECURITY_SESSION=hosted", "--env", "SPORADES_CLAMAV_MANAGED=1", "--env", "SPORADES_PUBLIC_ORIGIN=https://team-notes.capsules.example.dev", "--env", "SPORADES_RELEASE_ID=20260630T221500Z-feedface", "--publish", "127.0.0.1::4000", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine", "node", "/app/server.mjs"],
+        ["run", "--detach", "--name", "sporades-capsules-example-dev-team-notes", "--network", "sporades-hosted-capsules", "--restart", "on-failure:3", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=5", "--label", "com.sporades.managed=true", "--label", "com.sporades.hosted-domain=capsules.example.dev", "--label", "com.sporades.capsule-subname=team-notes", "--label", "com.sporades.capsule-id=capsules.example.dev/team-notes", "--label", "com.sporades.base-image.name=sporades-base", "--label", "com.sporades.base-image.version=0.2.0-node22-alpine", "--label", "com.sporades.base-image.update-policy=host-managed", "--label", "com.sporades.release-id=20260630T221500Z-feedface", "--volume", `${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`, "--volume", `${path.join(capsuleDir, "current", "public")}:/app/public:ro`, "--volume", `${path.join(capsuleDir, "current", "sporades.json")}:/app/sporades.json:ro`, "--volume", `${path.join(capsuleDir, "data")}:/app/data:rw`, "--workdir", "/app", "--env", "PORT=4000", "--env", "SPORADES_LOG_STDOUT=1", "--env", "SPORADES_SECURITY_SESSION=hosted", "--env", "SPORADES_CLAMAV_MANAGED=1", "--env", `SPORADES_RUNTIME_PROBE_TOKEN=${record.runtimeProbe.token}`, "--env", "SPORADES_PUBLIC_ORIGIN=https://team-notes.capsules.example.dev", "--env", "SPORADES_RELEASE_ID=20260630T221500Z-feedface", "--publish", "127.0.0.1::4000", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine", "node", "/app/server.mjs"],
         ["inspect", "-f", "{{.State.Running}}", "sporades-capsules-example-dev-team-notes"],
         ["inspect", "-f", "{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostIp}}:{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostPort}}", "sporades-capsules-example-dev-team-notes"],
         ["stop", "sporades-capsules-example-dev-team-notes"],

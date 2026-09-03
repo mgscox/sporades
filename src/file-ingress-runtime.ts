@@ -8,6 +8,7 @@ import { parse, tokenizer } from "acorn";
 import { parser as pythonParser } from "@lezer/python";
 import jpeg from "jpeg-js";
 import { PNG } from "pngjs";
+import { parse as parseShell } from "unbash";
 
 type RecordLike = Record<string, any>;
 const crypto = process.getBuiltinModule("node:crypto");
@@ -333,15 +334,60 @@ export function hasExecutablePythonSemantics(text: string) {
     }
   }
 }
+function isPlainQuotedText(text: string) {
+  const trimmed = text.trim();
+  if (trimmed.length < 2) return false;
+  if (trimmed.startsWith("'") && trimmed.endsWith("'")) return !trimmed.slice(1, -1).includes("'");
+  return trimmed.startsWith('"') && trimmed.endsWith('"') && !/[\\$`]/.test(trimmed.slice(1, -1));
+}
+function isSentenceShapedText(text: string) {
+  const lines = text.trim().split(/\r?\n/).filter((line) => line.trim().length > 0);
+  return lines.length > 0 && lines.every((line) => {
+    const trimmed = line.trim();
+    return /^[A-Z][^;&|<>$`\\]*[.!?]$/.test(trimmed) && /\s/.test(trimmed);
+  });
+}
+function isHarmlessShellWord(text: string) {
+  const trimmed = text.trim();
+  if (/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(trimmed)) return true;
+  let opening = 0; while (trimmed[opening] === "(") opening += 1;
+  let closing = trimmed.length; while (trimmed[closing - 1] === ")") closing -= 1;
+  return opening > 0 && opening === trimmed.length - closing && /^[A-Za-z_][A-Za-z0-9_.-]*$/.test(trimmed.slice(opening, closing));
+}
+export function hasExecutableShellSemantics(text: string) {
+  if (Buffer.byteLength(text, "utf8") > maximumContentPolicyTextBytes || !isJavaScriptRawInputWithinBounds(text)) return true;
+  if (isPlainQuotedText(text) || isSentenceShapedText(text) || isHarmlessShellWord(text)) return false;
+  let root: RecordLike;
+  try { root = parseShell(text) as RecordLike; }
+  catch { return true; }
+  const pending = [{ value: root, depth: 0 }]; const seen = new WeakSet<object>(); let visited = 0; let syntaxError = false;
+  try {
+    while (pending.length > 0) {
+      const { value, depth } = pending.pop()!;
+      if (!value || typeof value !== "object" || seen.has(value)) continue;
+      seen.add(value); visited += 1;
+      if (visited > maximumContentPolicyAstNodes || depth > maximumPythonContentPolicyAstDepth) return true;
+      if (Array.isArray(value.errors) && value.errors.length > 0) syntaxError = true;
+      const children = Object.values(value);
+      if ("parts" in value) children.push(value.parts);
+      if ("indexParts" in value) children.push(value.indexParts);
+      for (const child of children) {
+        if (Array.isArray(child)) for (const item of child) pending.push({ value: item, depth: depth + 1 });
+        else pending.push({ value: child, depth: depth + 1 });
+      }
+    }
+  } catch { return true; }
+  if (syntaxError || !Array.isArray(root.commands) || root.commands.length === 0) return false;
+  return true;
+}
 function safeUntrustedText(bytes: Buffer) {
   if (bytes.length > maximumContentPolicyTextBytes) return false;
   const decoder = new TextDecoder("utf-8", { fatal: true }); let text = ""; try { text = decoder.decode(bytes); } catch { return false; }
   if (!text || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text) || /<\s*(?:!doctype|\?xml|html\b|head\b|body\b|script\b|svg\b|[a-z][\w:-]*\s+[^>]*>)/i.test(text) || /<\s*([a-z][\w:-]*)\b[^>]*>[\s\S]*<\/\s*\1\s*>/i.test(text)) return false;
-  if (/(?:^|\n)\s*(?:#!|sudo\b|rm\s+-|curl\b|wget\b|bash\b|sh\b|python\b|node\b|chmod\b|eval\b|exec\b|echo\b|source\b|\.\s+[^\s]+|export\s+\w+=|set\s+-[eux]|if\s+\[|for\s+\w+\s+in\b)/im.test(text)) return false;
   // Acorn parses but never executes the upload. Whole-program parsing handles
   // comments, escapes, computed or parenthesized callees, and optional chains;
   // the iterative traversal fails closed at fixed node and depth budgets.
-  if (hasExecutableJavaScriptSemantics(text) || hasExecutablePythonSemantics(text)) return false;
+  if (hasExecutableJavaScriptSemantics(text) || hasExecutablePythonSemantics(text) || hasExecutableShellSemantics(text)) return false;
   return true;
 }
 async function contentPolicyOutcome(row: RecordLike, bytes: Buffer) {
@@ -403,6 +449,13 @@ async function terminateChild(child: any, timeoutMs = 5_000) {
   await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))]);
 }
 function clamavTerminateTimeout(database: RecordLike) { return database.__clamavTest?.terminateTimeoutMs ?? 5_000; }
+function observeClamavChild(database: RecordLike, child: any) {
+  if (!child || child.__sporadesClamavObserved) return;
+  child.__sporadesClamavObserved = true;
+  const failed = () => { child.__sporadesClamavTerminated = true; database.clamavReady = false; };
+  child.once?.("exit", failed); child.once?.("error", failed);
+}
+function clamavChildTerminated(child: any) { return Boolean(child) && (child.exitCode !== null || child.signalCode != null || child.__sporadesClamavTerminated === true); }
 async function currentLoadedClamavSignature(database: RecordLike) {
   const signature = await verifiedClamavSignature(database); if (!isCurrentClamavSignature(signature)) return null;
   if (database.__clamavTest?.loadedSignature) return database.__clamavTest.loadedSignature === signature.version ? signature : null;
@@ -414,19 +467,20 @@ export async function initializeClamavRuntime(database: RecordLike) {
   if (!required) return true;
   if (database.__clamavTest) { database.clamavReady = Boolean(await currentLoadedClamavSignature(database)); return database.clamavReady; }
   if (database.__clamavDevSidecar) {
-    for (let attempt = 0; attempt < 1_200; attempt += 1) { if (database.__clamavDevSidecar.process?.exitCode !== null) break; if (fs.existsSync(database.__clamavDevSidecar.socketPath) && await currentLoadedClamavSignature(database) && await clamavSocketCommand(database, Buffer.from("zPING\0"), 16, 500) === "PONG") { database.clamavReady = true; return true; } await new Promise((resolve) => setTimeout(resolve, 100)); }
+    observeClamavChild(database, database.__clamavDevSidecar.process);
+    for (let attempt = 0; attempt < 1_200; attempt += 1) { if (clamavChildTerminated(database.__clamavDevSidecar.process)) break; if (fs.existsSync(database.__clamavDevSidecar.socketPath) && await currentLoadedClamavSignature(database) && await clamavSocketCommand(database, Buffer.from("zPING\0"), 16, 500) === "PONG") { database.clamavReady = true; return true; } await new Promise((resolve) => setTimeout(resolve, 100)); }
     return false;
   }
   if (process.env.SPORADES_CLAMAV_MANAGED !== "1") return false;
   try { fs.mkdirSync("/app/data/clamav", { recursive: true }); fs.mkdirSync("/tmp/sporades-clamav", { recursive: true }); } catch { return false; }
   const update = childProcess.spawn("/usr/bin/freshclam", ["--config-file=/etc/clamav/freshclam.conf"], { stdio: "ignore" }); database.__clamavUpdateProcess = update; const updateCompleted = await waitForChild(update, 120_000); if (!updateCompleted) await terminateChild(update, clamavTerminateTimeout(database)); database.__clamavUpdateProcess = null; const signature = await verifiedClamavSignature(database); if (!isCurrentClamavSignature(signature)) return false;
   const daemon = childProcess.spawn("/usr/sbin/clamd", ["--foreground", "--config-file=/etc/clamav/clamd.conf"], { stdio: "ignore" }); database.__clamavProcess = daemon;
-  daemon.once("exit", () => { database.clamavReady = false; }); daemon.once("error", () => { database.clamavReady = false; });
-  for (let attempt = 0; attempt < 300; attempt += 1) { if (fs.existsSync("/tmp/sporades-clamd.sock") && await currentLoadedClamavSignature(database) && await clamavSocketCommand(database, Buffer.from("zPING\0"), 16, 500) === "PONG") { database.clamavReady = true; const updater = childProcess.spawn("/usr/bin/freshclam", ["--daemon", "--foreground=true", "--config-file=/etc/clamav/freshclam.conf"], { stdio: "ignore" }); database.__clamavUpdateProcess = updater; updater.once("exit", () => { database.clamavReady = false; }); updater.once("error", () => { database.clamavReady = false; }); return true; } if (daemon.exitCode !== null) break; await new Promise((resolve) => setTimeout(resolve, 100)); }
+  observeClamavChild(database, daemon);
+  for (let attempt = 0; attempt < 300; attempt += 1) { if (fs.existsSync("/tmp/sporades-clamd.sock") && await currentLoadedClamavSignature(database) && await clamavSocketCommand(database, Buffer.from("zPING\0"), 16, 500) === "PONG") { database.clamavReady = true; const updater = childProcess.spawn("/usr/bin/freshclam", ["--daemon", "--foreground=true", "--config-file=/etc/clamav/freshclam.conf"], { stdio: "ignore" }); database.__clamavUpdateProcess = updater; observeClamavChild(database, updater); return true; } if (clamavChildTerminated(daemon)) break; await new Promise((resolve) => setTimeout(resolve, 100)); }
   await Promise.all([terminateChild(daemon, clamavTerminateTimeout(database)), terminateChild(database.__clamavUpdateProcess, clamavTerminateTimeout(database))]); return false;
 }
 export async function shutdownClamavRuntime(database: RecordLike) { database.clamavReady = false; if (!database.__clamavDevSidecar?.externallyManaged) await Promise.all([terminateChild(database.__clamavProcess, clamavTerminateTimeout(database)), terminateChild(database.__clamavUpdateProcess, clamavTerminateTimeout(database))]); database.__clamavProcess = null; database.__clamavUpdateProcess = null; }
-export async function checkClamavRuntime(database: RecordLike) { if (!database.clamavRequired) return { ok: true }; if ((database.__clamavDevSidecar?.process && database.__clamavDevSidecar.process.exitCode !== null) || (database.__clamavProcess && database.__clamavProcess.exitCode !== null) || (database.__clamavUpdateProcess && database.__clamavUpdateProcess.exitCode !== null)) { database.clamavReady = false; return { ok: false }; } const current = await currentLoadedClamavSignature(database); const pong = current ? await clamavSocketCommand(database, Buffer.from("zPING\0"), 16, 500) : null; database.clamavReady = pong === "PONG"; return { ok: database.clamavReady }; }
+export async function checkClamavRuntime(database: RecordLike) { if (!database.clamavRequired) return { ok: true }; const children = [database.__clamavDevSidecar?.process, database.__clamavProcess, database.__clamavUpdateProcess]; for (const child of children) observeClamavChild(database, child); if (children.some(clamavChildTerminated)) { database.clamavReady = false; return { ok: false }; } const current = await currentLoadedClamavSignature(database); const pong = current ? await clamavSocketCommand(database, Buffer.from("zPING\0"), 16, 500) : null; database.clamavReady = pong === "PONG"; return { ok: database.clamavReady }; }
 async function inspectIngressLease(database: RecordLike, policy: RecordLike | null, row: RecordLike, bytes: Buffer) {
   if (!policy) return undefined;
   const inspectedAt = new Date().toISOString();

@@ -589,10 +589,19 @@ export async function routeRuntimeHealth(database: any, request: { url: string |
     writeNotFound(response);
     return true;
   }
+  if (database.clamavRequired && !runtimeProbeMatches(probe, database.runtimeProbeToken)) {
+    writeNotFound(response);
+    return true;
+  }
 
   const result = await createRuntimeHealthResult(database);
   writeJsonHttpResponse(response, result.ok ? 200 : 503, result);
   return true;
+}
+
+function runtimeProbeMatches(actualToken: string, expectedToken: unknown) {
+  if (!/^[a-f0-9]{64}$/.test(actualToken) || typeof expectedToken !== "string" || !/^[a-f0-9]{64}$/.test(expectedToken)) return false;
+  return process.getBuiltinModule("node:crypto").timingSafeEqual(Buffer.from(actualToken, "hex"), Buffer.from(expectedToken, "hex"));
 }
 
 async function createRuntimeHealthResult(database: any) {

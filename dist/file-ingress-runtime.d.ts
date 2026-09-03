@@ -5,6 +5,7 @@ export declare function isJavaScriptRawInputWithinBounds(text: string): boolean;
 export declare function isJavaScriptParserInputWithinBounds(text: string): boolean;
 export declare function hasExecutableJavaScriptSemantics(text: string): boolean;
 export declare function hasExecutablePythonSemantics(text: string): boolean;
+export declare function hasExecutableShellSemantics(text: string): boolean;
 export declare function isCurrentClamavSignature(signature: RecordLike | null, now?: number): boolean;
 export declare function initializeClamavRuntime(database: RecordLike): Promise<any>;
 export declare function shutdownClamavRuntime(database: RecordLike): Promise<void>;

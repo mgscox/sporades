@@ -14,7 +14,7 @@ import { discardPublicTree, getProcessStartIdentity, readPublicAsset, readPublic
 import { SPORADES_BASE_IMAGE, baseImageLabels, baseImageRuntimeUser, } from "../base-image.js";
 import { ensureSealedServerEnvKeyPair, envelopeSummary, exportedEnvelope, readKeyPair, readSealedServerEnv, sealServerEnv, sealedServerEnvPaths, unsealServerEnv, withSealedServerEnvMutationLock, writeSealedServerEnv, } from "../sealed-server-env.js";
 import { restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-policy.js";
-import { createSqliteDatabaseAdapter, createLogEnvelope, createPrivilegedAuditLogInput, createPostgresConnection, createWebSocketHub, dumpDatabase, handleFileHttpRoute, injectPageConnectionToken, listDatabaseTables, openDevDatabase, prepareHttpSecurity, readJsonRequest, routeEndpoint, routeRuntimeHealth, routeSporadesAuth, runReadOnlyQuery, shutdownHttpServerAndRuntime, simulateLocalIdentitySession, readJsonlLogEvents, replaceRuntimeDatabase, shutdownAndCloseDatabase, validateReadOnlyInspectionSql, writeUnhandledHttpError, } from "../server-runtime-source.js";
+import { createSqliteDatabaseAdapter, createLogEnvelope, createPrivilegedAuditLogInput, createPostgresConnection, createWebSocketHub, dumpDatabase, handleFileHttpRoute, injectPageConnectionToken, listDatabaseTables, openDevDatabase, prepareHttpSecurity, readJsonRequest, routeEndpoint, routeRuntimeHealth, routeSporadesAuth, runReadOnlyQuery, shutdownHttpServerAndRuntime, simulateLocalIdentitySession, readJsonlLogEvents, replacePreparedRuntimeDatabase, shutdownAndCloseDatabase, validateReadOnlyInspectionSql, writeUnhandledHttpError, } from "../server-runtime-source.js";
 import { scaffoldFiles } from "../templates/scaffold-template.js";
 import { resolveSporadesPackageRoot } from "../package-root.js";
 import { startDevClamavSidecar } from "../dev-clamav-sidecar.js";
@@ -1835,6 +1835,7 @@ async function startDevSession(options) {
         serviceEnv: capsuleServiceEnv,
         capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
         config: withRuntimeSecuritySession(config, session),
+        runtimeProbeToken: inspectionToken,
     });
     await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
     runtime.database.log.emit({
@@ -2328,6 +2329,7 @@ async function createDevRuntime(options) {
         createStripeCallbackEndpoint: await stripeCallbackFactory(options.config),
         createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(options.config),
     });
+    database.runtimeProbeToken = options.runtimeProbeToken;
     try {
         await attachRequiredSidecar(database);
         await database.init();
@@ -2349,24 +2351,15 @@ async function createDevRuntime(options) {
                 createStripeCallbackEndpoint: await stripeCallbackFactory(config),
                 createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(config),
             });
+            nextDatabase.runtimeProbeToken = options.runtimeProbeToken;
             const sidecarWasAbsent = !clamavSidecar;
-            await attachRequiredSidecar(nextDatabase);
-            try {
-                database = await replaceRuntimeDatabase(database, nextDatabase);
-            }
-            catch (error) {
-                if (sidecarWasAbsent && clamavSidecar) {
-                    const candidateSidecar = clamavSidecar;
-                    clamavSidecar = undefined;
-                    try {
-                        await candidateSidecar.stop();
-                    }
-                    catch (cleanupError) {
-                        throw new AggregateError([error, cleanupError], "Dev runtime replacement and scanner cleanup both failed.");
-                    }
-                }
-                throw error;
-            }
+            database = await replacePreparedRuntimeDatabase(database, nextDatabase, attachRequiredSidecar, async () => {
+                if (!sidecarWasAbsent || !clamavSidecar)
+                    return;
+                const candidateSidecar = clamavSidecar;
+                clamavSidecar = undefined;
+                await candidateSidecar.stop();
+            });
         },
         async shutdown() {
             const settled = await Promise.allSettled([shutdownAndCloseDatabase(database), clamavSidecar?.stop?.()].filter(Boolean));
@@ -3650,6 +3643,7 @@ async function startContainerSession(options) {
         : [];
     const bundleMountArgs = bundle.containerMounts.files.flatMap((mount) => ["--volume", formatMount(mount)]);
     const containerTransactionToken = randomBytes(16).toString("hex");
+    const runtimeProbeToken = randomBytes(32).toString("hex");
     const capsuleServicesNetworkArgs = capsuleServices ? ["--network", capsuleServices.networks.services] : [];
     const capsuleServicesEnvArgs = Object.entries(containerCapsuleServices.env ?? {}).flatMap(([key, value]) => [
         "--env",
@@ -3692,6 +3686,8 @@ async function startContainerSession(options) {
         "SPORADES_LOG_STDOUT=1",
         "--env",
         "SPORADES_CLAMAV_MANAGED=1",
+        "--env",
+        `SPORADES_RUNTIME_PROBE_TOKEN=${runtimeProbeToken}`,
         SPORADES_BASE_IMAGE.image,
         ...(sshAccess.enabled ? ["/usr/local/bin/sporades-start"] : ["node", "/app/server.mjs"]),
     ];

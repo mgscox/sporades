@@ -68,6 +68,7 @@ import {
   simulateLocalIdentitySession,
   readJsonlLogEvents,
   replaceRuntimeDatabase,
+  replacePreparedRuntimeDatabase,
   shutdownAndCloseDatabase,
   validateReadOnlyInspectionSql,
   writeUnhandledHttpError,
@@ -2146,6 +2147,7 @@ async function startDevSession(options: LooseRecord) {
     serviceEnv: capsuleServiceEnv,
     capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
     config: withRuntimeSecuritySession(config, session),
+    runtimeProbeToken: inspectionToken,
   });
   await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
   runtime.database.log.emit({
@@ -2709,6 +2711,7 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
       createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(options.config),
     },
   );
+  database.runtimeProbeToken = options.runtimeProbeToken;
   try { await attachRequiredSidecar(database); await database.init(); }
   catch (error) {
     const cleanup = await Promise.allSettled([Promise.resolve().then(() => database.close()), clamavSidecar?.stop?.()].filter(Boolean));
@@ -2733,9 +2736,19 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
           createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(config),
         },
       );
-      const sidecarWasAbsent = !clamavSidecar; await attachRequiredSidecar(nextDatabase);
-      try { database = await replaceRuntimeDatabase(database, nextDatabase); }
-      catch (error) { if (sidecarWasAbsent && clamavSidecar) { const candidateSidecar = clamavSidecar; clamavSidecar = undefined; try { await candidateSidecar.stop(); } catch (cleanupError) { throw new AggregateError([error, cleanupError], "Dev runtime replacement and scanner cleanup both failed."); } } throw error; }
+      nextDatabase.runtimeProbeToken = options.runtimeProbeToken;
+      const sidecarWasAbsent = !clamavSidecar;
+      database = await replacePreparedRuntimeDatabase(
+        database,
+        nextDatabase,
+        attachRequiredSidecar,
+        async () => {
+          if (!sidecarWasAbsent || !clamavSidecar) return;
+          const candidateSidecar = clamavSidecar;
+          clamavSidecar = undefined;
+          await candidateSidecar.stop();
+        },
+      );
     },
     async shutdown() {
       const settled = await Promise.allSettled([shutdownAndCloseDatabase(database), clamavSidecar?.stop?.()].filter(Boolean)); const failures = settled.filter((item) => item.status === "rejected").map((item: any) => item.reason); if (failures.length === 1) throw failures[0]; if (failures.length > 1) throw new AggregateError(failures, "Dev runtime and scanner shutdown both failed.");
@@ -4156,6 +4169,7 @@ async function startContainerSession(options: LooseRecord) {
     : [];
   const bundleMountArgs = bundle.containerMounts.files.flatMap((mount) => ["--volume", formatMount(mount)]);
   const containerTransactionToken = randomBytes(16).toString("hex");
+  const runtimeProbeToken = randomBytes(32).toString("hex");
   const capsuleServicesNetworkArgs = capsuleServices ? ["--network", capsuleServices.networks.services] : [];
   const capsuleServicesEnvArgs = Object.entries(containerCapsuleServices.env ?? {}).flatMap(([key, value]) => [
     "--env",
@@ -4198,6 +4212,8 @@ async function startContainerSession(options: LooseRecord) {
       "SPORADES_LOG_STDOUT=1",
       "--env",
       "SPORADES_CLAMAV_MANAGED=1",
+      "--env",
+      `SPORADES_RUNTIME_PROBE_TOKEN=${runtimeProbeToken}`,
       SPORADES_BASE_IMAGE.image,
       ...(sshAccess.enabled ? ["/usr/local/bin/sporades-start"] : ["node", "/app/server.mjs"]),
     ];

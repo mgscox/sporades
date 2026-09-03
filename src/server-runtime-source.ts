@@ -592,6 +592,31 @@ export async function replaceRuntimeDatabase(currentDatabase: LooseRecord, candi
   return candidateDatabase;
 }
 
+export async function replacePreparedRuntimeDatabase(
+  currentDatabase: LooseRecord,
+  candidateDatabase: LooseRecord,
+  prepareCandidate: (candidate: LooseRecord) => Promise<any>,
+  cleanupPreparation: () => Promise<any>,
+) {
+  let replacementStarted = false;
+  try {
+    await prepareCandidate(candidateDatabase);
+    replacementStarted = true;
+    return await replaceRuntimeDatabase(currentDatabase, candidateDatabase);
+  } catch (error) {
+    const cleanupTasks = [Promise.resolve().then(() => cleanupPreparation())];
+    // replaceRuntimeDatabase owns candidate cleanup after it starts. Before
+    // that boundary, preparation failure must not strand the opened adapter.
+    if (!replacementStarted) cleanupTasks.push(Promise.resolve().then(() => candidateDatabase.close()));
+    const settled = await Promise.allSettled(cleanupTasks);
+    const failures = settled.filter((item) => item.status === "rejected").map((item: any) => item.reason);
+    if (failures.length) {
+      throw new AggregateError([error, ...failures], "Runtime replacement and candidate preparation cleanup both failed.");
+    }
+    throw error;
+  }
+}
+
 function emitRuntimeReplacementWarning(database: LooseRecord, event: string, message: string, error: unknown, fallbackCode: string) {
   try {
     const warning = database.log?.emit?.({
