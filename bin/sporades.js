@@ -85535,8 +85535,12 @@ function validPdfTerminalBoundary(bytes) {
       }
       if (chain.at(-1).size !== chain.at(-1).maxObject + 1) return false;
       const effective = /* @__PURE__ */ new Map();
-      for (const revision of chain) for (const [objectNumber, entry] of revision.entries) if (!effective.has(objectNumber)) effective.set(objectNumber, entry);
-      return validPdfEffectiveXref(bytes, chain[0].size, effective);
+      for (let index = chain.length - 1; index >= 0; index -= 1) {
+        const revision = chain[index];
+        for (const [objectNumber, entry] of revision.entries) effective.set(objectNumber, entry);
+        if (!validPdfEffectiveXref(bytes, revision.size, effective)) return false;
+      }
+      return true;
     }
     if (section.prev >= offset2) return false;
     offset2 = section.prev;

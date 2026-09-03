@@ -1269,8 +1269,9 @@ test("File reference docs define the trusted multipart ingress contract and oper
   assert.match(contents, /tables bind every in-use subsection entry's object number, generation, and\s+offset/i);
   assert.match(contents, /accept out-of-order subsections only when their object identities\s+remain unique/i);
   assert.match(contents, /generation numbers are limited to\s+0 through 65535, and object 0 must be the generation-65535 free entry/i);
-  assert.match(contents, /Compressed entries must resolve to an\s+effective in-use `\/Type \/ObjStm` with bounded `\/N` and `\/First`/i);
-  assert.match(contents, /free entries must form one bounded, acyclic chain from object 0 back to the 0\s+sentinel/i);
+  assert.match(contents, /At every linked revision, the\s+effective cross-reference state is validated after applying that revision over\s+its predecessors/i);
+  assert.match(contents, /Compressed entries must resolve to an\s+effective in-use\s+`\/Type \/ObjStm` with bounded `\/N` and `\/First`/i);
+  assert.match(contents, /free entries\s+must form one bounded, acyclic chain from object 0 back to the 0\s+sentinel/i);
   assert.match(contents, /standard single-element `\[\/FlateDecode\]` array/i);
   assert.match(contents, /one in-range `\/XRefStm` to a genuine same-revision cross-reference\s+stream/i);
   assert.match(contents, /intervening indirect objects must be indexed/i);
