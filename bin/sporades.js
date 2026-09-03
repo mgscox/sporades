@@ -75316,7 +75316,168 @@ function isStructuredAcornSyntaxError(error) {
 function isAcornStackExhaustion(error) {
   return isStructuredAcornSyntaxError(error) && String(error.message).startsWith("Not enough stack space to parse input");
 }
+function isJavaScriptRawInputWithinBounds(text2) {
+  const expressionPrefixKeywords = /* @__PURE__ */ new Set([
+    "await",
+    "case",
+    "delete",
+    "do",
+    "else",
+    "extends",
+    "in",
+    "instanceof",
+    "new",
+    "of",
+    "return",
+    "throw",
+    "typeof",
+    "void",
+    "yield"
+  ]);
+  const closingFor = /* @__PURE__ */ new Map([["(", ")"], ["[", "]"], ["{", "}"]]);
+  const closings = [];
+  let mode = "code";
+  let canStartRegex = true;
+  let regexCharacterClass = false;
+  let regexGroups = 0;
+  for (let index = 0; index < text2.length; index += 1) {
+    const character = text2[index];
+    const next = text2[index + 1];
+    if (mode === "single" || mode === "double") {
+      if (character === "\\") index += 1;
+      else if (mode === "single" && character === "'" || mode === "double" && character === '"') {
+        mode = "code";
+        canStartRegex = false;
+      }
+      continue;
+    }
+    if (mode === "line-comment") {
+      if (character === "\n" || character === "\r") mode = "code";
+      continue;
+    }
+    if (mode === "block-comment") {
+      if (character === "*" && next === "/") {
+        mode = "code";
+        index += 1;
+      }
+      continue;
+    }
+    if (mode === "template") {
+      if (character === "\\") index += 1;
+      else if (character === "`") {
+        mode = "code";
+        canStartRegex = false;
+      } else if (character === "$" && next === "{") {
+        closings.push({ closing: "}", resumeTemplate: true });
+        if (closings.length > maximumContentPolicyParserRecursion) return false;
+        mode = "code";
+        canStartRegex = true;
+        index += 1;
+      }
+      continue;
+    }
+    if (mode === "regex") {
+      if (character === "\\") {
+        index += 1;
+        continue;
+      }
+      if (regexCharacterClass) {
+        if (character === "]") regexCharacterClass = false;
+        continue;
+      }
+      if (character === "[") {
+        regexCharacterClass = true;
+        continue;
+      }
+      if (character === "(") {
+        regexGroups += 1;
+        if (regexGroups > maximumContentPolicyParserRecursion) return false;
+        continue;
+      }
+      if (character === ")") {
+        regexGroups = Math.max(0, regexGroups - 1);
+        continue;
+      }
+      if (character === "/") {
+        mode = "code";
+        canStartRegex = false;
+        while (/[A-Za-z]/.test(text2[index + 1] ?? "")) index += 1;
+      } else if (character === "\n" || character === "\r") mode = "code";
+      continue;
+    }
+    if (/\s/.test(character)) continue;
+    if (character === "\\") {
+      index += 1;
+      continue;
+    }
+    if (character === "'") {
+      mode = "single";
+      continue;
+    }
+    if (character === '"') {
+      mode = "double";
+      continue;
+    }
+    if (character === "`") {
+      mode = "template";
+      continue;
+    }
+    if (character === "/" && next === "/") {
+      mode = "line-comment";
+      index += 1;
+      continue;
+    }
+    if (character === "/" && next === "*") {
+      mode = "block-comment";
+      index += 1;
+      continue;
+    }
+    if (character === "/" && canStartRegex) {
+      mode = "regex";
+      regexCharacterClass = false;
+      regexGroups = 0;
+      continue;
+    }
+    if (/[A-Za-z_$]/.test(character)) {
+      let word = character;
+      while (/[A-Za-z0-9_$]/.test(text2[index + 1] ?? "")) {
+        index += 1;
+        word += text2[index];
+      }
+      canStartRegex = expressionPrefixKeywords.has(word);
+      continue;
+    }
+    if (/[0-9]/.test(character)) {
+      while (/[A-Za-z0-9_.]/.test(text2[index + 1] ?? "")) index += 1;
+      canStartRegex = false;
+      continue;
+    }
+    const closing = closingFor.get(character);
+    if (closing) {
+      closings.push({ closing, resumeTemplate: false });
+      if (closings.length > maximumContentPolicyParserRecursion) return false;
+      canStartRegex = true;
+      continue;
+    }
+    if (character === ")" || character === "]" || character === "}") {
+      const expected = closings.at(-1);
+      if (expected?.closing === character) {
+        closings.pop();
+        if (expected.resumeTemplate) mode = "template";
+      }
+      canStartRegex = false;
+      continue;
+    }
+    if (character === ".") {
+      canStartRegex = false;
+      continue;
+    }
+    canStartRegex = true;
+  }
+  return true;
+}
 function boundedJavaScriptPreparse(text2) {
+  if (!isJavaScriptRawInputWithinBounds(text2)) return "exhausted";
   const closingFor = /* @__PURE__ */ new Map([["(", ")"], ["[", "]"], ["{", "}"], ["${", "}"]]);
   const closings = [];
   let recursiveGrammarTokens = 0;
