@@ -498,10 +498,15 @@ for a bounded, cycle-safe traversal of the parsed catalog, pages, annotations,
 streams, arrays, and indirect object graph. It rejects encryption, action
 semantics at any traversed location (including page additional actions,
 JavaScript, URI, Launch, SubmitForm, and ImportData), and embedded files,
-requires the last startxref-linked `%%EOF` to be terminal except for PDF
-whitespace and printable comment lines, handles the last boundary of an
-incremental update, caps pages, and enforces a short inspection timeout. The production
-dependency
+parses the terminal classic cross-reference table or cross-reference stream,
+binds its `startxref` and `%%EOF` footer to that section, and follows at most
+256 strictly backward `/Prev` links. Each linked footer must belong to its
+referenced section, and intervening revision bytes must be bounded PDF indirect
+object syntax rather than unclaimed trailing payload. The last linked `%%EOF`
+must be terminal except for PDF whitespace and printable comment lines, so
+valid incremental updates remain supported while forged terminal footers and
+PDF polyglots are rejected. Validation also caps pages and enforces a short
+inspection timeout. The production dependency
 audit must remain clean when either parser is upgraded. Text is a
 particularly conservative untrusted-evidence lane: strict UTF-8 is rejected
 when it resembles markup, JavaScript, shell, or common script/source forms.
