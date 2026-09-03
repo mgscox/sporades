@@ -259,8 +259,51 @@ function validJpeg(bytes) {
     }
     return false;
 }
+function validPdfTerminalBoundary(bytes) {
+    const marker = Buffer.from("%%EOF");
+    const pdfWhitespace = (byte) => byte === 0 || byte === 9 || byte === 10 || byte === 12 || byte === 13 || byte === 32;
+    const trailingTriviaOnly = (offset) => {
+        while (offset < bytes.length) {
+            while (offset < bytes.length && pdfWhitespace(bytes[offset]))
+                offset += 1;
+            if (offset >= bytes.length)
+                return true;
+            if (bytes[offset] !== 0x25)
+                return false;
+            offset += 1;
+            while (offset < bytes.length && bytes[offset] !== 10 && bytes[offset] !== 13) {
+                // PDF comments contain regular characters. Reject binary comment tails
+                // so an appended executable/container cannot hide behind a percent.
+                if (bytes[offset] < 0x20 || bytes[offset] > 0x7e)
+                    return false;
+                offset += 1;
+            }
+        }
+        return true;
+    };
+    for (let at = bytes.lastIndexOf(marker); at >= 0; at = bytes.lastIndexOf(marker, at - 1)) {
+        if (at > 0 && bytes[at - 1] !== 10 && bytes[at - 1] !== 13)
+            continue;
+        const after = at + marker.length;
+        if (after < bytes.length && bytes[after] !== 10 && bytes[after] !== 13)
+            continue;
+        const prefix = bytes.subarray(Math.max(0, at - 160), at).toString("latin1");
+        const start = /startxref[\x00\x09\x0a\x0c\x0d\x20]+(\d{1,20})[\x00\x09\x0a\x0c\x0d\x20]*$/.exec(prefix);
+        if (!start)
+            continue;
+        const xrefOffset = Number(start[1]);
+        if (!Number.isSafeInteger(xrefOffset) || xrefOffset < 0 || xrefOffset >= at)
+            continue;
+        const xrefHead = bytes.subarray(xrefOffset, Math.min(at, xrefOffset + 80)).toString("latin1");
+        if (!/^xref(?:[\x00\x09\x0a\x0c\x0d\x20]|$)/.test(xrefHead) && !/^\d+[\x00\x09\x0a\x0c\x0d\x20]+\d+[\x00\x09\x0a\x0c\x0d\x20]+obj(?:[\x00\x09\x0a\x0c\x0d\x20]|$)/.test(xrefHead))
+            continue;
+        if (trailingTriviaOnly(after))
+            return true;
+    }
+    return false;
+}
 export async function validatePdfIngress(bytes, options = {}) {
-    if (bytes.length < 16 || bytes.subarray(0, 5).toString("ascii") !== "%PDF-" || bytes.includes(Buffer.from("/Encrypt")))
+    if (bytes.length < 16 || bytes.subarray(0, 5).toString("ascii") !== "%PDF-" || bytes.includes(Buffer.from("/Encrypt")) || !validPdfTerminalBoundary(bytes))
         return false;
     let task;
     let timer;
@@ -772,9 +815,10 @@ async function contentPolicyOutcome(row, bytes) {
     return safeUntrustedText(bytes) && /\.txt$/.test(name) && type === "text/plain" ? "clean" : "rejected";
 }
 export function isCurrentClamavSignature(signature, now = Date.now()) { const builtAt = Date.parse(signature?.updatedAt); return Boolean(signature) && typeof signature?.version === "string" && /^daily:\d{1,12}$/.test(signature.version) && Number.isFinite(builtAt) && builtAt <= now && now - builtAt <= 24 * 60 * 60 * 1000; }
-function boundedTool(child, timeoutMs, maximumBytes = 8192) { return new Promise((resolve) => { let settled = false; let stdout = Buffer.alloc(0); const finish = (ok) => { if (settled)
-    return; settled = true; clearTimeout(timer); resolve({ ok, stdout: stdout.toString("utf8") }); }; const timer = setTimeout(() => finish(false), timeoutMs); child.stdout?.on?.("data", (chunk) => { if (stdout.length + chunk.length > maximumBytes)
-    return finish(false); stdout = Buffer.concat([stdout, chunk]); }); child.once("exit", (code) => finish(code === 0)); child.once("error", () => finish(false)); }); }
+export function collectBoundedToolOutput(child, timeoutMs, maximumBytes = 8192) { return new Promise((resolve) => { let settled = false; let stdout = Buffer.alloc(0); let exitCode; let stdoutEnded = !child.stdout; const finish = (ok) => { if (settled)
+    return; settled = true; clearTimeout(timer); resolve({ ok, stdout: stdout.toString("utf8") }); }; const completed = () => { if (exitCode !== undefined && stdoutEnded)
+    finish(exitCode === 0); }; const timer = setTimeout(() => finish(false), timeoutMs); child.stdout?.on?.("data", (chunk) => { if (stdout.length + chunk.length > maximumBytes)
+    return finish(false); stdout = Buffer.concat([stdout, chunk]); }); child.stdout?.once?.("end", () => { stdoutEnded = true; completed(); }); child.once("exit", (code) => { exitCode = code; completed(); }); child.once("close", (code) => finish(code === 0)); child.once("error", () => finish(false)); }); }
 async function verifiedClamavSignature(database) {
     if (database.__clamavTest?.signature)
         return database.__clamavTest.signature;
@@ -785,7 +829,7 @@ async function verifiedClamavSignature(database) {
         const child = sidecar
             ? childProcess.spawn("docker", ["exec", sidecar.containerName, "/usr/bin/sigtool", "--info", path], { stdio: ["ignore", "pipe", "ignore"] })
             : childProcess.spawn("/usr/bin/sigtool", ["--info", path], { stdio: ["ignore", "pipe", "ignore"] });
-        const result = await boundedTool(child, 5_000);
+        const result = await collectBoundedToolOutput(child, 5_000);
         if (!result.ok) {
             await terminateChild(child);
             continue;

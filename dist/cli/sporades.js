@@ -17,7 +17,7 @@ import { restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-po
 import { createSqliteDatabaseAdapter, createLogEnvelope, createPrivilegedAuditLogInput, createPostgresConnection, createWebSocketHub, dumpDatabase, handleFileHttpRoute, injectPageConnectionToken, listDatabaseTables, openDevDatabase, prepareHttpSecurity, readJsonRequest, routeEndpoint, routeRuntimeHealth, routeSporadesAuth, runReadOnlyQuery, shutdownHttpServerAndRuntime, simulateLocalIdentitySession, readJsonlLogEvents, replacePreparedRuntimeDatabase, shutdownAndCloseDatabase, validateReadOnlyInspectionSql, writeUnhandledHttpError, } from "../server-runtime-source.js";
 import { scaffoldFiles } from "../templates/scaffold-template.js";
 import { resolveSporadesPackageRoot } from "../package-root.js";
-import { devRuntimeRequiresClamav, releaseDevClamavSidecar, retireDevClamavSidecarIfUnused, startDevClamavSidecar } from "../dev-clamav-sidecar.js";
+import { attachRequiredDevClamavSidecar, releaseDevClamavSidecar, retireDevClamavSidecarIfUnused, startDevClamavSidecar } from "../dev-clamav-sidecar.js";
 import { CAPSULE_SERVICES_COMPOSE_FILE, CAPSULE_SERVICES_STATE_DIR, capsuleServicesComposeModel, validateCapsuleServicesConfig, writeCapsuleServicesCompose, } from "../capsule-services.js";
 import { createHostBootstrapRequest, createHostDeleteRequest, createHostLifecycleRequest, createHostRegistrationRequest, createHostReleaseRequest, createHostRuntimeHealthRequest, createHostStatsRequest, createHostUnregisterRequest, } from "./host-request-builders.js";
 import { renderCliHelp } from "./cli-help.js";
@@ -2317,12 +2317,9 @@ async function stripeTeamBillingProviderFactory(config) {
 async function createDevRuntime(options) {
     let clamavSidecar;
     const attachRequiredSidecar = async (candidate) => {
-        if (!devRuntimeRequiresClamav(candidate))
-            return false;
-        if (!clamavSidecar)
-            clamavSidecar = await startDevClamavSidecar({ projectDir: options.projectDir, dockerfile: path.join(resolveSporadesPackageRoot(), "Dockerfile.base"), buildContext: resolveSporadesPackageRoot() });
-        clamavSidecar.attach(candidate);
-        return true;
+        const attached = await attachRequiredDevClamavSidecar(clamavSidecar, candidate, async () => await startDevClamavSidecar({ projectDir: options.projectDir, dockerfile: path.join(resolveSporadesPackageRoot(), "Dockerfile.base"), buildContext: resolveSporadesPackageRoot() }));
+        clamavSidecar = attached.sidecar;
+        return attached.attached;
     };
     let database = await openDevDatabase(options.databasePath, options.serverSource, options.serverEnv, options.config, await importCapsuleDefinition(options.capsuleModuleSource), {
         serviceEnv: options.serviceEnv,
@@ -2352,9 +2349,9 @@ async function createDevRuntime(options) {
                 createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(config),
             });
             nextDatabase.runtimeProbeToken = options.runtimeProbeToken;
-            const sidecarWasAbsent = !clamavSidecar;
+            const sidecarBeforePreparation = clamavSidecar;
             database = await replacePreparedRuntimeDatabase(database, nextDatabase, attachRequiredSidecar, async () => {
-                if (!sidecarWasAbsent || !clamavSidecar)
+                if (clamavSidecar === sidecarBeforePreparation || !clamavSidecar)
                     return;
                 clamavSidecar = await releaseDevClamavSidecar(clamavSidecar);
             });

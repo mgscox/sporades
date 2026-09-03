@@ -75,7 +75,7 @@ import {
 } from "../server-runtime-source.js";
 import { scaffoldFiles } from "../templates/scaffold-template.js";
 import { resolveSporadesPackageRoot } from "../package-root.js";
-import { devRuntimeRequiresClamav, releaseDevClamavSidecar, retireDevClamavSidecarIfUnused, startDevClamavSidecar } from "../dev-clamav-sidecar.js";
+import { attachRequiredDevClamavSidecar, releaseDevClamavSidecar, retireDevClamavSidecarIfUnused, startDevClamavSidecar } from "../dev-clamav-sidecar.js";
 import {
   CAPSULE_SERVICES_COMPOSE_FILE,
   CAPSULE_SERVICES_STATE_DIR,
@@ -2695,9 +2695,8 @@ async function stripeTeamBillingProviderFactory(config: LooseRecord) {
 async function createDevRuntime(options: LooseRecord): Promise<any> {
   let clamavSidecar: any;
   const attachRequiredSidecar = async (candidate: any) => {
-    if (!devRuntimeRequiresClamav(candidate)) return false;
-    if (!clamavSidecar) clamavSidecar = await startDevClamavSidecar({ projectDir: options.projectDir, dockerfile: path.join(resolveSporadesPackageRoot(), "Dockerfile.base"), buildContext: resolveSporadesPackageRoot() });
-    clamavSidecar.attach(candidate); return true;
+    const attached = await attachRequiredDevClamavSidecar(clamavSidecar, candidate, async () => await startDevClamavSidecar({ projectDir: options.projectDir, dockerfile: path.join(resolveSporadesPackageRoot(), "Dockerfile.base"), buildContext: resolveSporadesPackageRoot() }));
+    clamavSidecar = attached.sidecar; return attached.attached;
   };
   let database: any = await openDevDatabase(
     options.databasePath,
@@ -2737,13 +2736,13 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
         },
       );
       nextDatabase.runtimeProbeToken = options.runtimeProbeToken;
-      const sidecarWasAbsent = !clamavSidecar;
+      const sidecarBeforePreparation = clamavSidecar;
       database = await replacePreparedRuntimeDatabase(
         database,
         nextDatabase,
         attachRequiredSidecar,
         async () => {
-          if (!sidecarWasAbsent || !clamavSidecar) return;
+          if (clamavSidecar === sidecarBeforePreparation || !clamavSidecar) return;
           clamavSidecar = await releaseDevClamavSidecar(clamavSidecar);
         },
       );

@@ -498,7 +498,10 @@ for a bounded, cycle-safe traversal of the parsed catalog, pages, annotations,
 streams, arrays, and indirect object graph. It rejects encryption, action
 semantics at any traversed location (including page additional actions,
 JavaScript, URI, Launch, SubmitForm, and ImportData), and embedded files,
-caps pages, and enforces a short inspection timeout. The production dependency
+requires the last startxref-linked `%%EOF` to be terminal except for PDF
+whitespace and printable comment lines, handles the last boundary of an
+incremental update, caps pages, and enforces a short inspection timeout. The production
+dependency
 audit must remain clean when either parser is upgraded. Text is a
 particularly conservative untrusted-evidence lane: strict UTF-8 is rejected
 when it resembles markup, JavaScript, shell, or common script/source forms.

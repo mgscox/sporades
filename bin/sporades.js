@@ -85054,8 +85054,39 @@ function validJpeg(bytes) {
   }
   return false;
 }
+function validPdfTerminalBoundary(bytes) {
+  const marker = Buffer.from("%%EOF");
+  const pdfWhitespace = (byte) => byte === 0 || byte === 9 || byte === 10 || byte === 12 || byte === 13 || byte === 32;
+  const trailingTriviaOnly = (offset2) => {
+    while (offset2 < bytes.length) {
+      while (offset2 < bytes.length && pdfWhitespace(bytes[offset2])) offset2 += 1;
+      if (offset2 >= bytes.length) return true;
+      if (bytes[offset2] !== 37) return false;
+      offset2 += 1;
+      while (offset2 < bytes.length && bytes[offset2] !== 10 && bytes[offset2] !== 13) {
+        if (bytes[offset2] < 32 || bytes[offset2] > 126) return false;
+        offset2 += 1;
+      }
+    }
+    return true;
+  };
+  for (let at2 = bytes.lastIndexOf(marker); at2 >= 0; at2 = bytes.lastIndexOf(marker, at2 - 1)) {
+    if (at2 > 0 && bytes[at2 - 1] !== 10 && bytes[at2 - 1] !== 13) continue;
+    const after = at2 + marker.length;
+    if (after < bytes.length && bytes[after] !== 10 && bytes[after] !== 13) continue;
+    const prefix = bytes.subarray(Math.max(0, at2 - 160), at2).toString("latin1");
+    const start = /startxref[\x00\x09\x0a\x0c\x0d\x20]+(\d{1,20})[\x00\x09\x0a\x0c\x0d\x20]*$/.exec(prefix);
+    if (!start) continue;
+    const xrefOffset = Number(start[1]);
+    if (!Number.isSafeInteger(xrefOffset) || xrefOffset < 0 || xrefOffset >= at2) continue;
+    const xrefHead = bytes.subarray(xrefOffset, Math.min(at2, xrefOffset + 80)).toString("latin1");
+    if (!/^xref(?:[\x00\x09\x0a\x0c\x0d\x20]|$)/.test(xrefHead) && !/^\d+[\x00\x09\x0a\x0c\x0d\x20]+\d+[\x00\x09\x0a\x0c\x0d\x20]+obj(?:[\x00\x09\x0a\x0c\x0d\x20]|$)/.test(xrefHead)) continue;
+    if (trailingTriviaOnly(after)) return true;
+  }
+  return false;
+}
 async function validatePdfIngress(bytes, options = {}) {
-  if (bytes.length < 16 || bytes.subarray(0, 5).toString("ascii") !== "%PDF-" || bytes.includes(Buffer.from("/Encrypt"))) return false;
+  if (bytes.length < 16 || bytes.subarray(0, 5).toString("ascii") !== "%PDF-" || bytes.includes(Buffer.from("/Encrypt")) || !validPdfTerminalBoundary(bytes)) return false;
   let task;
   let timer;
   const timeoutMs = Number.isInteger(options.timeoutMs) ? Math.max(1, Math.min(2e3, options.timeoutMs)) : 2e3;
@@ -85547,22 +85578,35 @@ function isCurrentClamavSignature(signature, now2 = Date.now()) {
   const builtAt = Date.parse(signature?.updatedAt);
   return Boolean(signature) && typeof signature?.version === "string" && /^daily:\d{1,12}$/.test(signature.version) && Number.isFinite(builtAt) && builtAt <= now2 && now2 - builtAt <= 24 * 60 * 60 * 1e3;
 }
-function boundedTool(child, timeoutMs, maximumBytes = 8192) {
+function collectBoundedToolOutput(child, timeoutMs, maximumBytes = 8192) {
   return new Promise((resolve) => {
     let settled = false;
     let stdout = Buffer.alloc(0);
+    let exitCode;
+    let stdoutEnded = !child.stdout;
     const finish = (ok) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       resolve({ ok, stdout: stdout.toString("utf8") });
     };
+    const completed = () => {
+      if (exitCode !== void 0 && stdoutEnded) finish(exitCode === 0);
+    };
     const timer = setTimeout(() => finish(false), timeoutMs);
     child.stdout?.on?.("data", (chunk) => {
       if (stdout.length + chunk.length > maximumBytes) return finish(false);
       stdout = Buffer.concat([stdout, chunk]);
     });
-    child.once("exit", (code) => finish(code === 0));
+    child.stdout?.once?.("end", () => {
+      stdoutEnded = true;
+      completed();
+    });
+    child.once("exit", (code) => {
+      exitCode = code;
+      completed();
+    });
+    child.once("close", (code) => finish(code === 0));
     child.once("error", () => finish(false));
   });
 }
@@ -85572,7 +85616,7 @@ async function verifiedClamavSignature(database) {
   for (const path13 of ["/app/data/clamav/daily.cld", "/app/data/clamav/daily.cvd"]) {
     if (!sidecar && !fs.existsSync(path13)) continue;
     const child = sidecar ? childProcess.spawn("docker", ["exec", sidecar.containerName, "/usr/bin/sigtool", "--info", path13], { stdio: ["ignore", "pipe", "ignore"] }) : childProcess.spawn("/usr/bin/sigtool", ["--info", path13], { stdio: ["ignore", "pipe", "ignore"] });
-    const result = await boundedTool(child, 5e3);
+    const result = await collectBoundedToolOutput(child, 5e3);
     if (!result.ok) {
       await terminateChild(child);
       continue;
@@ -105796,6 +105840,21 @@ async function ensureBaseImage(dockerCommand, dockerfile, buildContext) {
 function devClamavChildTerminated(child) {
   return Boolean(child) && (child.exitCode !== null || child.signalCode != null || child.__sporadesClamavTerminated === true);
 }
+function devClamavSidecarIsReusable(sidecar) {
+  const child = sidecar?.descriptor?.process;
+  return Boolean(child) && !devClamavChildTerminated(child);
+}
+async function attachRequiredDevClamavSidecar(sidecar, database, createSidecar) {
+  if (!devRuntimeRequiresClamav(database)) return { sidecar, attached: false };
+  let selected = sidecar;
+  if (selected && !devClamavSidecarIsReusable(selected)) {
+    await selected.stop();
+    selected = void 0;
+  }
+  if (!selected) selected = await createSidecar();
+  selected.attach(database);
+  return { sidecar: selected, attached: true };
+}
 function waitForDevClamavChildExit(child, timeoutMs) {
   if (!child || devClamavChildTerminated(child)) return Promise.resolve(true);
   return new Promise((resolve) => {
@@ -111187,10 +111246,9 @@ async function stripeTeamBillingProviderFactory(config) {
 async function createDevRuntime(options) {
   let clamavSidecar;
   const attachRequiredSidecar = async (candidate) => {
-    if (!devRuntimeRequiresClamav(candidate)) return false;
-    if (!clamavSidecar) clamavSidecar = await startDevClamavSidecar({ projectDir: options.projectDir, dockerfile: path12.join(resolveSporadesPackageRoot(), "Dockerfile.base"), buildContext: resolveSporadesPackageRoot() });
-    clamavSidecar.attach(candidate);
-    return true;
+    const attached = await attachRequiredDevClamavSidecar(clamavSidecar, candidate, async () => await startDevClamavSidecar({ projectDir: options.projectDir, dockerfile: path12.join(resolveSporadesPackageRoot(), "Dockerfile.base"), buildContext: resolveSporadesPackageRoot() }));
+    clamavSidecar = attached.sidecar;
+    return attached.attached;
   };
   let database = await openDevDatabase(
     options.databasePath,
@@ -111232,13 +111290,13 @@ async function createDevRuntime(options) {
         }
       );
       nextDatabase.runtimeProbeToken = options.runtimeProbeToken;
-      const sidecarWasAbsent = !clamavSidecar;
+      const sidecarBeforePreparation = clamavSidecar;
       database = await replacePreparedRuntimeDatabase(
         database,
         nextDatabase,
         attachRequiredSidecar,
         async () => {
-          if (!sidecarWasAbsent || !clamavSidecar) return;
+          if (clamavSidecar === sidecarBeforePreparation || !clamavSidecar) return;
           clamavSidecar = await releaseDevClamavSidecar(clamavSidecar);
         }
       );

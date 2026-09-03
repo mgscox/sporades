@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { ensureDevClamavChildExit, releaseDevClamavSidecar, retireDevClamavSidecarIfUnused, startDevClamavSidecar, waitForDevClamavChildExit } from "../dist/dev-clamav-sidecar.js";
+import { attachRequiredDevClamavSidecar, ensureDevClamavChildExit, releaseDevClamavSidecar, retireDevClamavSidecarIfUnused, startDevClamavSidecar, waitForDevClamavChildExit } from "../dist/dev-clamav-sidecar.js";
 import { replacePreparedRuntimeDatabase } from "../dist/server-runtime-source.js";
 
 test("failed hot-add rollback retains sidecar ownership until cleanup succeeds", async () => {
@@ -44,6 +44,30 @@ test("Dev ClamAV sidecar retirement follows the successfully promoted runtime's 
   let retained = failing;
   await assert.rejects(async () => { retained = await retireDevClamavSidecarIfUnused(retained, { endpoints: [] }); }, (error) => error === stopError);
   assert.equal(retained, failing, "failed retirement remains reachable for shutdown retry");
+});
+
+test("Dev rebuild attachment replaces a terminated ClamAV sidecar without losing cleanup ownership", async () => {
+  const candidate = () => ({ endpoints: [{ options: { body: { multipart: { inspection: { requiredInspectors: ["clamav"] } } } } }] });
+  const replacement = () => { const manager = { descriptor: { process: { exitCode: null, signalCode: null } }, attached: 0, attach(database) { this.attached += 1; database.__clamavDevSidecar = this.descriptor; }, async stop() {} }; return manager; };
+
+  for (const process of [{ exitCode: null, signalCode: "SIGKILL" }, { exitCode: null, signalCode: null, __sporadesClamavTerminated: true }]) {
+    const calls = []; const old = { descriptor: { process }, async stop() { calls.push("old.stop"); }, attach() { throw new Error("dead sidecar attached"); } }; const next = replacement();
+    const result = await attachRequiredDevClamavSidecar(old, candidate(), async () => { calls.push("replacement.create"); return next; });
+    assert.equal(result.sidecar, next); assert.equal(result.attached, true); assert.equal(next.attached, 1); assert.deepEqual(calls, ["old.stop", "replacement.create"]);
+  }
+
+  const stopError = new Error("dead sidecar cleanup failed"); let stopAttempts = 0; let creates = 0;
+  const retryable = { descriptor: { process: { exitCode: null, signalCode: "SIGTERM" } }, async stop() { stopAttempts += 1; if (stopAttempts === 1) throw stopError; }, attach() {} };
+  let owned = retryable;
+  await assert.rejects(async () => { owned = (await attachRequiredDevClamavSidecar(owned, candidate(), async () => { creates += 1; return replacement(); })).sidecar; }, (error) => error === stopError);
+  assert.equal(owned, retryable); assert.equal(creates, 0);
+  owned = (await attachRequiredDevClamavSidecar(owned, candidate(), async () => { creates += 1; return replacement(); })).sidecar;
+  assert.notEqual(owned, retryable); assert.equal(stopAttempts, 2); assert.equal(creates, 1);
+
+  const live = replacement(); const liveCandidate = candidate(); const reused = await attachRequiredDevClamavSidecar(live, liveCandidate, async () => { throw new Error("duplicate sidecar"); });
+  assert.equal(reused.sidecar, live); assert.equal(live.attached, 1);
+  const unused = await attachRequiredDevClamavSidecar(live, { endpoints: [] }, async () => { throw new Error("unexpected sidecar"); });
+  assert.deepEqual(unused, { sidecar: live, attached: false });
 });
 
 test("Dev ClamAV child exit handling is immediate for dead children and escalates only a live child", async () => {

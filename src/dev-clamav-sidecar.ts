@@ -46,6 +46,26 @@ function devClamavChildTerminated(child: any) {
   return Boolean(child) && (child.exitCode !== null || child.signalCode != null || child.__sporadesClamavTerminated === true);
 }
 
+export function devClamavSidecarIsReusable(sidecar: any) {
+  const child = sidecar?.descriptor?.process;
+  return Boolean(child) && !devClamavChildTerminated(child);
+}
+
+export async function attachRequiredDevClamavSidecar(sidecar: any, database: RecordLike, createSidecar: () => Promise<any>) {
+  if (!devRuntimeRequiresClamav(database)) return { sidecar, attached: false };
+  let selected = sidecar;
+  if (selected && !devClamavSidecarIsReusable(selected)) {
+    // Stop before replacement so there can never be two task-owned scanner
+    // containers. Assignment happens only after stop/create/attach succeeds,
+    // leaving a failed cleanup reachable for the caller's next retry.
+    await selected.stop();
+    selected = undefined;
+  }
+  if (!selected) selected = await createSidecar();
+  selected.attach(database);
+  return { sidecar: selected, attached: true };
+}
+
 export function waitForDevClamavChildExit(child: any, timeoutMs: number) {
   if (!child || devClamavChildTerminated(child)) return Promise.resolve(true);
   return new Promise<boolean>((resolve) => { let settled = false; const finish = (value: boolean) => { if (value) child.__sporadesClamavTerminated = true; if (settled) return; settled = true; clearTimeout(timer); resolve(value); }; const timer = setTimeout(() => finish(false), timeoutMs); child.once("close", () => finish(true)); child.once("error", () => finish(true)); });

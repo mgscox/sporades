@@ -50,6 +50,26 @@ async function ensureBaseImage(dockerCommand, dockerfile, buildContext) {
 function devClamavChildTerminated(child) {
     return Boolean(child) && (child.exitCode !== null || child.signalCode != null || child.__sporadesClamavTerminated === true);
 }
+export function devClamavSidecarIsReusable(sidecar) {
+    const child = sidecar?.descriptor?.process;
+    return Boolean(child) && !devClamavChildTerminated(child);
+}
+export async function attachRequiredDevClamavSidecar(sidecar, database, createSidecar) {
+    if (!devRuntimeRequiresClamav(database))
+        return { sidecar, attached: false };
+    let selected = sidecar;
+    if (selected && !devClamavSidecarIsReusable(selected)) {
+        // Stop before replacement so there can never be two task-owned scanner
+        // containers. Assignment happens only after stop/create/attach succeeds,
+        // leaving a failed cleanup reachable for the caller's next retry.
+        await selected.stop();
+        selected = undefined;
+    }
+    if (!selected)
+        selected = await createSidecar();
+    selected.attach(database);
+    return { sidecar: selected, attached: true };
+}
 export function waitForDevClamavChildExit(child, timeoutMs) {
     if (!child || devClamavChildTerminated(child))
         return Promise.resolve(true);

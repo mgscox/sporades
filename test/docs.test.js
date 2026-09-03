@@ -1264,6 +1264,7 @@ test("File reference docs define the trusted multipart ingress contract and oper
   assert.doesNotMatch(contents, /sweepExpiredFileIngress/);
   assert.match(contents, /Local filesystem and\s+MinIO-backed/i);
   assert.match(contents, /completed receipts remain replayable/i);
+  assert.match(contents, /last startxref-linked `%%EOF` to be terminal except for PDF\s+whitespace and printable comment lines/i);
   assert.match(contents, /every candidate\s+evaluated by the shell classifier is parsed before either narrow plain-data\s+allowance/i);
   assert.match(contents, /pinned GNU Bash 5\.2 builtin and reserved-word vocabulary/i);
   assert.match(contents, /bounded current `PATH` search \(at most 128 entries/i);
