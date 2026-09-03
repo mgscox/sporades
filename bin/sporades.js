@@ -35801,6 +35801,16 @@ async function startDevSession(options) {
         fatalRestartAttempts = 0;
         refresh = await devRefresh.broadcast();
         websocketHub.disconnectAll();
+        try {
+          await runtime.database.log.emit({
+            category: "platform",
+            event: "dev.capsule.reloaded",
+            level: "info",
+            message: "Dev capsule reloaded after a server change",
+            data: capsuleReloadSurface(runtime.database, nextConfig)
+          });
+        } catch {
+        }
       }
       const previousBundle = bundle;
       bundle = rebuild;
@@ -36003,6 +36013,27 @@ async function createDevRuntime(options) {
       await shutdownAndCloseDatabase(database);
     }
   };
+}
+function capsuleReloadSurface(database, config = {}) {
+  const names = (values, key = "name") => values.map((value) => String(value?.[key] ?? "")).sort();
+  const surface = {
+    tables: names(database.schema?.tables ?? []),
+    mutations: names(database.mutations ?? []),
+    jobs: names(database.jobs ?? []),
+    omitted: { tables: 0, mutations: 0, jobs: 0 }
+  };
+  const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
+  const payloadMaxBytes = Number.isInteger(configured) && configured > 0 ? configured : 4096;
+  const budget = Math.max(256, payloadMaxBytes - 1024);
+  const over = () => Buffer.byteLength(JSON.stringify(surface), "utf8") > budget;
+  const kinds = ["tables", "mutations", "jobs"];
+  while (over()) {
+    const widest = kinds.filter((kind) => surface[kind].length > 0).sort((a, b) => Buffer.byteLength(JSON.stringify(surface[b]), "utf8") - Buffer.byteLength(JSON.stringify(surface[a]), "utf8"))[0];
+    if (!widest) break;
+    surface[widest].pop();
+    surface.omitted[widest] += 1;
+  }
+  return surface;
 }
 function createDevInspectionToken() {
   return randomBytes7(32).toString("hex");
