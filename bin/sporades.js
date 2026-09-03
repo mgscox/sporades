@@ -85369,6 +85369,7 @@ function hasExecutableShellSemantics(text2) {
   const seen = /* @__PURE__ */ new WeakSet();
   let visited = 0;
   let syntaxError = false;
+  let firstErrorAt = Number.POSITIVE_INFINITY;
   try {
     while (pending.length > 0) {
       const { value, depth } = pending.pop();
@@ -85376,7 +85377,10 @@ function hasExecutableShellSemantics(text2) {
       seen.add(value);
       visited += 1;
       if (visited > maximumContentPolicyAstNodes || depth > maximumPythonContentPolicyAstDepth) return true;
-      if (Array.isArray(value.errors) && value.errors.length > 0) syntaxError = true;
+      if (Array.isArray(value.errors) && value.errors.length > 0) {
+        syntaxError = true;
+        for (const error of value.errors) if (Number.isInteger(error?.pos) && error.pos >= 0) firstErrorAt = Math.min(firstErrorAt, error.pos);
+      }
       const children = Object.values(value);
       if ("parts" in value) children.push(value.parts);
       if ("indexParts" in value) children.push(value.indexParts);
@@ -85388,8 +85392,23 @@ function hasExecutableShellSemantics(text2) {
   } catch {
     return true;
   }
-  if (syntaxError || !Array.isArray(root.commands) || root.commands.length === 0) return false;
-  return true;
+  if (!Array.isArray(root.commands) || root.commands.length === 0) return false;
+  if (!syntaxError) return true;
+  const hasCommandBoundary = (suffix) => {
+    for (let index = 0; index < suffix.length; index += 1) {
+      if (suffix[index] === ";") return true;
+      if (suffix[index] === "&" && suffix[index - 1] !== "&" && suffix[index - 1] !== "|" && suffix[index + 1] !== "&") return true;
+      if (suffix[index] !== "\n") continue;
+      let escapes = 0;
+      for (let before = index - 1; before >= 0 && suffix[before] === "\\"; before -= 1) escapes += 1;
+      if (escapes % 2 === 0) return true;
+    }
+    return false;
+  };
+  return root.commands.some((statement) => {
+    if (statement?.type !== "Statement" || !statement.command || !Number.isInteger(statement.pos) || !Number.isInteger(statement.end) || statement.end <= statement.pos || statement.end > firstErrorAt) return false;
+    return statement.background === true || hasCommandBoundary(text2.slice(statement.end, firstErrorAt));
+  });
 }
 function safeUntrustedText(bytes) {
   if (bytes.length > maximumContentPolicyTextBytes) return false;
@@ -85541,7 +85560,7 @@ function waitForChild(child, timeoutMs) {
   });
 }
 async function terminateChild(child, timeoutMs = 5e3) {
-  if (!child || child.exitCode !== null) return;
+  if (!child || clamavChildTerminated(child)) return;
   const exited = new Promise((resolve) => {
     child.once("exit", resolve);
     child.once("error", resolve);

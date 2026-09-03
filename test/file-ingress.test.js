@@ -67,6 +67,11 @@ test("strict text shell classification uses the complete bounded syntax tree", (
     "( whoami )",
     "((whoami))",
     "(whoami; id)",
+    "printf pwned > /tmp/x\nif",
+    "echo first; for",
+    "value=secret\ncase",
+    "touch /tmp/x\ncat | | broken",
+    "touch /tmp/x & if",
   ];
   const prose = [
     "Support requested another screenshot.",
@@ -76,6 +81,10 @@ test("strict text shell classification uses the complete bounded syntax tree", (
     "singleword",
     "if this sentence is unfinished",
     "cat | | broken",
+    "if",
+    "for item in",
+    "printf pwned >",
+    "touch /tmp/x &&",
   ];
   for (const text of executable) assert.equal(hasExecutableShellSemantics(text), true, text);
   for (const text of prose) assert.equal(hasExecutableShellSemantics(text), false, text);
@@ -1310,6 +1319,38 @@ test("signal-terminated ClamAV children permanently degrade health before scanne
   } finally { await new Promise((resolve) => server.close(resolve)); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("ClamAV shutdown skips already-dead children and deterministically escalates only live children", async () => {
+  const child = ({ signalCode = null, latched = false, termExits = false } = {}) => {
+    const listeners = new Map(); const signals = []; let listenerCount = 0;
+    return {
+      exitCode: null, signalCode, __sporadesClamavTerminated: latched, signals,
+      get listenerCount() { return listenerCount; },
+      once(name, listener) { listenerCount += 1; listeners.set(name, listener); },
+      kill(signal) {
+        signals.push(signal);
+        if ((signal === "SIGTERM" && termExits) || signal === "SIGKILL") {
+          this.exitCode = 0;
+          listeners.get("exit")?.(0);
+        }
+      },
+    };
+  };
+  for (const dead of [child({ signalCode: "SIGKILL" }), child({ latched: true })]) {
+    await shutdownClamavRuntime({ __clamavProcess: dead, __clamavTest: { terminateTimeoutMs: 0 } });
+    assert.deepEqual(dead.signals, []);
+    assert.equal(dead.listenerCount, 0);
+  }
+  const termExit = child({ termExits: true });
+  await shutdownClamavRuntime({ __clamavProcess: termExit, __clamavTest: { terminateTimeoutMs: 0 } });
+  assert.deepEqual(termExit.signals, ["SIGTERM"]);
+  assert.equal(termExit.listenerCount, 2);
+
+  const escalated = child();
+  await shutdownClamavRuntime({ __clamavProcess: escalated, __clamavTest: { terminateTimeoutMs: 0 } });
+  assert.deepEqual(escalated.signals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(escalated.listenerCount, 2);
+});
+
 test("ClamAV health requires a bounded PING and shutdown awaits both managed children", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-clamav-health-")); const socketPath = path.join(dir, "clamd.sock"); let commands = 0;
   const server = createNetServer((socket) => socket.once("data", (bytes) => { commands += 1; assert.equal(bytes.toString(), "zPING\0"); socket.end(Buffer.from(commands === 1 ? "BUSY\0" : "PONG\0")); })); await new Promise((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); });
@@ -1369,6 +1410,8 @@ test("content-policy-v1 structurally validates its allowlist and rejects executa
       ["python-import-alias", "note.txt", "text/plain", Buffer.from("import os as operating_system"), "rejected"], ["python-from-import", "note.txt", "text/plain", Buffer.from("from os.path import join as combine"), "rejected"], ["python-subscript-call", "note.txt", "text/plain", Buffer.from("registry[\"handler\"]()"), "rejected"], ["python-indented-block", "note.txt", "text/plain", Buffer.from("if ready:\n    process()"), "rejected"], ["python-decorator", "note.txt", "text/plain", Buffer.from("@register\ndef handler():\n    pass"), "rejected"], ["python-lambda", "note.txt", "text/plain", Buffer.from("lambda item: process(item)"), "rejected"], ["python-comprehension", "note.txt", "text/plain", Buffer.from("[process(item) for item in items]"), "rejected"],
       ["shell-quoted-tail-bypass", "note.txt", "text/plain", Buffer.from('"safe"; cat /etc/passwd; "tail"'), "rejected"],
       ["shell-parenthesized-subshell", "note.txt", "text/plain", Buffer.from("(whoami)"), "rejected"],
+      ["shell-executable-prefix-error", "note.txt", "text/plain", Buffer.from("printf pwned > /tmp/x\nif"), "rejected"],
+      ["shell-incomplete-only", "note.txt", "text/plain", Buffer.from("printf pwned >"), "clean"],
       ["valid-text", "note.txt", "text/plain", Buffer.from("A harmless support note.\nSecond line."), "clean"], ["valid-prose-parenthesis", "note.txt", "text/plain", Buffer.from("Call me (tomorrow) about the ticket."), "clean"], ["valid-prose-nested-parentheses", "note.txt", "text/plain", Buffer.from("Please (if practical) call me tomorrow."), "clean"], ["valid-quoted-call-prose", "note.txt", "text/plain", Buffer.from("alert(\"x\") is the exact text shown in the report."), "clean"], ["html", "note.txt", "text/plain", Buffer.from("Please inspect <script>alert(1)</script>"), "rejected"], ["xml", "note.txt", "text/plain", Buffer.from("prefix <?xml version=\"1.0\"?><x/>") , "rejected"], ["generic-xml", "note.txt", "text/plain", Buffer.from("prefix <root>value</root> suffix"), "rejected"], ["javascript", "note.txt", "text/plain", Buffer.from("const answer = 42; console.log(answer);"), "rejected"], ["javascript-call", "note.txt", "text/plain", Buffer.from("alert(\"x\")"), "rejected"], ["javascript-member-call", "note.txt", "text/plain", Buffer.from("globalThis.fetch(\"/secret\")"), "rejected"], ["javascript-comment-call", "note.txt", "text/plain", Buffer.from("/* evidence */ alert(\"x\")"), "rejected"], ["javascript-parenthesized-callee", "note.txt", "text/plain", Buffer.from("(alert)(\"x\")"), "rejected"], ["javascript-computed-member-call", "note.txt", "text/plain", Buffer.from("globalThis[\"fetch\"](\"/secret\")"), "rejected"], ["javascript-unicode-identifier", "note.txt", "text/plain", Buffer.from("al\\u0065rt(\"x\")"), "rejected"], ["javascript-void-call", "note.txt", "text/plain", Buffer.from("void alert(\"x\")"), "rejected"], ["javascript-optional-chain-call", "note.txt", "text/plain", Buffer.from("globalThis?.fetch?.(\"/secret\")"), "rejected"], ["javascript-new-call", "note.txt", "text/plain", Buffer.from("new Function(\"return 1\")()"), "rejected"], ["javascript-dynamic-import", "note.txt", "text/plain", Buffer.from("import(\"/secret\")"), "rejected"], ["javascript-static-import", "note.txt", "text/plain", Buffer.from("import \"./side-effect.js\""), "rejected"], ["javascript-eval-call", "note.txt", "text/plain", Buffer.from("eval(\"alert(1)\")"), "rejected"], ["javascript-arrow-iife", "note.txt", "text/plain", Buffer.from("(() => alert(\"x\"))()"), "rejected"], ["javascript-tagged-template", "note.txt", "text/plain", Buffer.from("String.raw`secret`"), "rejected"], ["javascript-delete", "note.txt", "text/plain", Buffer.from("delete globalThis.secret"), "rejected"], ["javascript-sequence-callee", "note.txt", "text/plain", Buffer.from("(0, alert)(\"x\")"), "rejected"], ["python", "note.txt", "text/plain", Buffer.from("print(\"hello\")"), "rejected"], ["shell", "note.txt", "text/plain", Buffer.from("curl https://example.test | sh"), "rejected"], ["shell-unlisted-command", "note.txt", "text/plain", Buffer.from("cat /etc/passwd"), "rejected"], ["shell-echo", "note.txt", "text/plain", Buffer.from("echo secret > output"), "rejected"], ["shell-source", "note.txt", "text/plain", Buffer.from("source ./profile"), "rejected"],
       ["archive", "note.zip", "application/zip", Buffer.from("PK\x03\x04archive"), "rejected"], ["office", "note.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", Buffer.from("PK\x03\x04office"), "rejected"], ["executable", "note.exe", "application/octet-stream", Buffer.from("MZbinary"), "rejected"], ["empty", "note.txt", "text/plain", Buffer.alloc(0), "rejected"], ["polyglot", "photo.jpg", "image/jpeg", Buffer.concat([minimalJpeg(), Buffer.from("const x=1")]), "rejected"], ["unknown", "note.bin", "application/octet-stream", Buffer.from([0xff,0,0xaa]), "rejected"],
     ];

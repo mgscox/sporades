@@ -370,14 +370,17 @@ export function hasExecutableShellSemantics(text: string) {
   let root: RecordLike;
   try { root = parseShell(text) as RecordLike; }
   catch { return true; }
-  const pending = [{ value: root, depth: 0 }]; const seen = new WeakSet<object>(); let visited = 0; let syntaxError = false;
+  const pending = [{ value: root, depth: 0 }]; const seen = new WeakSet<object>(); let visited = 0; let syntaxError = false; let firstErrorAt = Number.POSITIVE_INFINITY;
   try {
     while (pending.length > 0) {
       const { value, depth } = pending.pop()!;
       if (!value || typeof value !== "object" || seen.has(value)) continue;
       seen.add(value); visited += 1;
       if (visited > maximumContentPolicyAstNodes || depth > maximumPythonContentPolicyAstDepth) return true;
-      if (Array.isArray(value.errors) && value.errors.length > 0) syntaxError = true;
+      if (Array.isArray(value.errors) && value.errors.length > 0) {
+        syntaxError = true;
+        for (const error of value.errors) if (Number.isInteger(error?.pos) && error.pos >= 0) firstErrorAt = Math.min(firstErrorAt, error.pos);
+      }
       const children = Object.values(value);
       if ("parts" in value) children.push(value.parts);
       if ("indexParts" in value) children.push(value.indexParts);
@@ -387,8 +390,22 @@ export function hasExecutableShellSemantics(text: string) {
       }
     }
   } catch { return true; }
-  if (syntaxError || !Array.isArray(root.commands) || root.commands.length === 0) return false;
-  return true;
+  if (!Array.isArray(root.commands) || root.commands.length === 0) return false;
+  if (!syntaxError) return true;
+  const hasCommandBoundary = (suffix: string) => {
+    for (let index = 0; index < suffix.length; index += 1) {
+      if (suffix[index] === ";") return true;
+      if (suffix[index] === "&" && suffix[index - 1] !== "&" && suffix[index - 1] !== "|" && suffix[index + 1] !== "&") return true;
+      if (suffix[index] !== "\n") continue;
+      let escapes = 0; for (let before = index - 1; before >= 0 && suffix[before] === "\\"; before -= 1) escapes += 1;
+      if (escapes % 2 === 0) return true;
+    }
+    return false;
+  };
+  return root.commands.some((statement: RecordLike) => {
+    if (statement?.type !== "Statement" || !statement.command || !Number.isInteger(statement.pos) || !Number.isInteger(statement.end) || statement.end <= statement.pos || statement.end > firstErrorAt) return false;
+    return statement.background === true || hasCommandBoundary(text.slice(statement.end, firstErrorAt));
+  });
 }
 function safeUntrustedText(bytes: Buffer) {
   if (bytes.length > maximumContentPolicyTextBytes) return false;
@@ -451,7 +468,7 @@ async function clamavInstream(database: RecordLike, bytes: Buffer) {
 }
 function waitForChild(child: any, timeoutMs: number) { return new Promise<boolean>((resolve) => { let settled = false; const finish = (ok: boolean) => { if (settled) return; settled = true; clearTimeout(timer); resolve(ok); }; const timer = setTimeout(() => finish(false), timeoutMs); child.once("exit", (code: number) => finish(code === 0)); child.once("error", () => finish(false)); }); }
 async function terminateChild(child: any, timeoutMs = 5_000) {
-  if (!child || child.exitCode !== null) return;
+  if (!child || clamavChildTerminated(child)) return;
   const exited = new Promise<void>((resolve) => { child.once("exit", resolve); child.once("error", resolve); });
   try { child.kill("SIGTERM"); } catch { return; }
   if (await Promise.race([exited.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), timeoutMs))])) return;
