@@ -603,6 +603,7 @@ const FILE_METADATA_CONFORMANCE_CASES = [
       const leased = { key: "POST:/upload:owner:request:part", leaseId: "lease-conformance", state: "leased", actorId: OWNER_ID, authorityKind: "actor", authorityId: `actor:${OWNER_ID}`, ownerId: OWNER_ID, principalNamespace: null, principalKeyDigest: null, endpointMethod: "POST", endpointPath: "/upload", requestKey: "request", partKey: "part", fileId: file.id, expiresAt: LATER };
       await adapter.prepare(adapter.dialect.sql("INSERT INTO [sporades_file_ingress] ([key], [leaseId], [state], [actorId], [authorityKind], [authorityId], [ownerId], [principalNamespace], [principalKeyDigest], [endpointMethod], [endpointPath], [requestKey], [partKey], [expiresAt], [sweepToken], [payload], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)")).run(leased.key, leased.leaseId, leased.state, leased.actorId, leased.authorityKind, leased.authorityId, leased.ownerId, leased.principalNamespace, leased.principalKeyDigest, leased.endpointMethod, leased.endpointPath, leased.requestKey, leased.partKey, leased.expiresAt, JSON.stringify(leased), NOW);
       assert.equal(await adapter.hasPendingIngressMaintenance(), true);
+      assert.deepEqual(await adapter.readIngressMaintenanceState(), { ingressRequired: true, auditDeliveryRequired: false, earliestDeliveredAt: null });
       await adapter.lockIngressReceipts([leased.leaseId]);
       assert.deepEqual(
         (({ leaseId, state, actorId, authorityKind, authorityId, ownerId, endpointMethod, endpointPath, requestKey, partKey }) => ({ leaseId, state, actorId, authorityKind, authorityId, ownerId, endpointMethod, endpointPath, requestKey, partKey }))(await adapter.selectIngressByLease(leased.leaseId)),
@@ -623,8 +624,10 @@ const FILE_METADATA_CONFORMANCE_CASES = [
       assert.equal((await adapter.deleteIngressSweepingReceipt(expired.leaseId, "sweep-token")).changes, 1);
       assert.equal(await adapter.selectIngressByLease(expired.leaseId), null);
       assert.equal(await adapter.hasPendingIngressMaintenance(), false, "completed receipts alone do not keep maintenance live");
+      assert.deepEqual(await adapter.readIngressMaintenanceState(), { ingressRequired: false, auditDeliveryRequired: false, earliestDeliveredAt: null });
       await adapter.enqueueIngressClaimAudit({ claimId: "retained-audit-conformance", createdAt: NOW });
       assert.equal(await adapter.hasPendingIngressMaintenance(), true, "an undelivered audit intent keeps maintenance live");
+      assert.deepEqual(await adapter.readIngressMaintenanceState(), { ingressRequired: false, auditDeliveryRequired: true, earliestDeliveredAt: null });
     },
   },
   {

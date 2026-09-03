@@ -785,17 +785,23 @@ live-maintenance retry until recovery succeeds; once clear, ordinary timer
 ticks do not rescan interrupted delivery rows.
 Delivered intents remain inspectable for 24 hours and are then pruned
 oldest-first in batches of 50; pending and in-progress intents are never
-pruned, and completed File retries do not create a new intent. A
+pruned, and completed File retries do not create a new intent. Retention has
+its own durable maintenance deadline: removing the final multipart endpoint
+and File-storage configuration stops unrelated scanner and sweep resources,
+but the replacement runtime still sleeps until the oldest delivered intent is
+due, prunes a bounded batch, and disarms the wake when the outbox is empty. A
 staging receipt becomes claimable only through a key, lease, state, and expiry
 compare-and-set after its object write. If expiry cleanup wins that race,
 Sporades compensates the exact newly written object and never revives the row;
 a concurrently completed receipt is preserved.
-A replacement Capsule discovers unclaimed leases and undelivered audit intents
+A replacement Capsule discovers unclaimed leases, undelivered audit intents,
+and delivered intents awaiting retention expiry
 from durable storage before activation. Their cleanup and delivery timers stay
 live even if that release removed its last multipart endpoint and relied on the
-implicit local File-storage configuration. A Capsule with no multipart
-declaration and no such retained work remains maintenance-free; completed
-receipts alone do not arm the timers.
+implicit local File-storage configuration. Audit retention uses its independent
+deadline rather than keeping the one-second delivery retry or ingress sweeper
+alive. A Capsule with no multipart declaration and no such retained work
+remains maintenance-free; completed receipts alone do not arm the timers.
 A lost response can replay the completed File even after the original lease
 expiry; expired unclaimed leases cannot be claimed. Local filesystem and
 MinIO-backed storage use identical policy, admission, lease, claim, ACL,

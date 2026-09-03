@@ -30,6 +30,7 @@ export const CONFORMANCE_SURFACE = {
         assert.equal((await adapter.claimIngressClaimAudit("claim-a", "token-deliver", LATE)).changes, 1);
         assert.equal((await adapter.deliverIngressClaimAudit("claim-a", "token-deliver", LATE)).changes, 1);
         assert.equal((await adapter.deliverIngressClaimAudit("claim-a", "token-deliver", LATE)).changes, 0);
+        assert.deepEqual(await adapter.readIngressMaintenanceState(), { ingressRequired: false, auditDeliveryRequired: true, earliestDeliveredAt: LATE });
         assert.deepEqual((await adapter.selectPendingIngressClaimAudits(3)).map((row) => row.claimId), ["claim-b", "claim-c"]);
 
         assert.equal((await adapter.claimIngressClaimAudit("claim-b", "token-b", LATE)).changes, 1);

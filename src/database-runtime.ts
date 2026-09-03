@@ -668,6 +668,15 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
         "SELECT CASE WHEN EXISTS (SELECT 1 FROM [sporades_file_ingress] WHERE [state] IN ('staging', 'leased', 'sweeping')) OR EXISTS (SELECT 1 FROM [sporades_file_ingress_audit_outbox] WHERE [state] IN ('pending', 'delivering')) THEN 1 ELSE 0 END AS [required]",
       )).get(), (row: LooseRecord | null) => Number(row?.required ?? 0) === 1);
     },
+    readIngressMaintenanceState() {
+      return thenIfPromise(this.prepare(sql(
+        "SELECT CASE WHEN EXISTS (SELECT 1 FROM [sporades_file_ingress] WHERE [state] IN ('staging', 'leased', 'sweeping')) THEN 1 ELSE 0 END AS [ingressRequired], CASE WHEN EXISTS (SELECT 1 FROM [sporades_file_ingress_audit_outbox] WHERE [state] IN ('pending', 'delivering')) THEN 1 ELSE 0 END AS [auditDeliveryRequired], (SELECT MIN([deliveredAt]) FROM [sporades_file_ingress_audit_outbox] WHERE [state] = 'delivered') AS [earliestDeliveredAt]",
+      )).get(), (row: LooseRecord | null) => ({
+        ingressRequired: Number(row?.ingressRequired ?? 0) === 1,
+        auditDeliveryRequired: Number(row?.auditDeliveryRequired ?? 0) === 1,
+        earliestDeliveredAt: row?.earliestDeliveredAt == null ? null : String(row.earliestDeliveredAt),
+      }));
+    },
     lockIngressReceipts(leaseIds: string[]) {
       const sorted = [...new Set(leaseIds.map(String))].sort();
       if (sorted.length === 0) return { changes: 0 };

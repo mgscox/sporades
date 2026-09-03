@@ -1045,6 +1045,45 @@ test("outbox retention prunes delivered intents in bounded batches without touch
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("a removed ingress surface retains one durable audit-prune wake until delivered rows expire", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-retention-restart-")); let first; let replacement;
+  try {
+    const dbPath = path.join(dir, "data.db");
+    first = await openDevDatabase(dbPath, "", {}, { name: "audit-retention-restart" }, capsule({ name: "audit-retention-restart", endpoints: { upload: endpoint({ method: "POST", path: "/removed", body: { multipart: ingressPolicy() } }, () => null) } }));
+    await first.adapter.prepare("INSERT INTO [sporades_file_ingress_audit_outbox] ([claimId], [state], [claimToken], [createdAt], [updatedAt], [deliveredAt]) VALUES ('retained-delivered', 'delivered', NULL, ?, ?, ?)").run("2030-01-01T00:00:00.000Z", "2030-01-01T00:00:00.000Z", "2030-01-01T00:00:00.000Z");
+    await first.close(); first = null;
+
+    const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+    replacement = await openDevDatabase(dbPath, "", {}, { name: "audit-retention-restart" }, capsule({ name: "audit-retention-restart" }), { clock });
+    assert.equal(replacement.fileIngressEnabled, false, "a delivered audit does not retain scanner or ingress-sweep resources");
+    await replacement.init();
+    assert.notEqual(replacement.__ingressAuditOutboxTimer, null, "retention keeps one deadline wake");
+    clock.advanceBy(24 * 60 * 60 * 1000 - 1); await clock.runDueTimers();
+    assert.equal((await replacement.adapter.prepare("SELECT [state] FROM [sporades_file_ingress_audit_outbox] WHERE [claimId] = 'retained-delivered'").get()).state, "delivered");
+    clock.advanceBy(1); await clock.runDueTimers();
+    assert.equal(await replacement.adapter.prepare("SELECT [state] FROM [sporades_file_ingress_audit_outbox] WHERE [claimId] = 'retained-delivered'").get(), undefined);
+    assert.equal(replacement.__ingressAuditOutboxTimer, null, "an empty outbox disarms audit maintenance");
+    clock.advanceBy(7 * 24 * 60 * 60 * 1000); await clock.runDueTimers();
+    assert.equal(replacement.__ingressAuditOutboxTimer, null, "an empty outbox does not recreate an idle maintenance loop");
+  } finally { await first?.close(); await replacement?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a removed ingress surface prunes already-due delivered audits during restart", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-retention-due-restart-")); let first; let replacement;
+  try {
+    const dbPath = path.join(dir, "data.db");
+    first = await openDevDatabase(dbPath, "", {}, { name: "audit-retention-due-restart" }, capsule({ name: "audit-retention-due-restart", endpoints: { upload: endpoint({ method: "POST", path: "/removed", body: { multipart: ingressPolicy() } }, () => null) } }));
+    await first.adapter.prepare("INSERT INTO [sporades_file_ingress_audit_outbox] ([claimId], [state], [claimToken], [createdAt], [updatedAt], [deliveredAt]) VALUES ('due-delivered', 'delivered', NULL, ?, ?, ?)").run("2029-12-30T00:00:00.000Z", "2029-12-30T00:00:00.000Z", "2029-12-30T00:00:00.000Z");
+    await first.close(); first = null;
+
+    const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+    replacement = await openDevDatabase(dbPath, "", {}, { name: "audit-retention-due-restart" }, capsule({ name: "audit-retention-due-restart" }), { clock });
+    assert.equal(replacement.fileIngressEnabled, false);
+    await replacement.init();
+    assert.equal(await replacement.adapter.prepare("SELECT [state] FROM [sporades_file_ingress_audit_outbox] WHERE [claimId] = 'due-delivered'").get(), undefined);
+  } finally { await first?.close(); await replacement?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("concurrent incompatible ingress descriptors keep one winner and stage no loser bytes", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-conflict-"));
   try {
