@@ -2143,6 +2143,17 @@ async function startDevSession(options) {
                 fatalRestartAttempts = 0;
                 refresh = await devRefresh.broadcast();
                 websocketHub.disconnectAll();
+                // A capsule reload is in-process, so nothing outside the session — not the pid, not its
+                // uptime — records that a server change took effect. Without this the only trace of a
+                // reload is stdout the developer has usually scrolled past, and an empty `sporades logs`
+                // reads as "the server never reloaded" when it equally means "it reloaded cleanly".
+                runtime.database.log.emit({
+                    category: "platform",
+                    event: "dev.capsule.reloaded",
+                    level: "info",
+                    message: "Dev capsule reloaded after a server change",
+                    data: capsuleReloadSurface(runtime.database),
+                });
             }
             const previousBundle = bundle;
             bundle = rebuild;
@@ -2332,6 +2343,17 @@ async function createDevRuntime(options) {
         async shutdown() {
             await shutdownAndCloseDatabase(database);
         },
+    };
+}
+// What a developer actually asks after saving a server change: did my new table, mutation, or job
+// land? Names rather than counts, because a count only answers that question for someone who
+// memorised the previous one.
+function capsuleReloadSurface(database) {
+    const names = (values, key = "name") => values.map((value) => String(value?.[key] ?? "")).sort();
+    return {
+        tables: names(database.schema?.tables ?? []),
+        mutations: names(database.mutations ?? []),
+        jobs: names(database.jobs ?? []),
     };
 }
 function createDevInspectionToken() {

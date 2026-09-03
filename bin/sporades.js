@@ -35801,6 +35801,13 @@ async function startDevSession(options) {
         fatalRestartAttempts = 0;
         refresh = await devRefresh.broadcast();
         websocketHub.disconnectAll();
+        runtime.database.log.emit({
+          category: "platform",
+          event: "dev.capsule.reloaded",
+          level: "info",
+          message: "Dev capsule reloaded after a server change",
+          data: capsuleReloadSurface(runtime.database)
+        });
       }
       const previousBundle = bundle;
       bundle = rebuild;
@@ -36002,6 +36009,14 @@ async function createDevRuntime(options) {
     async shutdown() {
       await shutdownAndCloseDatabase(database);
     }
+  };
+}
+function capsuleReloadSurface(database) {
+  const names = (values, key = "name") => values.map((value) => String(value?.[key] ?? "")).sort();
+  return {
+    tables: names(database.schema?.tables ?? []),
+    mutations: names(database.mutations ?? []),
+    jobs: names(database.jobs ?? [])
   };
 }
 function createDevInspectionToken() {
