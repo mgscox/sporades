@@ -1265,6 +1265,9 @@ test("File reference docs define the trusted multipart ingress contract and oper
   assert.match(contents, /Local filesystem and\s+MinIO-backed/i);
   assert.match(contents, /completed receipts remain replayable/i);
   assert.match(contents, /initial revision body and terminal classic cross-reference table or\s+cross-reference stream/i);
+  assert.match(contents, /stream lengths may be direct bounded integers or indirect integer\s+objects resolved by exact object number and generation through that revision's\s+already validated effective cross-reference state/i);
+  assert.match(contents, /Encryption is detected\s+from each trailer or cross-reference-stream dictionary's structural `\/Encrypt`\s+entry/i);
+  assert.match(contents, /harmless matching bytes in comments, strings, names, or content do\s+not make an otherwise unencrypted PDF fail/i);
   assert.match(contents, /ordinary streams cannot trigger parser fallback and pose as\s+the\s+terminal revision/i);
   assert.match(contents, /tables bind every in-use subsection entry's object number, generation, and\s+offset/i);
   assert.match(contents, /accept out-of-order subsections only when their object identities\s+remain unique/i);

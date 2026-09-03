@@ -501,7 +501,13 @@ JavaScript, URI, Launch, SubmitForm, and ImportData), and embedded files,
 parses the initial revision body and terminal classic cross-reference table or
 cross-reference stream, binds each `startxref` and `%%EOF` footer to that
 section, and follows at most 256 strictly backward `/Prev` links. Cross-reference
-tables bind every in-use subsection entry's object number, generation, and
+and ordinary stream lengths may be direct bounded integers or indirect integer
+objects resolved by exact object number and generation through that revision's
+already validated effective cross-reference state; missing, cyclic, ambiguous,
+wrong-type, or future-revision references fail closed. Encryption is detected
+from each trailer or cross-reference-stream dictionary's structural `/Encrypt`
+entry, so harmless matching bytes in comments, strings, names, or content do
+not make an otherwise unencrypted PDF fail. Cross-reference tables bind every in-use subsection entry's object number, generation, and
 offset to the referenced indirect object, bound `/Size`, admit normal free
 entries, and accept out-of-order subsections only when their object identities
 remain unique. In either representation generation numbers are limited to
