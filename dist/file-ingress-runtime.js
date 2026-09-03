@@ -762,6 +762,209 @@ function locatePdfIndirectInteger(bytes, reference, limit, deadlineExpired) {
     }
     return found;
 }
+function pdfTopLevelValueOffset(bytes, dictionaryOffset, dictionaryEnd, wanted, deadlineExpired) {
+    let cursor = dictionaryOffset + 2;
+    let found;
+    let pairs = 0;
+    while (++pairs <= 100_000) {
+        if (deadlineExpired?.("dictionary"))
+            return null;
+        cursor = skipPdfTrivia(bytes, cursor, dictionaryEnd, false, deadlineExpired);
+        if (cursor < 0)
+            return null;
+        if (bytes[cursor] === 0x3e && bytes[cursor + 1] === 0x3e)
+            return found;
+        if (bytes[cursor] !== 0x2f)
+            return null;
+        const nameStart = ++cursor;
+        let nameSteps = 0;
+        while (cursor < dictionaryEnd && !pdfDelimiter(bytes[cursor])) {
+            if ((nameSteps++ & 255) === 0 && deadlineExpired?.("dictionary"))
+                return null;
+            cursor += 1;
+        }
+        if (cursor - nameStart > 256)
+            return null;
+        const name = bytes.subarray(nameStart, cursor).toString("ascii").replace(/#([0-9a-f]{2})/gi, (_match, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
+        const valueAt = skipPdfTrivia(bytes, cursor, dictionaryEnd, false, deadlineExpired);
+        if (valueAt < 0)
+            return null;
+        if (name === wanted) {
+            if (found !== undefined)
+                return null;
+            found = valueAt;
+        }
+        cursor = pdfObjectEnd(bytes, valueAt, dictionaryEnd, deadlineExpired);
+        if (cursor < 0)
+            return null;
+    }
+    return null;
+}
+function pdfPredictorParameters(bytes, dictionaryOffset, dictionaryEnd, filterIsArray, deadlineExpired) {
+    const parameterAt = pdfTopLevelValueOffset(bytes, dictionaryOffset, dictionaryEnd, "DecodeParms", deadlineExpired);
+    if (parameterAt === null)
+        return null;
+    if (parameterAt === undefined)
+        return { predictor: 1, colors: 1, bits: 8, columns: 1 };
+    let at = parameterAt;
+    let array = false;
+    if (bytes[at] === 0x5b) {
+        if (!filterIsArray)
+            return null;
+        array = true;
+        at = skipPdfTrivia(bytes, at + 1, dictionaryEnd, false, deadlineExpired);
+        if (at < 0)
+            return null;
+    }
+    if (pdfKeywordAt(bytes, at, "null")) {
+        at = skipPdfTrivia(bytes, at + 4, dictionaryEnd, false, deadlineExpired);
+        if (at < 0 || (array && bytes[at] !== 0x5d))
+            return null;
+        return { predictor: 1, colors: 1, bits: 8, columns: 1 };
+    }
+    const parameters = pdfDictionary(bytes, at, new Set(["Predictor", "Colors", "BitsPerComponent", "BPC", "Columns"]), new Set(), new Set(), new Set(), new Set(), new Set(), deadlineExpired);
+    if (!parameters || parameters.end > dictionaryEnd || (parameters.values.has("BitsPerComponent") && parameters.values.has("BPC")))
+        return null;
+    let end = skipPdfTrivia(bytes, parameters.end, dictionaryEnd, false, deadlineExpired);
+    if (end < 0 || (array && bytes[end] !== 0x5d))
+        return null;
+    const predictor = parameters.values.get("Predictor") ?? 1;
+    const colors = parameters.values.get("Colors") ?? 1;
+    const bits = parameters.values.get("BitsPerComponent") ?? parameters.values.get("BPC") ?? 8;
+    const columns = parameters.values.get("Columns") ?? 1;
+    return { predictor, colors, bits, columns };
+}
+function pdfPredictorEncodedLength(parameters, entryCount, recordBytes) {
+    const { predictor, colors, bits, columns } = parameters;
+    if (!Number.isSafeInteger(predictor) || !Number.isSafeInteger(colors) || colors < 1 || colors > 32 || ![1, 2, 4, 8, 16].includes(bits) || !Number.isSafeInteger(columns) || columns < 1)
+        return null;
+    if (predictor === 1)
+        return entryCount * recordBytes;
+    if (predictor !== 2 && (predictor < 10 || predictor > 15))
+        return null;
+    const rowBytes = (BigInt(colors) * BigInt(bits) * BigInt(columns) + 7n) / 8n;
+    if (rowBytes !== BigInt(recordBytes))
+        return null;
+    const expected = BigInt(entryCount) * BigInt(recordBytes + (predictor >= 10 ? 1 : 0));
+    return expected <= 25000000n ? Number(expected) : null;
+}
+function decodePdfPredictor(encoded, parameters, entryCount, recordBytes, deadlineExpired) {
+    const { predictor, colors, bits, columns } = parameters;
+    const expectedEncoded = pdfPredictorEncodedLength(parameters, entryCount, recordBytes);
+    const expectedDecoded = entryCount * recordBytes;
+    if (expectedEncoded === null || encoded.length !== expectedEncoded || expectedDecoded > 24_000_000 || deadlineExpired?.("predictor-start"))
+        return null;
+    if (predictor <= 1)
+        return encoded;
+    const decoded = Buffer.alloc(expectedDecoded);
+    if (deadlineExpired?.("predictor-start"))
+        return null;
+    const pixelBytes = Math.ceil(colors * bits / 8);
+    let encodedAt = 0;
+    for (let row = 0; row < entryCount; row += 1) {
+        if (deadlineExpired?.("predictor-row"))
+            return null;
+        const outputAt = row * recordBytes;
+        const previousAt = outputAt - recordBytes;
+        if (predictor >= 10) {
+            const filter = encoded[encodedAt++];
+            if (filter > 4)
+                return null;
+            for (let column = 0; column < recordBytes; column += 1) {
+                if ((column & 255) === 0 && deadlineExpired?.("predictor-work"))
+                    return null;
+                const raw = encoded[encodedAt++];
+                const left = column >= pixelBytes ? decoded[outputAt + column - pixelBytes] : 0;
+                const up = row > 0 ? decoded[previousAt + column] : 0;
+                const upLeft = row > 0 && column >= pixelBytes ? decoded[previousAt + column - pixelBytes] : 0;
+                if (filter === 0)
+                    decoded[outputAt + column] = raw;
+                else if (filter === 1)
+                    decoded[outputAt + column] = raw + left;
+                else if (filter === 2)
+                    decoded[outputAt + column] = raw + up;
+                else if (filter === 3)
+                    decoded[outputAt + column] = raw + Math.floor((left + up) / 2);
+                else {
+                    const p = left + up - upLeft;
+                    const pa = Math.abs(p - left);
+                    const pb = Math.abs(p - up);
+                    const pc = Math.abs(p - upLeft);
+                    decoded[outputAt + column] = raw + (pa <= pb && pa <= pc ? left : pb <= pc ? up : upLeft);
+                }
+            }
+            continue;
+        }
+        const raw = encoded.subarray(encodedAt, encodedAt + recordBytes);
+        encodedAt += recordBytes;
+        if (bits === 1 && colors === 1) {
+            let carry = 0;
+            for (let column = 0; column < recordBytes; column += 1) {
+                if ((column & 255) === 0 && deadlineExpired?.("predictor-work"))
+                    return null;
+                let value = raw[column] ^ carry;
+                value ^= value >> 1;
+                value ^= value >> 2;
+                value ^= value >> 4;
+                carry = (value & 1) << 7;
+                decoded[outputAt + column] = value;
+            }
+        }
+        else if (bits === 8) {
+            for (let column = 0; column < recordBytes; column += 1) {
+                if ((column & 255) === 0 && deadlineExpired?.("predictor-work"))
+                    return null;
+                decoded[outputAt + column] = column < colors ? raw[column] : raw[column] + decoded[outputAt + column - colors];
+            }
+        }
+        else if (bits === 16) {
+            const pixel = colors * 2;
+            for (let column = 0; column < recordBytes; column += 2) {
+                if ((column & 255) === 0 && deadlineExpired?.("predictor-work"))
+                    return null;
+                if (column < pixel) {
+                    decoded[outputAt + column] = raw[column];
+                    decoded[outputAt + column + 1] = raw[column + 1];
+                }
+                else {
+                    const value = (raw[column] << 8) + raw[column + 1] + (decoded[outputAt + column - pixel] << 8) + decoded[outputAt + column - pixel + 1];
+                    decoded[outputAt + column] = value >> 8;
+                    decoded[outputAt + column + 1] = value;
+                }
+            }
+        }
+        else {
+            const components = new Uint8Array(colors + 1);
+            const mask = (1 << bits) - 1;
+            let input = 0;
+            let inputBits = 0;
+            let inputBuffer = 0;
+            let outputBits = 0;
+            let outputBuffer = 0;
+            let output = outputAt;
+            for (let column = 0; column < columns; column += 1)
+                for (let color = 0; color < colors; color += 1) {
+                    if (((column * colors + color) & 255) === 0 && deadlineExpired?.("predictor-work"))
+                        return null;
+                    if (inputBits < bits) {
+                        inputBuffer = inputBuffer << 8 | raw[input++];
+                        inputBits += 8;
+                    }
+                    components[color] = components[color] + (inputBuffer >> (inputBits - bits)) & mask;
+                    inputBits -= bits;
+                    outputBuffer = outputBuffer << bits | components[color];
+                    outputBits += bits;
+                    if (outputBits >= 8) {
+                        decoded[output++] = outputBuffer >> (outputBits - 8);
+                        outputBits -= 8;
+                    }
+                }
+            if (outputBits > 0)
+                decoded[output] = (outputBuffer << (8 - outputBits)) + (inputBuffer & ((1 << (8 - outputBits)) - 1));
+        }
+    }
+    return decoded;
+}
 function pdfXrefSection(bytes, offset, allowHybrid = true, bootstrapEntries, deadlineExpired) {
     if (deadlineExpired?.("xref"))
         return null;
@@ -866,6 +1069,7 @@ function pdfXrefSection(bytes, offset, allowHybrid = true, bootstrapEntries, dea
     let cursor = skipPdfTrivia(bytes, offset + head[0].length, bytes.length, false, deadlineExpired);
     if (cursor < 0)
         return null;
+    const dictionaryOffset = cursor;
     const dictionary = pdfDictionary(bytes, cursor, new Set(["Length", "Prev", "Size"]), new Set(["Type"]), new Set(["W", "Index"]), new Set(["Filter"]), new Set(["Length"]), new Set(["Encrypt"]), deadlineExpired);
     const width = dictionary?.arrays.get("W");
     const size = dictionary?.values.get("Size");
@@ -891,6 +1095,14 @@ function pdfXrefSection(bytes, offset, allowHybrid = true, bootstrapEntries, dea
     const recordBytes = width[0] + width[1] + width[2];
     if (entryCount > 1_000_000 || entryCount * recordBytes > 24_000_000)
         return null;
+    const filterOffset = pdfTopLevelValueOffset(bytes, dictionaryOffset, dictionary.end, "Filter", deadlineExpired);
+    if (filterOffset === null)
+        return null;
+    const filters = dictionary.nameLists.get("Filter");
+    const predictorParameters = filters === undefined ? { predictor: 1, colors: 1, bits: 8, columns: 1 } : pdfPredictorParameters(bytes, dictionaryOffset, dictionary.end, filterOffset !== undefined && bytes[filterOffset] === 0x5b, deadlineExpired);
+    const predictedLength = predictorParameters ? pdfPredictorEncodedLength(predictorParameters, entryCount, recordBytes) : null;
+    if (predictedLength === null)
+        return null;
     const lengthReference = dictionary.references.get("Length");
     const locatedLength = lengthReference ? locatePdfIndirectInteger(bytes, lengthReference, offset, deadlineExpired) : null;
     const streamLength = dictionary.values.get("Length") ?? (lengthReference && bootstrapEntries ? pdfIndirectInteger(bytes, lengthReference, bootstrapEntries, deadlineExpired) : null) ?? locatedLength?.value;
@@ -912,13 +1124,12 @@ function pdfXrefSection(bytes, offset, allowHybrid = true, bootstrapEntries, dea
         return null;
     let decoded;
     try {
-        const filters = dictionary.nameLists.get("Filter");
         if (filters === undefined)
             decoded = bytes.subarray(streamStart, cursor);
         else if (filters.length === 1 && filters[0] === "FlateDecode") {
             if (deadlineExpired?.("inflate-before"))
                 return null;
-            decoded = zlib.inflateSync(bytes.subarray(streamStart, cursor), { maxOutputLength: entryCount * recordBytes + 1 });
+            decoded = zlib.inflateSync(bytes.subarray(streamStart, cursor), { maxOutputLength: predictedLength + 1 });
             if (deadlineExpired?.("inflate-after"))
                 return null;
         }
@@ -928,8 +1139,10 @@ function pdfXrefSection(bytes, offset, allowHybrid = true, bootstrapEntries, dea
     catch {
         return null;
     }
-    if (decoded.length !== entryCount * recordBytes)
+    const predicted = decodePdfPredictor(decoded, predictorParameters, entryCount, recordBytes, deadlineExpired);
+    if (!predicted)
         return null;
+    decoded = predicted;
     const readField = (at, length) => { let value = 0; for (let byte = 0; byte < length; byte += 1)
         value = value * 256 + decoded[at + byte]; return value; };
     const entries = new Map();
