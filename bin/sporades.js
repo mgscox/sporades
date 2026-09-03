@@ -35802,7 +35802,7 @@ async function startDevSession(options) {
         refresh = await devRefresh.broadcast();
         websocketHub.disconnectAll();
         try {
-          runtime.database.log.emit({
+          await runtime.database.log.emit({
             category: "platform",
             event: "dev.capsule.reloaded",
             level: "info",

@@ -2156,8 +2156,14 @@ async function startDevSession(options) {
                 // Capsule. That trades a missing log line for split runtime, config and static state
                 // plus a rebuild reported as failed. Observability never gets to invalidate a
                 // completed reload.
+                //
+                // Awaited, unlike the other `log.emit` call sites here, because this one is the record the
+                // guide tells a developer to go and read. On the Postgres and libSQL services `emit`
+                // resolves only once the Log-index write lands, so returning early would let
+                // `rebuild: success` reach a script that then reads `sporades logs` — which serves the
+                // index — before the entry exists, and reports the reload as never having happened.
                 try {
-                    runtime.database.log.emit({
+                    await runtime.database.log.emit({
                         category: "platform",
                         event: "dev.capsule.reloaded",
                         level: "info",
