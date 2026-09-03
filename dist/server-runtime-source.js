@@ -1013,8 +1013,8 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             database.__scheduleRecoveryDueAt = null;
             database.__scheduleRecoveryPromise = null;
             database.__scheduleLegacyDiscoveryTimer = null;
-            database.__ingressAuditRecoveryPending = database.fileIngressEnabled;
-            if (database.fileIngressEnabled)
+            await refreshIngressMaintenanceState(database, { discoverInterruptedDelivery: true });
+            if (ingressAuditMaintenanceIsDue(database))
                 await runIngressAuditOutboxDrain(database);
             // Recovery may classify durable state while the candidate is stopped,
             // but it returns the retained wake instead of arming it. Publication is
@@ -1028,8 +1028,8 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             if (database.fileIngressEnabled) {
                 await runPeriodicIngressSweep(database);
                 startPeriodicIngressSweep(database);
-                startPeriodicIngressAuditOutboxDrain(database);
             }
+            scheduleIngressAuditOutboxMaintenance(database);
             if (!database.__jobActivationDeferred) {
                 // Orderly shutdown deliberately retains queued and delayed Jobs. A
                 // fresh runtime has no inherited worker/wake timer, so activation
@@ -1171,11 +1171,11 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     await ensureJobStorage(sqlite);
     await ensureScheduleStorage(sqlite, options?.scheduleStorageFault);
     await sqlite.ensureFileStorage();
-    // A release can remove its final multipart endpoint and its optional files
-    // configuration while a lease or claim-audit delivery is still durable.
-    // Discover that retained work from the database so the replacement runtime
-    // continues maintenance; completed receipts alone do not arm idle Capsules.
-    database.fileIngressEnabled = database.fileIngressEnabled || await sqlite.hasPendingIngressMaintenance();
+    // A release can remove its final multipart endpoint and optional File storage
+    // while ingress or audit-retention work remains durable. Scanner/sweep
+    // resources follow only active ingress receipts; the audit outbox carries its
+    // own deadline so a delivered row can sleep until its 24-hour expiry.
+    await refreshIngressMaintenanceState(database, { discoverInterruptedDelivery: true });
     await sqlite.ensureLogStorage();
     if (!options?.runtimeActionOnly) {
         await reportIngressSweepSelectionFailure(database, await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() }));
@@ -1368,6 +1368,25 @@ const LEGACY_SCHEDULE_DISCOVERY_INTERVAL_MS = 1_000;
 const LEGACY_SCHEDULE_DISCOVERY_LIMIT = 100;
 const INGRESS_SWEEP_INTERVAL_MS = 60_000;
 const INGRESS_AUDIT_OUTBOX_INTERVAL_MS = 1_000;
+const INGRESS_AUDIT_RETENTION_MS = 24 * 60 * 60 * 1000;
+function ingressAuditMaintenanceIsDue(database) {
+    const dueAt = Date.parse(String(database.__ingressAuditMaintenanceAt ?? ""));
+    return Number.isFinite(dueAt) && dueAt <= database.clock.now().getTime();
+}
+async function refreshIngressMaintenanceState(database, options = {}) {
+    const state = await database.adapter.readIngressMaintenanceState();
+    database.fileIngressEnabled = database.fileIngressEnabled || state.ingressRequired;
+    if (options.discoverInterruptedDelivery && state.auditDeliveryRequired)
+        database.__ingressAuditRecoveryPending = true;
+    if (state.auditDeliveryRequired) {
+        database.__ingressAuditMaintenanceAt = database.clock.now().toISOString();
+        return;
+    }
+    const deliveredAt = Date.parse(String(state.earliestDeliveredAt ?? ""));
+    database.__ingressAuditMaintenanceAt = Number.isFinite(deliveredAt)
+        ? new Date(deliveredAt + INGRESS_AUDIT_RETENTION_MS).toISOString()
+        : null;
+}
 async function runIngressAuditOutboxDrain(database) {
     if (database.__ingressAuditOutboxPromise)
         return database.__ingressAuditOutboxPromise;
@@ -1376,6 +1395,12 @@ async function runIngressAuditOutboxDrain(database) {
             database.__ingressAuditRecoveryPending = !(await recoverIngressClaimAuditOutbox(database));
         }
         await drainIngressClaimAuditOutbox(database);
+        try {
+            await refreshIngressMaintenanceState(database);
+        }
+        catch {
+            database.__ingressAuditMaintenanceAt = new Date(database.clock.now().getTime() + INGRESS_AUDIT_OUTBOX_INTERVAL_MS).toISOString();
+        }
     })();
     database.__ingressAuditOutboxPromise = run;
     try {
@@ -1384,21 +1409,29 @@ async function runIngressAuditOutboxDrain(database) {
     finally {
         if (database.__ingressAuditOutboxPromise === run)
             database.__ingressAuditOutboxPromise = null;
+        scheduleIngressAuditOutboxMaintenance(database);
     }
 }
-function startPeriodicIngressAuditOutboxDrain(database) {
-    const arm = () => {
-        if (database.__scheduleStopped)
-            return;
-        const timer = database.clock.setTimer(async () => {
-            database.__scheduleTimers?.delete(timer);
-            await runIngressAuditOutboxDrain(database);
-            arm();
-        }, INGRESS_AUDIT_OUTBOX_INTERVAL_MS);
-        database.__scheduleTimers?.add(timer);
-        database.__ingressAuditOutboxTimer = timer;
-    };
-    arm();
+function scheduleIngressAuditOutboxMaintenance(database) {
+    if (database.__ingressAuditOutboxTimer != null) {
+        database.clock.clearTimer(database.__ingressAuditOutboxTimer);
+        database.__scheduleTimers?.delete(database.__ingressAuditOutboxTimer);
+        database.__ingressAuditOutboxTimer = null;
+    }
+    if (database.__scheduleStopped || database.__ingressAuditMaintenanceAt == null)
+        return;
+    const dueAt = Date.parse(String(database.__ingressAuditMaintenanceAt));
+    const delayMs = Number.isFinite(dueAt)
+        ? Math.max(INGRESS_AUDIT_OUTBOX_INTERVAL_MS, dueAt - database.clock.now().getTime())
+        : INGRESS_AUDIT_OUTBOX_INTERVAL_MS;
+    const timer = database.clock.setTimer(async () => {
+        database.__scheduleTimers?.delete(timer);
+        if (database.__ingressAuditOutboxTimer === timer)
+            database.__ingressAuditOutboxTimer = null;
+        await runIngressAuditOutboxDrain(database);
+    }, Math.min(MAX_NATIVE_TIMER_DELAY_MS, delayMs));
+    database.__scheduleTimers?.add(timer);
+    database.__ingressAuditOutboxTimer = timer;
 }
 async function runPeriodicIngressSweep(database) {
     if (database.__ingressSweepPromise)

@@ -95011,6 +95011,15 @@ function createSharedDatabaseAdapterMethods(dialect) {
         "SELECT CASE WHEN EXISTS (SELECT 1 FROM [sporades_file_ingress] WHERE [state] IN ('staging', 'leased', 'sweeping')) OR EXISTS (SELECT 1 FROM [sporades_file_ingress_audit_outbox] WHERE [state] IN ('pending', 'delivering')) THEN 1 ELSE 0 END AS [required]"
       )).get(), (row) => Number(row?.required ?? 0) === 1);
     },
+    readIngressMaintenanceState() {
+      return thenIfPromise(this.prepare(sql(
+        "SELECT CASE WHEN EXISTS (SELECT 1 FROM [sporades_file_ingress] WHERE [state] IN ('staging', 'leased', 'sweeping')) THEN 1 ELSE 0 END AS [ingressRequired], CASE WHEN EXISTS (SELECT 1 FROM [sporades_file_ingress_audit_outbox] WHERE [state] IN ('pending', 'delivering')) THEN 1 ELSE 0 END AS [auditDeliveryRequired], (SELECT MIN([deliveredAt]) FROM [sporades_file_ingress_audit_outbox] WHERE [state] = 'delivered') AS [earliestDeliveredAt]"
+      )).get(), (row) => ({
+        ingressRequired: Number(row?.ingressRequired ?? 0) === 1,
+        auditDeliveryRequired: Number(row?.auditDeliveryRequired ?? 0) === 1,
+        earliestDeliveredAt: row?.earliestDeliveredAt == null ? null : String(row.earliestDeliveredAt)
+      }));
+    },
     lockIngressReceipts(leaseIds) {
       const sorted = [...new Set(leaseIds.map(String))].sort();
       if (sorted.length === 0) return { changes: 0 };
@@ -97734,8 +97743,8 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       database.__scheduleRecoveryDueAt = null;
       database.__scheduleRecoveryPromise = null;
       database.__scheduleLegacyDiscoveryTimer = null;
-      database.__ingressAuditRecoveryPending = database.fileIngressEnabled;
-      if (database.fileIngressEnabled) await runIngressAuditOutboxDrain(database);
+      await refreshIngressMaintenanceState(database, { discoverInterruptedDelivery: true });
+      if (ingressAuditMaintenanceIsDue(database)) await runIngressAuditOutboxDrain(database);
       const earliestFutureLeaseAt = await recoverExpiredJobLeases(database);
       await recoverPendingScheduleOccurrences(database, { validateOnly: true });
       preflightStaticScheduleTimers(database);
@@ -97745,8 +97754,8 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       if (database.fileIngressEnabled) {
         await runPeriodicIngressSweep(database);
         startPeriodicIngressSweep(database);
-        startPeriodicIngressAuditOutboxDrain(database);
       }
+      scheduleIngressAuditOutboxMaintenance(database);
       if (!database.__jobActivationDeferred) {
         activateCurrentUserJobExecution(database, earliestFutureLeaseAt);
       }
@@ -97861,7 +97870,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   await ensureJobStorage(sqlite);
   await ensureScheduleStorage(sqlite, options?.scheduleStorageFault);
   await sqlite.ensureFileStorage();
-  database.fileIngressEnabled = database.fileIngressEnabled || await sqlite.hasPendingIngressMaintenance();
+  await refreshIngressMaintenanceState(database, { discoverInterruptedDelivery: true });
   await sqlite.ensureLogStorage();
   if (!options?.runtimeActionOnly) {
     await reportIngressSweepSelectionFailure(database, await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() }));
@@ -98042,6 +98051,22 @@ var LEGACY_SCHEDULE_DISCOVERY_INTERVAL_MS = 1e3;
 var LEGACY_SCHEDULE_DISCOVERY_LIMIT = 100;
 var INGRESS_SWEEP_INTERVAL_MS = 6e4;
 var INGRESS_AUDIT_OUTBOX_INTERVAL_MS = 1e3;
+var INGRESS_AUDIT_RETENTION_MS = 24 * 60 * 60 * 1e3;
+function ingressAuditMaintenanceIsDue(database) {
+  const dueAt = Date.parse(String(database.__ingressAuditMaintenanceAt ?? ""));
+  return Number.isFinite(dueAt) && dueAt <= database.clock.now().getTime();
+}
+async function refreshIngressMaintenanceState(database, options = {}) {
+  const state = await database.adapter.readIngressMaintenanceState();
+  database.fileIngressEnabled = database.fileIngressEnabled || state.ingressRequired;
+  if (options.discoverInterruptedDelivery && state.auditDeliveryRequired) database.__ingressAuditRecoveryPending = true;
+  if (state.auditDeliveryRequired) {
+    database.__ingressAuditMaintenanceAt = database.clock.now().toISOString();
+    return;
+  }
+  const deliveredAt = Date.parse(String(state.earliestDeliveredAt ?? ""));
+  database.__ingressAuditMaintenanceAt = Number.isFinite(deliveredAt) ? new Date(deliveredAt + INGRESS_AUDIT_RETENTION_MS).toISOString() : null;
+}
 async function runIngressAuditOutboxDrain(database) {
   if (database.__ingressAuditOutboxPromise) return database.__ingressAuditOutboxPromise;
   const run2 = (async () => {
@@ -98049,26 +98074,36 @@ async function runIngressAuditOutboxDrain(database) {
       database.__ingressAuditRecoveryPending = !await recoverIngressClaimAuditOutbox(database);
     }
     await drainIngressClaimAuditOutbox(database);
+    try {
+      await refreshIngressMaintenanceState(database);
+    } catch {
+      database.__ingressAuditMaintenanceAt = new Date(database.clock.now().getTime() + INGRESS_AUDIT_OUTBOX_INTERVAL_MS).toISOString();
+    }
   })();
   database.__ingressAuditOutboxPromise = run2;
   try {
     await run2;
   } finally {
     if (database.__ingressAuditOutboxPromise === run2) database.__ingressAuditOutboxPromise = null;
+    scheduleIngressAuditOutboxMaintenance(database);
   }
 }
-function startPeriodicIngressAuditOutboxDrain(database) {
-  const arm = () => {
-    if (database.__scheduleStopped) return;
-    const timer = database.clock.setTimer(async () => {
-      database.__scheduleTimers?.delete(timer);
-      await runIngressAuditOutboxDrain(database);
-      arm();
-    }, INGRESS_AUDIT_OUTBOX_INTERVAL_MS);
-    database.__scheduleTimers?.add(timer);
-    database.__ingressAuditOutboxTimer = timer;
-  };
-  arm();
+function scheduleIngressAuditOutboxMaintenance(database) {
+  if (database.__ingressAuditOutboxTimer != null) {
+    database.clock.clearTimer(database.__ingressAuditOutboxTimer);
+    database.__scheduleTimers?.delete(database.__ingressAuditOutboxTimer);
+    database.__ingressAuditOutboxTimer = null;
+  }
+  if (database.__scheduleStopped || database.__ingressAuditMaintenanceAt == null) return;
+  const dueAt = Date.parse(String(database.__ingressAuditMaintenanceAt));
+  const delayMs = Number.isFinite(dueAt) ? Math.max(INGRESS_AUDIT_OUTBOX_INTERVAL_MS, dueAt - database.clock.now().getTime()) : INGRESS_AUDIT_OUTBOX_INTERVAL_MS;
+  const timer = database.clock.setTimer(async () => {
+    database.__scheduleTimers?.delete(timer);
+    if (database.__ingressAuditOutboxTimer === timer) database.__ingressAuditOutboxTimer = null;
+    await runIngressAuditOutboxDrain(database);
+  }, Math.min(MAX_NATIVE_TIMER_DELAY_MS, delayMs));
+  database.__scheduleTimers?.add(timer);
+  database.__ingressAuditOutboxTimer = timer;
 }
 async function runPeriodicIngressSweep(database) {
   if (database.__ingressSweepPromise) return database.__ingressSweepPromise;
@@ -113348,7 +113383,12 @@ async function startContainerSession(options) {
     wait: true
   });
   let clientRelease;
+  let requiresClamavReadiness = false;
   try {
+    const capsuleDefinition = await importCapsuleDefinition(bundle.serverRuntime.capsuleModuleSource);
+    requiresClamavReadiness = Object.values(capsuleDefinition?.endpoints ?? {}).some(
+      (endpoint) => endpoint?.options?.body?.multipart?.inspection?.requiredInspectors?.includes("clamav")
+    );
     clientRelease = {
       framework: config.client?.framework ?? "react",
       toolchain: configuredClientToolchain(config),
@@ -113483,6 +113523,13 @@ async function startContainerSession(options) {
     if (!candidateOwnershipProven) {
       throw commandError4("Container candidate ownership could not be verified.", "Inspect the returned Container ID before retrying deployment.");
     }
+    if (requiresClamavReadiness) {
+      await awaitContainerRuntimeReadiness({
+        port,
+        runtimeProbeToken,
+        timeoutMs: readContainerReadinessTimeoutMs()
+      });
+    }
     containerReplacementFault("consumer");
     const consumer = await writePublicTreeConsumer(
       bundle.buildDir,
@@ -113615,6 +113662,73 @@ async function startContainerSession(options) {
     process.stdout.write(`Sporades container session started at ${url}
 `);
   }
+}
+function readContainerReadinessTimeoutMs() {
+  const productionTimeoutMs = 16e4;
+  const testTimeoutMs = Number(process.env.SPORADES_TEST_CONTAINER_READINESS_TIMEOUT_MS);
+  if (Number.isFinite(testTimeoutMs) && testTimeoutMs > 0) {
+    return Math.min(testTimeoutMs, productionTimeoutMs);
+  }
+  return productionTimeoutMs;
+}
+async function awaitContainerRuntimeReadiness(options) {
+  const deadline = Date.now() + options.timeoutMs;
+  const healthUrl = `http://127.0.0.1:${options.port}/__sporades/health/runtime`;
+  let lastFailure = "The candidate runtime did not respond.";
+  while (Date.now() < deadline) {
+    let response = null;
+    try {
+      response = await fetch(healthUrl, {
+        headers: {
+          accept: "application/json",
+          "x-sporades-host-probe": options.runtimeProbeToken
+        },
+        signal: AbortSignal.timeout(Math.max(1, Math.min(1e4, deadline - Date.now())))
+      });
+      if (response.status !== 200 && response.status !== 503) {
+        await response.body?.cancel();
+        throw commandError4(
+          "Container candidate runtime readiness failed.",
+          "Inspect the candidate Container logs and runtime probe configuration, then retry deployment.",
+          { statusCode: response.status }
+        );
+      }
+      let body;
+      try {
+        body = JSON.parse(await response.text());
+      } catch {
+        throw commandError4(
+          "Container candidate runtime readiness failed.",
+          "The runtime health endpoint returned invalid JSON; inspect the candidate Container logs, then retry deployment."
+        );
+      }
+      const checks = body?.data?.checks;
+      const valid = typeof body?.ok === "boolean" && typeof body?.data?.runtime?.ready === "boolean" && typeof checks?.sqlite?.ok === "boolean" && typeof checks?.fileStorage?.ok === "boolean" && typeof checks?.fileInspection?.ok === "boolean";
+      if (!valid) {
+        throw commandError4(
+          "Container candidate runtime readiness failed.",
+          "The runtime health endpoint returned an unexpected result; update the Capsule runtime and retry deployment.",
+          { statusCode: response.status, hasOk: typeof body?.ok, hasReady: typeof body?.data?.runtime?.ready, hasSqlite: typeof checks?.sqlite?.ok, hasFileStorage: typeof checks?.fileStorage?.ok, hasFileInspection: typeof checks?.fileInspection?.ok }
+        );
+      }
+      if (response.status === 200 && body.ok === true && body.data.runtime.ready === true && checks.sqlite.ok === true && checks.fileStorage.ok === true && checks.fileInspection.ok === true) {
+        return;
+      }
+      lastFailure = checks.fileInspection.ok === false ? "The managed ClamAV scanner is not ready." : "The candidate runtime is not ready.";
+    } catch (error) {
+      if (error instanceof Error && "hint" in error) throw error;
+      lastFailure = "The candidate runtime did not respond.";
+    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(250, remainingMs)));
+    }
+  }
+  throw commandError4(
+    "Container candidate runtime readiness failed.",
+    "Inspect the candidate Container logs and managed ClamAV startup, then retry deployment; the previous working Container was restored.",
+    { timeoutMs: options.timeoutMs, cause: lastFailure }
+  );
 }
 async function inspectLocalContainerSsh(options) {
   const config = await readProjectConfig(options.projectDir);
