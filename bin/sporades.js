@@ -86371,6 +86371,25 @@ function parsedShellNodeHasRunnableCommand(root) {
   }
   return false;
 }
+function parsedShellStatementCompletedBeforeError(statement, firstErrorAt) {
+  if (statement?.type !== "Statement" || !Number.isInteger(statement.pos) || !Number.isInteger(statement.end) || statement.end <= statement.pos || statement.end >= firstErrorAt) return false;
+  const pending = [statement];
+  const seen = /* @__PURE__ */ new WeakSet();
+  let visited = 0;
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (!value || typeof value !== "object" || seen.has(value)) continue;
+    seen.add(value);
+    visited += 1;
+    if (visited > maximumContentPolicyAstNodes) return false;
+    if (Number.isInteger(value.pos) && value.pos < statement.pos || Number.isInteger(value.end) && value.end > statement.end) return false;
+    for (const child of Object.values(value)) {
+      if (Array.isArray(child)) for (const item of child) pending.push(item);
+      else pending.push(child);
+    }
+  }
+  return true;
+}
 function hasCompletedShellLineBoundary(suffix) {
   for (let index = 0; index < suffix.length; index += 1) {
     if (suffix[index] !== "\n") continue;
@@ -86425,7 +86444,7 @@ function hasExecutableShellSemantics(text2) {
   }
   if (exactShellVocabularyToken(text2)) return true;
   if (!syntaxError && Array.isArray(root.commands) && root.commands.some(hasRunnableParsedShellCommand)) return true;
-  if (syntaxError && Array.isArray(root.commands) && root.commands.some((statement) => Number.isInteger(statement?.end) && statement.end <= firstErrorAt && hasCompletedShellLineBoundary(text2.slice(statement.end, firstErrorAt)) && parsedShellNodeHasRunnableCommand(statement))) return true;
+  if (syntaxError && Array.isArray(root.commands) && root.commands.some((statement) => parsedShellStatementCompletedBeforeError(statement, firstErrorAt) && hasCompletedShellLineBoundary(text2.slice(statement.end, firstErrorAt)) && parsedShellNodeHasRunnableCommand(statement))) return true;
   if (isSentenceShapedText(text2) || !syntaxError && isNonRunnablePathSentence(text2, root)) return false;
   if (!Array.isArray(root.commands) || root.commands.length === 0) return false;
   if (!syntaxError) return root.commands.length !== 1 || !isPlainShellDatum(root.commands[0]);
@@ -86437,7 +86456,7 @@ function hasExecutableShellSemantics(text2) {
     return hasCompletedShellLineBoundary(suffix);
   };
   return root.commands.some((statement) => {
-    if (statement?.type !== "Statement" || !statement.command || !Number.isInteger(statement.pos) || !Number.isInteger(statement.end) || statement.end <= statement.pos || statement.end > firstErrorAt) return false;
+    if (!statement?.command || !parsedShellStatementCompletedBeforeError(statement, firstErrorAt)) return false;
     return !isPlainShellDatum(statement) && (statement.background === true || hasRecoveredCommandBoundary(text2.slice(statement.end, firstErrorAt)));
   });
 }

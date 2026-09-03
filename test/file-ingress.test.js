@@ -189,6 +189,8 @@ test("sentence-shaped shell classification checks only regular executable filesy
     process.env.USER = "sporades-fixture"; process.env.HOME = dir; for (const prose of ['"~/Payload/run" remains documented.', "\\~/Payload/run remains documented.", '"~sporades-fixture/Payload/run" remains documented.', "Tilde ~ means home."]) assert.equal(hasExecutableShellSemantics(prose), false, prose);
     for (const command of ["Payload/run argument.\nIf (then).", "Payload/run argument.\r\nIf (then).", "  Payload/run argument.\nIf (then).", '"Payload/run" argument.\nIf (then).', "Payload\\/run argument.\nIf (then).", "Payload/run argument. # comment\nIf (then).", "Payload/run argument.; If (then).", "Payload/run argument.; true\nIf (then).", "Payload/run argument. && true\nIf (then).", "Payload/run argument. || true\nIf (then).", "Payload/run argument.\nRunner argument.\nIf (then)."]) assert.equal(hasExecutableShellSemantics(command), true, command);
     for (const prose of ["Payload/run argument. && If (then).", "Payload/run argument. || If (then).", "Payload/run argument. &&\nIf (then).", "If (then).\nPayload/run argument.", "If (then).\nWhen (else)."] ) assert.equal(hasExecutableShellSemantics(prose), false, prose);
+    for (const command of ["if true; then\n Payload/run argument.\nfi\nIf (then).", "{\n Payload/run argument.\n}\nIf (then).", "work() {\n Payload/run argument.\n}\nwork\nIf (then).", "case one in\n one) Payload/run argument. ;;\nesac\nIf (then).", "while true; do\n Payload/run argument.\ndone\nIf (then).", "for item in one; do\n Payload/run argument.\ndone\nIf (then).", "(\n Payload/run argument.\n)\nIf (then).", "if true; then\n {\n  Payload/run argument.\n }\nfi\nIf (then)."] ) assert.equal(hasExecutableShellSemantics(command), true, command);
+    for (const prose of ["if true; then\n Payload/run argument.\nIf (then).", "if true; then\r\n # comment\r\n\r\n Payload/run argument.\r\nIf (then).", "{\n Payload/run argument.\nIf (then).", "work() {\n Payload/run argument.\nIf (then).", "case one in\n one) Payload/run argument. ;;\nIf (then).", "while true; do\n Payload/run argument.\nIf (then).", "for item in one; do\n Payload/run argument.\nIf (then).", "(\n Payload/run argument.\nIf (then).", "if true; then\n {\n  Payload/run argument.\n }\nIf (then).", "Payload/run |\nIf (then).", '"Payload/run argument.\nIf (then).'] ) assert.equal(hasExecutableShellSemantics(prose), false, prose);
     process.chdir(child); assert.equal(hasExecutableShellSemantics("../Payload/run argument."), true);
     assert.equal(hasExecutableShellSemantics("Please inspect Payload output."), false);
   } finally { process.chdir(originalCwd); if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath; if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome; if (originalUser === undefined) delete process.env.USER; else process.env.USER = originalUser; await rm(dir, { recursive: true, force: true }); }
@@ -1932,6 +1934,14 @@ test("content-policy-v1 structurally validates its allowlist and rejects executa
       ["shell-completed-and-or-prefix-before-later-error", "note.txt", "text/plain", Buffer.from("Payload/run argument. && true\nIf (then)."), "rejected"],
       ["shell-completed-or-prefix-before-later-error", "note.txt", "text/plain", Buffer.from("Payload/run argument. || true\nIf (then)."), "rejected"],
       ["shell-multiple-completed-prefixes-before-later-error", "note.txt", "text/plain", Buffer.from("Payload/run argument.\nRunner argument.\nIf (then)."), "rejected"],
+      ["shell-completed-if-before-later-error", "note.txt", "text/plain", Buffer.from("if true; then\n Payload/run argument.\nfi\nIf (then)."), "rejected"],
+      ["shell-completed-group-before-later-error", "note.txt", "text/plain", Buffer.from("{\n Payload/run argument.\n}\nIf (then)."), "rejected"],
+      ["shell-completed-function-before-later-error", "note.txt", "text/plain", Buffer.from("work() {\n Payload/run argument.\n}\nwork\nIf (then)."), "rejected"],
+      ["shell-completed-case-before-later-error", "note.txt", "text/plain", Buffer.from("case one in\n one) Payload/run argument. ;;\nesac\nIf (then)."), "rejected"],
+      ["shell-completed-while-before-later-error", "note.txt", "text/plain", Buffer.from("while true; do\n Payload/run argument.\ndone\nIf (then)."), "rejected"],
+      ["shell-completed-loop-before-later-error", "note.txt", "text/plain", Buffer.from("for item in one; do\n Payload/run argument.\ndone\nIf (then)."), "rejected"],
+      ["shell-completed-subshell-before-later-error", "note.txt", "text/plain", Buffer.from("(\n Payload/run argument.\n)\nIf (then)."), "rejected"],
+      ["shell-completed-nested-unit-before-later-error", "note.txt", "text/plain", Buffer.from("if true; then\n {\n  Payload/run argument.\n }\nfi\nIf (then)."), "rejected"],
       ...[127, 128, 129].map((length) => [`shell-sentence-bracket-bound-${length}`, "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[${"r".repeat(length)}]run argument.`), "rejected"]),
       ["shell-sentence-oversized-posix-bracket", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[${"r".repeat(128)}[:alpha:]]run argument.`), "rejected"],
       ["shell-ordinary-label", "note.txt", "text/plain", Buffer.from("ticket_reference"), "clean"],
@@ -1952,6 +1962,15 @@ test("content-policy-v1 structurally validates its allowlist and rejects executa
       ["valid-shell-same-line-or-error-before-execution", "note.txt", "text/plain", Buffer.from("Payload/run argument. || If (then)."), "clean"],
       ["valid-shell-error-before-runnable-line", "note.txt", "text/plain", Buffer.from("If (then).\nPayload/run argument."), "clean"],
       ["valid-shell-malformed-only-lines", "note.txt", "text/plain", Buffer.from("If (then).\nWhen (else)."), "clean"],
+      ["valid-shell-incomplete-if-unit", "note.txt", "text/plain", Buffer.from("if true; then\n Payload/run argument.\nIf (then)."), "clean"],
+      ["valid-shell-incomplete-if-crlf-comments", "note.txt", "text/plain", Buffer.from("if true; then\r\n # comment\r\n\r\n Payload/run argument.\r\nIf (then)."), "clean"],
+      ["valid-shell-incomplete-group-unit", "note.txt", "text/plain", Buffer.from("{\n Payload/run argument.\nIf (then)."), "clean"],
+      ["valid-shell-incomplete-function-unit", "note.txt", "text/plain", Buffer.from("work() {\n Payload/run argument.\nIf (then)."), "clean"],
+      ["valid-shell-incomplete-case-unit", "note.txt", "text/plain", Buffer.from("case one in\n one) Payload/run argument. ;;\nIf (then)."), "clean"],
+      ["valid-shell-incomplete-while-unit", "note.txt", "text/plain", Buffer.from("while true; do\n Payload/run argument.\nIf (then)."), "clean"],
+      ["valid-shell-incomplete-loop-unit", "note.txt", "text/plain", Buffer.from("for item in one; do\n Payload/run argument.\nIf (then)."), "clean"],
+      ["valid-shell-incomplete-subshell-unit", "note.txt", "text/plain", Buffer.from("(\n Payload/run argument.\nIf (then)."), "clean"],
+      ["valid-shell-incomplete-nested-unit", "note.txt", "text/plain", Buffer.from("if true; then\n {\n  Payload/run argument.\n }\nIf (then)."), "clean"],
       ["valid-shell-unterminated-oversized-bracket", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[${"r".repeat(129)}run remains documented.`), "clean"],
       ["valid-shell-malformed-empty-bracket", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[]run remains documented.`), "clean"],
       ["valid-shell-quoted-oversized-bracket", "note.txt", "text/plain", Buffer.from(`"${path.dirname(sentenceExecutable)}/[${"r".repeat(129)}]run" remains documented.`), "clean"],

@@ -1777,6 +1777,33 @@ function parsedShellNodeHasRunnableCommand(root) {
     }
     return false;
 }
+function parsedShellStatementCompletedBeforeError(statement, firstErrorAt) {
+    if (statement?.type !== "Statement" || !Number.isInteger(statement.pos) || !Number.isInteger(statement.end)
+        || statement.end <= statement.pos || statement.end >= firstErrorAt)
+        return false;
+    const pending = [statement];
+    const seen = new WeakSet();
+    let visited = 0;
+    while (pending.length > 0) {
+        const value = pending.pop();
+        if (!value || typeof value !== "object" || seen.has(value))
+            continue;
+        seen.add(value);
+        visited += 1;
+        if (visited > maximumContentPolicyAstNodes)
+            return false;
+        if ((Number.isInteger(value.pos) && value.pos < statement.pos) || (Number.isInteger(value.end) && value.end > statement.end))
+            return false;
+        for (const child of Object.values(value)) {
+            if (Array.isArray(child))
+                for (const item of child)
+                    pending.push(item);
+            else
+                pending.push(child);
+        }
+    }
+    return true;
+}
 function hasCompletedShellLineBoundary(suffix) {
     for (let index = 0; index < suffix.length; index += 1) {
         if (suffix[index] !== "\n")
@@ -1860,7 +1887,7 @@ export function hasExecutableShellSemantics(text) {
     // command word first while leaving slash-bearing arguments and URLs as prose.
     if (!syntaxError && Array.isArray(root.commands) && root.commands.some(hasRunnableParsedShellCommand))
         return true;
-    if (syntaxError && Array.isArray(root.commands) && root.commands.some((statement) => Number.isInteger(statement?.end) && statement.end <= firstErrorAt
+    if (syntaxError && Array.isArray(root.commands) && root.commands.some((statement) => parsedShellStatementCompletedBeforeError(statement, firstErrorAt)
         && hasCompletedShellLineBoundary(text.slice(statement.end, firstErrorAt)) && parsedShellNodeHasRunnableCommand(statement)))
         return true;
     if (isSentenceShapedText(text) || (!syntaxError && isNonRunnablePathSentence(text, root)))
@@ -1879,7 +1906,7 @@ export function hasExecutableShellSemantics(text) {
         return hasCompletedShellLineBoundary(suffix);
     };
     return root.commands.some((statement) => {
-        if (statement?.type !== "Statement" || !statement.command || !Number.isInteger(statement.pos) || !Number.isInteger(statement.end) || statement.end <= statement.pos || statement.end > firstErrorAt)
+        if (!statement?.command || !parsedShellStatementCompletedBeforeError(statement, firstErrorAt))
             return false;
         return !isPlainShellDatum(statement) && (statement.background === true || hasRecoveredCommandBoundary(text.slice(statement.end, firstErrorAt)));
     });

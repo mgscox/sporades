@@ -947,6 +947,21 @@ function parsedShellNodeHasRunnableCommand(root: RecordLike) {
   }
   return false;
 }
+function parsedShellStatementCompletedBeforeError(statement: RecordLike, firstErrorAt: number) {
+  if (statement?.type !== "Statement" || !Number.isInteger(statement.pos) || !Number.isInteger(statement.end)
+    || statement.end <= statement.pos || statement.end >= firstErrorAt) return false;
+  const pending = [statement]; const seen = new WeakSet<object>(); let visited = 0;
+  while (pending.length > 0) {
+    const value = pending.pop(); if (!value || typeof value !== "object" || seen.has(value)) continue;
+    seen.add(value); visited += 1; if (visited > maximumContentPolicyAstNodes) return false;
+    if ((Number.isInteger(value.pos) && value.pos < statement.pos) || (Number.isInteger(value.end) && value.end > statement.end)) return false;
+    for (const child of Object.values(value)) {
+      if (Array.isArray(child)) for (const item of child) pending.push(item);
+      else pending.push(child);
+    }
+  }
+  return true;
+}
 function hasCompletedShellLineBoundary(suffix: string) {
   for (let index = 0; index < suffix.length; index += 1) {
     if (suffix[index] !== "\n") continue;
@@ -998,7 +1013,7 @@ export function hasExecutableShellSemantics(text: string) {
   // Sentence punctuation does not make a parsed command inert. Resolve the
   // command word first while leaving slash-bearing arguments and URLs as prose.
   if (!syntaxError && Array.isArray(root.commands) && root.commands.some(hasRunnableParsedShellCommand)) return true;
-  if (syntaxError && Array.isArray(root.commands) && root.commands.some((statement: RecordLike) => Number.isInteger(statement?.end) && statement.end <= firstErrorAt
+  if (syntaxError && Array.isArray(root.commands) && root.commands.some((statement: RecordLike) => parsedShellStatementCompletedBeforeError(statement, firstErrorAt)
     && hasCompletedShellLineBoundary(text.slice(statement.end, firstErrorAt)) && parsedShellNodeHasRunnableCommand(statement))) return true;
   if (isSentenceShapedText(text) || (!syntaxError && isNonRunnablePathSentence(text, root))) return false;
   if (!Array.isArray(root.commands) || root.commands.length === 0) return false;
@@ -1011,7 +1026,7 @@ export function hasExecutableShellSemantics(text: string) {
     return hasCompletedShellLineBoundary(suffix);
   };
   return root.commands.some((statement: RecordLike) => {
-    if (statement?.type !== "Statement" || !statement.command || !Number.isInteger(statement.pos) || !Number.isInteger(statement.end) || statement.end <= statement.pos || statement.end > firstErrorAt) return false;
+    if (!statement?.command || !parsedShellStatementCompletedBeforeError(statement, firstErrorAt)) return false;
     return !isPlainShellDatum(statement) && (statement.background === true || hasRecoveredCommandBoundary(text.slice(statement.end, firstErrorAt)));
   });
 }
