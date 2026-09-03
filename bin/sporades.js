@@ -86151,6 +86151,10 @@ function isPlainShellDatum(statement) {
   const command = statement?.command;
   return statement?.type === "Statement" && statement.background !== true && Array.isArray(statement.redirects) && statement.redirects.length === 0 && command?.type === "Command" && Array.isArray(command.prefix) && command.prefix.length === 0 && Array.isArray(command.suffix) && command.suffix.length === 0 && Array.isArray(command.redirects) && command.redirects.length === 0 && isLiteralShellWord(command.name) && !shellCommandCanRun(command.name.value);
 }
+function hasRunnableParsedShellCommand(statement) {
+  const command = statement?.command;
+  return statement?.type === "Statement" && command?.type === "Command" && isLiteralShellWord(command.name) && shellCommandCanRun(command.name.value);
+}
 function hasExecutableShellSemantics(text2) {
   if (Buffer.byteLength(text2, "utf8") > maximumContentPolicyTextBytes || !isJavaScriptRawInputWithinBounds(text2)) return true;
   let root;
@@ -86187,6 +86191,7 @@ function hasExecutableShellSemantics(text2) {
     return true;
   }
   if (exactShellVocabularyToken(text2)) return true;
+  if (!syntaxError && Array.isArray(root.commands) && root.commands.some(hasRunnableParsedShellCommand)) return true;
   if (isSentenceShapedText(text2)) return false;
   if (!Array.isArray(root.commands) || root.commands.length === 0) return false;
   if (!syntaxError) return root.commands.length !== 1 || !isPlainShellDatum(root.commands[0]);

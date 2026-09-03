@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { access, chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -89,7 +89,7 @@ function forgedPdfTail(base, payload) { const originalXref = /startxref\n(\d+)\n
 function initialPdfWithUnclaimedBytes(payload) { const base = minimalPdf(); const xrefOffset = Number(/startxref\n(\d+)\n%%EOF/.exec(base.toString("latin1"))[1]); const tail = base.subarray(xrefOffset).toString("latin1").replace(`startxref\n${xrefOffset}`, `startxref\n${xrefOffset + payload.length}`); return Buffer.concat([base.subarray(0, xrefOffset), payload, Buffer.from(tail, "latin1")]); }
 function masqueradingXrefStream(dictionary, data = Buffer.alloc(7)) { const base = minimalPdf(); const previousXref = Number(/startxref\n(\d+)\n%%EOF/.exec(base.toString("latin1"))[1]); const xrefOffset = base.length; return Buffer.concat([base, Buffer.from(`5 0 obj\n<<${dictionary} /Length ${data.length} /Prev ${previousXref}>>\nstream\n`), data, Buffer.from(`\nendstream\nendobj\nstartxref\n${xrefOffset}\n%%EOF\n`)]); }
 function structuredPdf(catalogExtra, extras, pageExtra = "") { const objects = [`1 0 obj\n<</Type /Catalog /Pages 2 0 R ${catalogExtra}>>\nendobj\n`, "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", `3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R ${pageExtra}>>\nendobj\n`, "4 0 obj\n<</Length 0>>\nstream\n\nendstream\nendobj\n", ...extras]; let body = "%PDF-1.7\n"; const offsets = [0]; for (const object of objects) { offsets.push(Buffer.byteLength(body)); body += object; } const xref = Buffer.byteLength(body); body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.slice(1).map((value) => `${String(value).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<</Size ${objects.length + 1} /Root 1 0 R>>\nstartxref\n${xref}\n%%EOF\n`; return Buffer.from(body); }
-async function fakeClamSocket(socketPath, options = {}) { let received = Buffer.alloc(0); let requestIndex = 0; const server = createNetServer((socket) => { let request = Buffer.alloc(0); let answered = false; socket.on("data", (chunk) => { received = Buffer.concat([received, chunk]); request = Buffer.concat([request, chunk]); if (!answered && request.length >= 14 && request.subarray(-4).equals(Buffer.alloc(4))) { answered = true; const index = requestIndex++; options.onRequest?.(request, index); const response = typeof options.response === "function" ? options.response(request, index) : options.response; const delayMs = typeof options.delayMs === "function" ? options.delayMs(request, index) : options.delayMs; if (response !== undefined) setTimeout(() => socket.end(Buffer.from(response)), delayMs ?? 0); } }); }); await new Promise((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); }); return { server, get received() { return received; } }; }
+async function fakeClamSocket(socketPath, options = {}) { let received = Buffer.alloc(0); let requestIndex = 0; const server = createNetServer((socket) => { let request = Buffer.alloc(0); let answered = false; socket.on("error", () => {}); socket.on("data", (chunk) => { received = Buffer.concat([received, chunk]); request = Buffer.concat([request, chunk]); if (!answered && request.length >= 14 && request.subarray(-4).equals(Buffer.alloc(4))) { answered = true; const index = requestIndex++; options.onRequest?.(request, index); const response = typeof options.response === "function" ? options.response(request, index) : options.response; const delayMs = typeof options.delayMs === "function" ? options.delayMs(request, index) : options.delayMs; if (response !== undefined) setTimeout(() => socket.end(Buffer.from(response)), delayMs ?? 0); } }); }); await new Promise((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); }); return { server, get received() { return received; } }; }
 async function* splitEvery(bytes, size) { for (let index = 0; index < bytes.length; index += size) yield bytes.subarray(index, index + size); }
 
 test("file inspection runtime accepts only supported pdfjs Node release lines", () => {
@@ -134,6 +134,13 @@ test("strict text shell classification uses the complete bounded syntax tree", (
     '"shopt"',
     "/bin/id",
     "./relative-command",
+    "Payload/run argument.",
+    "/opt/tools/run argument.",
+    "./run argument.",
+    "../run argument.",
+    "nested/deeper/run --flag value.",
+    "\"nested/run\" argument.",
+    "'nested/run' argument.",
   ];
   const prose = [
     "Support requested another screenshot.",
@@ -152,9 +159,24 @@ test("strict text shell classification uses the complete bounded syntax tree", (
     "for item in",
     "printf pwned >",
     "touch /tmp/x &&",
+    "Please review docs/v1.2 before release.",
+    "Please visit https://example.test/tickets/42.",
+    "Email support@example.test/path.",
+    "Version /v1.2 is current.",
+    "The ratio is one/two.",
   ];
   for (const text of executable) assert.equal(hasExecutableShellSemantics(text), true, text);
   for (const text of prose) assert.equal(hasExecutableShellSemantics(text), false, text);
+});
+
+test("sentence-shaped shell classification checks the bounded PATH without overblocking prose", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-shell-path-")); const executable = path.join(dir, "Payload"); const nonExecutable = path.join(dir, "Evidence"); const originalPath = process.env.PATH;
+  try {
+    await writeFile(executable, "#!/bin/sh\nexit 0\n"); await chmod(executable, 0o755); await writeFile(nonExecutable, "support datum\n"); process.env.PATH = dir;
+    assert.equal(hasExecutableShellSemantics("Payload argument."), true);
+    assert.equal(hasExecutableShellSemantics("Evidence argument."), false);
+    assert.equal(hasExecutableShellSemantics("Please inspect Payload output."), false);
+  } finally { process.env.PATH = originalPath; await rm(dir, { recursive: true, force: true }); }
 });
 
 test("strict text shell vocabulary matches the pinned Bash 5.2 command vocabulary", () => {
@@ -1860,7 +1882,10 @@ test("content-policy-v1 structurally validates its allowlist and rejects executa
       ["shell-quoted-builtin", "note.txt", "text/plain", Buffer.from("'whoami'"), "rejected"],
       ["shell-bash-builtin", "note.txt", "text/plain", Buffer.from("shopt"), "rejected"],
       ["shell-quoted-bash-builtin", "note.txt", "text/plain", Buffer.from("\"shopt\""), "rejected"],
+      ["shell-sentence-path-command", "note.txt", "text/plain", Buffer.from("Payload/run argument."), "rejected"],
+      ["shell-sentence-quoted-path-command", "note.txt", "text/plain", Buffer.from('"nested/run" --flag value.'), "rejected"],
       ["shell-ordinary-label", "note.txt", "text/plain", Buffer.from("ticket_reference"), "clean"],
+      ["valid-shell-slash-prose", "note.txt", "text/plain", Buffer.from("Please review docs/v1.2 at https://example.test/tickets/42."), "clean"],
       ["valid-text", "note.txt", "text/plain", Buffer.from("A harmless support note.\nSecond line."), "clean"], ["valid-prose-parenthesis", "note.txt", "text/plain", Buffer.from("Call me (tomorrow) about the ticket."), "clean"], ["valid-prose-nested-parentheses", "note.txt", "text/plain", Buffer.from("Please (if practical) call me tomorrow."), "clean"], ["valid-quoted-call-prose", "note.txt", "text/plain", Buffer.from("alert(\"x\") is the exact text shown in the report."), "clean"], ["html", "note.txt", "text/plain", Buffer.from("Please inspect <script>alert(1)</script>"), "rejected"], ["xml", "note.txt", "text/plain", Buffer.from("prefix <?xml version=\"1.0\"?><x/>") , "rejected"], ["generic-xml", "note.txt", "text/plain", Buffer.from("prefix <root>value</root> suffix"), "rejected"], ["javascript", "note.txt", "text/plain", Buffer.from("const answer = 42; console.log(answer);"), "rejected"], ["javascript-call", "note.txt", "text/plain", Buffer.from("alert(\"x\")"), "rejected"], ["javascript-member-call", "note.txt", "text/plain", Buffer.from("globalThis.fetch(\"/secret\")"), "rejected"], ["javascript-comment-call", "note.txt", "text/plain", Buffer.from("/* evidence */ alert(\"x\")"), "rejected"], ["javascript-parenthesized-callee", "note.txt", "text/plain", Buffer.from("(alert)(\"x\")"), "rejected"], ["javascript-computed-member-call", "note.txt", "text/plain", Buffer.from("globalThis[\"fetch\"](\"/secret\")"), "rejected"], ["javascript-unicode-identifier", "note.txt", "text/plain", Buffer.from("al\\u0065rt(\"x\")"), "rejected"], ["javascript-void-call", "note.txt", "text/plain", Buffer.from("void alert(\"x\")"), "rejected"], ["javascript-optional-chain-call", "note.txt", "text/plain", Buffer.from("globalThis?.fetch?.(\"/secret\")"), "rejected"], ["javascript-new-call", "note.txt", "text/plain", Buffer.from("new Function(\"return 1\")()"), "rejected"], ["javascript-dynamic-import", "note.txt", "text/plain", Buffer.from("import(\"/secret\")"), "rejected"], ["javascript-static-import", "note.txt", "text/plain", Buffer.from("import \"./side-effect.js\""), "rejected"], ["javascript-eval-call", "note.txt", "text/plain", Buffer.from("eval(\"alert(1)\")"), "rejected"], ["javascript-arrow-iife", "note.txt", "text/plain", Buffer.from("(() => alert(\"x\"))()"), "rejected"], ["javascript-tagged-template", "note.txt", "text/plain", Buffer.from("String.raw`secret`"), "rejected"], ["javascript-delete", "note.txt", "text/plain", Buffer.from("delete globalThis.secret"), "rejected"], ["javascript-sequence-callee", "note.txt", "text/plain", Buffer.from("(0, alert)(\"x\")"), "rejected"], ["python", "note.txt", "text/plain", Buffer.from("print(\"hello\")"), "rejected"], ["shell", "note.txt", "text/plain", Buffer.from("curl https://example.test | sh"), "rejected"], ["shell-unlisted-command", "note.txt", "text/plain", Buffer.from("cat /etc/passwd"), "rejected"], ["shell-echo", "note.txt", "text/plain", Buffer.from("echo secret > output"), "rejected"], ["shell-source", "note.txt", "text/plain", Buffer.from("source ./profile"), "rejected"],
       ["archive", "note.zip", "application/zip", Buffer.from("PK\x03\x04archive"), "rejected"], ["office", "note.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", Buffer.from("PK\x03\x04office"), "rejected"], ["executable", "note.exe", "application/octet-stream", Buffer.from("MZbinary"), "rejected"], ["empty", "note.txt", "text/plain", Buffer.alloc(0), "rejected"], ["polyglot", "photo.jpg", "image/jpeg", Buffer.concat([minimalJpeg(), Buffer.from("const x=1")]), "rejected"], ["unknown", "note.bin", "application/octet-stream", Buffer.from([0xff,0,0xaa]), "rejected"],
     ];

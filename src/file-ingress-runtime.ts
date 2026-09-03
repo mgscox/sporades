@@ -799,6 +799,11 @@ function isPlainShellDatum(statement: RecordLike) {
     && Array.isArray(command.redirects) && command.redirects.length === 0
     && isLiteralShellWord(command.name) && !shellCommandCanRun(command.name.value);
 }
+function hasRunnableParsedShellCommand(statement: RecordLike) {
+  const command = statement?.command;
+  return statement?.type === "Statement" && command?.type === "Command"
+    && isLiteralShellWord(command.name) && shellCommandCanRun(command.name.value);
+}
 export function hasExecutableShellSemantics(text: string) {
   if (Buffer.byteLength(text, "utf8") > maximumContentPolicyTextBytes || !isJavaScriptRawInputWithinBounds(text)) return true;
   let root: RecordLike;
@@ -828,6 +833,9 @@ export function hasExecutableShellSemantics(text: string) {
   // Bash reserved words can form recovery/error trees when isolated, so also
   // compare an exact literal token with the complete pinned vocabulary.
   if (exactShellVocabularyToken(text)) return true;
+  // Sentence punctuation does not make a parsed command inert. Resolve the
+  // command word first while leaving slash-bearing arguments and URLs as prose.
+  if (!syntaxError && Array.isArray(root.commands) && root.commands.some(hasRunnableParsedShellCommand)) return true;
   if (isSentenceShapedText(text)) return false;
   if (!Array.isArray(root.commands) || root.commands.length === 0) return false;
   if (!syntaxError) return root.commands.length !== 1 || !isPlainShellDatum(root.commands[0]);
