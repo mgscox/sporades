@@ -632,7 +632,12 @@ network egress and downloads public signature updates, never customer data.
 After the initial readiness update, Sporades keeps freshclam's bounded daemon
 running for periodic updates and supervises both children. Shutdown awaits
 both processes after `SIGTERM` and uses a bounded `SIGKILL` fallback, including
-partial-startup failure paths.
+partial-startup failure paths. Managed and Dev startup share one absolute
+120-second readiness window: database verification, socket probes, and retry
+delays are each capped by the time still remaining, so repeated slow probes
+cannot multiply that window. If a child is still live after both shutdown
+deadlines, cleanup fails visibly and retains the owned child reference for a
+later shutdown or rollback retry.
 Signatures older than 24 hours, missing databases, daemon/socket failure,
 timeouts, malformed or oversized replies, scan limits, infection, and every
 other inconclusive outcome fail closed. Operators should monitor runtime

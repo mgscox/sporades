@@ -12,6 +12,7 @@ export declare function collectBoundedToolOutput(child: any, timeoutMs: number, 
     ok: boolean;
     stdout: string;
 }>;
+export declare function waitForClamavReadiness(database: RecordLike, child: any, deadline: number, socketPath?: string): Promise<boolean>;
 export declare function initializeClamavRuntime(database: RecordLike): Promise<any>;
 export declare function shutdownClamavRuntime(database: RecordLike): Promise<void>;
 export declare function checkClamavRuntime(database: RecordLike): Promise<{

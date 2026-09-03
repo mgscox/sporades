@@ -15,7 +15,7 @@ import { PNG } from "pngjs";
 
 import { capsule, endpoint, requireAuth, String as StringField, table } from "../dist/server.js";
 import { createControllableRuntimeClock, openDevDatabase, routeEndpoint, runEndpoint } from "../dist/server-runtime-source.js";
-import { bash52CommandVocabulary, checkClamavRuntime, collectBoundedToolOutput, createEndpointIngressApi, hasExecutableJavaScriptSemantics, hasExecutablePythonSemantics, hasExecutableShellSemantics, isCurrentClamavSignature, isJavaScriptParserInputWithinBounds, isJavaScriptRawInputWithinBounds, isSupportedInspectionNodeVersion, multipartParts, shutdownClamavRuntime, stageMultipartIngress, sweepExpiredFileIngress, validatePdfIngress } from "../dist/file-ingress-runtime.js";
+import { bash52CommandVocabulary, checkClamavRuntime, collectBoundedToolOutput, createEndpointIngressApi, hasExecutableJavaScriptSemantics, hasExecutablePythonSemantics, hasExecutableShellSemantics, initializeClamavRuntime, isCurrentClamavSignature, isJavaScriptParserInputWithinBounds, isJavaScriptRawInputWithinBounds, isSupportedInspectionNodeVersion, multipartParts, shutdownClamavRuntime, stageMultipartIngress, sweepExpiredFileIngress, validatePdfIngress, waitForClamavReadiness } from "../dist/file-ingress-runtime.js";
 import { capsuleIngressAuthUserId } from "../dist/auth-runtime.js";
 import { accessKeyVerifierDigest, createAccessKeySecret } from "../dist/access-keys-runtime.js";
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
@@ -1629,6 +1629,45 @@ test("ClamAV shutdown skips already-dead children and deterministically escalate
   await shutdownClamavRuntime({ __clamavProcess: escalated, __clamavTest: { terminateTimeoutMs: 0 } });
   assert.deepEqual(escalated.signals, ["SIGTERM", "SIGKILL"]);
   assert.equal(escalated.listenerCount, 2);
+});
+
+test("ClamAV readiness consumes one absolute deadline across probes and retry delays", async () => {
+  const process = { exitCode: null, signalCode: null, once() {}, kill() {} };
+  const run = async ({ budget, probeCosts, outcomes }) => {
+    let now = 1000; const timeouts = []; const delays = [];
+    const database = { __clamavTest: {
+      now: () => now,
+      delay: async (milliseconds) => { delays.push(milliseconds); now += milliseconds; },
+      socketExists: () => true,
+      readinessProbe: async (timeoutMs) => { timeouts.push(timeoutMs); now += Math.min(probeCosts.shift() ?? 0, timeoutMs); return outcomes.shift() ?? false; },
+    } };
+    const ready = await waitForClamavReadiness(database, process, now + budget);
+    return { ready, elapsed: now - 1000, timeouts, delays };
+  };
+  assert.deepEqual(await run({ budget: 0, probeCosts: [], outcomes: [] }), { ready: false, elapsed: 0, timeouts: [], delays: [] });
+  assert.deepEqual(await run({ budget: 250, probeCosts: [120, 20], outcomes: [false, true] }), { ready: true, elapsed: 240, timeouts: [250, 30], delays: [100] });
+  assert.deepEqual(await run({ budget: 250, probeCosts: [200, 200], outcomes: [false, false] }), { ready: false, elapsed: 250, timeouts: [250], delays: [50] });
+
+  let now = Date.parse("2030-01-01T00:00:00.000Z"); const devTimeouts = []; const devDatabase = {
+    endpoints: [{ options: { body: { multipart: { inspection: { requiredInspectors: ["clamav"] } } } } }],
+    __clamavDevSidecar: { socketPath: "/unused-test-socket", process, externallyManaged: true },
+    __clamavTest: { startupTimeoutMs: 75, now: () => now, delay: async (milliseconds) => { now += milliseconds; }, socketExists: () => true, signature: { version: "daily:1", updatedAt: new Date(now).toISOString() }, loadedSignature: "daily:1", socketCommand: async (_command, timeoutMs) => { devTimeouts.push(timeoutMs); now += timeoutMs; return null; } },
+  };
+  assert.equal(await initializeClamavRuntime(devDatabase), false); assert.equal(now, Date.parse("2030-01-01T00:00:00.075Z")); assert.deepEqual(devTimeouts, [75]);
+});
+
+test("ClamAV shutdown retains stubborn children for a later successful cleanup retry", async () => {
+  const child = () => {
+    const listeners = new Map(); const signals = []; let canExit = false;
+    return { exitCode: null, signalCode: null, signals, once(name, listener) { listeners.set(name, listener); }, kill(signal) { signals.push(signal); if (canExit && signal === "SIGKILL") { this.signalCode = signal; listeners.get("exit")?.(null, signal); } }, allowExit() { canExit = true; } };
+  };
+  const daemon = child(); const updater = child(); const database = { __clamavProcess: daemon, __clamavUpdateProcess: updater, __clamavTest: { terminateTimeoutMs: 0 } };
+  await assert.rejects(shutdownClamavRuntime(database), AggregateError);
+  assert.equal(database.__clamavProcess, daemon); assert.equal(database.__clamavUpdateProcess, updater);
+  assert.deepEqual(daemon.signals, ["SIGTERM", "SIGKILL"]); assert.deepEqual(updater.signals, ["SIGTERM", "SIGKILL"]);
+  daemon.allowExit(); updater.allowExit(); await shutdownClamavRuntime(database);
+  assert.equal(database.__clamavProcess, null); assert.equal(database.__clamavUpdateProcess, null);
+  assert.deepEqual(daemon.signals, ["SIGTERM", "SIGKILL", "SIGTERM", "SIGKILL"]);
 });
 
 test("ClamAV health requires a bounded PING and shutdown awaits both managed children", async () => {
