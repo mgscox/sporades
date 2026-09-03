@@ -41,7 +41,12 @@ being read for the first time and the events that mattered are already gone.
   bounded envelope shape rather than a single representative event.
 - Refuse a cap that cannot honour that guarantee, at configuration validation,
   with a structured error and an actionable hint.
-- Leave every cap that can honour it working exactly as it does today.
+- Apply the floor globally rather than per-Capsule. Validation runs before any
+  event exists, and the runtime writes its own platform events in every Capsule,
+  so a cap too small for those is unusable regardless of what the Capsule itself
+  logs. A Capsule whose own tiny payloads fit under a very small cap today will
+  stop validating; that cost is accepted deliberately in exchange for the
+  guarantee holding everywhere.
 
 ## Non-Goals
 

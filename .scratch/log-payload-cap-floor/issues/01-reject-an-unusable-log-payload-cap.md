@@ -48,10 +48,11 @@ configured one trades this surprise for another.
 - [ ] The maintainer ratifies the bounded envelope shape below, or replaces it. This is the decision the rest of the ticket depends on, because it determines which existing Capsule configurations stop validating.
 - [ ] The minimum is computed from the ratified shape against the real envelope, so it stays correct if envelope fields change, rather than being a constant in the source.
 - [ ] A cap that cannot honour the guarantee is rejected at config validation with a structured error and an actionable hint, in the same shape as other invalid configuration keys.
-- [ ] A cap that can honour it is accepted unchanged; caps usable today for minimal envelopes are not rejected on the strength of the runtime's own larger events.
+- [ ] The floor is global: a cap below it is rejected for every Capsule, including one whose own events would fit. Validation runs before any event exists and cannot know what a Capsule will log, and the runtime's own platform events are written by every Capsule regardless.
 - [ ] The `logging.payloadMaxBytes` alias is validated identically.
 - [ ] A cap at exactly the minimum still yields structured `data` for an envelope of the stated shape.
-- [ ] Tests cover a rejected cap, a cap at exactly the minimum, an ordinary cap, and a minimal envelope that a small cap can still legitimately carry.
+- [ ] Tests cover a rejected cap, a cap at exactly the minimum, and an ordinary cap.
+- [ ] Generated `bin/` and `dist/` artifacts are rebuilt with the source change, with focused source-to-bundle parity coverage, so an installed CLI does not keep accepting values the source now rejects.
 - [ ] The configuration guide documents the minimum and what it protects.
 
 ## Proposed guarantee, for ratification
@@ -70,14 +71,28 @@ may actually log.
 | `request`, `release`, `correlation` | null | Absent on the platform events this protects |
 | surviving `data` | 256 bytes | Enough for a small structured object rather than a sentinel |
 
-A cap that cannot carry an envelope of that shape is rejected. A cap that can is
-accepted unchanged, including caps that only ever carry smaller envelopes than
-the runtime's own events — an operator logging exclusively tiny payloads is not
-doing anything wrong.
+A cap that cannot carry an envelope of that shape is rejected, and the rule is
+global rather than per-Capsule.
 
-The open question for the maintainer is the last row. A larger surviving-`data`
-bound protects more real events and rejects more existing configurations; a
-smaller one is more permissive and lets more events silently truncate.
+An earlier draft of this ticket tried to have it both ways — reject caps below
+the floor, while still accepting caps that a Capsule's own smaller envelopes
+would fit. Those cannot both hold: the shape above puts the minimum well above
+256, so the documented 256-byte reproduction would have to be rejected and
+accepted at once. The global rule is the one that survives scrutiny, for two
+reasons. Validation runs before any event exists, so it cannot know what a
+Capsule will go on to log. And the runtime writes its own platform events —
+`dev.session.started` among them — in every Capsule, so a cap too small for
+those is unusable no matter how modest the Capsule's own logging is.
+
+The consequence is deliberate and worth stating plainly: a Capsule configured
+with a very small cap that happens to work today for its own tiny payloads will
+stop validating. That is the cost of the guarantee, and it is the reason this
+ticket is a maintainer decision rather than an implementation detail.
+
+The open question for the maintainer is the last row of the table. A larger
+surviving-`data` bound protects more real events and rejects more existing
+configurations; a smaller one is more permissive and lets more events silently
+truncate.
 
 ## Blocked by
 
