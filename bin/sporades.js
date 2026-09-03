@@ -15929,21 +15929,24 @@ function mailError(code, message, hint) {
   error.hint = hint;
   return error;
 }
+function disabledMailRuntime(code, message, hint) {
+  return {
+    enabled: false,
+    async send() {
+      throw mailError(code, message, hint);
+    },
+    close() {
+    }
+  };
+}
 function createMailRuntime(mailConfig, serverEnv, options = {}) {
   const smtp = mailConfig?.smtp;
   if (!smtp) {
-    return {
-      enabled: false,
-      async send() {
-        throw mailError(
-          "MAIL_DISABLED",
-          "Mail delivery is disabled.",
-          "Configure `mail.smtp` in sporades.json and restart the Capsule runtime."
-        );
-      },
-      close() {
-      }
-    };
+    return disabledMailRuntime(
+      "MAIL_DISABLED",
+      "Mail delivery is disabled.",
+      "Configure `mail.smtp` in sporades.json and restart the Capsule runtime."
+    );
   }
   let auth;
   if (smtp.auth.method === "none") {
@@ -15952,7 +15955,7 @@ function createMailRuntime(mailConfig, serverEnv, options = {}) {
     const username = serverEnv[smtp.auth.usernameEnv];
     const password = serverEnv[smtp.auth.passwordEnv];
     if (typeof username !== "string" || typeof password !== "string") {
-      throw mailError(
+      return disabledMailRuntime(
         "MAIL_CREDENTIAL_MISSING",
         "SMTP credentials are unavailable.",
         "Set the configured SMTP username and password keys in Server env, then restart the Capsule runtime."

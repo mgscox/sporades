@@ -812,7 +812,10 @@ inspection omits the payload and does not expose raw provider history.
 optional `cc`, `bcc`, `from`, and `replyTo`, plus `subject`, `textBody` and/or
 `htmlBody`, and an optional validated `provider` object. It returns a stable
 `{ messageId, accepted, rejected }` result. When `mail.smtp` is omitted from
-`sporades.json`, calls fail with `MAIL_DISABLED`.
+`sporades.json`, calls fail with `MAIL_DISABLED`. When `mail.smtp` is configured
+but its named credentials are absent from Server env, the Capsule still starts,
+`ctx.mail.enabled` is `false`, and calls fail with `MAIL_CREDENTIAL_MISSING`;
+neither failure names a Server env key.
 
 The same Server Bundle and configuration run unchanged in Dev sessions, local
 Container sessions, and Hosted Capsules. Credential values remain in Sealed

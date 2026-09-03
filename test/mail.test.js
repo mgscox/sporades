@@ -1247,14 +1247,35 @@ test("encoded display names fold before a short mailbox would push the line past
   assert.equal(encodedLines.every((line) => line.length <= 76), true);
 });
 
-test("configured SMTP credentials must resolve from Server env before startup", async () => {
+test("a Capsule boots without SMTP credentials and every send fails", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-mail-credentials-"));
+  const capsule = {
+    queries: {
+      mailState: query((ctx) => ({ enabled: ctx.mail.enabled })),
+      mailSend: query((ctx) => ctx.mail.send({ to: "to@example.com", subject: "s", textBody: "b" })),
+    },
+  };
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, smtpConfig, capsule);
   try {
+    assert.equal(database.mail.enabled, false);
     await assert.rejects(
-      openDevDatabase(path.join(dir, "data.db"), "", {}, smtpConfig, {}),
-      (error) => error.code === "MAIL_CREDENTIAL_MISSING" && !error.message.includes("SMTP_PASSWORD"),
+      database.mail.send({ to: "to@example.com", subject: "s", textBody: "b" }),
+      (error) => error.code === "MAIL_CREDENTIAL_MISSING"
+        && !error.message.includes("SMTP_PASSWORD")
+        && !error.message.includes("SMTP_USERNAME")
+        && !error.hint.includes("SMTP_PASSWORD"),
     );
+    database.adapter.prepare("INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(user.userId, new Date().toISOString(), user.displayName, user.email, null, 1, 0, user.provider);
+    await database.init();
+    const state = await runQuery(database, user, "mailState");
+    assert.equal(state.error, null);
+    assert.deepEqual(state.data, { enabled: false });
+    const attempted = await runQuery(database, user, "mailSend");
+    assert.notEqual(attempted.error, null);
   } finally {
+    await database.shutdown();
+    await database.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
