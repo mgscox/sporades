@@ -789,12 +789,13 @@ function shellCommandCanRun(name: string) {
   if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(name)) return false;
   if (name.includes("/")) return isRegularExecutableShellPath(name);
   if (Buffer.byteLength(name, "utf8") > 255) return false;
-  for (const entry of String(process.env.PATH ?? "").split(":").slice(0, 128)) {
+  const pathEntries = String(process.env.PATH ?? "").split(":");
+  for (const entry of pathEntries.slice(0, 128)) {
     const directory = entry || process.cwd();
-    if (Buffer.byteLength(directory, "utf8") > 4096) continue;
+    if (Buffer.byteLength(directory, "utf8") > 4096) return true;
     if (isRegularExecutableShellPath(`${directory.replace(/\/$/, "")}/${name}`)) return true;
   }
-  return false;
+  return pathEntries.length > 128;
 }
 function braceSequenceAlternatives(body: string): string[] | null | undefined {
   const numeric = /^(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?$/.exec(body);
@@ -866,7 +867,8 @@ function shellGlobSegment(segment: string): RegExp | null | false {
         if (segment[close] === "]" && close > index + 1) break;
         const literal = segment[close]; body += literal === "\\" || literal === "]" ? `\\${literal}` : literal; close += 1;
       }
-      if (close < segment.length && segment[close] === "]" && close - index <= 128) {
+      if (close < segment.length && segment[close] === "]") {
+        if (close - index > 128) return false;
         if (localeDependent || unsupported) return false;
         body = body.replace(/^!/, "^"); source += `[${body}]`; active = true; index = close; continue;
       }

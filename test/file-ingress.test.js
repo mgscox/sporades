@@ -170,7 +170,7 @@ test("sentence-shaped shell classification checks only regular executable filesy
   try {
     await mkdir(path.dirname(nestedExecutable), { recursive: true }); await mkdir(child); await mkdir(pathBin);
     await writeFile(executable, "#!/bin/sh\nexit 0\n"); await chmod(executable, 0o755); await writeFile(nestedExecutable, "#!/bin/sh\nexit 0\n"); await chmod(nestedExecutable, 0o755); await writeFile(nonExecutable, "support datum\n");
-    for (const name of ["literal*", "run1", "run01", "runa", "1un", "élocale"]) { await writeFile(path.join(dir, "Payload", name), "#!/bin/sh\nexit 0\n"); await chmod(path.join(dir, "Payload", name), 0o755); }
+    for (const name of ["literal*", "run1", "run01", "runa", "rrun", "1un", "élocale"]) { await writeFile(path.join(dir, "Payload", name), "#!/bin/sh\nexit 0\n"); await chmod(path.join(dir, "Payload", name), 0o755); }
     await writeFile(path.join(dir, "MatchOne"), "not executable\n"); await writeFile(path.join(dir, "MatchTwo"), "not executable\n"); await mkdir(path.join(dir, "DirMatchOne"));
     await mkdir(path.join(dir, "Payload", "directory")); await symlink(executable, path.join(dir, "Payload", "linked")); await symlink(path.join(dir, "missing"), path.join(dir, "Payload", "broken"));
     for (const name of ["Runner", "Run*", "MatchOne"]) { await writeFile(path.join(pathBin, name), "#!/bin/sh\nexit 0\n"); await chmod(path.join(pathBin, name), 0o755); }
@@ -178,6 +178,11 @@ test("sentence-shaped shell classification checks only regular executable filesy
     process.chdir(dir); process.env.PATH = pathBin; process.env.HOME = dir;
     for (const command of ["Payload/run argument.", "./Payload/run argument.", `${executable} argument.`, "Payload/nested/run --flag value.", '"Payload/run" argument.', "'Payload/run' argument.", "Payload\\/run argument.", '"Payload/literal*" argument.', "Payload/literal\\* argument.", "Payload/linked argument.", "Payload/* argument.", "Payload/r?n argument.", "Payload/[r]un argument.", "Payload/{run,nope} argument.", "Payload/run{1..2} argument.", "Payload/run{01..02} argument.", "Payload/run{a..b} argument.", "Payload/run{2..1} argument.", "Payload/run{b..a} argument.", "Payload/run{5..1..2} argument.", "Payload/run{5..1..-2} argument.", "Payload/run{1..5..2} argument.", "Payload/run{01..05..2} argument.", "Payload/run{a..e..2} argument.", "Payload/run{1..1000} argument.", "Payload/[[:alpha:]]una argument.", "Payload/[[:digit:]]un argument.", "Payload/[[:digit:]]una argument.", "Payload/[[:alnum:]]una argument.", "Payload/[![:digit:]]una argument.", "Payload/[[:digit:]r]una argument.", "Payload/[[:alpha:]]locale argument.", "~/Payload/r*n argument.", "~/Payload/run{1..2} argument.", "Run* argument.", "Match* argument.", "Runner argument.", "LinkedRunner argument."]) assert.equal(hasExecutableShellSemantics(command), true, command);
     for (const prose of ["Payload/evidence remains available.", "Payload/directory remains available.", "Payload/broken remains available.", "Payload/missing* remains unavailable.", "Payload/n?pe remains unavailable.", "Payload/[x]un remains unavailable.", "Payload/[z-a] remains documented.", "Payload/{nope,missing} remains unavailable.", "Payload/run{1..3..0} remains documented.", "Payload/run{1..x} remains documented.", "Payload/run{1...2} remains documented.", '"Payload/run{1..2}" remains documented.', "Payload/run\\{1..2\\} remains documented.", '"Payload/[[:alpha:]]una" remains documented.', "Payload/\\[\\[:alpha:\\]\\]una remains documented.", '"Payload/*" remains documented.', "Payload/\\* remains documented.", "~/sporades-file-ingress-no-such-command-* remains unavailable.", "NoMatch* remains unavailable.", "Miss* remains unavailable.", "DirMatch* remains available.", "Evidence argument.", "Support request remains active.", "BrokenRunner argument.", "A * marker remains visible.", "A {draft,final} label remains visible.", "A {1..2} range remains visible.", "A [[:alpha:]] class remains visible."]) assert.equal(hasExecutableShellSemantics(prose), false, prose);
+    for (const length of [127, 128, 129]) assert.equal(hasExecutableShellSemantics(`Payload/[${"r".repeat(length)}]run argument.`), true, `bracket body ${length}`);
+    assert.equal(hasExecutableShellSemantics(`Payload/[${"r".repeat(128)}[:alpha:]]run argument.`), true, "oversized POSIX bracket class");
+    for (const prose of [`Payload/[${"r".repeat(129)}run remains documented.`, "Payload/[]run remains documented.", `"Payload/[${"r".repeat(129)}]run" remains documented.`, `Payload/\\[${"r".repeat(129)}\\]run remains documented.`]) assert.equal(hasExecutableShellSemantics(prose), false, prose);
+    process.env.PATH = Array.from({ length: 129 }, (_, index) => path.join(dir, `missing-${index}`)).join(":"); assert.equal(hasExecutableShellSemantics("BeyondPathBound argument."), true);
+    process.env.PATH = "x".repeat(4097); assert.equal(hasExecutableShellSemantics("BeyondPathEntryBound argument."), true); process.env.PATH = pathBin;
     process.chdir(child); assert.equal(hasExecutableShellSemantics("../Payload/run argument."), true);
     assert.equal(hasExecutableShellSemantics("Please inspect Payload output."), false);
   } finally { process.chdir(originalCwd); process.env.PATH = originalPath; process.env.HOME = originalHome; await rm(dir, { recursive: true, force: true }); }
@@ -1818,7 +1823,7 @@ test("content-policy-v1 structurally validates its allowlist and rejects executa
   try {
     const inspection = { policyRevision: "matrix-v1", requiredInspectors: ["content-policy-v1"] }; const policy = { ...ingressPolicy(), maxFileBytes: 20_000, maxTotalFileBytes: 20_000, inspection };
     const sentenceExecutable = path.join(dir, "Payload", "run"); await mkdir(path.dirname(sentenceExecutable), { recursive: true });
-    for (const name of ["run", "run1", "run01", "runa", "1un", "élocale"]) { const candidate = path.join(path.dirname(sentenceExecutable), name); await writeFile(candidate, "#!/bin/sh\nexit 0\n"); await chmod(candidate, 0o755); }
+    for (const name of ["run", "run1", "run01", "runa", "rrun", "1un", "élocale"]) { const candidate = path.join(path.dirname(sentenceExecutable), name); await writeFile(candidate, "#!/bin/sh\nexit 0\n"); await chmod(candidate, 0o755); }
     const pathBin = path.join(dir, "bin"); await mkdir(pathBin); for (const name of ["Run*", "MatchOne"]) { const candidate = path.join(pathBin, name); await writeFile(candidate, "#!/bin/sh\nexit 0\n"); await chmod(candidate, 0o755); }
     await writeFile(path.join(pathBin, "Miss*"), "not executable\n"); await mkdir(path.join(pathBin, "DirMatchOne")); await writeFile(path.join(dir, "MatchOne"), "not executable\n"); await writeFile(path.join(dir, "MatchTwo"), "not executable\n"); await mkdir(path.join(dir, "DirMatchOne"));
     process.env.HOME = dir; process.env.PATH = `${pathBin}:${originalPath ?? ""}`; process.chdir(dir);
@@ -1912,6 +1917,8 @@ test("content-policy-v1 structurally validates its allowlist and rejects executa
       ["shell-sentence-active-unmatched-posix-class", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[[:digit:]]una remains unavailable.`), "rejected"],
       ["shell-sentence-path-literal-fallback", "note.txt", "text/plain", Buffer.from("Run* argument."), "rejected"],
       ["shell-sentence-matched-path-command", "note.txt", "text/plain", Buffer.from("Match* argument."), "rejected"],
+      ...[127, 128, 129].map((length) => [`shell-sentence-bracket-bound-${length}`, "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[${"r".repeat(length)}]run argument.`), "rejected"]),
+      ["shell-sentence-oversized-posix-bracket", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[${"r".repeat(128)}[:alpha:]]run argument.`), "rejected"],
       ["shell-ordinary-label", "note.txt", "text/plain", Buffer.from("ticket_reference"), "clean"],
       ["valid-shell-slash-prose", "note.txt", "text/plain", Buffer.from("Please review docs/v1.2 at https://example.test/tickets/42."), "clean"],
       ["valid-shell-leading-letter-slash", "note.txt", "text/plain", Buffer.from("A/B testing remains active."), "clean"],
@@ -1925,6 +1932,10 @@ test("content-policy-v1 structurally validates its allowlist and rejects executa
       ["valid-shell-unmatched-path-pattern", "note.txt", "text/plain", Buffer.from("NoMatch* remains unavailable."), "clean"],
       ["valid-shell-non-x-path-literal", "note.txt", "text/plain", Buffer.from("Miss* remains unavailable."), "clean"],
       ["valid-shell-path-directory", "note.txt", "text/plain", Buffer.from("DirMatch* remains available."), "clean"],
+      ["valid-shell-unterminated-oversized-bracket", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[${"r".repeat(129)}run remains documented.`), "clean"],
+      ["valid-shell-malformed-empty-bracket", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[]run remains documented.`), "clean"],
+      ["valid-shell-quoted-oversized-bracket", "note.txt", "text/plain", Buffer.from(`"${path.dirname(sentenceExecutable)}/[${"r".repeat(129)}]run" remains documented.`), "clean"],
+      ["valid-shell-escaped-oversized-bracket", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/\\[${"r".repeat(129)}\\]run remains documented.`), "clean"],
       ["valid-shell-quoted-star", "note.txt", "text/plain", Buffer.from(`"${path.dirname(sentenceExecutable)}/*" remains documented.`), "clean"],
       ["valid-shell-escaped-star", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/\\* remains documented.`), "clean"],
       ["valid-shell-unmatched-tilde", "note.txt", "text/plain", Buffer.from("~/sporades-file-ingress-no-such-command-* remains unavailable."), "clean"],
