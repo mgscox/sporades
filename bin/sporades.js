@@ -85786,18 +85786,18 @@ async function checkClamavRuntime(database) {
 }
 async function inspectIngressLease(database, policy, row, bytes) {
   if (!policy) return void 0;
-  const inspectedAt = (/* @__PURE__ */ new Date()).toISOString();
   const verdicts = await Promise.all(policy.requiredInspectors.map(async (inspector) => {
     const result = inspector === "content-policy-v1" ? { outcome: await contentPolicyOutcome(row, bytes), signatureVersion: "content-policy-v1" } : await clamavInstream(database, bytes);
+    const inspectedAt = ingressAuditNow(database);
     return Object.freeze({ inspector, outcome: result.outcome, leaseId: row.leaseId, size: row.size, digest: row.digest, version: row.version, policyRevision: policy.policyRevision, engine: inspector === "content-policy-v1" ? "sporades-content-policy" : "clamav", signatureVersion: result.signatureVersion, inspectedAt });
   }));
   return Object.freeze({ policyRevision: policy.policyRevision, maxVerdictAgeMs: policy.maxVerdictAgeMs, verdicts: Object.freeze(verdicts) });
 }
-function inspectionEvidenceIsCurrent(row, policy) {
+function inspectionEvidenceIsCurrent(database, row, policy) {
   if (!policy) return true;
   const inspection = row.inspection;
   if (!inspection || inspection.policyRevision !== policy.policyRevision || !Array.isArray(inspection.verdicts) || inspection.verdicts.length !== policy.requiredInspectors.length) return false;
-  const now2 = Date.now();
+  const now2 = Date.parse(ingressAuditNow(database));
   return policy.requiredInspectors.every((inspector) => {
     const verdict = inspection.verdicts.find((candidate) => candidate?.inspector === inspector);
     const inspectedAt = Date.parse(verdict?.inspectedAt);
@@ -86148,7 +86148,7 @@ function createEndpointIngressApi(database, endpoint, endpointRequest, context) 
           return fileMetadataFromRow(row.file);
         }
         if (row.state === "expired" || Date.parse(row.expiresAt) <= Date.now()) throw Object.assign(new Error("File ingress lease has expired."), { code: "INGRESS_LEASE_EXPIRED" });
-        if (!inspectionEvidenceIsCurrent(row, inspectionPolicy)) throw inspectionRequiredError();
+        if (!inspectionEvidenceIsCurrent(database, row, inspectionPolicy)) throw inspectionRequiredError();
         if (row.state !== "leased") throw idempotencyConflict("Ingress lease is not claimable.");
         const now2 = (/* @__PURE__ */ new Date()).toISOString();
         const bucket = await ensureFileBucket(database, row.ownerId, "default", now2);

@@ -1289,6 +1289,46 @@ test("required inspection evidence is bound to the lease and fails closed before
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("inspection verdict age starts when each asynchronous inspector completes", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-inspect-clock-")); let database; let fake;
+  try {
+    const startedAt = "2030-01-01T00:00:00.000Z"; const clock = createControllableRuntimeClock(startedAt);
+    const inspection = { policyRevision: "completion-clock-v1", maxVerdictAgeMs: 1_000, requiredInspectors: ["content-policy-v1", "clamav"] };
+    const endpoint = { options: { method: "POST", path: "/completion-clock", body: { multipart: { ...ingressPolicy(), inspection } } } };
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "inspection-completion-clock", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "inspection-completion-clock" }), { clock });
+    const socketPath = path.join(dir, "clamd.sock");
+    const fakeOptions = { response: "stream: OK\0", onRequest: () => clock.advanceBy(750) };
+    fake = await fakeClamSocket(socketPath, fakeOptions);
+    database.__clamavTest = { socketPath, loadedSignature: "daily:42", signature: { version: "daily:42", updatedAt: new Date().toISOString() } };
+    const stage = async (requestKey) => {
+      const request = ingressRequest(requestKey);
+      const staged = await stageMultipartIngress(database, endpoint, request, { headers: request.headers }, { userId: "claim-user" });
+      const lease = staged.multipart.files[0];
+      const api = createEndpointIngressApi(database, endpoint, { __ingressRequestKey: requestKey, __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
+      return { api, lease };
+    };
+
+    const immediate = await stage("completion-clock-immediate");
+    const evidence = await immediate.api.inspection(immediate.lease);
+    assert.deepEqual(evidence.verdicts.map((verdict) => verdict.inspectedAt), [startedAt, "2030-01-01T00:00:00.750Z"]);
+    assert.equal((await immediate.api.claim(immediate.lease, { path: "/attachments/immediate.txt" })).path, "/attachments/immediate.txt");
+
+    const aging = await stage("completion-clock-aging");
+    clock.advanceBy(1_001);
+    await assert.rejects(aging.api.claim(aging.lease, { path: "/attachments/stale.txt" }), { code: "INGRESS_INSPECTION_REQUIRED" });
+
+    fakeOptions.response = "stream: Eicar-Test-Signature FOUND\0";
+    const infected = await stage("completion-clock-infected");
+    const infectedEvidence = await infected.api.inspection(infected.lease);
+    assert.deepEqual(infectedEvidence.verdicts.map((verdict) => [verdict.outcome, verdict.inspectedAt]), [["clean", "2030-01-01T00:00:02.501Z"], ["rejected", "2030-01-01T00:00:03.251Z"]]);
+
+    fakeOptions.response = "malformed scanner response\0";
+    const inconclusive = await stage("completion-clock-inconclusive");
+    const inconclusiveEvidence = await inconclusive.api.inspection(inconclusive.lease);
+    assert.deepEqual(inconclusiveEvidence.verdicts.map((verdict) => [verdict.outcome, verdict.inspectedAt]), [["clean", "2030-01-01T00:00:03.251Z"], ["inconclusive", "2030-01-01T00:00:04.001Z"]]);
+  } finally { if (fake) await new Promise((resolve) => fake.server.close(resolve)); await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("inspection declarations reject forged verdict providers before request bytes are consumed", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-inspection-forged-")); let database;
   try {

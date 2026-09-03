@@ -553,15 +553,14 @@ export async function shutdownClamavRuntime(database: RecordLike) { database.cla
 export async function checkClamavRuntime(database: RecordLike) { if (!database.clamavRequired) return { ok: true }; const children = [database.__clamavDevSidecar?.process, database.__clamavProcess, database.__clamavUpdateProcess]; for (const child of children) observeClamavChild(database, child); if (children.some(clamavChildTerminated)) { database.clamavReady = false; return { ok: false }; } const current = await currentLoadedClamavSignature(database); const pong = current ? await clamavSocketCommand(database, Buffer.from("zPING\0"), 16, 500) : null; database.clamavReady = pong === "PONG"; return { ok: database.clamavReady }; }
 async function inspectIngressLease(database: RecordLike, policy: RecordLike | null, row: RecordLike, bytes: Buffer) {
   if (!policy) return undefined;
-  const inspectedAt = new Date().toISOString();
-  const verdicts = await Promise.all(policy.requiredInspectors.map(async (inspector: string) => { const result = inspector === "content-policy-v1" ? { outcome: await contentPolicyOutcome(row, bytes), signatureVersion: "content-policy-v1" } : await clamavInstream(database, bytes); return Object.freeze({ inspector, outcome: result.outcome, leaseId: row.leaseId, size: row.size, digest: row.digest, version: row.version, policyRevision: policy.policyRevision, engine: inspector === "content-policy-v1" ? "sporades-content-policy" : "clamav", signatureVersion: result.signatureVersion, inspectedAt }); }));
+  const verdicts = await Promise.all(policy.requiredInspectors.map(async (inspector: string) => { const result = inspector === "content-policy-v1" ? { outcome: await contentPolicyOutcome(row, bytes), signatureVersion: "content-policy-v1" } : await clamavInstream(database, bytes); const inspectedAt = ingressAuditNow(database); return Object.freeze({ inspector, outcome: result.outcome, leaseId: row.leaseId, size: row.size, digest: row.digest, version: row.version, policyRevision: policy.policyRevision, engine: inspector === "content-policy-v1" ? "sporades-content-policy" : "clamav", signatureVersion: result.signatureVersion, inspectedAt }); }));
   return Object.freeze({ policyRevision: policy.policyRevision, maxVerdictAgeMs: policy.maxVerdictAgeMs, verdicts: Object.freeze(verdicts) });
 }
-function inspectionEvidenceIsCurrent(row: RecordLike, policy: RecordLike | null) {
+function inspectionEvidenceIsCurrent(database: RecordLike, row: RecordLike, policy: RecordLike | null) {
   if (!policy) return true;
   const inspection = row.inspection;
   if (!inspection || inspection.policyRevision !== policy.policyRevision || !Array.isArray(inspection.verdicts) || inspection.verdicts.length !== policy.requiredInspectors.length) return false;
-  const now = Date.now();
+  const now = Date.parse(ingressAuditNow(database));
   return policy.requiredInspectors.every((inspector: string) => {
     const verdict = inspection.verdicts.find((candidate: RecordLike) => candidate?.inspector === inspector);
     const inspectedAt = Date.parse(verdict?.inspectedAt);
@@ -768,7 +767,7 @@ export function createEndpointIngressApi(database: RecordLike, endpoint: RecordL
         return fileMetadataFromRow(row.file);
       }
       if (row.state === "expired" || Date.parse(row.expiresAt) <= Date.now()) throw Object.assign(new Error("File ingress lease has expired."), { code: "INGRESS_LEASE_EXPIRED" });
-      if (!inspectionEvidenceIsCurrent(row, inspectionPolicy)) throw inspectionRequiredError();
+      if (!inspectionEvidenceIsCurrent(database, row, inspectionPolicy)) throw inspectionRequiredError();
       if (row.state !== "leased") throw idempotencyConflict("Ingress lease is not claimable.");
       const now = new Date().toISOString(); const bucket = await ensureFileBucket(database, row.ownerId, "default", now);
       const file = { id: row.fileId, ownerId: row.ownerId, bucketId: bucket.id, bucketName: bucket.name, path, name: safeName(options?.name ?? row.name), type: safeType(options?.type ?? row.type), size: row.size, version: row.version, status: "uploaded", createdAt: now, updatedAt: now };
