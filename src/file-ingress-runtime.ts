@@ -338,7 +338,9 @@ function isPlainQuotedText(text: string) {
   const trimmed = text.trim();
   if (trimmed.length < 2) return false;
   if (trimmed.startsWith("'") && trimmed.endsWith("'")) return !trimmed.slice(1, -1).includes("'");
-  return trimmed.startsWith('"') && trimmed.endsWith('"') && !/[\\$`]/.test(trimmed.slice(1, -1));
+  if (!trimmed.startsWith('"') || !trimmed.endsWith('"')) return false;
+  const interior = trimmed.slice(1, -1);
+  return !interior.includes('"') && !/[\\$`]/.test(interior);
 }
 function isSentenceShapedText(text: string) {
   const lines = text.trim().split(/\r?\n/).filter((line) => line.trim().length > 0);
