@@ -1124,12 +1124,13 @@ export async function stageMultipartIngress(database: RecordLike, endpoint: Reco
     if (!row || !sameIngressRetryDescriptor(row, candidate)) throw Object.assign(new Error("Multipart retry descriptor conflicts with the original part."), { code: "INGRESS_DESCRIPTOR_CONFLICT" });
     if ((acquired.winner && row.state !== "staging") || (!acquired.winner && row.state !== "leased" && row.state !== "complete")) throw Object.assign(new Error("Multipart ingress staging did not complete."), { code: "INGRESS_STAGING_INCOMPLETE" });
     const inspection = await inspectIngressLease(database, policy.inspection, row, body);
-    const freshInspectionIsClean = inspection ? inspectionEvidenceIsCurrent(database, { ...row, inspection }, policy.inspection) : true;
     if (inspection) {
       if (acquired.winner) Object.assign(row, { inspection });
       else row = await refreshReceiptInspection(database, row, inspection);
     }
-    if (row.state === "complete" && !freshInspectionIsClean) throw inspectionRequiredError();
+    // A retry follows the durable CAS winner, never its caller-local scan. Leased
+    // receipts are read and checked again by claim(), closing the later refresh race.
+    if (row.state === "complete" && !inspectionEvidenceIsCurrent(database, row, policy.inspection)) throw inspectionRequiredError();
     if (acquired.winner) {
       wonReceipts.push(row);
       await database.fileStorage.writeFileVersion({ fileId: row.fileId, version: row.version, bytes: body });

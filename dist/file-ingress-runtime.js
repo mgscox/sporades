@@ -2192,14 +2192,15 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
             if ((acquired.winner && row.state !== "staging") || (!acquired.winner && row.state !== "leased" && row.state !== "complete"))
                 throw Object.assign(new Error("Multipart ingress staging did not complete."), { code: "INGRESS_STAGING_INCOMPLETE" });
             const inspection = await inspectIngressLease(database, policy.inspection, row, body);
-            const freshInspectionIsClean = inspection ? inspectionEvidenceIsCurrent(database, { ...row, inspection }, policy.inspection) : true;
             if (inspection) {
                 if (acquired.winner)
                     Object.assign(row, { inspection });
                 else
                     row = await refreshReceiptInspection(database, row, inspection);
             }
-            if (row.state === "complete" && !freshInspectionIsClean)
+            // A retry follows the durable CAS winner, never its caller-local scan. Leased
+            // receipts are read and checked again by claim(), closing the later refresh race.
+            if (row.state === "complete" && !inspectionEvidenceIsCurrent(database, row, policy.inspection))
                 throw inspectionRequiredError();
             if (acquired.winner) {
                 wonReceipts.push(row);

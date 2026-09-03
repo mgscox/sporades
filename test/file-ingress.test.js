@@ -89,7 +89,7 @@ function forgedPdfTail(base, payload) { const originalXref = /startxref\n(\d+)\n
 function initialPdfWithUnclaimedBytes(payload) { const base = minimalPdf(); const xrefOffset = Number(/startxref\n(\d+)\n%%EOF/.exec(base.toString("latin1"))[1]); const tail = base.subarray(xrefOffset).toString("latin1").replace(`startxref\n${xrefOffset}`, `startxref\n${xrefOffset + payload.length}`); return Buffer.concat([base.subarray(0, xrefOffset), payload, Buffer.from(tail, "latin1")]); }
 function masqueradingXrefStream(dictionary, data = Buffer.alloc(7)) { const base = minimalPdf(); const previousXref = Number(/startxref\n(\d+)\n%%EOF/.exec(base.toString("latin1"))[1]); const xrefOffset = base.length; return Buffer.concat([base, Buffer.from(`5 0 obj\n<<${dictionary} /Length ${data.length} /Prev ${previousXref}>>\nstream\n`), data, Buffer.from(`\nendstream\nendobj\nstartxref\n${xrefOffset}\n%%EOF\n`)]); }
 function structuredPdf(catalogExtra, extras, pageExtra = "") { const objects = [`1 0 obj\n<</Type /Catalog /Pages 2 0 R ${catalogExtra}>>\nendobj\n`, "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", `3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R ${pageExtra}>>\nendobj\n`, "4 0 obj\n<</Length 0>>\nstream\n\nendstream\nendobj\n", ...extras]; let body = "%PDF-1.7\n"; const offsets = [0]; for (const object of objects) { offsets.push(Buffer.byteLength(body)); body += object; } const xref = Buffer.byteLength(body); body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.slice(1).map((value) => `${String(value).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<</Size ${objects.length + 1} /Root 1 0 R>>\nstartxref\n${xref}\n%%EOF\n`; return Buffer.from(body); }
-async function fakeClamSocket(socketPath, options = {}) { let received = Buffer.alloc(0); const server = createNetServer((socket) => { socket.on("data", (chunk) => { received = Buffer.concat([received, chunk]); if (received.length >= 14 && received.subarray(-4).equals(Buffer.alloc(4))) { options.onRequest?.(received); if (options.response !== undefined) setTimeout(() => socket.end(Buffer.from(options.response)), options.delayMs ?? 0); } }); }); await new Promise((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); }); return { server, get received() { return received; } }; }
+async function fakeClamSocket(socketPath, options = {}) { let received = Buffer.alloc(0); let requestIndex = 0; const server = createNetServer((socket) => { let request = Buffer.alloc(0); let answered = false; socket.on("data", (chunk) => { received = Buffer.concat([received, chunk]); request = Buffer.concat([request, chunk]); if (!answered && request.length >= 14 && request.subarray(-4).equals(Buffer.alloc(4))) { answered = true; const index = requestIndex++; options.onRequest?.(request, index); const response = typeof options.response === "function" ? options.response(request, index) : options.response; const delayMs = typeof options.delayMs === "function" ? options.delayMs(request, index) : options.delayMs; if (response !== undefined) setTimeout(() => socket.end(Buffer.from(response)), delayMs ?? 0); } }); }); await new Promise((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); }); return { server, get received() { return received; } }; }
 async function* splitEvery(bytes, size) { for (let index = 0; index < bytes.length; index += size) yield bytes.subarray(index, index + size); }
 
 test("file inspection runtime accepts only supported pdfjs Node release lines", () => {
@@ -1957,6 +1957,79 @@ test("a completed pre-inspection receipt requires fresh current ClamAV evidence 
     stored = JSON.parse((await database.adapter.selectIngressByLease(clean.multipart.files[0].leaseId)).payload);
     assert.equal(stored.inspection.verdicts[0].outcome, "clean");
   } finally { if (scanner) await new Promise((resolve) => scanner.server.close(resolve)); await database?.close(); await rm(socketPath, { force: true }); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("concurrent completed retries follow the inspection evidence that wins the durable refresh", async () => {
+  for (const race of [
+    { name: "rejected-wins", responses: ["stream: OK\0", "stream: Malware FOUND\0"], delays: [30, 0], outcome: "rejected" },
+    { name: "clean-wins", responses: ["stream: Malware FOUND\0", "stream: OK\0"], delays: [30, 0], outcome: "clean" },
+  ]) {
+    const dir = await mkdtemp(path.join(tmpdir(), `sporades-ingress-refresh-${race.name}-`)); let database; let scanner;
+    const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`);
+    const requestKey = `refresh-${race.name}`; const bytes = Buffer.from("stable completed race bytes");
+    const legacyEndpoint = { options: { method: "POST", path: "/completed-refresh-race", body: { multipart: ingressPolicy() } } };
+    const inspection = { policyRevision: `race-${race.name}-v2`, maxVerdictAgeMs: 60_000, requiredInspectors: ["clamav"] };
+    const inspectedEndpoint = { options: { ...legacyEndpoint.options, body: { multipart: { ...ingressPolicy(), inspection } } } };
+    const request = (boundary) => ({ headers: { "content-type": `multipart/form-data; boundary=${boundary}`, "idempotency-key": requestKey }, async *[Symbol.asyncIterator]() { yield multipartBinary(boundary, "claim.txt", "text/plain", bytes); } });
+    const stage = async (boundary) => { const incoming = request(boundary); return await stageMultipartIngress(database, inspectedEndpoint, incoming, { headers: incoming.headers }, { userId: "claim-user" }); };
+    const api = (endpoint) => createEndpointIngressApi(database, endpoint, { __ingressRequestKey: requestKey, __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
+    try {
+      database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: `refresh-${race.name}`, files: { storagePath: path.join(dir, "files") } }, capsule({ name: `refresh-${race.name}` }));
+      const initialRequest = request("legacy");
+      const initial = await stageMultipartIngress(database, legacyEndpoint, initialRequest, { headers: initialRequest.headers }, { userId: "claim-user" });
+      const file = await api(legacyEndpoint).claim(initial.multipart.files[0], { path: "/attachments/race.txt" });
+      database.__clamavTest = { socketPath, loadedSignature: "daily:42", signature: { version: "daily:42", updatedAt: new Date().toISOString() } };
+      scanner = await fakeClamSocket(socketPath, { response: (_request, index) => race.responses[index], delayMs: (_request, index) => race.delays[index] });
+
+      const results = await Promise.allSettled([stage("race-first"), stage("race-second")]);
+      const stored = JSON.parse((await database.adapter.selectIngressByLease(initial.multipart.files[0].leaseId)).payload);
+      assert.equal(stored.inspection.verdicts[0].outcome, race.outcome, race.name);
+      if (race.outcome === "rejected") {
+        assert.deepEqual(results.map((result) => result.status), ["rejected", "rejected"]);
+        for (const result of results) assert.equal(result.reason?.code, "INGRESS_INSPECTION_REQUIRED");
+        await assert.rejects(api(inspectedEndpoint).claim(initial.multipart.files[0], { path: "/attachments/race.txt" }), { code: "INGRESS_INSPECTION_REQUIRED" });
+      } else {
+        assert.deepEqual(results.map((result) => result.status), ["fulfilled", "fulfilled"]);
+        assert.equal((await api(inspectedEndpoint).claim(initial.multipart.files[0], { path: "/attachments/race.txt" })).id, file.id);
+      }
+    } finally { if (scanner) await new Promise((resolve) => scanner.server.close(resolve)); await database?.close(); await rm(socketPath, { force: true }); await rm(dir, { recursive: true, force: true }); }
+  }
+});
+
+test("concurrent leased retries expose claim readiness only from the durable inspection winner", async () => {
+  for (const race of [
+    { name: "rejected-wins", responses: ["stream: OK\0", "stream: Malware FOUND\0"], delays: [30, 0], outcome: "rejected" },
+    { name: "clean-wins", responses: ["stream: Malware FOUND\0", "stream: OK\0"], delays: [30, 0], outcome: "clean" },
+  ]) {
+    const dir = await mkdtemp(path.join(tmpdir(), `sporades-ingress-leased-race-${race.name}-`)); let database; let scanner;
+    const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`);
+    const requestKey = `leased-race-${race.name}`; const bytes = Buffer.from("stable leased race bytes");
+    const legacyEndpoint = { options: { method: "POST", path: "/leased-refresh-race", body: { multipart: ingressPolicy() } } };
+    const inspection = { policyRevision: `leased-race-${race.name}-v2`, maxVerdictAgeMs: 60_000, requiredInspectors: ["clamav"] };
+    const inspectedEndpoint = { options: { ...legacyEndpoint.options, body: { multipart: { ...ingressPolicy(), inspection } } } };
+    const request = (boundary) => ({ headers: { "content-type": `multipart/form-data; boundary=${boundary}`, "idempotency-key": requestKey }, async *[Symbol.asyncIterator]() { yield multipartBinary(boundary, "claim.txt", "text/plain", bytes); } });
+    const stage = async (boundary) => { const incoming = request(boundary); return await stageMultipartIngress(database, inspectedEndpoint, incoming, { headers: incoming.headers }, { userId: "claim-user" }); };
+    const api = () => createEndpointIngressApi(database, inspectedEndpoint, { __ingressRequestKey: requestKey, __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
+    try {
+      database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: `leased-race-${race.name}`, files: { storagePath: path.join(dir, "files") } }, capsule({ name: `leased-race-${race.name}` }));
+      const initialRequest = request("legacy");
+      const initial = await stageMultipartIngress(database, legacyEndpoint, initialRequest, { headers: initialRequest.headers }, { userId: "claim-user" });
+      database.__clamavTest = { socketPath, loadedSignature: "daily:42", signature: { version: "daily:42", updatedAt: new Date().toISOString() } };
+      scanner = await fakeClamSocket(socketPath, { response: (_request, index) => race.responses[index], delayMs: (_request, index) => race.delays[index] });
+
+      const retries = await Promise.all([stage("race-first"), stage("race-second")]);
+      const stored = JSON.parse((await database.adapter.selectIngressByLease(initial.multipart.files[0].leaseId)).payload);
+      assert.equal(stored.inspection.verdicts[0].outcome, race.outcome, race.name);
+      const claims = await Promise.allSettled(retries.map((retry) => api().claim(retry.multipart.files[0], { path: "/attachments/leased-race.txt" })));
+      if (race.outcome === "rejected") {
+        assert.deepEqual(claims.map((result) => result.status), ["rejected", "rejected"]);
+        for (const result of claims) assert.equal(result.reason?.code, "INGRESS_INSPECTION_REQUIRED");
+      } else {
+        assert.deepEqual(claims.map((result) => result.status), ["fulfilled", "fulfilled"]);
+        assert.equal(claims[0].value.id, claims[1].value.id);
+      }
+    } finally { if (scanner) await new Promise((resolve) => scanner.server.close(resolve)); await database?.close(); await rm(socketPath, { force: true }); await rm(dir, { recursive: true, force: true }); }
+  }
 });
 
 test("stable retries atomically refresh a matching leased receipt's inspection without accepting descriptor changes", async () => {
