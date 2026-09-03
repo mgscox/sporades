@@ -165,7 +165,7 @@ test("strict text shell classification uses the complete bounded syntax tree", (
 });
 
 test("sentence-shaped shell classification checks only regular executable filesystem entries", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "sporades-shell-path-")); const originalPath = process.env.PATH; const originalHome = process.env.HOME; const originalCwd = process.cwd();
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-shell-path-")); const originalPath = process.env.PATH; const originalHome = process.env.HOME; const originalUser = process.env.USER; const originalCwd = process.cwd();
   const executable = path.join(dir, "Payload", "run"); const nestedExecutable = path.join(dir, "Payload", "nested", "run"); const nonExecutable = path.join(dir, "Payload", "evidence"); const child = path.join(dir, "child"); const pathBin = path.join(dir, "bin");
   try {
     await mkdir(path.dirname(nestedExecutable), { recursive: true }); await mkdir(child); await mkdir(pathBin);
@@ -183,9 +183,13 @@ test("sentence-shaped shell classification checks only regular executable filesy
     for (const prose of [`Payload/[${"r".repeat(129)}run remains documented.`, "Payload/[]run remains documented.", `"Payload/[${"r".repeat(129)}]run" remains documented.`, `Payload/\\[${"r".repeat(129)}\\]run remains documented.`]) assert.equal(hasExecutableShellSemantics(prose), false, prose);
     process.env.PATH = Array.from({ length: 129 }, (_, index) => path.join(dir, `missing-${index}`)).join(":"); assert.equal(hasExecutableShellSemantics("BeyondPathBound argument."), true);
     process.env.PATH = "x".repeat(4097); assert.equal(hasExecutableShellSemantics("BeyondPathEntryBound argument."), true); process.env.PATH = pathBin;
+    process.env.USER = "sporades-fixture"; process.env.HOME = dir; assert.equal(hasExecutableShellSemantics("~sporades-fixture/Payload/run argument."), true);
+    for (const invalidHome of [undefined, "", "relative/home", "x".repeat(4097)]) { if (invalidHome === undefined) delete process.env.HOME; else process.env.HOME = invalidHome; assert.equal(hasExecutableShellSemantics("~/Payload/run argument."), true, `HOME=${String(invalidHome)}`); }
+    process.env.HOME = dir; delete process.env.USER; assert.equal(hasExecutableShellSemantics("~sporades-fixture/Payload/run argument."), true, "missing USER"); process.env.USER = "someone-else"; assert.equal(hasExecutableShellSemantics("~sporades-fixture/Payload/run argument."), true, "mismatched USER"); assert.equal(hasExecutableShellSemantics("~unsupported/Payload/run argument."), true, "unsupported named user");
+    process.env.USER = "sporades-fixture"; process.env.HOME = dir; for (const prose of ['"~/Payload/run" remains documented.', "\\~/Payload/run remains documented.", '"~sporades-fixture/Payload/run" remains documented.', "Tilde ~ means home."]) assert.equal(hasExecutableShellSemantics(prose), false, prose);
     process.chdir(child); assert.equal(hasExecutableShellSemantics("../Payload/run argument."), true);
     assert.equal(hasExecutableShellSemantics("Please inspect Payload output."), false);
-  } finally { process.chdir(originalCwd); process.env.PATH = originalPath; process.env.HOME = originalHome; await rm(dir, { recursive: true, force: true }); }
+  } finally { process.chdir(originalCwd); if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath; if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome; if (originalUser === undefined) delete process.env.USER; else process.env.USER = originalUser; await rm(dir, { recursive: true, force: true }); }
 });
 
 test("strict text shell vocabulary matches the pinned Bash 5.2 command vocabulary", () => {
@@ -1819,14 +1823,14 @@ test("ClamAV refuses bytes above its exact 10 MB stream cap before opening a soc
 });
 
 test("content-policy-v1 structurally validates its allowlist and rejects executable or ambiguous evidence", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-content-matrix-")); const originalHome = process.env.HOME; const originalPath = process.env.PATH; const originalCwd = process.cwd(); let database;
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-content-matrix-")); const originalHome = process.env.HOME; const originalUser = process.env.USER; const originalPath = process.env.PATH; const originalCwd = process.cwd(); let database;
   try {
     const inspection = { policyRevision: "matrix-v1", requiredInspectors: ["content-policy-v1"] }; const policy = { ...ingressPolicy(), maxFileBytes: 20_000, maxTotalFileBytes: 20_000, inspection };
     const sentenceExecutable = path.join(dir, "Payload", "run"); await mkdir(path.dirname(sentenceExecutable), { recursive: true });
     for (const name of ["run", "run1", "run01", "runa", "rrun", "1un", "élocale"]) { const candidate = path.join(path.dirname(sentenceExecutable), name); await writeFile(candidate, "#!/bin/sh\nexit 0\n"); await chmod(candidate, 0o755); }
     const pathBin = path.join(dir, "bin"); await mkdir(pathBin); for (const name of ["Run*", "MatchOne"]) { const candidate = path.join(pathBin, name); await writeFile(candidate, "#!/bin/sh\nexit 0\n"); await chmod(candidate, 0o755); }
     await writeFile(path.join(pathBin, "Miss*"), "not executable\n"); await mkdir(path.join(pathBin, "DirMatchOne")); await writeFile(path.join(dir, "MatchOne"), "not executable\n"); await writeFile(path.join(dir, "MatchTwo"), "not executable\n"); await mkdir(path.join(dir, "DirMatchOne"));
-    process.env.HOME = dir; process.env.PATH = `${pathBin}:${originalPath ?? ""}`; process.chdir(dir);
+    process.env.HOME = dir; process.env.USER = "sporades-fixture"; process.env.PATH = `${pathBin}:${originalPath ?? ""}`; process.chdir(dir);
     database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "content-matrix", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "content-matrix" }));
     const validPdf = minimalPdf(); const validPdfText = validPdf.toString("latin1"); const validEntries = [...validPdfText.matchAll(/\d{10} 00000 n /g)].map((match) => match[0]); const swappedClassicPdf = Buffer.from(validPdfText.replace(validEntries[0], "SWAP_ENTRY").replace(validEntries[1], validEntries[0]).replace("SWAP_ENTRY", validEntries[1]), "latin1"); const validNonzeroGenerationPdf = Buffer.from(validPdfText.replace("1 0 obj", "1 2 obj").replace("/Root 1 0 R", "/Root 1 2 R").replace(validEntries[0], `${validEntries[0].slice(0, 11)}00002 n `), "latin1"); const invalidHybridPdf = Buffer.from(hybridXrefPdf().toString("latin1").replace("/W [1 4 2]", "/W [1 0 2]"), "latin1"); const validPng = minimalPng(); const parsedPng = pngChunks(validPng); const idatAt = parsedPng.findIndex((chunk) => chunk.type === "IDAT");
     const badZlibPng = rebuildPng(parsedPng.map((chunk) => chunk.type === "IDAT" ? { ...chunk, data: Buffer.from([0xff, 0xff]) } : chunk)); const rawPng = inflateSync(parsedPng[idatAt].data); rawPng[0] = 5; const badFilterPng = rebuildPng(parsedPng.map((chunk) => chunk.type === "IDAT" ? { ...chunk, data: deflateSync(rawPng) } : chunk)); const idat = parsedPng[idatAt]; const split = Math.max(1, Math.floor(idat.data.length / 2)); const badOrderPng = rebuildPng([...parsedPng.slice(0, idatAt), { type: "IDAT", data: idat.data.subarray(0, split) }, { type: "tEXt", data: Buffer.from("x\0y") }, { type: "IDAT", data: idat.data.subarray(split) }, ...parsedPng.slice(idatAt + 1)]);
@@ -1908,6 +1912,7 @@ test("content-policy-v1 structurally validates its allowlist and rejects executa
       ["shell-sentence-stepped-brace-sequence", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/run{5..1..2} argument.`), "rejected"],
       ["shell-sentence-descending-alpha-sequence", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/run{b..a} argument.`), "rejected"],
       ["shell-sentence-tilde-brace-sequence", "note.txt", "text/plain", Buffer.from("~/Payload/run{1..2} argument."), "rejected"],
+      ["shell-sentence-current-user-tilde", "note.txt", "text/plain", Buffer.from("~sporades-fixture/Payload/run argument."), "rejected"],
       ["shell-sentence-posix-alpha-class", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[[:alpha:]]una argument.`), "rejected"],
       ["shell-sentence-posix-digit-class", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[[:digit:]]un argument.`), "rejected"],
       ["shell-sentence-posix-alnum-class", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[[:alnum:]]una argument.`), "rejected"],
@@ -1936,6 +1941,9 @@ test("content-policy-v1 structurally validates its allowlist and rejects executa
       ["valid-shell-malformed-empty-bracket", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[]run remains documented.`), "clean"],
       ["valid-shell-quoted-oversized-bracket", "note.txt", "text/plain", Buffer.from(`"${path.dirname(sentenceExecutable)}/[${"r".repeat(129)}]run" remains documented.`), "clean"],
       ["valid-shell-escaped-oversized-bracket", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/\\[${"r".repeat(129)}\\]run remains documented.`), "clean"],
+      ["valid-shell-quoted-tilde", "note.txt", "text/plain", Buffer.from('"~/Payload/run" remains documented.'), "clean"],
+      ["valid-shell-escaped-tilde", "note.txt", "text/plain", Buffer.from("\\~/Payload/run remains documented."), "clean"],
+      ["valid-shell-tilde-prose", "note.txt", "text/plain", Buffer.from("Tilde ~ means home."), "clean"],
       ["valid-shell-quoted-star", "note.txt", "text/plain", Buffer.from(`"${path.dirname(sentenceExecutable)}/*" remains documented.`), "clean"],
       ["valid-shell-escaped-star", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/\\* remains documented.`), "clean"],
       ["valid-shell-unmatched-tilde", "note.txt", "text/plain", Buffer.from("~/sporades-file-ingress-no-such-command-* remains unavailable."), "clean"],
@@ -1943,7 +1951,14 @@ test("content-policy-v1 structurally validates its allowlist and rejects executa
       ["archive", "note.zip", "application/zip", Buffer.from("PK\x03\x04archive"), "rejected"], ["office", "note.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", Buffer.from("PK\x03\x04office"), "rejected"], ["executable", "note.exe", "application/octet-stream", Buffer.from("MZbinary"), "rejected"], ["empty", "note.txt", "text/plain", Buffer.alloc(0), "rejected"], ["polyglot", "photo.jpg", "image/jpeg", Buffer.concat([minimalJpeg(), Buffer.from("const x=1")]), "rejected"], ["unknown", "note.bin", "application/octet-stream", Buffer.from([0xff,0,0xaa]), "rejected"],
     ];
     for (const [key, name, type, bytes, expected] of cases) { const endpoint = { options: { method: "POST", path: "/matrix", body: { multipart: policy } } }; const headers = { "content-type": `multipart/form-data; boundary=${key}`, "idempotency-key": key }; const staged = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipartBinary(key, name, type, bytes); } }, { headers }, { userId: "claim-user" }); const receipt = JSON.parse((await database.adapter.selectIngressByLease(staged.multipart.files[0].leaseId)).payload); assert.equal(receipt.inspection.verdicts[0].outcome, expected, key); }
-  } finally { process.chdir(originalCwd); process.env.HOME = originalHome; process.env.PATH = originalPath; await database?.close(); await rm(dir, { recursive: true, force: true }); }
+    const tildeEnvironments = [
+      ["missing-home", () => { delete process.env.HOME; }, "~/Payload/run argument."], ["empty-home", () => { process.env.HOME = ""; }, "~/Payload/run argument."],
+      ["relative-home", () => { process.env.HOME = "relative/home"; }, "~/Payload/run argument."], ["overlong-home", () => { process.env.HOME = "x".repeat(4097); }, "~/Payload/run argument."],
+      ["missing-user", () => { delete process.env.USER; }, "~sporades-fixture/Payload/run argument."], ["mismatched-user", () => { process.env.USER = "someone-else"; }, "~sporades-fixture/Payload/run argument."],
+      ["unsupported-user", () => {}, "~unsupported/Payload/run argument."],
+    ];
+    for (const [key, mutate, text] of tildeEnvironments) { process.env.HOME = dir; process.env.USER = "sporades-fixture"; mutate(); const endpoint = { options: { method: "POST", path: "/matrix", body: { multipart: policy } } }; const headers = { "content-type": `multipart/form-data; boundary=tilde-${key}`, "idempotency-key": `tilde-${key}` }; const staged = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipartBinary(`tilde-${key}`, "note.txt", "text/plain", Buffer.from(text)); } }, { headers }, { userId: "claim-user" }); const receipt = JSON.parse((await database.adapter.selectIngressByLease(staged.multipart.files[0].leaseId)).payload); assert.equal(receipt.inspection.verdicts[0].outcome, "rejected", key); }
+  } finally { process.chdir(originalCwd); if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome; if (originalUser === undefined) delete process.env.USER; else process.env.USER = originalUser; if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath; await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
 test("strict text inspection accepts its exact 1 MiB parser limit and rejects one byte beyond it", async () => {

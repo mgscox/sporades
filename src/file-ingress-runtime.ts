@@ -823,8 +823,7 @@ function shellWordHasPathExpansion(word: RecordLike) {
     if (character === "\\" && quote !== "'") { index += 1; continue; }
     if (character === "'" || character === '"') { if (!quote) quote = character; else if (quote === character) quote = ""; continue; }
     if (quote) continue;
-    const currentUserTilde = process.env.USER && (raw === `~${process.env.USER}` || raw.startsWith(`~${process.env.USER}/`));
-    if ((index === 0 && character === "~" && (raw[index + 1] === "/" || raw.length === 1 || currentUserTilde)) || character === "*" || character === "?" || character === "[") return true;
+    if ((index === 0 && character === "~") || character === "*" || character === "?" || character === "[") return true;
     if (character === "{") { const close = raw.indexOf("}", index + 1); if (close > index + 1 && braceBodyIsExpandable(raw.slice(index + 1, close))) return true; }
   }
   return false;
@@ -884,10 +883,10 @@ function expandedShellCommandCanRun(pattern: string) {
   let visited = 0;
   for (let candidate of braces) {
     let roots: string[]; let segments: string[]; let pathQualified = candidate.includes("/");
-    const currentUserTilde = process.env.USER && (candidate === `~${process.env.USER}` || candidate.startsWith(`~${process.env.USER}/`));
-    if (candidate === "~" || candidate.startsWith("~/") || currentUserTilde) {
-      const home = String(process.env.HOME ?? ""); if (!home || Buffer.byteLength(home, "utf8") > 4096) continue;
-      const prefixLength = candidate[1] === "/" ? 2 : currentUserTilde ? String(process.env.USER).length + 2 : 1;
+    if (candidate.startsWith("~")) {
+      const slash = candidate.indexOf("/"); const user = candidate.slice(1, slash < 0 ? undefined : slash); const home = String(process.env.HOME ?? "");
+      if (user || !home || !pathRuntime.isAbsolute(home) || Buffer.byteLength(home, "utf8") > 4096) return true;
+      const prefixLength = slash < 0 ? candidate.length : slash + 1;
       roots = [home]; segments = candidate.length < prefixLength ? [] : candidate.slice(prefixLength).split("/"); pathQualified = true;
     } else {
       const absolute = candidate.startsWith("/"); roots = [absolute ? "/" : process.cwd()]; segments = candidate.split("/").filter((segment, index) => !(absolute && index === 0));
@@ -936,7 +935,7 @@ function hasRunnableParsedShellCommand(statement: RecordLike) {
 }
 function isNonRunnablePathSentence(text: string, root: RecordLike) {
   if (!Array.isArray(root?.commands) || root.commands.length !== 1) return false;
-  const statement = root.commands[0]; const command = statement?.command; const trimmed = text.trim(); const prose = trimmed.replace(/\\([*?\[\]{}])/g, "$1");
+  const statement = root.commands[0]; const command = statement?.command; const trimmed = text.trim(); const prose = trimmed.replace(/\\([*?\[\]{}~])/g, "$1");
   return statement?.type === "Statement" && statement.background !== true
     && Array.isArray(statement.redirects) && statement.redirects.length === 0
     && command?.type === "Command" && Array.isArray(command.prefix) && command.prefix.length === 0

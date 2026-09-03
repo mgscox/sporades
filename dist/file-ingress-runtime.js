@@ -1557,8 +1557,7 @@ function shellWordHasPathExpansion(word) {
         }
         if (quote)
             continue;
-        const currentUserTilde = process.env.USER && (raw === `~${process.env.USER}` || raw.startsWith(`~${process.env.USER}/`));
-        if ((index === 0 && character === "~" && (raw[index + 1] === "/" || raw.length === 1 || currentUserTilde)) || character === "*" || character === "?" || character === "[")
+        if ((index === 0 && character === "~") || character === "*" || character === "?" || character === "[")
             return true;
         if (character === "{") {
             const close = raw.indexOf("}", index + 1);
@@ -1670,12 +1669,13 @@ function expandedShellCommandCanRun(pattern) {
         let roots;
         let segments;
         let pathQualified = candidate.includes("/");
-        const currentUserTilde = process.env.USER && (candidate === `~${process.env.USER}` || candidate.startsWith(`~${process.env.USER}/`));
-        if (candidate === "~" || candidate.startsWith("~/") || currentUserTilde) {
+        if (candidate.startsWith("~")) {
+            const slash = candidate.indexOf("/");
+            const user = candidate.slice(1, slash < 0 ? undefined : slash);
             const home = String(process.env.HOME ?? "");
-            if (!home || Buffer.byteLength(home, "utf8") > 4096)
-                continue;
-            const prefixLength = candidate[1] === "/" ? 2 : currentUserTilde ? String(process.env.USER).length + 2 : 1;
+            if (user || !home || !pathRuntime.isAbsolute(home) || Buffer.byteLength(home, "utf8") > 4096)
+                return true;
+            const prefixLength = slash < 0 ? candidate.length : slash + 1;
             roots = [home];
             segments = candidate.length < prefixLength ? [] : candidate.slice(prefixLength).split("/");
             pathQualified = true;
@@ -1758,7 +1758,7 @@ function isNonRunnablePathSentence(text, root) {
     const statement = root.commands[0];
     const command = statement?.command;
     const trimmed = text.trim();
-    const prose = trimmed.replace(/\\([*?\[\]{}])/g, "$1");
+    const prose = trimmed.replace(/\\([*?\[\]{}~])/g, "$1");
     return statement?.type === "Statement" && statement.background !== true
         && Array.isArray(statement.redirects) && statement.redirects.length === 0
         && command?.type === "Command" && Array.isArray(command.prefix) && command.prefix.length === 0
