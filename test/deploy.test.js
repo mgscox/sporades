@@ -334,6 +334,13 @@ async function updateSporadesConfig(projectDir, updater) {
   return config;
 }
 
+async function declareClamavFileIngress(projectDir) {
+  await writeFile(path.join(projectDir, "server", "index.ts"), `import { capsule, endpoint } from "sporades/server";
+const multipart = { maxFiles: 1, maxFileBytes: 1024, maxTotalFileBytes: 1024, maxFieldCount: 1, maxFieldBytes: 1024, maxTotalFieldBytes: 1024, allowedPathPrefixes: ["/attachments"], requestKeyHeader: "idempotency-key", partKeyHeader: "content-id", requireStablePartKeys: false, inspection: { policyRevision: "container-readiness-v1", requiredInspectors: ["clamav"] } };
+export default capsule({ name: "container-readiness", endpoints: { upload: endpoint({ method: "POST", path: "/upload", body: { multipart } }, () => ({ status: 204 })) } });
+`);
+}
+
 function sshString(value) {
   const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value);
   const length = Buffer.alloc(4);
@@ -1089,6 +1096,110 @@ test("Container replacement switches one complete public tree while persistent d
     const stopIndex = calls.findIndex((call, index) => index > calls.indexOf(runs[0]) && call.args[0] === "stop");
     assert.ok(stopIndex > calls.indexOf(runs[0]));
     assert.ok(calls.indexOf(runs[1]) > stopIndex);
+  });
+});
+
+test("ClamAV Container replacement proves authenticated runtime readiness before committing", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "clamav-ready-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "clamav-ready-island"));
+    await installFakeReact(projectDir);
+    const initialDocker = await installFakeDocker(path.join(dir, "initial"), "container-old-ready");
+    assert.equal((await runCli(["deploy", "--json"], { cwd: projectDir, env: initialDocker.env })).code, 0);
+    await declareClamavFileIngress(projectDir);
+
+    const replacementDocker = await installFakeDocker(path.join(dir, "replacement"), "container-new-ready");
+    let requests = 0;
+    const server = createHttpServer(async (request, response) => {
+      requests += 1;
+      const calls = await replacementDocker.calls();
+      const runCall = firstDockerRunCall(calls);
+      const expectedToken = runCall.args.find((arg) => arg.startsWith("SPORADES_RUNTIME_PROBE_TOKEN=")).split("=")[1];
+      assert.equal(request.url, "/__sporades/health/runtime");
+      assert.equal(request.headers["x-sporades-host-probe"], expectedToken);
+      assert.equal(JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8")).containerId, "container-old-ready");
+      response.writeHead(requests === 1 ? 503 : 200, { "content-type": "application/json" });
+      response.end(JSON.stringify(requests === 1
+        ? { ok: false, data: { runtime: { ready: false }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: false } } }, error: null }
+        : { ok: true, data: { runtime: { ready: true }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: true } } }, error: null }));
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      await updateSporadesConfig(projectDir, (config) => { config.deploy = { ...(config.deploy ?? {}), port: address.port }; });
+      const replacement = await runCli(["deploy", "--json"], { cwd: projectDir, env: replacementDocker.env });
+      assert.equal(replacement.code, 0, `${replacement.stderr}\n${replacement.stdout}`);
+      assert.equal(requests, 2);
+      const calls = await replacementDocker.calls();
+      const inspectIndex = calls.findIndex((call) => call.args[0] === "inspect" && call.args.includes("{{json .}}"));
+      const cleanupIndex = calls.findIndex((call) => call.args[0] === "rm" && call.args[1]?.includes("rollback"));
+      assert.ok(cleanupIndex > inspectIndex, "the retained Container is removed only after candidate readiness succeeds");
+      assert.equal(JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8")).containerId, "container-new-ready");
+    } finally {
+      await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+});
+
+test("ClamAV Container readiness failures roll back the candidate and preserve the working binding", async (t) => {
+  for (const scenario of ["authentication", "timeout"]) {
+    await t.test(scenario, async () => {
+      await withTempDir(async (dir) => {
+        const created = await runCli(["create", `clamav-${scenario}-island`, "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+        assert.equal(created.code, 0, created.stderr);
+        const projectDir = await realpath(path.join(dir, `clamav-${scenario}-island`));
+        await installFakeReact(projectDir);
+        const initialDocker = await installFakeDocker(path.join(dir, "initial"), `container-old-${scenario}`);
+        assert.equal((await runCli(["deploy", "--json"], { cwd: projectDir, env: initialDocker.env })).code, 0);
+        const bindingPath = path.join(projectDir, ".sporades", "binding.json");
+        const beforeBinding = await readFile(bindingPath, "utf8");
+        await declareClamavFileIngress(projectDir);
+        const replacementDocker = await installFakeDocker(path.join(dir, "replacement"), `container-new-${scenario}`);
+        const server = createHttpServer((_request, response) => {
+          if (scenario === "authentication") {
+            response.writeHead(401, { "content-type": "application/json" });
+            response.end(JSON.stringify({ ok: false, data: null, error: { message: "denied" } }));
+            return;
+          }
+          response.writeHead(503, { "content-type": "application/json" });
+          response.end(JSON.stringify({ ok: false, data: { runtime: { ready: false }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: false } } }, error: null }));
+        });
+        await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+        try {
+          const address = server.address();
+          await updateSporadesConfig(projectDir, (config) => { config.deploy = { ...(config.deploy ?? {}), port: address.port }; });
+          const replacement = await runCli(["deploy", "--json"], {
+            cwd: projectDir,
+            env: { ...replacementDocker.env, SPORADES_TEST_CONTAINER_READINESS_TIMEOUT_MS: "80" },
+          });
+          assert.equal(replacement.code, 1, replacement.stdout);
+          assert.match(replacement.stdout, /Container candidate runtime readiness failed/);
+          assert.equal(await readFile(bindingPath, "utf8"), beforeBinding);
+          const calls = await replacementDocker.calls();
+          assert.ok(calls.some((call) => call.args[0] === "rm" && call.args[1] === "-f" && call.args[2] === `container-new-${scenario}`));
+          assert.ok(calls.some((call) => call.args[0] === "rename" && call.args[1]?.includes("rollback") && call.args[2] === `sporades-clamav-${scenario}-island`));
+          assert.ok(calls.some((call) => call.args[0] === "start" && call.args[1] === `sporades-clamav-${scenario}-island`));
+        } finally {
+          await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        }
+      });
+    });
+  }
+});
+
+test("Container deployment without ClamAV keeps the readiness-probe fast path", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "no-clamav-ready-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "no-clamav-ready-island"));
+    await installFakeReact(projectDir);
+    const docker = await installFakeDocker(dir, "container-no-clamav");
+    const deployed = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: { ...docker.env, SPORADES_TEST_CONTAINER_READINESS_TIMEOUT_MS: "1" },
+    });
+    assert.equal(deployed.code, 0, deployed.stderr);
   });
 });
 

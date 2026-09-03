@@ -4104,7 +4104,12 @@ async function startContainerSession(options: LooseRecord) {
   });
 
   let clientRelease: LooseRecord;
+  let requiresClamavReadiness = false;
   try {
+    const capsuleDefinition = await importCapsuleDefinition(bundle.serverRuntime.capsuleModuleSource);
+    requiresClamavReadiness = Object.values(capsuleDefinition?.endpoints ?? {}).some(
+      (endpoint: any) => endpoint?.options?.body?.multipart?.inspection?.requiredInspectors?.includes("clamav"),
+    );
     clientRelease = {
       framework: config.client?.framework ?? "react",
       toolchain: configuredClientToolchain(config),
@@ -4249,6 +4254,13 @@ async function startContainerSession(options: LooseRecord) {
     if (!candidateOwnershipProven) {
       throw commandError("Container candidate ownership could not be verified.", "Inspect the returned Container ID before retrying deployment.");
     }
+    if (requiresClamavReadiness) {
+      await awaitContainerRuntimeReadiness({
+        port,
+        runtimeProbeToken,
+        timeoutMs: readContainerReadinessTimeoutMs(),
+      });
+    }
     containerReplacementFault("consumer");
     const consumer = await writePublicTreeConsumer(
       bundle.buildDir,
@@ -4358,6 +4370,82 @@ async function startContainerSession(options: LooseRecord) {
   } else {
     process.stdout.write(`Sporades container session started at ${url}\n`);
   }
+}
+
+function readContainerReadinessTimeoutMs() {
+  const productionTimeoutMs = 160_000;
+  const testTimeoutMs = Number(process.env.SPORADES_TEST_CONTAINER_READINESS_TIMEOUT_MS);
+  if (Number.isFinite(testTimeoutMs) && testTimeoutMs > 0) {
+    return Math.min(testTimeoutMs, productionTimeoutMs);
+  }
+  return productionTimeoutMs;
+}
+
+async function awaitContainerRuntimeReadiness(options: { port: number; runtimeProbeToken: string; timeoutMs: number }) {
+  const deadline = Date.now() + options.timeoutMs;
+  const healthUrl = `http://127.0.0.1:${options.port}/__sporades/health/runtime`;
+  let lastFailure = "The candidate runtime did not respond.";
+  while (Date.now() < deadline) {
+    let response: Response | null = null;
+    try {
+      response = await fetch(healthUrl, {
+        headers: {
+          accept: "application/json",
+          "x-sporades-host-probe": options.runtimeProbeToken,
+        },
+        signal: AbortSignal.timeout(Math.max(1, Math.min(10_000, deadline - Date.now()))),
+      });
+      if (response.status !== 200 && response.status !== 503) {
+        await response.body?.cancel();
+        throw commandError(
+          "Container candidate runtime readiness failed.",
+          "Inspect the candidate Container logs and runtime probe configuration, then retry deployment.",
+          { statusCode: response.status },
+        );
+      }
+      let body: any;
+      try {
+        body = JSON.parse(await response.text());
+      } catch {
+        throw commandError(
+          "Container candidate runtime readiness failed.",
+          "The runtime health endpoint returned invalid JSON; inspect the candidate Container logs, then retry deployment.",
+        );
+      }
+      const checks = body?.data?.checks;
+      const valid = typeof body?.ok === "boolean"
+        && typeof body?.data?.runtime?.ready === "boolean"
+        && typeof checks?.sqlite?.ok === "boolean"
+        && typeof checks?.fileStorage?.ok === "boolean"
+        && typeof checks?.fileInspection?.ok === "boolean";
+      if (!valid) {
+        throw commandError(
+          "Container candidate runtime readiness failed.",
+          "The runtime health endpoint returned an unexpected result; update the Capsule runtime and retry deployment.",
+          { statusCode: response.status, hasOk: typeof body?.ok, hasReady: typeof body?.data?.runtime?.ready, hasSqlite: typeof checks?.sqlite?.ok, hasFileStorage: typeof checks?.fileStorage?.ok, hasFileInspection: typeof checks?.fileInspection?.ok },
+        );
+      }
+      if (response.status === 200 && body.ok === true && body.data.runtime.ready === true
+        && checks.sqlite.ok === true && checks.fileStorage.ok === true && checks.fileInspection.ok === true) {
+        return;
+      }
+      lastFailure = checks.fileInspection.ok === false
+        ? "The managed ClamAV scanner is not ready."
+        : "The candidate runtime is not ready.";
+    } catch (error) {
+      if (error instanceof Error && "hint" in error) throw error;
+      lastFailure = "The candidate runtime did not respond.";
+    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(250, remainingMs)));
+    }
+  }
+  throw commandError(
+    "Container candidate runtime readiness failed.",
+    "Inspect the candidate Container logs and managed ClamAV startup, then retry deployment; the previous working Container was restored.",
+    { timeoutMs: options.timeoutMs, cause: lastFailure },
+  );
 }
 
 async function inspectLocalContainerSsh(options: LooseRecord) {
