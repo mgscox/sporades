@@ -28245,7 +28245,7 @@ function redactBuildProjectRoots(message, projectRoots) {
   }
   for (const root of [...relativeRoots].filter(Boolean).sort((left, right) => right.length - left.length)) {
     const escaped = root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    redacted = redacted.replace(new RegExp(`(^|[^A-Za-z0-9_.\\/\\\\-])${escaped}(?=[/\\\\])`, "g"), "$1<project>");
+    redacted = redacted.replace(new RegExp(`(^|[^\\p{L}\\p{M}\\p{N}\\p{Pc}.\\/\\\\-])${escaped}(?=[/\\\\])`, "gu"), "$1<project>");
   }
   return redacted;
 }

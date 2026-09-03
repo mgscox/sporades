@@ -640,6 +640,15 @@ test("Vite build diagnostics redact short relative project roots only as path pr
     const windowsRelativeSource = relativeSource.replaceAll("/", "\\");
     const windowsAbsoluteSource = clientSourcePath.replaceAll("/", "\\");
     const readableProse = "A capable app can map an application and adapt a banner";
+    const posixCaseDistinctPath = `${projectName.toUpperCase()}/client/index.tsx`;
+    const embeddedWordPaths = [
+      `café${projectName}/client/index.tsx`,
+      `e\u0301${projectName}/client/index.tsx`,
+      `Ω${projectName}/client/index.tsx`,
+      `界${projectName}/client/index.tsx`,
+      `١${projectName}/client/index.tsx`,
+      `word‿${projectName}/client/index.tsx`,
+    ];
     await assert.rejects(access(projectDir), (error) => error.code === "ENOENT");
     try {
       await mkdir(clientDir, { recursive: true });
@@ -647,7 +656,7 @@ test("Vite build diagnostics redact short relative project roots only as path pr
       await writeFile(indexHtmlPath, '<script type="module" src="/client/index.tsx"></script>\n');
       await writeFile(
         path.join(projectDir, "vite.config.mjs"),
-        `throw new Error(${JSON.stringify(`${readableProse}; absolute=${clientSourcePath}?mode=build; windows=${windowsAbsoluteSource}:7:3; stack=(${relativeSource}:8:4); quoted='${windowsRelativeSource}'`)});\n`,
+        `throw new Error(${JSON.stringify(`${readableProse}; embedded=${embeddedWordPaths.join("|")}; case=${posixCaseDistinctPath}; absolute=${clientSourcePath}?mode=build; windows=${windowsAbsoluteSource}:7:3; stack=(${relativeSource}:8:4); query=?file=${relativeSource}; quoted='${windowsRelativeSource}'; spaced= ${relativeSource}`)});\n`,
       );
 
       await assert.rejects(
@@ -662,14 +671,16 @@ test("Vite build diagnostics redact short relative project roots only as path pr
         }),
         (error) => {
           assert.match(error.message, new RegExp(readableProse));
+          for (const embedded of embeddedWordPaths) assert.equal(error.message.includes(embedded), true, embedded);
+          assert.equal(error.message.includes(`case=${posixCaseDistinctPath}`), true);
           assert.match(error.message, /absolute=<project>\/client\/index\.tsx\?mode=build/);
           assert.match(error.message, /windows=<project>\\client\\index\.tsx:7:3/);
           assert.match(error.message, /stack=\(<project>\/client\/index\.tsx:8:4\)/);
+          assert.match(error.message, /query=\?file=<project>\/client\/index\.tsx/);
           assert.match(error.message, /quoted='<project>\\client\\index\.tsx'/);
+          assert.match(error.message, /spaced= <project>\/client\/index\.tsx/);
           assert.equal(error.message.includes(projectDir), false);
           assert.equal(error.message.includes(windowsAbsoluteSource), false);
-          assert.equal(error.message.includes(relativeSource), false);
-          assert.equal(error.message.includes(windowsRelativeSource), false);
           return true;
         },
       );
