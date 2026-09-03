@@ -4,7 +4,7 @@
 import { ensureFileBucket, fileMetadataFromRow, normalizeAbsoluteFilePath } from "./file-storage-runtime.js";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRef, PDFStream } from "pdf-lib";
-import { parse } from "acorn";
+import { parse, tokenizer } from "acorn";
 import jpeg from "jpeg-js";
 import { PNG } from "pngjs";
 
@@ -199,6 +199,7 @@ export async function validatePdfIngress(bytes: Buffer, options: RecordLike = {}
   } catch { return false; } finally { clearTimeout(timer); try { await task?.destroy?.(); } catch {} }
 }
 const maximumContentPolicyTextBytes = 1024 * 1024;
+const maximumContentPolicyTokens = 100_000;
 const maximumContentPolicyAstNodes = 100_000;
 const maximumContentPolicyAstDepth = 256;
 const executableJavaScriptNodes = new Set([
@@ -212,12 +213,50 @@ const executableJavaScriptNodes = new Set([
   "UpdateExpression", "VariableDeclaration", "WhileStatement", "WithStatement",
   "YieldExpression",
 ]);
-function hasExecutableJavaScriptSemantics(text: string) {
+function isStructuredAcornSyntaxError(error: unknown) {
+  const value = error as RecordLike;
+  return error instanceof SyntaxError && Number.isInteger(value?.pos) && Number.isInteger(value?.raisedAt)
+    && Number.isInteger(value?.loc?.line) && Number.isInteger(value?.loc?.column);
+}
+function isAcornStackExhaustion(error: unknown) {
+  // This exact diagnostic is defense-in-depth for the pinned parser. The flat
+  // tokenizer bounds below independently stop known recursive grammar shapes
+  // before parse(), so admission does not depend on diagnostic prose alone.
+  return isStructuredAcornSyntaxError(error) && String((error as Error).message).startsWith("Not enough stack space to parse input");
+}
+function boundedJavaScriptPreparse(text: string) {
+  const closingFor = new Map([["(", ")"], ["[", "]"], ["{", "}"], ["${", "}"]]);
+  const closings: string[] = []; let prefixDepth = 0; let tokens = 0;
+  try {
+    const input = tokenizer(text, { ecmaVersion: "latest", sourceType: "module" });
+    while (true) {
+      const token = input.getToken(); const label = token.type.label;
+      tokens += 1;
+      if (tokens > maximumContentPolicyTokens) return "exhausted";
+      prefixDepth = (token.type as RecordLike).prefix ? prefixDepth + 1 : 0;
+      if (prefixDepth > maximumContentPolicyAstDepth) return "exhausted";
+      const closing = closingFor.get(label);
+      if (closing) {
+        closings.push(closing);
+        if (closings.length > maximumContentPolicyAstDepth) return "exhausted";
+      } else if (closings.at(-1) === label) {
+        closings.pop();
+      }
+      if (label === "eof") return "within-bounds";
+    }
+  } catch (error) {
+    return isStructuredAcornSyntaxError(error) && !isAcornStackExhaustion(error) ? "invalid" : "exhausted";
+  }
+}
+export function hasExecutableJavaScriptSemantics(text: string) {
+  const preparse = boundedJavaScriptPreparse(text);
+  if (preparse === "exhausted") return true;
+  if (preparse === "invalid") return false;
   let root: RecordLike;
   try {
     root = parse(text, { ecmaVersion: "latest", sourceType: "module", allowAwaitOutsideFunction: true }) as RecordLike;
-  } catch {
-    return false;
+  } catch (error) {
+    return isStructuredAcornSyntaxError(error) && !isAcornStackExhaustion(error) ? false : true;
   }
   const pending = [{ node: root, depth: 0 }]; let visited = 0;
   while (pending.length > 0) {

@@ -74930,6 +74930,9 @@ Parser.acorn = {
 function parse3(input, options) {
   return Parser.parse(input, options);
 }
+function tokenizer2(input, options) {
+  return Parser.tokenizer(input, options);
+}
 
 // src/file-ingress-runtime.ts
 var import_jpeg_js = __toESM(require_jpeg_js(), 1);
@@ -75257,6 +75260,7 @@ async function validatePdfIngress(bytes, options = {}) {
   }
 }
 var maximumContentPolicyTextBytes = 1024 * 1024;
+var maximumContentPolicyTokens = 1e5;
 var maximumContentPolicyAstNodes = 1e5;
 var maximumContentPolicyAstDepth = 256;
 var executableJavaScriptNodes = /* @__PURE__ */ new Set([
@@ -75291,12 +75295,49 @@ var executableJavaScriptNodes = /* @__PURE__ */ new Set([
   "WithStatement",
   "YieldExpression"
 ]);
+function isStructuredAcornSyntaxError(error) {
+  const value = error;
+  return error instanceof SyntaxError && Number.isInteger(value?.pos) && Number.isInteger(value?.raisedAt) && Number.isInteger(value?.loc?.line) && Number.isInteger(value?.loc?.column);
+}
+function isAcornStackExhaustion(error) {
+  return isStructuredAcornSyntaxError(error) && String(error.message).startsWith("Not enough stack space to parse input");
+}
+function boundedJavaScriptPreparse(text2) {
+  const closingFor = /* @__PURE__ */ new Map([["(", ")"], ["[", "]"], ["{", "}"], ["${", "}"]]);
+  const closings = [];
+  let prefixDepth = 0;
+  let tokens = 0;
+  try {
+    const input = tokenizer2(text2, { ecmaVersion: "latest", sourceType: "module" });
+    while (true) {
+      const token = input.getToken();
+      const label = token.type.label;
+      tokens += 1;
+      if (tokens > maximumContentPolicyTokens) return "exhausted";
+      prefixDepth = token.type.prefix ? prefixDepth + 1 : 0;
+      if (prefixDepth > maximumContentPolicyAstDepth) return "exhausted";
+      const closing = closingFor.get(label);
+      if (closing) {
+        closings.push(closing);
+        if (closings.length > maximumContentPolicyAstDepth) return "exhausted";
+      } else if (closings.at(-1) === label) {
+        closings.pop();
+      }
+      if (label === "eof") return "within-bounds";
+    }
+  } catch (error) {
+    return isStructuredAcornSyntaxError(error) && !isAcornStackExhaustion(error) ? "invalid" : "exhausted";
+  }
+}
 function hasExecutableJavaScriptSemantics(text2) {
+  const preparse = boundedJavaScriptPreparse(text2);
+  if (preparse === "exhausted") return true;
+  if (preparse === "invalid") return false;
   let root;
   try {
     root = parse3(text2, { ecmaVersion: "latest", sourceType: "module", allowAwaitOutsideFunction: true });
-  } catch {
-    return false;
+  } catch (error) {
+    return isStructuredAcornSyntaxError(error) && !isAcornStackExhaustion(error) ? false : true;
   }
   const pending = [{ node: root, depth: 0 }];
   let visited = 0;

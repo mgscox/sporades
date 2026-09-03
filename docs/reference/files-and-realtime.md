@@ -508,8 +508,13 @@ such material should be pasted as quoted ticket text or explicitly handled by
 a future reviewed evidence policy, never treated as an executable channel.
 Strict-text inspection is capped at 1 MiB before UTF-8 decoding or JavaScript
 parsing. Sporades uses its pinned production JavaScript parser on the complete
-text, then walks the syntax tree under fixed node and depth budgets without
-executing the upload. Programs containing calls, construction, dynamic or
+text without executing the upload. A flat token pass caps work at 100,000
+tokens, 256 nested delimiters, and 256 consecutive prefix operators before the
+recursive parse; the syntax tree is then walked under 100,000-node and
+256-depth budgets. These independent bounds reject parser stack-exhaustion
+inputs without depending only on diagnostic wording. Unknown parser failures
+fail closed, while structurally ordinary syntax errors remain non-executable
+prose. Programs containing calls, construction, dynamic or
 static imports, assignments, declarations, control flow, or similar executable
 semantics are rejected. This covers comments, parentheses, computed or optional
 member access, and Unicode escapes around call-only programs such as
