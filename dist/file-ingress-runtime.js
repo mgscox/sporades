@@ -595,9 +595,26 @@ function isSentenceShapedText(text) {
         return /^[A-Z][^;&|<>$`\\]*[.!?]$/.test(trimmed) && /\s/.test(trimmed);
     });
 }
-const shellBuiltinNames = new Set([
-    ".", ":", "alias", "bg", "bind", "break", "builtin", "caller", "cd", "command", "compgen", "complete", "compopt", "continue", "declare", "dirs", "disown", "echo", "enable", "eval", "exec", "exit", "export", "false", "fc", "fg", "getopts", "hash", "help", "history", "jobs", "kill", "let", "local", "logout", "mapfile", "popd", "printf", "pushd", "pwd", "read", "readarray", "readonly", "return", "set", "shift", "source", "suspend", "test", "times", "trap", "true", "type", "typeset", "ulimit", "umask", "unalias", "unset", "wait",
+// Pinned to GNU Bash 5.2's Reference Manual lists in "Bourne Shell
+// Builtins", "Bash Builtin Commands", and "Reserved Words". Keeping this
+// vocabulary in-process makes classification deterministic and avoids
+// spawning a shell for untrusted uploads. The independent fixture contract in
+// test/fixtures/bash-5.2-command-vocabulary.txt guards omissions and drift.
+export const bash52CommandVocabulary = Object.freeze([
+    "!", ".", ":", "[", "[[", "]]", "alias", "bg", "bind", "break", "builtin", "caller", "case", "cd", "command", "compgen", "complete", "compopt", "continue", "coproc", "declare", "dirs", "disown", "do", "done", "echo", "elif", "else", "enable", "esac", "eval", "exec", "exit", "export", "false", "fc", "fg", "fi", "for", "function", "getopts", "hash", "help", "history", "if", "in", "jobs", "kill", "let", "local", "logout", "mapfile", "popd", "printf", "pushd", "pwd", "read", "readarray", "readonly", "return", "select", "set", "shift", "shopt", "source", "suspend", "test", "then", "time", "times", "trap", "true", "type", "typeset", "ulimit", "umask", "unalias", "unset", "until", "wait", "while", "{", "}",
 ]);
+const bashCommandNames = new Set(bash52CommandVocabulary);
+function exactShellVocabularyToken(text) {
+    const trimmed = text.trim();
+    if (bashCommandNames.has(trimmed))
+        return trimmed;
+    if (trimmed.length >= 2 && ((trimmed[0] === "'" && trimmed.at(-1) === "'") || (trimmed[0] === '"' && trimmed.at(-1) === '"'))) {
+        const value = trimmed.slice(1, -1);
+        if (!value.includes(trimmed[0]) && !/[\\$`]/.test(value) && bashCommandNames.has(value))
+            return value;
+    }
+    return null;
+}
 function isLiteralShellWord(word) {
     if (!word || typeof word.value !== "string" || typeof word.text !== "string")
         return false;
@@ -609,7 +626,7 @@ function isLiteralShellWord(word) {
     return !/[$`*?\[\]{}~]/.test(word.text.replace(/^(['"])([\s\S]*)\1$/, "$2"));
 }
 function shellCommandCanRun(name) {
-    if (shellBuiltinNames.has(name))
+    if (bashCommandNames.has(name))
         return true;
     if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(name))
         return false;
@@ -644,8 +661,6 @@ function isPlainShellDatum(statement) {
 export function hasExecutableShellSemantics(text) {
     if (Buffer.byteLength(text, "utf8") > maximumContentPolicyTextBytes || !isJavaScriptRawInputWithinBounds(text))
         return true;
-    if (isSentenceShapedText(text))
-        return false;
     let root;
     try {
         root = parseShell(text);
@@ -690,6 +705,13 @@ export function hasExecutableShellSemantics(text) {
     catch {
         return true;
     }
+    // Parse every candidate before applying either narrow plain-text allowance.
+    // Bash reserved words can form recovery/error trees when isolated, so also
+    // compare an exact literal token with the complete pinned vocabulary.
+    if (exactShellVocabularyToken(text))
+        return true;
+    if (isSentenceShapedText(text))
+        return false;
     if (!Array.isArray(root.commands) || root.commands.length === 0)
         return false;
     if (!syntaxError)

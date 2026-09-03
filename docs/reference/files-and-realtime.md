@@ -504,8 +504,8 @@ particularly conservative untrusted-evidence lane: strict UTF-8 is rejected
 when it resembles markup, JavaScript, shell, or common script/source forms.
 This includes generic XML and common JavaScript, Python, and shell source forms.
 That deliberately creates false positives for support notes containing code;
-such material should be pasted as quoted ticket text or explicitly handled by
-a future reviewed evidence policy, never treated as an executable channel.
+such material needs an explicitly reviewed future evidence policy, never an
+assumption that quoting makes an executable language harmless.
 Strict-text inspection is capped at 1 MiB before UTF-8 decoding or JavaScript,
 Python, and shell parsing. Sporades uses pinned production parsers on the complete
 text without executing the upload. Before invoking either dependency, a
@@ -549,13 +549,25 @@ Sporades then parses POSIX/Bash-like input with pinned `unbash@4.0.11`, whose
 typed syntax tree and recovery errors are traversed iteratively under the same
 100,000-node and 512-level caps. An error-free program containing a command,
 assignment, pipeline, substitution, redirect, function, or control structure
-is rejected; syntax-error trees remain eligible as malformed prose. Because a
-bare prose phrase is also a syntactically valid shell command, the classifier
-pre-accepts only narrowly bounded sentence-shaped prose, whole quoted text,
-and harmless single words before parsing. This is intentionally conservative:
-ambiguous command-shaped text is rejected rather than guessed safe. Unexpected
-parser failures and traversal-budget exhaustion fail closed, and no uploaded
-program is executed.
+is rejected. Syntax-error trees remain eligible as malformed prose only when
+they contain neither a completed executable prefix nor an exact literal from
+the pinned Bash command vocabulary. Because a bare prose phrase is also a
+syntactically valid shell command, every candidate
+evaluated by the shell classifier is parsed before either narrow plain-data
+allowance is applied. Sentence-shaped prose remains eligible. Exactly one
+literal, side-effect-free token may also be treated as data only when it is not
+in Sporades' pinned GNU Bash 5.2 builtin and reserved-word vocabulary
+(documented in [Bash Builtins](https://www.gnu.org/software/bash/manual/bash.html#Bash-Builtins)
+and [Reserved Words](https://www.gnu.org/software/bash/manual/bash.html#Reserved-Words)),
+is not a filesystem command path, and does not resolve to an executable through the
+bounded current `PATH` search (at most 128 entries, with an empty entry meaning
+the current directory). Quoting a token does not bypass those checks. This
+classification can therefore depend on the runtime's bounded current `PATH`
+and filesystem: a word that names executable code in that environment is a
+script risk, while an otherwise identical non-command label can remain data.
+This is intentionally conservative: ambiguous command-shaped text is rejected
+rather than guessed safe. Unexpected parser failures and traversal-budget
+exhaustion fail closed, and no uploaded program or shell is executed.
 
 The `clamav` inspector is runtime-owned and communicates only with clamd's
 fixed Unix-domain socket inside the Capsule container. There is no TCP,

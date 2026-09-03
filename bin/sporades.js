@@ -85345,26 +85345,37 @@ function isSentenceShapedText(text2) {
     return /^[A-Z][^;&|<>$`\\]*[.!?]$/.test(trimmed) && /\s/.test(trimmed);
   });
 }
-var shellBuiltinNames = /* @__PURE__ */ new Set([
+var bash52CommandVocabulary = Object.freeze([
+  "!",
   ".",
   ":",
+  "[",
+  "[[",
+  "]]",
   "alias",
   "bg",
   "bind",
   "break",
   "builtin",
   "caller",
+  "case",
   "cd",
   "command",
   "compgen",
   "complete",
   "compopt",
   "continue",
+  "coproc",
   "declare",
   "dirs",
   "disown",
+  "do",
+  "done",
   "echo",
+  "elif",
+  "else",
   "enable",
+  "esac",
   "eval",
   "exec",
   "exit",
@@ -85372,10 +85383,15 @@ var shellBuiltinNames = /* @__PURE__ */ new Set([
   "false",
   "fc",
   "fg",
+  "fi",
+  "for",
+  "function",
   "getopts",
   "hash",
   "help",
   "history",
+  "if",
+  "in",
   "jobs",
   "kill",
   "let",
@@ -85390,11 +85406,15 @@ var shellBuiltinNames = /* @__PURE__ */ new Set([
   "readarray",
   "readonly",
   "return",
+  "select",
   "set",
   "shift",
+  "shopt",
   "source",
   "suspend",
   "test",
+  "then",
+  "time",
   "times",
   "trap",
   "true",
@@ -85404,8 +85424,22 @@ var shellBuiltinNames = /* @__PURE__ */ new Set([
   "umask",
   "unalias",
   "unset",
-  "wait"
+  "until",
+  "wait",
+  "while",
+  "{",
+  "}"
 ]);
+var bashCommandNames = new Set(bash52CommandVocabulary);
+function exactShellVocabularyToken(text2) {
+  const trimmed = text2.trim();
+  if (bashCommandNames.has(trimmed)) return trimmed;
+  if (trimmed.length >= 2 && (trimmed[0] === "'" && trimmed.at(-1) === "'" || trimmed[0] === '"' && trimmed.at(-1) === '"')) {
+    const value = trimmed.slice(1, -1);
+    if (!value.includes(trimmed[0]) && !/[\\$`]/.test(value) && bashCommandNames.has(value)) return value;
+  }
+  return null;
+}
 function isLiteralShellWord(word) {
   if (!word || typeof word.value !== "string" || typeof word.text !== "string") return false;
   const literalPart = (part) => part?.type === "Literal" || part?.type === "SingleQuoted" || part?.type === "DoubleQuoted" && Array.isArray(part.parts) && part.parts.every(literalPart);
@@ -85413,7 +85447,7 @@ function isLiteralShellWord(word) {
   return !/[$`*?\[\]{}~]/.test(word.text.replace(/^(['"])([\s\S]*)\1$/, "$2"));
 }
 function shellCommandCanRun(name2) {
-  if (shellBuiltinNames.has(name2)) return true;
+  if (bashCommandNames.has(name2)) return true;
   if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(name2)) return false;
   if (name2.includes("/")) return true;
   if (Buffer.byteLength(name2, "utf8") > 255) return false;
@@ -85434,7 +85468,6 @@ function isPlainShellDatum(statement) {
 }
 function hasExecutableShellSemantics(text2) {
   if (Buffer.byteLength(text2, "utf8") > maximumContentPolicyTextBytes || !isJavaScriptRawInputWithinBounds(text2)) return true;
-  if (isSentenceShapedText(text2)) return false;
   let root;
   try {
     root = parse4(text2);
@@ -85468,6 +85501,8 @@ function hasExecutableShellSemantics(text2) {
   } catch {
     return true;
   }
+  if (exactShellVocabularyToken(text2)) return true;
+  if (isSentenceShapedText(text2)) return false;
   if (!Array.isArray(root.commands) || root.commands.length === 0) return false;
   if (!syntaxError) return root.commands.length !== 1 || !isPlainShellDatum(root.commands[0]);
   const hasCommandBoundary = (suffix) => {

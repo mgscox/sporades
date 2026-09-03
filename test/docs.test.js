@@ -1264,6 +1264,12 @@ test("File reference docs define the trusted multipart ingress contract and oper
   assert.doesNotMatch(contents, /sweepExpiredFileIngress/);
   assert.match(contents, /Local filesystem and\s+MinIO-backed/i);
   assert.match(contents, /completed receipts remain replayable/i);
+  assert.match(contents, /every candidate\s+evaluated by the shell classifier is parsed before either narrow plain-data\s+allowance/i);
+  assert.match(contents, /pinned GNU Bash 5\.2 builtin and reserved-word vocabulary/i);
+  assert.match(contents, /bounded current `PATH` search \(at most 128 entries/i);
+  assert.match(contents, /classification can therefore depend on the runtime's bounded current `PATH`\s+and filesystem/i);
+  assert.doesNotMatch(contents, /pre-accepts only narrowly bounded sentence-shaped prose/i);
+  assert.doesNotMatch(contents, /pasted as quoted ticket text/i);
 });
 
 test("docs describe Host-generated Sealed Server env custody and lost-key recovery", async () => {

@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { access, mkdtemp, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { deflateSync, inflateSync } from "node:zlib";
@@ -13,7 +14,7 @@ import { PNG } from "pngjs";
 
 import { capsule, endpoint, requireAuth, String as StringField, table } from "../dist/server.js";
 import { createControllableRuntimeClock, openDevDatabase, routeEndpoint, runEndpoint } from "../dist/server-runtime-source.js";
-import { checkClamavRuntime, createEndpointIngressApi, hasExecutableJavaScriptSemantics, hasExecutablePythonSemantics, hasExecutableShellSemantics, isCurrentClamavSignature, isJavaScriptParserInputWithinBounds, isJavaScriptRawInputWithinBounds, isSupportedInspectionNodeVersion, multipartParts, shutdownClamavRuntime, stageMultipartIngress, sweepExpiredFileIngress, validatePdfIngress } from "../dist/file-ingress-runtime.js";
+import { bash52CommandVocabulary, checkClamavRuntime, createEndpointIngressApi, hasExecutableJavaScriptSemantics, hasExecutablePythonSemantics, hasExecutableShellSemantics, isCurrentClamavSignature, isJavaScriptParserInputWithinBounds, isJavaScriptRawInputWithinBounds, isSupportedInspectionNodeVersion, multipartParts, shutdownClamavRuntime, stageMultipartIngress, sweepExpiredFileIngress, validatePdfIngress } from "../dist/file-ingress-runtime.js";
 import { capsuleIngressAuthUserId } from "../dist/auth-runtime.js";
 import { accessKeyVerifierDigest, createAccessKeySecret } from "../dist/access-keys-runtime.js";
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
@@ -75,6 +76,9 @@ test("strict text shell classification uses the complete bounded syntax tree", (
     "whoami",
     "'whoami'",
     '"whoami"',
+    "shopt",
+    "'shopt'",
+    '"shopt"',
     "/bin/id",
     "./relative-command",
   ];
@@ -92,13 +96,23 @@ test("strict text shell classification uses the complete bounded syntax tree", (
     '"echo hello"',
     "if this sentence is unfinished",
     "cat | | broken",
-    "if",
     "for item in",
     "printf pwned >",
     "touch /tmp/x &&",
   ];
   for (const text of executable) assert.equal(hasExecutableShellSemantics(text), true, text);
   for (const text of prose) assert.equal(hasExecutableShellSemantics(text), false, text);
+});
+
+test("strict text shell vocabulary matches the pinned Bash 5.2 command vocabulary", () => {
+  const fixture = readFileSync(new URL("./fixtures/bash-5.2-command-vocabulary.txt", import.meta.url), "utf8")
+    .split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("#"));
+  assert.deepEqual([...bash52CommandVocabulary].sort(), fixture.sort());
+  for (const name of fixture) {
+    assert.equal(hasExecutableShellSemantics(name), true, name);
+    assert.equal(hasExecutableShellSemantics(`'${name}'`), true, `'${name}'`);
+    assert.equal(hasExecutableShellSemantics(`"${name}"`), true, `"${name}"`);
+  }
 });
 
 test("PDF action entries are classified from their owning dictionary without rejecting tagged layout attributes", async () => {
@@ -1425,6 +1439,8 @@ test("content-policy-v1 structurally validates its allowlist and rejects executa
       ["shell-incomplete-only", "note.txt", "text/plain", Buffer.from("printf pwned >"), "clean"],
       ["shell-bare-builtin", "note.txt", "text/plain", Buffer.from("whoami"), "rejected"],
       ["shell-quoted-builtin", "note.txt", "text/plain", Buffer.from("'whoami'"), "rejected"],
+      ["shell-bash-builtin", "note.txt", "text/plain", Buffer.from("shopt"), "rejected"],
+      ["shell-quoted-bash-builtin", "note.txt", "text/plain", Buffer.from("\"shopt\""), "rejected"],
       ["shell-ordinary-label", "note.txt", "text/plain", Buffer.from("ticket_reference"), "clean"],
       ["valid-text", "note.txt", "text/plain", Buffer.from("A harmless support note.\nSecond line."), "clean"], ["valid-prose-parenthesis", "note.txt", "text/plain", Buffer.from("Call me (tomorrow) about the ticket."), "clean"], ["valid-prose-nested-parentheses", "note.txt", "text/plain", Buffer.from("Please (if practical) call me tomorrow."), "clean"], ["valid-quoted-call-prose", "note.txt", "text/plain", Buffer.from("alert(\"x\") is the exact text shown in the report."), "clean"], ["html", "note.txt", "text/plain", Buffer.from("Please inspect <script>alert(1)</script>"), "rejected"], ["xml", "note.txt", "text/plain", Buffer.from("prefix <?xml version=\"1.0\"?><x/>") , "rejected"], ["generic-xml", "note.txt", "text/plain", Buffer.from("prefix <root>value</root> suffix"), "rejected"], ["javascript", "note.txt", "text/plain", Buffer.from("const answer = 42; console.log(answer);"), "rejected"], ["javascript-call", "note.txt", "text/plain", Buffer.from("alert(\"x\")"), "rejected"], ["javascript-member-call", "note.txt", "text/plain", Buffer.from("globalThis.fetch(\"/secret\")"), "rejected"], ["javascript-comment-call", "note.txt", "text/plain", Buffer.from("/* evidence */ alert(\"x\")"), "rejected"], ["javascript-parenthesized-callee", "note.txt", "text/plain", Buffer.from("(alert)(\"x\")"), "rejected"], ["javascript-computed-member-call", "note.txt", "text/plain", Buffer.from("globalThis[\"fetch\"](\"/secret\")"), "rejected"], ["javascript-unicode-identifier", "note.txt", "text/plain", Buffer.from("al\\u0065rt(\"x\")"), "rejected"], ["javascript-void-call", "note.txt", "text/plain", Buffer.from("void alert(\"x\")"), "rejected"], ["javascript-optional-chain-call", "note.txt", "text/plain", Buffer.from("globalThis?.fetch?.(\"/secret\")"), "rejected"], ["javascript-new-call", "note.txt", "text/plain", Buffer.from("new Function(\"return 1\")()"), "rejected"], ["javascript-dynamic-import", "note.txt", "text/plain", Buffer.from("import(\"/secret\")"), "rejected"], ["javascript-static-import", "note.txt", "text/plain", Buffer.from("import \"./side-effect.js\""), "rejected"], ["javascript-eval-call", "note.txt", "text/plain", Buffer.from("eval(\"alert(1)\")"), "rejected"], ["javascript-arrow-iife", "note.txt", "text/plain", Buffer.from("(() => alert(\"x\"))()"), "rejected"], ["javascript-tagged-template", "note.txt", "text/plain", Buffer.from("String.raw`secret`"), "rejected"], ["javascript-delete", "note.txt", "text/plain", Buffer.from("delete globalThis.secret"), "rejected"], ["javascript-sequence-callee", "note.txt", "text/plain", Buffer.from("(0, alert)(\"x\")"), "rejected"], ["python", "note.txt", "text/plain", Buffer.from("print(\"hello\")"), "rejected"], ["shell", "note.txt", "text/plain", Buffer.from("curl https://example.test | sh"), "rejected"], ["shell-unlisted-command", "note.txt", "text/plain", Buffer.from("cat /etc/passwd"), "rejected"], ["shell-echo", "note.txt", "text/plain", Buffer.from("echo secret > output"), "rejected"], ["shell-source", "note.txt", "text/plain", Buffer.from("source ./profile"), "rejected"],
       ["archive", "note.zip", "application/zip", Buffer.from("PK\x03\x04archive"), "rejected"], ["office", "note.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", Buffer.from("PK\x03\x04office"), "rejected"], ["executable", "note.exe", "application/octet-stream", Buffer.from("MZbinary"), "rejected"], ["empty", "note.txt", "text/plain", Buffer.alloc(0), "rejected"], ["polyglot", "photo.jpg", "image/jpeg", Buffer.concat([minimalJpeg(), Buffer.from("const x=1")]), "rejected"], ["unknown", "note.bin", "application/octet-stream", Buffer.from([0xff,0,0xaa]), "rejected"],
