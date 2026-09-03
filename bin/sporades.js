@@ -35801,13 +35801,16 @@ async function startDevSession(options) {
         fatalRestartAttempts = 0;
         refresh = await devRefresh.broadcast();
         websocketHub.disconnectAll();
-        runtime.database.log.emit({
-          category: "platform",
-          event: "dev.capsule.reloaded",
-          level: "info",
-          message: "Dev capsule reloaded after a server change",
-          data: capsuleReloadSurface(runtime.database)
-        });
+        try {
+          runtime.database.log.emit({
+            category: "platform",
+            event: "dev.capsule.reloaded",
+            level: "info",
+            message: "Dev capsule reloaded after a server change",
+            data: capsuleReloadSurface(runtime.database)
+          });
+        } catch {
+        }
       }
       const previousBundle = bundle;
       bundle = rebuild;

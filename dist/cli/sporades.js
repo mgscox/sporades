@@ -2147,13 +2147,27 @@ async function startDevSession(options) {
                 // uptime — records that a server change took effect. Without this the only trace of a
                 // reload is stdout the developer has usually scrolled past, and an empty `sporades logs`
                 // reads as "the server never reloaded" when it equally means "it reloaded cleanly".
-                runtime.database.log.emit({
-                    category: "platform",
-                    event: "dev.capsule.reloaded",
-                    level: "info",
-                    message: "Dev capsule reloaded after a server change",
-                    data: capsuleReloadSurface(runtime.database),
-                });
+                //
+                // Best-effort, and it must stay that way. The reload is already committed here: the
+                // candidate runtime is promoted and the outgoing database is shut down. `log.emit`
+                // appends to the JSONL sink synchronously, so a full disk or an unwritable log file
+                // throws — and an escaping throw would reach the rebuild catch below, which rolls the
+                // published Bundle and service env back while `runtime.database` stays on the new
+                // Capsule. That trades a missing log line for split runtime, config and static state
+                // plus a rebuild reported as failed. Observability never gets to invalidate a
+                // completed reload.
+                try {
+                    runtime.database.log.emit({
+                        category: "platform",
+                        event: "dev.capsule.reloaded",
+                        level: "info",
+                        message: "Dev capsule reloaded after a server change",
+                        data: capsuleReloadSurface(runtime.database),
+                    });
+                }
+                catch {
+                    // The reload stands; only its record is missing.
+                }
             }
             const previousBundle = bundle;
             bundle = rebuild;
