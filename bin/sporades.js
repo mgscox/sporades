@@ -85142,7 +85142,7 @@ function pdfObjectEnd(bytes, offset2, limit) {
   let end = offset2 + token[0].length;
   if (/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(token[0])) {
     const after = skipPdfTrivia(bytes, end, limit);
-    const reference = after < 0 ? null : /^\d{1,10}[\x00\x09\x0a\x0c\x0d\x20]+R(?:[\x00\x09\x0a\x0c\x0d\x20\[\]()<>\/%]|$)/.exec(bytes.subarray(after, Math.min(limit, after + 80)).toString("latin1"));
+    const reference = after < 0 ? null : /^\d{1,10}[\x00\x09\x0a\x0c\x0d\x20]+R(?=[\x00\x09\x0a\x0c\x0d\x20\[\]()<>\/%]|$)/.exec(bytes.subarray(after, Math.min(limit, after + 80)).toString("latin1"));
     if (reference) end = after + reference[0].length;
   }
   return end;

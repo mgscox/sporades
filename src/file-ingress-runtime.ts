@@ -170,7 +170,7 @@ function pdfObjectEnd(bytes: Buffer, offset: number, limit: number) {
   }
   const token = /^[^\x00\x09\x0a\x0c\x0d\x20\[\]()<>\/%]+/.exec(bytes.subarray(offset, limit).toString("latin1")); if (!token) return -1;
   let end = offset + token[0].length;
-  if (/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(token[0])) { const after = skipPdfTrivia(bytes, end, limit); const reference = after < 0 ? null : /^\d{1,10}[\x00\x09\x0a\x0c\x0d\x20]+R(?:[\x00\x09\x0a\x0c\x0d\x20\[\]()<>\/%]|$)/.exec(bytes.subarray(after, Math.min(limit, after + 80)).toString("latin1")); if (reference) end = after + reference[0].length; }
+  if (/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(token[0])) { const after = skipPdfTrivia(bytes, end, limit); const reference = after < 0 ? null : /^\d{1,10}[\x00\x09\x0a\x0c\x0d\x20]+R(?=[\x00\x09\x0a\x0c\x0d\x20\[\]()<>\/%]|$)/.exec(bytes.subarray(after, Math.min(limit, after + 80)).toString("latin1")); if (reference) end = after + reference[0].length; }
   return end;
 }
 function pdfDictionaryHasTopLevelKey(bytes: Buffer, offset: number, key: string) {

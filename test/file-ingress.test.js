@@ -36,7 +36,8 @@ function breakJpegComponent(bytes) { const output = Buffer.from(bytes); const at
 function pngChunks(bytes) { const chunks = []; for (let offset = 8; offset < bytes.length;) { const length = bytes.readUInt32BE(offset); const type = bytes.subarray(offset + 4, offset + 8).toString("ascii"); chunks.push({ type, data: bytes.subarray(offset + 8, offset + 8 + length) }); offset += 12 + length; } return chunks; }
 function rebuildPng(chunks) { return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), ...chunks.map(({ type, data }) => pngChunk(type, data))]); }
 function minimalPdf() { const objects = ["1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n", "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", "3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R>>\nendobj\n", "4 0 obj\n<</Length 0>>\nstream\n\nendstream\nendobj\n"]; let body = "%PDF-1.4\n"; const offsets = [0]; for (const object of objects) { offsets.push(Buffer.byteLength(body)); body += object; } const xref = Buffer.byteLength(body); body += `xref\n0 5\n0000000000 65535 f \n${offsets.slice(1).map((value) => `${String(value).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<</Size 5 /Root 1 0 R>>\nstartxref\n${xref}\n%%EOF\n`; return Buffer.from(body); }
-function classicPdfWithStreamLength(lengthToken, lengthObject = "4", content = "q\nQ\n", trailerExtra = "") { const objects = ["1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n", "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", "3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R>>\nendobj\n", `4 0 obj\n<</Length ${lengthToken}>>\nstream\n${content}endstream\nendobj\n`, `5 0 obj\n${lengthObject}\nendobj\n`]; let body = "%PDF-1.5\n"; const offsets = [0]; for (const object of objects) { offsets.push(Buffer.byteLength(body)); body += object; } const xref = Buffer.byteLength(body); body += `xref\n0 6\n0000000000 65535 f \n${offsets.slice(1).map((value) => `${String(value).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<</Size 6 /Root 1 0 R ${trailerExtra}>>\nstartxref\n${xref}\n%%EOF\n`; return Buffer.from(body); }
+function compactTrailerPdf(suffix = "") { return Buffer.from(minimalPdf().toString("latin1").replace("<</Size 5 /Root 1 0 R>>", `<</Size 5/Root 1 0 R${suffix}>>`), "latin1"); }
+function classicPdfWithStreamLength(lengthToken, lengthObject = "4", content = "q\nQ\n", trailerExtra = "", streamExtra = "") { const objects = ["1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n", "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", "3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R>>\nendobj\n", `4 0 obj\n<</Length ${lengthToken}${streamExtra}>>\nstream\n${content}endstream\nendobj\n`, `5 0 obj\n${lengthObject}\nendobj\n`]; let body = "%PDF-1.5\n"; const offsets = [0]; for (const object of objects) { offsets.push(Buffer.byteLength(body)); body += object; } const xref = Buffer.byteLength(body); body += `xref\n0 6\n0000000000 65535 f \n${offsets.slice(1).map((value) => `${String(value).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<</Size 6 /Root 1 0 R ${trailerExtra}>>\nstartxref\n${xref}\n%%EOF\n`; return Buffer.from(body); }
 function futureRevisionStreamLength() { const base = classicPdfWithStreamLength("6 0 R"); const previousXref = Number(/startxref\n(\d+)\n%%EOF/.exec(base.toString("latin1"))[1]); const objectOffset = base.length; const object = Buffer.from("6 0 obj\n4\nendobj\n"); const xrefOffset = objectOffset + object.length; return Buffer.concat([base, object, Buffer.from(`xref\n6 1\n${String(objectOffset).padStart(10, "0")} 00000 n \ntrailer\n<</Size 7 /Root 1 0 R /Prev ${previousXref}>>\nstartxref\n${xrefOffset}\n%%EOF\n`)]); }
 function classicPdfWithCatalogGeneration(generation) { const objects = [`1 ${generation} obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n`, "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", "3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R>>\nendobj\n", "4 0 obj\n<</Length 0>>\nstream\n\nendstream\nendobj\n"]; let body = "%PDF-1.4\n"; const offsets = [0]; for (const object of objects) { offsets.push(Buffer.byteLength(body)); body += object; } const xref = Buffer.byteLength(body); body += `xref\n0 5\n0000000000 65535 f \n${offsets.slice(1).map((value, index) => `${String(value).padStart(10, "0")} ${String(index === 0 ? generation : 0).padStart(5, "0")} n \n`).join("")}trailer\n<</Size 5 /Root 1 ${generation} R>>\nstartxref\n${xref}\n%%EOF\n`; return Buffer.from(body); }
 function classicPdfWithInUseObjectZero() { const objects = ["0 0 obj\nnull\nendobj\n", "1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n", "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", "3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R>>\nendobj\n", "4 0 obj\n<</Length 0>>\nstream\n\nendstream\nendobj\n"]; let body = "%PDF-1.4\n"; const offsets = []; for (const object of objects) { offsets.push(Buffer.byteLength(body)); body += object; } const xref = Buffer.byteLength(body); body += `xref\n0 5\n${offsets.map((value) => `${String(value).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<</Size 5 /Root 1 0 R>>\nstartxref\n${xref}\n%%EOF\n`; return Buffer.from(body); }
@@ -229,6 +230,8 @@ test("PDF inspection requires the final cross-reference EOF boundary to be termi
     classicPdfWithFreeChain(),
     incrementallyReplaceHistoricalFreeEntry(),
     classicPdfWithStreamLength("5 0 R"),
+    classicPdfWithStreamLength("5 0 R", "4", "q\nQ\n", "", "/Custom null"),
+    compactTrailerPdf("/Info null"),
     xrefStreamPdfWithCompressedObject({ indirectLength: true }),
     xrefStreamPdfWithCompressedObject({ indirectLength: true, flate: true }),
     xrefStreamPdfWithIndirectLength(),
@@ -323,6 +326,12 @@ test("PDF inspection requires the final cross-reference EOF boundary to be termi
   assert.equal(await validatePdfIngress(xrefStreamPdfWithIndirectLength({ encrypt: true })), false);
   assert.equal(await validatePdfIngress(classicPdfWithStreamLength("5 0 R", "4", "q\nQ\n", "/Encrypt <</Filter /Standard>>")), false);
   assert.equal(await validatePdfIngress(classicPdfWithStreamLength("5 0 R", "<</Filter /Standard>>", "q\nQ\n", "/Encrypt 5 0 R")), false);
+  assert.equal(await validatePdfIngress(compactTrailerPdf("/Encrypt null")), false);
+  assert.equal(await validatePdfIngress(compactTrailerPdf("/Encrypt 4 0 R")), false);
+  assert.equal(await validatePdfIngress(compactTrailerPdf("/Encrypt 9 0 R")), false);
+  for (const delimiter of ["/Meta <00>/Encrypt null", "/Meta <</Ignored true>>/Encrypt null", "/Meta [null]/Encrypt null", "/Meta (ignored)/Encrypt null"]) assert.equal(await validatePdfIngress(compactTrailerPdf(delimiter)), false, delimiter);
+  assert.equal(await validatePdfIngress(compactTrailerPdf("% adjacent comment\n")), true);
+  assert.equal(await validatePdfIngress(compactTrailerPdf("% adjacent comment\n/Encrypt null")), false);
   const objectTwoOffset = /2 0 obj/.exec(classic).index;
   assert.equal(await validatePdfIngress(Buffer.from(classic.replace("trailer\n", `2 1\n${String(objectTwoOffset).padStart(10, "0")} 00000 n \ntrailer\n`), "latin1")), false);
 
@@ -1671,6 +1680,8 @@ test("content-policy-v1 structurally validates its allowlist and rejects executa
       ["valid-freed-compressed-member-pdf", "note.pdf", "application/pdf", incrementallySupersededCompressedObject(true), "clean"],
       ["valid-reused-historical-free-entry-pdf", "note.pdf", "application/pdf", incrementallyReplaceHistoricalFreeEntry(), "clean"],
       ["valid-indirect-stream-length-pdf", "note.pdf", "application/pdf", classicPdfWithStreamLength("5 0 R"), "clean"],
+      ["valid-adjacent-indirect-stream-length-pdf", "note.pdf", "application/pdf", classicPdfWithStreamLength("5 0 R", "4", "q\nQ\n", "", "/Custom null"), "clean"],
+      ["valid-adjacent-non-encrypt-trailer-key-pdf", "note.pdf", "application/pdf", compactTrailerPdf("/Info null"), "clean"],
       ["valid-indirect-object-stream-length-pdf", "note.pdf", "application/pdf", xrefStreamPdfWithCompressedObject({ indirectLength: true }), "clean"],
       ["valid-indirect-flate-object-stream-length-pdf", "note.pdf", "application/pdf", xrefStreamPdfWithCompressedObject({ indirectLength: true, flate: true }), "clean"],
       ["valid-indirect-xref-stream-length-pdf", "note.pdf", "application/pdf", xrefStreamPdfWithIndirectLength(), "clean"],
@@ -1686,6 +1697,9 @@ test("content-policy-v1 structurally validates its allowlist and rejects executa
       ["wrong-type-indirect-xref-stream-length-pdf", "note.pdf", "application/pdf", xrefStreamPdfWithIndirectLength({ wrongType: true }), "rejected"],
       ["direct-encrypt-trailer-pdf", "note.pdf", "application/pdf", classicPdfWithStreamLength("5 0 R", "4", "q\nQ\n", "/Encrypt <</Filter /Standard>>"), "rejected"],
       ["indirect-encrypt-trailer-pdf", "note.pdf", "application/pdf", classicPdfWithStreamLength("5 0 R", "<</Filter /Standard>>", "q\nQ\n", "/Encrypt 5 0 R"), "rejected"],
+      ["compact-null-encrypt-trailer-pdf", "note.pdf", "application/pdf", compactTrailerPdf("/Encrypt null"), "rejected"],
+      ["compact-indirect-encrypt-trailer-pdf", "note.pdf", "application/pdf", compactTrailerPdf("/Encrypt 4 0 R"), "rejected"],
+      ["compact-missing-encrypt-trailer-pdf", "note.pdf", "application/pdf", compactTrailerPdf("/Encrypt 9 0 R"), "rejected"],
       ["repaired-invalid-historical-compressed-container-pdf", "note.pdf", "application/pdf", incrementallyRepairInvalidCompressedContainer(), "rejected"],
       ["repaired-invalid-historical-free-head-pdf", "note.pdf", "application/pdf", incrementallyRepairInvalidFreeHead(), "rejected"],
       ["compressed-object-catalog-container-pdf", "note.pdf", "application/pdf", xrefStreamPdfWithCompressedObject({ container: 1 }), "rejected"],
