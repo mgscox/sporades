@@ -1264,9 +1264,10 @@ test("File reference docs define the trusted multipart ingress contract and oper
   assert.doesNotMatch(contents, /sweepExpiredFileIngress/);
   assert.match(contents, /Local filesystem and\s+MinIO-backed/i);
   assert.match(contents, /completed receipts remain replayable/i);
-  assert.match(contents, /terminal classic cross-reference table or cross-reference stream/i);
+  assert.match(contents, /initial revision body and terminal classic cross-reference table or\s+cross-reference stream/i);
+  assert.match(contents, /ordinary streams cannot trigger parser fallback and pose as\s+the terminal revision/i);
   assert.match(contents, /follows at most\s+256 strictly backward `\/Prev` links/i);
-  assert.match(contents, /last linked `%%EOF`\s+must be terminal except for PDF whitespace and printable comment lines/i);
+  assert.match(contents, /last\s+linked `%%EOF`\s+must be terminal except for PDF whitespace and printable comment lines/i);
   assert.match(contents, /every candidate\s+evaluated by the shell classifier is parsed before either narrow plain-data\s+allowance/i);
   assert.match(contents, /pinned GNU Bash 5\.2 builtin and reserved-word vocabulary/i);
   assert.match(contents, /bounded current `PATH` search \(at most 128 entries/i);
