@@ -2522,7 +2522,7 @@ async function startDevSession(options: LooseRecord) {
             event: "dev.capsule.reloaded",
             level: "info",
             message: "Dev capsule reloaded after a server change",
-            data: capsuleReloadSurface(runtime.database),
+            data: capsuleReloadSurface(runtime.database, nextConfig),
           });
         } catch {
           // The reload stands; only its record is missing.
@@ -2759,15 +2759,44 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
 // What a developer actually asks after saving a server change: did my new table, mutation, or job
 // land? Names rather than counts, because a count only answers that question for someone who
 // memorised the previous one.
-function capsuleReloadSurface(database: LooseRecord) {
+function capsuleReloadSurface(database: LooseRecord, config: LooseRecord = {}) {
   const names = (values: any[], key = "name") =>
     values.map((value: LooseRecord) => String(value?.[key] ?? "")).sort();
 
-  return {
+  const surface: LooseRecord = {
     tables: names(database.schema?.tables ?? []),
     mutations: names(database.mutations ?? []),
     jobs: names(database.jobs ?? []),
+    omitted: { tables: 0, mutations: 0, jobs: 0 },
   };
+
+  // The surface has to bound itself, because the alternative is worse than a short list. A
+  // Capsule with enough declarations overruns the logger's payload cap, and `capLogEnvelope`
+  // sheds whole `data` keys in reverse order by replacing each with the string "[TRUNCATED]" —
+  // so `jobs`, then `mutations`, then `tables` stop being arrays at all, and the `sporades logs`
+  // check this event exists for stops being readable. Dropping names keeps the shape; letting
+  // the envelope cap us loses it.
+  //
+  // `omitted` is always present rather than added on truncation, so a reader distinguishes "all
+  // of them" from "as many as fit" structurally, without pattern-matching on a sentinel string.
+  const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
+  const payloadMaxBytes = Number.isInteger(configured) && configured > 0 ? configured : 4096;
+  // Headroom for the envelope fields wrapped around `data` — message, category, capsule identity,
+  // correlation, timestamps. The cap applies to the serialized envelope, not to `data` alone.
+  const budget = Math.max(256, payloadMaxBytes - 1024);
+  const over = () => Buffer.byteLength(JSON.stringify(surface), "utf8") > budget;
+  const kinds = ["tables", "mutations", "jobs"];
+  while (over()) {
+    // Shed from whichever list is currently costing the most, so no one kind is emptied while
+    // another stays whole, and always from the tail of the sorted list so the result is stable.
+    const widest = kinds
+      .filter((kind) => surface[kind].length > 0)
+      .sort((a, b) => Buffer.byteLength(JSON.stringify(surface[b]), "utf8") - Buffer.byteLength(JSON.stringify(surface[a]), "utf8"))[0];
+    if (!widest) break;
+    surface[widest].pop();
+    surface.omitted[widest] += 1;
+  }
+  return surface;
 }
 
 function createDevInspectionToken() {
