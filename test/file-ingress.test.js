@@ -281,6 +281,29 @@ test("PDF inspection deadline covers every costly structural preflight stage", a
   }
 });
 
+test("PDF numeric indirect-reference lookahead remains incrementally deadline-bounded", async () => {
+  const padding = " ".repeat(8 * 1024 * 1024);
+  const base = minimalPdf().toString("latin1");
+  const numeric = Buffer.from(base.replace("<</Size", `<</Foo 1${padding}/Size`), "latin1");
+  let ticks = 0n; let referenceChecks = 0; let imports = 0;
+  assert.equal(await validatePdfIngress(numeric, {
+    timeoutMs: 1,
+    monotonicNow: () => ticks,
+    pdfPreflightCheckpoint(stage) { if (stage === "object-reference") { referenceChecks += 1; ticks = 1_000_000n; } },
+    beforePdfJsImport() { imports += 1; },
+  }), false);
+  assert.ok(referenceChecks > 0, "numeric lookahead omitted its deadline boundary");
+  assert.equal(imports, 0, "numeric lookahead reached PDF.js after structural expiry");
+
+  const control = Buffer.from(base.replace("<</Size", `<</Foo null${padding}/Size`), "latin1");
+  ticks = 0n; let checkpoints = 0; imports = 0;
+  assert.equal(await validatePdfIngress(control, { timeoutMs: 1, monotonicNow: () => ticks, pdfPreflightCheckpoint() { checkpoints += 1; ticks += 100n; }, beforePdfJsImport() { imports += 1; } }), false);
+  assert.equal(imports, 0, "non-numeric control reached PDF.js after structural expiry");
+  assert.ok(checkpoints >= 10_000, `non-numeric control crossed a multi-megabyte scan with only ${checkpoints} deadline checks`);
+
+  assert.equal(await validatePdfIngress(xrefStreamPdfWithIndirectLength(), { timeoutMs: 2_000, monotonicNow: () => 0n }), true, "valid indirect stream length near-bound control");
+});
+
 test("PDF inspection fails closed and retries after a transient lazy module failure", async () => {
   const token = randomUUID();
   const runtimePath = path.join(process.cwd(), "dist", `.file-ingress-runtime-${token}.mjs`);

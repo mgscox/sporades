@@ -398,15 +398,50 @@ function pdfObjectEnd(bytes, offset, limit, deadlineExpired) {
         }
         return stack.length === 0 ? offset : -1;
     }
-    const token = /^[^\x00\x09\x0a\x0c\x0d\x20\[\]()<>\/%]+/.exec(bytes.subarray(offset, limit).toString("latin1"));
-    if (!token)
+    let end = offset;
+    let tokenSteps = 0;
+    let numeric = true;
+    let digit = false;
+    let dot = false;
+    if (bytes[end] === 0x2b || bytes[end] === 0x2d)
+        end += 1;
+    while (end < limit && !pdfDelimiter(bytes[end])) {
+        if ((tokenSteps++ & 255) === 0 && deadlineExpired?.("object-token"))
+            return -1;
+        const byte = bytes[end];
+        if (byte >= 0x30 && byte <= 0x39)
+            digit = true;
+        else if (byte === 0x2e && !dot)
+            dot = true;
+        else
+            numeric = false;
+        end += 1;
+    }
+    if (end === offset)
         return -1;
-    let end = offset + token[0].length;
-    if (/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(token[0])) {
-        const after = skipPdfTrivia(bytes, end, limit);
-        const reference = after < 0 ? null : /^\d{1,10}[\x00\x09\x0a\x0c\x0d\x20]+R(?=[\x00\x09\x0a\x0c\x0d\x20\[\]()<>\/%]|$)/.exec(bytes.subarray(after, Math.min(limit, after + 80)).toString("latin1"));
-        if (reference)
-            end = after + reference[0].length;
+    if (numeric && digit) {
+        if (deadlineExpired?.("object-reference"))
+            return -1;
+        const after = skipPdfTrivia(bytes, end, limit, false, deadlineExpired);
+        if (after < 0)
+            return -1;
+        let referenceAt = after;
+        let generationDigits = 0;
+        while (referenceAt < limit && bytes[referenceAt] >= 0x30 && bytes[referenceAt] <= 0x39 && generationDigits <= 10) {
+            generationDigits += 1;
+            referenceAt += 1;
+        }
+        if (generationDigits >= 1 && generationDigits <= 10) {
+            const whitespaceAt = referenceAt;
+            let whitespaceSteps = 0;
+            while (referenceAt < limit && pdfWhitespace(bytes[referenceAt])) {
+                if ((whitespaceSteps++ & 255) === 0 && deadlineExpired?.("object-reference"))
+                    return -1;
+                referenceAt += 1;
+            }
+            if (referenceAt > whitespaceAt && bytes[referenceAt] === 0x52 && (referenceAt + 1 === limit || pdfDelimiter(bytes[referenceAt + 1])))
+                end = referenceAt + 1;
+        }
     }
     return end;
 }
@@ -432,6 +467,8 @@ function pdfDictionaryHasTopLevelKey(bytes, offset, key, deadlineExpired) {
                 return false;
             cursor += 1;
         }
+        if (cursor - start > 256)
+            return false;
         const name = bytes.subarray(start, cursor).toString("ascii").replace(/#([0-9a-f]{2})/gi, (_match, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
         if (name === key)
             return true;
@@ -522,6 +559,8 @@ function pdfDictionary(bytes, offset, integerKeys, nameKeys = new Set(), integer
                     return null;
                 index += 1;
             }
+            if (index - nameStart > 256)
+                return null;
             const name = bytes.subarray(nameStart, index).toString("ascii").replace(/#([0-9a-f]{2})/gi, (_match, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
             if (depth === 1 && (integerKeys.has(name) || referenceKeys.has(name))) {
                 let valueAt = skipPdfTrivia(bytes, index, bytes.length, false, deadlineExpired);
@@ -559,6 +598,8 @@ function pdfDictionary(bytes, offset, integerKeys, nameKeys = new Set(), integer
                         return null;
                     valueAt += 1;
                 }
+                if (valueAt - valueStart > 256)
+                    return null;
                 const value = bytes.subarray(valueStart, valueAt).toString("ascii").replace(/#([0-9a-f]{2})/gi, (_match, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
                 if (!value)
                     return null;
@@ -612,6 +653,8 @@ function pdfDictionary(bytes, offset, integerKeys, nameKeys = new Set(), integer
                             return null;
                         valueAt += 1;
                     }
+                    if (valueAt - valueStart > 256)
+                        return null;
                     const value = bytes.subarray(valueStart, valueAt).toString("ascii").replace(/#([0-9a-f]{2})/gi, (_match, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
                     if (!value)
                         return null;
@@ -666,20 +709,56 @@ function pdfStreamLength(bytes, dictionary, entries, deadlineExpired) {
 function locatePdfIndirectInteger(bytes, reference, limit, deadlineExpired) {
     if (deadlineExpired?.("object"))
         return null;
-    const source = bytes.subarray(0, limit).toString("latin1");
-    const pattern = new RegExp(`(?:^|[\\x00\\x09\\x0a\\x0c\\x0d\\x20])(${reference.objectNumber})[\\x00\\x09\\x0a\\x0c\\x0d\\x20]+${reference.generation}[\\x00\\x09\\x0a\\x0c\\x0d\\x20]+obj[\\x00\\x09\\x0a\\x0c\\x0d\\x20]+(\\d{1,20})[\\x00\\x09\\x0a\\x0c\\x0d\\x20]+endobj(?=[\\x00\\x09\\x0a\\x0c\\x0d\\x20]|$)`, "g");
-    if (deadlineExpired?.("object"))
-        return null;
+    const objectNumber = String(reference.objectNumber);
+    const generation = String(reference.generation);
     let found = null;
-    let match;
-    while ((match = pattern.exec(source))) {
-        if (deadlineExpired?.("object"))
+    const matches = (at, text) => at + text.length <= limit && bytes.subarray(at, at + text.length).toString("ascii") === text;
+    const skipWhitespace = (at) => { let steps = 0; while (at < limit && pdfWhitespace(bytes[at])) {
+        if ((steps++ & 255) === 0 && deadlineExpired?.("object"))
+            return -1;
+        at += 1;
+    } return at; };
+    for (let cursor = 0; cursor < limit; cursor += 1) {
+        if ((cursor & 255) === 0 && deadlineExpired?.("object"))
             return null;
-        const value = Number(match[2]);
-        const offset = match.index + match[0].indexOf(match[1]);
+        if ((cursor > 0 && !pdfWhitespace(bytes[cursor - 1])) || !matches(cursor, objectNumber))
+            continue;
+        let at = cursor + objectNumber.length;
+        if (at >= limit || !pdfWhitespace(bytes[at]))
+            continue;
+        at = skipWhitespace(at);
+        if (at < 0)
+            return null;
+        if (!matches(at, generation))
+            continue;
+        at += generation.length;
+        if (at >= limit || !pdfWhitespace(bytes[at]))
+            continue;
+        at = skipWhitespace(at);
+        if (at < 0)
+            return null;
+        if (!matches(at, "obj"))
+            continue;
+        at += 3;
+        if (at >= limit || !pdfWhitespace(bytes[at]))
+            continue;
+        at = skipWhitespace(at);
+        if (at < 0)
+            return null;
+        const valueStart = at;
+        while (at < limit && bytes[at] >= 0x30 && bytes[at] <= 0x39 && at - valueStart <= 20)
+            at += 1;
+        if (at === valueStart || at - valueStart > 20 || at >= limit || !pdfWhitespace(bytes[at]))
+            continue;
+        const value = Number(bytes.subarray(valueStart, at).toString("ascii"));
+        at = skipWhitespace(at);
+        if (at < 0)
+            return null;
+        if (!matches(at, "endobj") || (at + 6 < limit && !pdfDelimiter(bytes[at + 6])))
+            continue;
         if (!Number.isSafeInteger(value) || value > 24_000_000 || found)
             return null;
-        found = { offset, value };
+        found = { offset: cursor, value };
     }
     return found;
 }
@@ -1165,6 +1244,38 @@ function validPdfEffectiveXref(bytes, size, entries, deadlineExpired) {
         }
     return true;
 }
+function hasPdfFooterBefore(bytes, limit, deadlineExpired) {
+    const startxref = Buffer.from("startxref");
+    const eof = Buffer.from("%%EOF");
+    const skipWhitespace = (at) => { let steps = 0; while (at < limit && pdfWhitespace(bytes[at])) {
+        if ((steps++ & 255) === 0 && deadlineExpired("revision"))
+            return -1;
+        at += 1;
+    } return at; };
+    for (let cursor = 0; cursor + startxref.length < limit; cursor += 1) {
+        if ((cursor & 255) === 0 && deadlineExpired("revision"))
+            return true;
+        if (!bytes.subarray(cursor, cursor + startxref.length).equals(startxref))
+            continue;
+        let at = cursor + startxref.length;
+        if (!pdfWhitespace(bytes[at]))
+            continue;
+        at = skipWhitespace(at);
+        if (at < 0)
+            return true;
+        const pointerStart = at;
+        while (at < limit && bytes[at] >= 0x30 && bytes[at] <= 0x39 && at - pointerStart <= 20)
+            at += 1;
+        if (at === pointerStart || at - pointerStart > 20 || at >= limit || !pdfWhitespace(bytes[at]))
+            continue;
+        at = skipWhitespace(at);
+        if (at < 0)
+            return true;
+        if (at + eof.length <= limit && bytes.subarray(at, at + eof.length).equals(eof))
+            return true;
+    }
+    return false;
+}
 function validPdfTerminalBoundary(bytes, deadlineExpired) {
     // Each accepted EOF is tied to the xref section which immediately precedes
     // its startxref footer. Following /Prev proves that the terminal section is
@@ -1209,9 +1320,7 @@ function validPdfTerminalBoundary(bytes, deadlineExpired) {
             return false;
         chain.push({ offset, end: footer.end, prev: section.prev, size: section.size, maxObject: section.maxObject, entries: section.entries, objectOffsets: section.objectOffsets, indirectLengths: section.indirectLengths });
         if (section.prev === undefined) {
-            if (deadlineExpired("revision"))
-                return false;
-            const earlierFooter = /startxref[\x00\x09\x0a\x0c\x0d\x20]+\d{1,20}[\x00\x09\x0a\x0c\x0d\x20]+%%EOF/.test(bytes.subarray(0, offset).toString("latin1"));
+            const earlierFooter = hasPdfFooterBefore(bytes, offset, deadlineExpired);
             if (deadlineExpired("revision"))
                 return false;
             if (earlierFooter)
