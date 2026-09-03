@@ -1,6 +1,6 @@
 # Log a Dev session Capsule reload
 
-Status: ready
+Status: complete
 
 ## Parent
 

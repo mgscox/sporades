@@ -1,18 +1,25 @@
 # Reject an unusable log payload cap
 
-Status: ready
+Status: ready-for-agent
 
 ## Parent
 
-None - standalone config-contract fix.
+.scratch/log-payload-cap-floor/PRD.md
 
 ## What to build
 
 `logs.payloadMaxBytes` (and its `logging.payloadMaxBytes` alias) accepts any
-positive integer, including values too small for any log event to carry its
-payload. Below roughly 400 bytes every event silently loses its structured
-`data`, because the envelope wrapped around `data` costs about 300 bytes before
-`data` contributes anything.
+positive integer, including values too small for the events a Capsule actually
+writes to carry their payloads.
+
+There is no single threshold here, and the first draft of this ticket wrongly
+asserted one. Envelope overhead varies with the Capsule name and id and with the
+event's `event`, `message`, `request`, `release`, and `correlation` values: a
+minimal envelope with a one-character Capsule name and `{"x": 1}` data
+serializes to about 245 bytes and survives a 256-byte cap, while the runtime's
+own Dev events do not. The defect is not "caps below N are unusable" but that a
+cap is accepted without any stated guarantee about what it must still be able to
+carry.
 
 Reproduced with `logs.payloadMaxBytes: 256` on a Dev session, one server change.
 Both entries the session produced:
@@ -38,11 +45,13 @@ configured one trades this surprise for another.
 
 ## Acceptance criteria
 
-- [ ] A `logs.payloadMaxBytes` below the minimum a complete envelope needs is rejected at config validation with a structured error and an actionable hint, in the same shape as other invalid configuration keys.
-- [ ] The minimum is derived from the actual envelope overhead rather than a guessed constant, and stays correct if envelope fields change.
+- [ ] The guarantee a cap must preserve is written down first, as an explicit bounded envelope shape — which fields are counted, at what maximum sizes, and how much `data` must survive — not as a single representative event.
+- [ ] The minimum is computed from that stated shape against the real envelope, so it stays correct if envelope fields change, rather than being a constant in the source.
+- [ ] A cap that cannot honour the guarantee is rejected at config validation with a structured error and an actionable hint, in the same shape as other invalid configuration keys.
+- [ ] A cap that can honour it is accepted unchanged; caps usable today for minimal envelopes are not rejected on the strength of the runtime's own larger events.
 - [ ] The `logging.payloadMaxBytes` alias is validated identically.
-- [ ] A cap at exactly the minimum still yields structured `data` for a representative event.
-- [ ] Tests cover a rejected cap, a cap at the minimum, and an ordinary cap.
+- [ ] A cap at exactly the minimum still yields structured `data` for an envelope of the stated shape.
+- [ ] Tests cover a rejected cap, a cap at exactly the minimum, an ordinary cap, and a minimal envelope that a small cap can still legitimately carry.
 - [ ] The configuration guide documents the minimum and what it protects.
 
 ## Blocked by
