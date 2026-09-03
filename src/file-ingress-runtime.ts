@@ -393,9 +393,6 @@ function validPdfEffectiveXref(bytes: Buffer, size: number, entries: Map<number,
     if (!objectNumbers) { objectNumbers = pdfObjectStreamNumbers(bytes, container) ?? undefined; if (!objectNumbers) return false; objectStreams.set(entry.objectStream, objectNumbers); }
     if (entry.index >= objectNumbers.length || objectNumbers[entry.index] !== objectNumber) return false;
   }
-  for (const [containerNumber, objectNumbers] of objectStreams) for (let index = 0; index < objectNumbers.length; index += 1) {
-    const entry = entries.get(objectNumbers[index]); if (!entry || entry.type !== 2 || entry.objectStream !== containerNumber || entry.index !== index) return false;
-  }
   return true;
 }
 function validPdfTerminalBoundary(bytes: Buffer) {
