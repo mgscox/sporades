@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { copyFile, rename, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -12,10 +13,13 @@ if (process.env.SPORADES_EXPECT_RUNTIME_UID) assert.equal(String(process.getuid?
 const policy = { maxFiles: 1, maxFileBytes: 10 * 1024 * 1024, maxTotalFileBytes: 10 * 1024 * 1024, maxFieldCount: 1, maxFieldBytes: 1024, maxTotalFieldBytes: 1024, allowedPathPrefixes: ["/attachments"], requestKeyHeader: "idempotency-key", partKeyHeader: "content-id", requireStablePartKeys: true, inspection: { policyRevision: "docker-v1", requiredInspectors: ["clamav"] } };
 const definition = capsule({ name: "clamav-runtime-smoke", endpoints: { upload: endpoint({ method: "POST", path: "/upload", body: { multipart: policy } }, () => ({ ok: true })) } });
 const database = await openDevDatabase("/app/data/runtime-smoke.db", "", {}, { name: definition.name, files: { storagePath: "/app/data/files" } }, definition);
+const runtimeProbeToken = randomBytes(32).toString("hex");
+assert.match(runtimeProbeToken, /^[a-f0-9]{64}$/);
+database.runtimeProbeToken = runtimeProbeToken;
 let server;
 try {
   await database.init();
-  const health = async () => { const response = await fetch(`http://127.0.0.1:${server.address().port}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": "acceptance" } }); return { status: response.status, body: await response.json() }; };
+  const health = async () => { const response = await fetch(`http://127.0.0.1:${server.address().port}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": runtimeProbeToken } }); return { status: response.status, body: await response.json() }; };
   server = createServer((request, response) => routeRuntimeHealth(database, request, response)); await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   assert.equal((await health()).status, 200);
   const multipart = (boundary, bytes) => Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="evidence.txt"\r\nContent-Type: text/plain\r\nContent-ID: stable\r\n\r\n`), bytes, Buffer.from(`\r\n--${boundary}--`)]);
