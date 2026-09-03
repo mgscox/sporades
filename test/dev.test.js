@@ -6839,6 +6839,105 @@ test("sporades dev restarts server runtime and accepts new WebSocket connections
   });
 });
 
+test("sporades dev logs a capsule reload that a server change triggered", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "todo-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+
+      const serverPath = path.join(projectDir, "server", "index.ts");
+      const originalServer = await readFile(serverPath, "utf8");
+      await writeFile(
+        serverPath,
+        originalServer.replace(
+          "todos: table({",
+          `notes: table({
+      text: String(),
+    }),
+    todos: table({`,
+        ),
+      );
+
+      const rebuilt = await waitForJsonEvent(
+        child,
+        (event) => event.ok && event.data.event === "rebuild" && event.data.status === "success",
+      );
+      assert.equal(rebuilt.error, null);
+
+      const logsResult = await runCli(["logs", "--json"], { cwd: projectDir });
+      assert.equal(logsResult.code, 0, logsResult.stderr);
+      const reloaded = JSON.parse(logsResult.stdout).data.entries.find(
+        (entry) => entry.event === "dev.capsule.reloaded",
+      );
+
+      assert.ok(reloaded, "expected a dev.capsule.reloaded log entry after a server change");
+      assert.equal(reloaded.category, "platform");
+      assert.equal(reloaded.level, "info");
+      assert.equal(reloaded.capsule.name, "todo-island");
+      assert.ok(reloaded.data.tables.includes("notes"), JSON.stringify(reloaded.data.tables));
+      assert.ok(reloaded.data.tables.includes("todos"), JSON.stringify(reloaded.data.tables));
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev does not log a capsule reload for a client-only change", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "todo-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+
+      const clientPath = path.join(projectDir, "client", "index.tsx");
+      const originalClient = await readFile(clientPath, "utf8");
+      await writeFile(clientPath, `${originalClient}\nconsole.log("client-only edit");\n`);
+
+      const rebuilt = await waitForJsonEvent(
+        child,
+        (event) => event.ok && event.data.event === "rebuild" && event.data.status === "success",
+      );
+      assert.equal(rebuilt.error, null);
+      assert.equal(rebuilt.data.build.phase, "client");
+
+      const logsResult = await runCli(["logs", "--json"], { cwd: projectDir });
+      assert.equal(logsResult.code, 0, logsResult.stderr);
+      const entries = JSON.parse(logsResult.stdout).data.entries;
+
+      assert.equal(entries.some((entry) => entry.event === "dev.capsule.reloaded"), false);
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("sporades dev applies an additive table migration without losing existing Capsule data", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
