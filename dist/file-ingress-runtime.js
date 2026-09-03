@@ -2,7 +2,6 @@
 // visibility: only claim() creates an ordinary File in the handler transaction.
 /// <reference path="./vendor-decoders.d.ts" />
 import { ensureFileBucket, fileMetadataFromRow, normalizeAbsoluteFilePath } from "./file-storage-runtime.js";
-import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRef, PDFStream } from "pdf-lib";
 import { parse, tokenizer } from "acorn";
 import { parser as pythonParser } from "@lezer/python";
@@ -1119,8 +1118,9 @@ export async function validatePdfIngress(bytes, options = {}) {
     let timer;
     const timeoutMs = Number.isInteger(options.timeoutMs) ? Math.max(1, Math.min(2_000, options.timeoutMs)) : 2_000;
     try {
-        task = getDocument({ data: new Uint8Array(bytes), useWorkerFetch: false, disableFontFace: true });
         const workflow = (async () => {
+            const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+            task = getDocument({ data: new Uint8Array(bytes), useWorkerFetch: false, disableFontFace: true });
             const [document, parsed] = await Promise.all([task.promise, PDFDocument.load(bytes, { ignoreEncryption: false, throwOnInvalidObject: true, updateMetadata: false })]);
             if (document.numPages < 1 || document.numPages > 100)
                 return false;
