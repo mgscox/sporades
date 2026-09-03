@@ -86402,19 +86402,33 @@ async function terminateChild(child, timeoutMs = 5e3, database = {}) {
 function clamavTerminateTimeout(database) {
   return database.__clamavTest?.terminateTimeoutMs ?? 5e3;
 }
+function unobserveClamavChild(database, child) {
+  const observers = child?.__sporadesClamavObservers;
+  const observer = observers?.get(database);
+  if (!observer) return;
+  child.removeListener?.("exit", observer.terminated);
+  child.removeListener?.("close", observer.terminated);
+  child.removeListener?.("error", observer.failed);
+  observers?.delete(database);
+  if (observers?.size === 0) delete child.__sporadesClamavObservers;
+}
 function observeClamavChild(database, child) {
-  if (!child || child.__sporadesClamavObserved) return;
-  child.__sporadesClamavObserved = true;
+  if (!child) return;
+  const observers = child.__sporadesClamavObservers ?? /* @__PURE__ */ new Map();
+  child.__sporadesClamavObservers = observers;
+  if (observers.has(database)) return;
   const terminated = () => {
     child.__sporadesClamavTerminated = true;
     database.clamavReady = false;
+    unobserveClamavChild(database, child);
   };
   const failed = () => {
     database.clamavReady = false;
   };
+  observers.set(database, { terminated, failed });
   child.once?.("exit", terminated);
   child.once?.("close", terminated);
-  child.once?.("error", failed);
+  (child.on ?? child.once)?.call(child, "error", failed);
 }
 function clamavChildTerminated(child) {
   return Boolean(child) && (child.exitCode !== null || child.signalCode != null || child.__sporadesClamavTerminated === true);
@@ -86457,6 +86471,7 @@ async function stopOwnedClamavChildren(database) {
   results.forEach((result, index) => {
     const [key, child] = owned[index];
     if (result.status === "fulfilled") {
+      unobserveClamavChild(database, child);
       if (database[key] === child) database[key] = null;
     } else failures.push(result.reason);
   });
@@ -86510,6 +86525,7 @@ async function shutdownClamavRuntime(database) {
   database.clamavReady = false;
   if (!database.__clamavDevSidecar?.externallyManaged) await stopOwnedClamavChildren(database);
   else {
+    unobserveClamavChild(database, database.__clamavDevSidecar.process);
     database.__clamavProcess = null;
     database.__clamavUpdateProcess = null;
   }

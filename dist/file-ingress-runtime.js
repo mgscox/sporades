@@ -1757,15 +1757,31 @@ async function terminateChild(child, timeoutMs = 5_000, database = {}) {
     throw Object.assign(new Error("ClamAV child did not terminate after SIGKILL."), { code: "CLAMAV_CHILD_TERMINATION_FAILED" });
 }
 function clamavTerminateTimeout(database) { return database.__clamavTest?.terminateTimeoutMs ?? 5_000; }
-function observeClamavChild(database, child) {
-    if (!child || child.__sporadesClamavObserved)
+function unobserveClamavChild(database, child) {
+    const observers = child?.__sporadesClamavObservers;
+    const observer = observers?.get(database);
+    if (!observer)
         return;
-    child.__sporadesClamavObserved = true;
-    const terminated = () => { child.__sporadesClamavTerminated = true; database.clamavReady = false; };
+    child.removeListener?.("exit", observer.terminated);
+    child.removeListener?.("close", observer.terminated);
+    child.removeListener?.("error", observer.failed);
+    observers?.delete(database);
+    if (observers?.size === 0)
+        delete child.__sporadesClamavObservers;
+}
+function observeClamavChild(database, child) {
+    if (!child)
+        return;
+    const observers = child.__sporadesClamavObservers ?? new Map();
+    child.__sporadesClamavObservers = observers;
+    if (observers.has(database))
+        return;
+    const terminated = () => { child.__sporadesClamavTerminated = true; database.clamavReady = false; unobserveClamavChild(database, child); };
     const failed = () => { database.clamavReady = false; };
+    observers.set(database, { terminated, failed });
     child.once?.("exit", terminated);
     child.once?.("close", terminated);
-    child.once?.("error", failed);
+    (child.on ?? child.once)?.call(child, "error", failed);
 }
 function clamavChildTerminated(child) { return Boolean(child) && (child.exitCode !== null || child.signalCode != null || child.__sporadesClamavTerminated === true); }
 async function currentLoadedClamavSignature(database, deadline = Number.POSITIVE_INFINITY) {
@@ -1814,6 +1830,7 @@ async function stopOwnedClamavChildren(database) {
     const results = await Promise.allSettled(owned.map(([, child]) => terminateChild(child, clamavTerminateTimeout(database), database)));
     const failures = [];
     results.forEach((result, index) => { const [key, child] = owned[index]; if (result.status === "fulfilled") {
+        unobserveClamavChild(database, child);
         if (database[key] === child)
             database[key] = null;
     }
@@ -1876,6 +1893,7 @@ export async function initializeClamavRuntime(database) {
 export async function shutdownClamavRuntime(database) { database.clamavReady = false; if (!database.__clamavDevSidecar?.externallyManaged)
     await stopOwnedClamavChildren(database);
 else {
+    unobserveClamavChild(database, database.__clamavDevSidecar.process);
     database.__clamavProcess = null;
     database.__clamavUpdateProcess = null;
 } }

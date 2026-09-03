@@ -1600,6 +1600,30 @@ test("signal-terminated ClamAV children permanently degrade health before scanne
   } finally { await new Promise((resolve) => server.close(resolve)); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("ClamAV supervision handles every nonterminal child error until exit or owner teardown", async () => {
+  const child = new EventEmitter(); Object.assign(child, { exitCode: null, signalCode: null, signals: [] }); child.kill = function (signal) { this.signals.push(signal); this.exitCode = 0; this.emit("close", 0, signal); };
+  const testState = { loadedSignature: "daily:1", signature: { version: "daily:1", updatedAt: new Date().toISOString() }, socketCommand: async () => "PONG" };
+  const database = { clamavRequired: true, clamavReady: false, __clamavProcess: child, __clamavTest: testState };
+  assert.deepEqual(await checkClamavRuntime(database), { ok: true }); assert.equal(child.listenerCount("error"), 1);
+  child.emit("error", new Error("transient one")); assert.equal(database.clamavReady, false);
+  assert.deepEqual(await checkClamavRuntime(database), { ok: true }); assert.equal(child.listenerCount("error"), 1);
+  assert.doesNotThrow(() => child.emit("error", new Error("transient two"))); assert.equal(database.clamavReady, false); assert.equal(child.listenerCount("error"), 1);
+  await shutdownClamavRuntime(database); assert.equal(database.__clamavProcess, null);
+  assert.equal(child.listenerCount("exit"), 0); assert.equal(child.listenerCount("close"), 0); assert.equal(child.listenerCount("error"), 0);
+
+  const terminal = new EventEmitter(); Object.assign(terminal, { exitCode: null, signalCode: null }); terminal.kill = () => {};
+  const terminalDatabase = { clamavRequired: true, clamavReady: false, __clamavProcess: terminal, __clamavTest: testState };
+  assert.deepEqual(await checkClamavRuntime(terminalDatabase), { ok: true }); terminal.emit("exit", 1); assert.equal(terminalDatabase.clamavReady, false);
+  assert.equal(terminal.listenerCount("exit"), 0); assert.equal(terminal.listenerCount("close"), 0); assert.equal(terminal.listenerCount("error"), 0);
+
+  const sidecar = new EventEmitter(); Object.assign(sidecar, { exitCode: null, signalCode: null }); sidecar.kill = () => {};
+  const oldRuntime = { clamavRequired: true, clamavReady: false, __clamavDevSidecar: { process: sidecar, externallyManaged: true }, __clamavTest: testState };
+  assert.deepEqual(await checkClamavRuntime(oldRuntime), { ok: true }); await shutdownClamavRuntime(oldRuntime); assert.equal(sidecar.listenerCount("error"), 0);
+  const replacementRuntime = { ...oldRuntime, clamavReady: false };
+  assert.deepEqual(await checkClamavRuntime(replacementRuntime), { ok: true }); sidecar.emit("error", new Error("replacement runtime error")); assert.equal(replacementRuntime.clamavReady, false); assert.equal(sidecar.listenerCount("error"), 1);
+  await shutdownClamavRuntime(replacementRuntime); assert.equal(sidecar.listenerCount("error"), 0);
+});
+
 test("ClamAV shutdown skips already-dead children and deterministically escalates only live children", async () => {
   const child = ({ signalCode = null, latched = false, termExits = false } = {}) => {
     const listeners = new Map(); const signals = [];
