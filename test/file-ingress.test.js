@@ -246,6 +246,41 @@ test("PDF inspection fail-closes expired fresh and concurrent lazy loads before 
   }
 });
 
+test("PDF inspection deadline covers every costly structural preflight stage", async () => {
+  const cases = [
+    { name: "preflight entry", pdf: minimalPdf(), stage: "header", occurrence: 1 },
+    { name: "xref traversal", pdf: minimalPdf(), stage: "xref", occurrence: 2 },
+    { name: "dictionary parsing", pdf: minimalPdf(), stage: "dictionary", occurrence: 2 },
+    { name: "revision chain", pdf: incrementalPdf(), stage: "revision", occurrence: 2 },
+    { name: "revision object traversal", pdf: minimalPdf(), stage: "objects", occurrence: 2 },
+    { name: "xref Flate decompression", pdf: xrefStreamPdf(true), stage: "inflate-after", occurrence: 1 },
+    { name: "object-stream Flate decompression", pdf: xrefStreamPdfWithCompressedObject({ flate: true }), stage: "inflate-after", occurrence: 1 },
+  ];
+  for (const { name, pdf, stage, occurrence } of cases) {
+    let now = 0n; let stages = 0; let imports = 0; let operators = 0;
+    const result = await validatePdfIngress(pdf, {
+      timeoutMs: 10,
+      monotonicNow: () => now,
+      pdfPreflightCheckpoint(candidate) {
+        if (candidate === stage && ++stages === occurrence) now = 10_000_000n;
+      },
+      beforePdfJsImport() { imports += 1; },
+      beforeOperatorList() { operators += 1; },
+    });
+    assert.ok(stages >= occurrence, `${name} did not expose its bounded checkpoint`);
+    assert.equal(result, false, `${name} continued after its absolute deadline`);
+    assert.equal(imports, 0, `${name} imported PDF.js after preflight expiry`);
+    assert.equal(operators, 0, `${name} reached PDF.js operator inspection after preflight expiry`);
+  }
+
+  for (const [name, pdf] of [["classic", minimalPdf()], ["incremental", incrementalPdf()], ["xref stream", xrefStreamPdf(true)], ["object stream", xrefStreamPdfWithCompressedObject({ flate: true })]]) {
+    let imports = 0; let operators = 0;
+    assert.equal(await validatePdfIngress(pdf, { timeoutMs: 2_000, monotonicNow: () => 0n, beforePdfJsImport() { imports += 1; }, beforeOperatorList() { operators += 1; } }), true, `${name} near-bound control`);
+    assert.equal(imports, 1, `${name} did not reach PDF.js import`);
+    assert.ok(operators > 0, `${name} did not complete PDF.js inspection`);
+  }
+});
+
 test("PDF inspection fails closed and retries after a transient lazy module failure", async () => {
   const token = randomUUID();
   const runtimePath = path.join(process.cwd(), "dist", `.file-ingress-runtime-${token}.mjs`);
