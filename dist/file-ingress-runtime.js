@@ -495,7 +495,7 @@ function pdfXrefSection(bytes, offset, allowHybrid = true) {
                 const objectNumber = first + index;
                 const objectOffset = Number(entry[1]);
                 const generation = Number(entry[2]);
-                if (entries.has(objectNumber))
+                if (generation > 65_535 || entries.has(objectNumber) || (objectNumber === 0 && (entry[3] !== "f" || generation !== 65_535)))
                     return null;
                 if (entry[3] === "n") {
                     if (objectOffset >= offset)
@@ -514,7 +514,7 @@ function pdfXrefSection(bytes, offset, allowHybrid = true) {
         return null;
     }
     const head = /^(\d{1,10})[\x00\x09\x0a\x0c\x0d\x20]+(\d{1,10})[\x00\x09\x0a\x0c\x0d\x20]+obj(?:[\x00\x09\x0a\x0c\x0d\x20]|$)/.exec(bytes.subarray(offset, Math.min(bytes.length, offset + 80)).toString("latin1"));
-    if (!head)
+    if (!head || Number(head[2]) > 65_535)
         return null;
     let cursor = skipPdfTrivia(bytes, offset + head[0].length, bytes.length);
     if (cursor < 0)
@@ -584,6 +584,8 @@ function pdfXrefSection(bytes, offset, allowHybrid = true) {
             const field2 = readField(decodedAt + width[0], width[1]);
             const field3 = readField(decodedAt + width[0] + width[1], width[2]);
             decodedAt += recordBytes;
+            if (((type === 0 || type === 1) && field3 > 65_535) || (objectNumber === 0 && (type !== 0 || field3 !== 65_535)))
+                return null;
             if (type === 1) {
                 if (field2 > offset || (objectNumber !== Number(head[1]) && field2 === offset))
                     return null;
@@ -649,8 +651,8 @@ function pdfRevisionObjectsOnly(bytes, start, end, referencedOffsets, allowBinar
     while (cursor < end) {
         if (referencedOffsets && !referencedOffsets.has(cursor))
             return false;
-        const head = /^\d{1,10}[\x00\x09\x0a\x0c\x0d\x20]+\d{1,10}[\x00\x09\x0a\x0c\x0d\x20]+obj(?:[\x00\x09\x0a\x0c\x0d\x20]|$)/.exec(bytes.subarray(cursor, Math.min(end, cursor + 80)).toString("latin1"));
-        if (!head)
+        const head = /^(\d{1,10})[\x00\x09\x0a\x0c\x0d\x20]+(\d{1,10})[\x00\x09\x0a\x0c\x0d\x20]+obj(?:[\x00\x09\x0a\x0c\x0d\x20]|$)/.exec(bytes.subarray(cursor, Math.min(end, cursor + 80)).toString("latin1"));
+        if (!head || Number(head[2]) > 65_535)
             return false;
         let index = cursor + head[0].length;
         let foundEnd = false;

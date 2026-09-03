@@ -247,7 +247,7 @@ function pdfXrefSection(bytes: Buffer, offset: number, allowHybrid = true): Pars
       for (let index = 0; index < count; index += 1) {
         const entry = /^(\d{10})[\x00\x09\x0c\x20]+(\d{5})[\x00\x09\x0c\x20]+([fn])[\x00\x09\x0c\x20]*(?:\r\n|\r|\n)/.exec(bytes.subarray(cursor, Math.min(bytes.length, cursor + 40)).toString("latin1"));
         if (!entry) return null;
-        const objectNumber = first + index; const objectOffset = Number(entry[1]); const generation = Number(entry[2]); if (entries.has(objectNumber)) return null;
+        const objectNumber = first + index; const objectOffset = Number(entry[1]); const generation = Number(entry[2]); if (generation > 65_535 || entries.has(objectNumber) || (objectNumber === 0 && (entry[3] !== "f" || generation !== 65_535))) return null;
         if (entry[3] === "n") {
           if (objectOffset >= offset) return null;
           const target = /^(\d{1,10})[\x00\x09\x0a\x0c\x0d\x20]+(\d{1,10})[\x00\x09\x0a\x0c\x0d\x20]+obj(?:[\x00\x09\x0a\x0c\x0d\x20]|$)/.exec(bytes.subarray(objectOffset, Math.min(bytes.length, objectOffset + 80)).toString("latin1"));
@@ -260,7 +260,7 @@ function pdfXrefSection(bytes: Buffer, offset: number, allowHybrid = true): Pars
     return null;
   }
   const head = /^(\d{1,10})[\x00\x09\x0a\x0c\x0d\x20]+(\d{1,10})[\x00\x09\x0a\x0c\x0d\x20]+obj(?:[\x00\x09\x0a\x0c\x0d\x20]|$)/.exec(bytes.subarray(offset, Math.min(bytes.length, offset + 80)).toString("latin1"));
-  if (!head) return null;
+  if (!head || Number(head[2]) > 65_535) return null;
   let cursor = skipPdfTrivia(bytes, offset + head[0].length, bytes.length); if (cursor < 0) return null;
   const dictionary = pdfDictionary(bytes, cursor, new Set(["Length", "Prev", "Size"]), new Set(["Type"]), new Set(["W", "Index"]), new Set(["Filter"]));
   const width = dictionary?.arrays.get("W"); const size = dictionary?.values.get("Size");
@@ -285,6 +285,7 @@ function pdfXrefSection(bytes: Buffer, offset: number, allowHybrid = true): Pars
   const entries = new Map<number, PdfXrefEntry>(); const objectOffsets = new Set<number>(); let decodedAt = 0; let sawSelf = false;
   for (let range = 0; range < index.length; range += 2) for (let item = 0; item < index[range + 1]; item += 1) {
     const objectNumber = index[range] + item; const type = width[0] === 0 ? 1 : readField(decodedAt, width[0]); const field2 = readField(decodedAt + width[0], width[1]); const field3 = readField(decodedAt + width[0] + width[1], width[2]); decodedAt += recordBytes;
+    if (((type === 0 || type === 1) && field3 > 65_535) || (objectNumber === 0 && (type !== 0 || field3 !== 65_535))) return null;
     if (type === 1) {
       if (field2 > offset || (objectNumber !== Number(head[1]) && field2 === offset)) return null;
       const target = /^(\d{1,10})[\x00\x09\x0a\x0c\x0d\x20]+(\d{1,10})[\x00\x09\x0a\x0c\x0d\x20]+obj(?:[\x00\x09\x0a\x0c\x0d\x20]|$)/.exec(bytes.subarray(field2, Math.min(bytes.length, field2 + 80)).toString("latin1"));
@@ -315,8 +316,8 @@ function pdfRevisionObjectsOnly(bytes: Buffer, start: number, end: number, refer
   let cursor = skipPdfTrivia(bytes, start, end, allowBinaryComments); if (cursor < 0) return false;
   while (cursor < end) {
     if (referencedOffsets && !referencedOffsets.has(cursor)) return false;
-    const head = /^\d{1,10}[\x00\x09\x0a\x0c\x0d\x20]+\d{1,10}[\x00\x09\x0a\x0c\x0d\x20]+obj(?:[\x00\x09\x0a\x0c\x0d\x20]|$)/.exec(bytes.subarray(cursor, Math.min(end, cursor + 80)).toString("latin1"));
-    if (!head) return false;
+    const head = /^(\d{1,10})[\x00\x09\x0a\x0c\x0d\x20]+(\d{1,10})[\x00\x09\x0a\x0c\x0d\x20]+obj(?:[\x00\x09\x0a\x0c\x0d\x20]|$)/.exec(bytes.subarray(cursor, Math.min(end, cursor + 80)).toString("latin1"));
+    if (!head || Number(head[2]) > 65_535) return false;
     let index = cursor + head[0].length; let foundEnd = false; let steps = 0;
     while (index < end && ++steps <= 2_000_000) {
       if (bytes[index] === 0x25) { while (index < end && bytes[index] !== 10 && bytes[index] !== 13) index += 1; continue; }

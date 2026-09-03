@@ -504,7 +504,9 @@ section, and follows at most 256 strictly backward `/Prev` links. Cross-referenc
 tables bind every in-use subsection entry's object number, generation, and
 offset to the referenced indirect object, bound `/Size`, admit normal free
 entries, and accept out-of-order subsections only when their object identities
-remain unique. Cross-reference streams require a real `/Type /XRef`, bounded `/Size`,
+remain unique. In either representation generation numbers are limited to
+0 through 65535, and object 0 must be the generation-65535 free entry.
+Cross-reference streams require a real `/Type /XRef`, bounded `/Size`,
 consistent `/W` and `/Index` ranges, exact raw or Flate-decoded records, and an
 entry that identifies the stream itself. Flate is accepted as the direct
 `/FlateDecode` name or the standard single-element `[/FlateDecode]` array;
