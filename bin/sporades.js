@@ -86347,9 +86347,38 @@ function isPlainShellDatum(statement) {
   const command = statement?.command;
   return statement?.type === "Statement" && statement.background !== true && Array.isArray(statement.redirects) && statement.redirects.length === 0 && command?.type === "Command" && Array.isArray(command.prefix) && command.prefix.length === 0 && Array.isArray(command.suffix) && command.suffix.length === 0 && Array.isArray(command.redirects) && command.redirects.length === 0 && isLiteralShellWord(command.name) && !shellCommandCanRun(command.name.value);
 }
+function parsedShellCommandCanRun(command) {
+  return command?.type === "Command" && (isStaticShellWord(command.name) && !shellWordHasPathExpansion(command.name) && shellCommandCanRun(command.name.value) || shellWordHasPathExpansion(command.name) && expandedShellCommandCanRun(command.name.value));
+}
 function hasRunnableParsedShellCommand(statement) {
-  const command = statement?.command;
-  return statement?.type === "Statement" && command?.type === "Command" && (isStaticShellWord(command.name) && !shellWordHasPathExpansion(command.name) && shellCommandCanRun(command.name.value) || shellWordHasPathExpansion(command.name) && expandedShellCommandCanRun(command.name.value));
+  return statement?.type === "Statement" && parsedShellCommandCanRun(statement.command);
+}
+function parsedShellNodeHasRunnableCommand(root) {
+  const pending = [root];
+  const seen = /* @__PURE__ */ new WeakSet();
+  let visited = 0;
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (!value || typeof value !== "object" || seen.has(value)) continue;
+    seen.add(value);
+    visited += 1;
+    if (visited > maximumContentPolicyAstNodes) return true;
+    if (parsedShellCommandCanRun(value)) return true;
+    for (const child of Object.values(value)) {
+      if (Array.isArray(child)) for (const item of child) pending.push(item);
+      else pending.push(child);
+    }
+  }
+  return false;
+}
+function hasCompletedShellLineBoundary(suffix) {
+  for (let index = 0; index < suffix.length; index += 1) {
+    if (suffix[index] !== "\n") continue;
+    let escapes = 0;
+    for (let before = index - 1; before >= 0 && suffix[before] === "\\"; before -= 1) escapes += 1;
+    if (escapes % 2 === 0) return true;
+  }
+  return false;
 }
 function isNonRunnablePathSentence(text2, root) {
   if (!Array.isArray(root?.commands) || root.commands.length !== 1) return false;
@@ -86396,23 +86425,20 @@ function hasExecutableShellSemantics(text2) {
   }
   if (exactShellVocabularyToken(text2)) return true;
   if (!syntaxError && Array.isArray(root.commands) && root.commands.some(hasRunnableParsedShellCommand)) return true;
+  if (syntaxError && Array.isArray(root.commands) && root.commands.some((statement) => Number.isInteger(statement?.end) && statement.end <= firstErrorAt && hasCompletedShellLineBoundary(text2.slice(statement.end, firstErrorAt)) && parsedShellNodeHasRunnableCommand(statement))) return true;
   if (isSentenceShapedText(text2) || !syntaxError && isNonRunnablePathSentence(text2, root)) return false;
   if (!Array.isArray(root.commands) || root.commands.length === 0) return false;
   if (!syntaxError) return root.commands.length !== 1 || !isPlainShellDatum(root.commands[0]);
-  const hasCommandBoundary = (suffix) => {
+  const hasRecoveredCommandBoundary = (suffix) => {
     for (let index = 0; index < suffix.length; index += 1) {
       if (suffix[index] === ";") return true;
       if (suffix[index] === "&" && suffix[index - 1] !== "&" && suffix[index - 1] !== "|" && suffix[index + 1] !== "&") return true;
-      if (suffix[index] !== "\n") continue;
-      let escapes = 0;
-      for (let before = index - 1; before >= 0 && suffix[before] === "\\"; before -= 1) escapes += 1;
-      if (escapes % 2 === 0) return true;
     }
-    return false;
+    return hasCompletedShellLineBoundary(suffix);
   };
   return root.commands.some((statement) => {
     if (statement?.type !== "Statement" || !statement.command || !Number.isInteger(statement.pos) || !Number.isInteger(statement.end) || statement.end <= statement.pos || statement.end > firstErrorAt) return false;
-    return !isPlainShellDatum(statement) && (statement.background === true || hasCommandBoundary(text2.slice(statement.end, firstErrorAt)));
+    return !isPlainShellDatum(statement) && (statement.background === true || hasRecoveredCommandBoundary(text2.slice(statement.end, firstErrorAt)));
   });
 }
 function safeUntrustedText(bytes) {

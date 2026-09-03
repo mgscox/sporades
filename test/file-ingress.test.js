@@ -187,6 +187,8 @@ test("sentence-shaped shell classification checks only regular executable filesy
     for (const invalidHome of [undefined, "", "relative/home", "x".repeat(4097)]) { if (invalidHome === undefined) delete process.env.HOME; else process.env.HOME = invalidHome; assert.equal(hasExecutableShellSemantics("~/Payload/run argument."), true, `HOME=${String(invalidHome)}`); }
     process.env.HOME = dir; delete process.env.USER; assert.equal(hasExecutableShellSemantics("~sporades-fixture/Payload/run argument."), true, "missing USER"); process.env.USER = "someone-else"; assert.equal(hasExecutableShellSemantics("~sporades-fixture/Payload/run argument."), true, "mismatched USER"); assert.equal(hasExecutableShellSemantics("~unsupported/Payload/run argument."), true, "unsupported named user");
     process.env.USER = "sporades-fixture"; process.env.HOME = dir; for (const prose of ['"~/Payload/run" remains documented.', "\\~/Payload/run remains documented.", '"~sporades-fixture/Payload/run" remains documented.', "Tilde ~ means home."]) assert.equal(hasExecutableShellSemantics(prose), false, prose);
+    for (const command of ["Payload/run argument.\nIf (then).", "Payload/run argument.\r\nIf (then).", "  Payload/run argument.\nIf (then).", '"Payload/run" argument.\nIf (then).', "Payload\\/run argument.\nIf (then).", "Payload/run argument. # comment\nIf (then).", "Payload/run argument.; If (then).", "Payload/run argument.; true\nIf (then).", "Payload/run argument. && true\nIf (then).", "Payload/run argument. || true\nIf (then).", "Payload/run argument.\nRunner argument.\nIf (then)."]) assert.equal(hasExecutableShellSemantics(command), true, command);
+    for (const prose of ["Payload/run argument. && If (then).", "Payload/run argument. || If (then).", "Payload/run argument. &&\nIf (then).", "If (then).\nPayload/run argument.", "If (then).\nWhen (else)."] ) assert.equal(hasExecutableShellSemantics(prose), false, prose);
     process.chdir(child); assert.equal(hasExecutableShellSemantics("../Payload/run argument."), true);
     assert.equal(hasExecutableShellSemantics("Please inspect Payload output."), false);
   } finally { process.chdir(originalCwd); if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath; if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome; if (originalUser === undefined) delete process.env.USER; else process.env.USER = originalUser; await rm(dir, { recursive: true, force: true }); }
@@ -1922,6 +1924,14 @@ test("content-policy-v1 structurally validates its allowlist and rejects executa
       ["shell-sentence-active-unmatched-posix-class", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[[:digit:]]una remains unavailable.`), "rejected"],
       ["shell-sentence-path-literal-fallback", "note.txt", "text/plain", Buffer.from("Run* argument."), "rejected"],
       ["shell-sentence-matched-path-command", "note.txt", "text/plain", Buffer.from("Match* argument."), "rejected"],
+      ["shell-completed-prefix-before-later-error", "note.txt", "text/plain", Buffer.from("Payload/run argument.\nIf (then)."), "rejected"],
+      ["shell-completed-prefix-before-later-error-crlf", "note.txt", "text/plain", Buffer.from("Payload/run argument.\r\nIf (then)."), "rejected"],
+      ["shell-completed-quoted-prefix-before-later-error", "note.txt", "text/plain", Buffer.from('"Payload/run" argument.\nIf (then).'), "rejected"],
+      ["shell-completed-escaped-prefix-before-later-error", "note.txt", "text/plain", Buffer.from("Payload\\/run argument.\nIf (then)."), "rejected"],
+      ["shell-completed-commented-prefix-before-later-error", "note.txt", "text/plain", Buffer.from("Payload/run argument. # comment\nIf (then)."), "rejected"],
+      ["shell-completed-and-or-prefix-before-later-error", "note.txt", "text/plain", Buffer.from("Payload/run argument. && true\nIf (then)."), "rejected"],
+      ["shell-completed-or-prefix-before-later-error", "note.txt", "text/plain", Buffer.from("Payload/run argument. || true\nIf (then)."), "rejected"],
+      ["shell-multiple-completed-prefixes-before-later-error", "note.txt", "text/plain", Buffer.from("Payload/run argument.\nRunner argument.\nIf (then)."), "rejected"],
       ...[127, 128, 129].map((length) => [`shell-sentence-bracket-bound-${length}`, "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[${"r".repeat(length)}]run argument.`), "rejected"]),
       ["shell-sentence-oversized-posix-bracket", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[${"r".repeat(128)}[:alpha:]]run argument.`), "rejected"],
       ["shell-ordinary-label", "note.txt", "text/plain", Buffer.from("ticket_reference"), "clean"],
@@ -1937,6 +1947,11 @@ test("content-policy-v1 structurally validates its allowlist and rejects executa
       ["valid-shell-unmatched-path-pattern", "note.txt", "text/plain", Buffer.from("NoMatch* remains unavailable."), "clean"],
       ["valid-shell-non-x-path-literal", "note.txt", "text/plain", Buffer.from("Miss* remains unavailable."), "clean"],
       ["valid-shell-path-directory", "note.txt", "text/plain", Buffer.from("DirMatch* remains available."), "clean"],
+      ["shell-semicolon-prefix-before-later-error", "note.txt", "text/plain", Buffer.from("Payload/run argument.; If (then)."), "rejected"],
+      ["valid-shell-incomplete-and-or-before-error", "note.txt", "text/plain", Buffer.from("Payload/run argument. &&\nIf (then)."), "clean"],
+      ["valid-shell-same-line-or-error-before-execution", "note.txt", "text/plain", Buffer.from("Payload/run argument. || If (then)."), "clean"],
+      ["valid-shell-error-before-runnable-line", "note.txt", "text/plain", Buffer.from("If (then).\nPayload/run argument."), "clean"],
+      ["valid-shell-malformed-only-lines", "note.txt", "text/plain", Buffer.from("If (then).\nWhen (else)."), "clean"],
       ["valid-shell-unterminated-oversized-bracket", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[${"r".repeat(129)}run remains documented.`), "clean"],
       ["valid-shell-malformed-empty-bracket", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[]run remains documented.`), "clean"],
       ["valid-shell-quoted-oversized-bracket", "note.txt", "text/plain", Buffer.from(`"${path.dirname(sentenceExecutable)}/[${"r".repeat(129)}]run" remains documented.`), "clean"],
