@@ -54,16 +54,22 @@ function mailError(code, message, hint) {
     error.hint = hint;
     return error;
 }
+// A Capsule whose mail authority is unavailable still boots. The runtime reports `enabled: false`
+// and every send fails with the reason, so an operator who has not sealed the SMTP credentials yet
+// gets a running Capsule without Email rather than a Capsule that will not start.
+function disabledMailRuntime(code, message, hint) {
+    return {
+        enabled: false,
+        async send() {
+            throw mailError(code, message, hint);
+        },
+        close() { },
+    };
+}
 export function createMailRuntime(mailConfig, serverEnv, options = {}) {
     const smtp = mailConfig?.smtp;
     if (!smtp) {
-        return {
-            enabled: false,
-            async send() {
-                throw mailError("MAIL_DISABLED", "Mail delivery is disabled.", "Configure `mail.smtp` in sporades.json and restart the Capsule runtime.");
-            },
-            close() { },
-        };
+        return disabledMailRuntime("MAIL_DISABLED", "Mail delivery is disabled.", "Configure `mail.smtp` in sporades.json and restart the Capsule runtime.");
     }
     let auth;
     if (smtp.auth.method === "none") {
@@ -73,7 +79,10 @@ export function createMailRuntime(mailConfig, serverEnv, options = {}) {
         const username = serverEnv[smtp.auth.usernameEnv];
         const password = serverEnv[smtp.auth.passwordEnv];
         if (typeof username !== "string" || typeof password !== "string") {
-            throw mailError("MAIL_CREDENTIAL_MISSING", "SMTP credentials are unavailable.", "Set the configured SMTP username and password keys in Server env, then restart the Capsule runtime.");
+            // The configured key names are deliberately absent from the message: the failure travels to
+            // Capsule code and delivery logs, and naming a Sealed Server env key there would leak the
+            // credential layout of a Capsule to anyone who can provoke a send.
+            return disabledMailRuntime("MAIL_CREDENTIAL_MISSING", "SMTP credentials are unavailable.", "Set the configured SMTP username and password keys in Server env, then restart the Capsule runtime.");
         }
         auth = { method: smtp.auth.method, username, password };
     }
