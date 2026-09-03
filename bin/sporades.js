@@ -85067,9 +85067,10 @@ async function validatePdfIngress(bytes, options = {}) {
       const visitedObjects = /* @__PURE__ */ new WeakSet();
       const visitedRefs = /* @__PURE__ */ new Set();
       let visitedCount = 0;
-      const actionBearingKeys = /* @__PURE__ */ new Set(["/OpenAction", "/AA", "/A"]);
+      const actionBearingKeys = /* @__PURE__ */ new Set(["/OpenAction", "/AA"]);
       const forbiddenStructureKeys = /* @__PURE__ */ new Set(["/JavaScript", "/EmbeddedFiles", "/EF", "/XFA"]);
       const actionSubtypes = /* @__PURE__ */ new Set(["/GoTo", "/GoToR", "/GoToE", "/Launch", "/Thread", "/URI", "/Sound", "/Movie", "/Hide", "/Named", "/SubmitForm", "/ResetForm", "/ImportData", "/JavaScript", "/SetOCGState", "/Rendition", "/Trans", "/GoTo3DView"]);
+      const annotationSubtypes = /* @__PURE__ */ new Set(["/Text", "/Link", "/FreeText", "/Line", "/Square", "/Circle", "/Polygon", "/PolyLine", "/Highlight", "/Underline", "/Squiggly", "/StrikeOut", "/Stamp", "/Caret", "/Ink", "/Popup", "/FileAttachment", "/Sound", "/Movie", "/Widget", "/Screen", "/PrinterMark", "/TrapNet", "/Watermark", "/3D", "/Redact", "/Projection", "/RichMedia"]);
       const semanticName = (candidate, key) => {
         let value = candidate.get(import_pdf_lib.PDFName.of(key));
         if (value === void 0) return void 0;
@@ -85112,10 +85113,13 @@ async function validatePdfIngress(bytes, options = {}) {
         const subtype = semanticName(candidate, "S");
         if (subtype === null) return false;
         if (subtype !== void 0 && actionSubtypes.has(subtype)) return false;
+        const annotationSubtype = semanticName(candidate, "Subtype");
+        if (annotationSubtype === null) return false;
+        const ownsActivationAction = type === "/Annot" || annotationSubtype !== void 0 && annotationSubtypes.has(annotationSubtype) || candidate.has(import_pdf_lib.PDFName.of("Title")) && candidate.has(import_pdf_lib.PDFName.of("Parent"));
         for (const [key, value] of candidate.entries()) {
           const name2 = key.asString();
           if (forbiddenStructureKeys.has(name2) || name2 === "/JS") return false;
-          if (!visit(value, depth + 1, actionBearingKeys.has(name2))) return false;
+          if (!visit(value, depth + 1, actionBearingKeys.has(name2) || name2 === "/A" && ownsActivationAction)) return false;
         }
         return true;
       };
@@ -85341,13 +85345,7 @@ function isSentenceShapedText(text2) {
   });
 }
 function isHarmlessShellWord(text2) {
-  const trimmed = text2.trim();
-  if (/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(trimmed)) return true;
-  let opening = 0;
-  while (trimmed[opening] === "(") opening += 1;
-  let closing = trimmed.length;
-  while (trimmed[closing - 1] === ")") closing -= 1;
-  return opening > 0 && opening === trimmed.length - closing && /^[A-Za-z_][A-Za-z0-9_.-]*$/.test(trimmed.slice(opening, closing));
+  return /^[A-Za-z_][A-Za-z0-9_.-]*$/.test(text2.trim());
 }
 function hasExecutableShellSemantics(text2) {
   if (Buffer.byteLength(text2, "utf8") > maximumContentPolicyTextBytes || !isJavaScriptRawInputWithinBounds(text2)) return true;

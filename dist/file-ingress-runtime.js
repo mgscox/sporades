@@ -274,9 +274,10 @@ export async function validatePdfIngress(bytes, options = {}) {
             const visitedObjects = new WeakSet();
             const visitedRefs = new Set();
             let visitedCount = 0;
-            const actionBearingKeys = new Set(["/OpenAction", "/AA", "/A"]);
+            const actionBearingKeys = new Set(["/OpenAction", "/AA"]);
             const forbiddenStructureKeys = new Set(["/JavaScript", "/EmbeddedFiles", "/EF", "/XFA"]);
             const actionSubtypes = new Set(["/GoTo", "/GoToR", "/GoToE", "/Launch", "/Thread", "/URI", "/Sound", "/Movie", "/Hide", "/Named", "/SubmitForm", "/ResetForm", "/ImportData", "/JavaScript", "/SetOCGState", "/Rendition", "/Trans", "/GoTo3DView"]);
+            const annotationSubtypes = new Set(["/Text", "/Link", "/FreeText", "/Line", "/Square", "/Circle", "/Polygon", "/PolyLine", "/Highlight", "/Underline", "/Squiggly", "/StrikeOut", "/Stamp", "/Caret", "/Ink", "/Popup", "/FileAttachment", "/Sound", "/Movie", "/Widget", "/Screen", "/PrinterMark", "/TrapNet", "/Watermark", "/3D", "/Redact", "/Projection", "/RichMedia"]);
             const semanticName = (candidate, key) => {
                 let value = candidate.get(PDFName.of(key));
                 if (value === undefined)
@@ -305,7 +306,9 @@ export async function validatePdfIngress(bytes, options = {}) {
             const visit = (candidate, depth = 0, actionContext = false) => {
                 if (depth > 128 || ++visitedCount > 100_000)
                     return false;
-                // OpenAction, AA, and A values are action-bearing by definition.
+                // The caller only supplies actionContext for keys which define actions
+                // on their owning PDF dictionary. In particular, /A is also the
+                // structure-element attributes key and cannot be classified globally.
                 // Reject the whole reachable value even when it is indirect, an array,
                 // or a dictionary that legally omits /Type /Action and /S.
                 if (actionContext)
@@ -343,6 +346,12 @@ export async function validatePdfIngress(bytes, options = {}) {
                 // standardized action subtype or in an action-bearing context.
                 if (subtype !== undefined && actionSubtypes.has(subtype))
                     return false;
+                const annotationSubtype = semanticName(candidate, "Subtype");
+                if (annotationSubtype === null)
+                    return false;
+                const ownsActivationAction = type === "/Annot"
+                    || (annotationSubtype !== undefined && annotationSubtypes.has(annotationSubtype))
+                    || (candidate.has(PDFName.of("Title")) && candidate.has(PDFName.of("Parent")));
                 for (const [key, value] of candidate.entries()) {
                     const name = key.asString();
                     if (forbiddenStructureKeys.has(name) || name === "/JS")
@@ -350,7 +359,7 @@ export async function validatePdfIngress(bytes, options = {}) {
                     // /Next is also the ordinary sibling pointer in outline trees. It is
                     // an action chain only after this dictionary has independently been
                     // classified as an action; those dictionaries are rejected above.
-                    if (!visit(value, depth + 1, actionBearingKeys.has(name)))
+                    if (!visit(value, depth + 1, actionBearingKeys.has(name) || (name === "/A" && ownsActivationAction)))
                         return false;
                 }
                 return true;
@@ -586,16 +595,7 @@ function isSentenceShapedText(text) {
     });
 }
 function isHarmlessShellWord(text) {
-    const trimmed = text.trim();
-    if (/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(trimmed))
-        return true;
-    let opening = 0;
-    while (trimmed[opening] === "(")
-        opening += 1;
-    let closing = trimmed.length;
-    while (trimmed[closing - 1] === ")")
-        closing -= 1;
-    return opening > 0 && opening === trimmed.length - closing && /^[A-Za-z_][A-Za-z0-9_.-]*$/.test(trimmed.slice(opening, closing));
+    return /^[A-Za-z_][A-Za-z0-9_.-]*$/.test(text.trim());
 }
 export function hasExecutableShellSemantics(text) {
     if (Buffer.byteLength(text, "utf8") > maximumContentPolicyTextBytes || !isJavaScriptRawInputWithinBounds(text))
