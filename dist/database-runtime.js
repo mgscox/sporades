@@ -567,6 +567,9 @@ export function createSharedDatabaseAdapterMethods(dialect) {
         selectIngressByLease(leaseId) {
             return this.prepare(sql("SELECT * FROM [sporades_file_ingress] WHERE [leaseId] = ?")).get(leaseId) ?? null;
         },
+        hasPendingIngressMaintenance() {
+            return thenIfPromise(this.prepare(sql("SELECT CASE WHEN EXISTS (SELECT 1 FROM [sporades_file_ingress] WHERE [state] IN ('staging', 'leased', 'sweeping')) OR EXISTS (SELECT 1 FROM [sporades_file_ingress_audit_outbox] WHERE [state] IN ('pending', 'delivering')) THEN 1 ELSE 0 END AS [required]")).get(), (row) => Number(row?.required ?? 0) === 1);
+        },
         lockIngressReceipts(leaseIds) {
             const sorted = [...new Set(leaseIds.map(String))].sort();
             if (sorted.length === 0)

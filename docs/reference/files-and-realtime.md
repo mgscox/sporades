@@ -506,6 +506,12 @@ This includes generic XML and common JavaScript, Python, and shell source forms.
 That deliberately creates false positives for support notes containing code;
 such material should be pasted as quoted ticket text or explicitly handled by
 a future reviewed evidence policy, never treated as an executable channel.
+Strict-text inspection is capped at 1 MiB before UTF-8 decoding or JavaScript
+compilation. High-confidence JavaScript declaration or statement-start call
+shapes are rejected only when Node can compile the complete text as a program;
+this catches call-only programs such as `alert("x")` and member calls while
+ordinary prose containing parentheses remains text.
+
 The `clamav` inspector is runtime-owned and communicates only with clamd's
 fixed Unix-domain socket inside the Capsule container. There is no TCP,
 hostname, IP, path-scan, or caller-configurable destination surface. Sporades
@@ -639,6 +645,12 @@ application-chosen absolute path:
 const file = await ctx.files.claim(lease, { path: `/attachments/${id}/source` });
 ```
 
+Without inspection, trusted handlers may continue to override the stored File
+`name` and `type` at claim. When inspection is required, verdict evidence is
+bound to the staged bytes, filename, and MIME type: a claim may omit or repeat
+the inspected descriptor but cannot relabel it afterward. Use the File `path`
+for the Capsule's application-specific destination.
+
 The staged bytes must exist before the receipt is completed. The File row,
 receipt completion, bucket, application writes, and one runtime-private audit
 intent then commit together. The intent drains after commit, at startup, and
@@ -664,7 +676,13 @@ staging receipt becomes claimable only through a key, lease, state, and expiry
 compare-and-set after its object write. If expiry cleanup wins that race,
 Sporades compensates the exact newly written object and never revives the row;
 a concurrently completed receipt is preserved.
-lost response can replay the completed File even after the original lease
+A replacement Capsule discovers unclaimed leases and undelivered audit intents
+from durable storage before activation. Their cleanup and delivery timers stay
+live even if that release removed its last multipart endpoint and relied on the
+implicit local File-storage configuration. A Capsule with no multipart
+declaration and no such retained work remains maintenance-free; completed
+receipts alone do not arm the timers.
+A lost response can replay the completed File even after the original lease
 expiry; expired unclaimed leases cannot be claimed. Local filesystem and
 MinIO-backed storage use identical policy, admission, lease, claim, ACL,
 idempotency, expiry, and cleanup semantics. This server-only surface never

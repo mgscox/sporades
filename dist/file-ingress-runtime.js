@@ -389,7 +389,10 @@ export async function validatePdfIngress(bytes, options = {}) {
         catch { }
     }
 }
+const maximumContentPolicyTextBytes = 1024 * 1024;
 function safeUntrustedText(bytes) {
+    if (bytes.length > maximumContentPolicyTextBytes)
+        return false;
     const decoder = new TextDecoder("utf-8", { fatal: true });
     let text = "";
     try {
@@ -404,7 +407,12 @@ function safeUntrustedText(bytes) {
         return false;
     if (/\b(?:print|open|compile|__import__|subprocess\.(?:run|call|Popen)|os\.system)\s*\(/.test(text))
         return false;
-    if (/(?:\b(?:const|let|var|function|class|import|export)\b|=>|\brequire\s*\(|\bprocess\.)/.test(text)) {
+    // Compilation never executes the upload. Requiring both a high-confidence
+    // statement-start call shape and a syntactically valid complete program
+    // catches call-only JavaScript without classifying ordinary prose merely for
+    // containing a word followed later by a parenthesis.
+    const javascriptSignal = /(?:\b(?:const|let|var|function|class|import|export)\b|=>|\brequire\s*\(|\bprocess\.|(?:^|[;{}\n])\s*(?:await\s+)?(?:new\s+)?[A-Za-z_$][\w$]*(?:\s*(?:\?\.|\.)\s*[A-Za-z_$][\w$]*)*\s*(?:\?\.)?\s*\()/m;
+    if (javascriptSignal.test(text)) {
         try {
             new Function(text);
             return false;
@@ -1005,6 +1013,11 @@ export function createEndpointIngressApi(database, endpoint, endpointRequest, co
                     throw Object.assign(new Error("File path is outside the endpoint ingress policy."), { code: "INGRESS_PATH_DENIED" });
                 const name = safeName(options?.name ?? row.name);
                 const type = safeType(options?.type ?? row.type);
+                // Inspector evidence is bound to the staged descriptor as well as its bytes.
+                // An inspected claim may repeat that descriptor, but it cannot relabel the
+                // ordinary File after content-policy has made a name/type-sensitive decision.
+                if (inspectionPolicy && (name !== row.name || type !== row.type))
+                    throw inspectionRequiredError();
                 const expectedFile = { id: row.fileId, ownerId: row.ownerId, path, name, type, size: row.size, version: row.version };
                 if (row.state === "complete") {
                     if (!sameFileDescriptor(row.file, expectedFile))

@@ -69567,7 +69567,9 @@ async function validatePdfIngress(bytes, options = {}) {
     }
   }
 }
+var maximumContentPolicyTextBytes = 1024 * 1024;
 function safeUntrustedText(bytes) {
+  if (bytes.length > maximumContentPolicyTextBytes) return false;
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let text2 = "";
   try {
@@ -69578,7 +69580,8 @@ function safeUntrustedText(bytes) {
   if (!text2 || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text2) || /<\s*(?:!doctype|\?xml|html\b|head\b|body\b|script\b|svg\b|[a-z][\w:-]*\s+[^>]*>)/i.test(text2) || /<\s*([a-z][\w:-]*)\b[^>]*>[\s\S]*<\/\s*\1\s*>/i.test(text2)) return false;
   if (/(?:^|\n)\s*(?:#!|sudo\b|rm\s+-|curl\b|wget\b|bash\b|sh\b|python\b|node\b|chmod\b|eval\b|exec\b|echo\b|source\b|\.\s+[^\s]+|export\s+\w+=|set\s+-[eux]|if\s+\[|for\s+\w+\s+in\b)/im.test(text2)) return false;
   if (/\b(?:print|open|compile|__import__|subprocess\.(?:run|call|Popen)|os\.system)\s*\(/.test(text2)) return false;
-  if (/(?:\b(?:const|let|var|function|class|import|export)\b|=>|\brequire\s*\(|\bprocess\.)/.test(text2)) {
+  const javascriptSignal = /(?:\b(?:const|let|var|function|class|import|export)\b|=>|\brequire\s*\(|\bprocess\.|(?:^|[;{}\n])\s*(?:await\s+)?(?:new\s+)?[A-Za-z_$][\w$]*(?:\s*(?:\?\.|\.)\s*[A-Za-z_$][\w$]*)*\s*(?:\?\.)?\s*\()/m;
+  if (javascriptSignal.test(text2)) {
     try {
       new Function(text2);
       return false;
@@ -70188,6 +70191,7 @@ function createEndpointIngressApi(database, endpoint, endpointRequest, context) 
         if (!policy.allowedPathPrefixes.some((prefix) => path13 === prefix || path13.startsWith(`${prefix}/`))) throw Object.assign(new Error("File path is outside the endpoint ingress policy."), { code: "INGRESS_PATH_DENIED" });
         const name = safeName(options?.name ?? row.name);
         const type = safeType(options?.type ?? row.type);
+        if (inspectionPolicy && (name !== row.name || type !== row.type)) throw inspectionRequiredError();
         const expectedFile = { id: row.fileId, ownerId: row.ownerId, path: path13, name, type, size: row.size, version: row.version };
         if (row.state === "complete") {
           if (!sameFileDescriptor(row.file, expectedFile)) throw idempotencyConflict();
@@ -78251,6 +78255,11 @@ function createSharedDatabaseAdapterMethods(dialect) {
     selectIngressByLease(leaseId) {
       return this.prepare(sql("SELECT * FROM [sporades_file_ingress] WHERE [leaseId] = ?")).get(leaseId) ?? null;
     },
+    hasPendingIngressMaintenance() {
+      return thenIfPromise(this.prepare(sql(
+        "SELECT CASE WHEN EXISTS (SELECT 1 FROM [sporades_file_ingress] WHERE [state] IN ('staging', 'leased', 'sweeping')) OR EXISTS (SELECT 1 FROM [sporades_file_ingress_audit_outbox] WHERE [state] IN ('pending', 'delivering')) THEN 1 ELSE 0 END AS [required]"
+      )).get(), (row) => Number(row?.required ?? 0) === 1);
+    },
     lockIngressReceipts(leaseIds) {
       const sorted = [...new Set(leaseIds.map(String))].sort();
       if (sorted.length === 0) return { changes: 0 };
@@ -81066,6 +81075,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   await ensureJobStorage(sqlite);
   await ensureScheduleStorage(sqlite, options?.scheduleStorageFault);
   await sqlite.ensureFileStorage();
+  database.fileIngressEnabled = database.fileIngressEnabled || await sqlite.hasPendingIngressMaintenance();
   await sqlite.ensureLogStorage();
   if (!options?.runtimeActionOnly) {
     await reportIngressSweepSelectionFailure(database, await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() }));

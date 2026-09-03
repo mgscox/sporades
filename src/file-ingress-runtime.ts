@@ -197,12 +197,19 @@ export async function validatePdfIngress(bytes: Buffer, options: RecordLike = {}
     return await Promise.race([workflow, new Promise<boolean>((_, reject) => { timer = setTimeout(() => { try { task?.destroy?.(); } catch {} reject(new Error("PDF inspection timeout")); }, timeoutMs); })]);
   } catch { return false; } finally { clearTimeout(timer); try { await task?.destroy?.(); } catch {} }
 }
+const maximumContentPolicyTextBytes = 1024 * 1024;
 function safeUntrustedText(bytes: Buffer) {
+  if (bytes.length > maximumContentPolicyTextBytes) return false;
   const decoder = new TextDecoder("utf-8", { fatal: true }); let text = ""; try { text = decoder.decode(bytes); } catch { return false; }
   if (!text || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text) || /<\s*(?:!doctype|\?xml|html\b|head\b|body\b|script\b|svg\b|[a-z][\w:-]*\s+[^>]*>)/i.test(text) || /<\s*([a-z][\w:-]*)\b[^>]*>[\s\S]*<\/\s*\1\s*>/i.test(text)) return false;
   if (/(?:^|\n)\s*(?:#!|sudo\b|rm\s+-|curl\b|wget\b|bash\b|sh\b|python\b|node\b|chmod\b|eval\b|exec\b|echo\b|source\b|\.\s+[^\s]+|export\s+\w+=|set\s+-[eux]|if\s+\[|for\s+\w+\s+in\b)/im.test(text)) return false;
   if (/\b(?:print|open|compile|__import__|subprocess\.(?:run|call|Popen)|os\.system)\s*\(/.test(text)) return false;
-  if (/(?:\b(?:const|let|var|function|class|import|export)\b|=>|\brequire\s*\(|\bprocess\.)/.test(text)) { try { new Function(text); return false; } catch {} }
+  // Compilation never executes the upload. Requiring both a high-confidence
+  // statement-start call shape and a syntactically valid complete program
+  // catches call-only JavaScript without classifying ordinary prose merely for
+  // containing a word followed later by a parenthesis.
+  const javascriptSignal = /(?:\b(?:const|let|var|function|class|import|export)\b|=>|\brequire\s*\(|\bprocess\.|(?:^|[;{}\n])\s*(?:await\s+)?(?:new\s+)?[A-Za-z_$][\w$]*(?:\s*(?:\?\.|\.)\s*[A-Za-z_$][\w$]*)*\s*(?:\?\.)?\s*\()/m;
+  if (javascriptSignal.test(text)) { try { new Function(text); return false; } catch {} }
   return true;
 }
 async function contentPolicyOutcome(row: RecordLike, bytes: Buffer) {
@@ -495,6 +502,10 @@ export function createEndpointIngressApi(database: RecordLike, endpoint: RecordL
       }
       const path = normalizeAbsoluteFilePath(options?.path); if (!policy.allowedPathPrefixes.some((prefix: string) => path === prefix || path.startsWith(`${prefix}/`))) throw Object.assign(new Error("File path is outside the endpoint ingress policy."), { code: "INGRESS_PATH_DENIED" });
       const name = safeName(options?.name ?? row.name); const type = safeType(options?.type ?? row.type);
+      // Inspector evidence is bound to the staged descriptor as well as its bytes.
+      // An inspected claim may repeat that descriptor, but it cannot relabel the
+      // ordinary File after content-policy has made a name/type-sensitive decision.
+      if (inspectionPolicy && (name !== row.name || type !== row.type)) throw inspectionRequiredError();
       const expectedFile = { id: row.fileId, ownerId: row.ownerId, path, name, type, size: row.size, version: row.version };
       if (row.state === "complete") {
         if (!sameFileDescriptor(row.file, expectedFile)) throw idempotencyConflict();

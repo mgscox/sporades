@@ -1130,6 +1130,11 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     await ensureJobStorage(sqlite);
     await ensureScheduleStorage(sqlite, options?.scheduleStorageFault);
     await sqlite.ensureFileStorage();
+    // A release can remove its final multipart endpoint and its optional files
+    // configuration while a lease or claim-audit delivery is still durable.
+    // Discover that retained work from the database so the replacement runtime
+    // continues maintenance; completed receipts alone do not arm idle Capsules.
+    database.fileIngressEnabled = database.fileIngressEnabled || await sqlite.hasPendingIngressMaintenance();
     await sqlite.ensureLogStorage();
     if (!options?.runtimeActionOnly) {
         await reportIngressSweepSelectionFailure(database, await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() }));

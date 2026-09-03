@@ -58731,6 +58731,7 @@ function isSupportedInspectionNodeVersion(version2) {
 }
 if (!isSupportedInspectionNodeVersion(process.versions.node)) throw Object.assign(new Error("Sporades File inspection requires Node 22.13+ or Node 24+."), { code: "UNSUPPORTED_NODE_RUNTIME" });
 var maximumInspectionAgeMs = 24 * 60 * 60 * 1e3;
+var maximumContentPolicyTextBytes = 1024 * 1024;
 
 // src/teams-runtime.ts
 var TEAM_JOIN_LINK_DEFAULT_TTL_SECONDS = 60 * 60 * 24;
