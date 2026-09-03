@@ -85195,11 +85195,10 @@ function pdfXrefSection(bytes, offset2, allowHybrid = true) {
   if (!Number.isSafeInteger(offset2) || offset2 < 0 || offset2 >= bytes.length) return null;
   if (pdfKeywordAt(bytes, offset2, "xref")) {
     let cursor2 = offset2 + 4;
-    let entries = 0;
-    let previousRangeEnd2 = 0;
+    let entryCount2 = 0;
     let highestObject = -1;
+    const entries2 = /* @__PURE__ */ new Map();
     const objectOffsets2 = /* @__PURE__ */ new Set();
-    const freeOffsets = [];
     while (cursor2 < bytes.length) {
       cursor2 = skipPdfTrivia(bytes, cursor2, bytes.length);
       if (cursor2 < 0) return null;
@@ -85208,39 +85207,44 @@ function pdfXrefSection(bytes, offset2, allowHybrid = true) {
         if (cursor2 < 0) return null;
         const dictionary2 = pdfDictionary(bytes, cursor2, /* @__PURE__ */ new Set(["Prev", "Size", "XRefStm"]));
         const size2 = dictionary2?.values.get("Size");
-        if (!dictionary2 || size2 === void 0 || size2 < 1 || size2 > 1e6 || highestObject >= size2 || freeOffsets.some((value) => value >= size2)) return null;
+        if (!dictionary2 || size2 === void 0 || size2 < 1 || size2 > 1e6 || highestObject >= size2 || [...entries2.values()].some((entry) => entry.type === 0 && entry.nextFree >= size2)) return null;
         const hybridOffset = dictionary2.values.get("XRefStm");
         if (hybridOffset !== void 0) {
           if (!allowHybrid) return null;
           if (hybridOffset <= 0 || hybridOffset >= offset2) return null;
           const hybrid = pdfXrefSection(bytes, hybridOffset, false);
-          if (!hybrid || hybrid.kind !== "stream" || hybrid.size !== size2 || hybrid.prev !== void 0 || skipPdfTrivia(bytes, hybrid.end, offset2) !== offset2) return null;
+          if (!hybrid || hybrid.kind !== "stream" || hybrid.size !== size2 || hybrid.prev !== void 0) return null;
+          for (const [objectNumber, entry] of hybrid.entries) {
+            if (!entries2.has(objectNumber)) entries2.set(objectNumber, entry);
+          }
           for (const objectOffset of hybrid.objectOffsets) objectOffsets2.add(objectOffset);
+          if (!pdfRevisionObjectsOnly(bytes, hybrid.end, offset2, objectOffsets2)) return null;
           highestObject = Math.max(highestObject, hybrid.maxObject);
         }
-        return { kind: "classic", end: dictionary2.end, prev: dictionary2.values.get("Prev"), size: size2, maxObject: highestObject, objectOffsets: objectOffsets2 };
+        return { kind: "classic", end: dictionary2.end, prev: dictionary2.values.get("Prev"), size: size2, maxObject: highestObject, entries: entries2, objectOffsets: objectOffsets2 };
       }
       const header2 = /^(\d{1,10})[\x00\x09\x0c\x20]+(\d{1,10})[\x00\x09\x0c\x20]*(?:\r\n|\r|\n)/.exec(bytes.subarray(cursor2, Math.min(bytes.length, cursor2 + 80)).toString("latin1"));
       if (!header2) return null;
       const first = Number(header2[1]);
       const count = Number(header2[2]);
-      if (!Number.isSafeInteger(first) || !Number.isSafeInteger(count) || count < 1 || first < previousRangeEnd2 || first + count > 1e6 || entries + count > 1e6) return null;
-      previousRangeEnd2 = first + count;
-      highestObject = Math.max(highestObject, previousRangeEnd2 - 1);
+      if (!Number.isSafeInteger(first) || !Number.isSafeInteger(count) || count < 1 || first + count > 1e6 || entryCount2 + count > 1e6) return null;
+      highestObject = Math.max(highestObject, first + count - 1);
       cursor2 += header2[0].length;
-      entries += count;
+      entryCount2 += count;
       for (let index2 = 0; index2 < count; index2 += 1) {
         const entry = /^(\d{10})[\x00\x09\x0c\x20]+(\d{5})[\x00\x09\x0c\x20]+([fn])[\x00\x09\x0c\x20]*(?:\r\n|\r|\n)/.exec(bytes.subarray(cursor2, Math.min(bytes.length, cursor2 + 40)).toString("latin1"));
         if (!entry) return null;
         const objectNumber = first + index2;
         const objectOffset = Number(entry[1]);
         const generation = Number(entry[2]);
+        if (entries2.has(objectNumber)) return null;
         if (entry[3] === "n") {
           if (objectOffset >= offset2) return null;
           const target = /^(\d{1,10})[\x00\x09\x0a\x0c\x0d\x20]+(\d{1,10})[\x00\x09\x0a\x0c\x0d\x20]+obj(?:[\x00\x09\x0a\x0c\x0d\x20]|$)/.exec(bytes.subarray(objectOffset, Math.min(bytes.length, objectOffset + 80)).toString("latin1"));
           if (!target || Number(target[1]) !== objectNumber || Number(target[2]) !== generation) return null;
+          entries2.set(objectNumber, { type: 1, offset: objectOffset, generation });
           objectOffsets2.add(objectOffset);
-        } else freeOffsets.push(objectOffset);
+        } else entries2.set(objectNumber, { type: 0, nextFree: objectOffset, generation });
         cursor2 += entry[0].length;
       }
     }
@@ -85293,6 +85297,7 @@ function pdfXrefSection(bytes, offset2, allowHybrid = true) {
     for (let byte = 0; byte < length; byte += 1) value = value * 256 + decoded[at2 + byte];
     return value;
   };
+  const entries = /* @__PURE__ */ new Map();
   const objectOffsets = /* @__PURE__ */ new Set();
   let decodedAt = 0;
   let sawSelf = false;
@@ -85306,11 +85311,16 @@ function pdfXrefSection(bytes, offset2, allowHybrid = true) {
       if (field2 > offset2 || objectNumber !== Number(head[1]) && field2 === offset2) return null;
       const target = /^(\d{1,10})[\x00\x09\x0a\x0c\x0d\x20]+(\d{1,10})[\x00\x09\x0a\x0c\x0d\x20]+obj(?:[\x00\x09\x0a\x0c\x0d\x20]|$)/.exec(bytes.subarray(field2, Math.min(bytes.length, field2 + 80)).toString("latin1"));
       if (!target || Number(target[1]) !== objectNumber || Number(target[2]) !== field3) return null;
+      entries.set(objectNumber, { type: 1, offset: field2, generation: field3 });
       objectOffsets.add(field2);
       if (objectNumber === Number(head[1])) sawSelf = field2 === offset2 && field3 === Number(head[2]);
     } else if (type === 2) {
       if (field2 >= size) return null;
-    } else if (type !== 0) return null;
+      entries.set(objectNumber, { type: 2, objectStream: field2, index: field3 });
+    } else if (type === 0) {
+      if (field2 >= size) return null;
+      entries.set(objectNumber, { type: 0, nextFree: field2, generation: field3 });
+    } else return null;
   }
   if (!sawSelf) return null;
   if (bytes[cursor] === 13 && bytes[cursor + 1] === 10) cursor += 2;
@@ -85318,7 +85328,7 @@ function pdfXrefSection(bytes, offset2, allowHybrid = true) {
   if (!pdfKeywordAt(bytes, cursor, "endstream")) return null;
   cursor = skipPdfTrivia(bytes, cursor + 9, bytes.length);
   if (cursor < 0 || !pdfKeywordAt(bytes, cursor, "endobj")) return null;
-  return { kind: "stream", end: cursor + 6, prev: dictionary.values.get("Prev"), size, maxObject, objectOffsets };
+  return { kind: "stream", end: cursor + 6, prev: dictionary.values.get("Prev"), size, maxObject, entries, objectOffsets };
 }
 function pdfFooterAfter(bytes, sectionEnd, limit) {
   let cursor = skipPdfTrivia(bytes, sectionEnd, limit);

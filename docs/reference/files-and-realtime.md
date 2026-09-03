@@ -502,14 +502,18 @@ parses the initial revision body and terminal classic cross-reference table or
 cross-reference stream, binds each `startxref` and `%%EOF` footer to that
 section, and follows at most 256 strictly backward `/Prev` links. Cross-reference
 tables bind every in-use subsection entry's object number, generation, and
-offset to the referenced indirect object, bound `/Size`, and admit normal free
-entries. Cross-reference streams require a real `/Type /XRef`, bounded `/Size`,
+offset to the referenced indirect object, bound `/Size`, admit normal free
+entries, and accept out-of-order subsections only when their object identities
+remain unique. Cross-reference streams require a real `/Type /XRef`, bounded `/Size`,
 consistent `/W` and `/Index` ranges, exact raw or Flate-decoded records, and an
 entry that identifies the stream itself. Flate is accepted as the direct
 `/FlateDecode` name or the standard single-element `[/FlateDecode]` array;
 unsupported or multiple filter chains fail closed. Hybrid tables must point
 through one in-range `/XRefStm` to a genuine same-revision cross-reference
-stream. Ordinary streams cannot trigger parser fallback and pose as the
+stream. Any intervening indirect objects must be indexed. Within either source,
+duplicate object identities fail closed; where the two sources overlap, the
+current classic entry has the standard lookup precedence over its supplemental
+stream before `/Prev` is consulted. Ordinary streams cannot trigger parser fallback and pose as the
 terminal revision. Each linked footer must belong to its referenced section,
 while initial and intervening revision bytes must be bounded PDF comments or
 indirect-object syntax rather than unclaimed payload. The last

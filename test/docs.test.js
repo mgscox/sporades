@@ -1267,8 +1267,11 @@ test("File reference docs define the trusted multipart ingress contract and oper
   assert.match(contents, /initial revision body and terminal classic cross-reference table or\s+cross-reference stream/i);
   assert.match(contents, /ordinary streams cannot trigger parser fallback and pose as\s+the\s+terminal revision/i);
   assert.match(contents, /tables bind every in-use subsection entry's object number, generation, and\s+offset/i);
+  assert.match(contents, /accept out-of-order subsections only when their object identities\s+remain unique/i);
   assert.match(contents, /standard single-element `\[\/FlateDecode\]` array/i);
   assert.match(contents, /one in-range `\/XRefStm` to a genuine same-revision cross-reference\s+stream/i);
+  assert.match(contents, /intervening indirect objects must be indexed/i);
+  assert.match(contents, /current classic entry has the standard lookup precedence over its supplemental\s+stream before `\/Prev`/i);
   assert.match(contents, /follows at most\s+256 strictly backward `\/Prev` links/i);
   assert.match(contents, /last\s+linked `%%EOF`\s+must be terminal except for PDF whitespace and printable comment lines/i);
   assert.match(contents, /every candidate\s+evaluated by the shell classifier is parsed before either narrow plain-data\s+allowance/i);
