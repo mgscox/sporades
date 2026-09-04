@@ -111,6 +111,7 @@ Changes since v0.9.12.
 
 ### 📦 Packaging
 
+- Bump for vuln (89a2ce1c).
 - Select Hosted readiness policy by release (5abfd072).
 - Regenerate artifacts for the Dev reload log event (09b3e35c).
 
@@ -201,4 +202,5 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
+
 

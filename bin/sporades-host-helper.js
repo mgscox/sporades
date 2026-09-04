@@ -42582,7 +42582,7 @@ function writeEnvelope(result, failed = false) {
 }
 
 // src/cli/cli-version.ts
-var CLI_VERSION = "0.9.12";
+var CLI_VERSION = "0.9.14";
 
 // src/cli/schedule-inspection-envelope.ts
 var SCHEDULE_DIAGNOSTIC_FIELDS = /* @__PURE__ */ new Set([
