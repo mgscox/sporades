@@ -1974,6 +1974,31 @@ test("ClamAV health requires a bounded PING and shutdown awaits both managed chi
   } finally { await new Promise((resolve) => server.close(resolve)); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("ClamAV health converges after a notified signature reload without weakening exact version matching", async () => {
+  const daemon = new EventEmitter(); Object.assign(daemon, { exitCode: null, signalCode: null, kill() {} });
+  const updater = new EventEmitter(); Object.assign(updater, { exitCode: null, signalCode: null, kill() {} });
+  let loadedSignature = "daily:41"; let probes = 0;
+  const database = {
+    clamavRequired: true,
+    clamavReady: true,
+    __clamavProcess: daemon,
+    __clamavUpdateProcess: updater,
+    __clamavTest: {
+      get loadedSignature() { return loadedSignature; },
+      signature: { version: "daily:42", updatedAt: new Date().toISOString() },
+      socketCommand: async (command) => { probes += 1; assert.equal(command.toString(), "zPING\0"); return "PONG"; },
+    },
+  };
+
+  assert.deepEqual(await checkClamavRuntime(database), { ok: false }, "new on-disk signatures fail closed until clamd reloads");
+  assert.equal(probes, 0, "version mismatch does not probe or admit the stale engine");
+  loadedSignature = "daily:42";
+  assert.deepEqual(await checkClamavRuntime(database), { ok: true }, "the next bounded health check observes the notified reload");
+  assert.equal(probes, 1);
+  assert.deepEqual(await checkClamavRuntime(database), { ok: true }, "a failed later update leaves the last loaded valid signatures healthy");
+  assert.equal(probes, 2);
+});
+
 test("runtime init failure shuts down a started ClamAV before a collision-free retry", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-clamav-init-rollback-")); let database; let attempts = 0;
   const child = () => { const listeners = new Map(); const signals = []; return { exitCode: null, signals, once(name, handler) { listeners.set(name, handler); }, kill(signal) { signals.push(signal); this.exitCode = 0; queueMicrotask(() => listeners.get("exit")?.(0)); } }; };

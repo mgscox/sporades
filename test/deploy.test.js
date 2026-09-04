@@ -1876,6 +1876,7 @@ test("Sporades Base image includes dormant OpenSSH, Fail2ban, and Unix-only Clam
   assert.doesNotMatch(dockerfile, /DatabaseOwner/);
   assert.doesNotMatch(dockerfile, /TCPSocket|TCPAddr/);
   assert.match(dockerfile, /StreamMaxLength 10M/);
+  assert.equal((dockerfile.match(/NotifyClamd \/etc\/clamav\/clamd\.conf/g) ?? []).length, 1);
   assert.match(dockerfile, /\/usr\/local\/bin\/sporades-start/);
   assert.match(dockerfile, /PasswordAuthentication=no/);
   assert.match(dockerfile, /PermitRootLogin=no/);

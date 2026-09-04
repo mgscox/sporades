@@ -350,6 +350,13 @@ verification timeout remains bounded and overrides either default. Runtime
 health output preserves the safe `checks.fileInspection.ok` boolean without
 exposing daemon topology, signatures, or malware names.
 
+The Base image's `freshclam` daemon notifies its local `clamd` over the
+configured Unix socket after a successful signature update. Health continues
+to require the on-disk and loaded signature versions to match, so an update may
+briefly fail closed while `clamd` reloads and then converges without waiting for
+its periodic reload interval. A failed update leaves the last loaded valid
+signature set in service.
+
 By default, verification failure records the failed release and routes the
 Capsule to the Hosted Capsule unavailable response. Automatic fallback to the
 previous release is deliberately opt-in and only applies during release

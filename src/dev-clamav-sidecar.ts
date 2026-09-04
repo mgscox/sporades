@@ -105,8 +105,8 @@ export async function startDevClamavSidecar(options: RecordLike) {
     const script = [
       "set -eu",
       "/usr/bin/freshclam --config-file=/etc/clamav/freshclam.conf",
-      "/usr/bin/freshclam --daemon --foreground=true --config-file=/etc/clamav/freshclam.conf >/tmp/freshclam.log 2>&1 & updater=$!",
       "/usr/sbin/clamd --foreground --config-file=/etc/clamav/clamd.conf >/tmp/clamd.log 2>&1 & daemon=$!",
+      "/usr/bin/freshclam --daemon --foreground=true --config-file=/etc/clamav/freshclam.conf >/tmp/freshclam.log 2>&1 & updater=$!",
       "trap 'kill -TERM \"$daemon\" \"$updater\" 2>/dev/null || true; wait \"$daemon\" \"$updater\" 2>/dev/null || true' EXIT INT TERM",
       "while kill -0 \"$daemon\" 2>/dev/null && kill -0 \"$updater\" 2>/dev/null; do sleep 1; done",
       "cat /tmp/clamd.log /tmp/freshclam.log >&2 || true",
