@@ -6696,7 +6696,7 @@ test("Hosted Capsule fallback restart uses the recorded ClamAV readiness window 
       action: "capsule.restart",
       host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
       capsule: { subname: fixture.subname },
-      release: { id: fixture.releaseId, inspection: { requiredInspectors: [] } },
+      release: { id: fixture.releaseId, inspection: null },
       lifecycle,
     }, { cwd: dir, env: { ...docker.env, NODE_OPTIONS: `--import=${clock}` } });
 
@@ -6726,26 +6726,38 @@ test("Hosted Capsule fallback restart ignores a failed candidate's ClamAV readin
   });
 });
 
-test("Hosted Capsule restart gives corrupt recorded inspection metadata a conservative bounded readiness window", async () => {
-  await withTempDir(async (dir) => {
-    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "restart-corrupt-inspection", restart: false });
+test("Hosted Capsule restart accepts only canonical persisted inspector metadata", async () => {
+  const cases = [
+    { name: "absent", inspection: undefined, longWindow: false },
+    { name: "content-only", inspection: { requiredInspectors: ["content-policy-v1"] }, longWindow: false },
+    { name: "clamav-only", inspection: { requiredInspectors: ["clamav"] }, longWindow: true },
+    { name: "both", inspection: { requiredInspectors: ["content-policy-v1", "clamav"] }, longWindow: true },
+    { name: "unknown", inspection: { requiredInspectors: ["unknown"] }, longWindow: true },
+    { name: "empty-string", inspection: { requiredInspectors: [""] }, longWindow: true },
+    { name: "duplicate-content", inspection: { requiredInspectors: ["content-policy-v1", "content-policy-v1"] }, longWindow: true },
+    { name: "duplicate-clamav", inspection: { requiredInspectors: ["clamav", "clamav"] }, longWindow: true },
+    { name: "mixed-duplicate", inspection: { requiredInspectors: ["content-policy-v1", "clamav", "content-policy-v1"] }, longWindow: true },
+    { name: "too-many", inspection: { requiredInspectors: Array.from({ length: 9 }, (_, index) => `unknown-${index}`) }, longWindow: true },
+    { name: "empty-array", inspection: { requiredInspectors: [] }, longWindow: true },
+    { name: "non-string", inspection: { requiredInspectors: [1] }, longWindow: true },
+    { name: "object", inspection: { requiredInspectors: {} }, longWindow: true },
+    { name: "missing-list", inspection: {}, longWindow: true },
+    { name: "null", inspection: null, longWindow: true },
+    { name: "array", inspection: [], longWindow: true },
+  ];
+  for (const scenario of cases) await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: `restart-inspection-${scenario.name}`, restart: false });
     const lifecycle = await alignSealedFixtureWithBuiltLifecycle(fixture);
     const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
-    record.releases[0].source.inspection = { requiredInspectors: "clamav" };
+    if (scenario.inspection === undefined) delete record.releases[0].source.inspection;
+    else record.releases[0].source.inspection = scenario.inspection;
     await writeFile(fixture.registryRecordPath, `${JSON.stringify(record, null, 2)}\n`);
     const clock = path.join(dir, "stepping-monotonic-clock.mjs");
     await writeFile(clock, "let now = 0; Object.defineProperty(globalThis, 'performance', { value: { now: () => { const current = now; now += 20000; return current; } } });\n");
     const docker = await installFakeDocker(path.join(dir, "docker"));
-
-    const result = await runHostHelper({
-      action: "capsule.restart",
-      host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
-      capsule: { subname: fixture.subname },
-      lifecycle,
-    }, { cwd: dir, env: { ...docker.env, NODE_OPTIONS: `--import=${clock}` } });
-
-    assert.equal(JSON.parse(result.stdout).ok, true, result.stdout);
-    assert.equal((await docker.calls()).filter((call) => call.args[0] === "exec").length, 1);
+    const result = await runHostHelper({ action: "capsule.restart", host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname }, lifecycle }, { cwd: dir, env: { ...docker.env, NODE_OPTIONS: `--import=${clock}` } });
+    assert.equal(JSON.parse(result.stdout).ok, scenario.longWindow, `${scenario.name}: ${result.stdout}`);
+    assert.equal((await docker.calls()).filter((call) => call.args[0] === "exec").length, scenario.longWindow ? 1 : 0, scenario.name);
   });
 });
 
@@ -11376,7 +11388,7 @@ test("sporades host helper applies verification fallback with the selected relea
     const before = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
     before.releases[0].source = { inspection: { requiredInspectors: ["clamav"] } };
     await writeFile(fixture.registryRecordPath, `${JSON.stringify(before, null, 2)}\n`);
-    fixture.release.inspection = { requiredInspectors: [] };
+    fixture.release.inspection = null;
     const clock = path.join(dir, "fallback-stepping-clock.mjs");
     await writeFile(clock, "const values = [0, 1, 2, 3, 20000, 20001]; let index = 0; Object.defineProperty(globalThis, 'performance', { value: { now: () => values[Math.min(index++, values.length - 1)] } }); let wall = 0; Date.now = () => { wall += 200000; return wall; };\n");
     const docker = await installFakeDocker(path.join(dir, "verify-fallback-success-docker"));
@@ -11477,7 +11489,7 @@ test("sporades host helper keeps failed release current when ordinary fallback i
     await writeFile(path.join(previousReleaseDir, "server.mjs"), "export default 'previous';\n");
     await writeFile(path.join(previousReleaseDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
     const before = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
-    before.releases[0].source = { inspection: { requiredInspectors: [] } };
+    before.releases[0].source = {};
     await writeFile(fixture.registryRecordPath, `${JSON.stringify(before, null, 2)}\n`);
     fixture.release.inspection = { requiredInspectors: ["clamav"] };
     const clock = path.join(dir, "fallback-stepping-clock.mjs");

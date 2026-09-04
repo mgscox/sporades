@@ -44798,10 +44798,13 @@ function verificationHealthSummary(result) {
 function hostedRuntimeReadinessTimeoutMs(request, record, releaseId) {
   const recorded = normaliseReleaseHistory(record).find((release) => release.id === releaseId);
   const recordedInspection = recorded?.source?.inspection;
-  const inspection = recordedInspection !== void 0 ? recordedInspection : request.release?.id === releaseId ? request.release.inspection : null;
-  const requiredInspectors = inspection?.requiredInspectors;
-  const corruptInspection = inspection != null && (!Array.isArray(requiredInspectors) || requiredInspectors.some((value) => typeof value !== "string"));
-  const fallback = corruptInspection || requiredInspectors?.includes("clamav") ? 16e4 : 1e4;
+  const requestInspectionMatches = request.release?.id === releaseId;
+  const inspection = recordedInspection !== void 0 ? recordedInspection : requestInspectionMatches ? request.release.inspection : void 0;
+  const nullMeansAbsent = recordedInspection === void 0 && requestInspectionMatches;
+  const requiredInspectors = inspection && typeof inspection === "object" && !Array.isArray(inspection) ? inspection.requiredInspectors : null;
+  const canonicalInspectors = Array.isArray(requiredInspectors) && requiredInspectors.length >= 1 && requiredInspectors.length <= 8 && requiredInspectors.every((value) => value === "content-policy-v1" || value === "clamav") && new Set(requiredInspectors).size === requiredInspectors.length;
+  const absentInspection = inspection === void 0 || inspection === null && nullMeansAbsent;
+  const fallback = !absentInspection && (!canonicalInspectors || requiredInspectors.includes("clamav")) ? 16e4 : 1e4;
   const configured = Number(request.verification?.healthTimeoutMs ?? fallback);
   return Number.isFinite(configured) && configured >= 1 ? Math.min(configured, 18e4) : fallback;
 }
