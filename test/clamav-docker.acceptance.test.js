@@ -19,15 +19,16 @@ test ! -e /tmp/sporades-clamd.sock
 test -s /app/data/clamav/daily.cld -o -s /app/data/clamav/daily.cvd
 /usr/sbin/clamd --foreground --config-file=/etc/clamav/clamd.conf >/tmp/clamd.log 2>&1 &
 clamd_pid=$!
-/usr/bin/freshclam --daemon --foreground=true --config-file=/etc/clamav/freshclam.conf >/tmp/freshclam.log 2>&1 &
-freshclam_pid=$!
-trap 'kill -TERM "$clamd_pid" "$freshclam_pid" 2>/dev/null || true; wait "$clamd_pid" "$freshclam_pid" 2>/dev/null || true' EXIT INT TERM
-kill -0 "$freshclam_pid"
+trap 'kill -TERM "$clamd_pid" 2>/dev/null || true; wait "$clamd_pid" 2>/dev/null || true' EXIT INT TERM
 for attempt in $(seq 1 100); do test -S /tmp/sporades-clamd.sock && break; sleep .1; done
 test -S /tmp/sporades-clamd.sock
 ready=0
 for attempt in $(seq 1 100); do if printf 'clean support evidence' | clamdscan --config-file=/etc/clamav/clamd.conf --stream - >/tmp/clean.out 2>&1; then ready=1; break; fi; sleep .1; done
 if test "$ready" -ne 1; then cat /tmp/clamd.log /tmp/clean.out >&2; exit 1; fi
+/usr/bin/freshclam --daemon --foreground=true --config-file=/etc/clamav/freshclam.conf >/tmp/freshclam.log 2>&1 &
+freshclam_pid=$!
+trap 'kill -TERM "$clamd_pid" "$freshclam_pid" 2>/dev/null || true; wait "$clamd_pid" "$freshclam_pid" 2>/dev/null || true' EXIT INT TERM
+kill -0 "$freshclam_pid"
 set +e
 printf '%s' 'X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' | clamdscan --config-file=/etc/clamav/clamd.conf --stream - >/tmp/infected.out
 infected_status=$?

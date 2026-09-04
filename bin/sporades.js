@@ -107329,6 +107329,8 @@ import { mkdir as mkdir4, mkdtemp, rm as rm5 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import path8 from "node:path";
+var DEV_CLAMAV_READY_MARKER = "sporades-clamav-ready-v1";
+var DEV_CLAMAV_HOST_READY_TIMEOUT_MS = 125e3;
 function devRuntimeRequiresClamav(database) {
   return Boolean(database.endpoints?.some((item) => item?.options?.body?.multipart?.inspection?.requiredInspectors?.includes("clamav")));
 }
@@ -107451,6 +107453,37 @@ async function ensureDevClamavChildExit(child, timeoutMs, timing) {
   if (await waitForDevClamavChildExit(child, firstWait, timing)) return true;
   return await waitForDevClamavChildExitAttempt(child, Math.max(0, deadline - devClamavNow(timing)), timing, "SIGKILL");
 }
+function waitForDevClamavReadinessProof(child, timeoutMs, output) {
+  if (output().includes(DEV_CLAMAV_READY_MARKER)) return Promise.resolve(true);
+  if (!child || devClamavChildTerminated(child)) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer;
+    const remove = () => {
+      child.stdout?.removeListener?.("data", onData);
+      child.removeListener?.("exit", onTerminated);
+      child.removeListener?.("close", onTerminated);
+      child.removeListener?.("error", onTerminated);
+    };
+    const finish = (ready) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      remove();
+      resolve(ready);
+    };
+    const onData = () => {
+      if (output().includes(DEV_CLAMAV_READY_MARKER)) finish(true);
+    };
+    const onTerminated = () => finish(false);
+    child.stdout?.on?.("data", onData);
+    child.once("exit", onTerminated);
+    child.once("close", onTerminated);
+    child.once("error", onTerminated);
+    timer = setTimeout(() => finish(false), timeoutMs);
+    if (output().includes(DEV_CLAMAV_READY_MARKER)) finish(true);
+  });
+}
 async function startDevClamavSidecar(options) {
   const dataRoot = path8.join(options.projectDir, ".sporades", "clamav");
   await mkdir4(path8.join(dataRoot, "clamav"), { recursive: true });
@@ -107473,7 +107506,13 @@ async function startDevClamavSidecar(options) {
       "set -eu",
       "/usr/bin/freshclam --config-file=/etc/clamav/freshclam.conf",
       "/usr/sbin/clamd --foreground --config-file=/etc/clamav/clamd.conf >/tmp/clamd.log 2>&1 & daemon=$!",
+      `trap 'kill -TERM "$daemon" 2>/dev/null || true; wait "$daemon" 2>/dev/null || true' EXIT INT TERM`,
+      "ready=0",
+      `for attempt in $(seq 1 1200); do kill -0 "$daemon" 2>/dev/null || break; if printf '%s' 'sporades file inspection readiness' | /usr/bin/clamdscan --config-file=/etc/clamav/clamd.conf --stream - >/tmp/clamd-ready.log 2>&1; then ready=1; break; fi; sleep .1; done`,
+      'if [ "$ready" -ne 1 ]; then cat /tmp/clamd.log /tmp/clamd-ready.log >&2 2>/dev/null || true; exit 1; fi',
       "/usr/bin/freshclam --daemon --foreground=true --config-file=/etc/clamav/freshclam.conf >/tmp/freshclam.log 2>&1 & updater=$!",
+      'kill -0 "$updater" 2>/dev/null',
+      `printf '%s\\n' '${DEV_CLAMAV_READY_MARKER}'`,
       `trap 'kill -TERM "$daemon" "$updater" 2>/dev/null || true; wait "$daemon" "$updater" 2>/dev/null || true' EXIT INT TERM`,
       'while kill -0 "$daemon" 2>/dev/null && kill -0 "$updater" 2>/dev/null; do sleep 1; done',
       "cat /tmp/clamd.log /tmp/freshclam.log >&2 || true",
@@ -107489,6 +107528,9 @@ async function startDevClamavSidecar(options) {
       child.once("spawn", resolve);
       child.once("error", reject);
     });
+    const requestedReadinessTimeout = options.readinessTimeoutMs;
+    const readinessTimeoutMs = Number.isFinite(requestedReadinessTimeout) ? Math.max(1, Math.min(DEV_CLAMAV_HOST_READY_TIMEOUT_MS, Math.trunc(requestedReadinessTimeout))) : DEV_CLAMAV_HOST_READY_TIMEOUT_MS;
+    if (!await waitForDevClamavReadinessProof(child, readinessTimeoutMs, () => output)) throw Object.assign(new Error("Required Dev File inspection scanner did not become ready."), { code: "FILE_INSPECTION_UNAVAILABLE" });
     const bridgeSource = "const net=require('node:net');const socket=net.createConnection('/tmp/sporades-clamd.sock');process.stdin.pipe(socket);socket.pipe(process.stdout);socket.on('error',()=>process.exit(1));";
     proxy = (options.proxyServerFactory ?? createServer)((socket) => {
       proxySockets.add(socket);

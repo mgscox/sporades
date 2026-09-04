@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import path from "node:path";
 import { SPORADES_BASE_IMAGE } from "./base-image.js";
+const DEV_CLAMAV_READY_MARKER = "sporades-clamav-ready-v1";
+const DEV_CLAMAV_HOST_READY_TIMEOUT_MS = 125_000;
 export function devRuntimeRequiresClamav(database) {
     return Boolean(database.endpoints?.some((item) => item?.options?.body?.multipart?.inspection?.requiredInspectors?.includes("clamav")));
 }
@@ -119,6 +121,30 @@ export async function ensureDevClamavChildExit(child, timeoutMs, timing) {
         return true;
     return await waitForDevClamavChildExitAttempt(child, Math.max(0, deadline - devClamavNow(timing)), timing, "SIGKILL");
 }
+function waitForDevClamavReadinessProof(child, timeoutMs, output) {
+    if (output().includes(DEV_CLAMAV_READY_MARKER))
+        return Promise.resolve(true);
+    if (!child || devClamavChildTerminated(child))
+        return Promise.resolve(false);
+    return new Promise((resolve) => {
+        let settled = false;
+        let timer;
+        const remove = () => { child.stdout?.removeListener?.("data", onData); child.removeListener?.("exit", onTerminated); child.removeListener?.("close", onTerminated); child.removeListener?.("error", onTerminated); };
+        const finish = (ready) => { if (settled)
+            return; settled = true; if (timer)
+            clearTimeout(timer); remove(); resolve(ready); };
+        const onData = () => { if (output().includes(DEV_CLAMAV_READY_MARKER))
+            finish(true); };
+        const onTerminated = () => finish(false);
+        child.stdout?.on?.("data", onData);
+        child.once("exit", onTerminated);
+        child.once("close", onTerminated);
+        child.once("error", onTerminated);
+        timer = setTimeout(() => finish(false), timeoutMs);
+        if (output().includes(DEV_CLAMAV_READY_MARKER))
+            finish(true);
+    });
+}
 export async function startDevClamavSidecar(options) {
     const dataRoot = path.join(options.projectDir, ".sporades", "clamav");
     await mkdir(path.join(dataRoot, "clamav"), { recursive: true });
@@ -141,7 +167,13 @@ export async function startDevClamavSidecar(options) {
             "set -eu",
             "/usr/bin/freshclam --config-file=/etc/clamav/freshclam.conf",
             "/usr/sbin/clamd --foreground --config-file=/etc/clamav/clamd.conf >/tmp/clamd.log 2>&1 & daemon=$!",
+            "trap 'kill -TERM \"$daemon\" 2>/dev/null || true; wait \"$daemon\" 2>/dev/null || true' EXIT INT TERM",
+            "ready=0",
+            "for attempt in $(seq 1 1200); do kill -0 \"$daemon\" 2>/dev/null || break; if printf '%s' 'sporades file inspection readiness' | /usr/bin/clamdscan --config-file=/etc/clamav/clamd.conf --stream - >/tmp/clamd-ready.log 2>&1; then ready=1; break; fi; sleep .1; done",
+            "if [ \"$ready\" -ne 1 ]; then cat /tmp/clamd.log /tmp/clamd-ready.log >&2 2>/dev/null || true; exit 1; fi",
             "/usr/bin/freshclam --daemon --foreground=true --config-file=/etc/clamav/freshclam.conf >/tmp/freshclam.log 2>&1 & updater=$!",
+            "kill -0 \"$updater\" 2>/dev/null",
+            `printf '%s\\n' '${DEV_CLAMAV_READY_MARKER}'`,
             "trap 'kill -TERM \"$daemon\" \"$updater\" 2>/dev/null || true; wait \"$daemon\" \"$updater\" 2>/dev/null || true' EXIT INT TERM",
             "while kill -0 \"$daemon\" 2>/dev/null && kill -0 \"$updater\" 2>/dev/null; do sleep 1; done",
             "cat /tmp/clamd.log /tmp/freshclam.log >&2 || true",
@@ -152,6 +184,12 @@ export async function startDevClamavSidecar(options) {
         child.stdout.on("data", retain);
         child.stderr.on("data", retain);
         await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+        // The container's clean-scan loop is bounded at 120 seconds. Keep a small
+        // outer margin so a proof emitted at that boundary cannot lose a timer race.
+        const requestedReadinessTimeout = options.readinessTimeoutMs;
+        const readinessTimeoutMs = Number.isFinite(requestedReadinessTimeout) ? Math.max(1, Math.min(DEV_CLAMAV_HOST_READY_TIMEOUT_MS, Math.trunc(requestedReadinessTimeout))) : DEV_CLAMAV_HOST_READY_TIMEOUT_MS;
+        if (!await waitForDevClamavReadinessProof(child, readinessTimeoutMs, () => output))
+            throw Object.assign(new Error("Required Dev File inspection scanner did not become ready."), { code: "FILE_INSPECTION_UNAVAILABLE" });
         const bridgeSource = "const net=require('node:net');const socket=net.createConnection('/tmp/sporades-clamd.sock');process.stdin.pipe(socket);socket.pipe(process.stdout);socket.on('error',()=>process.exit(1));";
         proxy = (options.proxyServerFactory ?? createServer)((socket) => { proxySockets.add(socket); const bridge = spawn(dockerCommand, ["exec", "-i", containerName, "node", "-e", bridgeSource], { stdio: ["pipe", "pipe", "ignore"] }); bridges.add(bridge); socket.pipe(bridge.stdin); bridge.stdout.pipe(socket); const close = () => { bridges.delete(bridge); proxySockets.delete(socket); socket.destroy(); }; bridge.once("close", close); bridge.once("error", close); socket.once("error", () => { try {
             bridge.kill("SIGTERM");

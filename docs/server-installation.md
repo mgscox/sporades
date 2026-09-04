@@ -355,7 +355,9 @@ configured Unix socket after a successful signature update. Health continues
 to require the on-disk and loaded signature versions to match, so an update may
 briefly fail closed while `clamd` reloads and then converges without waiting for
 its periodic reload interval. A failed update leaves the last loaded valid
-signature set in service.
+signature set in service. A Dev session does not publish its scanner companion
+until a bounded clean scan has proved the daemon and Unix socket ready; timeout
+or early daemon exit removes that unpublished companion before startup fails.
 
 By default, verification failure records the failed release and routes the
 Capsule to the Hosted Capsule unavailable response. Automatic fallback to the
