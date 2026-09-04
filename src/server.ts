@@ -1,6 +1,24 @@
+import type {
+  EndpointBodyBytes as CanonicalEndpointBodyBytes,
+  EndpointContext as CanonicalEndpointContext,
+  EndpointFileAttachmentApi as CanonicalEndpointFileAttachmentApi,
+  EndpointFileAttachmentContext as CanonicalEndpointFileAttachmentContext,
+  EndpointFileAttachmentOptions as CanonicalEndpointFileAttachmentOptions,
+  EndpointFileAttachmentReference as CanonicalEndpointFileAttachmentReference,
+  EndpointFileAttachmentResponse as CanonicalEndpointFileAttachmentResponse,
+  EndpointFileIngressApi as CanonicalEndpointFileIngressApi,
+  EndpointFileIngressInspection as CanonicalEndpointFileIngressInspection,
+  EndpointFileIngressLease as CanonicalEndpointFileIngressLease,
+  EndpointFileMetadata as CanonicalEndpointFileMetadata,
+  EndpointRequest as CanonicalEndpointRequest,
+  FileIngressOptions as CanonicalFileIngressOptions,
+  SchemaDefinition as CanonicalSchemaDefinition,
+} from "../src/types/server.js";
+
 export type FieldKind = "String" | "Boolean" | "Number" | "Date" | "Json" | "Reference";
 export type UnknownRecord = Record<string, unknown>;
-export type Handler<Args extends unknown[] = unknown[], Result = unknown> = (...args: Args) => Result | Promise<Result>;
+export type Handler<Args extends unknown[] = any[], Result = unknown> = (...args: Args) => Result | Promise<Result>;
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
 const atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
 
@@ -20,33 +38,80 @@ export type FileIngressInspection = Readonly<{
   requiredInspectors: readonly ("content-policy-v1" | "clamav")[];
 }>;
 
-export type EndpointOptions = {
+export type SchemaDefinition = CanonicalSchemaDefinition;
+type EndpointFieldValue<Field> = Field extends FieldBuilder<infer Value>
+  ? Value | null
+  : Field extends FieldDefinition<infer Value>
+    ? Value
+    : Field extends ReferenceFieldBuilder | ReferenceFieldDefinition
+      ? string | null
+      : unknown;
+type EndpointRow<Fields extends UnknownRecord> = { id: string; createdAt: string; updatedAt: string } & {
+  [Key in keyof Fields]: EndpointFieldValue<Fields[Key]>;
+};
+export type ReadOnlyTableApi<Row extends UnknownRecord = UnknownRecord> = {
+  where<FieldName extends keyof Row & string>(fieldName: FieldName, value: Row[FieldName]): ReadOnlyTableApi<Row>;
+  orderBy(fieldName: keyof Row & string, direction?: "asc" | "desc" | "ASC" | "DESC"): ReadOnlyTableApi<Row>;
+  limit(count: number): ReadOnlyTableApi<Row>;
+  get(): Promise<Row | null>;
+  all(): Promise<Row[]>;
+};
+export type ReadOnlyDatabaseFromSchema<Schema extends SchemaDefinition> = {
+  [TableName in keyof Schema]: Schema[TableName] extends TableDefinition<infer Fields> ? ReadOnlyTableApi<EndpointRow<Fields>> : ReadOnlyTableApi;
+};
+export type FileIngressPrincipal = Readonly<{ namespace: string; key: string }>;
+export type FileIngressAdmissionRequest = Readonly<{ method: string; path: string; headers: Readonly<Record<string, string>>; query: Readonly<Record<string, string>> }>;
+export type FileIngressAdmissionDecision = Readonly<{ allow: false } | { allow: true; principal: FileIngressPrincipal }>;
+export type FileIngressAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
+/** Shared immutable request head supplied to endpoint multipart admission. */
+export type EndpointMultipartAdmissionRequest = FileIngressAdmissionRequest;
+/** An authenticated, read-only policy context evaluated before a multipart endpoint reads its request body. */
+export type EndpointMultipartAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ auth: AuthContext; credential: CredentialProvenance; db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
+/** The endpoint policy can only continue or reject this request; it cannot provide file claim authority. */
+export type EndpointMultipartAdmissionDecision = Readonly<{ allow: true } | { allow: false }>;
+/** Runtime-owned bounds and stable identifiers for one endpoint multipart ingress request. */
+export type EndpointMultipartIngressLimits = Readonly<{
+  maxFiles: number; maxFileBytes: number; maxTotalFileBytes: number; maxFieldCount: number; maxFieldBytes: number; maxTotalFieldBytes: number;
+  allowedMimeTypes?: readonly string[]; allowedPathPrefixes: readonly string[]; requestKeyHeader: string; partKeyHeader: string;
+  requireStablePartKeys?: boolean; inspection?: FileIngressInspection;
+}>;
+/** Actor-owned ingress may apply a request-specific admission policy. */
+export type EndpointActorMultipartIngressOptions<Schema extends SchemaDefinition = SchemaDefinition> = EndpointMultipartIngressLimits & Readonly<{ claimAuthorities?: readonly ["actor"]; admit?(ctx: EndpointMultipartAdmissionContext<Schema>, request: FileIngressAdmissionRequest): EndpointMultipartAdmissionDecision | Promise<EndpointMultipartAdmissionDecision> }>;
+/** Capsule-principal ingress has its separate Capsule-level admission policy and cannot add actor admission. */
+export type EndpointCapsulePrincipalMultipartIngressOptions = EndpointMultipartIngressLimits & Readonly<{ claimAuthorities: readonly ["capsule-principal"]; admit?: never }>;
+/** One of the supported endpoint multipart ingress authority modes. */
+export type EndpointMultipartIngressOptions<Schema extends SchemaDefinition = SchemaDefinition> = EndpointActorMultipartIngressOptions<Schema> | EndpointCapsulePrincipalMultipartIngressOptions;
+export type EndpointOptions<Schema extends SchemaDefinition = SchemaDefinition> = {
   method: string;
   path: string;
   /** Explicitly delegates exact-version attachment authorization to this trusted endpoint handler. */
   response?: { fileAttachment: true };
   /** Runtime-owned bounded multipart ingress for a trusted Custom endpoint. */
-  body?: { multipart: {
-    maxFiles: number;
-    maxFileBytes: number;
-    maxTotalFileBytes: number;
-    maxFieldCount: number;
-    maxFieldBytes: number;
-    maxTotalFieldBytes: number;
-    allowedMimeTypes?: readonly string[];
-    allowedPathPrefixes: readonly string[];
-    requestKeyHeader: string;
-    partKeyHeader: string;
-    requireStablePartKeys?: boolean;
-    claimAuthorities?: readonly ["actor" | "capsule-principal"];
-    /** Optional fail-closed inspection gate for trusted ingress claims. */
-    inspection?: FileIngressInspection;
-  } };
+  body?: { multipart: EndpointMultipartIngressOptions<Schema> };
 };
 
-export type EndpointDefinition<HandlerType extends Handler = Handler> = {
+/** Endpoint declaration that permits an opaque File attachment response. */
+export type EndpointFileAttachmentOptionsDeclaration<Schema extends SchemaDefinition = SchemaDefinition> = EndpointOptions<Schema> & { response: { fileAttachment: true } };
+export type EndpointBodyBytes = CanonicalEndpointBodyBytes;
+export type EndpointRequest = CanonicalEndpointRequest;
+export type EndpointFileIngressLease = CanonicalEndpointFileIngressLease;
+export type EndpointFileIngressInspection = CanonicalEndpointFileIngressInspection;
+export type EndpointFileMetadata = CanonicalEndpointFileMetadata;
+export type FileIngressOptions = CanonicalFileIngressOptions;
+export type EndpointFileAttachmentReference = CanonicalEndpointFileAttachmentReference;
+export type EndpointFileAttachmentOptions = CanonicalEndpointFileAttachmentOptions;
+export type EndpointFileAttachmentResponse = CanonicalEndpointFileAttachmentResponse;
+export type EndpointFileIngressApi = CanonicalEndpointFileIngressApi;
+export type EndpointFileAttachmentApi = CanonicalEndpointFileAttachmentApi;
+export type EndpointContext<Schema extends SchemaDefinition = SchemaDefinition> = CanonicalEndpointContext<Schema>;
+export type EndpointFileAttachmentContext<Schema extends SchemaDefinition = SchemaDefinition> = CanonicalEndpointFileAttachmentContext<Schema>;
+export type EndpointHandler<Schema extends SchemaDefinition = SchemaDefinition, Result = unknown> = (ctx: EndpointContext<Schema>) => Result | Promise<Result>;
+export type EndpointFileAttachmentHandler<Schema extends SchemaDefinition = SchemaDefinition, Result = unknown> = (ctx: EndpointFileAttachmentContext<Schema>) => Result | Promise<Result>;
+declare const authGuardedHandlerBrand: unique symbol;
+export type AuthGuardedHandler<HandlerType extends Handler> = HandlerType & { readonly [authGuardedHandlerBrand]: true };
+export type EndpointDefinition<HandlerType extends Handler = Handler, Schema extends SchemaDefinition = SchemaDefinition> = {
   kind: "endpoint";
-  options: EndpointOptions;
+  options: EndpointOptions<Schema>;
   handler: HandlerType;
 };
 
@@ -120,15 +185,17 @@ export type FieldBuilder<Value = unknown> = {
 export type ReferenceFieldBuilder = {
   kind: "Reference";
   targetTable: string;
-  default(defaultValue: string | null): FieldDefinition<string | null> & { kind: "Reference"; targetTable: string };
+  default(defaultValue: string | null): ReferenceFieldDefinition;
 };
+
+export type ReferenceFieldDefinition = FieldDefinition<string | null> & { kind: "Reference"; targetTable: string };
 
 export type TableDefinition<Fields extends UnknownRecord = UnknownRecord> = {
   kind: "table";
   fields: Fields;
-  aclRules?: unknown;
+  aclRules?: any;
   uniqueConstraints?: readonly (readonly string[])[];
-  acl(rules: unknown): TableDefinition<Fields>;
+  acl(rules: any): TableDefinition<Fields>;
   unique(...fields: [keyof Fields & string, ...(keyof Fields & string)[]]): TableDefinition<Fields>;
 };
 
@@ -235,15 +302,38 @@ function validateEndpointResponseDeclarations(definition: UnknownRecord) {
   }
 }
 
-export function endpoint<const HandlerType extends Handler>(
-  options: EndpointOptions,
-  handler: HandlerType,
-): EndpointDefinition<HandlerType> {
+/** Define a Custom endpoint for HTTP integrations such as webhooks. */
+export function endpoint<Schema extends SchemaDefinition = SchemaDefinition>(
+  options: EndpointFileAttachmentOptionsDeclaration<Schema>,
+  handler: EndpointFileAttachmentHandler<Schema>,
+): EndpointDefinition<EndpointFileAttachmentHandler<Schema>, Schema>;
+export function endpoint<Schema extends SchemaDefinition = SchemaDefinition>(
+  options: EndpointOptions<Schema>,
+  handler: EndpointHandler<Schema>,
+): EndpointDefinition<EndpointHandler<Schema>, Schema>;
+export function endpoint<Schema extends SchemaDefinition = SchemaDefinition, HandlerType extends Handler = Handler>(
+  options: EndpointOptions<Schema>,
+  handler: AuthGuardedHandler<HandlerType>,
+): EndpointDefinition<AuthGuardedHandler<HandlerType>, Schema>;
+export function endpoint(options: EndpointOptions, handler: Handler): EndpointDefinition {
   return {
     kind: "endpoint",
     options,
     handler,
   };
+}
+
+/** Schema-bound endpoint declaration helper for callbacks that read the Capsule database before request-body handling. */
+export type EndpointBuilder<Schema extends SchemaDefinition> = {
+  (options: EndpointFileAttachmentOptionsDeclaration<Schema>, handler: EndpointFileAttachmentHandler<Schema>): EndpointDefinition<EndpointFileAttachmentHandler<Schema>, Schema>;
+  (options: EndpointOptions<Schema>, handler: EndpointHandler<Schema>): EndpointDefinition<EndpointHandler<Schema>, Schema>;
+  <HandlerType extends Handler>(options: EndpointOptions<Schema>, handler: AuthGuardedHandler<HandlerType>): EndpointDefinition<AuthGuardedHandler<HandlerType>, Schema>;
+};
+
+/** Bind a declared Capsule schema once when endpoint admission needs schema-aware read-only database typing. */
+export function endpointFor<Schema extends SchemaDefinition>(schema: Schema): EndpointBuilder<Schema> {
+  void schema;
+  return endpoint as EndpointBuilder<Schema>;
 }
 
 /** Declare the single provider-neutral email-event subscription for a Capsule. */
@@ -329,23 +419,23 @@ function tableDefinition<const Fields extends UnknownRecord>(fields: Fields, acl
   };
 }
 
-export function String() {
+export function String(): FieldBuilder<string> {
   return field("String");
 }
 
-export function Boolean() {
+export function Boolean(): FieldBuilder<boolean> {
   return field("Boolean");
 }
 
-export function Number() {
+export function Number(): FieldBuilder<number> {
   return field("Number");
 }
 
-export function Date() {
+export function Date(): FieldBuilder<string | globalThis.Date | null> {
   return field("Date");
 }
 
-export function Json() {
+export function Json<Value extends JsonValue = JsonValue>(): FieldBuilder<Value> {
   return field("Json");
 }
 
@@ -527,6 +617,11 @@ export function endpoint(options, handler) {
     options,
     handler,
   };
+}
+
+export function endpointFor(schema) {
+  void schema;
+  return endpoint;
 }
 
 export function emailEvent(handler) {

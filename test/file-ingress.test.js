@@ -1460,6 +1460,183 @@ test("a scoped service-user Access key claims a File owned by that non-session a
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("authenticated endpoint multipart admission filters request heads before reading or staging", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-endpoint-multipart-admission-")); let database;
+  try {
+    const calls = [];
+    const definition = capsule({ name: "endpoint-multipart-admission", schema: { resources: table({ key: StringField() }) }, accessKeys: { scopes: ["attachments:write"] }, endpoints: {
+      upload: endpoint({ method: "POST", path: "/admit", body: { multipart: { ...ingressPolicy(), admit: async ({ auth, credential, request, db }) => {
+        calls.push({ auth, credential, request, resources: await db.resources.all() });
+        return { allow: request.query.resource === "available" && request.headers["x-route"] === "attachments" };
+      } } } }, requireAuth({ scopes: ["attachments:write"] }, async (ctx) => await ctx.files.claim(ctx.request.multipart.files[0], { path: `/attachments/${ctx.auth.userId}.txt` }))),
+    } });
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "endpoint-multipart-admission", files: { storagePath: path.join(dir, "files") }, accessKeys: { enabled: true } }, definition);
+    await seedIngressUser(database);
+    await database.adapter.withTransaction((tx) => tx.prepare("INSERT INTO [resources] ([id], [createdAt], [updatedAt], [key]) VALUES (?, ?, ?, ?)").run("resource", "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z", "attachments"));
+    let reads = 0; const denied = ingressRequest("endpoint-admit-denied"); denied.headers["x-route"] = "other"; denied[Symbol.asyncIterator] = async function* () { reads += 1; yield multipart("claim"); };
+    await assert.rejects(runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/admit?resource=available"), denied), { code: "MULTIPART_ADMISSION_DENIED" });
+    assert.equal(reads, 0); assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 0);
+    assert.equal(calls[0].auth.userId, "claim-user"); assert.equal(calls[0].credential.kind, "session"); assert.equal(calls[0].request.query.resource, "available"); assert.equal(calls[0].resources[0].key, "attachments");
+    const allowed = ingressRequest("endpoint-admit-allowed"); allowed.headers["x-route"] = "attachments";
+    const file = await runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/admit?resource=available"), allowed);
+    assert.ok(file.id);
+    const token = await seedIngressAccessKey(database, "access-admission-owner"); const access = accessKeyIngressRequest(token, "endpoint-admit-access"); access.headers["x-route"] = "attachments";
+    const accessFile = await runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/admit?resource=available"), access);
+    assert.ok(accessFile.id); assert.equal(calls.at(-1).credential.kind, "access-key"); assert.equal(calls.at(-1).auth.userId, "access-admission-owner");
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("endpoint multipart admission fails closed before body consumption and does not run for an unauthenticated request", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-endpoint-multipart-admission-failures-")); let database;
+  try {
+    let calls = 0; let outcome = "throw";
+    const definition = capsule({ name: "endpoint-multipart-admission-failures", endpoints: {
+      upload: endpoint({ method: "POST", path: "/admit-failures", body: { multipart: { ...ingressPolicy(), admit: () => {
+        calls += 1; if (outcome === "throw") throw new Error("private policy detail"); if (outcome === "malformed") return { allow: "yes" }; return { allow: false };
+      } } } }, requireAuth(async (ctx) => await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/never.txt" }))),
+    } });
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "endpoint-multipart-admission-failures", files: { storagePath: path.join(dir, "files") } }, definition);
+    await seedIngressUser(database);
+    for (const next of ["throw", "malformed", "deny"]) {
+      outcome = next; let reads = 0; const request = ingressRequest(`admit-${next}`); request[Symbol.asyncIterator] = async function* () { reads += 1; yield multipart("claim"); };
+      let error; await assert.rejects(runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/admit-failures"), request), (value) => { error = value; return value.code === "MULTIPART_ADMISSION_DENIED"; });
+      assert.equal(reads, 0); assert.equal(error.message, "Multipart request was not admitted."); assert.equal(JSON.stringify(error).includes("private policy detail"), false);
+    }
+    const unauthenticated = ingressRequest("admit-unauthenticated"); delete unauthenticated.headers["x-sporades-session-token"]; let reads = 0; unauthenticated[Symbol.asyncIterator] = async function* () { reads += 1; yield multipart("claim"); };
+    await assert.rejects(runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/admit-failures"), unauthenticated), { code: "UNAUTHENTICATED" });
+    assert.equal(calls, 3); assert.equal(reads, 0); assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 0);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("the handler rechecks a mutable admission condition before claiming staged ingress", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-endpoint-multipart-admission-recheck-")); let database;
+  try {
+    let resourceAvailable = true; let effects = 0;
+    const definition = capsule({ name: "endpoint-multipart-admission-recheck", endpoints: {
+      upload: endpoint({ method: "POST", path: "/admit-recheck", body: { multipart: { ...ingressPolicy(), admit: () => {
+        resourceAvailable = false;
+        return { allow: true };
+      } } } }, requireAuth(async (ctx) => {
+        if (!resourceAvailable) throw Object.assign(new Error("Resource condition changed."), { code: "RESOURCE_UNAVAILABLE" });
+        effects += 1;
+        return await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/never.txt" });
+      })),
+    } });
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "endpoint-multipart-admission-recheck", files: { storagePath: path.join(dir, "files") } }, definition);
+    await seedIngressUser(database);
+    await assert.rejects(runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/admit-recheck"), ingressRequest("admit-recheck")), { code: "RESOURCE_UNAVAILABLE" });
+    assert.equal(effects, 0); assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_files]").get()).count), 0);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("an overdue endpoint multipart admission fails closed without advancing the body", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-endpoint-multipart-admission-timeout-")); let database;
+  try {
+    const definition = capsule({ name: "endpoint-multipart-admission-timeout", endpoints: {
+      upload: endpoint({ method: "POST", path: "/admit-timeout", body: { multipart: { ...ingressPolicy(), admit: async () => await new Promise((resolve) => setTimeout(() => resolve({ allow: true }), 5_100)) } } }, requireAuth(async (ctx) => await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/never.txt" }))),
+    } });
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "endpoint-multipart-admission-timeout", files: { storagePath: path.join(dir, "files") } }, definition);
+    await seedIngressUser(database); let reads = 0; const request = ingressRequest("admit-timeout"); request[Symbol.asyncIterator] = async function* () { reads += 1; yield multipart("claim"); };
+    await assert.rejects(runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/admit-timeout"), request), { code: "MULTIPART_ADMISSION_DENIED" });
+    assert.equal(reads, 0); assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 0);
+    assert.equal((await database.adapter.prepare("SELECT 1 AS [value]").get()).value, 1, "timeout releases the read transaction before a late policy settles");
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("endpoint multipart admission denies expiry or disconnect during transaction settlement before body work", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-endpoint-multipart-admission-settlement-")); let database;
+  try {
+    for (const mode of ["timeout", "abort"]) {
+      let hooks = 0; let handlers = 0; let releaseCommit; let commitEntered;
+      const commitReady = new Promise((resolve) => { commitEntered = resolve; });
+      const commitRelease = new Promise((resolve) => { releaseCommit = resolve; });
+      const definition = capsule({ name: `endpoint-multipart-admission-settlement-${mode}`, endpoints: {
+        upload: endpoint({ method: "POST", path: `/${mode}`, body: { multipart: { ...ingressPolicy(), admit: () => { hooks += 1; return { allow: true }; } } } }, requireAuth(async (ctx) => { handlers += 1; return await ctx.files.claim(ctx.request.multipart.files[0], { path: `/attachments/${mode}.txt` }); })),
+      } });
+      database = await openDevDatabase(path.join(dir, `${mode}.db`), "", {}, { name: `endpoint-multipart-admission-settlement-${mode}`, files: { storagePath: path.join(dir, `${mode}-files`) } }, definition);
+      await seedIngressUser(database);
+      const originalAdapter = database.adapter; const transactionOperations = Symbol.for("sporades.database.transactionOperations"); let holdCommit = true;
+      database.adapter = Object.create(originalAdapter);
+      Object.defineProperty(database.adapter, transactionOperations, {
+        value: () => {
+          const operations = originalAdapter[transactionOperations]();
+          return { ...operations, async exec(statement, ...params) {
+            if (holdCommit && statement === "COMMIT") {
+              holdCommit = false; commitEntered(); await commitRelease;
+              if (mode === "timeout") throw new Error("late commit failure");
+            }
+            return await operations.exec(statement, ...params);
+          } };
+        },
+      });
+      let reads = 0; const request = ingressRequest(`settlement-${mode}`); request[Symbol.asyncIterator] = async function* () { reads += 1; yield multipart("claim"); };
+      const cancellation = new AbortController(); if (mode === "abort") request.signal = cancellation.signal;
+      const pending = runEndpoint(database, database.endpoints[0], new URL(`http://capsule.test/${mode}`), request);
+      void pending.catch(() => {});
+      await Promise.race([commitReady, new Promise((_, reject) => setTimeout(() => reject(new Error("admission transaction did not reach COMMIT")), 1_000))]);
+      if (mode === "timeout") await new Promise((resolve) => setTimeout(resolve, 5_100)); else cancellation.abort();
+      await assert.rejects(pending, { code: "MULTIPART_ADMISSION_DENIED" });
+      assert.equal(hooks, 1); assert.equal(handlers, 0); assert.equal(reads, 0);
+      let nextEntered = false;
+      const next = database.adapter.withTransaction(async () => { nextEntered = true; });
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(nextEntered, false, "the actual connection gate remains held until the delayed settlement releases");
+      releaseCommit();
+      let recoveryTimer;
+      try {
+        await Promise.race([next, new Promise((_, reject) => { recoveryTimer = setTimeout(() => reject(new Error("queued transaction did not recover after delayed settlement")), 1_000); })]);
+      } finally { clearTimeout(recoveryTimer); }
+      assert.equal(handlers, 0, "a late transaction settlement cannot re-enter the endpoint handler");
+      assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 0);
+      database.adapter = originalAdapter;
+      await runEndpoint(database, database.endpoints[0], new URL(`http://capsule.test/${mode}`), ingressRequest(`settlement-next-${mode}`));
+      assert.equal(handlers, 1, "a later admitted request proceeds after the held transaction settles");
+      await database.close(); database = undefined;
+    }
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("endpoint multipart staging rechecks a disconnect that arrives after admission cleanup", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-endpoint-multipart-admission-staging-boundary-")); let database;
+  try {
+    let hooks = 0; let handlers = 0; let reads = 0; let abortedChecks = 0;
+    const definition = capsule({ name: "endpoint-multipart-admission-staging-boundary", endpoints: {
+      upload: endpoint({ method: "POST", path: "/boundary", body: { multipart: { ...ingressPolicy(), admit: () => { hooks += 1; return { allow: true }; } } } }, requireAuth(async (ctx) => { handlers += 1; return await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/boundary.txt" }); })),
+    } });
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "endpoint-multipart-admission-staging-boundary", files: { storagePath: path.join(dir, "files") } }, definition);
+    await seedIngressUser(database);
+    const request = ingressRequest("staging-boundary"); request[Symbol.asyncIterator] = async function* () { reads += 1; yield multipart("claim"); };
+    request.signal = {
+      get aborted() { abortedChecks += 1; return abortedChecks >= 2; },
+      addEventListener() {}, removeEventListener() {},
+    };
+    await assert.rejects(runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/boundary"), request), { code: "MULTIPART_ADMISSION_DENIED" });
+    assert.equal(hooks, 1); assert.equal(handlers, 0); assert.equal(reads, 0);
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 0);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a route-level already-aborted request cannot enter endpoint multipart admission", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-endpoint-multipart-admission-aborted-")); let database;
+  try {
+    let calls = 0; let handlers = 0;
+    const definition = capsule({ name: "endpoint-multipart-admission-aborted", endpoints: {
+      upload: endpoint({ method: "POST", path: "/admit-aborted", body: { multipart: { ...ingressPolicy(), admit: () => { calls += 1; return { allow: true }; } } } }, requireAuth(async (ctx) => { handlers += 1; return await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/never.txt" }); })),
+    } });
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "endpoint-multipart-admission-aborted", files: { storagePath: path.join(dir, "files") } }, definition);
+    await seedIngressUser(database); let reads = 0;
+    const request = Object.assign(new EventEmitter(), { method: "POST", url: "/admit-aborted", headers: { "x-sporades-session-token": "claim-session", "content-type": "multipart/form-data; boundary=claim", "idempotency-key": "admit-aborted" }, aborted: true, destroyed: false,
+      async *[Symbol.asyncIterator]() { reads += 1; yield multipart("claim"); },
+    });
+    const response = { status: null, body: "", setHeader() {}, writeHead(status) { this.status = status; }, end(body = "") { this.body = String(body); } };
+    assert.equal(await routeEndpoint(database, request, response), true);
+    assert.equal(response.status, 500, response.body); assert.match(response.body, /MULTIPART_ADMISSION_DENIED/); assert.equal(calls, 0); assert.equal(handlers, 0); assert.equal(reads, 0);
+    assert.equal(request.listenerCount("aborted"), 0, "route cleanup removes its abort listener");
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 0);
+    assert.equal((await database.adapter.prepare("SELECT 1 AS [value]").get()).value, 1, "an already-aborted request releases its admission transaction promptly");
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("Capsule-principal claims persist a reserved owner and digest, never the raw principal key", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-principal-owner-")); let database;
   try {
@@ -1564,9 +1741,9 @@ test("trusted ingress has identical denial, claim, replay, restart, disconnect, 
   await withFakeS3CompatibleService(async ({ endpoint: storageEndpoint, objects }) => {
     const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-minio-")); let database; const namespace = `ingress-${randomUUID()}`;
     try {
-      let shouldClaim = true;
+      let shouldClaim = true; let admissions = 0;
       const definition = capsule({ name: namespace, endpoints: {
-        upload: endpoint({ method: "POST", path: "/minio", body: { multipart: ingressPolicy() } }, requireAuth(async (ctx) => shouldClaim ? await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/minio.txt" }) : ctx.request.multipart.files[0])),
+        upload: endpoint({ method: "POST", path: "/minio", body: { multipart: { ...ingressPolicy(), admit: ({ request }) => { admissions += 1; return { allow: request.headers["x-resource-state"] === "available" }; } } } }, requireAuth(async (ctx) => shouldClaim ? await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/minio.txt" }) : ctx.request.multipart.files[0])),
         denied: endpoint({ method: "POST", path: "/minio-denied", body: { multipart: ingressPolicy() } }, requireAuth(() => ({ body: { impossible: true } }))),
       } });
       const dbPath = path.join(dir, "data.db"); const config = { name: namespace, services: { storage: { kind: "storage", engine: "minio" } } };
@@ -1575,12 +1752,15 @@ test("trusted ingress has identical denial, claim, replay, restart, disconnect, 
       let deniedReads = 0; const denied = ingressRequest("minio-denied"); delete denied.headers["x-sporades-session-token"]; denied[Symbol.asyncIterator] = async function* () { deniedReads += 1; yield multipart("claim"); };
       await assert.rejects(runEndpoint(database, database.endpoints.find((route) => route.options.path === "/minio-denied"), new URL("http://capsule.test/minio-denied"), denied), { code: "UNAUTHENTICATED" }); assert.equal(deniedReads, 0); assert.equal(objects.size, 0);
       const route = database.endpoints.find((candidate) => candidate.options.path === "/minio");
-      const claims = await Promise.all(Array.from({ length: 20 }, () => runEndpoint(database, route, new URL("http://capsule.test/minio"), ingressRequest("minio-claim"))));
+      let admissionReads = 0; const admissionDenied = ingressRequest("minio-admission-denied"); admissionDenied[Symbol.asyncIterator] = async function* () { admissionReads += 1; yield multipart("claim"); };
+      await assert.rejects(runEndpoint(database, route, new URL("http://capsule.test/minio"), admissionDenied), { code: "MULTIPART_ADMISSION_DENIED" }); assert.equal(admissionReads, 0); assert.equal(objects.size, 0); assert.equal(admissions, 1);
+      const admittedRequest = () => { const request = ingressRequest("minio-claim"); request.headers["x-resource-state"] = "available"; return request; };
+      const claims = await Promise.all(Array.from({ length: 20 }, () => runEndpoint(database, route, new URL("http://capsule.test/minio"), admittedRequest())));
       assert.equal(new Set(claims.map((file) => file.id)).size, 1); assert.equal(objects.size, 1); const canonicalKey = [...objects.keys()][0]; assert.ok(canonicalKey.startsWith(`capsules/${namespace}/files/`));
-      await database.close(); database = await openDevDatabase(dbPath, "", serviceEnv, config, definition, { serviceEnv }); const replay = await runEndpoint(database, database.endpoints.find((candidate) => candidate.options.path === "/minio"), new URL("http://capsule.test/minio"), ingressRequest("minio-claim")); assert.equal(replay.id, claims[0].id); assert.deepEqual([...objects.keys()], [canonicalKey]);
-      const truncated = ingressRequest("minio-truncated"); truncated[Symbol.asyncIterator] = async function* () { yield Buffer.from("--claim\r\nContent-Disposition: form-data; name=\"file\"; filename=\"cut.txt\"\r\n\r\npartial"); };
+      await database.close(); database = await openDevDatabase(dbPath, "", serviceEnv, config, definition, { serviceEnv }); const replay = await runEndpoint(database, database.endpoints.find((candidate) => candidate.options.path === "/minio"), new URL("http://capsule.test/minio"), admittedRequest()); assert.equal(replay.id, claims[0].id); assert.deepEqual([...objects.keys()], [canonicalKey]);
+      const truncated = admittedRequest(); truncated.headers["idempotency-key"] = "minio-truncated"; truncated[Symbol.asyncIterator] = async function* () { yield Buffer.from("--claim\r\nContent-Disposition: form-data; name=\"file\"; filename=\"cut.txt\"\r\n\r\npartial"); };
       await assert.rejects(runEndpoint(database, database.endpoints.find((candidate) => candidate.options.path === "/minio"), new URL("http://capsule.test/minio"), truncated), { code: "INVALID_MULTIPART" }); assert.deepEqual([...objects.keys()], [canonicalKey]);
-      shouldClaim = false; const orphan = await runEndpoint(database, database.endpoints.find((candidate) => candidate.options.path === "/minio"), new URL("http://capsule.test/minio"), ingressRequest("minio-orphan")); const orphanRow = await expireIngressReceipt(database, orphan.leaseId); const orphanKey = `capsules/${namespace}/files/${orphanRow.fileId}/${orphanRow.version}`; assert.equal(objects.has(orphanKey), true);
+      shouldClaim = false; const orphanRequest = admittedRequest(); orphanRequest.headers["idempotency-key"] = "minio-orphan"; const orphan = await runEndpoint(database, database.endpoints.find((candidate) => candidate.options.path === "/minio"), new URL("http://capsule.test/minio"), orphanRequest); const orphanRow = await expireIngressReceipt(database, orphan.leaseId); const orphanKey = `capsules/${namespace}/files/${orphanRow.fileId}/${orphanRow.version}`; assert.equal(objects.has(orphanKey), true);
       const swept = await sweepExpiredFileIngress(database, { limit: 1 }); assert.equal(swept.cleaned.length, 1); assert.equal(objects.has(orphanKey), false); assert.deepEqual([...objects.keys()], [canonicalKey]);
     } finally {
       await database?.close();

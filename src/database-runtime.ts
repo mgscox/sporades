@@ -220,19 +220,45 @@ function createConnectionTransactionGate() {
     return new Promise((resolve, reject) => pending.push({ operation, resolve, reject }));
   };
 
-  const runTransaction = async <Value>(operation: () => Value): Promise<Awaited<Value>> => {
+  const cancelledTransaction = () => Object.assign(new Error("Database transaction acquisition was cancelled."), { code: "TRANSACTION_ACQUISITION_CANCELLED" });
+  const runTransaction = async <Value>(operation: () => Value, options: { signal?: AbortSignal } = {}): Promise<Awaited<Value>> => {
     if (transactionOwnership.getStore() === transactionOwner) return await rejectNestedTransactionScope();
     const previous = transactionTail;
     let release: () => void = () => {};
     transactionTail = new Promise<void>((resolve) => { release = resolve; });
-    await previous.catch(() => {});
-    transactionActive = true;
+    const waitForPrevious = previous.catch(() => {});
+    // A cancelled waiter must settle its caller immediately, but its place in
+    // the serial chain cannot be released until its predecessor has finished:
+    // otherwise a later transaction could overlap the still-active owner.
+    if (options.signal?.aborted) {
+      void waitForPrevious.then(release);
+      throw cancelledTransaction();
+    }
+    let removeAbort = () => {};
+    let entered = false;
     try {
+      await Promise.race([
+        waitForPrevious,
+        new Promise<never>((_, reject) => {
+          const abort = () => reject(cancelledTransaction());
+          options.signal?.addEventListener?.("abort", abort, { once: true });
+          removeAbort = () => options.signal?.removeEventListener?.("abort", abort);
+        }),
+      ]);
+      removeAbort();
+      if (options.signal?.aborted) throw cancelledTransaction();
+      transactionActive = true;
+      entered = true;
       return await transactionOwnership.run(transactionOwner, operation);
     } finally {
-      transactionActive = false;
-      await drainPending();
-      release();
+      removeAbort();
+      if (entered) {
+        transactionActive = false;
+        await drainPending();
+        release();
+      } else {
+        void waitForPrevious.then(release);
+      }
     }
   };
 
@@ -1706,7 +1732,7 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
     engine: "sqlite",
     dialect,
     normalization: sqliteRowNormalization(),
-    async withTransaction(fn: (transactionAdapter: LooseRecord) => any) {
+    async withTransaction(fn: (transactionAdapter: LooseRecord) => any, options: { signal?: AbortSignal } = {}) {
       return await connectionGate.runTransaction(async () => {
         const ownerOperations: LooseRecord = typeof (this as any)[transactionOperations] === "function"
           ? (this as any)[transactionOperations]()
@@ -1727,7 +1753,7 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
           await transactionExec("ROLLBACK");
           throw error;
         }
-      });
+      }, options);
     },
     async withReadOnlySnapshot(fn: (transactionAdapter: LooseRecord) => any) {
       return await connectionGate.runTransaction(async () => {
@@ -1848,7 +1874,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     // goes, or the moment a new engine composes the set without knowing to shadow it. `ensureLogStorage`
     // is the sharpest illustration — a copy of its bare `CREATE TABLE` here would be a Log index
     // that silently never ran ADR-0036's ordering migration.
-    async withTransaction(fn: (transactionAdapter: LooseRecord) => any) {
+    async withTransaction(fn: (transactionAdapter: LooseRecord) => any, options: { signal?: AbortSignal } = {}) {
       return await connectionGate.runTransaction(async () => {
         await rawQuery("BEGIN");
         try {
@@ -1867,7 +1893,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
           } catch { }
           throw error;
         }
-      });
+      }, options);
     },
     async withReadOnlySnapshot(fn: (adapter: LooseRecord) => any) {
       return await connectionGate.runTransaction(async () => {
@@ -2417,7 +2443,7 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
     // Postgres adapter states above. Six used to: the two storage bootstraps, the OAuth state
     // consume, and three await-shims over Log index methods that ADR-0036 corrected in the shared
     // body instead.
-    async withTransaction(fn: (transactionAdapter: LooseRecord) => any) {
+    async withTransaction(fn: (transactionAdapter: LooseRecord) => any, options: { signal?: AbortSignal } = {}) {
       assertLibsqlOpen(closed);
       return await connectionGate.runTransaction(async () => {
         assertLibsqlOpen(closed);
@@ -2445,7 +2471,7 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
         } finally {
           activeTransactions.delete(transaction);
         }
-      });
+      }, options);
     },
     async withReadOnlySnapshot(fn: (adapter: LooseRecord) => any) {
       assertLibsqlOpen(closed);

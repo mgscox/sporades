@@ -1568,13 +1568,15 @@ export function validateMultipartIngressPolicy(policy: RecordLike) {
   if (!policy || typeof policy !== "object" || Array.isArray(policy)) invalid();
   for (const name of ["maxFiles", "maxFileBytes", "maxTotalFileBytes"]) if (typeof policy[name] !== "number" || !Number.isFinite(policy[name]) || !Number.isInteger(policy[name]) || policy[name] <= 0) invalid();
   for (const name of ["maxFieldCount", "maxFieldBytes", "maxTotalFieldBytes"]) if (typeof policy[name] !== "number" || !Number.isFinite(policy[name]) || !Number.isInteger(policy[name]) || policy[name] < 0) invalid();
-  const allowedKeys = new Set(["maxFiles", "maxFileBytes", "maxTotalFileBytes", "maxFieldCount", "maxFieldBytes", "maxTotalFieldBytes", "allowedPathPrefixes", "allowedMimeTypes", "requestKeyHeader", "partKeyHeader", "requireStablePartKeys", "claimAuthorities", "inspection"]);
+  const allowedKeys = new Set(["maxFiles", "maxFileBytes", "maxTotalFileBytes", "maxFieldCount", "maxFieldBytes", "maxTotalFieldBytes", "allowedPathPrefixes", "allowedMimeTypes", "requestKeyHeader", "partKeyHeader", "requireStablePartKeys", "claimAuthorities", "inspection", "admit"]);
   if (Object.keys(policy).some((key) => !allowedKeys.has(key))) invalid();
   if (!Array.isArray(policy.allowedPathPrefixes) || policy.allowedPathPrefixes.length === 0 || policy.allowedPathPrefixes.some((value: any) => !validPathPrefix(value))) invalid();
   if (policy.allowedMimeTypes !== undefined && (!Array.isArray(policy.allowedMimeTypes) || policy.allowedMimeTypes.some((value: any) => typeof value !== "string" || safeType(value) !== value.toLowerCase()))) invalid();
   for (const name of ["requestKeyHeader", "partKeyHeader"]) if (typeof policy[name] !== "string" || policy[name].length > 100 || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(policy[name])) invalid();
   if (policy.requireStablePartKeys !== undefined && typeof policy.requireStablePartKeys !== "boolean") invalid();
   if (policy.claimAuthorities !== undefined && (!Array.isArray(policy.claimAuthorities) || policy.claimAuthorities.length !== 1 || !["actor", "capsule-principal"].includes(policy.claimAuthorities[0]))) invalid();
+  if (policy.admit !== undefined && typeof policy.admit !== "function") invalid();
+  if (policy.admit !== undefined && policy.claimAuthorities?.[0] === "capsule-principal") invalid();
   const inspection = normalizedInspectionPolicy(policy.inspection);
   return inspection ? { ...policy, inspection } : policy;
 }

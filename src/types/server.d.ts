@@ -183,7 +183,21 @@ export type FileIngressPrincipal = Readonly<{ namespace: string; key: string }>;
 export type FileIngressInspection = Readonly<{ policyRevision: string; maxVerdictAgeMs?: number; requiredInspectors: readonly ("content-policy-v1" | "clamav")[] }>;
 export type FileIngressAdmissionDecision = Readonly<{ allow: false } | { allow: true; principal: FileIngressPrincipal }>;
 export type FileIngressAdmissionRequest = Readonly<{ method: string; path: string; headers: Readonly<Record<string, string>>; query: Readonly<Record<string, string>> }>;
+/** Shared immutable request head supplied to endpoint multipart admission. */
+export type EndpointMultipartAdmissionRequest = FileIngressAdmissionRequest;
 export type FileIngressAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
+/** An authenticated, read-only policy context evaluated before a multipart endpoint reads its request body. */
+export type EndpointMultipartAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ auth: AuthContext; credential: CredentialProvenance; db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
+/** The endpoint policy can only continue or reject this request; it cannot provide file claim authority. */
+export type EndpointMultipartAdmissionDecision = Readonly<{ allow: true } | { allow: false }>;
+/** Runtime-owned bounds and stable identifiers for one endpoint multipart ingress request. */
+export type EndpointMultipartIngressLimits = Readonly<{ maxFiles: number; maxFileBytes: number; maxTotalFileBytes: number; maxFieldCount: number; maxFieldBytes: number; maxTotalFieldBytes: number; allowedMimeTypes?: readonly string[]; allowedPathPrefixes: readonly string[]; requestKeyHeader: string; partKeyHeader: string; requireStablePartKeys?: boolean; inspection?: FileIngressInspection }>;
+/** Actor-owned ingress may apply a request-specific admission policy. */
+export type EndpointActorMultipartIngressOptions<Schema extends SchemaDefinition = SchemaDefinition> = EndpointMultipartIngressLimits & Readonly<{ claimAuthorities?: readonly ["actor"]; admit?(ctx: EndpointMultipartAdmissionContext<Schema>, request: FileIngressAdmissionRequest): MaybePromise<EndpointMultipartAdmissionDecision> }>;
+/** Capsule-principal ingress has its separate Capsule-level admission policy and cannot add actor admission. */
+export type EndpointCapsulePrincipalMultipartIngressOptions = EndpointMultipartIngressLimits & Readonly<{ claimAuthorities: readonly ["capsule-principal"]; admit?: never }>;
+/** One of the supported endpoint multipart ingress authority modes. */
+export type EndpointMultipartIngressOptions<Schema extends SchemaDefinition = SchemaDefinition> = EndpointActorMultipartIngressOptions<Schema> | EndpointCapsulePrincipalMultipartIngressOptions;
 export type CapsuleFilesDefinition<Schema extends SchemaDefinition = SchemaDefinition> = {
   acl?: FileAclRules; accessKeys?: CapsuleFileAccessKeyPolicy;
   ingress?: { principalNamespaces: readonly string[]; admit(ctx: FileIngressAdmissionContext<Schema>, request: FileIngressAdmissionRequest): MaybePromise<FileIngressAdmissionDecision> };
@@ -1058,17 +1072,18 @@ export type MutationDefinition<Handler = MutationHandler> = {
 };
 
 /** HTTP method/path options for a Custom endpoint. */
-export type EndpointOptions = {
+export type EndpointOptions<Schema extends SchemaDefinition = SchemaDefinition> = {
   method: string;
   path: string;
   response?: { fileAttachment: true };
-  body?: { multipart: { maxFiles: number; maxFileBytes: number; maxTotalFileBytes: number; maxFieldCount: number; maxFieldBytes: number; maxTotalFieldBytes: number; allowedMimeTypes?: readonly string[]; allowedPathPrefixes: readonly string[]; requestKeyHeader: string; partKeyHeader: string; requireStablePartKeys?: boolean; claimAuthorities?: readonly ["actor" | "capsule-principal"]; inspection?: FileIngressInspection; } };
+  body?: { multipart: EndpointMultipartIngressOptions<Schema> };
 };
-export type EndpointFileAttachmentOptionsDeclaration = EndpointOptions & { response: { fileAttachment: true } };
+/** Endpoint declaration that permits an opaque File attachment response. */
+export type EndpointFileAttachmentOptionsDeclaration<Schema extends SchemaDefinition = SchemaDefinition> = EndpointOptions<Schema> & { response: { fileAttachment: true } };
 
-export type EndpointDefinition<Handler = EndpointHandler> = {
+export type EndpointDefinition<Handler = EndpointHandler, Schema extends SchemaDefinition = SchemaDefinition> = {
   kind: "endpoint";
-  options: EndpointOptions;
+  options: EndpointOptions<Schema>;
   handler: Handler;
 };
 
@@ -1182,7 +1197,7 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   schema?: Schema;
   queries?: Record<string, QueryDefinition<QueryHandler<Schema, any> | AuthGuardedHandler<(...args: any[]) => any>>>;
   mutations?: Record<string, MutationDefinition<MutationHandler<Schema, any[]> | AuthGuardedHandler<(...args: any[]) => any>>>;
-  endpoints?: Record<string, EndpointDefinition<EndpointHandler<Schema> | EndpointFileAttachmentHandler<Schema> | AuthGuardedHandler<(...args: any[]) => any>>>;
+  endpoints?: Record<string, EndpointDefinition<EndpointHandler<Schema> | EndpointFileAttachmentHandler<Schema> | AuthGuardedHandler<(...args: any[]) => any>, Schema>>;
   emailEvents?: EmailEventDefinition<EmailEventHandler<Schema>>;
   stripeEvents?: StripeEventDefinition<StripeEventHandler<Schema>> | AtomicStripeEventDefinition<AtomicStripeEventHandler<Schema>>;
   messages?: Record<string, MessageDefinition<MessageHandler<Schema> | AuthGuardedHandler<(...args: any[]) => any>>>;
@@ -1221,6 +1236,9 @@ export type Capsule<Definition extends object = CapsuleDefinition> = Definition 
  * migrations, wire auth, register queries/mutations/endpoints/messages, and
  * start the runtime context.
  */
+export function capsule<const Schema extends SchemaDefinition, const Definition extends CapsuleDefinition<NoInfer<Schema>>>(
+  definition: Definition & { schema: Schema },
+): Capsule<Definition>;
 export function capsule<const Schema extends SchemaDefinition, const Definition extends CapsuleDefinition<Schema>>(
   definition: Definition & { schema?: Schema },
 ): Capsule<Definition>;
@@ -1267,9 +1285,17 @@ export function requireAuth<Handler extends (...args: any[]) => any>(
   handler: Handler,
 ): AuthGuardedHandler<Handler>;
 /** Define a Custom endpoint for HTTP integrations such as webhooks. */
-export function endpoint(options: EndpointFileAttachmentOptionsDeclaration, handler: EndpointFileAttachmentHandler): EndpointDefinition<EndpointFileAttachmentHandler>;
-export function endpoint(options: EndpointOptions, handler: EndpointHandler): EndpointDefinition<EndpointHandler>;
-export function endpoint<Handler extends (...args: any[]) => any>(options: EndpointOptions, handler: AuthGuardedHandler<Handler>): EndpointDefinition<AuthGuardedHandler<Handler>>;
+export function endpoint<Schema extends SchemaDefinition = SchemaDefinition>(options: EndpointFileAttachmentOptionsDeclaration<Schema>, handler: EndpointFileAttachmentHandler<Schema>): EndpointDefinition<EndpointFileAttachmentHandler<Schema>, Schema>;
+export function endpoint<Schema extends SchemaDefinition = SchemaDefinition>(options: EndpointOptions<Schema>, handler: EndpointHandler<Schema>): EndpointDefinition<EndpointHandler<Schema>, Schema>;
+export function endpoint<Schema extends SchemaDefinition = SchemaDefinition, Handler extends (...args: any[]) => any = (...args: any[]) => any>(options: EndpointOptions<Schema>, handler: AuthGuardedHandler<Handler>): EndpointDefinition<AuthGuardedHandler<Handler>, Schema>;
+/** Schema-bound endpoint declaration helper for callbacks that read the Capsule database before request-body handling. */
+export type EndpointBuilder<Schema extends SchemaDefinition> = {
+  (options: EndpointFileAttachmentOptionsDeclaration<Schema>, handler: EndpointFileAttachmentHandler<Schema>): EndpointDefinition<EndpointFileAttachmentHandler<Schema>, Schema>;
+  (options: EndpointOptions<Schema>, handler: EndpointHandler<Schema>): EndpointDefinition<EndpointHandler<Schema>, Schema>;
+  <Handler extends (...args: any[]) => any>(options: EndpointOptions<Schema>, handler: AuthGuardedHandler<Handler>): EndpointDefinition<AuthGuardedHandler<Handler>, Schema>;
+};
+/** Bind a declared Capsule schema once when endpoint admission needs schema-aware read-only database typing. */
+export function endpointFor<Schema extends SchemaDefinition>(schema: Schema): EndpointBuilder<Schema>;
 
 /** Declare the single provider-neutral email-event subscription for a Capsule. */
 export function emailEvent<Handler extends EmailEventHandler>(handler: Handler): EmailEventDefinition<Handler>;

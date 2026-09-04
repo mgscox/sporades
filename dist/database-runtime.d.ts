@@ -34,7 +34,9 @@ export declare function createLibsqlDatabaseAdapter(options: {
     engine: string;
     dialect: LooseRecord;
     normalization: LooseRecord;
-    withTransaction(fn: (transactionAdapter: LooseRecord) => any): Promise<any>;
+    withTransaction(fn: (transactionAdapter: LooseRecord) => any, options?: {
+        signal?: AbortSignal;
+    }): Promise<any>;
     withReadOnlySnapshot(fn: (adapter: LooseRecord) => any): Promise<any>;
     close(): Promise<void>;
     exec(sql: string): any;

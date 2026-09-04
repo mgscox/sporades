@@ -59,6 +59,11 @@ export function endpoint(options, handler) {
         handler,
     };
 }
+/** Bind a declared Capsule schema once when endpoint admission needs schema-aware read-only database typing. */
+export function endpointFor(schema) {
+    void schema;
+    return endpoint;
+}
 /** Declare the single provider-neutral email-event subscription for a Capsule. */
 export function emailEvent(handler) {
     return { kind: "emailEvent", handler };
@@ -317,6 +322,11 @@ export function endpoint(options, handler) {
     options,
     handler,
   };
+}
+
+export function endpointFor(schema) {
+  void schema;
+  return endpoint;
 }
 
 export function emailEvent(handler) {

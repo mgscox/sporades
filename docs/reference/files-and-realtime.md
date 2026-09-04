@@ -428,6 +428,44 @@ limits. Fragmented multipart boundaries are supported; malformed or truncated
 streams fail without publishing a partial lease. Completed parts appear only
 as private, expiring leases in `ctx.request.multipart.files`. A lease has no
 File URL, File row, or ACL visibility.
+
+### Request-specific multipart admission
+
+An actor-owned multipart endpoint may add `admit` to apply a bounded,
+request-specific domain check after its Session or Access key is authenticated,
+but before any multipart bytes are consumed. The callback receives the admitted
+`auth` and credential provenance, immutable method/path/query/headers, and a
+transactionally consistent read-only `db` view. It returns only `{ allow: true
+}` or `{ allow: false }`; a denial, malformed result, throw, cancellation, or
+timeout returns the same bounded rejection and does not invoke the handler,
+stage a lease, or create a File.
+
+```ts
+const schema = { resources: table({ state: String() }) };
+const defineEndpoint = endpointFor(schema);
+
+capsule({ schema, endpoints: {
+  upload: defineEndpoint({ method: "POST", path: "/upload", body: { multipart: {
+    ...limits,
+    admit: async ({ auth, request, db }) => ({
+      allow: auth.isAuthenticated
+        && request.query.resource !== undefined
+        && (await db.resources.where("id", request.query.resource).get())?.state === "available",
+    }),
+  } } }, handler),
+} });
+```
+
+Use `endpointFor(schema)` when an endpoint callback needs schema-aware database
+typing, such as multipart admission. It binds the declared schema once; the
+ordinary `endpoint(...)` form remains suitable for endpoints that do not need
+that policy database view.
+
+This is an early request filter, not durable authority: handlers must recheck
+mutable domain conditions in their normal transaction before claiming a File.
+The callback cannot add scopes, replace the actor claim authority, or be used
+with Capsule-principal ingress admission. Omitting it preserves the existing
+multipart lifecycle.
 Both token and commonly emitted quoted `boundary` parameters are accepted;
 Sporades validates RFC 2046 `bchars`, applies HTTP-token restrictions to the
 unquoted form, and enforces the 70-character cap before reading the body.

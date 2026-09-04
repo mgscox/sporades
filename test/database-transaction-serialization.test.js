@@ -7,6 +7,36 @@ import { test } from "node:test";
 import { createSqliteDatabaseAdapter } from "../dist/server-runtime-source.js";
 import { POSTGRES_SKIP_REASON, withLibsqlAdapter, withPostgresAdapter } from "./support/database-adapter-engines.js";
 
+test("a cancelled queued transaction never enters after its connection gate owner releases", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-cancelled-transaction-gate-"));
+  let adapter;
+  try {
+    adapter = await createSqliteDatabaseAdapter(path.join(dir, "data.db"));
+    let releaseOwner;
+    let ownerEntered;
+    const ownerReady = new Promise((resolve) => { ownerEntered = resolve; });
+    const ownerRelease = new Promise((resolve) => { releaseOwner = resolve; });
+    const owner = adapter.withTransaction(async () => { ownerEntered(); await ownerRelease; });
+    await ownerReady;
+    const cancellation = new AbortController();
+    let cancelledEntered = false;
+    const cancelled = adapter.withTransaction(async () => { cancelledEntered = true; }, { signal: cancellation.signal });
+    cancellation.abort();
+    await assert.rejects(cancelled, /transaction acquisition was cancelled/i);
+    assert.equal(cancelledEntered, false);
+    let nextEntered = false;
+    const next = adapter.withTransaction(async () => { nextEntered = true; });
+    releaseOwner();
+    await owner;
+    await next;
+    assert.equal(cancelledEntered, false, "the cancelled callback never runs after the owner releases");
+    assert.equal(nextEntered, true, "the next legitimate transaction proceeds after the owner releases");
+  } finally {
+    await adapter?.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 async function assertNestedTransactionModesRejectPromptly(adapter) {
   for (const outerMode of ["withTransaction", "withReadOnlySnapshot"]) {
     for (const nestedMode of ["withTransaction", "withReadOnlySnapshot"]) {
