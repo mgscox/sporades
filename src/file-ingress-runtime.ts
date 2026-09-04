@@ -1264,12 +1264,24 @@ function clamavSocketCommand(database: RecordLike, command: Buffer, maximumReply
     socket.once("error", () => finish(null)); socket.once("end", () => { if (!settled) finish(null); });
   });
 }
-async function clamavInstream(database: RecordLike, bytes: Buffer) {
-  const signature = await currentLoadedClamavSignature(database);
+async function loadedClamavSignatureVersion(database: RecordLike, timeoutMs = 500) {
+  if (typeof database.__clamavTest?.loadedSignature === "string") return /^daily:\d{1,12}$/.test(database.__clamavTest.loadedSignature) ? database.__clamavTest.loadedSignature : null;
+  const versionReply = await clamavSocketCommand(database, Buffer.from("zVERSION\0"), 512, Math.max(1, Math.min(500, timeoutMs)));
+  const loadedVersion = /^ClamAV\s+[^/]{1,64}\/(\d{1,12})\//.exec(versionReply ?? "")?.[1];
+  return loadedVersion ? `daily:${loadedVersion}` : null;
+}
+async function clamavInstream(database: RecordLike, bytes: Buffer, requestSignature?: RecordLike | null) {
+  // A multipart request is one admission unit. Resolving the authenticated
+  // disk/daemon identity for each part lets freshclam's atomic publication
+  // window turn an otherwise healthy later part into "unavailable". Capture
+  // the exact ready identity once at request admission; every part still has
+  // its own bounded INSTREAM verdict, so a dead socket or malware never gets
+  // promoted by this cache.
+  const signature = requestSignature === undefined ? await currentLoadedClamavSignature(database) : requestSignature;
   if (!signature) return { outcome: "inconclusive", signatureVersion: "unavailable" };
   if (bytes.length > clamavMaximumStreamBytes) return { outcome: "inconclusive", signatureVersion: String(signature.version).slice(0, 128) };
   const socketPath = database.__clamavTest?.socketPath ?? database.__clamavDevSidecar?.socketPath ?? "/tmp/sporades-clamd.sock"; const timeoutMs = database.__clamavTest?.timeoutMs ?? 10_000;
-  return await new Promise<RecordLike>((resolve) => {
+  const scanned = await new Promise<RecordLike>((resolve) => {
     let settled = false; let response = Buffer.alloc(0); const socket = net.createConnection({ path: socketPath });
     const finish = (outcome: string) => { if (settled) return; settled = true; clearTimeout(timer); socket.destroy(); resolve({ outcome, signatureVersion: String(signature.version).slice(0, 128) }); };
     const timer = setTimeout(() => finish("inconclusive"), timeoutMs);
@@ -1277,6 +1289,19 @@ async function clamavInstream(database: RecordLike, bytes: Buffer) {
     socket.on("data", (chunk: Buffer) => { if (response.length + chunk.length > 4096) return finish("inconclusive"); response = Buffer.concat([response, chunk]); if (response.includes(0)) { const text = response.subarray(0, response.indexOf(0)).toString("utf8"); if (/^stream: OK$/.test(text)) finish("clean"); else if (/^stream: .+ FOUND$/.test(text)) finish("rejected"); else finish("inconclusive"); } });
     socket.once("error", () => finish("inconclusive")); socket.once("end", () => { if (!settled) finish("inconclusive"); });
   });
+  if (scanned.outcome !== "clean" && scanned.outcome !== "rejected") return scanned;
+  // The admission snapshot is evidence only while the daemon which performed
+  // this scan still reports that exact loaded database. A reload between two
+  // parts therefore fails closed rather than relabelling a later verdict with
+  // an earlier signature; ordinary on-disk freshclam publication alone does
+  // not disturb a healthy daemon's request identity.
+  const loadedSignature = await loadedClamavSignatureVersion(database);
+  const signatureFresh = isCurrentClamavSignature(signature, clamavNow(database));
+  // A positive malware verdict is irreversible evidence from the scanner. A
+  // later identity change cannot make it clean or merely inconclusive; retain
+  // rejection while withholding a version we can no longer authenticate.
+  if (scanned.outcome === "rejected") return signatureFresh && loadedSignature === signature.version ? scanned : { outcome: "rejected", signatureVersion: "unavailable" };
+  return signatureFresh && loadedSignature === signature.version ? scanned : { outcome: "inconclusive", signatureVersion: signatureFresh ? String(loadedSignature ?? "unavailable").slice(0, 128) : "unavailable" };
 }
 function waitForChild(child: any, timeoutMs: number) { if (clamavChildTerminated(child)) return Promise.resolve(child?.exitCode === 0); return new Promise<boolean>((resolve) => { let settled = false; const finish = (ok: boolean) => { if (settled) return; settled = true; clearTimeout(timer); resolve(ok); }; const timer = setTimeout(() => finish(false), Math.max(0, timeoutMs)); child.once("exit", (code: number) => finish(code === 0)); child.once("error", () => finish(false)); }); }
 function signalChildUntil(database: RecordLike, child: any, signal: string, deadline: number) {
@@ -1322,8 +1347,8 @@ async function currentLoadedClamavSignature(database: RecordLike, deadline = Num
   const signature = await verifiedClamavSignature(database, deadline); if (!isCurrentClamavSignature(signature, clamavNow(database))) return null;
   if (database.__clamavTest?.loadedSignature) return database.__clamavTest.loadedSignature === signature.version ? signature : null;
   const remaining = clamavRemaining(database, deadline); if (remaining <= 0) return null;
-  const versionReply = await clamavSocketCommand(database, Buffer.from("zVERSION\0"), 512, Math.min(500, remaining)); const loadedVersion = /^ClamAV\s+[^/]{1,64}\/(\d{1,12})\//.exec(versionReply ?? "")?.[1];
-  return loadedVersion && `daily:${loadedVersion}` === signature.version ? signature : null;
+  const loadedSignature = await loadedClamavSignatureVersion(database, Math.min(500, remaining));
+  return loadedSignature === signature.version ? signature : null;
 }
 async function probeClamavReadiness(database: RecordLike, deadline: number) {
   const remaining = clamavRemaining(database, deadline); if (remaining <= 0) return false;
@@ -1369,9 +1394,9 @@ export async function initializeClamavRuntime(database: RecordLike) {
 }
 export async function shutdownClamavRuntime(database: RecordLike) { database.clamavReady = false; if (!database.__clamavDevSidecar?.externallyManaged) await stopOwnedClamavChildren(database); else { unobserveClamavChild(database, database.__clamavDevSidecar.process); database.__clamavProcess = null; database.__clamavUpdateProcess = null; } }
 export async function checkClamavRuntime(database: RecordLike) { if (!database.clamavRequired) return { ok: true }; const children = [database.__clamavDevSidecar?.process, database.__clamavProcess, database.__clamavUpdateProcess]; for (const child of children) observeClamavChild(database, child); if (children.some(clamavChildTerminated)) { database.clamavReady = false; return { ok: false }; } const current = await currentLoadedClamavSignature(database); const pong = current ? await clamavSocketCommand(database, Buffer.from("zPING\0"), 16, 500) : null; database.clamavReady = pong === "PONG"; return { ok: database.clamavReady }; }
-async function inspectIngressLease(database: RecordLike, policy: RecordLike | null, row: RecordLike, bytes: Buffer) {
+async function inspectIngressLease(database: RecordLike, policy: RecordLike | null, row: RecordLike, bytes: Buffer, clamavRequestSignature?: RecordLike | null) {
   if (!policy) return undefined;
-  const verdicts = await Promise.all(policy.requiredInspectors.map(async (inspector: string) => { const result = inspector === "content-policy-v1" ? { outcome: await contentPolicyOutcome(row, bytes), signatureVersion: "content-policy-v1" } : await clamavInstream(database, bytes); const inspectedAt = ingressAuditNow(database); return Object.freeze({ inspector, outcome: result.outcome, leaseId: row.leaseId, size: row.size, digest: row.digest, version: row.version, policyRevision: policy.policyRevision, engine: inspector === "content-policy-v1" ? "sporades-content-policy" : "clamav", signatureVersion: result.signatureVersion, inspectedAt }); }));
+  const verdicts = await Promise.all(policy.requiredInspectors.map(async (inspector: string) => { const result = inspector === "content-policy-v1" ? { outcome: await contentPolicyOutcome(row, bytes), signatureVersion: "content-policy-v1" } : await clamavInstream(database, bytes, clamavRequestSignature); const inspectedAt = ingressAuditNow(database); return Object.freeze({ inspector, outcome: result.outcome, leaseId: row.leaseId, size: row.size, digest: row.digest, version: row.version, policyRevision: policy.policyRevision, engine: inspector === "content-policy-v1" ? "sporades-content-policy" : "clamav", signatureVersion: result.signatureVersion, inspectedAt }); }));
   return Object.freeze({ policyRevision: policy.policyRevision, maxVerdictAgeMs: policy.maxVerdictAgeMs, verdicts: Object.freeze(verdicts) });
 }
 function inspectionEvidenceIsCurrent(database: RecordLike, row: RecordLike, policy: RecordLike | null) {
@@ -1454,6 +1479,10 @@ export async function stageMultipartIngress(database: RecordLike, endpoint: Reco
   const requestKey = header(endpointRequest.headers, policy.requestKeyHeader);
   if (typeof requestKey !== "string" || requestKey.length < 1 || requestKey.length > 200) { const error = Object.assign(new Error("Missing multipart idempotency key."), { code: "INVALID_MULTIPART_REQUEST_KEY" }); await emitIngressAudit(database, "failed", { outcome: "failed", code: "INVALID_MULTIPART_REQUEST_KEY" }); throw error; }
   await emitIngressAudit(database, "started", { outcome: "started" });
+  // Do not re-query signature state for each ordered part. This is deliberately
+  // not a retry: an unavailable identity stays unavailable for this request;
+  // the next request performs a fresh authenticated readiness check.
+  const clamavRequestSignature = policy.inspection?.requiredInspectors?.includes("clamav") ? await currentLoadedClamavSignature(database) : undefined;
   const maxBytes = Number(policy.maxTotalFileBytes) + Number(policy.maxTotalFieldBytes) + 65536;
   const files: any[] = []; const fields: RecordLike = Object.create(null); let fieldCount = 0; let fieldBytes = 0; let fileBytes = 0; const partKeys = new Set<string>(); const wonReceipts: RecordLike[] = [];
   const streamingFileLimit = Math.min(Number(policy.maxFileBytes), Number(database.fileMaxSizeBytes));
@@ -1491,7 +1520,7 @@ export async function stageMultipartIngress(database: RecordLike, endpoint: Reco
     if (!acquired.winner && row.state === "staging") row = await awaitCompletedStagingReceipt(database, row.key);
     if (!row || !sameIngressRetryDescriptor(row, candidate)) throw Object.assign(new Error("Multipart retry descriptor conflicts with the original part."), { code: "INGRESS_DESCRIPTOR_CONFLICT" });
     if ((acquired.winner && row.state !== "staging") || (!acquired.winner && row.state !== "leased" && row.state !== "complete")) throw Object.assign(new Error("Multipart ingress staging did not complete."), { code: "INGRESS_STAGING_INCOMPLETE" });
-    const inspection = await inspectIngressLease(database, policy.inspection, row, body);
+    const inspection = await inspectIngressLease(database, policy.inspection, row, body, clamavRequestSignature);
     if (inspection) {
       if (acquired.winner) Object.assign(row, { inspection });
       else row = await refreshReceiptInspection(database, row, inspection);

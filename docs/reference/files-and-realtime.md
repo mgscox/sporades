@@ -678,8 +678,22 @@ Freshness is derived from ClamAV `sigtool --info` verification of the signed
 database and its embedded build timestamp, never its filesystem modification
 time. Runtime health and every scan also require clamd's bounded `VERSION`
 reply to match that authenticated database version. Copying or touching an old
-database, or replacing it with an unsigned current-looking header, cannot make
-it current. The runtime also enforces the exact 10 MB scanner cap
+database cannot make it current. Multipart ingress captures one authenticated,
+currently loaded scanner identity when request staging begins, so an ordinary
+freshclam file-publication window cannot make a healthy later part report a
+spurious unavailable signature. Each clean scan still checks both clamd's
+current `VERSION` and that captured signature's 24-hour freshness when its
+verdict is recorded. A reload, socket/version loss, or signature that ages out
+while a slow request body is arriving makes a clean verdict inconclusive and
+unclaimable; the next request re-establishes readiness without an app restart.
+An already returned `FOUND` remains rejected even if that post-scan check
+changes or disappears, but its signature version is withheld as unavailable
+rather than falsely attributing the result to the old or new database. This is
+deliberately fail-closed and does not retry uploaded bytes: operators should
+expect a brief rejection window during a real reload or stale-signature event,
+then investigate health and updater logs until a new request becomes clean.
+Replacing the database with an unsigned current-looking header cannot make it
+current. The runtime also enforces the exact 10 MB scanner cap
 before opening the socket or writing any frame.
 Production malware-scanner transport is deliberately a runtime-owned
 integration rather than an endpoint-handler callback: no endpoint handler,
