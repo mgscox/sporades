@@ -38,6 +38,13 @@ The JSON configuration contains only Server env key names. Store the referenced
 username and password in Sealed Server env; never put credentials or provider
 tokens in `sporades.json`.
 
+A Capsule starts whether or not those credentials are present. When `mail.smtp`
+names Server env keys that Sealed Server env does not carry, the Capsule boots
+with mail unavailable: `ctx.mail.enabled` is `false`, every `ctx.mail.send(...)`
+fails with `MAIL_CREDENTIAL_MISSING`, and runtime-owned Email such as password
+reset reports that mail is not configured. Seal the credentials and restart to
+enable delivery.
+
 TLS modes are explicit:
 
 - `implicit` opens TLS before the SMTP greeting, commonly on port 465.

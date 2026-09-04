@@ -479,6 +479,13 @@ export type MailSendResult = {
  * absent from browser, table ACL, and Schedule payload-factory contexts.
  */
 export type MailApi = {
+  /**
+   * Whether the runtime can deliver mail. `false` when `mail.smtp` is omitted
+   * from `sporades.json`, and when it is configured but its named credentials
+   * are absent from Server env; the Capsule still starts in both cases and
+   * every `send` rejects.
+   */
+  readonly enabled: boolean;
   send(message: MailSendInput): Promise<MailSendResult>;
 };
 

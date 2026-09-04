@@ -93020,21 +93020,24 @@ function mailError(code, message, hint) {
   error.hint = hint;
   return error;
 }
+function disabledMailRuntime(code, message, hint) {
+  return {
+    enabled: false,
+    async send() {
+      throw mailError(code, message, hint);
+    },
+    close() {
+    }
+  };
+}
 function createMailRuntime(mailConfig, serverEnv, options = {}) {
   const smtp = mailConfig?.smtp;
   if (!smtp) {
-    return {
-      enabled: false,
-      async send() {
-        throw mailError(
-          "MAIL_DISABLED",
-          "Mail delivery is disabled.",
-          "Configure `mail.smtp` in sporades.json and restart the Capsule runtime."
-        );
-      },
-      close() {
-      }
-    };
+    return disabledMailRuntime(
+      "MAIL_DISABLED",
+      "Mail delivery is disabled.",
+      "Configure `mail.smtp` in sporades.json and restart the Capsule runtime."
+    );
   }
   let auth;
   if (smtp.auth.method === "none") {
@@ -93043,7 +93046,7 @@ function createMailRuntime(mailConfig, serverEnv, options = {}) {
     const username = serverEnv[smtp.auth.usernameEnv];
     const password = serverEnv[smtp.auth.passwordEnv];
     if (typeof username !== "string" || typeof password !== "string") {
-      throw mailError(
+      return disabledMailRuntime(
         "MAIL_CREDENTIAL_MISSING",
         "SMTP credentials are unavailable.",
         "Set the configured SMTP username and password keys in Server env, then restart the Capsule runtime."
@@ -112647,6 +112650,16 @@ async function startDevSession(options) {
         fatalRestartAttempts = 0;
         refresh = await devRefresh.broadcast();
         websocketHub.disconnectAll();
+        try {
+          await runtime.database.log.emit({
+            category: "platform",
+            event: "dev.capsule.reloaded",
+            level: "info",
+            message: "Dev capsule reloaded after a server change",
+            data: capsuleReloadSurface(runtime.database, nextConfig)
+          });
+        } catch {
+        }
       }
       const previousBundle = bundle;
       bundle = rebuild;
@@ -112878,6 +112891,27 @@ async function createDevRuntime(options) {
       if (failures.length > 1) throw new AggregateError(failures, "Dev runtime and scanner shutdown both failed.");
     }
   };
+}
+function capsuleReloadSurface(database, config = {}) {
+  const names = (values, key = "name") => values.map((value) => String(value?.[key] ?? "")).sort();
+  const surface = {
+    tables: names(database.schema?.tables ?? []),
+    mutations: names(database.mutations ?? []),
+    jobs: names(database.jobs ?? []),
+    omitted: { tables: 0, mutations: 0, jobs: 0 }
+  };
+  const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
+  const payloadMaxBytes = Number.isInteger(configured) && configured > 0 ? configured : 4096;
+  const budget = Math.max(256, payloadMaxBytes - 1024);
+  const over = () => Buffer.byteLength(JSON.stringify(surface), "utf8") > budget;
+  const kinds = ["tables", "mutations", "jobs"];
+  while (over()) {
+    const widest = kinds.filter((kind) => surface[kind].length > 0).sort((a, b) => Buffer.byteLength(JSON.stringify(surface[b]), "utf8") - Buffer.byteLength(JSON.stringify(surface[a]), "utf8"))[0];
+    if (!widest) break;
+    surface[widest].pop();
+    surface.omitted[widest] += 1;
+  }
+  return surface;
 }
 function createDevInspectionToken() {
   return randomBytes8(32).toString("hex");
