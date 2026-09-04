@@ -110,13 +110,33 @@ function waitForDevClamavReadinessProof(child: any, deadline: number, ready: () 
   });
 }
 
+function devClamavUnavailableError() {
+  return Object.assign(new Error("Required Dev File inspection scanner did not become ready."), { code: "FILE_INSPECTION_UNAVAILABLE" });
+}
+
+function waitForDevClamavLifecycleTurn(unavailable: Promise<void>, alive: () => boolean) {
+  if (!alive()) return Promise.resolve(false);
+  return Promise.race([
+    unavailable.then(() => false),
+    new Promise<boolean>((resolve) => setImmediate(() => resolve(alive()))),
+  ]);
+}
+
+async function devClamavContainerIsRunning(dockerCommand: string, containerName: string, deadline: number, now: () => number) {
+  const remaining = deadline - now();
+  if (remaining < 0) return false;
+  const result = await commandResult(dockerCommand, ["container", "inspect", "--format", "{{.State.Running}}", containerName], Math.max(1, Math.ceil(remaining)));
+  return result.code === 0 && result.stdout.trim() === "true" && now() <= deadline;
+}
+
 export async function startDevClamavSidecar(options: RecordLike) {
   const dataRoot = path.join(options.projectDir, ".sporades", "clamav");
   await mkdir(path.join(dataRoot, "clamav"), { recursive: true });
   const socketDir = await mkdtemp(path.join(tmpdir(), "sporades-dev-clamav-"));
   const identity = createHash("sha256").update(`${path.resolve(options.projectDir)}\0${process.pid}\0${randomBytes(8).toString("hex")}`).digest("hex").slice(0, 20);
   const containerName = `sporades-dev-clamav-${identity}`; const socketPath = path.join(socketDir, "clamd.sock");
-  let child: any; let proxy: any; const bridges = new Set<any>(); const proxySockets = new Set<any>(); let stopped = false; let output = ""; let readinessLine = ""; let readinessLineOverflow = false; let readinessProven = false;
+  let child: any; let proxy: any; const bridges = new Set<any>(); const proxySockets = new Set<any>(); let stopped = false; let output = ""; let readinessLine = ""; let readinessLineOverflow = false; let readinessProven = false; let childUnavailable = false; let signalChildUnavailable: () => void = () => {};
+  const childUnavailablePromise = new Promise<void>((resolve) => { signalChildUnavailable = resolve; });
   try {
     const dockerCommand = options.dockerCommand ?? "docker"; await ensureBaseImage(dockerCommand, options.dockerfile, options.buildContext);
     const uid = process.getuid?.() ?? 10001; const gid = process.getgid?.() ?? 10001;
@@ -137,6 +157,10 @@ export async function startDevClamavSidecar(options: RecordLike) {
       "exit 1",
     ].join("\n");
     child = spawn(dockerCommand, ["run", "--rm", "--name", containerName, "--label", `com.sporades.dev-task=${identity}`, "--user", `${uid}:${gid}`, "--volume", `${dataRoot}:/app/data`, "--entrypoint", "/bin/sh", SPORADES_BASE_IMAGE.image, "-ec", script], { stdio: ["ignore", "pipe", "pipe"] });
+    const removeChildLifecycleListeners = () => { child.removeListener?.("exit", onChildUnavailable); child.removeListener?.("close", onChildUnavailable); child.removeListener?.("error", onChildUnavailable); };
+    const onChildUnavailable = () => { if (childUnavailable) return; childUnavailable = true; child.__sporadesClamavTerminated = true; removeChildLifecycleListeners(); signalChildUnavailable(); };
+    child.once("exit", onChildUnavailable); child.once("close", onChildUnavailable); child.once("error", onChildUnavailable);
+    const childIsAlive = () => !childUnavailable && !devClamavChildTerminated(child);
     const retain = (chunk: Buffer) => { output = (output + chunk.toString("utf8")).slice(-8192); };
     const retainStdout = (chunk: Buffer) => {
       retain(chunk); const text = chunk.toString("utf8"); let cursor = 0;
@@ -156,10 +180,16 @@ export async function startDevClamavSidecar(options: RecordLike) {
     await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
     const requestedReadinessTimeout = options.readinessTimeoutMs; const readinessTimeoutMs = Number.isFinite(requestedReadinessTimeout) ? Math.max(1, Math.min(DEV_CLAMAV_HOST_READY_TIMEOUT_MS, Math.trunc(requestedReadinessTimeout))) : DEV_CLAMAV_HOST_READY_TIMEOUT_MS;
     const readinessNow = options.readinessTiming?.now ?? (() => performance.now()); const readinessDeadline = readinessNow() + readinessTimeoutMs;
-    if (!await waitForDevClamavReadinessProof(child, readinessDeadline, () => readinessProven, readinessNow)) throw Object.assign(new Error("Required Dev File inspection scanner did not become ready."), { code: "FILE_INSPECTION_UNAVAILABLE" });
+    const containerIsRunning = options.readinessTiming?.containerIsRunning ?? (() => devClamavContainerIsRunning(dockerCommand, containerName, readinessDeadline, readinessNow));
+    if (!await waitForDevClamavReadinessProof(child, readinessDeadline, () => readinessProven, readinessNow)) throw devClamavUnavailableError();
+    if (!await waitForDevClamavLifecycleTurn(childUnavailablePromise, childIsAlive)) throw devClamavUnavailableError();
+    if (!await containerIsRunning() || !childIsAlive()) throw devClamavUnavailableError();
     const bridgeSource = "const net=require('node:net');const socket=net.createConnection('/tmp/sporades-clamd.sock');process.stdin.pipe(socket);socket.pipe(process.stdout);socket.on('error',()=>process.exit(1));";
     proxy = (options.proxyServerFactory ?? createServer)((socket: any) => { proxySockets.add(socket); const bridge = spawn(dockerCommand, ["exec", "-i", containerName, "node", "-e", bridgeSource], { stdio: ["pipe", "pipe", "ignore"] }); bridges.add(bridge); socket.pipe(bridge.stdin); bridge.stdout.pipe(socket); const close = () => { bridges.delete(bridge); proxySockets.delete(socket); socket.destroy(); }; bridge.once("close", close); bridge.once("error", close); socket.once("error", () => { try { bridge.kill("SIGTERM"); } catch {} }); });
-    await new Promise<void>((resolve, reject) => { proxy.once("error", reject); proxy.listen(socketPath, resolve); });
+    const proxyPublished = new Promise<boolean>((resolve, reject) => { proxy.once("error", reject); proxy.listen(socketPath, () => resolve(true)); });
+    if (!await Promise.race([proxyPublished, childUnavailablePromise.then(() => false)])) throw devClamavUnavailableError();
+    if (!await containerIsRunning() || !childIsAlive()) throw devClamavUnavailableError();
+    if (!await waitForDevClamavLifecycleTurn(childUnavailablePromise, childIsAlive)) throw devClamavUnavailableError();
   } catch (error) {
     const failures: unknown[] = [];
     for (const socket of proxySockets) socket.destroy();

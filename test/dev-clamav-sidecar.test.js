@@ -117,7 +117,7 @@ test("Dev ClamAV child exit handling is immediate for dead children and escalate
 
 test("Dev ClamAV sidecar is exact-task scoped, UID-safe, Unix-only, and residue-free", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-dev-clamav-unit-")); const docker = path.join(dir, "docker.mjs"); const log = path.join(dir, "calls.jsonl"); const state = path.join(dir, "state.json");
-  await writeFile(docker, `#!/usr/bin/env node\nimport fs from "node:fs";\nconst args=process.argv.slice(2); fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(args)+"\\n");\nif(args[0]==="image"&&args[1]==="inspect")process.exit(0);\nif(args[0]==="run"){fs.writeFileSync(${JSON.stringify(state)},JSON.stringify({pid:process.pid})); process.stdout.write("sporades-clamav-ready-v1\\n"); process.on("SIGTERM",()=>process.exit(0)); setInterval(()=>{},1000);}\nelse if(args[0]==="rm"){try{const s=JSON.parse(fs.readFileSync(${JSON.stringify(state)},"utf8"));process.kill(s.pid,"SIGTERM");fs.unlinkSync(${JSON.stringify(state)});}catch{}process.exit(0);}\nelse if(args[0]==="container"&&args[1]==="inspect")process.exit(1);\nelse process.exit(1);\n`); await chmod(docker, 0o755);
+  await writeFile(docker, `#!/usr/bin/env node\nimport fs from "node:fs";\nconst args=process.argv.slice(2); fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(args)+"\\n");\nif(args[0]==="image"&&args[1]==="inspect")process.exit(0);\nif(args[0]==="run"){fs.writeFileSync(${JSON.stringify(state)},JSON.stringify({pid:process.pid})); process.stdout.write("sporades-clamav-ready-v1\\n"); process.on("SIGTERM",()=>process.exit(0)); setInterval(()=>{},1000);}\nelse if(args[0]==="rm"){try{const s=JSON.parse(fs.readFileSync(${JSON.stringify(state)},"utf8"));process.kill(s.pid,"SIGTERM");fs.unlinkSync(${JSON.stringify(state)});}catch{}process.exit(0);}\nelse if(args[0]==="container"&&args[1]==="inspect"&&args.includes("--format")){try{const s=JSON.parse(fs.readFileSync(${JSON.stringify(state)},"utf8"));process.kill(s.pid,0);process.stdout.write("true\\n");}catch{process.exit(1);}}\nelse if(args[0]==="container"&&args[1]==="inspect")process.exit(1);\nelse process.exit(1);\n`); await chmod(docker, 0o755);
   let manager;
   try {
     manager = await startDevClamavSidecar({ projectDir: dir, dockerfile: path.join(dir, "Dockerfile.base"), buildContext: dir, dockerCommand: docker }); const database = {}; manager.attach(database); assert.equal(database.__clamavDevSidecar.containerName, manager.descriptor.containerName); assert.equal(database.__clamavDevSidecar.externallyManaged, true);
@@ -132,7 +132,7 @@ test("Dev ClamAV sidecar is exact-task scoped, UID-safe, Unix-only, and residue-
 
 test("Dev ClamAV sidecar start waits for the container readiness proof", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-dev-clamav-ready-")); const docker = path.join(dir, "docker.mjs"); const state = path.join(dir, "state.json");
-  await writeFile(docker, `#!/usr/bin/env node\nimport fs from "node:fs";\nconst args=process.argv.slice(2);\nif(args[0]==="image")process.exit(0);\nif(args[0]==="run"){fs.writeFileSync(${JSON.stringify(state)},String(process.pid));setTimeout(()=>process.stdout.write("sporades-clamav-ready-v1\\n"),200);process.on("SIGTERM",()=>process.exit(0));setInterval(()=>{},1000);}\nelse if(args[0]==="rm"){try{process.kill(Number(fs.readFileSync(${JSON.stringify(state)},"utf8")),"SIGTERM");}catch{}process.exit(0);}\nelse if(args[0]==="container"&&args[1]==="inspect")process.exit(1);\nelse process.exit(1);\n`); await chmod(docker, 0o755);
+  await writeFile(docker, `#!/usr/bin/env node\nimport fs from "node:fs";\nconst args=process.argv.slice(2);\nif(args[0]==="image")process.exit(0);\nif(args[0]==="run"){fs.writeFileSync(${JSON.stringify(state)},String(process.pid));setTimeout(()=>process.stdout.write("sporades-clamav-ready-v1\\n"),200);process.on("SIGTERM",()=>process.exit(0));setInterval(()=>{},1000);}\nelse if(args[0]==="rm"){try{process.kill(Number(fs.readFileSync(${JSON.stringify(state)},"utf8")),"SIGTERM");}catch{}process.exit(0);}\nelse if(args[0]==="container"&&args[1]==="inspect"&&args.includes("--format")){try{process.kill(Number(fs.readFileSync(${JSON.stringify(state)},"utf8")),0);process.stdout.write("true\\n");}catch{process.exit(1);}}\nelse if(args[0]==="container"&&args[1]==="inspect")process.exit(1);\nelse process.exit(1);\n`); await chmod(docker, 0o755);
   let manager;
   try {
     let settled = false; const pending = startDevClamavSidecar({ projectDir: dir, dockerfile: path.join(dir, "Dockerfile.base"), buildContext: dir, dockerCommand: docker, readinessTimeoutMs: 1_000 }); pending.then(() => { settled = true; }, () => { settled = true; });
@@ -158,7 +158,7 @@ test("Dev ClamAV readiness accepts only an exact newline-framed stdout control",
   ];
   for (const [name, emission, expectedReady] of cases) {
     const dir = await mkdtemp(path.join(tmpdir(), `sporades-dev-clamav-frame-${name}-`)); const docker = path.join(dir, "docker.mjs"); const state = path.join(dir, "state.json"); let manager;
-    await writeFile(docker, `#!/usr/bin/env node\nimport fs from "node:fs";\nconst args=process.argv.slice(2);\nif(args[0]==="image")process.exit(0);\nif(args[0]==="run"){fs.writeFileSync(${JSON.stringify(state)},String(process.pid));${emission}process.on("SIGTERM",()=>process.exit(0));setInterval(()=>{},1000);}\nelse if(args[0]==="rm"){try{process.kill(Number(fs.readFileSync(${JSON.stringify(state)},"utf8")),"SIGTERM");}catch{}process.exit(0);}\nelse if(args[0]==="container"&&args[1]==="inspect")process.exit(1);\nelse process.exit(1);\n`); await chmod(docker, 0o755);
+    await writeFile(docker, `#!/usr/bin/env node\nimport fs from "node:fs";\nconst args=process.argv.slice(2);\nif(args[0]==="image")process.exit(0);\nif(args[0]==="run"){fs.writeFileSync(${JSON.stringify(state)},String(process.pid));${emission}process.on("SIGTERM",()=>process.exit(0));setInterval(()=>{},1000);}\nelse if(args[0]==="rm"){try{process.kill(Number(fs.readFileSync(${JSON.stringify(state)},"utf8")),"SIGTERM");}catch{}process.exit(0);}\nelse if(args[0]==="container"&&args[1]==="inspect"&&args.includes("--format")){try{process.kill(Number(fs.readFileSync(${JSON.stringify(state)},"utf8")),0);process.stdout.write("true\\n");}catch{process.exit(1);}}\nelse if(args[0]==="container"&&args[1]==="inspect")process.exit(1);\nelse process.exit(1);\n`); await chmod(docker, 0o755);
     try {
       const outcome = await startDevClamavSidecar({ projectDir: dir, dockerfile: path.join(dir, "Dockerfile.base"), buildContext: dir, dockerCommand: docker, readinessTimeoutMs: 200 }).then((value) => ({ value }), (error) => ({ error })); manager = outcome.value;
       assert.equal(Boolean(outcome.value), expectedReady, name); if (!expectedReady) assert.equal(outcome.error?.code, "FILE_INSPECTION_UNAVAILABLE", name);
@@ -169,12 +169,54 @@ test("Dev ClamAV readiness accepts only an exact newline-framed stdout control",
 test("Dev ClamAV readiness uses its host monotonic deadline at the exact proof boundary", async () => {
   for (const [name, clock, expectedReady] of [["before", [0, 0, 99], true], ["at", [0, 0, 100], true], ["after", [0, 0, 101], false]]) {
     const dir = await mkdtemp(path.join(tmpdir(), `sporades-dev-clamav-deadline-${name}-`)); const docker = path.join(dir, "docker.mjs"); const state = path.join(dir, "state.json"); let manager; let last = clock.at(-1);
-    await writeFile(docker, `#!/usr/bin/env node\nimport fs from "node:fs";\nconst args=process.argv.slice(2);\nif(args[0]==="image")process.exit(0);\nif(args[0]==="run"){fs.writeFileSync(${JSON.stringify(state)},String(process.pid));setTimeout(()=>process.stdout.write("sporades-clamav-ready-v1\\n"),10);process.on("SIGTERM",()=>process.exit(0));setInterval(()=>{},1000);}\nelse if(args[0]==="rm"){try{process.kill(Number(fs.readFileSync(${JSON.stringify(state)},"utf8")),"SIGTERM");}catch{}process.exit(0);}\nelse process.exit(1);\n`); await chmod(docker, 0o755);
+    await writeFile(docker, `#!/usr/bin/env node\nimport fs from "node:fs";\nconst args=process.argv.slice(2);\nif(args[0]==="image")process.exit(0);\nif(args[0]==="run"){fs.writeFileSync(${JSON.stringify(state)},String(process.pid));setTimeout(()=>process.stdout.write("sporades-clamav-ready-v1\\n"),10);process.on("SIGTERM",()=>process.exit(0));setInterval(()=>{},1000);}\nelse if(args[0]==="rm"){try{process.kill(Number(fs.readFileSync(${JSON.stringify(state)},"utf8")),"SIGTERM");}catch{}process.exit(0);}\nelse if(args[0]==="container"&&args[1]==="inspect"&&args.includes("--format")){try{process.kill(Number(fs.readFileSync(${JSON.stringify(state)},"utf8")),0);process.stdout.write("true\\n");}catch{process.exit(1);}}\nelse process.exit(1);\n`); await chmod(docker, 0o755);
     try {
-      const values = [...clock]; const outcome = await startDevClamavSidecar({ projectDir: dir, dockerfile: path.join(dir, "Dockerfile.base"), buildContext: dir, dockerCommand: docker, readinessTimeoutMs: 100, readinessTiming: { now: () => { if (values.length) last = values.shift(); return last; } } }).then((value) => ({ value }), (error) => ({ error })); manager = outcome.value;
+      const values = [...clock]; const outcome = await startDevClamavSidecar({ projectDir: dir, dockerfile: path.join(dir, "Dockerfile.base"), buildContext: dir, dockerCommand: docker, readinessTimeoutMs: 100, readinessTiming: { now: () => { if (values.length) last = values.shift(); return last; }, containerIsRunning: async () => true } }).then((value) => ({ value }), (error) => ({ error })); manager = outcome.value;
       assert.equal(Boolean(outcome.value), expectedReady, name); if (!expectedReady) assert.equal(outcome.error?.code, "FILE_INSPECTION_UNAVAILABLE", name);
     } finally { await manager?.stop().catch(() => {}); await rm(dir, { recursive: true, force: true }); }
   }
+});
+
+test("Dev ClamAV readiness is not published when the container exits with or immediately after its proof", async () => {
+  const modes = [
+    ["same-turn", 'process.stdout.write("sporades-clamav-ready-v1\\n");process.exit(0);'],
+    ["next-tick", 'process.stdout.write("sporades-clamav-ready-v1\\n");process.nextTick(()=>process.exit(0));'],
+    ["immediate", 'process.stdout.write("sporades-clamav-ready-v1\\n");setImmediate(()=>process.exit(0));'],
+    ["timer", 'process.stdout.write("sporades-clamav-ready-v1\\n");setTimeout(()=>process.exit(0),0);'],
+  ];
+  for (const [mode, runBehavior] of modes) {
+    const dir = await mkdtemp(path.join(tmpdir(), `sporades-dev-clamav-proof-exit-${mode}-`)); const docker = path.join(dir, "docker.mjs"); const log = path.join(dir, "calls.jsonl"); const state = path.join(dir, "state.json");
+    await writeFile(docker, `#!/usr/bin/env node\nimport fs from "node:fs";\nconst args=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(args)+"\\n");\nif(args[0]==="image")process.exit(0);\nif(args[0]==="run"){fs.writeFileSync(${JSON.stringify(state)},String(process.pid));${runBehavior}}\nelse if(args[0]==="rm")process.exit(0);\nelse if(args[0]==="container"&&args[1]==="inspect"&&args.includes("--format")){try{process.kill(Number(fs.readFileSync(${JSON.stringify(state)},"utf8")),0);process.stdout.write("true\\n");}catch{process.exit(1);}}\nelse if(args[0]==="container"&&args[1]==="inspect")process.exit(1);\nelse process.exit(1);\n`); await chmod(docker, 0o755);
+    try {
+      await assert.rejects(startDevClamavSidecar({ projectDir: dir, dockerfile: path.join(dir, "Dockerfile.base"), buildContext: dir, dockerCommand: docker, readinessTimeoutMs: 500 }), (error) => error?.code === "FILE_INSPECTION_UNAVAILABLE", mode);
+      const calls = (await readFile(log, "utf8")).trim().split("\n").map(JSON.parse); assert.equal(calls.some((args) => args[0] === "rm"), true, `${mode}: unpublished container cleaned`);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  }
+});
+
+test("Dev ClamAV readiness is unpublished when the container exits during proxy publication", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-dev-clamav-bind-exit-")); const docker = path.join(dir, "docker.mjs"); const state = path.join(dir, "state.json"); let proxyClosed = false;
+  await writeFile(docker, `#!/usr/bin/env node\nimport fs from "node:fs";\nconst args=process.argv.slice(2);\nif(args[0]==="image")process.exit(0);\nif(args[0]==="run"){fs.writeFileSync(${JSON.stringify(state)},String(process.pid));process.stdout.write("sporades-clamav-ready-v1\\n");process.on("SIGTERM",()=>process.exit(0));setInterval(()=>{},1000);}\nelse if(args[0]==="container"&&args[1]==="inspect"&&args.includes("--format")){try{process.kill(Number(fs.readFileSync(${JSON.stringify(state)},"utf8")),0);process.stdout.write("true\\n");}catch{process.exit(1);}}\nelse if(args[0]==="rm"){try{process.kill(Number(fs.readFileSync(${JSON.stringify(state)},"utf8")),"SIGTERM");}catch{}process.exit(0);}\nelse process.exit(1);\n`); await chmod(docker, 0o755);
+  const proxyServerFactory = () => ({
+    once(name, callback) { if (name === "error") this.onError = callback; },
+    listen(_socketPath, callback) { readFile(state, "utf8").then((pid) => process.kill(Number(pid), "SIGTERM")); setTimeout(callback, 25); },
+    close(callback) { proxyClosed = true; callback(); },
+  });
+  try {
+    await assert.rejects(startDevClamavSidecar({ projectDir: dir, dockerfile: path.join(dir, "Dockerfile.base"), buildContext: dir, dockerCommand: docker, readinessTimeoutMs: 1_000, proxyServerFactory }), (error) => error?.code === "FILE_INSPECTION_UNAVAILABLE");
+    assert.equal(proxyClosed, true, "a proxy racing publication is closed before startup rejects");
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("Dev ClamAV stable readiness can be published and cleaned across repeated starts", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-dev-clamav-repeat-ready-")); const docker = path.join(dir, "docker.mjs"); const state = path.join(dir, "state.json");
+  await writeFile(docker, `#!/usr/bin/env node\nimport fs from "node:fs";\nconst args=process.argv.slice(2);\nif(args[0]==="image")process.exit(0);\nif(args[0]==="run"){fs.writeFileSync(${JSON.stringify(state)},String(process.pid));process.stdout.write("sporades-clamav-ready-v1\\n");process.on("SIGTERM",()=>process.exit(0));setInterval(()=>{},1000);}\nelse if(args[0]==="container"&&args[1]==="inspect"&&args.includes("--format")){try{process.kill(Number(fs.readFileSync(${JSON.stringify(state)},"utf8")),0);process.stdout.write("true\\n");}catch{process.exit(1);}}\nelse if(args[0]==="container"&&args[1]==="inspect")process.exit(1);\nelse if(args[0]==="rm"){try{process.kill(Number(fs.readFileSync(${JSON.stringify(state)},"utf8")),"SIGTERM");}catch{}process.exit(0);}\nelse process.exit(1);\n`); await chmod(docker, 0o755);
+  try {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const manager = await startDevClamavSidecar({ projectDir: dir, dockerfile: path.join(dir, "Dockerfile.base"), buildContext: dir, dockerCommand: docker, readinessTimeoutMs: 1_000 });
+      assert.equal(manager.descriptor.process.exitCode, null); await manager.stop();
+    }
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test("Dev ClamAV sidecar readiness timeout and early exit clean the exact unpublished container", async () => {
@@ -193,7 +235,7 @@ test("Dev ClamAV sidecar readiness timeout and early exit clean the exact unpubl
 test("Dev ClamAV startup failure removes only its exact container and socket directory", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-dev-clamav-startup-")); const docker = path.join(dir, "docker.mjs"); const log = path.join(dir, "calls.jsonl"); const state = path.join(dir, "state.json");
   const beforeSockets = new Set((await readdir(tmpdir())).filter((item) => item.startsWith("sporades-dev-clamav-")));
-  await writeFile(docker, `#!/usr/bin/env node\nimport fs from "node:fs";\nconst args=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(args)+"\\n");if(args[0]==="image")process.exit(0);if(args[0]==="run"){fs.writeFileSync(${JSON.stringify(state)},String(process.pid));process.stdout.write("sporades-clamav-ready-v1\\n");process.on("SIGTERM",()=>process.exit(0));setInterval(()=>{},1000);}else if(args[0]==="rm"){try{process.kill(Number(fs.readFileSync(${JSON.stringify(state)},"utf8")),"SIGTERM");}catch{}process.exit(0);}else process.exit(1);`); await chmod(docker, 0o755);
+  await writeFile(docker, `#!/usr/bin/env node\nimport fs from "node:fs";\nconst args=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(args)+"\\n");if(args[0]==="image")process.exit(0);if(args[0]==="run"){fs.writeFileSync(${JSON.stringify(state)},String(process.pid));process.stdout.write("sporades-clamav-ready-v1\\n");process.on("SIGTERM",()=>process.exit(0));setInterval(()=>{},1000);}else if(args[0]==="rm"){try{process.kill(Number(fs.readFileSync(${JSON.stringify(state)},"utf8")),"SIGTERM");}catch{}process.exit(0);}else if(args[0]==="container"&&args[1]==="inspect"&&args.includes("--format")){try{process.kill(Number(fs.readFileSync(${JSON.stringify(state)},"utf8")),0);process.stdout.write("true\\n");}catch{process.exit(1);}}else process.exit(1);`); await chmod(docker, 0o755);
   const failingProxy = () => ({ once(name, callback) { if (name === "error") this.onError = callback; }, listen() { queueMicrotask(() => this.onError(new Error("socket unavailable"))); }, close(callback) { callback(); } });
   try {
     await assert.rejects(startDevClamavSidecar({ projectDir: dir, dockerfile: path.join(dir, "Dockerfile.base"), buildContext: dir, dockerCommand: docker, proxyServerFactory: failingProxy }), /socket unavailable/);
