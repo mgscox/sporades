@@ -1,7 +1,7 @@
 export const SPORADES_BASE_IMAGE = {
     name: "sporades-base",
-    image: "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
-    version: "0.1.0-node22-alpine",
+    image: "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
+    version: "0.2.0-node22-alpine",
     runtimeUser: "sporades",
     runtimeUid: 10001,
     runtimeGid: 10001,

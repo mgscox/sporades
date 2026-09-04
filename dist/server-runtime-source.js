@@ -50,7 +50,7 @@ import { deserializeFieldValue, deserializeRow, normalizeDateValue, serializeFie
 // here, so importing them would declare a name nothing in this file reads.
 import { applyReadAcl, assertActivePrivilegedJobAccess, bindPendingAclWrites, createPrivilegedAuditEmitter, createPrivilegedAuditEmissionPublicError, createPrivilegedFileApi, createPrivilegedRunAbortError, createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi, drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit, filterRowsByReadAcl, grantPrivilegedDbAccess, isPrivilegedAuditEmissionPublicError, normalizeFileAcl, normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback, revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode, trackPendingAclWrite, } from "./acl-runtime.js";
 import { createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter, deletePrivateFile, getPrivateFileUrl, revokePublicFileUrl, } from "./file-storage-runtime.js";
-import { createEndpointIngressApi, drainIngressClaimAuditOutbox, finalizeEndpointIngressClaims, recoverIngressClaimAuditOutbox, stageMultipartIngress, sweepExpiredFileIngress, validateMultipartIngressPolicy } from "./file-ingress-runtime.js";
+import { createEndpointIngressApi, drainIngressClaimAuditOutbox, finalizeEndpointIngressClaims, initializeClamavRuntime, recoverIngressClaimAuditOutbox, shutdownClamavRuntime, stageMultipartIngress, sweepExpiredFileIngress, validateMultipartIngressPolicy } from "./file-ingress-runtime.js";
 import { createEndpointFileResponseApi } from "./endpoint-file-response.js";
 import { abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob, canonicalJobCredentialProvenance, captureJobAuthSnapshot, commitPendingJobCancellationAborts, createRuntimeClock, decodeJobCursor, dropPendingJobCancellationAborts, encodeJobCursor, ensureJobStorage, ensureScheduleStorage, finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence, normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, readJobAuthSnapshot, readJobCredentialProvenance, resolveSchedulePayload, RESERVED_JOB_NAME_PREFIX, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure, scheduleStripeEventPayloadCleanup, startStripeEventPayloadCleanup, stopStripeEventPayloadCleanup, STRIPE_EVENT_JOB, stripeEventPayloadRetentionStorageValue, scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduledOccurrenceIdentity, } from "./jobs-runtime.js";
 import { dispatchVerifiedStripeEvent } from "./stripe-events-runtime.js";
@@ -479,6 +479,27 @@ export async function replaceRuntimeDatabase(currentDatabase, candidateDatabase)
     }
     return candidateDatabase;
 }
+export async function replacePreparedRuntimeDatabase(currentDatabase, candidateDatabase, prepareCandidate, cleanupPreparation) {
+    let replacementStarted = false;
+    try {
+        await prepareCandidate(candidateDatabase);
+        replacementStarted = true;
+        return await replaceRuntimeDatabase(currentDatabase, candidateDatabase);
+    }
+    catch (error) {
+        const cleanupTasks = [Promise.resolve().then(() => cleanupPreparation())];
+        // replaceRuntimeDatabase owns candidate cleanup after it starts. Before
+        // that boundary, preparation failure must not strand the opened adapter.
+        if (!replacementStarted)
+            cleanupTasks.push(Promise.resolve().then(() => candidateDatabase.close()));
+        const settled = await Promise.allSettled(cleanupTasks);
+        const failures = settled.filter((item) => item.status === "rejected").map((item) => item.reason);
+        if (failures.length) {
+            throw new AggregateError([error, ...failures], "Runtime replacement and candidate preparation cleanup both failed.");
+        }
+        throw error;
+    }
+}
 function emitRuntimeReplacementWarning(database, event, message, error, fallbackCode) {
     try {
         const warning = database.log?.emit?.({
@@ -584,6 +605,11 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         }
     }
     const endpoints = [...capsuleEndpoints, ...providerEndpoints];
+    // A declared multipart endpoint needs live maintenance. Keep maintenance
+    // enabled when File storage remains configured as well, so removing the last
+    // endpoint cannot strand durable leases from the preceding release.
+    const fileIngressEnabled = config.files !== undefined
+        || endpoints.some((endpoint) => endpoint?.options?.body?.multipart !== undefined);
     const fileIngressDefinition = normalizeCapsuleFileIngressDefinition(capsuleDefinition?.files, endpoints);
     const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
     const journeySessionInactivityMinutes = resolveJourneySessionInactivityMinutes(config);
@@ -681,6 +707,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         capsuleIdentity: String(config.name ?? "capsule"),
         capsuleIngressOwnerId: capsuleIngressAuthUserId(config.name ?? capsuleDefinition?.name ?? "capsule"),
         fileIngressDefinition,
+        fileIngressEnabled,
         scheduleOccurrenceFault: options?.scheduleOccurrenceFault,
         scheduleReconciliationFault: options?.scheduleReconciliationFault,
         jobRecoveryFault: options?.jobRecoveryFault,
@@ -886,6 +913,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 const failures = [];
                 const pending = [];
                 const resources = [
+                    () => shutdownClamavRuntime(database),
                     () => database.mail.close(),
                     () => database.adapter.close(),
                     () => database.fileStorage.close(),
@@ -968,6 +996,8 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         if (database.__runtimeInitialized)
             return;
         try {
+            if (!await initializeClamavRuntime(database))
+                throw commandError("Required File inspection is unavailable.", "Check ClamAV signatures and the local daemon socket.", "FILE_INSPECTION_UNAVAILABLE");
             if (database.lifecycleHooks.init !== undefined) {
                 if (typeof database.lifecycleHooks.init !== "function")
                     throw commandError("Invalid Capsule init hook.", "Declare hooks.init as a function.");
@@ -983,8 +1013,9 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             database.__scheduleRecoveryDueAt = null;
             database.__scheduleRecoveryPromise = null;
             database.__scheduleLegacyDiscoveryTimer = null;
-            database.__ingressAuditRecoveryPending = true;
-            await runIngressAuditOutboxDrain(database);
+            await refreshIngressMaintenanceState(database, { discoverInterruptedDelivery: true });
+            if (ingressAuditMaintenanceIsDue(database))
+                await runIngressAuditOutboxDrain(database);
             // Recovery may classify durable state while the candidate is stopped,
             // but it returns the retained wake instead of arming it. Publication is
             // the single boundary that releases both Job and Schedule work.
@@ -994,9 +1025,11 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             const reconciled = await reconcileSchedules(database);
             database.__scheduleStopped = false;
             startStaticSchedules(database, reconciled.timerPlans);
-            await runPeriodicIngressSweep(database);
-            startPeriodicIngressSweep(database);
-            startPeriodicIngressAuditOutboxDrain(database);
+            if (database.fileIngressEnabled) {
+                await runPeriodicIngressSweep(database);
+                startPeriodicIngressSweep(database);
+            }
+            scheduleIngressAuditOutboxMaintenance(database);
             if (!database.__jobActivationDeferred) {
                 // Orderly shutdown deliberately retains queued and delayed Jobs. A
                 // fresh runtime has no inherited worker/wake timer, so activation
@@ -1019,7 +1052,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             database.__scheduleRecoveryTimer = null;
             database.__scheduleRecoveryDueAt = null;
             database.__scheduleLegacyDiscoveryTimer = null;
-            const settlements = [stopCurrentUserJobWorker(database), settleActiveScheduleWork(database)]
+            const settlements = [stopCurrentUserJobWorker(database), settleActiveScheduleWork(database), shutdownClamavRuntime(database)]
                 .filter(Boolean)
                 .map((pending) => Promise.resolve(pending));
             const cleanup = await Promise.allSettled(settlements);
@@ -1034,14 +1067,17 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     database.shutdown = () => {
         if (database.__shutdownPromise)
             return database.__shutdownPromise;
-        database.__shutdownPromise = (async () => {
-            let shutdownError;
-            let mailCloseError;
-            let shutdownRejected = false;
-            let mailCloseRejected = false;
+        const shutdownPromise = (async () => {
+            const failures = [];
+            let workerSettlement;
             try {
                 database.__scheduleStopped = true;
-                const workerSettlement = stopCurrentUserJobWorker(database);
+                workerSettlement = stopCurrentUserJobWorker(database);
+            }
+            catch (error) {
+                failures.push(error);
+            }
+            try {
                 abortSchedulePayloadFactories(database);
                 for (const timer of database.__scheduleTimers ?? [])
                     database.clock.clearTimer(timer);
@@ -1049,38 +1085,56 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 database.__scheduleRecoveryTimer = null;
                 database.__scheduleRecoveryDueAt = null;
                 database.__scheduleLegacyDiscoveryTimer = null;
-                if (workerSettlement)
+            }
+            catch (error) {
+                failures.push(error);
+            }
+            if (workerSettlement) {
+                try {
                     await workerSettlement;
+                }
+                catch (error) {
+                    failures.push(error);
+                }
+            }
+            try {
                 await settleActiveScheduleWork(database);
-                if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== undefined) {
+            }
+            catch (error) {
+                failures.push(error);
+            }
+            if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== undefined) {
+                try {
                     if (typeof database.lifecycleHooks.shutdown !== "function")
                         throw commandError("Invalid Capsule shutdown hook.", "Declare hooks.shutdown as a function.");
                     await database.lifecycleHooks.shutdown(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false }));
                 }
+                catch (error) {
+                    failures.push(error);
+                }
+            }
+            try {
+                await shutdownClamavRuntime(database);
             }
             catch (error) {
-                shutdownRejected = true;
-                shutdownError = error;
+                failures.push(error);
             }
-            finally {
-                database.__runtimeInitialized = false;
-            }
+            database.__runtimeInitialized = false;
             try {
                 await database.mail.close();
             }
             catch (error) {
-                mailCloseRejected = true;
-                mailCloseError = error;
+                failures.push(error);
             }
-            if (shutdownRejected && mailCloseRejected) {
-                throw new AggregateError([shutdownError, mailCloseError], "Runtime shutdown and mail closure both failed.");
-            }
-            if (shutdownRejected)
-                throw shutdownError;
-            if (mailCloseRejected)
-                throw mailCloseError;
+            if (failures.length === 1)
+                throw failures[0];
+            if (failures.length > 1)
+                throw new AggregateError(failures, "Multiple runtime resources failed to shut down.");
         })();
-        return database.__shutdownPromise;
+        database.__shutdownPromise = shutdownPromise;
+        shutdownPromise.catch(() => { if (database.__shutdownPromise === shutdownPromise)
+            database.__shutdownPromise = null; });
+        return shutdownPromise;
     };
     database.log = createRuntimeLogSink({
         database: sqlite,
@@ -1117,6 +1171,11 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     await ensureJobStorage(sqlite);
     await ensureScheduleStorage(sqlite, options?.scheduleStorageFault);
     await sqlite.ensureFileStorage();
+    // A release can remove its final multipart endpoint and optional File storage
+    // while ingress or audit-retention work remains durable. Scanner/sweep
+    // resources follow only active ingress receipts; the audit outbox carries its
+    // own deadline so a delivered row can sleep until its 24-hour expiry.
+    await refreshIngressMaintenanceState(database, { discoverInterruptedDelivery: true });
     await sqlite.ensureLogStorage();
     if (!options?.runtimeActionOnly) {
         await reportIngressSweepSelectionFailure(database, await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() }));
@@ -1309,6 +1368,25 @@ const LEGACY_SCHEDULE_DISCOVERY_INTERVAL_MS = 1_000;
 const LEGACY_SCHEDULE_DISCOVERY_LIMIT = 100;
 const INGRESS_SWEEP_INTERVAL_MS = 60_000;
 const INGRESS_AUDIT_OUTBOX_INTERVAL_MS = 1_000;
+const INGRESS_AUDIT_RETENTION_MS = 24 * 60 * 60 * 1000;
+function ingressAuditMaintenanceIsDue(database) {
+    const dueAt = Date.parse(String(database.__ingressAuditMaintenanceAt ?? ""));
+    return Number.isFinite(dueAt) && dueAt <= database.clock.now().getTime();
+}
+async function refreshIngressMaintenanceState(database, options = {}) {
+    const state = await database.adapter.readIngressMaintenanceState();
+    database.fileIngressEnabled = database.fileIngressEnabled || state.ingressRequired;
+    if (options.discoverInterruptedDelivery && state.auditDeliveryRequired)
+        database.__ingressAuditRecoveryPending = true;
+    if (state.auditDeliveryRequired) {
+        database.__ingressAuditMaintenanceAt = database.clock.now().toISOString();
+        return;
+    }
+    const deliveredAt = Date.parse(String(state.earliestDeliveredAt ?? ""));
+    database.__ingressAuditMaintenanceAt = Number.isFinite(deliveredAt)
+        ? new Date(deliveredAt + INGRESS_AUDIT_RETENTION_MS).toISOString()
+        : null;
+}
 async function runIngressAuditOutboxDrain(database) {
     if (database.__ingressAuditOutboxPromise)
         return database.__ingressAuditOutboxPromise;
@@ -1317,6 +1395,12 @@ async function runIngressAuditOutboxDrain(database) {
             database.__ingressAuditRecoveryPending = !(await recoverIngressClaimAuditOutbox(database));
         }
         await drainIngressClaimAuditOutbox(database);
+        try {
+            await refreshIngressMaintenanceState(database);
+        }
+        catch {
+            database.__ingressAuditMaintenanceAt = new Date(database.clock.now().getTime() + INGRESS_AUDIT_OUTBOX_INTERVAL_MS).toISOString();
+        }
     })();
     database.__ingressAuditOutboxPromise = run;
     try {
@@ -1325,21 +1409,29 @@ async function runIngressAuditOutboxDrain(database) {
     finally {
         if (database.__ingressAuditOutboxPromise === run)
             database.__ingressAuditOutboxPromise = null;
+        scheduleIngressAuditOutboxMaintenance(database);
     }
 }
-function startPeriodicIngressAuditOutboxDrain(database) {
-    const arm = () => {
-        if (database.__scheduleStopped)
-            return;
-        const timer = database.clock.setTimer(async () => {
-            database.__scheduleTimers?.delete(timer);
-            await runIngressAuditOutboxDrain(database);
-            arm();
-        }, INGRESS_AUDIT_OUTBOX_INTERVAL_MS);
-        database.__scheduleTimers?.add(timer);
-        database.__ingressAuditOutboxTimer = timer;
-    };
-    arm();
+function scheduleIngressAuditOutboxMaintenance(database) {
+    if (database.__ingressAuditOutboxTimer != null) {
+        database.clock.clearTimer(database.__ingressAuditOutboxTimer);
+        database.__scheduleTimers?.delete(database.__ingressAuditOutboxTimer);
+        database.__ingressAuditOutboxTimer = null;
+    }
+    if (database.__scheduleStopped || database.__ingressAuditMaintenanceAt == null)
+        return;
+    const dueAt = Date.parse(String(database.__ingressAuditMaintenanceAt));
+    const delayMs = Number.isFinite(dueAt)
+        ? Math.max(INGRESS_AUDIT_OUTBOX_INTERVAL_MS, dueAt - database.clock.now().getTime())
+        : INGRESS_AUDIT_OUTBOX_INTERVAL_MS;
+    const timer = database.clock.setTimer(async () => {
+        database.__scheduleTimers?.delete(timer);
+        if (database.__ingressAuditOutboxTimer === timer)
+            database.__ingressAuditOutboxTimer = null;
+        await runIngressAuditOutboxDrain(database);
+    }, Math.min(MAX_NATIVE_TIMER_DELAY_MS, delayMs));
+    database.__scheduleTimers?.add(timer);
+    database.__ingressAuditOutboxTimer = timer;
 }
 async function runPeriodicIngressSweep(database) {
     if (database.__ingressSweepPromise)

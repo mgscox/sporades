@@ -61,18 +61,21 @@ import {
   prepareHttpSecurity,
   readJsonRequest,
   routeEndpoint,
+  routeRuntimeHealth,
   routeSporadesAuth,
   runReadOnlyQuery,
   shutdownHttpServerAndRuntime,
   simulateLocalIdentitySession,
   readJsonlLogEvents,
   replaceRuntimeDatabase,
+  replacePreparedRuntimeDatabase,
   shutdownAndCloseDatabase,
   validateReadOnlyInspectionSql,
   writeUnhandledHttpError,
 } from "../server-runtime-source.js";
 import { scaffoldFiles } from "../templates/scaffold-template.js";
 import { resolveSporadesPackageRoot } from "../package-root.js";
+import { attachRequiredDevClamavSidecar, releaseDevClamavSidecar, retireDevClamavSidecarIfUnused, startDevClamavSidecar } from "../dev-clamav-sidecar.js";
 import {
   CAPSULE_SERVICES_COMPOSE_FILE,
   CAPSULE_SERVICES_STATE_DIR,
@@ -2137,12 +2140,14 @@ async function startDevSession(options: LooseRecord) {
   const sessionFilePath = path.join(options.projectDir, DEV_SESSION_FILE);
   const databasePath = path.join(options.projectDir, ".sporades", "data.db");
   const runtime: any = await createDevRuntime({
+    projectDir: options.projectDir,
     databasePath,
     serverSource: bundle.serverRuntime.source,
     serverEnv: bundle.serverRuntime.env,
     serviceEnv: capsuleServiceEnv,
     capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
     config: withRuntimeSecuritySession(config, session),
+    runtimeProbeToken: inspectionToken,
   });
   await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
   runtime.database.log.emit({
@@ -2283,7 +2288,8 @@ async function startDevSession(options: LooseRecord) {
       }
 
       if (
-        (await routeSporadesAuth(runtime.database, request, response))
+        (await routeRuntimeHealth(runtime.database, request as any, response))
+        || (await routeSporadesAuth(runtime.database, request, response))
         || (await handleFileHttpRoute(runtime.database, request, response, websocketHub as any))
         || (await routeEndpoint(runtime.database, request, response))
       ) {
@@ -2717,6 +2723,11 @@ async function stripeTeamBillingProviderFactory(config: LooseRecord) {
 }
 
 async function createDevRuntime(options: LooseRecord): Promise<any> {
+  let clamavSidecar: any;
+  const attachRequiredSidecar = async (candidate: any) => {
+    const attached = await attachRequiredDevClamavSidecar(clamavSidecar, candidate, async () => await startDevClamavSidecar({ projectDir: options.projectDir, dockerfile: path.join(resolveSporadesPackageRoot(), "Dockerfile.base"), buildContext: resolveSporadesPackageRoot() }));
+    clamavSidecar = attached.sidecar; return attached.attached;
+  };
   let database: any = await openDevDatabase(
     options.databasePath,
     options.serverSource,
@@ -2729,7 +2740,13 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
       createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(options.config),
     },
   );
-  await database.init();
+  database.runtimeProbeToken = options.runtimeProbeToken;
+  try { await attachRequiredSidecar(database); await database.init(); }
+  catch (error) {
+    const cleanup = await Promise.allSettled([Promise.resolve().then(() => database.close()), clamavSidecar?.stop?.()].filter(Boolean));
+    const failures = cleanup.filter((item) => item.status === "rejected").map((item: any) => item.reason);
+    if (failures.length) throw new AggregateError([error, ...failures], "Dev runtime startup and scanner cleanup both failed."); throw error;
+  }
 
   return {
     get database() {
@@ -2748,10 +2765,21 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
           createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(config),
         },
       );
-      database = await replaceRuntimeDatabase(database, nextDatabase);
+      nextDatabase.runtimeProbeToken = options.runtimeProbeToken;
+      const sidecarBeforePreparation = clamavSidecar;
+      database = await replacePreparedRuntimeDatabase(
+        database,
+        nextDatabase,
+        attachRequiredSidecar,
+        async () => {
+          if (clamavSidecar === sidecarBeforePreparation || !clamavSidecar) return;
+          clamavSidecar = await releaseDevClamavSidecar(clamavSidecar);
+        },
+      );
+      clamavSidecar = await retireDevClamavSidecarIfUnused(clamavSidecar, database);
     },
     async shutdown() {
-      await shutdownAndCloseDatabase(database);
+      const settled = await Promise.allSettled([shutdownAndCloseDatabase(database), clamavSidecar?.stop?.()].filter(Boolean)); const failures = settled.filter((item) => item.status === "rejected").map((item: any) => item.reason); if (failures.length === 1) throw failures[0]; if (failures.length > 1) throw new AggregateError(failures, "Dev runtime and scanner shutdown both failed.");
     },
   };
 }
@@ -4149,7 +4177,12 @@ async function startContainerSession(options: LooseRecord) {
   });
 
   let clientRelease: LooseRecord;
+  let requiresClamavReadiness = false;
   try {
+    const capsuleDefinition = await importCapsuleDefinition(bundle.serverRuntime.capsuleModuleSource);
+    requiresClamavReadiness = Object.values(capsuleDefinition?.endpoints ?? {}).some(
+      (endpoint: any) => endpoint?.options?.body?.multipart?.inspection?.requiredInspectors?.includes("clamav"),
+    );
     clientRelease = {
       framework: config.client?.framework ?? "react",
       toolchain: configuredClientToolchain(config),
@@ -4212,6 +4245,7 @@ async function startContainerSession(options: LooseRecord) {
     : [];
   const bundleMountArgs = bundle.containerMounts.files.flatMap((mount) => ["--volume", formatMount(mount)]);
   const containerTransactionToken = randomBytes(16).toString("hex");
+  const runtimeProbeToken = randomBytes(32).toString("hex");
   const capsuleServicesNetworkArgs = capsuleServices ? ["--network", capsuleServices.networks.services] : [];
   const capsuleServicesEnvArgs = Object.entries(containerCapsuleServices.env ?? {}).flatMap(([key, value]) => [
     "--env",
@@ -4252,6 +4286,10 @@ async function startContainerSession(options: LooseRecord) {
       "PORT=4000",
       "--env",
       "SPORADES_LOG_STDOUT=1",
+      "--env",
+      "SPORADES_CLAMAV_MANAGED=1",
+      "--env",
+      `SPORADES_RUNTIME_PROBE_TOKEN=${runtimeProbeToken}`,
       SPORADES_BASE_IMAGE.image,
       ...(sshAccess.enabled ? ["/usr/local/bin/sporades-start"] : ["node", "/app/server.mjs"]),
     ];
@@ -4288,6 +4326,13 @@ async function startContainerSession(options: LooseRecord) {
     );
     if (!candidateOwnershipProven) {
       throw commandError("Container candidate ownership could not be verified.", "Inspect the returned Container ID before retrying deployment.");
+    }
+    if (requiresClamavReadiness) {
+      await awaitContainerRuntimeReadiness({
+        port,
+        runtimeProbeToken,
+        timeoutMs: readContainerReadinessTimeoutMs(),
+      });
     }
     containerReplacementFault("consumer");
     const consumer = await writePublicTreeConsumer(
@@ -4398,6 +4443,82 @@ async function startContainerSession(options: LooseRecord) {
   } else {
     process.stdout.write(`Sporades container session started at ${url}\n`);
   }
+}
+
+function readContainerReadinessTimeoutMs() {
+  const productionTimeoutMs = 160_000;
+  const testTimeoutMs = Number(process.env.SPORADES_TEST_CONTAINER_READINESS_TIMEOUT_MS);
+  if (Number.isFinite(testTimeoutMs) && testTimeoutMs > 0) {
+    return Math.min(testTimeoutMs, productionTimeoutMs);
+  }
+  return productionTimeoutMs;
+}
+
+async function awaitContainerRuntimeReadiness(options: { port: number; runtimeProbeToken: string; timeoutMs: number }) {
+  const deadline = Date.now() + options.timeoutMs;
+  const healthUrl = `http://127.0.0.1:${options.port}/__sporades/health/runtime`;
+  let lastFailure = "The candidate runtime did not respond.";
+  while (Date.now() < deadline) {
+    let response: Response | null = null;
+    try {
+      response = await fetch(healthUrl, {
+        headers: {
+          accept: "application/json",
+          "x-sporades-host-probe": options.runtimeProbeToken,
+        },
+        signal: AbortSignal.timeout(Math.max(1, Math.min(10_000, deadline - Date.now()))),
+      });
+      if (response.status !== 200 && response.status !== 503) {
+        await response.body?.cancel();
+        throw commandError(
+          "Container candidate runtime readiness failed.",
+          "Inspect the candidate Container logs and runtime probe configuration, then retry deployment.",
+          { statusCode: response.status },
+        );
+      }
+      let body: any;
+      try {
+        body = JSON.parse(await response.text());
+      } catch {
+        throw commandError(
+          "Container candidate runtime readiness failed.",
+          "The runtime health endpoint returned invalid JSON; inspect the candidate Container logs, then retry deployment.",
+        );
+      }
+      const checks = body?.data?.checks;
+      const valid = typeof body?.ok === "boolean"
+        && typeof body?.data?.runtime?.ready === "boolean"
+        && typeof checks?.sqlite?.ok === "boolean"
+        && typeof checks?.fileStorage?.ok === "boolean"
+        && typeof checks?.fileInspection?.ok === "boolean";
+      if (!valid) {
+        throw commandError(
+          "Container candidate runtime readiness failed.",
+          "The runtime health endpoint returned an unexpected result; update the Capsule runtime and retry deployment.",
+          { statusCode: response.status, hasOk: typeof body?.ok, hasReady: typeof body?.data?.runtime?.ready, hasSqlite: typeof checks?.sqlite?.ok, hasFileStorage: typeof checks?.fileStorage?.ok, hasFileInspection: typeof checks?.fileInspection?.ok },
+        );
+      }
+      if (response.status === 200 && body.ok === true && body.data.runtime.ready === true
+        && checks.sqlite.ok === true && checks.fileStorage.ok === true && checks.fileInspection.ok === true) {
+        return;
+      }
+      lastFailure = checks.fileInspection.ok === false
+        ? "The managed ClamAV scanner is not ready."
+        : "The candidate runtime is not ready.";
+    } catch (error) {
+      if (error instanceof Error && "hint" in error) throw error;
+      lastFailure = "The candidate runtime did not respond.";
+    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(250, remainingMs)));
+    }
+  }
+  throw commandError(
+    "Container candidate runtime readiness failed.",
+    "Inspect the candidate Container logs and managed ClamAV startup, then retry deployment; the previous working Container was restored.",
+    { timeoutMs: options.timeoutMs, cause: lastFailure },
+  );
 }
 
 async function inspectLocalContainerSsh(options: LooseRecord) {
@@ -5302,6 +5423,10 @@ async function createHostReleaseArchive(options: LooseRecord) {
   const remoteArchive = posixJoin(options.profile.remoteRoot, "incoming", `${releaseId}.tar.gz`);
   const sealedServerEnv = await createHostReleaseSealedServerEnv(options);
   const publicFiles = await listHostedPublicFiles(options.bundle.staticFiles.publicDir);
+  const capsuleDefinition = await importCapsuleDefinition(options.bundle.serverRuntime.capsuleModuleSource);
+  const requiredInspectors = [...new Set((Object.values(capsuleDefinition?.endpoints ?? {}) as any[])
+    .flatMap((endpoint: any) => endpoint?.options?.body?.multipart?.inspection?.requiredInspectors ?? []))]
+    .filter((inspector) => inspector === "content-policy-v1" || inspector === "clamav");
   const releaseRequest = createHostReleaseRequest({
     alias: options.alias,
     profile: options.profile,
@@ -5315,6 +5440,7 @@ async function createHostReleaseArchive(options: LooseRecord) {
     sshAccess: options.sshAccess,
     updatePolicyMode: readBaseImageUpdatePolicy(options.projectConfig),
     publicFiles,
+    requiredInspectors,
   });
   await rm(packageDir, { recursive: true, force: true });
   await mkdir(path.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true });

@@ -1,4 +1,23 @@
 type RecordLike = Record<string, any>;
+export declare function isSupportedInspectionNodeVersion(version: string): boolean;
+export declare function validatePdfIngress(bytes: Buffer, options?: RecordLike): Promise<boolean>;
+export declare function isJavaScriptRawInputWithinBounds(text: string): boolean;
+export declare function isJavaScriptParserInputWithinBounds(text: string): boolean;
+export declare function hasExecutableJavaScriptSemantics(text: string): boolean;
+export declare function hasExecutablePythonSemantics(text: string): boolean;
+export declare const bash52CommandVocabulary: readonly string[];
+export declare function hasExecutableShellSemantics(text: string): boolean;
+export declare function isCurrentClamavSignature(signature: RecordLike | null, now?: number): boolean;
+export declare function collectBoundedToolOutput(child: any, timeoutMs: number, maximumBytes?: number): Promise<{
+    ok: boolean;
+    stdout: string;
+}>;
+export declare function waitForClamavReadiness(database: RecordLike, child: any, deadline: number, socketPath?: string): Promise<boolean>;
+export declare function initializeClamavRuntime(database: RecordLike): Promise<any>;
+export declare function shutdownClamavRuntime(database: RecordLike): Promise<void>;
+export declare function checkClamavRuntime(database: RecordLike): Promise<{
+    ok: any;
+}>;
 export declare function multipartParts(request: AsyncIterable<Uint8Array>, boundaryText: string, maxWireBytes: number, maxPartBytes: number | {
     file: number;
     field: number;
@@ -38,6 +57,10 @@ export declare function createEndpointIngressApi(database: RecordLike, endpoint:
         path: any;
         version: any;
     }>;
+    inspection(lease: RecordLike): Promise<Readonly<{
+        policyRevision: any;
+        verdicts: any;
+    }> | null>;
     status(statusRequestKey: string, partKey: string): Promise<{
         state: "missing";
         file?: undefined;

@@ -13,6 +13,13 @@ export type Capsule<Definition extends CapsuleDefinition = CapsuleDefinition> = 
   kind: "capsule";
 };
 
+export type FileIngressInspection = Readonly<{
+  policyRevision: string;
+  maxVerdictAgeMs?: number;
+  /** Runtime-owned inspector names; Capsule code cannot supply verdicts. */
+  requiredInspectors: readonly ("content-policy-v1" | "clamav")[];
+}>;
+
 export type EndpointOptions = {
   method: string;
   path: string;
@@ -32,6 +39,8 @@ export type EndpointOptions = {
     partKeyHeader: string;
     requireStablePartKeys?: boolean;
     claimAuthorities?: readonly ["actor" | "capsule-principal"];
+    /** Optional fail-closed inspection gate for trusted ingress claims. */
+    inspection?: FileIngressInspection;
   } };
 };
 

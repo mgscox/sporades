@@ -2,7 +2,7 @@
 
 The generated server Bundle must be able to import Node's own builtins and
 nothing else. A Hosted Capsule runs `node /app/server.mjs` inside the Sporades
-base image, which is `node:22-alpine` with no install step and no `node_modules`
+base image, which pins Node 22.14 Alpine with no install step and no `node_modules`
 anywhere. A release mounts `server.mjs`, `sporades.json` and the public tree into
 `/app`, plus `.env.sporades.server` or the sealed-env envelope and private key
 when those are in use — every mount read-only, and none of them a place a module

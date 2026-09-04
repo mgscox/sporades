@@ -20,6 +20,16 @@ import { defaultHostHelperConfig, loadHostHelperConfig } from "./host-helper-con
 import { hostRegistryRetryCommand, missingCapsuleHint, validateBootstrapRequest, validateDeleteRequest, validateHealthRequest, validateHostLogsRequest, validateHostStatsRequest, validateInstallRequest, validateLifecycleRequest, validateListRegistryRecord, validateListRequest, validateRegisterRequest, validateReleaseListRequest, validateScheduleInspectionRequest, validateRollbackRequest, validateSealedEnvRotationRequest, validateStatsRequest, validateUnregisterRequest, } from "./host-helper-validation.js";
 const CAPSULE_RUNTIME_HEALTH_PATH = "/__sporades/health/runtime";
 const RUNTIME_PROBE_HEADER = "x-sporades-host-probe";
+const HOSTED_RUNTIME_PROBE_SCRIPT = String.raw `const timeoutMs = Math.max(1, Math.min(5000, Number(process.argv[1]) || 1000)); const port = Number(process.argv[2]) || 4000;
+try {
+  const response = await fetch("http://127.0.0.1:" + port + "/__sporades/health/runtime", { headers: { accept: "application/json", "x-sporades-host-probe": process.env.SPORADES_RUNTIME_PROBE_TOKEN || "" }, signal: AbortSignal.timeout(timeoutMs) });
+  const text = await response.text();
+  if (text.length > 65536) { process.stdout.write(JSON.stringify({ kind: "invalid", status: response.status })); process.exit(0); }
+  let body; try { body = JSON.parse(text); } catch { process.stdout.write(JSON.stringify({ kind: "invalid", status: response.status })); process.exit(0); }
+  const checks = body?.data?.checks; const ready = body?.data?.runtime?.ready;
+  const valid = typeof body?.ok === "boolean" && typeof ready === "boolean" && typeof checks?.sqlite?.ok === "boolean" && typeof checks?.fileStorage?.ok === "boolean" && (checks?.fileInspection === undefined || typeof checks.fileInspection?.ok === "boolean");
+  process.stdout.write(JSON.stringify({ kind: "response", status: response.status, valid, ok: body?.ok === true, ready: ready === true, sqlite: checks?.sqlite?.ok === true, fileStorage: checks?.fileStorage?.ok === true, fileInspection: checks?.fileInspection === undefined ? null : checks.fileInspection?.ok === true }));
+} catch { process.stdout.write(JSON.stringify({ kind: "connection" })); }`;
 // Published by Cloudflare at https://www.cloudflare.com/ips/ and checked on 2026-08-21.
 // cloudflare-origin routes reject every other peer before trusting CF-Connecting-IP.
 const CLOUDFLARE_ORIGIN_IP_RANGES = Object.freeze([
@@ -1456,11 +1466,12 @@ async function verifyInstalledPublicTree(request, timeoutMs) {
     return lastFailure;
 }
 function readVerificationHealthTimeoutMs(request) {
-    const value = Number(request.verification?.healthTimeoutMs ?? 10_000);
+    const scannerStartupMs = request.release?.inspection?.requiredInspectors?.includes("clamav") ? 160_000 : 10_000;
+    const value = Number(request.verification?.healthTimeoutMs ?? scannerStartupMs);
     if (!Number.isFinite(value) || value < 1) {
-        return 10_000;
+        return scannerStartupMs;
     }
-    return Math.min(value, 60_000);
+    return Math.min(value, 180_000);
 }
 async function routeVerifiedFailureToUnavailable(request, releaseId, message) {
     const lifecycle = normaliseLifecycle(request);
@@ -1587,6 +1598,59 @@ function verificationHealthSummary(result) {
         runtime: result.data?.runtime ?? null,
     };
 }
+function hostedRuntimeReadinessTimeoutMs(request, record, releaseId) {
+    const recorded = normaliseReleaseHistory(record).find((release) => release.id === releaseId);
+    const recordedInspection = recorded?.source?.inspection;
+    const requestInspectionMatches = request.release?.id === releaseId;
+    const inspection = recordedInspection !== undefined ? recordedInspection : requestInspectionMatches ? request.release.inspection : undefined;
+    const nullMeansAbsent = recordedInspection === undefined && requestInspectionMatches;
+    const requiredInspectors = inspection && typeof inspection === "object" && !Array.isArray(inspection) ? inspection.requiredInspectors : null;
+    const canonicalInspectors = Array.isArray(requiredInspectors)
+        && requiredInspectors.length >= 1
+        && requiredInspectors.length <= 8
+        && requiredInspectors.every((value) => value === "content-policy-v1" || value === "clamav")
+        && new Set(requiredInspectors).size === requiredInspectors.length;
+    const absentInspection = inspection === undefined || (inspection === null && nullMeansAbsent);
+    const fallback = !absentInspection && (!canonicalInspectors || requiredInspectors.includes("clamav")) ? 160_000 : 10_000;
+    const configured = Number(request.verification?.healthTimeoutMs ?? fallback);
+    return Number.isFinite(configured) && configured >= 1 ? Math.min(configured, 180_000) : fallback;
+}
+async function waitForHostedRuntimeReadiness(lifecycle, timeoutMs) {
+    const deadline = performance.now() + timeoutMs;
+    let lastFailure = { ok: false, failure: "connection" };
+    while (performance.now() < deadline) {
+        const running = inspectContainerRunning(lifecycle.container.name);
+        if (!running.ok || !running.running)
+            return { ok: false, failure: "exited" };
+        const remaining = deadline - performance.now();
+        const probeTimeoutMs = Math.max(1, Math.min(1_000, remaining));
+        const probe = runDocker(["exec", lifecycle.container.name, "node", "--input-type=module", "--eval", HOSTED_RUNTIME_PROBE_SCRIPT, String(probeTimeoutMs), String(lifecycle.routes.running.port ?? 4000)], { maxBuffer: 128 * 1024, timeoutMs: Math.ceil(probeTimeoutMs + 250) });
+        if (!probe.ok) {
+            const after = inspectContainerRunning(lifecycle.container.name);
+            if (!after.ok || !after.running)
+                return { ok: false, failure: "exited" };
+            lastFailure = { ok: false, failure: "connection" };
+        }
+        else {
+            let result;
+            try {
+                result = JSON.parse(probe.stdout);
+            }
+            catch {
+                result = null;
+            }
+            if (result?.kind === "response" && [401, 403, 404].includes(result.status))
+                return { ok: false, failure: "authentication" };
+            if (result?.kind === "response" && result.status === 200 && result.valid === true && result.ok === true && result.ready === true && result.sqlite === true && result.fileStorage === true && result.fileInspection !== false)
+                return { ok: true };
+            lastFailure = { ok: false, failure: result?.kind === "response" && result.valid === true ? "unhealthy" : result?.kind === "connection" ? "connection" : "invalid" };
+        }
+        const waitMs = deadline - performance.now();
+        if (waitMs > 0)
+            await delay(Math.min(100, waitMs));
+    }
+    return lastFailure.ok ? lastFailure : { ok: false, failure: lastFailure.failure === "connection" ? "timeout" : lastFailure.failure };
+}
 async function startCapsule(request, options = {}) {
     validateLifecycleRequest(request);
     const registryRecord = await verifyRegisteredCapsule(request, "lifecycle");
@@ -1599,7 +1663,8 @@ async function startCapsule(request, options = {}) {
         await prepareWritableDataPath(paths.data);
     await recordReleaseStartAttempt(request, releaseId);
     ensureHostedBaseImage(lifecycle);
-    const runArgs = await dockerRunArgs(lifecycle, releaseId);
+    const runtimeProbe = await ensureRuntimeProbeCredential(request);
+    const runArgs = await dockerRunArgs(lifecycle, releaseId, runtimeProbe);
     const run = runDocker(runArgs);
     if (!run.ok) {
         await recordFailedStartAndUnavailableRoute(request, lifecycle, releaseId, "Hosted Capsule container failed to start.");
@@ -1649,7 +1714,24 @@ async function startCapsule(request, options = {}) {
         }
         return null;
     }
-    const runtimeProbe = await ensureRuntimeProbeCredential(request);
+    const readiness = await waitForHostedRuntimeReadiness(lifecycle, hostedRuntimeReadinessTimeoutMs(request, registryRecord, releaseId));
+    if (!readiness.ok) {
+        stopAndRemoveContainer(lifecycle.container.name);
+        await recordFailedStartAndUnavailableRoute(request, lifecycle, releaseId, `Hosted Capsule runtime readiness failed (${readiness.failure}).`);
+        const result = {
+            ok: false,
+            data: null,
+            error: {
+                message: "Hosted Capsule runtime did not become ready.",
+                hint: readiness.failure === "authentication"
+                    ? "Restart the Hosted Capsule so its Host-owned runtime probe credential is refreshed, then inspect runtime logs if readiness still fails."
+                    : `Check Docker logs for ${lifecycle.container.name}; the route has been returned to the Hosted Capsule unavailable response.`,
+            },
+        };
+        if (options.write !== false)
+            writeEnvelope(result);
+        return null;
+    }
     const runningRoute = loopbackRunningRoute({ ...lifecycle.routes.running, runtimeProbe }, publishedPort);
     try {
         await writeRunningRoute(lifecycle, runningRoute);
@@ -1931,7 +2013,7 @@ async function evaluateCapsuleHealth(request, options = {}) {
     catch {
         return healthFailure(request, health, "route-failure", "Hosted Capsule route did not respond to runtime health.", "Check DNS, Caddy, and the Hosted Capsule route, then retry health.");
     }
-    if (!response.ok) {
+    if (!response.ok && response.status !== 503) {
         return healthFailure(request, health, "route-failure", "Hosted Capsule route returned an HTTP failure for runtime health.", "Check Caddy routing and Hosted Capsule logs, then retry health.", { statusCode: response.status });
     }
     let body;
@@ -1939,10 +2021,16 @@ async function evaluateCapsuleHealth(request, options = {}) {
         body = JSON.parse(await response.text());
     }
     catch {
+        if (!response.ok) {
+            return healthFailure(request, health, "route-failure", "Hosted Capsule route returned an HTTP failure for runtime health.", "Check Caddy routing and Hosted Capsule logs, then retry health.", { statusCode: response.status });
+        }
         return healthFailure(request, health, "runtime-failure", "Hosted Capsule runtime health returned invalid JSON.", "Check Hosted Capsule logs, then retry health.");
     }
     const runtime = normaliseRuntimeHealthBody(body);
     if (!runtime.valid) {
+        if (!response.ok) {
+            return healthFailure(request, health, "route-failure", "Hosted Capsule route returned an HTTP failure for runtime health.", "Check Caddy routing and Hosted Capsule logs, then retry health.", { statusCode: response.status });
+        }
         return healthFailure(request, health, "runtime-failure", "Hosted Capsule runtime health had an unexpected shape.", "Update the Hosted Capsule release and retry health.");
     }
     if (!runtime.checks.sqlite.ok) {
@@ -1950,6 +2038,9 @@ async function evaluateCapsuleHealth(request, options = {}) {
     }
     if (!runtime.checks.fileStorage.ok) {
         return healthFailure(request, health, "file-storage-failure", "Hosted Capsule file storage health check failed.", "Check the Hosted Capsule data volume permissions, then retry health.", { runtime: runtime.safe });
+    }
+    if (runtime.checks.fileInspection && !runtime.checks.fileInspection.ok) {
+        return healthFailure(request, health, "file-inspection-failure", "Hosted Capsule file inspection health check failed.", "Check the managed ClamAV daemon and signature freshness, then retry health.", { runtime: runtime.safe });
     }
     if (!body.ok || !runtime.ready) {
         return healthFailure(request, health, "runtime-failure", "Hosted Capsule runtime is not ready.", "Check Hosted Capsule logs, then retry health.", { runtime: runtime.safe });
@@ -2756,7 +2847,7 @@ async function ensureRuntimeProbeCredential(request) {
 function readRuntimeProbeCredential(record) {
     const header = record?.runtimeProbe?.header;
     const token = record?.runtimeProbe?.token;
-    if (header !== RUNTIME_PROBE_HEADER || typeof token !== "string" || token.length === 0) {
+    if (header !== RUNTIME_PROBE_HEADER || typeof token !== "string" || !/^[a-f0-9]{64}$/.test(token)) {
         return null;
     }
     return { header, token };
@@ -2765,13 +2856,16 @@ function normaliseRuntimeHealthBody(body) {
     const checks = body?.data?.checks;
     const sqlite = checks?.sqlite;
     const fileStorage = checks?.fileStorage;
+    const fileInspection = checks?.fileInspection;
     const ready = body?.data?.runtime?.ready;
-    const valid = typeof body?.ok === "boolean" && typeof ready === "boolean" && typeof sqlite?.ok === "boolean" && typeof fileStorage?.ok === "boolean";
+    const valid = typeof body?.ok === "boolean" && typeof ready === "boolean" && typeof sqlite?.ok === "boolean" && typeof fileStorage?.ok === "boolean"
+        && (fileInspection === undefined || typeof fileInspection?.ok === "boolean");
     const safe = {
         ready: ready === true,
         checks: {
             sqlite: { ok: sqlite?.ok === true },
             fileStorage: { ok: fileStorage?.ok === true },
+            ...(fileInspection === undefined ? {} : { fileInspection: { ok: fileInspection?.ok === true } }),
         },
     };
     return { valid, ready: ready === true, checks: safe.checks, safe };
@@ -4011,7 +4105,7 @@ function parseDockerByteSize(value) {
     }
     return Math.round(amount * multipliers[unit]);
 }
-async function dockerRunArgs(lifecycle, releaseId) {
+async function dockerRunArgs(lifecycle, releaseId, runtimeProbe) {
     const args = [
         "run",
         "--detach",
@@ -4067,7 +4161,7 @@ async function dockerRunArgs(lifecycle, releaseId) {
             args.push("--env", "SPORADES_SSH_AUTHORIZED_KEYS_PATH=/run/sporades/ssh/authorized_keys", "--env", "SPORADES_SSH_AUTHORIZED_KEYS_TARGET=/app/data/ssh/authorized_keys");
         }
     }
-    args.push("--volume", formatMount(lifecycle.mounts.data), "--workdir", "/app", "--env", "PORT=4000", "--env", "SPORADES_LOG_STDOUT=1", "--env", "SPORADES_SECURITY_SESSION=hosted", "--env", `SPORADES_PUBLIC_ORIGIN=${lifecycle.hostedUrl}`, "--env", `SPORADES_RELEASE_ID=${releaseId}`);
+    args.push("--volume", formatMount(lifecycle.mounts.data), "--workdir", "/app", "--env", "PORT=4000", "--env", "SPORADES_LOG_STDOUT=1", "--env", "SPORADES_SECURITY_SESSION=hosted", "--env", "SPORADES_CLAMAV_MANAGED=1", "--env", `SPORADES_RUNTIME_PROBE_TOKEN=${runtimeProbe.token}`, "--env", `SPORADES_PUBLIC_ORIGIN=${lifecycle.hostedUrl}`, "--env", `SPORADES_RELEASE_ID=${releaseId}`);
     args.push("--publish", `127.0.0.1::${lifecycle.routes.running.port ?? 4000}`);
     const sshEnabled = lifecycle.mounts.files.some((mount) => mount.container === "/run/sporades/ssh/authorized_keys");
     if (sshEnabled) {
@@ -4155,7 +4249,7 @@ function ensureHostedBaseImage(lifecycle) {
     }
 }
 function runDocker(args, options = {}) {
-    const result = spawnSync("docker", args, { encoding: "utf8", ...(options.maxBuffer ? { maxBuffer: options.maxBuffer } : {}) });
+    const result = spawnSync("docker", args, { encoding: "utf8", ...(options.maxBuffer ? { maxBuffer: options.maxBuffer } : {}), ...(options.timeoutMs ? { timeout: options.timeoutMs } : {}) });
     if (options.ignoreFailure) {
         return { ok: result.status === 0, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
     }
@@ -4817,6 +4911,9 @@ async function recordReleaseUploaded(request, release, fileInventory) {
                 files: Array.isArray(release.files) ? [...release.files] : [],
                 fileInventory: fileInventory.map((file) => ({ ...file })),
                 serverEnvIncluded: Boolean(release.serverEnvIncluded),
+                inspection: Array.isArray(release.inspection?.requiredInspectors)
+                    ? { requiredInspectors: [...release.inspection.requiredInspectors] }
+                    : undefined,
                 sealedServerEnvIncluded: Boolean(release.sealedServerEnvIncluded),
                 sealedServerEnv: release.sealedServerEnv?.publicKeyFingerprint
                     ? {

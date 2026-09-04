@@ -24,7 +24,7 @@ Host profile if you want a different path from the outset.
 Local machine:
 
 - A checked-out Sporades repo or installed `sporades` CLI.
-- Node.js 22+ and npm.
+- Node.js `>=22.13 <23` or `>=24`, plus npm.
 - `tar`, `scp`, and `ssh` available on `PATH`.
 - SSH key access (i.e. no SSH password) to the Host server, for example `ssh root@example.com`.
 - Optional: Docker for deployment of packaged capsules on local host
@@ -32,7 +32,7 @@ Local machine:
 Host server:
 
 - Linux server reachable over SSH.
-- Node.js 22+ to run the Sporades Host helper.
+- Node.js `>=22.13 <23` or `>=24` to run the Sporades Host helper.
 - Docker available to run Hosted Capsule containers.
 - Caddy available to serve and reload generated routes.
 - `tar` available to extract pushed Capsule releases.
@@ -150,7 +150,8 @@ not the audit source of truth for Capsule SSH sessions. Any later Capsule-level
 Fail2ban activity should be treated as hardening-adjacent telemetry; normalized
 Sporades audit events remain the user-facing record for SSH access facts.
 
-Node 22+ is recommended because the Host helper is an ESM Node script.
+Node.js `>=22.13 <23` or `>=24` is required because the Host helper and carried
+File-inspection runtime share Sporades' declared Node contract.
 
 ## 3. Install the Server Helper Runtime
 
@@ -182,7 +183,7 @@ the dependency-free Node helper can parse it directly:
 ```json
 {
   "hostedCapsule": {
-    "dockerImage": "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
+    "dockerImage": "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
     "dockerNetwork": "sporades-hosted-capsules",
     "graceCheckMs": 500
   },
@@ -339,6 +340,24 @@ new current release and checks the Hosted Capsule runtime health route:
 ```sh
 sporades host push --host personal --subname team-notes --verify --json
 ```
+
+When the built Capsule declares the required `clamav` inspector, the release
+request carries only that bounded inspector name. Hosted verification then
+allows up to 160 seconds for the initial official signature download and
+daemon readiness, instead of applying the ordinary 10-second route window to
+a cold scanner. Other Capsules retain the 10-second default. An explicit
+verification timeout remains bounded and overrides either default. Runtime
+health output preserves the safe `checks.fileInspection.ok` boolean without
+exposing daemon topology, signatures, or malware names.
+
+The Base image's `freshclam` daemon notifies its local `clamd` over the
+configured Unix socket after a successful signature update. Health continues
+to require the on-disk and loaded signature versions to match, so an update may
+briefly fail closed while `clamd` reloads and then converges without waiting for
+its periodic reload interval. A failed update leaves the last loaded valid
+signature set in service. A Dev session does not publish its scanner companion
+until a bounded clean scan has proved the daemon and Unix socket ready; timeout
+or early daemon exit removes that unpublished companion before startup fails.
 
 By default, verification failure records the failed release and routes the
 Capsule to the Hosted Capsule unavailable response. Automatic fallback to the

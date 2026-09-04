@@ -12,7 +12,7 @@ import { connect } from "node:net";
 import { createWebSocketHub, openDevDatabase, prepareHttpSecurity, routeRuntimeHealth } from "../dist/server-runtime-source.js";
 import { CLIENT_CAPABILITIES, CLIENT_TEMPLATES } from "../dist/client-capabilities.js";
 import { validateReleaseArchive } from "../dist/cli/host-helper-archive.js";
-import { createHostLifecycleRequest } from "../dist/cli/host-request-builders.js";
+import { createHostLifecycleRequest, createHostReleaseRequest } from "../dist/cli/host-request-builders.js";
 import { installProjectVueToolchain } from "./support/project-vue-toolchain.js";
 import { installProjectSvelteToolchain } from "./support/project-svelte-toolchain.js";
 import { installProjectSolidToolchain } from "./support/project-solid-toolchain.js";
@@ -34,6 +34,20 @@ function buildHostLifecycle(remoteRoot, domain, subname, scheme = "https") {
     { updatePolicyMode: "manual" },
   );
 }
+
+test("Hosted release requests carry only bounded required inspector metadata", () => {
+  const base = {
+    alias: "personal", profile: { domain: "capsules.example.dev", remoteRoot: "/srv/sporades" }, subname: "team-notes",
+    binding: { hostedUrl: "https://team-notes.capsules.example.dev", remoteCapsuleId: "capsules.example.dev/team-notes" },
+    releaseId: "20260903T010203Z-deadbeef", remoteArchive: "/srv/sporades/incoming/release.tar.gz",
+    bundle: { containerMounts: { serverEnv: null } }, publicFiles: ["public/index.html"], restart: true,
+    updatePolicyMode: "manual", sealedServerEnv: null, sshAccess: { enabled: false },
+  };
+  assert.deepEqual(createHostReleaseRequest({ ...base, requiredInspectors: ["content-policy-v1", "clamav"] }).inspection, {
+    requiredInspectors: ["content-policy-v1", "clamav"],
+  });
+  assert.equal(createHostReleaseRequest({ ...base, requiredInspectors: [] }).inspection, null);
+});
 
 async function withTempDir(fn) {
   const dir = await mkdtemp(path.join(await realpath(tmpdir()), "sporades-host-"));
@@ -541,7 +555,15 @@ if (args[0] === "run") {
   process.exit(Number(process.env.FAKE_DOCKER_RUN_STATUS || "0"));
 }
 if (args[0] === "inspect" && args.includes("{{.State.Running}}")) {
-  process.stdout.write(process.env.FAKE_DOCKER_RUNNING || "true");
+  let running = process.env.FAKE_DOCKER_RUNNING || "true";
+  if (process.env.FAKE_DOCKER_RUNNING_VALUES) {
+    const { existsSync, readFileSync, writeFileSync } = require("node:fs");
+    const statePath = process.env.FAKE_DOCKER_RUNNING_STATE;
+    const count = statePath && existsSync(statePath) ? Number(readFileSync(statePath, "utf8")) : 0;
+    const values = process.env.FAKE_DOCKER_RUNNING_VALUES.split(","); running = values[Math.min(count, values.length - 1)];
+    if (statePath) writeFileSync(statePath, String(count + 1));
+  }
+  process.stdout.write(running);
   process.exit(Number(process.env.FAKE_DOCKER_RUNNING_STATUS || "0"));
 }
 if (args[0] === "inspect" && args.includes("{{json .}}")) {
@@ -551,6 +573,23 @@ if (args[0] === "inspect" && args.includes("{{json .}}")) {
 if (args[0] === "inspect" && args.some((arg) => arg.includes("NetworkSettings.Ports"))) {
   process.stdout.write(process.env.FAKE_DOCKER_PUBLISHED_PORT || "127.0.0.1:49153");
   process.exit(Number(process.env.FAKE_DOCKER_PUBLISHED_PORT_STATUS || "0"));
+}
+if (args[0] === "exec") {
+  const { existsSync, readFileSync, writeFileSync } = require("node:fs");
+  if (process.env.FAKE_DOCKER_RUNTIME_PROBE_OBSERVATION) {
+    const route = existsSync(process.env.FAKE_DOCKER_RUNTIME_PROBE_ROUTE) ? readFileSync(process.env.FAKE_DOCKER_RUNTIME_PROBE_ROUTE, "utf8") : "";
+    const registry = existsSync(process.env.FAKE_DOCKER_RUNTIME_PROBE_REGISTRY) ? JSON.parse(readFileSync(process.env.FAKE_DOCKER_RUNTIME_PROBE_REGISTRY, "utf8")) : {};
+    writeFileSync(process.env.FAKE_DOCKER_RUNTIME_PROBE_OBSERVATION, JSON.stringify({ routeRunning: route.includes("reverse_proxy"), registryStatus: registry.status }));
+  }
+  const statePath = process.env.FAKE_DOCKER_RUNTIME_PROBE_STATE;
+  const count = statePath && existsSync(statePath) ? Number(readFileSync(statePath, "utf8")) : 0;
+  const configured = process.env.FAKE_DOCKER_RUNTIME_PROBE_RESULTS ? JSON.parse(process.env.FAKE_DOCKER_RUNTIME_PROBE_RESULTS) : [];
+  const result = configured[Math.min(count, configured.length - 1)] || { status: 200, body: { ok: true, data: { runtime: { ready: true }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: true } } }, error: null } };
+  if (statePath) writeFileSync(statePath, String(count + 1));
+  if (result.stdout !== undefined) process.stdout.write(result.stdout);
+  else { const checks = result.body?.data?.checks; process.stdout.write(JSON.stringify({ kind: "response", status: result.status, valid: typeof result.body?.ok === "boolean" && typeof result.body?.data?.runtime?.ready === "boolean" && typeof checks?.sqlite?.ok === "boolean" && typeof checks?.fileStorage?.ok === "boolean" && (checks?.fileInspection === undefined || typeof checks.fileInspection?.ok === "boolean"), ok: result.body?.ok === true, ready: result.body?.data?.runtime?.ready === true, sqlite: checks?.sqlite?.ok === true, fileStorage: checks?.fileStorage?.ok === true, fileInspection: checks?.fileInspection === undefined ? null : checks.fileInspection?.ok === true })); }
+  if (result.stderr) process.stderr.write(result.stderr);
+  process.exit(Number(result.exitStatus || "0"));
 }
 if (args[0] === "stats") {
   process.stdout.write(process.env.FAKE_DOCKER_STATS_JSON || "{}");
@@ -618,6 +657,8 @@ process.exit(Number(status || "0"));
       FAKE_DOCKER_CADDY_LOG: caddyLogPath,
       FAKE_DOCKER_CADDY_STATE: path.join(dir, "caddy-state.txt"),
       FAKE_DOCKER_RUN_STATE: path.join(dir, "docker-run-state.txt"),
+      FAKE_DOCKER_RUNNING_STATE: path.join(dir, "docker-running-state.txt"),
+      FAKE_DOCKER_RUNTIME_PROBE_STATE: path.join(dir, "docker-runtime-probe-state.txt"),
       SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1",
       ...options.env,
     },
@@ -1878,7 +1919,7 @@ test("Host helper legacy drain uses a monotonic bounded deadline despite wall-cl
     });
     const forcedKill = setTimeout(() => {
       try { process.kill(-upgrade.child.pid, "SIGKILL"); } catch {}
-    }, 500);
+    }, 2_000);
     const result = await upgrade.result;
     clearTimeout(forcedKill);
     assert.equal(result.code, 1);
@@ -3694,7 +3735,7 @@ test("sporades host helper restores the exact pre-rotation running state", async
       assert.equal(JSON.parse(result.stdout).ok, true, `${label}: ${result.stdout}\n${result.stderr}\n${JSON.stringify(await docker.calls())}`);
       const calls = (await docker.calls()).map((call) => call.args[0]);
       if (running) {
-        assert.deepEqual(calls, ["inspect", "stop", "rm", "image", "run", "inspect", "inspect"], label);
+        assert.deepEqual(calls, ["inspect", "stop", "rm", "image", "run", "inspect", "inspect", "inspect", "exec"], label);
         assert.equal(JSON.parse(await readFile(fixture.registryRecordPath, "utf8")).status, "running");
       } else {
         assert.deepEqual(calls, ["inspect"], label);
@@ -4104,8 +4145,8 @@ process.exit(0);
         },
         baseImage: {
           name: "sporades-base",
-          image: "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
-          version: "0.1.0-node22-alpine",
+          image: "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
+          version: "0.2.0-node22-alpine",
           updatePolicy: {
             mode: "host-managed",
             autoPatch: { supported: false, reason: "Base image updates are applied by replacing containers, not mutating them in place." },
@@ -5321,12 +5362,12 @@ process.exit(0);
     assert.equal(startOutput.data.container.labels["com.sporades.capsule-subname"], "team-notes");
     assert.equal(startOutput.data.container.labels["com.sporades.capsule-id"], "capsules.example.dev/team-notes");
     assert.equal(startOutput.data.container.labels["com.sporades.base-image.name"], "sporades-base");
-    assert.equal(startOutput.data.container.labels["com.sporades.base-image.version"], "0.1.0-node22-alpine");
+    assert.equal(startOutput.data.container.labels["com.sporades.base-image.version"], "0.2.0-node22-alpine");
     assert.equal(startOutput.data.container.labels["com.sporades.base-image.update-policy"], "host-managed");
     assert.deepEqual(startOutput.data.container.baseImage, {
       name: "sporades-base",
-      image: "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
-      version: "0.1.0-node22-alpine",
+      image: "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
+      version: "0.2.0-node22-alpine",
       updatePolicy: {
         mode: "host-managed",
         autoPatch: { supported: false, reason: "Base image updates are applied by replacing containers, not mutating them in place." },
@@ -5384,12 +5425,12 @@ process.exit(0);
       container: "/app/data",
       mode: "rw",
     });
-    assert.equal(startRequest.lifecycle.container.image, "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine");
+    assert.equal(startRequest.lifecycle.container.image, "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine");
     assert.equal(startRequest.lifecycle.container.user, "10001:10001");
     assert.deepEqual(startRequest.lifecycle.container.baseImage, {
       name: "sporades-base",
-      image: "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
-      version: "0.1.0-node22-alpine",
+      image: "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
+      version: "0.2.0-node22-alpine",
       updatePolicy: {
         mode: "host-managed",
         autoPatch: { supported: false, reason: "Base image updates are applied by replacing containers, not mutating them in place." },
@@ -6146,8 +6187,8 @@ test("sporades host helper starts public-key-only sealed releases with the relea
           files: ["server.mjs", "public/client.js", "public/index.html", "sporades.json", ".sporades/sealed-server-env/server-env.sealed.json"],
           baseImage: {
             name: "sporades-base",
-            image: "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
-            version: "0.1.0-node22-alpine",
+            image: "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
+            version: "0.2.0-node22-alpine",
             updatePolicy: { mode: "manual" },
           },
           directories: {
@@ -6504,8 +6545,8 @@ test("sporades host helper starts the current release in Docker and routes throu
     assert.equal(output.data.route.upstream, "127.0.0.1:49153");
 
     const calls = await docker.calls();
-    assert.deepEqual(calls.map((call) => call.args[0]), ["stop", "rm", "image", "run", "inspect", "inspect"]);
-    assert.deepEqual(calls[2].args, ["image", "inspect", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine"]);
+    assert.deepEqual(calls.map((call) => call.args[0]), ["stop", "rm", "image", "run", "inspect", "inspect", "inspect", "exec"]);
+    assert.deepEqual(calls[2].args, ["image", "inspect", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine"]);
     const runCall = calls.find((call) => call.args[0] === "run");
     assert.equal(runCall.args[runCall.args.indexOf("--name") + 1], "sporades-capsules-example-dev-team-notes");
     assert.equal(runCall.args[runCall.args.indexOf("--network") + 1], "sporades-hosted-capsules");
@@ -6522,7 +6563,7 @@ test("sporades host helper starts the current release in Docker and routes throu
     assert(runCall.args.includes("--label"));
     assert(runCall.args.includes("com.sporades.release-id=20260630T221500Z-feedface"));
     assert(runCall.args.includes("com.sporades.base-image.name=sporades-base"));
-    assert(runCall.args.includes("com.sporades.base-image.version=0.1.0-node22-alpine"));
+    assert(runCall.args.includes("com.sporades.base-image.version=0.2.0-node22-alpine"));
     assert(runCall.args.includes("com.sporades.base-image.update-policy=manual"));
     assert(runCall.args.includes(`${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`));
     assert(runCall.args.includes(`${path.join(capsuleDir, "current", ".env.sporades.server")}:/app/.env.sporades.server:ro`));
@@ -6532,8 +6573,8 @@ test("sporades host helper starts the current release in Docker and routes throu
     assert(runCall.args.includes("SPORADES_SECURITY_SESSION=hosted"));
     assert(runCall.args.includes("SPORADES_PUBLIC_ORIGIN=https://team-notes.capsules.example.dev"));
     assert(runCall.args.includes("SPORADES_RELEASE_ID=20260630T221500Z-feedface"));
-    assert.deepEqual(runCall.args.slice(runCall.args.indexOf("ghcr.io/sporades/sporades-base:0.1.0-node22-alpine")), [
-      "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
+    assert.deepEqual(runCall.args.slice(runCall.args.indexOf("ghcr.io/sporades/sporades-base:0.2.0-node22-alpine")), [
+      "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
       "node",
       "/app/server.mjs",
     ]);
@@ -6551,6 +6592,8 @@ test("sporades host helper starts the current release in Docker and routes throu
     const record = JSON.parse(await readFile(registryRecordPath, "utf8"));
     assert.equal(record.runtimeProbe.header, "x-sporades-host-probe");
     assert.match(record.runtimeProbe.token, /^[a-f0-9]{64}$/);
+    assert(runCall.args.includes(`SPORADES_RUNTIME_PROBE_TOKEN=${record.runtimeProbe.token}`));
+    assert.doesNotMatch(start.stdout + start.stderr, new RegExp(record.runtimeProbe.token));
     assert.equal(JSON.stringify(output).includes(record.runtimeProbe.token), false);
     assert.equal(JSON.stringify(output).includes("SECRET_TOKEN"), false);
     const preparedDataDir = await stat(dataDir);
@@ -6570,6 +6613,177 @@ test("sporades host helper starts the current release in Docker and routes throu
   });
 });
 
+test("Hosted Capsule restart never publishes a running route before authenticated runtime readiness", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "restart-runtime-readiness", restart: false });
+    const lifecycle = await alignSealedFixtureWithBuiltLifecycle(fixture);
+    const docker = await installFakeDocker(path.join(dir, "docker"), {
+      env: {
+        FAKE_DOCKER_RUNTIME_PROBE_RESULTS: JSON.stringify([{ status: 503, body: { ok: false, data: { runtime: { ready: false }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: false } } }, error: null } }]),
+        FAKE_DOCKER_RUNTIME_PROBE_OBSERVATION: path.join(dir, "readiness-observation.json"),
+        FAKE_DOCKER_RUNTIME_PROBE_ROUTE: fixture.routeFile,
+        FAKE_DOCKER_RUNTIME_PROBE_REGISTRY: fixture.registryRecordPath,
+      },
+    });
+    const result = await runHostHelper({
+      action: "capsule.restart",
+      host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+      lifecycle,
+      verification: { healthTimeoutMs: 25 },
+    }, { cwd: dir, env: docker.env });
+
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, false, result.stdout);
+    assert.equal(output.error.message, "Hosted Capsule restart failed.");
+    assert.match(await readFile(fixture.routeFile, "utf8"), /respond "Hosted Capsule unavailable" 503/);
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    assert.notEqual(record.status, "running");
+    assert((await docker.calls()).some((call) => call.args[0] === "exec"), "authenticated runtime probe was not attempted");
+    assert.deepEqual(JSON.parse(await readFile(path.join(dir, "readiness-observation.json"), "utf8")), { routeRunning: false, registryStatus: "running" });
+  });
+});
+
+test("Hosted Capsule startup distinguishes delayed readiness, probe authentication failure, and exit during initialization", async () => {
+  const readyBody = { ok: true, data: { runtime: { ready: true }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: true } } }, error: null };
+  const startingBody = { ok: false, data: { runtime: { ready: false }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: false } } }, error: null };
+  for (const scenario of ["delayed", "authentication", "exit"]) await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: `runtime-readiness-${scenario}`, restart: false });
+    const lifecycle = await alignSealedFixtureWithBuiltLifecycle(fixture);
+    if (scenario === "delayed") {
+      const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8")); record.status = "released";
+      await writeFile(fixture.registryRecordPath, `${JSON.stringify(record, null, 2)}\n`);
+    }
+    const results = scenario === "delayed"
+      ? [{ status: 503, body: startingBody }, { status: 200, body: readyBody }]
+      : scenario === "authentication" ? [{ status: 404, body: startingBody }] : [{ status: 503, body: startingBody }];
+    const docker = await installFakeDocker(path.join(dir, "docker"), { env: {
+      FAKE_DOCKER_RUNTIME_PROBE_RESULTS: JSON.stringify(results),
+      ...(scenario === "delayed" ? {
+        FAKE_DOCKER_RUNTIME_PROBE_OBSERVATION: path.join(dir, "readiness-observation.json"),
+        FAKE_DOCKER_RUNTIME_PROBE_ROUTE: fixture.routeFile,
+        FAKE_DOCKER_RUNTIME_PROBE_REGISTRY: fixture.registryRecordPath,
+      } : {}),
+      ...(scenario === "exit" ? { FAKE_DOCKER_RUNNING_VALUES: "true,true,false" } : {}),
+    } });
+    const result = await runHostHelper({ action: "capsule.start", host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname }, lifecycle, verification: { healthTimeoutMs: 500 } }, { cwd: dir, env: docker.env });
+    const output = JSON.parse(result.stdout); const calls = await docker.calls(); const probes = calls.filter((call) => call.args[0] === "exec");
+    if (scenario === "delayed") {
+      assert.equal(output.ok, true, result.stdout); assert.equal(probes.length, 2); assert.match(await readFile(fixture.routeFile, "utf8"), /reverse_proxy 127\.0\.0\.1:49153/);
+      assert.equal(JSON.parse(await readFile(fixture.registryRecordPath, "utf8")).status, "running");
+      assert.deepEqual(JSON.parse(await readFile(path.join(dir, "readiness-observation.json"), "utf8")), { routeRunning: false, registryStatus: "released" });
+    } else {
+      assert.equal(output.ok, false, result.stdout); assert.equal(probes.length, 1); assert.match(await readFile(fixture.routeFile, "utf8"), /Hosted Capsule unavailable/);
+      assert.notEqual(JSON.parse(await readFile(fixture.registryRecordPath, "utf8")).status, "running");
+    }
+    const recordText = await readFile(fixture.registryRecordPath, "utf8");
+    assert.equal(result.stdout.includes(JSON.parse(recordText).runtimeProbe.token), false);
+  });
+});
+
+test("Hosted Capsule fallback restart uses the recorded ClamAV readiness window for the selected release", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "fallback-recorded-clamav", restart: false });
+    const lifecycle = await alignSealedFixtureWithBuiltLifecycle(fixture);
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    record.releases[0].source.inspection = { requiredInspectors: ["clamav"] };
+    await writeFile(fixture.registryRecordPath, `${JSON.stringify(record, null, 2)}\n`);
+    const clock = path.join(dir, "stepping-monotonic-clock.mjs");
+    await writeFile(clock, "let now = 0; Object.defineProperty(globalThis, 'performance', { value: { now: () => { const current = now; now += 20000; return current; } } });\n");
+    const docker = await installFakeDocker(path.join(dir, "docker"));
+
+    const result = await runHostHelper({
+      action: "capsule.restart",
+      host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+      release: { id: fixture.releaseId, inspection: null },
+      lifecycle,
+    }, { cwd: dir, env: { ...docker.env, NODE_OPTIONS: `--import=${clock}` } });
+
+    assert.equal(JSON.parse(result.stdout).ok, true, result.stdout);
+    assert.equal((await docker.calls()).filter((call) => call.args[0] === "exec").length, 1);
+  });
+});
+
+test("Hosted Capsule fallback restart ignores a failed candidate's ClamAV readiness window", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "fallback-recorded-ordinary", restart: false });
+    const lifecycle = await alignSealedFixtureWithBuiltLifecycle(fixture);
+    const clock = path.join(dir, "stepping-monotonic-clock.mjs");
+    await writeFile(clock, "let now = 0; Object.defineProperty(globalThis, 'performance', { value: { now: () => { const current = now; now += 20000; return current; } } });\n");
+    const docker = await installFakeDocker(path.join(dir, "docker"));
+
+    const result = await runHostHelper({
+      action: "capsule.restart",
+      host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+      release: { id: fixture.releaseId, inspection: { requiredInspectors: ["clamav"] } },
+      lifecycle,
+    }, { cwd: dir, env: { ...docker.env, NODE_OPTIONS: `--import=${clock}` } });
+
+    assert.equal(JSON.parse(result.stdout).ok, false, result.stdout);
+    assert.equal((await docker.calls()).filter((call) => call.args[0] === "exec").length, 0);
+  });
+});
+
+test("Hosted Capsule restart accepts only canonical persisted inspector metadata", async () => {
+  const cases = [
+    { name: "absent", inspection: undefined, longWindow: false },
+    { name: "content-only", inspection: { requiredInspectors: ["content-policy-v1"] }, longWindow: false },
+    { name: "clamav-only", inspection: { requiredInspectors: ["clamav"] }, longWindow: true },
+    { name: "both", inspection: { requiredInspectors: ["content-policy-v1", "clamav"] }, longWindow: true },
+    { name: "unknown", inspection: { requiredInspectors: ["unknown"] }, longWindow: true },
+    { name: "empty-string", inspection: { requiredInspectors: [""] }, longWindow: true },
+    { name: "duplicate-content", inspection: { requiredInspectors: ["content-policy-v1", "content-policy-v1"] }, longWindow: true },
+    { name: "duplicate-clamav", inspection: { requiredInspectors: ["clamav", "clamav"] }, longWindow: true },
+    { name: "mixed-duplicate", inspection: { requiredInspectors: ["content-policy-v1", "clamav", "content-policy-v1"] }, longWindow: true },
+    { name: "too-many", inspection: { requiredInspectors: Array.from({ length: 9 }, (_, index) => `unknown-${index}`) }, longWindow: true },
+    { name: "empty-array", inspection: { requiredInspectors: [] }, longWindow: true },
+    { name: "non-string", inspection: { requiredInspectors: [1] }, longWindow: true },
+    { name: "object", inspection: { requiredInspectors: {} }, longWindow: true },
+    { name: "missing-list", inspection: {}, longWindow: true },
+    { name: "null", inspection: null, longWindow: true },
+    { name: "array", inspection: [], longWindow: true },
+  ];
+  for (const scenario of cases) await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: `restart-inspection-${scenario.name}`, restart: false });
+    const lifecycle = await alignSealedFixtureWithBuiltLifecycle(fixture);
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    if (scenario.inspection === undefined) delete record.releases[0].source.inspection;
+    else record.releases[0].source.inspection = scenario.inspection;
+    await writeFile(fixture.registryRecordPath, `${JSON.stringify(record, null, 2)}\n`);
+    const clock = path.join(dir, "stepping-monotonic-clock.mjs");
+    await writeFile(clock, "let now = 0; Object.defineProperty(globalThis, 'performance', { value: { now: () => { const current = now; now += 20000; return current; } } });\n");
+    const docker = await installFakeDocker(path.join(dir, "docker"));
+    const result = await runHostHelper({ action: "capsule.restart", host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname }, lifecycle }, { cwd: dir, env: { ...docker.env, NODE_OPTIONS: `--import=${clock}` } });
+    assert.equal(JSON.parse(result.stdout).ok, scenario.longWindow, `${scenario.name}: ${result.stdout}`);
+    assert.equal((await docker.calls()).filter((call) => call.args[0] === "exec").length, scenario.longWindow ? 1 : 0, scenario.name);
+  });
+});
+
+test("Hosted Capsule start uses request inspection metadata only for its exact unrecorded release", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "start-exact-request-inspection", restart: false });
+    const lifecycle = await alignSealedFixtureWithBuiltLifecycle(fixture);
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8")); record.releases = [];
+    await writeFile(fixture.registryRecordPath, `${JSON.stringify(record, null, 2)}\n`);
+    const clock = path.join(dir, "stepping-monotonic-clock.mjs");
+    await writeFile(clock, "let now = 0; Object.defineProperty(globalThis, 'performance', { value: { now: () => { const current = now; now += 20000; return current; } } });\n");
+    const docker = await installFakeDocker(path.join(dir, "docker"));
+
+    const result = await runHostHelper({
+      action: "capsule.start",
+      host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+      release: { id: fixture.previousReleaseId, inspection: { requiredInspectors: ["clamav"] } },
+      lifecycle,
+    }, { cwd: dir, env: { ...docker.env, NODE_OPTIONS: `--import=${clock}` } });
+
+    assert.equal(JSON.parse(result.stdout).ok, true, result.stdout);
+    assert.equal((await docker.calls()).filter((call) => call.args[0] === "exec").length, 1);
+  });
+});
+
 test("sporades host helper checks Hosted Capsule runtime health with a Host-owned probe credential", async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
@@ -6577,7 +6791,7 @@ test("sporades host helper checks Hosted Capsule runtime health with a Host-owne
 
     await withHttpServer((request, response) => {
       assert.equal(request.url, "/__sporades/health/runtime");
-      assert.equal(request.headers["x-sporades-host-probe"], "probe-secret");
+      assert.equal(request.headers["x-sporades-host-probe"], "a".repeat(64));
       response.writeHead(200, { "content-type": "application/json" });
       response.end(
         JSON.stringify({
@@ -6587,6 +6801,7 @@ test("sporades host helper checks Hosted Capsule runtime health with a Host-owne
             checks: {
               sqlite: { ok: true },
               fileStorage: { ok: true },
+              fileInspection: { ok: true },
             },
           },
           error: null,
@@ -6606,7 +6821,7 @@ test("sporades host helper checks Hosted Capsule runtime health with a Host-owne
           hostedUrl,
           status: "running",
           currentRelease: { id: "20260630T221500Z-feedface" },
-          runtimeProbe: { header: "x-sporades-host-probe", token: "probe-secret" },
+          runtimeProbe: { header: "x-sporades-host-probe", token: "a".repeat(64) },
         })}\n`,
       );
 
@@ -6647,12 +6862,13 @@ test("sporades host helper checks Hosted Capsule runtime health with a Host-owne
             checks: {
               sqlite: { ok: true },
               fileStorage: { ok: true },
+              fileInspection: { ok: true },
             },
           },
         },
         error: null,
       });
-      assert.equal(health.stdout.includes("probe-secret"), false);
+      assert.equal(health.stdout.includes("a".repeat(64)), false);
     });
   });
 });
@@ -6669,7 +6885,7 @@ test("sporades host helper refreshes a stale loopback route after Docker restart
 
     await withHttpServer((request, response) => {
       assert.equal(request.url, "/__sporades/health/runtime");
-      assert.equal(request.headers["x-sporades-host-probe"], "probe-secret");
+      assert.equal(request.headers["x-sporades-host-probe"], "a".repeat(64));
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({
         ok: true,
@@ -6693,7 +6909,7 @@ test("sporades host helper refreshes a stale loopback route after Docker restart
           `team-notes.${domain} {`,
           "  @sporadesRuntimeProbe {",
           "    path /__sporades/health/runtime",
-          "    header x-sporades-host-probe probe-secret",
+          `    header x-sporades-host-probe ${"a".repeat(64)}`,
           "  }",
           "  handle @sporadesRuntimeProbe {",
           "    reverse_proxy 127.0.0.1:49153 {",
@@ -6716,7 +6932,7 @@ test("sporades host helper refreshes a stale loopback route after Docker restart
           hostedUrl,
           status: "running",
           currentRelease: { id: "20260630T221500Z-feedface" },
-          runtimeProbe: { header: "x-sporades-host-probe", token: "probe-secret" },
+          runtimeProbe: { header: "x-sporades-host-probe", token: "a".repeat(64) },
         })}\n`,
       );
 
@@ -6734,7 +6950,7 @@ test("sporades host helper refreshes a stale loopback route after Docker restart
       const route = await readFile(routeFile, "utf8");
       assert.equal((route.match(/reverse_proxy 127\.0\.0\.1:49154/g) ?? []).length, 2);
       assert.doesNotMatch(route, /127\.0\.0\.1:49153/);
-      assert.match(route, /header x-sporades-host-probe probe-secret/);
+      assert.match(route, new RegExp(`header x-sporades-host-probe ${"a".repeat(64)}`));
       assert.deepEqual(
         (await docker.caddyCalls()).map((call) => call.args),
         [
@@ -6800,7 +7016,7 @@ test("sporades host helper serializes two stale health route repairs across help
           hostedUrl,
           status: "running",
           currentRelease: { id: "20260630T221500Z-feedface" },
-          runtimeProbe: { header: "x-sporades-host-probe", token: "probe-secret" },
+          runtimeProbe: { header: "x-sporades-host-probe", token: "a".repeat(64) },
         })}\n`,
       );
       const request = {
@@ -6895,7 +7111,7 @@ test("sporades host helper serializes stale health repair against route removal"
           hostedUrl: `http://team-notes.${domain}`,
           status: "running",
           currentRelease: { id: "20260630T221500Z-feedface" },
-          runtimeProbe: { header: "x-sporades-host-probe", token: "probe-secret" },
+          runtimeProbe: { header: "x-sporades-host-probe", token: "a".repeat(64) },
         })}\n`,
       );
       const healthRequest = {
@@ -6983,7 +7199,7 @@ test("sporades host helper serializes stale health repair against a concurrent s
           status: "running",
           currentRelease: { id: "20260630T221500Z-feedface" },
           releases: [{ id: "20260630T221500Z-feedface", state: "started", current: true, startAttempts: [] }],
-          runtimeProbe: { header: "x-sporades-host-probe", token: "probe-secret" },
+          runtimeProbe: { header: "x-sporades-host-probe", token: "a".repeat(64) },
         })}\n`,
       );
       const baseRequest = {
@@ -7689,7 +7905,7 @@ test("sporades host helper does not send the runtime probe credential to caller-
     let maliciousRequests = 0;
 
     await withHttpServer((request, response) => {
-      assert.equal(request.headers["x-sporades-host-probe"], "probe-secret");
+      assert.equal(request.headers["x-sporades-host-probe"], "a".repeat(64));
       response.writeHead(200, { "content-type": "application/json" });
       response.end(
         JSON.stringify({
@@ -7723,7 +7939,7 @@ test("sporades host helper does not send the runtime probe credential to caller-
             hostedUrl,
             status: "running",
             currentRelease: { id: "20260630T221500Z-feedface" },
-            runtimeProbe: { header: "x-sporades-host-probe", token: "probe-secret" },
+            runtimeProbe: { header: "x-sporades-host-probe", token: "a".repeat(64) },
           })}\n`,
         );
 
@@ -7745,7 +7961,7 @@ test("sporades host helper does not send the runtime probe credential to caller-
         assert.equal(health.code, 0, health.stderr);
         assert.equal(JSON.parse(health.stdout).ok, true);
         assert.equal(maliciousRequests, 0);
-        assert.equal(health.stdout.includes("probe-secret"), false);
+        assert.equal(health.stdout.includes("a".repeat(64)), false);
       });
     });
   });
@@ -7773,6 +7989,15 @@ test("Sporades runtime health rejects unauthenticated probes and returns safe re
       assert.equal(unauthenticated.status, 404);
       assert.equal(await unauthenticated.text(), "Not found");
 
+      database.clamavRequired = true;
+      database.runtimeProbeToken = "a".repeat(64);
+      const forged = await fetch(`http://127.0.0.1:${port}/__sporades/health/runtime`, {
+        headers: { "x-sporades-host-probe": "probe-secret" },
+      });
+      assert.equal(forged.status, 404);
+      assert.equal(await forged.text(), "Not found");
+      database.clamavRequired = false;
+
       const authenticated = await fetch(`http://127.0.0.1:${port}/__sporades/health/runtime`, {
         headers: { "x-sporades-host-probe": "probe-secret" },
       });
@@ -7785,6 +8010,7 @@ test("Sporades runtime health rejects unauthenticated probes and returns safe re
           checks: {
             sqlite: { ok: true },
             fileStorage: { ok: true },
+            fileInspection: { ok: true },
           },
         },
         error: null,
@@ -7818,7 +8044,7 @@ test("sporades host helper reports structured Hosted Capsule runtime health fail
           hostedUrl: `${scheme}://team-notes.${domain}`,
           status: "running",
           currentRelease: { id: "20260630T221500Z-feedface" },
-          runtimeProbe: { header: "x-sporades-host-probe", token: "probe-secret" },
+          runtimeProbe: { header: "x-sporades-host-probe", token: "a".repeat(64) },
           ...recordOverrides,
         })}\n`,
       );
@@ -7890,14 +8116,19 @@ test("sporades host helper reports structured Hosted Capsule runtime health fail
         failure: "file-storage-failure",
         body: { ok: false, data: { runtime: { ready: false }, checks: { sqlite: { ok: true }, fileStorage: { ok: false } } }, error: null },
       },
+      {
+        failure: "file-inspection-failure",
+        statusCode: 503,
+        body: { ok: false, data: { runtime: { ready: false }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: false } } }, error: null },
+      },
     ];
 
     for (const responseCase of responseCases) {
       const root = path.join(baseRoot, responseCase.failure);
       const docker = await installFakeDocker(path.join(dir, `${responseCase.failure}-docker`));
       await withHttpServer((request, response) => {
-        assert.equal(request.headers["x-sporades-host-probe"], "probe-secret");
-        response.writeHead(200, { "content-type": "application/json" });
+        assert.equal(request.headers["x-sporades-host-probe"], "a".repeat(64));
+        response.writeHead(responseCase.statusCode ?? 200, { "content-type": "application/json" });
         response.end(JSON.stringify(responseCase.body));
       }, async (port) => {
         const domain = `localhost:${port}`;
@@ -7912,7 +8143,7 @@ test("sporades host helper reports structured Hosted Capsule runtime health fail
         const output = JSON.parse(result.stdout);
         assert.equal(output.ok, false);
         assert.equal(output.data.failure, responseCase.failure);
-        assert.equal(result.stdout.includes("probe-secret"), false);
+        assert.equal(result.stdout.includes("a".repeat(64)), false);
         assert.equal(result.stdout.includes(baseRoot), false);
       });
     }
@@ -8301,11 +8532,11 @@ test("sporades host helper lists registry records enriched with Docker container
           JSON.stringify({
             ID: "abc123def456",
             Names: "sporades-capsules-example-dev-notes",
-            Image: "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
+            Image: "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
             State: "running",
             Status: "Up 2 hours",
             Labels:
-              "com.sporades.managed=true,com.sporades.hosted-domain=capsules.example.dev,com.sporades.capsule-subname=notes,com.sporades.base-image.name=sporades-base,com.sporades.base-image.version=0.1.0-node22-alpine,com.sporades.base-image.update-policy=manual",
+              "com.sporades.managed=true,com.sporades.hosted-domain=capsules.example.dev,com.sporades.capsule-subname=notes,com.sporades.base-image.name=sporades-base,com.sporades.base-image.version=0.2.0-node22-alpine,com.sporades.base-image.update-policy=manual",
           }),
           JSON.stringify({
             ID: "fedcba654321",
@@ -8431,20 +8662,20 @@ test("sporades host helper lists registry records enriched with Docker container
             docker: {
               containerId: "abc123def456",
               containerName: "sporades-capsules-example-dev-notes",
-              image: "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
+              image: "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
               state: "running",
               status: "Up 2 hours",
               running: true,
               baseImage: {
                 name: "sporades-base",
-                version: "0.1.0-node22-alpine",
+                version: "0.2.0-node22-alpine",
                 updatePolicy: { mode: "manual" },
               },
             },
             baseImage: {
               name: "sporades-base",
-              image: "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
-              version: "0.1.0-node22-alpine",
+              image: "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
+              version: "0.2.0-node22-alpine",
               updatePolicy: {
                 mode: "manual",
                 autoPatch: { supported: false, reason: "Base image updates are applied by replacing containers, not mutating them in place." },
@@ -9704,9 +9935,9 @@ test("sporades host helper builds the base image when registry pull is unavailab
     assert.deepEqual(
       calls.filter((call) => ["image", "pull", "build"].includes(call.args[0])).map((call) => call.args),
       [
-        ["image", "inspect", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine"],
-        ["pull", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine"],
-        ["build", "-f", path.join(remoteRoot, "Dockerfile.base"), "-t", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine", remoteRoot],
+        ["image", "inspect", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine"],
+        ["pull", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine"],
+        ["build", "-f", path.join(remoteRoot, "Dockerfile.base"), "-t", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine", remoteRoot],
       ],
     );
     assert.ok(calls.some((call) => call.args[0] === "run"));
@@ -9754,7 +9985,7 @@ test("sporades host helper fails start with guidance when the base image cannot 
       data: null,
       error: {
         message: "Unable to prepare the Sporades Base image.",
-        hint: `Docker could not pull ghcr.io/sporades/sporades-base:0.1.0-node22-alpine, and ${path.join(remoteRoot, "Dockerfile.base")} is missing. Reinstall the Sporades Host helper files, then retry \`sporades host start team-notes --host <alias>\`.`,
+        hint: `Docker could not pull ghcr.io/sporades/sporades-base:0.2.0-node22-alpine, and ${path.join(remoteRoot, "Dockerfile.base")} is missing. Reinstall the Sporades Host helper files, then retry \`sporades host start team-notes --host <alias>\`.`,
       },
     });
     const calls = await docker.calls();
@@ -9763,8 +9994,8 @@ test("sporades host helper fails start with guidance when the base image cannot 
       [
         ["stop", "sporades-capsules-example-dev-team-notes"],
         ["rm", "sporades-capsules-example-dev-team-notes"],
-        ["image", "inspect", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine"],
-        ["pull", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine"],
+        ["image", "inspect", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine"],
+        ["pull", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine"],
       ],
     );
   });
@@ -9815,13 +10046,14 @@ test("sporades host helper fails start when Docker does not report a usable loop
     assert.equal(record.releases[0].id, "20260630T221500Z-feedface");
     assert.equal(record.releases[0].state, "failed");
     assert.equal(record.releases[0].failure.message, "Docker did not report a loopback published port for Hosted Capsule.");
+    assert.match(record.runtimeProbe.token, /^[a-f0-9]{64}$/);
     assert.deepEqual(
       (await docker.calls()).map((call) => call.args),
       [
         ["stop", "sporades-capsules-example-dev-team-notes"],
         ["rm", "sporades-capsules-example-dev-team-notes"],
-        ["image", "inspect", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine"],
-        ["run", "--detach", "--name", "sporades-capsules-example-dev-team-notes", "--network", "sporades-hosted-capsules", "--restart", "on-failure:3", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=5", "--label", "com.sporades.managed=true", "--label", "com.sporades.hosted-domain=capsules.example.dev", "--label", "com.sporades.capsule-subname=team-notes", "--label", "com.sporades.capsule-id=capsules.example.dev/team-notes", "--label", "com.sporades.base-image.name=sporades-base", "--label", "com.sporades.base-image.version=0.1.0-node22-alpine", "--label", "com.sporades.base-image.update-policy=host-managed", "--label", "com.sporades.release-id=20260630T221500Z-feedface", "--volume", `${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`, "--volume", `${path.join(capsuleDir, "current", "public")}:/app/public:ro`, "--volume", `${path.join(capsuleDir, "current", "sporades.json")}:/app/sporades.json:ro`, "--volume", `${path.join(capsuleDir, "data")}:/app/data:rw`, "--workdir", "/app", "--env", "PORT=4000", "--env", "SPORADES_LOG_STDOUT=1", "--env", "SPORADES_SECURITY_SESSION=hosted", "--env", "SPORADES_PUBLIC_ORIGIN=https://team-notes.capsules.example.dev", "--env", "SPORADES_RELEASE_ID=20260630T221500Z-feedface", "--publish", "127.0.0.1::4000", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine", "node", "/app/server.mjs"],
+        ["image", "inspect", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine"],
+        ["run", "--detach", "--name", "sporades-capsules-example-dev-team-notes", "--network", "sporades-hosted-capsules", "--restart", "on-failure:3", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=5", "--label", "com.sporades.managed=true", "--label", "com.sporades.hosted-domain=capsules.example.dev", "--label", "com.sporades.capsule-subname=team-notes", "--label", "com.sporades.capsule-id=capsules.example.dev/team-notes", "--label", "com.sporades.base-image.name=sporades-base", "--label", "com.sporades.base-image.version=0.2.0-node22-alpine", "--label", "com.sporades.base-image.update-policy=host-managed", "--label", "com.sporades.release-id=20260630T221500Z-feedface", "--volume", `${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`, "--volume", `${path.join(capsuleDir, "current", "public")}:/app/public:ro`, "--volume", `${path.join(capsuleDir, "current", "sporades.json")}:/app/sporades.json:ro`, "--volume", `${path.join(capsuleDir, "data")}:/app/data:rw`, "--workdir", "/app", "--env", "PORT=4000", "--env", "SPORADES_LOG_STDOUT=1", "--env", "SPORADES_SECURITY_SESSION=hosted", "--env", "SPORADES_CLAMAV_MANAGED=1", "--env", `SPORADES_RUNTIME_PROBE_TOKEN=${record.runtimeProbe.token}`, "--env", "SPORADES_PUBLIC_ORIGIN=https://team-notes.capsules.example.dev", "--env", "SPORADES_RELEASE_ID=20260630T221500Z-feedface", "--publish", "127.0.0.1::4000", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine", "node", "/app/server.mjs"],
         ["inspect", "-f", "{{.State.Running}}", "sporades-capsules-example-dev-team-notes"],
         ["inspect", "-f", "{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostIp}}:{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostPort}}", "sporades-capsules-example-dev-team-notes"],
         ["stop", "sporades-capsules-example-dev-team-notes"],
@@ -10796,7 +11028,7 @@ test("sporades host helper restarts the current release after install when reque
     assert.equal(output.data.lifecycle.release.id, "20260630T221500Z-feedface");
     assert.deepEqual(
       (await docker.calls()).map((call) => call.args[0]),
-      ["inspect", "stop", "rm", "image", "run", "inspect", "inspect"],
+      ["inspect", "stop", "rm", "image", "run", "inspect", "inspect", "inspect", "exec"],
     );
     const runCall = (await docker.calls()).find((call) => call.args[0] === "run");
     assert.equal(runCall.args[runCall.args.indexOf("--publish") + 1], "127.0.0.1::4000");
@@ -10885,9 +11117,9 @@ test("sporades host helper starts SSH-enabled Hosted Capsules through the Base s
     assert(runCall.args.includes("SPORADES_SSH_AUTHORIZED_KEYS_TARGET=/app/data/ssh/authorized_keys"));
     assert.equal(runCall.args[runCall.args.indexOf("--publish") + 1], "127.0.0.1::4000");
     assert.equal(runCall.args[runCall.args.lastIndexOf("--publish") + 1], "127.0.0.1::22");
-    const imageIndex = runCall.args.indexOf("ghcr.io/sporades/sporades-base:0.1.0-node22-alpine");
+    const imageIndex = runCall.args.indexOf("ghcr.io/sporades/sporades-base:0.2.0-node22-alpine");
     assert.deepEqual(runCall.args.slice(imageIndex), [
-      "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
+      "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
       "/usr/local/bin/sporades-start",
     ]);
 
@@ -10936,6 +11168,7 @@ test("sporades host helper verifies a pushed Hosted Capsule release after restar
             checks: {
               sqlite: { ok: true },
               fileStorage: { ok: true },
+              fileInspection: { ok: true },
             },
           },
           error: null,
@@ -10976,6 +11209,7 @@ test("sporades host helper verifies a pushed Hosted Capsule release after restar
       assert.equal(output.data.verification.state, "verified");
       assert.equal(output.data.verification.health.route.responding, true);
       assert.equal(output.data.verification.health.runtime.ready, true);
+      assert.deepEqual(output.data.verification.health.runtime.checks.fileInspection, { ok: true });
       assert.deepEqual(output.data.verification.health.public, {
         url: `http://${fixture.subname}.${fixture.domain}/`,
         path: "/",
@@ -11059,6 +11293,32 @@ test("sporades host helper waits for a newly started Capsule route to serve its 
   });
 });
 
+test("ClamAV-declaring release verification allows a cold scanner to exceed the legacy ten-second window", async () => {
+  await withTempDir(async (dir) => {
+    const startedAt = Date.now();
+    await withHttpServer((request, response) => {
+      if (request.url === "/" && Date.now() - startedAt < 10_100) {
+        response.writeHead(502, { "content-type": "text/plain" }); response.end("scanner starting"); return;
+      }
+      if (request.url === "/") {
+        response.writeHead(200, { "content-type": "text/html" }); response.end("<main>ready</main>"); return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true, data: { runtime: { ready: true }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: true } } }, error: null }));
+    }, async (port) => {
+      const fixture = await writeHostedCapsuleInstallFixture(dir, { rootName: "verify-cold-clamav", domain: `localhost:${port}`, scheme: "http" });
+      fixture.release.inspection = { requiredInspectors: ["clamav"] };
+      const docker = await installFakeDocker(path.join(dir, "verify-cold-clamav-docker"));
+      const install = await runHostHelper({ action: "capsule.release.install", host: { alias: "personal", domain: fixture.domain, scheme: "http", remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname }, release: fixture.release, lifecycle: fixture.lifecycle, verification: { enabled: true } }, { cwd: dir, env: docker.env });
+      assert.equal(install.code, 0, install.stderr);
+      assert.equal(JSON.parse(install.stdout).data.verified, true);
+      assert.ok(Date.now() - startedAt >= 10_000);
+      const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+      assert.deepEqual(record.releases.find((entry) => entry.id === fixture.release.id).source.inspection, { requiredInspectors: ["clamav"] });
+    });
+  });
+});
+
 test("sporades host helper marks verified push failed when the Capsule route does not become healthy", async () => {
   await withTempDir(async (dir) => {
     const port = await reserveUnusedPort();
@@ -11111,7 +11371,7 @@ test("sporades host helper marks verified push failed when the Capsule route doe
   });
 });
 
-test("sporades host helper applies verification fallback only after the previous release restarts", async () => {
+test("sporades host helper applies verification fallback with the selected release's recorded ClamAV readiness window", async () => {
   await withTempDir(async (dir) => {
     const port = await reserveUnusedPort();
     const fixture = await writeHostedCapsuleInstallFixture(dir, {
@@ -11125,6 +11385,12 @@ test("sporades host helper applies verification fallback only after the previous
     await writeFile(path.join(previousReleaseDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
     await writeFile(path.join(previousReleaseDir, "public", "index.html"), '<script type="module" src="/assets/previous-deadbeef.js"></script>\n');
     await writeFile(path.join(previousReleaseDir, "public", "assets", "previous-deadbeef.js"), "console.log('previous complete release');\n");
+    const before = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    before.releases[0].source = { inspection: { requiredInspectors: ["clamav"] } };
+    await writeFile(fixture.registryRecordPath, `${JSON.stringify(before, null, 2)}\n`);
+    fixture.release.inspection = null;
+    const clock = path.join(dir, "fallback-stepping-clock.mjs");
+    await writeFile(clock, "const values = [0, 1, 2, 3, 20000, 20001]; let index = 0; Object.defineProperty(globalThis, 'performance', { value: { now: () => values[Math.min(index++, values.length - 1)] } }); let wall = 0; Date.now = () => { wall += 200000; return wall; };\n");
     const docker = await installFakeDocker(path.join(dir, "verify-fallback-success-docker"));
 
     const install = await runHostHelper(
@@ -11137,10 +11403,9 @@ test("sporades host helper applies verification fallback only after the previous
         verification: {
           enabled: true,
           fallbackToPreviousRelease: true,
-          healthTimeoutMs: 25,
         },
       },
-      { cwd: dir, env: docker.env },
+      { cwd: dir, env: { ...docker.env, NODE_OPTIONS: `--import=${clock}` } },
     );
 
     assert.equal(install.code, 1, install.stderr);
@@ -11163,6 +11428,7 @@ test("sporades host helper applies verification fallback only after the previous
     assert.equal(failedRelease.fallbackAttempts.length, 1);
     assert.equal(failedRelease.fallbackAttempts[0].releaseId, fixture.previousReleaseId);
     assert.equal(fallbackRelease.current, true);
+    assert.equal((await docker.calls()).filter((call) => call.args[0] === "exec").length, 2, "candidate and fallback both require authenticated runtime readiness");
   });
 });
 
@@ -11212,7 +11478,7 @@ test("sporades host helper leaves current unchanged when fallback inventory is m
   });
 });
 
-test("sporades host helper keeps failed release current when verification fallback restart fails", async () => {
+test("sporades host helper keeps failed release current when ordinary fallback ignores the candidate ClamAV window", async () => {
   await withTempDir(async (dir) => {
     const fixture = await writeHostedCapsuleInstallFixture(dir, {
       rootName: "verify-fallback-restart-failure",
@@ -11222,9 +11488,13 @@ test("sporades host helper keeps failed release current when verification fallba
     await writePublicRuntimeFiles(previousReleaseDir);
     await writeFile(path.join(previousReleaseDir, "server.mjs"), "export default 'previous';\n");
     await writeFile(path.join(previousReleaseDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
-    const docker = await installFakeDocker(path.join(dir, "verify-fallback-restart-failure-docker"), {
-      env: { FAKE_DOCKER_RUN_STATUSES: "0,1" },
-    });
+    const before = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    before.releases[0].source = {};
+    await writeFile(fixture.registryRecordPath, `${JSON.stringify(before, null, 2)}\n`);
+    fixture.release.inspection = { requiredInspectors: ["clamav"] };
+    const clock = path.join(dir, "fallback-stepping-clock.mjs");
+    await writeFile(clock, "const values = [0, 1, 2, 3, 20000, 20001]; let index = 0; Object.defineProperty(globalThis, 'performance', { value: { now: () => values[Math.min(index++, values.length - 1)] } }); let wall = 0; Date.now = () => { wall += 200000; return wall; };\n");
+    const docker = await installFakeDocker(path.join(dir, "verify-fallback-restart-failure-docker"));
 
     const install = await runHostHelper(
       {
@@ -11238,7 +11508,7 @@ test("sporades host helper keeps failed release current when verification fallba
           fallbackToPreviousRelease: true,
         },
       },
-      { cwd: dir, env: docker.env },
+      { cwd: dir, env: { ...docker.env, NODE_OPTIONS: `--import=${clock}` } },
     );
 
     assert.equal(install.code, 1, install.stderr);
@@ -12572,12 +12842,12 @@ process.exit(0);
         },
         container: {
           name: "sporades-capsules-example-dev-team-notes",
-          image: "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
+          image: "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
           user: "10001:10001",
           baseImage: {
             name: "sporades-base",
-            image: "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
-            version: "0.1.0-node22-alpine",
+            image: "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
+            version: "0.2.0-node22-alpine",
             updatePolicy: {
               mode: "host-managed",
               autoPatch: { supported: false, reason: "Base image updates are applied by replacing containers, not mutating them in place." },
@@ -12589,7 +12859,7 @@ process.exit(0);
             "com.sporades.capsule-subname": "team-notes",
             "com.sporades.capsule-id": "capsules.example.dev/team-notes",
             "com.sporades.base-image.name": "sporades-base",
-            "com.sporades.base-image.version": "0.1.0-node22-alpine",
+            "com.sporades.base-image.version": "0.2.0-node22-alpine",
             "com.sporades.base-image.update-policy": "host-managed",
           },
         },

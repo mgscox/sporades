@@ -1,15 +1,23 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { createServer as createNetServer } from "node:net";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { deflateSync, inflateSync } from "node:zlib";
 import { DatabaseSync } from "node:sqlite";
+import { EventEmitter } from "node:events";
 import { test } from "node:test";
+import jpeg from "jpeg-js";
+import { PNG } from "pngjs";
 
 import { capsule, endpoint, requireAuth, String as StringField, table } from "../dist/server.js";
 import { createControllableRuntimeClock, openDevDatabase, routeEndpoint, runEndpoint } from "../dist/server-runtime-source.js";
-import { createEndpointIngressApi, multipartParts, stageMultipartIngress, sweepExpiredFileIngress } from "../dist/file-ingress-runtime.js";
+import { bash52CommandVocabulary, checkClamavRuntime, collectBoundedToolOutput, createEndpointIngressApi, hasExecutableJavaScriptSemantics, hasExecutablePythonSemantics, hasExecutableShellSemantics, initializeClamavRuntime, isCurrentClamavSignature, isJavaScriptParserInputWithinBounds, isJavaScriptRawInputWithinBounds, isSupportedInspectionNodeVersion, multipartParts, shutdownClamavRuntime, stageMultipartIngress, sweepExpiredFileIngress, validatePdfIngress, waitForClamavReadiness } from "../dist/file-ingress-runtime.js";
 import { capsuleIngressAuthUserId } from "../dist/auth-runtime.js";
 import { accessKeyVerifierDigest, createAccessKeySecret } from "../dist/access-keys-runtime.js";
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
@@ -20,7 +28,649 @@ function multipart(boundary, headers = 'Content-Disposition: form-data; name="fi
 function multipartMany(boundary, parts) {
   return Buffer.from(parts.map(({ headers, body }) => `--${boundary}\r\n${headers}\r\n\r\n${body}\r\n`).join("") + `--${boundary}--`);
 }
+function multipartBinary(boundary, name, type, bytes) { return Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\nContent-Type: ${type}\r\nContent-ID: stable\r\n\r\n`), Buffer.from(bytes), Buffer.from(`\r\n--${boundary}--`)]); }
+function testCrc32(bytes) { let crc = 0xffffffff; for (const byte of bytes) { crc ^= byte; for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0); } return (crc ^ 0xffffffff) >>> 0; }
+function pngChunk(type, data) { const typeBytes = Buffer.from(type); const length = Buffer.alloc(4); length.writeUInt32BE(data.length); const crc = Buffer.alloc(4); crc.writeUInt32BE(testCrc32(Buffer.concat([typeBytes, data]))); return Buffer.concat([length, typeBytes, data, crc]); }
+function minimalPng() { return PNG.sync.write({ width: 1, height: 1, data: Buffer.from([255, 0, 0, 255]) }); }
+function minimalJpeg() { return Buffer.from(jpeg.encode({ width: 1, height: 1, data: Buffer.from([255, 0, 0, 255]) }, 90).data); }
+function removeJpegSegments(bytes, marker) { let output = Buffer.from(bytes); while (true) { const at = output.indexOf(Buffer.from([0xff, marker])); if (at < 0) return output; const length = output.readUInt16BE(at + 2); output = Buffer.concat([output.subarray(0, at), output.subarray(at + 2 + length)]); } }
+function breakJpegComponent(bytes) { const output = Buffer.from(bytes); const at = output.indexOf(Buffer.from([0xff, 0xda])); if (at >= 0) output[at + 5] = 99; return output; }
+function pngChunks(bytes) { const chunks = []; for (let offset = 8; offset < bytes.length;) { const length = bytes.readUInt32BE(offset); const type = bytes.subarray(offset + 4, offset + 8).toString("ascii"); chunks.push({ type, data: bytes.subarray(offset + 8, offset + 8 + length) }); offset += 12 + length; } return chunks; }
+function rebuildPng(chunks) { return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), ...chunks.map(({ type, data }) => pngChunk(type, data))]); }
+function minimalPdf() { const objects = ["1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n", "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", "3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R>>\nendobj\n", "4 0 obj\n<</Length 0>>\nstream\n\nendstream\nendobj\n"]; let body = "%PDF-1.4\n"; const offsets = [0]; for (const object of objects) { offsets.push(Buffer.byteLength(body)); body += object; } const xref = Buffer.byteLength(body); body += `xref\n0 5\n0000000000 65535 f \n${offsets.slice(1).map((value) => `${String(value).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<</Size 5 /Root 1 0 R>>\nstartxref\n${xref}\n%%EOF\n`; return Buffer.from(body); }
+function freshPdfDeadlineProbe(timeouts, wallClockMode) {
+  const moduleUrl = new URL("../dist/file-ingress-runtime.js", import.meta.url).href;
+  const script = `import { validatePdfIngress } from ${JSON.stringify(moduleUrl)};
+const bytes = Buffer.from(${JSON.stringify(minimalPdf().toString("base64"))}, "base64");
+const actualWallNow = Date.now;
+const wallOrigin = actualWallNow();
+let wallReads = 0;
+Date.now = ${wallClockMode === "frozen" ? "() => wallOrigin" : wallClockMode === "backward" ? "() => wallOrigin - (++wallReads * 1_000_000_000)" : "() => wallOrigin + (++wallReads * 1_000_000_000)"};
+let expiredHooks = 0;
+const startedAt = performance.now();
+const timeouts = ${JSON.stringify(timeouts)};
+const results = await Promise.all(timeouts.map((timeoutMs) => validatePdfIngress(bytes, { timeoutMs, beforeOperatorList() { expiredHooks += 1; } })));
+const elapsedMs = performance.now() - startedAt;
+let retryHooks = 0;
+const retry = await validatePdfIngress(bytes, { timeoutMs: 2000, beforeOperatorList() { retryHooks += 1; } });
+console.log(JSON.stringify({ results, expiredHooks, elapsedMs, retry, retryHooks }));`;
+  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout.trim().split("\n").at(-1));
+}
+function compactTrailerPdf(suffix = "") { return Buffer.from(minimalPdf().toString("latin1").replace("<</Size 5 /Root 1 0 R>>", `<</Size 5/Root 1 0 R${suffix}>>`), "latin1"); }
+function classicPdfWithStreamLength(lengthToken, lengthObject = "4", content = "q\nQ\n", trailerExtra = "", streamExtra = "") { const objects = ["1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n", "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", "3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R>>\nendobj\n", `4 0 obj\n<</Length ${lengthToken}${streamExtra}>>\nstream\n${content}endstream\nendobj\n`, `5 0 obj\n${lengthObject}\nendobj\n`]; let body = "%PDF-1.5\n"; const offsets = [0]; for (const object of objects) { offsets.push(Buffer.byteLength(body)); body += object; } const xref = Buffer.byteLength(body); body += `xref\n0 6\n0000000000 65535 f \n${offsets.slice(1).map((value) => `${String(value).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<</Size 6 /Root 1 0 R ${trailerExtra}>>\nstartxref\n${xref}\n%%EOF\n`; return Buffer.from(body); }
+function futureRevisionStreamLength() { const base = classicPdfWithStreamLength("6 0 R"); const previousXref = Number(/startxref\n(\d+)\n%%EOF/.exec(base.toString("latin1"))[1]); const objectOffset = base.length; const object = Buffer.from("6 0 obj\n4\nendobj\n"); const xrefOffset = objectOffset + object.length; return Buffer.concat([base, object, Buffer.from(`xref\n6 1\n${String(objectOffset).padStart(10, "0")} 00000 n \ntrailer\n<</Size 7 /Root 1 0 R /Prev ${previousXref}>>\nstartxref\n${xrefOffset}\n%%EOF\n`)]); }
+function classicPdfWithCatalogGeneration(generation) { const objects = [`1 ${generation} obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n`, "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", "3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R>>\nendobj\n", "4 0 obj\n<</Length 0>>\nstream\n\nendstream\nendobj\n"]; let body = "%PDF-1.4\n"; const offsets = [0]; for (const object of objects) { offsets.push(Buffer.byteLength(body)); body += object; } const xref = Buffer.byteLength(body); body += `xref\n0 5\n0000000000 65535 f \n${offsets.slice(1).map((value, index) => `${String(value).padStart(10, "0")} ${String(index === 0 ? generation : 0).padStart(5, "0")} n \n`).join("")}trailer\n<</Size 5 /Root 1 ${generation} R>>\nstartxref\n${xref}\n%%EOF\n`; return Buffer.from(body); }
+function classicPdfWithInUseObjectZero() { const objects = ["0 0 obj\nnull\nendobj\n", "1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n", "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", "3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R>>\nendobj\n", "4 0 obj\n<</Length 0>>\nstream\n\nendstream\nendobj\n"]; let body = "%PDF-1.4\n"; const offsets = []; for (const object of objects) { offsets.push(Buffer.byteLength(body)); body += object; } const xref = Buffer.byteLength(body); body += `xref\n0 5\n${offsets.map((value) => `${String(value).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<</Size 5 /Root 1 0 R>>\nstartxref\n${xref}\n%%EOF\n`; return Buffer.from(body); }
+function minimalPdfWithBinaryHeaderComment() { const base = minimalPdf(); const comment = Buffer.from([0x25, 0x80, 0x81, 0x82, 0x83, 0x0a]); const headerEnd = base.indexOf(0x0a) + 1; const shifted = Buffer.concat([base.subarray(0, headerEnd), comment, base.subarray(headerEnd)]).toString("latin1"); return Buffer.from(shifted.replace(/(\d{10})(?= 00000 n)/g, (value) => String(Number(value) + comment.length).padStart(10, "0")).replace(/startxref\n(\d+)/, (_all, value) => `startxref\n${Number(value) + comment.length}`), "latin1"); }
+function incrementalPdfRevision(prefix = Buffer.alloc(0), object = Buffer.from("5 0 obj\n<</Producer (incremental update)>>\nendobj\n")) { const base = minimalPdf(); const previousXref = /startxref\n(\d+)\n%%EOF/.exec(base.toString("latin1"))[1]; const objectOffset = base.length + prefix.length; const xrefOffset = objectOffset + object.length; return Buffer.concat([base, prefix, object, Buffer.from(`xref\n5 1\n${String(objectOffset).padStart(10, "0")} 00000 n \ntrailer\n<</Size 6 /Root 1 0 R /Prev ${previousXref}>>\nstartxref\n${xrefOffset}\n%%EOF\n`)]); }
+function incrementalPdf() { return incrementalPdfRevision(); }
+function xrefStreamPdf(filterStyle = false, dictionaryExtra = "") { const objects = ["1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n", "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", "3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R>>\nendobj\n", "4 0 obj\n<</Length 0>>\nstream\n\nendstream\nendobj\n"]; let body = Buffer.from("%PDF-1.5\n"); const offsets = [0]; for (const object of objects) { offsets.push(body.length); body = Buffer.concat([body, Buffer.from(object)]); } const xrefOffset = body.length; offsets.push(xrefOffset); const entries = Buffer.alloc(6 * 7); entries[5] = 0xff; entries[6] = 0xff; for (let index = 1; index < 6; index += 1) { const at = index * 7; entries[at] = 1; entries.writeUInt32BE(offsets[index], at + 1); } const stream = filterStyle ? deflateSync(entries) : entries; const filter = filterStyle === "array" ? " /Filter [/FlateDecode]" : filterStyle === "multiple" ? " /Filter [/FlateDecode /ASCIIHexDecode]" : filterStyle ? " /Filter /FlateDecode" : ""; return Buffer.concat([body, Buffer.from(`5 0 obj\n<</Type /XRef /Size 6 /Root 1 0 R /W [1 4 2]${filter}${dictionaryExtra} /Length ${stream.length}>>\nstream\n`), stream, Buffer.from(`\nendstream\nendobj\nstartxref\n${xrefOffset}\n%%EOF\n`)]); }
+function predictedXrefStreamPdf({ predictor = 12, filterArray = false, parmsArray = false, columns = 7, colors = 1, bits = 8, bitsKey = "BitsPerComponent", filterByte, params = "", mutate } = {}) {
+  const objects = ["1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n", "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", "3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R>>\nendobj\n", "4 0 obj\n<</Length 0>>\nstream\n\nendstream\nendobj\n"]; let body = Buffer.from("%PDF-1.5\n"); const offsets = [0]; for (const object of objects) { offsets.push(body.length); body = Buffer.concat([body, Buffer.from(object)]); } const xrefOffset = body.length; offsets.push(xrefOffset); const entries = Buffer.alloc(6 * 7); entries[5] = 0xff; entries[6] = 0xff; for (let index = 1; index < 6; index += 1) { const at = index * 7; entries[at] = 1; entries.writeUInt32BE(offsets[index], at + 1); }
+  const declaredRowBytes = Math.ceil(colors * bits * columns / 8); const rowBytes = Number.isSafeInteger(declaredRowBytes) && declaredRowBytes >= 1 && declaredRowBytes <= entries.length ? declaredRowBytes : 7; const encoded = []; let previous = Buffer.alloc(rowBytes); const pixelBytes = Math.ceil(colors * bits / 8);
+  for (let rowAt = 0, row = 0; rowAt < entries.length; rowAt += rowBytes, row += 1) { const current = entries.subarray(rowAt, rowAt + rowBytes); if (predictor === 1) encoded.push(current); else if (predictor === 2) { const raw = Buffer.alloc(current.length); for (let at = 0; at < current.length; at += 1) raw[at] = at < colors ? current[at] : current[at] - current[at - colors]; encoded.push(raw); } else { const kind = filterByte ?? (predictor === 15 ? row % 5 : predictor - 10); const raw = Buffer.alloc(current.length); for (let at = 0; at < current.length; at += 1) { const left = at >= pixelBytes ? current[at - pixelBytes] : 0; const up = previous[at]; const upLeft = at >= pixelBytes ? previous[at - pixelBytes] : 0; const p = left + up - upLeft; const pa = Math.abs(p - left); const pb = Math.abs(p - up); const pc = Math.abs(p - upLeft); const predicted = kind === 0 ? 0 : kind === 1 ? left : kind === 2 ? up : kind === 3 ? Math.floor((left + up) / 2) : pa <= pb && pa <= pc ? left : pb <= pc ? up : upLeft; raw[at] = current[at] - predicted; } encoded.push(Buffer.from([kind]), raw); } previous = current; }
+  let predicted = Buffer.concat(encoded); if (mutate) predicted = mutate(predicted); const stream = deflateSync(predicted); const decode = `<</Predictor ${predictor} /Colors ${colors} /${bitsKey} ${bits} /Columns ${columns}${params}>>`; const decodeParms = parmsArray ? ` /DecodeParms [${decode}]` : ` /DecodeParms ${decode}`; const filter = filterArray ? " /Filter [/FlateDecode]" : " /Filter /FlateDecode";
+  return Buffer.concat([body, Buffer.from(`5 0 obj\n<</Type /XRef /Size 6 /Root 1 0 R /W [1 4 2]${filter}${decodeParms} /Length ${stream.length}>>\nstream\n`), stream, Buffer.from(`\nendstream\nendobj\nstartxref\n${xrefOffset}\n%%EOF\n`)]);
+}
+function xrefStreamPdfWithIndirectLength(options = {}) { const entries = Buffer.alloc(7 * 7); const objects = ["1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n", "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", "3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R>>\nendobj\n", "4 0 obj\n<</Length 0>>\nstream\n\nendstream\nendobj\n", `5 0 obj\n${options.wrongType ? "(forty nine)" : entries.length}\nendobj\n`]; let body = Buffer.from("%PDF-1.5\n"); const offsets = [0]; for (const object of objects) { offsets.push(body.length); body = Buffer.concat([body, Buffer.from(object)]); } const xrefOffset = body.length; offsets.push(xrefOffset); entries[5] = 0xff; entries[6] = 0xff; for (let index = 1; index <= 6; index += 1) { const at = index * 7; entries[at] = 1; entries.writeUInt32BE(offsets[index], at + 1); } return Buffer.concat([body, Buffer.from(`6 0 obj\n<</Type /XRef /Size 7 /Root 1 0 R /W [1 4 2] /Length 5 ${options.wrongGeneration ? 1 : 0} R${options.encrypt ? " /Encrypt <</Filter /Standard>>" : ""}>>\nstream\n`), entries, Buffer.from(`\nendstream\nendobj\nstartxref\n${xrefOffset}\n%%EOF\n`)]); }
+function xrefStreamPdfWithCatalogGeneration(generation, objectZeroGeneration = 65535) { const objects = [`1 ${generation} obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n`, "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", "3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R>>\nendobj\n", "4 0 obj\n<</Length 0>>\nstream\n\nendstream\nendobj\n"]; let body = Buffer.from("%PDF-1.5\n"); const offsets = [0]; for (const object of objects) { offsets.push(body.length); body = Buffer.concat([body, Buffer.from(object)]); } const xrefOffset = body.length; offsets.push(xrefOffset); const entries = Buffer.alloc(6 * 8); entries.writeUIntBE(objectZeroGeneration, 5, 3); for (let index = 1; index < 6; index += 1) { const at = index * 8; entries[at] = 1; entries.writeUInt32BE(offsets[index], at + 1); entries.writeUIntBE(index === 1 ? generation : 0, at + 5, 3); } return Buffer.concat([body, Buffer.from(`5 0 obj\n<</Type /XRef /Size 6 /Root 1 ${generation} R /W [1 4 3] /Length ${entries.length}>>\nstream\n`), entries, Buffer.from(`\nendstream\nendobj\nstartxref\n${xrefOffset}\n%%EOF\n`)]); }
+function xrefStreamPdfWithInUseObjectZero() { const objects = ["0 0 obj\nnull\nendobj\n", "1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n", "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", "3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R>>\nendobj\n", "4 0 obj\n<</Length 0>>\nstream\n\nendstream\nendobj\n"]; let body = Buffer.from("%PDF-1.5\n"); const offsets = []; for (const object of objects) { offsets.push(body.length); body = Buffer.concat([body, Buffer.from(object)]); } const xrefOffset = body.length; offsets.push(xrefOffset); const entries = Buffer.alloc(6 * 7); for (let index = 0; index < 6; index += 1) { const at = index * 7; entries[at] = 1; entries.writeUInt32BE(offsets[index], at + 1); } return Buffer.concat([body, Buffer.from(`5 0 obj\n<</Type /XRef /Size 6 /Root 1 0 R /W [1 4 2] /Length ${entries.length}>>\nstream\n`), entries, Buffer.from(`\nendstream\nendobj\nstartxref\n${xrefOffset}\n%%EOF\n`)]); }
+function xrefStreamPdfWithCompressedObject(options = {}) {
+  const tableObject = options.tableObject ?? 6; const objectPayload = `${tableObject} 0 <</Producer (compressed evidence)>>`; const decodedObjectStream = Buffer.from(objectPayload); const objectStreamBytes = options.flate ? deflateSync(decodedObjectStream) : decodedObjectStream;
+  const lengthToken = options.indirectLength ? "7 0 R" : objectStreamBytes.length; const objectStreamDictionary = options.ordinaryStream ? `/Length ${lengthToken}` : `/Type /ObjStm /N ${options.count ?? 1} /First ${options.first ?? String(tableObject).length + 3}${options.flate ? " /Filter /FlateDecode" : ""} /Length ${lengthToken}`;
+  const objects = ["1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n", "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", "3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R>>\nendobj\n", "4 0 obj\n<</Length 0>>\nstream\n\nendstream\nendobj\n"]; let body = Buffer.from("%PDF-1.5\n"); const offsets = [0]; for (const object of objects) { offsets.push(body.length); body = Buffer.concat([body, Buffer.from(object)]); }
+  offsets.push(body.length); body = Buffer.concat([body, Buffer.from(`5 0 obj\n<<${objectStreamDictionary}>>\nstream\n`), objectStreamBytes, Buffer.from("\nendstream\nendobj\n")]);
+  const selfObject = options.indirectLength ? 8 : 7; if (options.indirectLength) { offsets[7] = body.length; body = Buffer.concat([body, Buffer.from(`7 0 obj\n${objectStreamBytes.length}\nendobj\n`)]); }
+  const xrefOffset = body.length; offsets[selfObject] = xrefOffset; const entries = Buffer.alloc((selfObject + 1) * 7); entries.writeUInt32BE(options.freeHead ?? 0, 1); entries[5] = 0xff; entries[6] = 0xff;
+  for (let index = 1; index <= 5; index += 1) { const at = index * 7; entries[at] = 1; entries.writeUInt32BE(offsets[index], at + 1); }
+  const compressedAt = 6 * 7; entries[compressedAt] = 2; entries.writeUInt32BE(options.container ?? 5, compressedAt + 1); entries.writeUInt16BE(options.index ?? 0, compressedAt + 5);
+  if (options.indirectLength) { entries[7 * 7] = 1; entries.writeUInt32BE(offsets[7], 7 * 7 + 1); }
+  const selfAt = selfObject * 7; entries[selfAt] = 1; entries.writeUInt32BE(xrefOffset, selfAt + 1);
+  return Buffer.concat([body, Buffer.from(`${selfObject} 0 obj\n<</Type /XRef /Size ${selfObject + 1} /Root 1 0 R /W [1 4 2] /Length ${entries.length}>>\nstream\n`), entries, Buffer.from(`\nendstream\nendobj\nstartxref\n${xrefOffset}\n%%EOF\n`)]);
+}
+function incrementallySupersededCompressedObject(free = false) {
+  const objects = ["1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n", "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", "3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R>>\nendobj\n", "4 0 obj\n<</Length 0>>\nstream\n\nendstream\nendobj\n"];
+  let body = Buffer.from("%PDF-1.5\n"); const offsets = [0];
+  for (const object of objects) { offsets.push(body.length); body = Buffer.concat([body, Buffer.from(object)]); }
+  const memberSix = "<</Producer (historical six)>>"; const memberSeven = "<</Producer (current seven)>>"; const header = `6 0 7 ${Buffer.byteLength(memberSix)} `; const objectStream = Buffer.from(header + memberSix + memberSeven);
+  offsets.push(body.length); body = Buffer.concat([body, Buffer.from(`5 0 obj\n<</Type /ObjStm /N 2 /First ${Buffer.byteLength(header)} /Length ${objectStream.length}>>\nstream\n`), objectStream, Buffer.from("\nendstream\nendobj\n")]);
+  const baseXref = body.length; const entries = Buffer.alloc(9 * 7); entries[5] = 0xff; entries[6] = 0xff;
+  for (let objectNumber = 1; objectNumber <= 5; objectNumber += 1) { const at = objectNumber * 7; entries[at] = 1; entries.writeUInt32BE(offsets[objectNumber], at + 1); }
+  for (let objectNumber = 6; objectNumber <= 7; objectNumber += 1) { const at = objectNumber * 7; entries[at] = 2; entries.writeUInt32BE(5, at + 1); entries.writeUInt16BE(objectNumber - 6, at + 5); }
+  entries[8 * 7] = 1; entries.writeUInt32BE(baseXref, 8 * 7 + 1);
+  body = Buffer.concat([body, Buffer.from(`8 0 obj\n<</Type /XRef /Size 9 /Root 1 0 R /W [1 4 2] /Length ${entries.length}>>\nstream\n`), entries, Buffer.from(`\nendstream\nendobj\nstartxref\n${baseXref}\n%%EOF\n`)]);
+  const replacement = free ? Buffer.alloc(0) : Buffer.from("6 0 obj\n<</Producer (replacement six)>>\nendobj\n"); const replacementOffset = body.length; const updateXref = replacementOffset + replacement.length;
+  const update = free ? `xref\n0 1\n0000000006 65535 f \n6 1\n0000000000 00001 f \n` : `xref\n6 1\n${String(replacementOffset).padStart(10, "0")} 00000 n \n`;
+  return Buffer.concat([body, replacement, Buffer.from(`${update}trailer\n<</Size 9 /Root 1 0 R /Prev ${baseXref}>>\nstartxref\n${updateXref}\n%%EOF\n`)]);
+}
+function classicPdfWithFreeChain({ head = 5, next = 0, includeFree = true } = {}) { const text = minimalPdf().toString("latin1"); const entries = [...text.matchAll(/\d{10} \d{5} [fn] \n/g)].map((match) => match[0]); const xref = /startxref\n(\d+)/.exec(text)[1]; const table = `xref\n0 ${includeFree ? 6 : 5}\n${String(head).padStart(10, "0")} 65535 f \n${entries.slice(1).join("")}${includeFree ? `${String(next).padStart(10, "0")} 00001 f \n` : ""}trailer\n<</Size 6 /Root 1 0 R>>\nstartxref\n${xref}\n%%EOF\n`; return Buffer.from(text.replace(/xref\n[\s\S]*$/, table), "latin1"); }
+function incrementallyRepairInvalidCompressedContainer() { const base = xrefStreamPdfWithCompressedObject({ container: 1 }); const previousXref = Number([...base.toString("latin1").matchAll(/startxref\n(\d+)\n%%EOF/g)].at(-1)[1]); const replacementOffset = base.length; const replacement = Buffer.from("6 0 obj\n<</Producer (replacement six)>>\nendobj\n"); const xrefOffset = replacementOffset + replacement.length; return Buffer.concat([base, replacement, Buffer.from(`xref\n6 1\n${String(replacementOffset).padStart(10, "0")} 00000 n \ntrailer\n<</Size 8 /Root 1 0 R /Prev ${previousXref}>>\nstartxref\n${xrefOffset}\n%%EOF\n`)]); }
+function incrementallyRepairInvalidFreeHead() { const base = xrefStreamPdfWithCompressedObject({ freeHead: 1 }); const previousXref = Number([...base.toString("latin1").matchAll(/startxref\n(\d+)\n%%EOF/g)].at(-1)[1]); const xrefOffset = base.length; return Buffer.concat([base, Buffer.from(`xref\n0 1\n0000000000 65535 f \ntrailer\n<</Size 8 /Root 1 0 R /Prev ${previousXref}>>\nstartxref\n${xrefOffset}\n%%EOF\n`)]); }
+function incrementallyReplaceHistoricalFreeEntry() { const base = classicPdfWithFreeChain(); const previousXref = Number([...base.toString("latin1").matchAll(/startxref\n(\d+)\n%%EOF/g)].at(-1)[1]); const replacementOffset = base.length; const replacement = Buffer.from("5 1 obj\n<</Producer (reused free object)>>\nendobj\n"); const xrefOffset = replacementOffset + replacement.length; return Buffer.concat([base, replacement, Buffer.from(`xref\n0 1\n0000000000 65535 f \n5 1\n${String(replacementOffset).padStart(10, "0")} 00001 n \ntrailer\n<</Size 6 /Root 1 0 R /Prev ${previousXref}>>\nstartxref\n${xrefOffset}\n%%EOF\n`)]); }
+function hybridXrefPdf(interveningObject = false) { const objects = ["1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n", "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", "3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R>>\nendobj\n", "4 0 obj\n<</Length 0>>\nstream\n\nendstream\nendobj\n"]; let body = Buffer.from("%PDF-1.5\n"); const offsets = [0]; for (const object of objects) { offsets.push(body.length); body = Buffer.concat([body, Buffer.from(object)]); } const streamOffset = body.length; const size = interveningObject ? 7 : 6; const entry = Buffer.alloc(7); entry[0] = 1; entry.writeUInt32BE(streamOffset, 1); body = Buffer.concat([body, Buffer.from(`5 0 obj\n<</Type /XRef /Size ${size} /Root 1 0 R /Index [5 1] /W [1 4 2] /Length 7>>\nstream\n`), entry, Buffer.from("\nendstream\nendobj\n")]); let interveningOffset; if (interveningObject) { interveningOffset = body.length; body = Buffer.concat([body, Buffer.from("6 0 obj\n<</Producer (between hybrid sections)>>\nendobj\n")]); } const xrefOffset = body.length; return Buffer.concat([body, Buffer.from(`xref\n0 5\n0000000000 65535 f \n${offsets.slice(1).map((value) => `${String(value).padStart(10, "0")} 00000 n \n`).join("")}${interveningObject ? `6 1\n${String(interveningOffset).padStart(10, "0")} 00000 n \n` : ""}trailer\n<</Size ${size} /Root 1 0 R /XRefStm ${streamOffset}>>\nstartxref\n${xrefOffset}\n%%EOF\n`)]); }
+function outOfOrderClassicXrefPdf() { const text = minimalPdf().toString("latin1"); const match = /xref\n0 5\n((?:\d{10} \d{5} [fn] \n){5})trailer/.exec(text); const entries = match[1].match(/\d{10} \d{5} [fn] \n/g); return Buffer.from(text.replace(match[0], `xref\n3 2\n${entries.slice(3).join("")}0 3\n${entries.slice(0, 3).join("")}trailer`), "latin1"); }
+function incrementalHybridXrefPdf() { const base = minimalPdf(); const previousXref = Number(/startxref\n(\d+)\n%%EOF/.exec(base.toString("latin1"))[1]); let body = Buffer.from(base); const objectOffset = body.length; body = Buffer.concat([body, Buffer.from("5 0 obj\n<</Producer (hybrid update)>>\nendobj\n")]); const streamOffset = body.length; const streamEntry = Buffer.alloc(7); streamEntry[0] = 1; streamEntry.writeUInt32BE(streamOffset, 1); body = Buffer.concat([body, Buffer.from("6 0 obj\n<</Type /XRef /Size 8 /Root 1 0 R /Index [6 1] /W [1 4 2] /Length 7>>\nstream\n"), streamEntry, Buffer.from("\nendstream\nendobj\n")]); const trailingOffset = body.length; body = Buffer.concat([body, Buffer.from("7 0 obj\n<</Producer (after xref stream)>>\nendobj\n")]); const xrefOffset = body.length; return Buffer.concat([body, Buffer.from(`xref\n7 1\n${String(trailingOffset).padStart(10, "0")} 00000 n \n5 1\n${String(objectOffset).padStart(10, "0")} 00000 n \ntrailer\n<</Size 8 /Root 1 0 R /Prev ${previousXref} /XRefStm ${streamOffset}>>\nstartxref\n${xrefOffset}\n%%EOF\n`)]); }
+function conflictingHybridMappingPdf() { const base = hybridXrefPdf(); const text = base.toString("latin1"); const xrefOffset = Number(/startxref\n(\d+)\n%%EOF/.exec(text)[1]); const duplicate = Buffer.from("5 0 obj\n<</Producer (ambiguous duplicate)>>\nendobj\n"); const shifted = Buffer.concat([base.subarray(0, xrefOffset), duplicate, base.subarray(xrefOffset)]).toString("latin1"); return Buffer.from(shifted.replace("trailer\n", `5 1\n${String(xrefOffset).padStart(10, "0")} 00000 n \ntrailer\n`).replace(`startxref\n${xrefOffset}`, `startxref\n${xrefOffset + duplicate.length}`), "latin1"); }
+function incrementalXrefStreamPdf(predictor) { const base = minimalPdf(); const previousXref = Number(/startxref\n(\d+)\n%%EOF/.exec(base.toString("latin1"))[1]); const objectOffset = base.length; const object = Buffer.from("5 0 obj\n<</Producer (xref stream update)>>\nendobj\n"); const xrefOffset = objectOffset + object.length; const entries = Buffer.alloc(14); entries[0] = 1; entries.writeUInt32BE(objectOffset, 1); entries[7] = 1; entries.writeUInt32BE(xrefOffset, 8); let stream = entries; let decoding = ""; if (predictor === 12) { const first = entries.subarray(0, 7); const second = entries.subarray(7); const delta = Buffer.alloc(7); for (let index = 0; index < 7; index += 1) delta[index] = second[index] - first[index]; stream = deflateSync(Buffer.concat([Buffer.from([2]), first, Buffer.from([2]), delta])); decoding = " /Filter /FlateDecode /DecodeParms <</Predictor 12 /Columns 7>>"; } return Buffer.concat([base, object, Buffer.from(`6 0 obj\n<</Type /XRef /Size 7 /Root 1 0 R /Index [5 2] /W [1 4 2] /Length ${stream.length} /Prev ${previousXref}${decoding}>>\nstream\n`), stream, Buffer.from(`\nendstream\nendobj\nstartxref\n${xrefOffset}\n%%EOF\n`)]); }
+function forgedPdfTail(base, payload) { const originalXref = /startxref\n(\d+)\n%%EOF/.exec(base.toString("latin1"))[1]; return Buffer.concat([base, payload, Buffer.from(`\nstartxref\n${originalXref}\n%%EOF\n`)]); }
+function initialPdfWithUnclaimedBytes(payload) { const base = minimalPdf(); const xrefOffset = Number(/startxref\n(\d+)\n%%EOF/.exec(base.toString("latin1"))[1]); const tail = base.subarray(xrefOffset).toString("latin1").replace(`startxref\n${xrefOffset}`, `startxref\n${xrefOffset + payload.length}`); return Buffer.concat([base.subarray(0, xrefOffset), payload, Buffer.from(tail, "latin1")]); }
+function masqueradingXrefStream(dictionary, data = Buffer.alloc(7)) { const base = minimalPdf(); const previousXref = Number(/startxref\n(\d+)\n%%EOF/.exec(base.toString("latin1"))[1]); const xrefOffset = base.length; return Buffer.concat([base, Buffer.from(`5 0 obj\n<<${dictionary} /Length ${data.length} /Prev ${previousXref}>>\nstream\n`), data, Buffer.from(`\nendstream\nendobj\nstartxref\n${xrefOffset}\n%%EOF\n`)]); }
+function structuredPdf(catalogExtra, extras, pageExtra = "") { const objects = [`1 0 obj\n<</Type /Catalog /Pages 2 0 R ${catalogExtra}>>\nendobj\n`, "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", `3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R ${pageExtra}>>\nendobj\n`, "4 0 obj\n<</Length 0>>\nstream\n\nendstream\nendobj\n", ...extras]; let body = "%PDF-1.7\n"; const offsets = [0]; for (const object of objects) { offsets.push(Buffer.byteLength(body)); body += object; } const xref = Buffer.byteLength(body); body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.slice(1).map((value) => `${String(value).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<</Size ${objects.length + 1} /Root 1 0 R>>\nstartxref\n${xref}\n%%EOF\n`; return Buffer.from(body); }
+async function fakeClamSocket(socketPath, options = {}) { let received = Buffer.alloc(0); let requestIndex = 0; const server = createNetServer((socket) => { let request = Buffer.alloc(0); let answered = false; socket.on("error", () => {}); socket.on("data", (chunk) => { received = Buffer.concat([received, chunk]); request = Buffer.concat([request, chunk]); if (!answered && request.length >= 14 && request.subarray(-4).equals(Buffer.alloc(4))) { answered = true; const index = requestIndex++; options.onRequest?.(request, index); const response = typeof options.response === "function" ? options.response(request, index) : options.response; const delayMs = typeof options.delayMs === "function" ? options.delayMs(request, index) : options.delayMs; if (response !== undefined) setTimeout(() => socket.end(Buffer.from(response)), delayMs ?? 0); } }); }); await new Promise((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); }); return { server, get received() { return received; } }; }
 async function* splitEvery(bytes, size) { for (let index = 0; index < bytes.length; index += size) yield bytes.subarray(index, index + size); }
+
+test("file inspection runtime accepts only supported pdfjs Node release lines", () => {
+  assert.equal(isSupportedInspectionNodeVersion("22.12.0"), false);
+  assert.equal(isSupportedInspectionNodeVersion("22.13.0"), true);
+  assert.equal(isSupportedInspectionNodeVersion("22.14.1"), true);
+  assert.equal(isSupportedInspectionNodeVersion("23.11.0"), false);
+  assert.equal(isSupportedInspectionNodeVersion("24.0.0"), true);
+  assert.equal(isSupportedInspectionNodeVersion("not-a-version"), false);
+});
+
+test("strict text shell classification uses the complete bounded syntax tree", () => {
+  const executable = [
+    "cat /etc/passwd",
+    "value=secret",
+    "cat input | sort",
+    "echo $(id)",
+    "printf value > output",
+    "work() { echo ready; }",
+    "if true; then echo ready; fi",
+    "for item in one two; do echo $item; done",
+    "echo ${value}",
+    '"safe"; cat /etc/passwd; "tail"',
+    '"safe"\ncat /etc/passwd\n"tail"',
+    '"safe"cat /etc/passwd"tail"',
+    "'safe'; cat /etc/passwd; 'tail'",
+    "'safe'cat /etc/passwd'tail'",
+    "(whoami)",
+    "( whoami )",
+    "((whoami))",
+    "(whoami; id)",
+    "printf pwned > /tmp/x\nif",
+    "echo first; for",
+    "value=secret\ncase",
+    "touch /tmp/x\ncat | | broken",
+    "touch /tmp/x & if",
+    "whoami",
+    "'whoami'",
+    '"whoami"',
+    "shopt",
+    "'shopt'",
+    '"shopt"',
+  ];
+  const prose = [
+    "Support requested another screenshot.",
+    "Please call me (tomorrow) about this ticket.",
+    "Ticket reference: ABC-123.",
+    "The recorded value is 42.",
+    "42",
+    "https://example.test/ticket",
+    "ticket_reference",
+    "'ticket reference'",
+    "hello",
+    '"hello"',
+    '"echo hello"',
+    "if this sentence is unfinished",
+    "cat | | broken",
+    "for item in",
+    "printf pwned >",
+    "touch /tmp/x &&",
+    "Please review docs/v1.2 before release.",
+    "Please visit https://example.test/tickets/42.",
+    "Email support@example.test/path.",
+    "Version /v1.2 is current.",
+    "The ratio is one/two.",
+    "A/B testing remains active.",
+    "One/two ratio.",
+    "/v1.2 is current.",
+    "docs/v1.2 release notes.",
+  ];
+  for (const text of executable) assert.equal(hasExecutableShellSemantics(text), true, text);
+  for (const text of prose) assert.equal(hasExecutableShellSemantics(text), false, text);
+});
+
+test("sentence-shaped shell classification checks only regular executable filesystem entries", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-shell-path-")); const originalPath = process.env.PATH; const originalHome = process.env.HOME; const originalUser = process.env.USER; const originalCwd = process.cwd();
+  const executable = path.join(dir, "Payload", "run"); const nestedExecutable = path.join(dir, "Payload", "nested", "run"); const nonExecutable = path.join(dir, "Payload", "evidence"); const child = path.join(dir, "child"); const pathBin = path.join(dir, "bin");
+  try {
+    await mkdir(path.dirname(nestedExecutable), { recursive: true }); await mkdir(child); await mkdir(pathBin);
+    await writeFile(executable, "#!/bin/sh\nexit 0\n"); await chmod(executable, 0o755); await writeFile(nestedExecutable, "#!/bin/sh\nexit 0\n"); await chmod(nestedExecutable, 0o755); await writeFile(nonExecutable, "support datum\n");
+    for (const name of ["literal*", "run1", "run01", "runa", "rrun", "1un", "élocale"]) { await writeFile(path.join(dir, "Payload", name), "#!/bin/sh\nexit 0\n"); await chmod(path.join(dir, "Payload", name), 0o755); }
+    await writeFile(path.join(dir, "MatchOne"), "not executable\n"); await writeFile(path.join(dir, "MatchTwo"), "not executable\n"); await mkdir(path.join(dir, "DirMatchOne"));
+    await mkdir(path.join(dir, "Payload", "directory")); await symlink(executable, path.join(dir, "Payload", "linked")); await symlink(path.join(dir, "missing"), path.join(dir, "Payload", "broken"));
+    for (const name of ["Runner", "Run*", "MatchOne"]) { await writeFile(path.join(pathBin, name), "#!/bin/sh\nexit 0\n"); await chmod(path.join(pathBin, name), 0o755); }
+    await writeFile(path.join(pathBin, "Miss*"), "support datum\n"); await writeFile(path.join(pathBin, "Evidence"), "support datum\n"); await mkdir(path.join(pathBin, "Support")); await mkdir(path.join(pathBin, "DirMatchOne")); await symlink(executable, path.join(pathBin, "LinkedRunner")); await symlink(path.join(dir, "missing"), path.join(pathBin, "BrokenRunner"));
+    process.chdir(dir); process.env.PATH = pathBin; process.env.HOME = dir;
+    for (const command of ["Payload/run argument.", "./Payload/run argument.", `${executable} argument.`, "Payload/nested/run --flag value.", '"Payload/run" argument.', "'Payload/run' argument.", "Payload\\/run argument.", '"Payload/literal*" argument.', "Payload/literal\\* argument.", "Payload/linked argument.", "Payload/* argument.", "Payload/r?n argument.", "Payload/[r]un argument.", "Payload/{run,nope} argument.", "Payload/run{1..2} argument.", "Payload/run{01..02} argument.", "Payload/run{a..b} argument.", "Payload/run{2..1} argument.", "Payload/run{b..a} argument.", "Payload/run{5..1..2} argument.", "Payload/run{5..1..-2} argument.", "Payload/run{1..5..2} argument.", "Payload/run{01..05..2} argument.", "Payload/run{a..e..2} argument.", "Payload/run{1..1000} argument.", "Payload/[[:alpha:]]una argument.", "Payload/[[:digit:]]un argument.", "Payload/[[:digit:]]una argument.", "Payload/[[:alnum:]]una argument.", "Payload/[![:digit:]]una argument.", "Payload/[[:digit:]r]una argument.", "Payload/[[:alpha:]]locale argument.", "~/Payload/r*n argument.", "~/Payload/run{1..2} argument.", "Run* argument.", "Match* argument.", "Runner argument.", "LinkedRunner argument."]) assert.equal(hasExecutableShellSemantics(command), true, command);
+    for (const prose of ["Payload/evidence remains available.", "Payload/directory remains available.", "Payload/broken remains available.", "Payload/missing* remains unavailable.", "Payload/n?pe remains unavailable.", "Payload/[x]un remains unavailable.", "Payload/[z-a] remains documented.", "Payload/{nope,missing} remains unavailable.", "Payload/run{1..3..0} remains documented.", "Payload/run{1..x} remains documented.", "Payload/run{1...2} remains documented.", '"Payload/run{1..2}" remains documented.', "Payload/run\\{1..2\\} remains documented.", '"Payload/[[:alpha:]]una" remains documented.', "Payload/\\[\\[:alpha:\\]\\]una remains documented.", '"Payload/*" remains documented.', "Payload/\\* remains documented.", "~/sporades-file-ingress-no-such-command-* remains unavailable.", "NoMatch* remains unavailable.", "Miss* remains unavailable.", "DirMatch* remains available.", "Evidence argument.", "Support request remains active.", "BrokenRunner argument.", "A * marker remains visible.", "A {draft,final} label remains visible.", "A {1..2} range remains visible.", "A [[:alpha:]] class remains visible."]) assert.equal(hasExecutableShellSemantics(prose), false, prose);
+    for (const length of [127, 128, 129]) assert.equal(hasExecutableShellSemantics(`Payload/[${"r".repeat(length)}]run argument.`), true, `bracket body ${length}`);
+    assert.equal(hasExecutableShellSemantics(`Payload/[${"r".repeat(128)}[:alpha:]]run argument.`), true, "oversized POSIX bracket class");
+    for (const prose of [`Payload/[${"r".repeat(129)}run remains documented.`, "Payload/[]run remains documented.", `"Payload/[${"r".repeat(129)}]run" remains documented.`, `Payload/\\[${"r".repeat(129)}\\]run remains documented.`]) assert.equal(hasExecutableShellSemantics(prose), false, prose);
+    process.env.PATH = Array.from({ length: 129 }, (_, index) => path.join(dir, `missing-${index}`)).join(":"); assert.equal(hasExecutableShellSemantics("BeyondPathBound argument."), true);
+    process.env.PATH = "x".repeat(4097); assert.equal(hasExecutableShellSemantics("BeyondPathEntryBound argument."), true); process.env.PATH = pathBin;
+    process.env.USER = "sporades-fixture"; process.env.HOME = dir; assert.equal(hasExecutableShellSemantics("~sporades-fixture/Payload/run argument."), true);
+    for (const invalidHome of [undefined, "", "relative/home", "x".repeat(4097)]) { if (invalidHome === undefined) delete process.env.HOME; else process.env.HOME = invalidHome; assert.equal(hasExecutableShellSemantics("~/Payload/run argument."), true, `HOME=${String(invalidHome)}`); }
+    process.env.HOME = dir; delete process.env.USER; assert.equal(hasExecutableShellSemantics("~sporades-fixture/Payload/run argument."), true, "missing USER"); process.env.USER = "someone-else"; assert.equal(hasExecutableShellSemantics("~sporades-fixture/Payload/run argument."), true, "mismatched USER"); assert.equal(hasExecutableShellSemantics("~unsupported/Payload/run argument."), true, "unsupported named user");
+    process.env.USER = "sporades-fixture"; process.env.HOME = dir; for (const prose of ['"~/Payload/run" remains documented.', "\\~/Payload/run remains documented.", '"~sporades-fixture/Payload/run" remains documented.', "Tilde ~ means home."]) assert.equal(hasExecutableShellSemantics(prose), false, prose);
+    for (const command of ["Payload/run argument.\nIf (then).", "Payload/run argument.\r\nIf (then).", "  Payload/run argument.\nIf (then).", '"Payload/run" argument.\nIf (then).', "Payload\\/run argument.\nIf (then).", "Payload/run argument. # comment\nIf (then).", "Payload/run argument.; If (then).", "Payload/run argument.; true\nIf (then).", "Payload/run argument. && true\nIf (then).", "Payload/run argument. || true\nIf (then).", "Payload/run argument.\nRunner argument.\nIf (then)."]) assert.equal(hasExecutableShellSemantics(command), true, command);
+    for (const prose of ["Payload/run argument. && If (then).", "Payload/run argument. || If (then).", "Payload/run argument. &&\nIf (then).", "If (then).\nPayload/run argument.", "If (then).\nWhen (else)."] ) assert.equal(hasExecutableShellSemantics(prose), false, prose);
+    for (const command of ["if true; then\n Payload/run argument.\nfi\nIf (then).", "{\n Payload/run argument.\n}\nIf (then).", "work() {\n Payload/run argument.\n}\nwork\nIf (then).", "case one in\n one) Payload/run argument. ;;\nesac\nIf (then).", "while true; do\n Payload/run argument.\ndone\nIf (then).", "for item in one; do\n Payload/run argument.\ndone\nIf (then).", "(\n Payload/run argument.\n)\nIf (then).", "if true; then\n {\n  Payload/run argument.\n }\nfi\nIf (then)."] ) assert.equal(hasExecutableShellSemantics(command), true, command);
+    for (const prose of ["if true; then\n Payload/run argument.\nIf (then).", "if true; then\r\n # comment\r\n\r\n Payload/run argument.\r\nIf (then).", "{\n Payload/run argument.\nIf (then).", "work() {\n Payload/run argument.\nIf (then).", "case one in\n one) Payload/run argument. ;;\nIf (then).", "while true; do\n Payload/run argument.\nIf (then).", "for item in one; do\n Payload/run argument.\nIf (then).", "(\n Payload/run argument.\nIf (then).", "if true; then\n {\n  Payload/run argument.\n }\nIf (then).", "Payload/run |\nIf (then).", '"Payload/run argument.\nIf (then).'] ) assert.equal(hasExecutableShellSemantics(prose), false, prose);
+    process.chdir(child); assert.equal(hasExecutableShellSemantics("../Payload/run argument."), true);
+    assert.equal(hasExecutableShellSemantics("Please inspect Payload output."), false);
+  } finally { process.chdir(originalCwd); if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath; if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome; if (originalUser === undefined) delete process.env.USER; else process.env.USER = originalUser; await rm(dir, { recursive: true, force: true }); }
+});
+
+test("strict text shell vocabulary matches the pinned Bash 5.2 command vocabulary", () => {
+  const fixture = readFileSync(new URL("./fixtures/bash-5.2-command-vocabulary.txt", import.meta.url), "utf8")
+    .split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("#"));
+  assert.deepEqual([...bash52CommandVocabulary].sort(), fixture.sort());
+  for (const name of fixture) {
+    assert.equal(hasExecutableShellSemantics(name), true, name);
+    assert.equal(hasExecutableShellSemantics(`'${name}'`), true, `'${name}'`);
+    assert.equal(hasExecutableShellSemantics(`"${name}"`), true, `"${name}"`);
+  }
+});
+
+test("PDF inspection fail-closes expired fresh and concurrent lazy loads before operator work", () => {
+  const cases = [
+    { wallClock: "frozen", timeouts: [1] },
+    { wallClock: "backward", timeouts: Array(8).fill(1) },
+    { wallClock: "forward", timeouts: [1, 2000, 1, 2000, 2000, 1, 2000, 1] },
+  ];
+  for (const { wallClock, timeouts } of cases) {
+    const probe = freshPdfDeadlineProbe(timeouts, wallClock);
+    const expected = timeouts.map((timeoutMs) => timeoutMs > 1);
+    assert.deepEqual(probe.results, expected, `${wallClock} wall clock with ${timeouts.length} concurrent lazy loads`);
+    assert.equal(probe.expiredHooks, expected.filter(Boolean).length, `${wallClock} wall clock let expired work reach the operator hook`);
+    assert.ok(probe.elapsedMs < 2_000, `${wallClock} wall clock prevented a bounded result: ${probe.elapsedMs}ms`);
+    assert.equal(probe.retry, true, `normal retry failed after ${wallClock} wall clock lazy load`);
+    assert.equal(probe.retryHooks, 1, `normal retry did not reach its operator hook after ${wallClock} wall clock lazy load`);
+  }
+});
+
+test("PDF inspection deadline covers every costly structural preflight stage", async () => {
+  const cases = [
+    { name: "preflight entry", pdf: minimalPdf(), stage: "header", occurrence: 1 },
+    { name: "xref traversal", pdf: minimalPdf(), stage: "xref", occurrence: 2 },
+    { name: "dictionary parsing", pdf: minimalPdf(), stage: "dictionary", occurrence: 2 },
+    { name: "revision chain", pdf: incrementalPdf(), stage: "revision", occurrence: 2 },
+    { name: "revision object traversal", pdf: minimalPdf(), stage: "objects", occurrence: 2 },
+    { name: "xref Flate decompression", pdf: xrefStreamPdf(true), stage: "inflate-after", occurrence: 1 },
+    { name: "object-stream Flate decompression", pdf: xrefStreamPdfWithCompressedObject({ flate: true }), stage: "inflate-after", occurrence: 1 },
+  ];
+  for (const { name, pdf, stage, occurrence } of cases) {
+    let now = 0n; let stages = 0; let imports = 0; let operators = 0;
+    const result = await validatePdfIngress(pdf, {
+      timeoutMs: 10,
+      monotonicNow: () => now,
+      pdfPreflightCheckpoint(candidate) {
+        if (candidate === stage && ++stages === occurrence) now = 10_000_000n;
+      },
+      beforePdfJsImport() { imports += 1; },
+      beforeOperatorList() { operators += 1; },
+    });
+    assert.ok(stages >= occurrence, `${name} did not expose its bounded checkpoint`);
+    assert.equal(result, false, `${name} continued after its absolute deadline`);
+    assert.equal(imports, 0, `${name} imported PDF.js after preflight expiry`);
+    assert.equal(operators, 0, `${name} reached PDF.js operator inspection after preflight expiry`);
+  }
+
+  for (const [name, pdf] of [["classic", minimalPdf()], ["incremental", incrementalPdf()], ["xref stream", xrefStreamPdf(true)], ["object stream", xrefStreamPdfWithCompressedObject({ flate: true })]]) {
+    let imports = 0; let operators = 0;
+    assert.equal(await validatePdfIngress(pdf, { timeoutMs: 2_000, monotonicNow: () => 0n, beforePdfJsImport() { imports += 1; }, beforeOperatorList() { operators += 1; } }), true, `${name} near-bound control`);
+    assert.equal(imports, 1, `${name} did not reach PDF.js import`);
+    assert.ok(operators > 0, `${name} did not complete PDF.js inspection`);
+  }
+});
+
+test("PDF numeric indirect-reference lookahead remains incrementally deadline-bounded", async () => {
+  const padding = " ".repeat(8 * 1024 * 1024);
+  const base = minimalPdf().toString("latin1");
+  const numeric = Buffer.from(base.replace("<</Size", `<</Foo 1${padding}/Size`), "latin1");
+  let ticks = 0n; let referenceChecks = 0; let imports = 0;
+  assert.equal(await validatePdfIngress(numeric, {
+    timeoutMs: 1,
+    monotonicNow: () => ticks,
+    pdfPreflightCheckpoint(stage) { if (stage === "object-reference") { referenceChecks += 1; ticks = 1_000_000n; } },
+    beforePdfJsImport() { imports += 1; },
+  }), false);
+  assert.ok(referenceChecks > 0, "numeric lookahead omitted its deadline boundary");
+  assert.equal(imports, 0, "numeric lookahead reached PDF.js after structural expiry");
+
+  const control = Buffer.from(base.replace("<</Size", `<</Foo null${padding}/Size`), "latin1");
+  ticks = 0n; let checkpoints = 0; imports = 0;
+  assert.equal(await validatePdfIngress(control, { timeoutMs: 1, monotonicNow: () => ticks, pdfPreflightCheckpoint() { checkpoints += 1; ticks += 100n; }, beforePdfJsImport() { imports += 1; } }), false);
+  assert.equal(imports, 0, "non-numeric control reached PDF.js after structural expiry");
+  assert.ok(checkpoints >= 10_000, `non-numeric control crossed a multi-megabyte scan with only ${checkpoints} deadline checks`);
+
+  assert.equal(await validatePdfIngress(xrefStreamPdfWithIndirectLength(), { timeoutMs: 2_000, monotonicNow: () => 0n }), true, "valid indirect stream length near-bound control");
+});
+
+test("PDF xref streams decode bounded TIFF and PNG prediction parameters", async () => {
+  assert.equal(await validatePdfIngress(predictedXrefStreamPdf({ predictor: 1 })), true, "Predictor 1 no-op");
+  for (const predictor of [2, 10, 11, 12, 13, 14, 15]) {
+    assert.equal(await validatePdfIngress(predictedXrefStreamPdf({ predictor, filterArray: predictor % 2 === 0, parmsArray: predictor % 2 === 0 })), true, `Predictor ${predictor}`);
+  }
+  assert.equal(await validatePdfIngress(incrementalXrefStreamPdf(12)), true, "incremental predicted xref stream");
+  assert.equal(await validatePdfIngress(predictedXrefStreamPdf({ predictor: 12, bitsKey: "BPC" })), true, "BPC alias");
+  assert.equal(await validatePdfIngress(predictedXrefStreamPdf({ predictor: 12, columns: 14 })), true, "two xref records per predictor row");
+  assert.equal(await validatePdfIngress(predictedXrefStreamPdf({ predictor: 15, columns: 42 })), true, "one predictor row contains every xref record");
+  assert.equal(await validatePdfIngress(predictedXrefStreamPdf({ predictor: 12, columns: 6 })), true, "predictor rows may cross xref record boundaries");
+  assert.equal(await validatePdfIngress(predictedXrefStreamPdf({ predictor: 2, colors: 7, columns: 2 })), true, "TIFF row groups two seven-component records");
+  assert.equal(await validatePdfIngress(predictedXrefStreamPdf({ predictor: 12, colors: 2, bits: 4, columns: 7 })), true, "packed component row width");
+  for (const [name, pdf] of [
+    ["unsupported zero predictor", predictedXrefStreamPdf({ predictor: 0 })],
+    ["unsupported low predictor", predictedXrefStreamPdf({ predictor: 9 })],
+    ["unsupported high predictor", predictedXrefStreamPdf({ predictor: 16 })],
+    ["decoded bytes do not divide into predictor rows", predictedXrefStreamPdf({ predictor: 12, columns: 10 })],
+    ["invalid colors", predictedXrefStreamPdf({ predictor: 12, colors: 0 })],
+    ["invalid bits", predictedXrefStreamPdf({ predictor: 12, bits: 3 })],
+    ["invalid PNG filter", predictedXrefStreamPdf({ predictor: 15, filterByte: 5 })],
+    ["truncated predicted row", predictedXrefStreamPdf({ predictor: 12, mutate: (bytes) => bytes.subarray(0, -1) })],
+    ["extra predicted byte", predictedXrefStreamPdf({ predictor: 12, mutate: (bytes) => Buffer.concat([bytes, Buffer.from([0])]) })],
+    ["overflow columns", predictedXrefStreamPdf({ predictor: 12, columns: 9_007_199_254_740_991 })],
+    ["duplicate predictor", predictedXrefStreamPdf({ predictor: 12, params: " /Predictor 11" })],
+    ["malformed no-op colors", predictedXrefStreamPdf({ predictor: 1, colors: 0 })],
+    ["malformed no-op bits", predictedXrefStreamPdf({ predictor: 1, bits: 3 })],
+    ["malformed no-op columns", predictedXrefStreamPdf({ predictor: 1, columns: 0 })],
+  ]) assert.equal(await validatePdfIngress(pdf), false, name);
+
+  let ticks = 0n; let imports = 0;
+  assert.equal(await validatePdfIngress(predictedXrefStreamPdf({ predictor: 15 }), { timeoutMs: 1, monotonicNow: () => ticks, pdfPreflightCheckpoint(stage) { if (stage === "predictor-row") ticks = 1_000_000n; }, beforePdfJsImport() { imports += 1; } }), false);
+  assert.equal(imports, 0, "expired predictor work reached PDF.js");
+});
+
+test("PDF xref streams validate DecodeParms even without a Filter", async () => {
+  assert.equal(await validatePdfIngress(xrefStreamPdf(false, " /DecodeParms null")), true, "explicit null parameters are a no-op");
+  assert.equal(await validatePdfIngress(xrefStreamPdf(false, " /DecodeParms <</Predictor 1 /Colors 1 /BitsPerComponent 8 /Columns 1>>")), true, "valid explicit no-op parameters");
+  for (const [name, pdf] of [
+    ["active predictor without filter", xrefStreamPdf(false, " /DecodeParms <</Predictor 12 /Columns 7>>")],
+    ["indirect parameters without filter", xrefStreamPdf(false, " /DecodeParms 1 0 R")],
+    ["duplicate parameters without filter", xrefStreamPdf(false, " /DecodeParms null /DecodeParms null")],
+    ["malformed parameters without filter", xrefStreamPdf(false, " /DecodeParms [null]")],
+  ]) assert.equal(await validatePdfIngress(pdf), false, name);
+});
+
+test("PDF inspection fails closed and retries after a transient lazy module failure", async () => {
+  const token = randomUUID();
+  const runtimePath = path.join(process.cwd(), "dist", `.file-ingress-runtime-${token}.mjs`);
+  const loaderName = `.pdfjs-retry-${token}.mjs`;
+  const loaderPath = path.join(process.cwd(), "dist", loaderName);
+  try {
+    const source = await readFile(path.join(process.cwd(), "dist", "file-ingress-runtime.js"), "utf8");
+    assert.match(source, /import\("pdfjs-dist\/legacy\/build\/pdf\.mjs"\)/);
+    await writeFile(runtimePath, source.replace('import("pdfjs-dist/legacy/build/pdf.mjs")', `import("./${loaderName}")`));
+    const isolated = await import(`${pathToFileURL(runtimePath).href}?${token}`);
+    assert.equal(await isolated.validatePdfIngress(minimalPdf()), false);
+    await writeFile(loaderPath, `export function getDocument() {
+  const page = { async getOperatorList() { return {}; }, async getJSActions() { return null; }, async getAnnotations() { return []; } };
+  const document = { numPages: 1, async getAttachments() { return null; }, async getJSActions() { return null; }, async getOpenAction() { return null; }, async getPage() { return page; } };
+  return { promise: Promise.resolve(document), async destroy() {} };
+}\n`);
+    assert.equal(await isolated.validatePdfIngress(minimalPdf()), true);
+  } finally {
+    await rm(runtimePath, { force: true });
+    await rm(loaderPath, { force: true });
+  }
+});
+
+test("PDF action entries are classified from their owning dictionary without rejecting tagged layout attributes", async () => {
+  const taggedLayout = structuredPdf(
+    "/MarkInfo <</Marked true>> /StructTreeRoot 5 0 R",
+    [
+      "5 0 obj\n<</Type /StructTreeRoot /K [6 0 R]>>\nendobj\n",
+      "6 0 obj\n<</Type /StructElem /S /P /P 5 0 R /Pg 3 0 R /A <</O /Layout /TextAlign /Center>>>>\nendobj\n",
+    ],
+  );
+  const iconFit = structuredPdf("/AcroForm 5 0 R", [
+    "5 0 obj\n<</Fields [6 0 R]>>\nendobj\n",
+    "6 0 obj\n<</Type /Annot /Subtype /Widget /FT /Btn /Rect [0 0 1 1] /MK <</IF 7 0 R>>>>\nendobj\n",
+    "7 0 obj\n<</SW /A /S /P /A [0.5 0.5]>>\nendobj\n",
+  ], "/Annots [6 0 R]");
+  const annotationActions = [
+    structuredPdf("", ["5 0 obj\n<</Rect [0 0 1 1] /A <</D [3 0 R /Fit]>>>>\nendobj\n"], "/Annots [5 0 R]"),
+    structuredPdf("", ["5 0 obj\n<</Rect [0 0 1 1] /A 6 0 R>>\nendobj\n", "6 0 obj\n<</D [3 0 R /Fit]>>\nendobj\n"], "/Annots [5 0 R]"),
+    structuredPdf("", ["5 0 obj\n<</Subtype /CustomNote /Rect [0 0 1 1] /A <</D [3 0 R /Fit]>>>>\nendobj\n"], "/Annots [5 0 R]"),
+    structuredPdf("", ["5 0 obj\n<</Subtype /CustomNote /Rect [0 0 1 1] /A 6 0 R>>\nendobj\n", "6 0 obj\n<</D [3 0 R /Fit]>>\nendobj\n"], "/Annots [5 0 R]"),
+  ];
+  const outlineActions = [
+    structuredPdf("/Outlines 5 0 R", ["5 0 obj\n<</First 6 0 R /Last 6 0 R /Count 1>>\nendobj\n", "6 0 obj\n<</Title (Unsafe) /A <</D [3 0 R /Fit]>>>>\nendobj\n"]),
+    structuredPdf("/Outlines 5 0 R", ["5 0 obj\n<</First 6 0 R /Last 6 0 R /Count 1>>\nendobj\n", "6 0 obj\n<</Title (Unsafe) /A 7 0 R>>\nendobj\n", "7 0 obj\n<</D [3 0 R /Fit]>>\nendobj\n"]),
+    structuredPdf("/Outlines 5 0 R", ["5 0 obj\n<</First 6 0 R /Last 7 0 R /Count 2>>\nendobj\n", "6 0 obj\n<</Title (First) /Next 7 0 R>>\nendobj\n", "7 0 obj\n<</Title (Unsafe) /Prev 6 0 R /Next 6 0 R /A <</D [3 0 R /Fit]>>>>\nendobj\n"]),
+  ];
+
+  assert.equal(await validatePdfIngress(taggedLayout), true);
+  assert.equal(await validatePdfIngress(iconFit), true);
+  for (const pdf of annotationActions) assert.equal(await validatePdfIngress(pdf), false);
+  for (const pdf of outlineActions) assert.equal(await validatePdfIngress(pdf), false);
+});
+
+test("PDF inspection requires the final cross-reference EOF boundary to be terminal", async () => {
+  const base = minimalPdf();
+  const embeddedMarker = structuredPdf("", ["5 0 obj\n(embedded %%EOF marker)\nendobj\n"]);
+  const acceptedPdfs = [
+    base,
+    base.subarray(0, base.length - 1),
+    Buffer.concat([base, Buffer.from("\r\n\t\f ")]),
+    Buffer.concat([base, Buffer.from("% retained by archive\r\n% second comment\n")]),
+    Buffer.concat([base, Buffer.from("% archive mentions %%EOF without creating a footer\n")]),
+    minimalPdfWithBinaryHeaderComment(),
+    incrementalPdf(),
+    incrementalPdfRevision(Buffer.alloc(0), Buffer.from("5 0 obj\n<</Length 8>>\nstream\nevidence\nendstream\nendobj\n")),
+    xrefStreamPdf(),
+    xrefStreamPdf(true),
+    xrefStreamPdf("array"),
+    incrementalXrefStreamPdf(),
+    hybridXrefPdf(),
+    hybridXrefPdf(true),
+    incrementalHybridXrefPdf(),
+    outOfOrderClassicXrefPdf(),
+    classicPdfWithCatalogGeneration(65534),
+    classicPdfWithCatalogGeneration(65535),
+    xrefStreamPdfWithCatalogGeneration(65534),
+    xrefStreamPdfWithCatalogGeneration(65535),
+    xrefStreamPdfWithCompressedObject(),
+    xrefStreamPdfWithCompressedObject({ flate: true }),
+    incrementallySupersededCompressedObject(),
+    incrementallySupersededCompressedObject(true),
+    classicPdfWithFreeChain(),
+    incrementallyReplaceHistoricalFreeEntry(),
+    classicPdfWithStreamLength("5 0 R"),
+    classicPdfWithStreamLength("5 0 R", "4", "q\nQ\n", "", "/Custom null"),
+    compactTrailerPdf("/Info null"),
+    xrefStreamPdfWithCompressedObject({ indirectLength: true }),
+    xrefStreamPdfWithCompressedObject({ indirectLength: true, flate: true }),
+    xrefStreamPdfWithIndirectLength(),
+    classicPdfWithStreamLength("47", "4", "/Encrypt % harmless name and comment\n(Encrypt)\n"),
+    classicPdfWithStreamLength("5 0 R", "4", "q\nQ\n", "/CustomName /Encrypt"),
+    embeddedMarker,
+  ];
+  for (const [index, accepted] of acceptedPdfs.entries()) assert.equal(await validatePdfIngress(accepted), true, `accepted PDF control ${index}`);
+
+  for (const suffix of [
+    Buffer.from("PK\x03\x04archive"),
+    Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01]),
+    Buffer.from("MZexecutable"),
+    Buffer.from("#!/bin/sh\necho unsafe\n"),
+    Buffer.from([0xde, 0xad, 0xbe, 0xef]),
+  ]) assert.equal(await validatePdfIngress(Buffer.concat([base, suffix])), false);
+
+  for (const payload of [
+    Buffer.from("PK\x03\x04archive"),
+    Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01]),
+    Buffer.from("MZexecutable"),
+    Buffer.from("#!/bin/sh\necho unsafe\n"),
+    Buffer.from("printable garbage"),
+    Buffer.from([0xde, 0xad, 0xbe, 0xef]),
+    minimalPdf(),
+  ]) assert.equal(await validatePdfIngress(forgedPdfTail(base, payload)), false);
+
+  const update = incrementalPdf(); const updateXref = Number([...update.toString("latin1").matchAll(/startxref\n(\d+)\n%%EOF/g)].at(-1)[1]);
+  assert.equal(await validatePdfIngress(Buffer.from(update.toString("latin1").replace(`/Prev ${/startxref\n(\d+)\n%%EOF/.exec(base.toString("latin1"))[1]}`, `/Prev ${updateXref}`), "latin1")), false);
+  assert.equal(await validatePdfIngress(Buffer.from(update.toString("latin1").replace(/\/Prev \d+/, "/Prev 999999999"), "latin1")), false);
+  assert.equal(await validatePdfIngress(Buffer.from(update.toString("latin1").replace(/\/Prev \d+/, (match) => `${match} ${match}`), "latin1")), false);
+  assert.equal(await validatePdfIngress(incrementalPdfRevision(Buffer.from("PK\x03\x04unreferenced payload\n"))), false);
+
+  for (const payload of [Buffer.from("PK\x03\x04archive"), Buffer.from([0x7f, 0x45, 0x4c, 0x46]), Buffer.from("#!/bin/sh\n"), Buffer.from([0xde, 0xad, 0xbe, 0xef])]) {
+    assert.equal(await validatePdfIngress(initialPdfWithUnclaimedBytes(payload)), false);
+  }
+
+  for (const fake of [
+    masqueradingXrefStream("/Size 6 /W [1 4 2]"),
+    masqueradingXrefStream("/Type /Metadata /Size 6 /W [1 4 2]"),
+    masqueradingXrefStream("/Type /XRef /Size 6"),
+    masqueradingXrefStream("/Type /XRef /Size 6 /W [1 0 2]"),
+    masqueradingXrefStream("/Type /XRef /W [1 4 2]"),
+    masqueradingXrefStream("/Type /XRef /Size 6 /Index [7 1] /W [1 4 2]"),
+  ]) assert.equal(await validatePdfIngress(fake), false);
+
+  const classic = base.toString("latin1"); const inUseEntries = [...classic.matchAll(/\d{10} 00000 n /g)].map((match) => match[0]);
+  const swappedEntries = classic.replace(inUseEntries[0], "SWAP_ENTRY").replace(inUseEntries[1], inUseEntries[0]).replace("SWAP_ENTRY", inUseEntries[1]);
+  for (const malformed of [
+    swappedEntries,
+    classic.replace(inUseEntries[0], `${inUseEntries[0].slice(0, 11)}00001 n `),
+    classic.replace("xref\n0 5\n0000000000 65535 f \n", "xref\n2 4\n").replace("/Size 5", "/Size 6"),
+    classic.replace("/Size 5", "/Size 4"),
+    classic.replace("/Size 5", "/Size 999999"),
+    classic.replace("/Size 5", "/Size 999999999"),
+  ]) assert.equal(await validatePdfIngress(Buffer.from(malformed, "latin1")), false);
+
+  const nonzeroGeneration = Buffer.from(classic.replace("1 0 obj", "1 2 obj").replace("/Root 1 0 R", "/Root 1 2 R").replace(inUseEntries[0], `${inUseEntries[0].slice(0, 11)}00002 n `), "latin1");
+  assert.equal(await validatePdfIngress(nonzeroGeneration), true);
+  assert.equal(await validatePdfIngress(classicPdfWithCatalogGeneration(99999)), false);
+  assert.equal(await validatePdfIngress(Buffer.from(classic.replace("1 0 obj", "1 -1 obj"), "latin1")), false);
+  assert.equal(await validatePdfIngress(Buffer.from(classic.replace("0000000000 65535 f", "0000000000 00000 f"), "latin1")), false);
+  assert.equal(await validatePdfIngress(classicPdfWithInUseObjectZero()), false);
+  assert.equal(await validatePdfIngress(xrefStreamPdfWithCatalogGeneration(65536)), false);
+  assert.equal(await validatePdfIngress(xrefStreamPdfWithCatalogGeneration(0, 65534)), false);
+  assert.equal(await validatePdfIngress(xrefStreamPdfWithInUseObjectZero()), false);
+  for (const invalidCompressed of [
+    xrefStreamPdfWithCompressedObject({ container: 1 }),
+    xrefStreamPdfWithCompressedObject({ ordinaryStream: true }),
+    xrefStreamPdfWithCompressedObject({ index: 1 }),
+    xrefStreamPdfWithCompressedObject({ tableObject: 9 }),
+    xrefStreamPdfWithCompressedObject({ container: 6 }),
+  ]) assert.equal(await validatePdfIngress(invalidCompressed), false);
+  for (const invalidFreeList of [
+    classicPdfWithFreeChain({ head: 1 }),
+    classicPdfWithFreeChain({ head: 5, next: 5 }),
+    classicPdfWithFreeChain({ head: 9 }),
+    classicPdfWithFreeChain({ head: 0 }),
+    xrefStreamPdfWithCompressedObject({ freeHead: 6 }),
+    xrefStreamPdfWithCompressedObject({ freeHead: 9 }),
+  ]) assert.equal(await validatePdfIngress(invalidFreeList), false);
+  assert.equal(await validatePdfIngress(incrementallyRepairInvalidCompressedContainer()), false);
+  assert.equal(await validatePdfIngress(incrementallyRepairInvalidFreeHead()), false);
+  assert.equal(await validatePdfIngress(classicPdfWithStreamLength("5 1 R")), false);
+  assert.equal(await validatePdfIngress(classicPdfWithStreamLength("5 0 R", "(four)")), false);
+  assert.equal(await validatePdfIngress(classicPdfWithStreamLength("9 0 R")), false);
+  assert.equal(await validatePdfIngress(classicPdfWithStreamLength("4 0 R")), false);
+  assert.equal(await validatePdfIngress(futureRevisionStreamLength()), false);
+  assert.equal(await validatePdfIngress(Buffer.from(xrefStreamPdfWithCompressedObject({ indirectLength: true }).toString("latin1").replace("/Length 7 0 R", "/Length 7 1 R"), "latin1")), false);
+  assert.equal(await validatePdfIngress(xrefStreamPdfWithIndirectLength({ wrongGeneration: true })), false);
+  assert.equal(await validatePdfIngress(xrefStreamPdfWithIndirectLength({ wrongType: true })), false);
+  assert.equal(await validatePdfIngress(xrefStreamPdfWithIndirectLength({ encrypt: true })), false);
+  assert.equal(await validatePdfIngress(classicPdfWithStreamLength("5 0 R", "4", "q\nQ\n", "/Encrypt <</Filter /Standard>>")), false);
+  assert.equal(await validatePdfIngress(classicPdfWithStreamLength("5 0 R", "<</Filter /Standard>>", "q\nQ\n", "/Encrypt 5 0 R")), false);
+  assert.equal(await validatePdfIngress(compactTrailerPdf("/Encrypt null")), false);
+  assert.equal(await validatePdfIngress(compactTrailerPdf("/Encrypt 4 0 R")), false);
+  assert.equal(await validatePdfIngress(compactTrailerPdf("/Encrypt 9 0 R")), false);
+  for (const delimiter of ["/Meta <00>/Encrypt null", "/Meta <</Ignored true>>/Encrypt null", "/Meta [null]/Encrypt null", "/Meta (ignored)/Encrypt null"]) assert.equal(await validatePdfIngress(compactTrailerPdf(delimiter)), false, delimiter);
+  assert.equal(await validatePdfIngress(compactTrailerPdf("% adjacent comment\n")), true);
+  assert.equal(await validatePdfIngress(compactTrailerPdf("% adjacent comment\n/Encrypt null")), false);
+  const objectTwoOffset = /2 0 obj/.exec(classic).index;
+  assert.equal(await validatePdfIngress(Buffer.from(classic.replace("trailer\n", `2 1\n${String(objectTwoOffset).padStart(10, "0")} 00000 n \ntrailer\n`), "latin1")), false);
+
+  const hybrid = hybridXrefPdf(); const hybridText = hybrid.toString("latin1"); const hybridPointer = /\/XRefStm (\d+)/.exec(hybridText)[1]; const ordinaryObjectOffset = /4 0 obj/.exec(hybridText).index;
+  for (const malformed of [
+    hybridText.replace(`/XRefStm ${hybridPointer}`, `/XRefStm ${ordinaryObjectOffset}`),
+    hybridText.replace(`/XRefStm ${hybridPointer}`, "/XRefStm 999999999"),
+    hybridText.replace(`/XRefStm ${hybridPointer}`, `/XRefStm ${hybridPointer} /XRefStm ${hybridPointer}`),
+    hybridText.replace("/W [1 4 2]", "/W [1 0 2]"),
+  ]) assert.equal(await validatePdfIngress(Buffer.from(malformed, "latin1")), false);
+  assert.equal(await validatePdfIngress(Buffer.from(hybridText.replace("trailer\n", `5 1\n${String(hybridPointer).padStart(10, "0")} 00000 n \ntrailer\n`), "latin1")), true);
+  assert.equal(await validatePdfIngress(Buffer.from(hybridText.replace("0000000000 65535 f", "0000000005 65535 f").replace("trailer\n", "5 1\n0000000000 00001 f \ntrailer\n"), "latin1")), true);
+  assert.equal(await validatePdfIngress(conflictingHybridMappingPdf()), true);
+  assert.equal(await validatePdfIngress(xrefStreamPdf("multiple")), false);
+});
+
+test("JavaScript classification fails closed before recursive parser exhaustion without rejecting malformed prose", () => {
+  assert.equal(hasExecutableJavaScriptSemantics("(".repeat(1000) + "alert(1)" + ")".repeat(1000)), true);
+  assert.equal(hasExecutableJavaScriptSemantics("[".repeat(1000) + "alert(1)" + "]".repeat(1000)), true);
+  assert.equal(hasExecutableJavaScriptSemantics("!".repeat(4000) + "alert(1)"), true);
+  assert.equal(hasExecutableJavaScriptSemantics("await ".repeat(4000) + "alert(1)"), true);
+  assert.equal(hasExecutableJavaScriptSemantics("new ".repeat(4000) + "alert(1)"), true);
+  assert.equal(hasExecutableJavaScriptSemantics("a=>".repeat(4000) + "alert(1)"), true);
+  assert.equal(hasExecutableJavaScriptSemantics("a?".repeat(4000) + "alert(1)" + ":a".repeat(4000)), true);
+  assert.equal(hasExecutableJavaScriptSemantics("(".repeat(255) + "supportNote" + ")".repeat(255)), false);
+  assert.equal(hasExecutableJavaScriptSemantics("Please (if practical) call me tomorrow."), false);
+  assert.equal(hasExecutableJavaScriptSemantics("const ="), false);
+});
+
+test("Python classification rejects complete executable programs without treating prose as code", () => {
+  const executablePrograms = [
+    "import pathlib\npathlib.Path(\"/tmp/report\").unlink()",
+    "import os as operating_system",
+    "from os.path import join as combine",
+    "factory.build()",
+    "registry[\"handler\"]()",
+    "value = 1",
+    "value += 1",
+    "if ready:\n    process()",
+    "for item in items:\n    process(item)",
+    "@register\ndef handler():\n    pass",
+    "class Handler:\n    pass",
+    "async def task():\n    await work()",
+    "def stream():\n    yield 1",
+    "lambda item: process(item)",
+    "[process(item) for item in items]",
+    "{item: process(item) for item in items}",
+    "{process(item) for item in items}",
+    "(process(item) for item in items)",
+    "raise RuntimeError()",
+    "assert ready",
+    "del registry[\"handler\"]",
+  ];
+  for (const program of executablePrograms) assert.equal(hasExecutablePythonSemantics(program), true, program.split("\n", 1)[0]);
+
+  const benignText = [
+    "hello",
+    "ticket_reference",
+    "\"quoted text\"",
+    "'quoted text'",
+    "A harmless support note.\nSecond line.",
+    "Please (if practical) call me tomorrow.",
+    "import from",
+    "def broken(",
+    "alert(\"x\") is the exact text shown in the report.",
+  ];
+  for (const text of benignText) assert.equal(hasExecutablePythonSemantics(text), false, text.split("\n", 1)[0]);
+  assert.equal(hasExecutablePythonSemantics("(".repeat(255) + "supportNote" + ")".repeat(255)), false);
+  assert.equal(hasExecutablePythonSemantics("(".repeat(257) + "supportNote" + ")".repeat(257)), true);
+  assert.equal(hasExecutablePythonSemantics("a".repeat(1024 * 1024 + 1)), true);
+});
+
+test("the flat parser budget bounds every recursive Acorn expression grammar at one threshold", () => {
+  const expressions = [
+    ["parentheses", (depth) => "(".repeat(depth) + "supportNote" + ")".repeat(depth)],
+    ["arrays", (depth) => "[".repeat(depth) + "supportNote" + "]".repeat(depth)],
+    ["blocks", (depth) => "{".repeat(depth) + "supportNote;" + "}".repeat(depth)],
+    ["template expressions", (depth) => "`${".repeat(depth) + "supportNote" + "}`".repeat(depth)],
+    ["prefix operators", (depth) => "!".repeat(depth) + "supportNote"],
+    ["await", (depth) => "await ".repeat(depth) + "supportNote"],
+    ["yield", (depth) => "yield ".repeat(depth) + "supportNote"],
+    ["new", (depth) => "new ".repeat(depth) + "SupportNote"],
+    ["arrows", (depth) => "a=>".repeat(depth) + "a"],
+    ["conditionals", (depth) => "a?".repeat(depth) + "a" + ":a".repeat(depth)],
+    ["assignments", (depth) => "a=".repeat(depth) + "a"],
+    ["binary precedence", (depth) => "a+".repeat(depth) + "a"],
+    ["exponentiation", (depth) => "a**".repeat(depth) + "a"],
+    ["if statement bodies", (depth) => "if(a)".repeat(depth) + "supportNote;"],
+    ["while statement bodies", (depth) => "while(a)".repeat(depth) + "supportNote;"],
+    ["for statement bodies", (depth) => "for(;;)".repeat(depth) + "supportNote;"],
+    ["do statement bodies", (depth) => "do ".repeat(depth) + "supportNote;" + "while(a);".repeat(depth), 2],
+    ["with statement bodies", (depth) => "with(a)".repeat(depth) + "supportNote;"],
+    ["labels", (depth) => "support:".repeat(depth) + "supportNote;"],
+  ];
+  for (const [name, expression, recursionTokensPerDepth = 1] of expressions) {
+    const maximumDepth = Math.floor(256 / recursionTokensPerDepth);
+    assert.equal(isJavaScriptParserInputWithinBounds(expression(maximumDepth)), true, `${name} at the token bound`);
+    assert.equal(isJavaScriptParserInputWithinBounds(expression(maximumDepth + 1)), false, `${name} just above the token bound`);
+  }
+  assert.equal(hasExecutableJavaScriptSemantics("Please await a new reply (tomorrow)."), false);
+  assert.equal(hasExecutableJavaScriptSemantics("`" + "await new => ? ([{ ".repeat(64) + "`"), false);
+  assert.equal(hasExecutableJavaScriptSemantics("/await new => \\? \\( \\[ \\{/"), false);
+  assert.equal(hasExecutableJavaScriptSemantics("/* " + "await new => ? ([{ ".repeat(64) + " */ supportNote"), false);
+});
+
+test("raw structural nesting is bounded before any third-party JavaScript work", () => {
+  const nested = (open, close, depth, prefix = "", suffix = "") => prefix + open.repeat(depth) + "evidence" + close.repeat(depth) + suffix;
+  for (const [name, open, close] of [["parentheses", "(", ")"], ["brackets", "[", "]"], ["braces", "{", "}"]]) {
+    assert.equal(isJavaScriptRawInputWithinBounds(nested(open, close, 256)), true, `${name} at bound`);
+    assert.equal(isJavaScriptRawInputWithinBounds(nested(open, close, 257)), false, `${name} above bound`);
+  }
+  assert.equal(isJavaScriptRawInputWithinBounds("([{".repeat(85) + "(" + "evidence" + ")" + "}])".repeat(85)), true, "mixed at bound");
+  assert.equal(isJavaScriptRawInputWithinBounds("([{".repeat(85) + "([" + "evidence" + "])" + "}])".repeat(85)), false, "mixed above bound");
+  assert.equal(isJavaScriptRawInputWithinBounds(nested("[", "]", 256, "/", "/v")), true, "Unicode set at bound");
+  assert.equal(isJavaScriptRawInputWithinBounds(nested("[", "]", 257, "/", "/v")), false, "Unicode set above bound");
+  assert.equal(isJavaScriptRawInputWithinBounds(nested("(", ")", 256, "/", "/")), true, "regex group at bound");
+  assert.equal(isJavaScriptRawInputWithinBounds(nested("(", ")", 257, "/", "/")), false, "regex group above bound");
+  for (const [name, prefix, suffix] of [["quoted", "'", "'"], ["comment", "/*", "*/"], ["template", "`", "`"]]) {
+    assert.equal(isJavaScriptRawInputWithinBounds(nested("(", ")", 256, prefix, suffix)), true, `${name} at bound`);
+    assert.equal(isJavaScriptRawInputWithinBounds(nested("(", ")", 257, prefix, suffix)), false, `${name} above bound`);
+  }
+  assert.equal(isJavaScriptRawInputWithinBounds("(".repeat(256) + "evidence"), true, "unmatched openers at bound");
+  assert.equal(isJavaScriptRawInputWithinBounds("(".repeat(257) + "evidence"), false, "unmatched openers above bound");
+  assert.equal(isJavaScriptRawInputWithinBounds(")]}".repeat(1000) + "evidence"), true, "unmatched closers do not create depth");
+  assert.equal(isJavaScriptRawInputWithinBounds("[({])}".repeat(1000) + "evidence"), true, "mismatched delimiters remain shallow");
+  assert.equal(isJavaScriptRawInputWithinBounds("if (ready) /" + "[({])}".repeat(129) + "/"), true, "slash-prefixed malformed prose remains shallow");
+  assert.equal(isJavaScriptRawInputWithinBounds("Please keep the ticket wording (including this aside)."), true);
+});
 
 test("multipart framing survives every one-byte boundary/header split and keeps boundary-like payload bytes", async () => {
   const boundary = "split-boundary"; const payload = "one\r\n--not-the-boundary\r\ntwo"; const source = multipart(boundary, undefined, payload);
@@ -182,6 +832,29 @@ test("a running runtime periodically sweeps expired ingress leases and stops its
     clock.advanceBy(60_000); await clock.runDueTimers();
     assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 0);
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("durable ingress keeps maintenance alive after the last implicit-storage endpoint is removed", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-retained-maintenance-")); let first; let second; let legacy;
+  try {
+    const dbPath = path.join(dir, "data.db");
+    const firstDefinition = capsule({ name: "retained-maintenance", endpoints: { upload: endpoint({ method: "POST", path: "/removed", body: { multipart: ingressPolicy() } }, () => null) } });
+    first = await openDevDatabase(dbPath, "", {}, { name: "retained-maintenance" }, firstDefinition);
+    const staged = await stageMultipartIngress(first, first.endpoints[0], ingressRequest("retained-maintenance"), { headers: ingressRequest("retained-maintenance").headers }, { userId: "claim-user" });
+    await expireIngressReceipt(first, staged.multipart.files[0].leaseId, "2030-01-01T00:00:30.000Z");
+    await first.close(); first = null;
+
+    const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+    second = await openDevDatabase(dbPath, "", {}, { name: "retained-maintenance" }, capsule({ name: "retained-maintenance" }), { clock });
+    assert.equal(second.fileIngressEnabled, true, "durable lease enables maintenance without a current declaration");
+    await second.init(); clock.advanceBy(60_000); await clock.runDueTimers();
+    assert.equal(await second.adapter.selectIngressByLease(staged.multipart.files[0].leaseId), null);
+    await second.shutdown(); await second.close(); second = null;
+
+    legacy = await openDevDatabase(path.join(dir, "legacy.db"), "", {}, { name: "legacy" }, capsule({ name: "legacy" }), { clock: createControllableRuntimeClock("2030-01-01T00:00:00.000Z") });
+    assert.equal(legacy.fileIngressEnabled, false, "a Capsule with no declaration or durable ingress stays maintenance-free");
+    await legacy.init(); assert.equal(legacy.__ingressSweepTimer, undefined);
+  } finally { await first?.close(); await second?.close(); await legacy?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
 test("shutdown waits for an in-flight periodic ingress sweep before closing its lifecycle", async () => {
@@ -581,6 +1254,45 @@ test("outbox retention prunes delivered intents in bounded batches without touch
     assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress_audit_outbox] WHERE [state] = 'delivered'").get()).count), 0);
     assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress_audit_outbox] WHERE [state] = 'pending'").get()).count), 1);
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a removed ingress surface retains one durable audit-prune wake until delivered rows expire", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-retention-restart-")); let first; let replacement;
+  try {
+    const dbPath = path.join(dir, "data.db");
+    first = await openDevDatabase(dbPath, "", {}, { name: "audit-retention-restart" }, capsule({ name: "audit-retention-restart", endpoints: { upload: endpoint({ method: "POST", path: "/removed", body: { multipart: ingressPolicy() } }, () => null) } }));
+    await first.adapter.prepare("INSERT INTO [sporades_file_ingress_audit_outbox] ([claimId], [state], [claimToken], [createdAt], [updatedAt], [deliveredAt]) VALUES ('retained-delivered', 'delivered', NULL, ?, ?, ?)").run("2030-01-01T00:00:00.000Z", "2030-01-01T00:00:00.000Z", "2030-01-01T00:00:00.000Z");
+    await first.close(); first = null;
+
+    const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+    replacement = await openDevDatabase(dbPath, "", {}, { name: "audit-retention-restart" }, capsule({ name: "audit-retention-restart" }), { clock });
+    assert.equal(replacement.fileIngressEnabled, false, "a delivered audit does not retain scanner or ingress-sweep resources");
+    await replacement.init();
+    assert.notEqual(replacement.__ingressAuditOutboxTimer, null, "retention keeps one deadline wake");
+    clock.advanceBy(24 * 60 * 60 * 1000 - 1); await clock.runDueTimers();
+    assert.equal((await replacement.adapter.prepare("SELECT [state] FROM [sporades_file_ingress_audit_outbox] WHERE [claimId] = 'retained-delivered'").get()).state, "delivered");
+    clock.advanceBy(1); await clock.runDueTimers();
+    assert.equal(await replacement.adapter.prepare("SELECT [state] FROM [sporades_file_ingress_audit_outbox] WHERE [claimId] = 'retained-delivered'").get(), undefined);
+    assert.equal(replacement.__ingressAuditOutboxTimer, null, "an empty outbox disarms audit maintenance");
+    clock.advanceBy(7 * 24 * 60 * 60 * 1000); await clock.runDueTimers();
+    assert.equal(replacement.__ingressAuditOutboxTimer, null, "an empty outbox does not recreate an idle maintenance loop");
+  } finally { await first?.close(); await replacement?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a removed ingress surface prunes already-due delivered audits during restart", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-audit-retention-due-restart-")); let first; let replacement;
+  try {
+    const dbPath = path.join(dir, "data.db");
+    first = await openDevDatabase(dbPath, "", {}, { name: "audit-retention-due-restart" }, capsule({ name: "audit-retention-due-restart", endpoints: { upload: endpoint({ method: "POST", path: "/removed", body: { multipart: ingressPolicy() } }, () => null) } }));
+    await first.adapter.prepare("INSERT INTO [sporades_file_ingress_audit_outbox] ([claimId], [state], [claimToken], [createdAt], [updatedAt], [deliveredAt]) VALUES ('due-delivered', 'delivered', NULL, ?, ?, ?)").run("2029-12-30T00:00:00.000Z", "2029-12-30T00:00:00.000Z", "2029-12-30T00:00:00.000Z");
+    await first.close(); first = null;
+
+    const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+    replacement = await openDevDatabase(dbPath, "", {}, { name: "audit-retention-due-restart" }, capsule({ name: "audit-retention-due-restart" }), { clock });
+    assert.equal(replacement.fileIngressEnabled, false);
+    await replacement.init();
+    assert.equal(await replacement.adapter.prepare("SELECT [state] FROM [sporades_file_ingress_audit_outbox] WHERE [claimId] = 'due-delivered'").get(), undefined);
+  } finally { await first?.close(); await replacement?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
 test("concurrent incompatible ingress descriptors keep one winner and stage no loser bytes", async () => {
@@ -1010,5 +1722,691 @@ test("ingress orphan cleanup failures are stable, bounded, and retryable", async
     const failed = await sweepExpiredFileIngress(database, { limit: 1 });
     assert.deepEqual(failed.failures, [{ leaseId: lease.leaseId, code: "INGRESS_ORPHAN_CLEANUP_FAILED" }]); assert.equal(JSON.stringify(failed).includes("provider-secret-detail"), false); assert.equal((await database.adapter.selectIngressByLease(lease.leaseId)).state, "sweeping");
     database.fileStorage.deleteFileVersion = remove; const retried = await sweepExpiredFileIngress(database, { limit: 1 }); assert.equal(retried.cleaned.length, 1); assert.equal(await database.adapter.selectIngressByLease(lease.leaseId), null);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("required inspection evidence is bound to the lease and fails closed before a File exists", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-inspection-gate-")); let database;
+  try {
+    const inspection = { policyRevision: "attachments-v1", maxVerdictAgeMs: 60_000, requiredInspectors: ["content-policy-v1"] };
+    const endpoint = { options: { method: "POST", path: "/inspection", body: { multipart: { ...ingressPolicy(), inspection } } } };
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "inspection", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "inspection" }));
+    const request = { headers: ingressRequest("inspection").headers, async *[Symbol.asyncIterator]() { yield multipart("claim", 'Content-Disposition: form-data; name="file"; filename="claim.pdf"\r\nContent-Type: application/pdf\r\nContent-ID: stable-claim', "claim-bytes"); } };
+    const staged = await stageMultipartIngress(database, endpoint, request, { headers: request.headers }, { userId: "claim-user" });
+    const lease = staged.multipart.files[0]; const api = createEndpointIngressApi(database, endpoint, { __ingressRequestKey: "inspection", __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
+    await assert.rejects(api.claim(lease, { path: "/attachments/blocked.txt" }), { code: "INGRESS_INSPECTION_REQUIRED" });
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_files]").get()).count), 0);
+    const receipt = JSON.parse((await database.adapter.selectIngressByLease(lease.leaseId)).payload);
+    assert.equal(receipt.inspection.policyRevision, "attachments-v1"); assert.equal(receipt.inspection.verdicts[0].leaseId, lease.leaseId); assert.equal(receipt.inspection.verdicts[0].digest, receipt.digest); assert.equal(receipt.inspection.verdicts[0].size, lease.size);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("inspection verdict age starts when each asynchronous inspector completes", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-inspect-clock-")); let database; let fake;
+  try {
+    const startedAt = "2030-01-01T00:00:00.000Z"; const clock = createControllableRuntimeClock(startedAt);
+    const inspection = { policyRevision: "completion-clock-v1", maxVerdictAgeMs: 1_000, requiredInspectors: ["content-policy-v1", "clamav"] };
+    const endpoint = { options: { method: "POST", path: "/completion-clock", body: { multipart: { ...ingressPolicy(), inspection } } } };
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "inspection-completion-clock", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "inspection-completion-clock" }), { clock });
+    const socketPath = path.join(dir, "clamd.sock");
+    const fakeOptions = { response: "stream: OK\0", onRequest: () => clock.advanceBy(750) };
+    fake = await fakeClamSocket(socketPath, fakeOptions);
+    database.__clamavTest = { socketPath, loadedSignature: "daily:42", signature: { version: "daily:42", updatedAt: new Date().toISOString() } };
+    const stage = async (requestKey) => {
+      const request = ingressRequest(requestKey);
+      const staged = await stageMultipartIngress(database, endpoint, request, { headers: request.headers }, { userId: "claim-user" });
+      const lease = staged.multipart.files[0];
+      const api = createEndpointIngressApi(database, endpoint, { __ingressRequestKey: requestKey, __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
+      return { api, lease };
+    };
+
+    const immediate = await stage("completion-clock-immediate");
+    const evidence = await immediate.api.inspection(immediate.lease);
+    assert.deepEqual(evidence.verdicts.map((verdict) => verdict.inspectedAt), [startedAt, "2030-01-01T00:00:00.750Z"]);
+    assert.equal((await immediate.api.claim(immediate.lease, { path: "/attachments/immediate.txt" })).path, "/attachments/immediate.txt");
+
+    const aging = await stage("completion-clock-aging");
+    clock.advanceBy(1_001);
+    await assert.rejects(aging.api.claim(aging.lease, { path: "/attachments/stale.txt" }), { code: "INGRESS_INSPECTION_REQUIRED" });
+
+    fakeOptions.response = "stream: Eicar-Test-Signature FOUND\0";
+    const infected = await stage("completion-clock-infected");
+    const infectedEvidence = await infected.api.inspection(infected.lease);
+    assert.deepEqual(infectedEvidence.verdicts.map((verdict) => [verdict.outcome, verdict.inspectedAt]), [["clean", "2030-01-01T00:00:02.501Z"], ["rejected", "2030-01-01T00:00:03.251Z"]]);
+
+    fakeOptions.response = "malformed scanner response\0";
+    const inconclusive = await stage("completion-clock-inconclusive");
+    const inconclusiveEvidence = await inconclusive.api.inspection(inconclusive.lease);
+    assert.deepEqual(inconclusiveEvidence.verdicts.map((verdict) => [verdict.outcome, verdict.inspectedAt]), [["clean", "2030-01-01T00:00:03.251Z"], ["inconclusive", "2030-01-01T00:00:04.001Z"]]);
+  } finally { if (fake) await new Promise((resolve) => fake.server.close(resolve)); await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("inspection declarations reject forged verdict providers before request bytes are consumed", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-inspection-forged-")); let database;
+  try {
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "inspection-forged" }, capsule({ name: "inspection-forged" })); let reads = 0;
+    const endpoint = { options: { method: "POST", path: "/forged", body: { multipart: { ...ingressPolicy(), inspection: { policyRevision: "v1", inspectors: [{ name: "clean", verdict: "clean" }] } } } } };
+    await assert.rejects(stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { reads += 1; yield multipart("forged"); } }, { headers: { "content-type": "multipart/form-data; boundary=forged", "idempotency-key": "forged" } }, { userId: "actor" }), { code: "INVALID_MULTIPART_POLICY" }); assert.equal(reads, 0);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("every required inspector must be clean when a configured runtime inspector is unavailable", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-inspection-all-")); let database;
+  try {
+    const inspection = { policyRevision: "all-v1", requiredInspectors: ["content-policy-v1", "clamav"] }; const endpoint = { options: { method: "POST", path: "/all", body: { multipart: { ...ingressPolicy(), inspection } } } };
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "inspection-all", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "inspection-all" })); const request = ingressRequest("inspection-all"); const staged = await stageMultipartIngress(database, endpoint, request, { headers: request.headers }, { userId: "claim-user" }); const lease = staged.multipart.files[0];
+    const api = createEndpointIngressApi(database, endpoint, { __ingressRequestKey: "inspection-all", __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
+    await assert.rejects(api.claim(lease, { path: "/attachments/all.txt" }), { code: "INGRESS_INSPECTION_REQUIRED" }); const evidence = await api.inspection(lease); assert.deepEqual(evidence.verdicts.map((item) => item.outcome), ["clean", "inconclusive"]); assert.equal(await database.adapter.selectFileById(JSON.parse((await database.adapter.selectIngressByLease(lease.leaseId)).payload).fileId), null);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("ClamAV inspection uses only bounded Unix INSTREAM framing and fails closed for every non-clean condition", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-clamav-socket-")); let database;
+  try { database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "clamav-socket", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "clamav-socket" })); const inspection = { policyRevision: "clam-v1", requiredInspectors: ["clamav"] }; const endpoint = { options: { method: "POST", path: "/clam", body: { multipart: { ...ingressPolicy(), inspection } } } }; const body = Buffer.from("claim-bytes");
+    const cases = [["clean", "stream: OK\0", "clean"], ["infected", "stream: Eicar-Test-Signature FOUND\0", "rejected"], ["malformed", "nonsense\0", "inconclusive"], ["limit", "INSTREAM size limit exceeded. ERROR\0", "inconclusive"], ["timeout", undefined, "inconclusive"], ["unavailable", null, "inconclusive"], ["stale", null, "inconclusive"]];
+    for (const [key, response, expected] of cases) { const socketPath = path.join(dir, `${key}.sock`); let fake; if (response !== null) fake = await fakeClamSocket(socketPath, { response, delayMs: key === "timeout" ? 100 : 0 }); database.__clamavTest = { socketPath, timeoutMs: 10, loadedSignature: "daily:42", signature: { version: "daily:42", updatedAt: key === "stale" ? "2000-01-01T00:00:00.000Z" : new Date().toISOString() } }; const headers = { "content-type": `multipart/form-data; boundary=${key}`, "idempotency-key": key }; const staged = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipartBinary(key, "claim.txt", "text/plain", body); } }, { headers }, { userId: "claim-user" }); const receipt = JSON.parse((await database.adapter.selectIngressByLease(staged.multipart.files[0].leaseId)).payload); const verdict = receipt.inspection.verdicts[0]; assert.equal(verdict.outcome, expected, key); assert.equal(JSON.stringify(verdict).includes("Eicar"), false); if (key === "clean") { const wire = fake.received; assert.equal(wire.subarray(0, 10).toString(), "zINSTREAM\0"); assert.equal(wire.readUInt32BE(10), body.length); assert.deepEqual(wire.subarray(14, 14 + body.length), body); assert.deepEqual(wire.subarray(-4), Buffer.alloc(4)); } if (fake) await new Promise((resolve) => fake.server.close(resolve)); }
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("the one ClamAV freshness predicate rejects stale, future, malformed, and over-24-hour signatures", () => {
+  const now = Date.parse("2026-09-02T12:00:00.000Z"); assert.equal(isCurrentClamavSignature({ version: "daily:42", updatedAt: new Date(now - 24 * 60 * 60 * 1000).toISOString() }, now), true); assert.equal(isCurrentClamavSignature({ version: "daily:42", updatedAt: new Date(now - 24 * 60 * 60 * 1000 - 1).toISOString() }, now), false); assert.equal(isCurrentClamavSignature({ version: "daily:42", updatedAt: new Date(now + 1).toISOString() }, now), false); assert.equal(isCurrentClamavSignature({ version: "forged", updatedAt: new Date(now).toISOString() }, now), false);
+});
+
+test("bounded scanner tool collection drains stdout after process exit", async () => {
+  const child = new EventEmitter(); child.stdout = new EventEmitter();
+  const pending = collectBoundedToolOutput(child, 10_000); let settled = false; pending.then(() => { settled = true; });
+  child.emit("exit", 0); await Promise.resolve(); assert.equal(settled, false);
+  child.stdout.emit("data", Buffer.from("Version: 42\nVerification: OK\n"));
+  child.stdout.emit("end");
+  assert.deepEqual(await pending, { ok: true, stdout: "Version: 42\nVerification: OK\n" });
+
+  const excessive = new EventEmitter(); excessive.stdout = new EventEmitter(); const bounded = collectBoundedToolOutput(excessive, 10_000, 4); excessive.stdout.emit("data", Buffer.from("12345"));
+  assert.deepEqual(await bounded, { ok: false, stdout: "" });
+  const errored = new EventEmitter(); errored.stdout = new EventEmitter(); const failed = collectBoundedToolOutput(errored, 10_000); errored.emit("error", new Error("spawn failed")); assert.equal((await failed).ok, false);
+});
+
+test("signal-terminated ClamAV children permanently degrade health before scanner probes", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-clamav-signals-")); const socketPath = path.join(dir, "clamd.sock"); let commands = 0;
+  const server = createNetServer((socket) => socket.once("data", () => { commands += 1; socket.end(Buffer.from("PONG\0")); })); await new Promise((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); });
+  const alive = () => { const listeners = new Map(); return { exitCode: null, signalCode: null, once(name, listener) { listeners.set(name, listener); }, emit(name, ...args) { listeners.get(name)?.(...args); }, kill() {} }; };
+  const testState = { socketPath, loadedSignature: "daily:1", signature: { version: "daily:1", updatedAt: new Date().toISOString() } };
+  try {
+    for (const signalCode of ["SIGTERM", "SIGKILL", "SIGABRT"]) {
+      const daemon = alive(); const updater = alive(); updater.signalCode = signalCode;
+      const database = { clamavRequired: true, clamavReady: true, __clamavProcess: daemon, __clamavUpdateProcess: updater, __clamavTest: testState };
+      assert.deepEqual(await checkClamavRuntime(database), { ok: false }, signalCode); assert.equal(database.clamavReady, false);
+    }
+    const sidecarProcess = alive(); sidecarProcess.signalCode = "SIGKILL";
+    const sidecarDatabase = { clamavRequired: true, clamavReady: true, __clamavDevSidecar: { process: sidecarProcess, externallyManaged: true }, __clamavTest: testState };
+    assert.deepEqual(await checkClamavRuntime(sidecarDatabase), { ok: false }); assert.equal(sidecarDatabase.clamavReady, false);
+    assert.equal(commands, 0);
+    const exitedDaemon = alive(); const exitedUpdater = alive(); const exitedDatabase = { clamavRequired: true, clamavReady: true, __clamavProcess: exitedDaemon, __clamavUpdateProcess: exitedUpdater, __clamavTest: testState };
+    assert.deepEqual(await checkClamavRuntime(exitedDatabase), { ok: true }); const beforeExit = commands; exitedDaemon.emit("exit", 0);
+    assert.deepEqual(await checkClamavRuntime(exitedDatabase), { ok: false }); assert.equal(commands, beforeExit, "exit latch prevents probes");
+
+    const erroredDaemon = alive(); const erroredUpdater = alive(); const erroredDatabase = { clamavRequired: true, clamavReady: true, __clamavProcess: erroredDaemon, __clamavUpdateProcess: erroredUpdater, __clamavTest: testState };
+    assert.deepEqual(await checkClamavRuntime(erroredDatabase), { ok: true }); erroredUpdater.emit("error", new Error("child error")); assert.equal(erroredDatabase.clamavReady, false);
+    assert.deepEqual(await checkClamavRuntime(erroredDatabase), { ok: true }, "an error without exit evidence is not terminal");
+  } finally { await new Promise((resolve) => server.close(resolve)); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("ClamAV supervision handles every nonterminal child error until exit or owner teardown", async () => {
+  const child = new EventEmitter(); Object.assign(child, { exitCode: null, signalCode: null, signals: [] }); child.kill = function (signal) { this.signals.push(signal); this.exitCode = 0; this.emit("close", 0, signal); };
+  const testState = { loadedSignature: "daily:1", signature: { version: "daily:1", updatedAt: new Date().toISOString() }, socketCommand: async () => "PONG" };
+  const database = { clamavRequired: true, clamavReady: false, __clamavProcess: child, __clamavTest: testState };
+  assert.deepEqual(await checkClamavRuntime(database), { ok: true }); assert.equal(child.listenerCount("error"), 1);
+  child.emit("error", new Error("transient one")); assert.equal(database.clamavReady, false);
+  assert.deepEqual(await checkClamavRuntime(database), { ok: true }); assert.equal(child.listenerCount("error"), 1);
+  assert.doesNotThrow(() => child.emit("error", new Error("transient two"))); assert.equal(database.clamavReady, false); assert.equal(child.listenerCount("error"), 1);
+  await shutdownClamavRuntime(database); assert.equal(database.__clamavProcess, null);
+  assert.equal(child.listenerCount("exit"), 0); assert.equal(child.listenerCount("close"), 0); assert.equal(child.listenerCount("error"), 0);
+
+  const terminal = new EventEmitter(); Object.assign(terminal, { exitCode: null, signalCode: null }); terminal.kill = () => {};
+  const terminalDatabase = { clamavRequired: true, clamavReady: false, __clamavProcess: terminal, __clamavTest: testState };
+  assert.deepEqual(await checkClamavRuntime(terminalDatabase), { ok: true }); terminal.emit("exit", 1); assert.equal(terminalDatabase.clamavReady, false);
+  assert.equal(terminal.listenerCount("exit"), 0); assert.equal(terminal.listenerCount("close"), 0); assert.equal(terminal.listenerCount("error"), 0);
+
+  const sidecar = new EventEmitter(); Object.assign(sidecar, { exitCode: null, signalCode: null }); sidecar.kill = () => {};
+  const oldRuntime = { clamavRequired: true, clamavReady: false, __clamavDevSidecar: { process: sidecar, externallyManaged: true }, __clamavTest: testState };
+  assert.deepEqual(await checkClamavRuntime(oldRuntime), { ok: true }); await shutdownClamavRuntime(oldRuntime); assert.equal(sidecar.listenerCount("error"), 0);
+  const replacementRuntime = { ...oldRuntime, clamavReady: false };
+  assert.deepEqual(await checkClamavRuntime(replacementRuntime), { ok: true }); sidecar.emit("error", new Error("replacement runtime error")); assert.equal(replacementRuntime.clamavReady, false); assert.equal(sidecar.listenerCount("error"), 1);
+  await shutdownClamavRuntime(replacementRuntime); assert.equal(sidecar.listenerCount("error"), 0);
+});
+
+test("ClamAV shutdown skips already-dead children and deterministically escalates only live children", async () => {
+  const child = ({ signalCode = null, latched = false, termExits = false } = {}) => {
+    const listeners = new Map(); const signals = [];
+    return {
+      exitCode: null, signalCode, __sporadesClamavTerminated: latched, signals,
+      get listenerCount() { return listeners.size; },
+      once(name, listener) { listeners.set(name, listener); },
+      removeListener(name, listener) { if (listeners.get(name) === listener) listeners.delete(name); },
+      kill(signal) {
+        signals.push(signal);
+        if ((signal === "SIGTERM" && termExits) || signal === "SIGKILL") {
+          this.exitCode = 0;
+          const listener = listeners.get("exit"); listeners.delete("exit"); listener?.(0);
+        }
+      },
+    };
+  };
+  for (const dead of [child({ signalCode: "SIGKILL" }), child({ latched: true })]) {
+    await shutdownClamavRuntime({ __clamavProcess: dead, __clamavTest: { terminateTimeoutMs: 0 } });
+    assert.deepEqual(dead.signals, []);
+    assert.equal(dead.listenerCount, 0);
+  }
+  const termExit = child({ termExits: true });
+  await shutdownClamavRuntime({ __clamavProcess: termExit, __clamavTest: { terminateTimeoutMs: 0 } });
+  assert.deepEqual(termExit.signals, ["SIGTERM"]);
+  assert.equal(termExit.listenerCount, 0);
+
+  const escalated = child();
+  await shutdownClamavRuntime({ __clamavProcess: escalated, __clamavTest: { terminateTimeoutMs: 0 } });
+  assert.deepEqual(escalated.signals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(escalated.listenerCount, 0);
+});
+
+test("ClamAV readiness consumes one absolute deadline across probes and retry delays", async () => {
+  const process = { exitCode: null, signalCode: null, once() {}, kill() {} };
+  const run = async ({ budget, probeCosts, outcomes }) => {
+    let now = 1000; const timeouts = []; const delays = [];
+    const database = { __clamavTest: {
+      now: () => now,
+      delay: async (milliseconds) => { delays.push(milliseconds); now += milliseconds; },
+      socketExists: () => true,
+      readinessProbe: async (timeoutMs) => { timeouts.push(timeoutMs); now += Math.min(probeCosts.shift() ?? 0, timeoutMs); return outcomes.shift() ?? false; },
+    } };
+    const ready = await waitForClamavReadiness(database, process, now + budget);
+    return { ready, elapsed: now - 1000, timeouts, delays };
+  };
+  assert.deepEqual(await run({ budget: 0, probeCosts: [], outcomes: [] }), { ready: false, elapsed: 0, timeouts: [], delays: [] });
+  assert.deepEqual(await run({ budget: 50, probeCosts: [49], outcomes: [true] }), { ready: true, elapsed: 49, timeouts: [50], delays: [] });
+  assert.deepEqual(await run({ budget: 50, probeCosts: [51], outcomes: [true] }), { ready: false, elapsed: 50, timeouts: [50], delays: [] });
+  assert.deepEqual(await run({ budget: 250, probeCosts: [120, 20], outcomes: [false, true] }), { ready: true, elapsed: 240, timeouts: [250, 30], delays: [100] });
+  assert.deepEqual(await run({ budget: 250, probeCosts: [200, 200], outcomes: [false, false] }), { ready: false, elapsed: 250, timeouts: [250], delays: [50] });
+
+  let now = Date.parse("2030-01-01T00:00:00.000Z"); const devTimeouts = []; const devDatabase = {
+    endpoints: [{ options: { body: { multipart: { inspection: { requiredInspectors: ["clamav"] } } } } }],
+    __clamavDevSidecar: { socketPath: "/unused-test-socket", process, externallyManaged: true },
+    __clamavTest: { startupTimeoutMs: 75, now: () => now, delay: async (milliseconds) => { now += milliseconds; }, socketExists: () => true, signature: { version: "daily:1", updatedAt: new Date(now).toISOString() }, loadedSignature: "daily:1", socketCommand: async (_command, timeoutMs) => { devTimeouts.push(timeoutMs); now += timeoutMs; return null; } },
+  };
+  assert.equal(await initializeClamavRuntime(devDatabase), false); assert.equal(now, Date.parse("2030-01-01T00:00:00.075Z")); assert.deepEqual(devTimeouts, [75]);
+});
+
+test("ClamAV shutdown retains stubborn children for a later successful cleanup retry", async () => {
+  const child = () => {
+    const listeners = new Map(); const signals = []; let canExit = false;
+    return { exitCode: null, signalCode: null, signals, once(name, listener) { listeners.set(name, listener); }, kill(signal) { signals.push(signal); if (canExit && signal === "SIGKILL") { this.signalCode = signal; listeners.get("exit")?.(null, signal); } }, allowExit() { canExit = true; } };
+  };
+  const daemon = child(); const updater = child(); const database = { __clamavProcess: daemon, __clamavUpdateProcess: updater, __clamavTest: { terminateTimeoutMs: 0 } };
+  await assert.rejects(shutdownClamavRuntime(database), AggregateError);
+  assert.equal(database.__clamavProcess, daemon); assert.equal(database.__clamavUpdateProcess, updater);
+  assert.deepEqual(daemon.signals, ["SIGTERM", "SIGKILL"]); assert.deepEqual(updater.signals, ["SIGTERM", "SIGKILL"]);
+  daemon.allowExit(); updater.allowExit(); await shutdownClamavRuntime(database);
+  assert.equal(database.__clamavProcess, null); assert.equal(database.__clamavUpdateProcess, null);
+  assert.deepEqual(daemon.signals, ["SIGTERM", "SIGKILL", "SIGTERM", "SIGKILL"]);
+
+  const signalError = new EventEmitter(); Object.assign(signalError, { exitCode: null, signalCode: null, signals: [], canExit: false });
+  signalError.kill = function (signal) { this.signals.push(signal); if (this.canExit) { this.signalCode = signal; this.emit("close", null, signal); } else this.emit("error", Object.assign(new Error("signal denied"), { code: "EPERM" })); };
+  const errorDatabase = { __clamavProcess: signalError, __clamavTest: { terminateTimeoutMs: 0 } };
+  await assert.rejects(shutdownClamavRuntime(errorDatabase), AggregateError); assert.equal(errorDatabase.__clamavProcess, signalError);
+  assert.equal(signalError.listenerCount("exit"), 0); assert.equal(signalError.listenerCount("close"), 0); assert.equal(signalError.listenerCount("error"), 0);
+  signalError.canExit = true; await shutdownClamavRuntime(errorDatabase); assert.equal(errorDatabase.__clamavProcess, null);
+
+  let now = 0; const delays = []; const timed = new EventEmitter(); Object.assign(timed, { exitCode: null, signalCode: null, signals: [] }); timed.kill = function (signal) { this.signals.push(signal); };
+  const timedDatabase = { __clamavProcess: timed, __clamavTest: { terminateTimeoutMs: 100, now: () => now, delay: async (milliseconds) => { delays.push(milliseconds); now += milliseconds; } } };
+  await assert.rejects(shutdownClamavRuntime(timedDatabase), AggregateError);
+  assert.equal(now, 100); assert.deepEqual(delays, [50, 50]); assert.deepEqual(timed.signals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(timed.listenerCount("exit"), 0); assert.equal(timed.listenerCount("close"), 0); assert.equal(timed.listenerCount("error"), 0);
+  await assert.rejects(shutdownClamavRuntime(timedDatabase), AggregateError); assert.equal(now, 200); assert.deepEqual(delays, [50, 50, 50, 50]);
+  assert.equal(timed.listenerCount("exit"), 0); assert.equal(timed.listenerCount("close"), 0); assert.equal(timed.listenerCount("error"), 0);
+});
+
+test("ClamAV health requires a bounded PING and shutdown awaits both managed children", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-clamav-health-")); const socketPath = path.join(dir, "clamd.sock"); let commands = 0;
+  const server = createNetServer((socket) => socket.once("data", (bytes) => { commands += 1; assert.equal(bytes.toString(), "zPING\0"); socket.end(Buffer.from(commands === 1 ? "BUSY\0" : "PONG\0")); })); await new Promise((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); });
+  const child = (stuck = false) => { const listeners = new Map(); const signals = []; return { exitCode: null, signals, once(name, handler) { listeners.set(name, handler); }, kill(signal) { signals.push(signal); if (stuck && signal === "SIGTERM") return; this.exitCode = signal === "SIGKILL" ? null : 0; queueMicrotask(() => { this.exitCode = 0; listeners.get("exit")?.(0); }); } }; };
+  try {
+    const clamd = child(); const updater = child(true); const database = { clamavRequired: true, clamavReady: true, __clamavProcess: clamd, __clamavUpdateProcess: updater, __clamavTest: { socketPath, loadedSignature: "daily:1", terminateTimeoutMs: 5, signature: { version: "daily:1", updatedAt: new Date().toISOString() } } };
+    assert.deepEqual(await checkClamavRuntime(database), { ok: false }); assert.equal(database.clamavReady, false); assert.deepEqual(await checkClamavRuntime(database), { ok: true }); assert.equal(commands, 2); await shutdownClamavRuntime(database); assert.deepEqual(clamd.signals, ["SIGTERM"]); assert.deepEqual(updater.signals, ["SIGTERM", "SIGKILL"]); assert.equal(database.clamavReady, false); assert.equal(database.__clamavProcess, null); assert.equal(database.__clamavUpdateProcess, null);
+    const external = { clamavRequired: true, clamavReady: true, __clamavDevSidecar: { process: child(), externallyManaged: true }, __clamavTest: { socketPath, loadedSignature: "daily:1", signature: { version: "daily:1", updatedAt: new Date().toISOString() } } }; assert.deepEqual(await checkClamavRuntime(external), { ok: true }); assert.equal(commands, 3);
+  } finally { await new Promise((resolve) => server.close(resolve)); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("ClamAV health converges after a notified signature reload without weakening exact version matching", async () => {
+  const daemon = new EventEmitter(); Object.assign(daemon, { exitCode: null, signalCode: null, kill() {} });
+  const updater = new EventEmitter(); Object.assign(updater, { exitCode: null, signalCode: null, kill() {} });
+  let loadedSignature = "daily:41"; let probes = 0;
+  const database = {
+    clamavRequired: true,
+    clamavReady: true,
+    __clamavProcess: daemon,
+    __clamavUpdateProcess: updater,
+    __clamavTest: {
+      get loadedSignature() { return loadedSignature; },
+      signature: { version: "daily:42", updatedAt: new Date().toISOString() },
+      socketCommand: async (command) => { probes += 1; assert.equal(command.toString(), "zPING\0"); return "PONG"; },
+    },
+  };
+
+  assert.deepEqual(await checkClamavRuntime(database), { ok: false }, "new on-disk signatures fail closed until clamd reloads");
+  assert.equal(probes, 0, "version mismatch does not probe or admit the stale engine");
+  loadedSignature = "daily:42";
+  assert.deepEqual(await checkClamavRuntime(database), { ok: true }, "the next bounded health check observes the notified reload");
+  assert.equal(probes, 1);
+  assert.deepEqual(await checkClamavRuntime(database), { ok: true }, "a failed later update leaves the last loaded valid signatures healthy");
+  assert.equal(probes, 2);
+});
+
+test("runtime init failure shuts down a started ClamAV before a collision-free retry", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-clamav-init-rollback-")); let database; let attempts = 0;
+  const child = () => { const listeners = new Map(); const signals = []; return { exitCode: null, signals, once(name, handler) { listeners.set(name, handler); }, kill(signal) { signals.push(signal); this.exitCode = 0; queueMicrotask(() => listeners.get("exit")?.(0)); } }; };
+  const inspection = { policyRevision: "init-rollback-v1", requiredInspectors: ["clamav"] };
+  const definition = capsule({ name: "clamav-init-rollback", hooks: { init() { attempts += 1; if (attempts === 1) throw new Error("later init hook failed"); } }, endpoints: { upload: endpoint({ method: "POST", path: "/upload", body: { multipart: { ...ingressPolicy(), inspection } } }, () => ({ ok: true })) } });
+  try {
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: definition.name }, definition); database.__clamavTest = { loadedSignature: "daily:1", signature: { version: "daily:1", updatedAt: new Date().toISOString() } };
+    const firstClamd = child(); const firstUpdater = child(); database.__clamavProcess = firstClamd; database.__clamavUpdateProcess = firstUpdater;
+    await assert.rejects(database.init(), /later init hook failed/); assert.deepEqual(firstClamd.signals, ["SIGTERM"]); assert.deepEqual(firstUpdater.signals, ["SIGTERM"]); assert.equal(database.clamavReady, false); assert.equal(database.__clamavProcess, null); assert.equal(database.__clamavUpdateProcess, null);
+    const retryClamd = child(); const retryUpdater = child(); database.__clamavProcess = retryClamd; database.__clamavUpdateProcess = retryUpdater; await database.init(); assert.equal(database.clamavReady, true); await database.shutdown(); assert.deepEqual(retryClamd.signals, ["SIGTERM"]); assert.deepEqual(retryUpdater.signals, ["SIGTERM"]);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("ClamAV refuses bytes above its exact 10 MB stream cap before opening a socket", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-clamav-cap-")); const socketPath = path.join(dir, "clamd.sock"); let connections = 0; let database;
+  const server = createNetServer(() => { connections += 1; }); await new Promise((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); });
+  try {
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "clamav-cap", files: { storagePath: path.join(dir, "files"), maxSizeBytes: 11 * 1024 * 1024 } }, capsule({ name: "clamav-cap" })); database.__clamavTest = { socketPath, loadedSignature: "daily:1", signature: { version: "daily:1", updatedAt: new Date().toISOString() } };
+    const inspection = { policyRevision: "clam-cap-v1", requiredInspectors: ["clamav"] }; const policy = { ...ingressPolicy(), maxFileBytes: 11 * 1024 * 1024, maxTotalFileBytes: 11 * 1024 * 1024, inspection }; const endpoint = { options: { method: "POST", path: "/clam-cap", body: { multipart: policy } } }; const boundary = "clam-cap"; const bytes = Buffer.alloc(10 * 1024 * 1024 + 1, 65);
+    const staged = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipartBinary(boundary, "large.txt", "text/plain", bytes); } }, { headers: { "content-type": `multipart/form-data; boundary=${boundary}`, "idempotency-key": boundary } }, { userId: "claim-user" }); const row = JSON.parse((await database.adapter.selectIngressByLease(staged.multipart.files[0].leaseId)).payload);
+    assert.equal(row.inspection.verdicts[0].outcome, "inconclusive"); assert.equal(connections, 0);
+  } finally { await database?.close(); await new Promise((resolve) => server.close(resolve)); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("content-policy-v1 structurally validates its allowlist and rejects executable or ambiguous evidence", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-content-matrix-")); const originalHome = process.env.HOME; const originalUser = process.env.USER; const originalPath = process.env.PATH; const originalCwd = process.cwd(); let database;
+  try {
+    const inspection = { policyRevision: "matrix-v1", requiredInspectors: ["content-policy-v1"] }; const policy = { ...ingressPolicy(), maxFileBytes: 20_000, maxTotalFileBytes: 20_000, inspection };
+    const sentenceExecutable = path.join(dir, "Payload", "run"); await mkdir(path.dirname(sentenceExecutable), { recursive: true });
+    for (const name of ["run", "run1", "run01", "runa", "rrun", "1un", "élocale"]) { const candidate = path.join(path.dirname(sentenceExecutable), name); await writeFile(candidate, "#!/bin/sh\nexit 0\n"); await chmod(candidate, 0o755); }
+    const pathBin = path.join(dir, "bin"); await mkdir(pathBin); for (const name of ["Run*", "MatchOne"]) { const candidate = path.join(pathBin, name); await writeFile(candidate, "#!/bin/sh\nexit 0\n"); await chmod(candidate, 0o755); }
+    await writeFile(path.join(pathBin, "Miss*"), "not executable\n"); await mkdir(path.join(pathBin, "DirMatchOne")); await writeFile(path.join(dir, "MatchOne"), "not executable\n"); await writeFile(path.join(dir, "MatchTwo"), "not executable\n"); await mkdir(path.join(dir, "DirMatchOne"));
+    process.env.HOME = dir; process.env.USER = "sporades-fixture"; process.env.PATH = `${pathBin}:${originalPath ?? ""}`; process.chdir(dir);
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "content-matrix", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "content-matrix" }));
+    const validPdf = minimalPdf(); const validPdfText = validPdf.toString("latin1"); const validEntries = [...validPdfText.matchAll(/\d{10} 00000 n /g)].map((match) => match[0]); const swappedClassicPdf = Buffer.from(validPdfText.replace(validEntries[0], "SWAP_ENTRY").replace(validEntries[1], validEntries[0]).replace("SWAP_ENTRY", validEntries[1]), "latin1"); const validNonzeroGenerationPdf = Buffer.from(validPdfText.replace("1 0 obj", "1 2 obj").replace("/Root 1 0 R", "/Root 1 2 R").replace(validEntries[0], `${validEntries[0].slice(0, 11)}00002 n `), "latin1"); const invalidHybridPdf = Buffer.from(hybridXrefPdf().toString("latin1").replace("/W [1 4 2]", "/W [1 0 2]"), "latin1"); const validPng = minimalPng(); const parsedPng = pngChunks(validPng); const idatAt = parsedPng.findIndex((chunk) => chunk.type === "IDAT");
+    const badZlibPng = rebuildPng(parsedPng.map((chunk) => chunk.type === "IDAT" ? { ...chunk, data: Buffer.from([0xff, 0xff]) } : chunk)); const rawPng = inflateSync(parsedPng[idatAt].data); rawPng[0] = 5; const badFilterPng = rebuildPng(parsedPng.map((chunk) => chunk.type === "IDAT" ? { ...chunk, data: deflateSync(rawPng) } : chunk)); const idat = parsedPng[idatAt]; const split = Math.max(1, Math.floor(idat.data.length / 2)); const badOrderPng = rebuildPng([...parsedPng.slice(0, idatAt), { type: "IDAT", data: idat.data.subarray(0, split) }, { type: "tEXt", data: Buffer.from("x\0y") }, { type: "IDAT", data: idat.data.subarray(split) }, ...parsedPng.slice(idatAt + 1)]);
+    const cases = [
+      ["valid-compressed-object-pdf", "note.pdf", "application/pdf", xrefStreamPdfWithCompressedObject(), "clean"],
+      ["valid-flate-compressed-object-pdf", "note.pdf", "application/pdf", xrefStreamPdfWithCompressedObject({ flate: true }), "clean"],
+      ["valid-replaced-compressed-member-pdf", "note.pdf", "application/pdf", incrementallySupersededCompressedObject(), "clean"],
+      ["valid-freed-compressed-member-pdf", "note.pdf", "application/pdf", incrementallySupersededCompressedObject(true), "clean"],
+      ["valid-reused-historical-free-entry-pdf", "note.pdf", "application/pdf", incrementallyReplaceHistoricalFreeEntry(), "clean"],
+      ["valid-indirect-stream-length-pdf", "note.pdf", "application/pdf", classicPdfWithStreamLength("5 0 R"), "clean"],
+      ["valid-adjacent-indirect-stream-length-pdf", "note.pdf", "application/pdf", classicPdfWithStreamLength("5 0 R", "4", "q\nQ\n", "", "/Custom null"), "clean"],
+      ["valid-adjacent-non-encrypt-trailer-key-pdf", "note.pdf", "application/pdf", compactTrailerPdf("/Info null"), "clean"],
+      ["valid-indirect-object-stream-length-pdf", "note.pdf", "application/pdf", xrefStreamPdfWithCompressedObject({ indirectLength: true }), "clean"],
+      ["valid-indirect-flate-object-stream-length-pdf", "note.pdf", "application/pdf", xrefStreamPdfWithCompressedObject({ indirectLength: true, flate: true }), "clean"],
+      ["valid-indirect-xref-stream-length-pdf", "note.pdf", "application/pdf", xrefStreamPdfWithIndirectLength(), "clean"],
+      ["valid-multi-record-predictor-row-pdf", "note.pdf", "application/pdf", predictedXrefStreamPdf({ predictor: 12, columns: 14 }), "clean"],
+      ["active-predictor-without-filter-pdf", "note.pdf", "application/pdf", xrefStreamPdf(false, " /DecodeParms <</Predictor 12 /Columns 7>>"), "rejected"],
+      ["duplicate-decode-parms-without-filter-pdf", "note.pdf", "application/pdf", xrefStreamPdf(false, " /DecodeParms null /DecodeParms null"), "rejected"],
+      ["valid-harmless-encrypt-content-pdf", "note.pdf", "application/pdf", classicPdfWithStreamLength("47", "4", "/Encrypt % harmless name and comment\n(Encrypt)\n"), "clean"],
+      ["valid-harmless-encrypt-name-pdf", "note.pdf", "application/pdf", classicPdfWithStreamLength("5 0 R", "4", "q\nQ\n", "/CustomName /Encrypt"), "clean"],
+      ["wrong-generation-indirect-stream-length-pdf", "note.pdf", "application/pdf", classicPdfWithStreamLength("5 1 R"), "rejected"],
+      ["wrong-type-indirect-stream-length-pdf", "note.pdf", "application/pdf", classicPdfWithStreamLength("5 0 R", "(four)"), "rejected"],
+      ["missing-indirect-stream-length-pdf", "note.pdf", "application/pdf", classicPdfWithStreamLength("9 0 R"), "rejected"],
+      ["cyclic-indirect-stream-length-pdf", "note.pdf", "application/pdf", classicPdfWithStreamLength("4 0 R"), "rejected"],
+      ["future-revision-indirect-stream-length-pdf", "note.pdf", "application/pdf", futureRevisionStreamLength(), "rejected"],
+      ["wrong-generation-indirect-object-stream-length-pdf", "note.pdf", "application/pdf", Buffer.from(xrefStreamPdfWithCompressedObject({ indirectLength: true }).toString("latin1").replace("/Length 7 0 R", "/Length 7 1 R"), "latin1"), "rejected"],
+      ["wrong-generation-indirect-xref-stream-length-pdf", "note.pdf", "application/pdf", xrefStreamPdfWithIndirectLength({ wrongGeneration: true }), "rejected"],
+      ["wrong-type-indirect-xref-stream-length-pdf", "note.pdf", "application/pdf", xrefStreamPdfWithIndirectLength({ wrongType: true }), "rejected"],
+      ["direct-encrypt-trailer-pdf", "note.pdf", "application/pdf", classicPdfWithStreamLength("5 0 R", "4", "q\nQ\n", "/Encrypt <</Filter /Standard>>"), "rejected"],
+      ["indirect-encrypt-trailer-pdf", "note.pdf", "application/pdf", classicPdfWithStreamLength("5 0 R", "<</Filter /Standard>>", "q\nQ\n", "/Encrypt 5 0 R"), "rejected"],
+      ["compact-null-encrypt-trailer-pdf", "note.pdf", "application/pdf", compactTrailerPdf("/Encrypt null"), "rejected"],
+      ["compact-indirect-encrypt-trailer-pdf", "note.pdf", "application/pdf", compactTrailerPdf("/Encrypt 4 0 R"), "rejected"],
+      ["compact-missing-encrypt-trailer-pdf", "note.pdf", "application/pdf", compactTrailerPdf("/Encrypt 9 0 R"), "rejected"],
+      ["repaired-invalid-historical-compressed-container-pdf", "note.pdf", "application/pdf", incrementallyRepairInvalidCompressedContainer(), "rejected"],
+      ["repaired-invalid-historical-free-head-pdf", "note.pdf", "application/pdf", incrementallyRepairInvalidFreeHead(), "rejected"],
+      ["compressed-object-catalog-container-pdf", "note.pdf", "application/pdf", xrefStreamPdfWithCompressedObject({ container: 1 }), "rejected"],
+      ["compressed-object-out-of-range-index-pdf", "note.pdf", "application/pdf", xrefStreamPdfWithCompressedObject({ index: 1 }), "rejected"],
+      ["compressed-object-circular-container-pdf", "note.pdf", "application/pdf", xrefStreamPdfWithCompressedObject({ container: 6 }), "rejected"],
+      ["valid-free-list-pdf", "note.pdf", "application/pdf", classicPdfWithFreeChain(), "clean"],
+      ["free-list-to-in-use-pdf", "note.pdf", "application/pdf", classicPdfWithFreeChain({ head: 1 }), "rejected"],
+      ["cyclic-free-list-pdf", "note.pdf", "application/pdf", classicPdfWithFreeChain({ head: 5, next: 5 }), "rejected"],
+      ["free-list-to-compressed-object-pdf", "note.pdf", "application/pdf", xrefStreamPdfWithCompressedObject({ freeHead: 6 }), "rejected"],
+      ["classic-max-generation-pdf", "note.pdf", "application/pdf", classicPdfWithCatalogGeneration(65535), "clean"],
+      ["stream-max-generation-pdf", "note.pdf", "application/pdf", xrefStreamPdfWithCatalogGeneration(65535), "clean"],
+      ["classic-overflow-generation-pdf", "note.pdf", "application/pdf", classicPdfWithCatalogGeneration(99999), "rejected"],
+      ["classic-bad-object-zero-generation-pdf", "note.pdf", "application/pdf", Buffer.from(validPdfText.replace("0000000000 65535 f", "0000000000 00000 f"), "latin1"), "rejected"],
+      ["stream-overflow-generation-pdf", "note.pdf", "application/pdf", xrefStreamPdfWithCatalogGeneration(65536), "rejected"],
+      ["stream-bad-object-zero-generation-pdf", "note.pdf", "application/pdf", xrefStreamPdfWithCatalogGeneration(0, 65534), "rejected"],
+      ["classic-in-use-object-zero-pdf", "note.pdf", "application/pdf", classicPdfWithInUseObjectZero(), "rejected"],
+      ["stream-in-use-object-zero-pdf", "note.pdf", "application/pdf", xrefStreamPdfWithInUseObjectZero(), "rejected"],
+      ["benign-outline-next-pdf", "note.pdf", "application/pdf", structuredPdf("/Outlines 5 0 R", ["5 0 obj\n<</Type /Outlines /First 6 0 R /Last 7 0 R /Count 2>>\nendobj\n", "6 0 obj\n<</Title (First) /Parent 5 0 R /Next 7 0 R /Dest [3 0 R /Fit]>>\nendobj\n", "7 0 obj\n<</Title (Second) /Parent 5 0 R /Prev 6 0 R /Dest [3 0 R /Fit]>>\nendobj\n"]), "clean"],
+      ["xfa-packet-pdf", "note.pdf", "application/pdf", structuredPdf("/AcroForm <</Fields [] /XFA [(template) 5 0 R]>>", ["5 0 obj\n<</Length 43>>\nstream\n<template><script>xfa.host</script></template>\nendstream\nendobj\n"]), "rejected"],
+      ["xfa-formcalc-pdf", "note.pdf", "application/pdf", structuredPdf("/AcroForm <</Fields [] /XFA 5 0 R>>", ["5 0 obj\n<</Length 24>>\nstream\n$host.messageBox(\"x\")\nendstream\nendobj\n"]), "rejected"],
+      ["valid-jpeg", "photo.jpg", "image/jpeg", minimalJpeg(), "clean"], ["bad-jpeg", "photo.jpg", "image/jpeg", minimalJpeg().subarray(0, -1), "rejected"], ["missing-dqt-jpeg", "photo.jpg", "image/jpeg", removeJpegSegments(minimalJpeg(), 0xdb), "rejected"], ["missing-dht-jpeg", "photo.jpg", "image/jpeg", removeJpegSegments(minimalJpeg(), 0xc4), "rejected"], ["component-jpeg", "photo.jpg", "image/jpeg", breakJpegComponent(minimalJpeg()), "rejected"],
+      ["valid-png", "photo.png", "image/png", validPng, "clean"], ["bad-png", "photo.png", "image/png", Buffer.from(validPng.map((byte, index) => index === 40 ? byte ^ 1 : byte)), "rejected"], ["bad-zlib-png", "photo.png", "image/png", badZlibPng, "rejected"], ["bad-filter-png", "photo.png", "image/png", badFilterPng, "rejected"], ["bad-order-png", "photo.png", "image/png", badOrderPng, "rejected"],
+      ["valid-pdf", "note.pdf", "application/pdf", validPdf, "clean"], ["nonzero-generation-pdf", "note.pdf", "application/pdf", validNonzeroGenerationPdf, "clean"], ["out-of-order-classic-xref", "note.pdf", "application/pdf", outOfOrderClassicXrefPdf(), "clean"], ["binary-header-pdf", "note.pdf", "application/pdf", minimalPdfWithBinaryHeaderComment(), "clean"], ["incremental-pdf", "note.pdf", "application/pdf", incrementalPdf(), "clean"], ["xref-stream-pdf", "note.pdf", "application/pdf", xrefStreamPdf(), "clean"], ["compressed-xref-stream-pdf", "note.pdf", "application/pdf", xrefStreamPdf(true), "clean"], ["array-filter-xref-stream-pdf", "note.pdf", "application/pdf", xrefStreamPdf("array"), "clean"], ["incremental-xref-stream-pdf", "note.pdf", "application/pdf", incrementalXrefStreamPdf(), "clean"], ["hybrid-xref-pdf", "note.pdf", "application/pdf", hybridXrefPdf(), "clean"], ["hybrid-with-intervening-object", "note.pdf", "application/pdf", hybridXrefPdf(true), "clean"], ["incremental-hybrid-xref", "note.pdf", "application/pdf", incrementalHybridXrefPdf(), "clean"], ["hybrid-classic-precedence", "note.pdf", "application/pdf", conflictingHybridMappingPdf(), "clean"], ["swapped-classic-xref-entries", "note.pdf", "application/pdf", swappedClassicPdf, "rejected"], ["corrupt-hybrid-xref-stream", "note.pdf", "application/pdf", invalidHybridPdf, "rejected"], ["multiple-filter-xref-stream", "note.pdf", "application/pdf", xrefStreamPdf("multiple"), "rejected"], ["trailing-comment-pdf", "note.pdf", "application/pdf", Buffer.concat([validPdf, Buffer.from("% retained by archive\n")]), "clean"], ["pdf-zip-polyglot", "note.pdf", "application/pdf", Buffer.concat([validPdf, Buffer.from("PK\x03\x04archive")]), "rejected"], ["pdf-script-tail", "note.pdf", "application/pdf", Buffer.concat([validPdf, Buffer.from("#!/bin/sh\necho unsafe\n")]), "rejected"], ["forged-pdf-zip-tail", "note.pdf", "application/pdf", forgedPdfTail(validPdf, Buffer.from("PK\x03\x04archive")), "rejected"], ["forged-pdf-elf-tail", "note.pdf", "application/pdf", forgedPdfTail(validPdf, Buffer.from([0x7f, 0x45, 0x4c, 0x46])), "rejected"], ["forged-pdf-pe-tail", "note.pdf", "application/pdf", forgedPdfTail(validPdf, Buffer.from("MZexecutable")), "rejected"], ["forged-pdf-script-tail", "note.pdf", "application/pdf", forgedPdfTail(validPdf, Buffer.from("#!/bin/sh\necho unsafe\n")), "rejected"], ["forged-pdf-random-tail", "note.pdf", "application/pdf", forgedPdfTail(validPdf, Buffer.from([0xde, 0xad, 0xbe, 0xef])), "rejected"], ["forged-pdf-printable-tail", "note.pdf", "application/pdf", forgedPdfTail(validPdf, Buffer.from("printable garbage")), "rejected"], ["forged-second-pdf-tail", "note.pdf", "application/pdf", forgedPdfTail(validPdf, minimalPdf()), "rejected"], ["initial-pdf-zip-gap", "note.pdf", "application/pdf", initialPdfWithUnclaimedBytes(Buffer.from("PK\x03\x04archive")), "rejected"], ["initial-pdf-random-gap", "note.pdf", "application/pdf", initialPdfWithUnclaimedBytes(Buffer.from([0xde, 0xad, 0xbe, 0xef])), "rejected"], ["ordinary-stream-fake-xref", "note.pdf", "application/pdf", masqueradingXrefStream("/Size 6 /W [1 4 2]"), "rejected"], ["invalid-width-fake-xref", "note.pdf", "application/pdf", masqueradingXrefStream("/Type /XRef /Size 6 /W [1 0 2]"), "rejected"], ["benign-border-pdf", "note.pdf", "application/pdf", structuredPdf("", ["5 0 obj\n<</Type /Annot /Subtype /Square /Rect [0 0 1 1] /BS <</Type /Border /W 1 /S /D /D [3 2]>>>>\nendobj\n"], "/Annots [5 0 R]"), "clean"], ["benign-form-pdf", "note.pdf", "application/pdf", structuredPdf("/AcroForm 5 0 R", ["5 0 obj\n<</Fields [6 0 R] /DA (/Helv 10 Tf 0 g)>>\nendobj\n", "6 0 obj\n<</Type /Annot /Subtype /Widget /FT /Tx /T (Name) /Rect [0 0 1 1] /V (safe) /BS <</W 1 /S /S>>>>\nendobj\n"], "/Annots [6 0 R]"), "clean"], ["benign-transparency-pdf", "note.pdf", "application/pdf", structuredPdf("", [], "/Group <</Type /Group /S /Transparency /CS /DeviceRGB>>"), "clean"], ["bad-pdf", "note.pdf", "application/pdf", Buffer.from("%PDF-1.4\nnot a document"), "rejected"], ["encrypted-pdf", "note.pdf", "application/pdf", Buffer.concat([validPdf, Buffer.from("/Encrypt")]), "rejected"], ["javascript-action-pdf", "note.pdf", "application/pdf", structuredPdf("/OpenAction 5 0 R", ["5 0 obj\n<</S /JavaScript /JS (app.alert('x'))>>\nendobj\n"]), "rejected"], ["launch-action-pdf", "note.pdf", "application/pdf", structuredPdf("/OpenAction 5 0 R", ["5 0 obj\n<</S /Launch /F (payload.exe)>>\nendobj\n"]), "rejected"], ["page-aa-uri-pdf", "note.pdf", "application/pdf", structuredPdf("", [], "/AA <</O <</S /URI /URI (https://example.invalid/)>>>>"), "rejected"], ["catalog-aa-pdf", "note.pdf", "application/pdf", structuredPdf("/AA <</WC <</S /Named /N /Print>>>>", []), "rejected"], ["annotation-action-pdf", "note.pdf", "application/pdf", structuredPdf("", ["5 0 obj\n<</Type /Annot /Subtype /Link /Rect [0 0 1 1] /A <</S /URI /URI (https://example.invalid/)>>>>\nendobj\n"], "/Annots [5 0 R]"), "rejected"], ["indirect-type-action-pdf", "note.pdf", "application/pdf", structuredPdf("", ["5 0 obj\n<</Type 6 0 R /S /D>>\nendobj\n", "6 0 obj\n/Action\nendobj\n"], "/PieceInfo <</Evidence 5 0 R>>"), "rejected"], ["indirect-subtype-action-pdf", "note.pdf", "application/pdf", structuredPdf("", ["5 0 obj\n<</S 6 0 R /URI (https://example.invalid/)>>\nendobj\n", "6 0 obj\n/URI\nendobj\n"], "/PieceInfo <</Evidence 5 0 R>>"), "rejected"], ["multihop-semantic-action-pdf", "note.pdf", "application/pdf", structuredPdf("", ["5 0 obj\n<</S 6 0 R /URI (https://example.invalid/)>>\nendobj\n", "6 0 obj\n7 0 R\nendobj\n", "7 0 obj\n/URI\nendobj\n"], "/PieceInfo <</Evidence 5 0 R>>"), "rejected"], ["cyclic-semantic-action-pdf", "note.pdf", "application/pdf", structuredPdf("", ["5 0 obj\n<</S 6 0 R>>\nendobj\n", "6 0 obj\n7 0 R\nendobj\n", "7 0 obj\n6 0 R\nendobj\n"], "/PieceInfo <</Evidence 5 0 R>>"), "rejected"], ["missing-semantic-action-pdf", "note.pdf", "application/pdf", structuredPdf("", ["5 0 obj\n<</S 99 0 R>>\nendobj\n"], "/PieceInfo <</Evidence 5 0 R>>"), "rejected"], ["malformed-semantic-action-pdf", "note.pdf", "application/pdf", structuredPdf("", ["5 0 obj\n<</S (URI)>>\nendobj\n"], "/PieceInfo <</Evidence 5 0 R>>"), "rejected"], ["nested-indirect-action-pdf", "note.pdf", "application/pdf", structuredPdf("", ["5 0 obj\n<</Evidence 6 0 R>>\nendobj\n", "6 0 obj\n<</S /URI /URI (https://example.invalid/)>>\nendobj\n"], "/PieceInfo 5 0 R"), "rejected"], ["indirect-next-action-pdf", "note.pdf", "application/pdf", structuredPdf("/OpenAction 5 0 R", ["5 0 obj\n<</S /GoTo /D [3 0 R /Fit] /Next [6 0 R]>>\nendobj\n", "6 0 obj\n<</S /URI /URI (https://example.invalid/)>>\nendobj\n"]), "rejected"], ["submit-form-pdf", "note.pdf", "application/pdf", structuredPdf("", ["5 0 obj\n<</Type /Action /S /SubmitForm /F (https://example.invalid/)>>\nendobj\n"], "/AA <</O 5 0 R>>"), "rejected"], ["import-data-pdf", "note.pdf", "application/pdf", structuredPdf("", ["5 0 obj\n<</Type /Action /S /ImportData /F (payload.fdf)>>\nendobj\n"], "/AA <</O 5 0 R>>"), "rejected"], ["names-javascript-pdf", "note.pdf", "application/pdf", structuredPdf("/Names <</JavaScript 5 0 R>>", ["5 0 obj\n<</Names [(startup) 6 0 R]>>\nendobj\n", "6 0 obj\n<</S /JavaScript /JS (app.alert('x'))>>\nendobj\n"]), "rejected"], ["filespec-pdf", "note.pdf", "application/pdf", structuredPdf("", ["5 0 obj\n<</Type /Filespec /F (evidence.txt)>>\nendobj\n"], "/PieceInfo <</Evidence 5 0 R>>"), "rejected"], ["embedded-file-stream-pdf", "note.pdf", "application/pdf", structuredPdf("", ["5 0 obj\n<</Type /EmbeddedFile /Length 4>>\nstream\nevil\nendstream\nendobj\n"], "/PieceInfo <</Evidence 5 0 R>>"), "rejected"], ["embedded-file-pdf", "note.pdf", "application/pdf", structuredPdf("/Names <</EmbeddedFiles 5 0 R>>", ["5 0 obj\n<</Names [(evidence.txt) 6 0 R]>>\nendobj\n", "6 0 obj\n<</Type /Filespec /F (evidence.txt) /EF <</F 7 0 R>>>>\nendobj\n", "7 0 obj\n<</Type /EmbeddedFile /Length 4>>\nstream\nevil\nendstream\nendobj\n"]), "rejected"],
+      ["tagged-layout-attributes-pdf", "note.pdf", "application/pdf", structuredPdf("/MarkInfo <</Marked true>> /StructTreeRoot 5 0 R", ["5 0 obj\n<</Type /StructTreeRoot /K [6 0 R]>>\nendobj\n", "6 0 obj\n<</Type /StructElem /S /P /P 5 0 R /Pg 3 0 R /A <</O /Layout /TextAlign /Center>>>>\nendobj\n"]), "clean"],
+      ["icon-fit-alignment-pdf", "note.pdf", "application/pdf", structuredPdf("/AcroForm 5 0 R", ["5 0 obj\n<</Fields [6 0 R]>>\nendobj\n", "6 0 obj\n<</Type /Annot /Subtype /Widget /FT /Btn /Rect [0 0 1 1] /MK <</IF 7 0 R>>>>\nendobj\n", "7 0 obj\n<</SW /A /S /P /A [0.5 0.5]>>\nendobj\n"], "/Annots [6 0 R]"), "clean"],
+      ["untyped-annotation-action-pdf", "note.pdf", "application/pdf", structuredPdf("", ["5 0 obj\n<</Rect [0 0 1 1] /A 6 0 R>>\nendobj\n", "6 0 obj\n<</D [3 0 R /Fit]>>\nendobj\n"], "/Annots [5 0 R]"), "rejected"],
+      ["unparented-outline-action-pdf", "note.pdf", "application/pdf", structuredPdf("/Outlines 5 0 R", ["5 0 obj\n<</First 6 0 R /Last 6 0 R /Count 1>>\nendobj\n", "6 0 obj\n<</Title (Unsafe) /A 7 0 R>>\nendobj\n", "7 0 obj\n<</D [3 0 R /Fit]>>\nendobj\n"]), "rejected"],
+      ["deep-parenthesized-shell-command", "note.txt", "text/plain", Buffer.from("(".repeat(255) + "supportNote" + ")".repeat(255)), "rejected"], ["near-bound-regex-control", "note.txt", "text/plain", Buffer.from("/" + "(".repeat(256) + "evidence" + ")".repeat(256) + "/"), "clean"], ["deep-parenthesized-call", "note.txt", "text/plain", Buffer.from("(".repeat(1000) + "alert(1)" + ")".repeat(1000)), "rejected"], ["deep-array-call", "note.txt", "text/plain", Buffer.from("[".repeat(1000) + "alert(1)" + "]".repeat(1000)), "rejected"], ["deep-unary-call", "note.txt", "text/plain", Buffer.from("!".repeat(4000) + "alert(1)"), "rejected"], ["deep-await-call", "note.txt", "text/plain", Buffer.from("await ".repeat(1000) + "alert(1)"), "rejected"], ["deep-new-call", "note.txt", "text/plain", Buffer.from("new ".repeat(1000) + "alert(1)"), "rejected"], ["deep-arrow-call", "note.txt", "text/plain", Buffer.from("a=>".repeat(1000) + "alert(1)"), "rejected"], ["deep-conditional-call", "note.txt", "text/plain", Buffer.from("a?".repeat(1000) + "alert(1)" + ":a".repeat(1000)), "rejected"], ["deep-regex-capture-call", "note.txt", "text/plain", Buffer.from("/" + "(".repeat(1000) + "alert" + ")".repeat(1000) + "/"), "rejected"],
+      ["deep-unicode-set-regex", "note.txt", "text/plain", Buffer.from("/" + "[".repeat(1000) + "a" + "]".repeat(1000) + "/v"), "rejected"], ["shallow-slash-prose-control", "note.txt", "text/plain", Buffer.from("if (ready) /" + "[({])}".repeat(129) + "/"), "clean"],
+      ["python-import-filesystem-call", "note.txt", "text/plain", Buffer.from("import pathlib\npathlib.Path(\"/tmp/report\").unlink()"), "rejected"],
+      ["python-import-alias", "note.txt", "text/plain", Buffer.from("import os as operating_system"), "rejected"], ["python-from-import", "note.txt", "text/plain", Buffer.from("from os.path import join as combine"), "rejected"], ["python-subscript-call", "note.txt", "text/plain", Buffer.from("registry[\"handler\"]()"), "rejected"], ["python-indented-block", "note.txt", "text/plain", Buffer.from("if ready:\n    process()"), "rejected"], ["python-decorator", "note.txt", "text/plain", Buffer.from("@register\ndef handler():\n    pass"), "rejected"], ["python-lambda", "note.txt", "text/plain", Buffer.from("lambda item: process(item)"), "rejected"], ["python-comprehension", "note.txt", "text/plain", Buffer.from("[process(item) for item in items]"), "rejected"],
+      ["shell-quoted-tail-bypass", "note.txt", "text/plain", Buffer.from('"safe"; cat /etc/passwd; "tail"'), "rejected"],
+      ["shell-parenthesized-subshell", "note.txt", "text/plain", Buffer.from("(whoami)"), "rejected"],
+      ["shell-executable-prefix-error", "note.txt", "text/plain", Buffer.from("printf pwned > /tmp/x\nif"), "rejected"],
+      ["shell-incomplete-only", "note.txt", "text/plain", Buffer.from("printf pwned >"), "clean"],
+      ["shell-bare-builtin", "note.txt", "text/plain", Buffer.from("whoami"), "rejected"],
+      ["shell-quoted-builtin", "note.txt", "text/plain", Buffer.from("'whoami'"), "rejected"],
+      ["shell-bash-builtin", "note.txt", "text/plain", Buffer.from("shopt"), "rejected"],
+      ["shell-quoted-bash-builtin", "note.txt", "text/plain", Buffer.from("\"shopt\""), "rejected"],
+      ["shell-sentence-path-command", "note.txt", "text/plain", Buffer.from(`${sentenceExecutable} argument.`), "rejected"],
+      ["shell-sentence-quoted-path-command", "note.txt", "text/plain", Buffer.from(`"${sentenceExecutable}" --flag value.`), "rejected"],
+      ["shell-sentence-star-expansion", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/* argument.`), "rejected"],
+      ["shell-sentence-question-expansion", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/r?n argument.`), "rejected"],
+      ["shell-sentence-class-expansion", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[r]un argument.`), "rejected"],
+      ["shell-sentence-brace-expansion", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/{run,nope} argument.`), "rejected"],
+      ["shell-sentence-numeric-brace-sequence", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/run{1..2} argument.`), "rejected"],
+      ["shell-sentence-padded-brace-sequence", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/run{01..02} argument.`), "rejected"],
+      ["shell-sentence-alpha-brace-sequence", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/run{a..b} argument.`), "rejected"],
+      ["shell-sentence-stepped-brace-sequence", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/run{5..1..2} argument.`), "rejected"],
+      ["shell-sentence-descending-alpha-sequence", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/run{b..a} argument.`), "rejected"],
+      ["shell-sentence-tilde-brace-sequence", "note.txt", "text/plain", Buffer.from("~/Payload/run{1..2} argument."), "rejected"],
+      ["shell-sentence-current-user-tilde", "note.txt", "text/plain", Buffer.from("~sporades-fixture/Payload/run argument."), "rejected"],
+      ["shell-sentence-posix-alpha-class", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[[:alpha:]]una argument.`), "rejected"],
+      ["shell-sentence-posix-digit-class", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[[:digit:]]un argument.`), "rejected"],
+      ["shell-sentence-posix-alnum-class", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[[:alnum:]]una argument.`), "rejected"],
+      ["shell-sentence-posix-negated-class", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[![:digit:]]una argument.`), "rejected"],
+      ["shell-sentence-posix-mixed-class", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[[:digit:]r]una argument.`), "rejected"],
+      ["shell-sentence-posix-locale-class", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[[:alpha:]]locale argument.`), "rejected"],
+      ["shell-sentence-active-unmatched-posix-class", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[[:digit:]]una remains unavailable.`), "rejected"],
+      ["shell-sentence-path-literal-fallback", "note.txt", "text/plain", Buffer.from("Run* argument."), "rejected"],
+      ["shell-sentence-matched-path-command", "note.txt", "text/plain", Buffer.from("Match* argument."), "rejected"],
+      ["shell-completed-prefix-before-later-error", "note.txt", "text/plain", Buffer.from("Payload/run argument.\nIf (then)."), "rejected"],
+      ["shell-completed-prefix-before-later-error-crlf", "note.txt", "text/plain", Buffer.from("Payload/run argument.\r\nIf (then)."), "rejected"],
+      ["shell-completed-quoted-prefix-before-later-error", "note.txt", "text/plain", Buffer.from('"Payload/run" argument.\nIf (then).'), "rejected"],
+      ["shell-completed-escaped-prefix-before-later-error", "note.txt", "text/plain", Buffer.from("Payload\\/run argument.\nIf (then)."), "rejected"],
+      ["shell-completed-commented-prefix-before-later-error", "note.txt", "text/plain", Buffer.from("Payload/run argument. # comment\nIf (then)."), "rejected"],
+      ["shell-completed-and-or-prefix-before-later-error", "note.txt", "text/plain", Buffer.from("Payload/run argument. && true\nIf (then)."), "rejected"],
+      ["shell-completed-or-prefix-before-later-error", "note.txt", "text/plain", Buffer.from("Payload/run argument. || true\nIf (then)."), "rejected"],
+      ["shell-multiple-completed-prefixes-before-later-error", "note.txt", "text/plain", Buffer.from("Payload/run argument.\nRunner argument.\nIf (then)."), "rejected"],
+      ["shell-completed-if-before-later-error", "note.txt", "text/plain", Buffer.from("if true; then\n Payload/run argument.\nfi\nIf (then)."), "rejected"],
+      ["shell-completed-group-before-later-error", "note.txt", "text/plain", Buffer.from("{\n Payload/run argument.\n}\nIf (then)."), "rejected"],
+      ["shell-completed-function-before-later-error", "note.txt", "text/plain", Buffer.from("work() {\n Payload/run argument.\n}\nwork\nIf (then)."), "rejected"],
+      ["shell-completed-case-before-later-error", "note.txt", "text/plain", Buffer.from("case one in\n one) Payload/run argument. ;;\nesac\nIf (then)."), "rejected"],
+      ["shell-completed-while-before-later-error", "note.txt", "text/plain", Buffer.from("while true; do\n Payload/run argument.\ndone\nIf (then)."), "rejected"],
+      ["shell-completed-loop-before-later-error", "note.txt", "text/plain", Buffer.from("for item in one; do\n Payload/run argument.\ndone\nIf (then)."), "rejected"],
+      ["shell-completed-subshell-before-later-error", "note.txt", "text/plain", Buffer.from("(\n Payload/run argument.\n)\nIf (then)."), "rejected"],
+      ["shell-completed-nested-unit-before-later-error", "note.txt", "text/plain", Buffer.from("if true; then\n {\n  Payload/run argument.\n }\nfi\nIf (then)."), "rejected"],
+      ...[127, 128, 129].map((length) => [`shell-sentence-bracket-bound-${length}`, "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[${"r".repeat(length)}]run argument.`), "rejected"]),
+      ["shell-sentence-oversized-posix-bracket", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[${"r".repeat(128)}[:alpha:]]run argument.`), "rejected"],
+      ["shell-ordinary-label", "note.txt", "text/plain", Buffer.from("ticket_reference"), "clean"],
+      ["valid-shell-slash-prose", "note.txt", "text/plain", Buffer.from("Please review docs/v1.2 at https://example.test/tickets/42."), "clean"],
+      ["valid-shell-leading-letter-slash", "note.txt", "text/plain", Buffer.from("A/B testing remains active."), "clean"],
+      ["valid-shell-leading-ratio", "note.txt", "text/plain", Buffer.from("One/two ratio."), "clean"],
+      ["valid-shell-leading-version", "note.txt", "text/plain", Buffer.from("/v1.2 is current."), "clean"],
+      ["valid-shell-leading-docs-path", "note.txt", "text/plain", Buffer.from("docs/v1.2 release notes."), "clean"],
+      ["valid-shell-unmatched-star", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/missing* remains unavailable.`), "clean"],
+      ["valid-shell-unmatched-brace", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/{nope,missing} remains unavailable.`), "clean"],
+      ["valid-shell-zero-step-brace", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/run{1..3..0} remains documented.`), "clean"],
+      ["valid-shell-malformed-brace-sequence", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/run{1..x} remains documented.`), "clean"],
+      ["valid-shell-unmatched-path-pattern", "note.txt", "text/plain", Buffer.from("NoMatch* remains unavailable."), "clean"],
+      ["valid-shell-non-x-path-literal", "note.txt", "text/plain", Buffer.from("Miss* remains unavailable."), "clean"],
+      ["valid-shell-path-directory", "note.txt", "text/plain", Buffer.from("DirMatch* remains available."), "clean"],
+      ["shell-semicolon-prefix-before-later-error", "note.txt", "text/plain", Buffer.from("Payload/run argument.; If (then)."), "rejected"],
+      ["valid-shell-incomplete-and-or-before-error", "note.txt", "text/plain", Buffer.from("Payload/run argument. &&\nIf (then)."), "clean"],
+      ["valid-shell-same-line-or-error-before-execution", "note.txt", "text/plain", Buffer.from("Payload/run argument. || If (then)."), "clean"],
+      ["valid-shell-error-before-runnable-line", "note.txt", "text/plain", Buffer.from("If (then).\nPayload/run argument."), "clean"],
+      ["valid-shell-malformed-only-lines", "note.txt", "text/plain", Buffer.from("If (then).\nWhen (else)."), "clean"],
+      ["valid-shell-incomplete-if-unit", "note.txt", "text/plain", Buffer.from("if true; then\n Payload/run argument.\nIf (then)."), "clean"],
+      ["valid-shell-incomplete-if-crlf-comments", "note.txt", "text/plain", Buffer.from("if true; then\r\n # comment\r\n\r\n Payload/run argument.\r\nIf (then)."), "clean"],
+      ["valid-shell-incomplete-group-unit", "note.txt", "text/plain", Buffer.from("{\n Payload/run argument.\nIf (then)."), "clean"],
+      ["valid-shell-incomplete-function-unit", "note.txt", "text/plain", Buffer.from("work() {\n Payload/run argument.\nIf (then)."), "clean"],
+      ["valid-shell-incomplete-case-unit", "note.txt", "text/plain", Buffer.from("case one in\n one) Payload/run argument. ;;\nIf (then)."), "clean"],
+      ["valid-shell-incomplete-while-unit", "note.txt", "text/plain", Buffer.from("while true; do\n Payload/run argument.\nIf (then)."), "clean"],
+      ["valid-shell-incomplete-loop-unit", "note.txt", "text/plain", Buffer.from("for item in one; do\n Payload/run argument.\nIf (then)."), "clean"],
+      ["valid-shell-incomplete-subshell-unit", "note.txt", "text/plain", Buffer.from("(\n Payload/run argument.\nIf (then)."), "clean"],
+      ["valid-shell-incomplete-nested-unit", "note.txt", "text/plain", Buffer.from("if true; then\n {\n  Payload/run argument.\n }\nIf (then)."), "clean"],
+      ["valid-shell-unterminated-oversized-bracket", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[${"r".repeat(129)}run remains documented.`), "clean"],
+      ["valid-shell-malformed-empty-bracket", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/[]run remains documented.`), "clean"],
+      ["valid-shell-quoted-oversized-bracket", "note.txt", "text/plain", Buffer.from(`"${path.dirname(sentenceExecutable)}/[${"r".repeat(129)}]run" remains documented.`), "clean"],
+      ["valid-shell-escaped-oversized-bracket", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/\\[${"r".repeat(129)}\\]run remains documented.`), "clean"],
+      ["valid-shell-quoted-tilde", "note.txt", "text/plain", Buffer.from('"~/Payload/run" remains documented.'), "clean"],
+      ["valid-shell-escaped-tilde", "note.txt", "text/plain", Buffer.from("\\~/Payload/run remains documented."), "clean"],
+      ["valid-shell-tilde-prose", "note.txt", "text/plain", Buffer.from("Tilde ~ means home."), "clean"],
+      ["valid-shell-quoted-star", "note.txt", "text/plain", Buffer.from(`"${path.dirname(sentenceExecutable)}/*" remains documented.`), "clean"],
+      ["valid-shell-escaped-star", "note.txt", "text/plain", Buffer.from(`${path.dirname(sentenceExecutable)}/\\* remains documented.`), "clean"],
+      ["valid-shell-unmatched-tilde", "note.txt", "text/plain", Buffer.from("~/sporades-file-ingress-no-such-command-* remains unavailable."), "clean"],
+      ["valid-text", "note.txt", "text/plain", Buffer.from("A harmless support note.\nSecond line."), "clean"], ["valid-prose-parenthesis", "note.txt", "text/plain", Buffer.from("Call me (tomorrow) about the ticket."), "clean"], ["valid-prose-nested-parentheses", "note.txt", "text/plain", Buffer.from("Please (if practical) call me tomorrow."), "clean"], ["valid-quoted-call-prose", "note.txt", "text/plain", Buffer.from("alert(\"x\") is the exact text shown in the report."), "clean"], ["html", "note.txt", "text/plain", Buffer.from("Please inspect <script>alert(1)</script>"), "rejected"], ["xml", "note.txt", "text/plain", Buffer.from("prefix <?xml version=\"1.0\"?><x/>") , "rejected"], ["generic-xml", "note.txt", "text/plain", Buffer.from("prefix <root>value</root> suffix"), "rejected"], ["javascript", "note.txt", "text/plain", Buffer.from("const answer = 42; console.log(answer);"), "rejected"], ["javascript-call", "note.txt", "text/plain", Buffer.from("alert(\"x\")"), "rejected"], ["javascript-member-call", "note.txt", "text/plain", Buffer.from("globalThis.fetch(\"/secret\")"), "rejected"], ["javascript-comment-call", "note.txt", "text/plain", Buffer.from("/* evidence */ alert(\"x\")"), "rejected"], ["javascript-parenthesized-callee", "note.txt", "text/plain", Buffer.from("(alert)(\"x\")"), "rejected"], ["javascript-computed-member-call", "note.txt", "text/plain", Buffer.from("globalThis[\"fetch\"](\"/secret\")"), "rejected"], ["javascript-unicode-identifier", "note.txt", "text/plain", Buffer.from("al\\u0065rt(\"x\")"), "rejected"], ["javascript-void-call", "note.txt", "text/plain", Buffer.from("void alert(\"x\")"), "rejected"], ["javascript-optional-chain-call", "note.txt", "text/plain", Buffer.from("globalThis?.fetch?.(\"/secret\")"), "rejected"], ["javascript-new-call", "note.txt", "text/plain", Buffer.from("new Function(\"return 1\")()"), "rejected"], ["javascript-dynamic-import", "note.txt", "text/plain", Buffer.from("import(\"/secret\")"), "rejected"], ["javascript-static-import", "note.txt", "text/plain", Buffer.from("import \"./side-effect.js\""), "rejected"], ["javascript-eval-call", "note.txt", "text/plain", Buffer.from("eval(\"alert(1)\")"), "rejected"], ["javascript-arrow-iife", "note.txt", "text/plain", Buffer.from("(() => alert(\"x\"))()"), "rejected"], ["javascript-tagged-template", "note.txt", "text/plain", Buffer.from("String.raw`secret`"), "rejected"], ["javascript-delete", "note.txt", "text/plain", Buffer.from("delete globalThis.secret"), "rejected"], ["javascript-sequence-callee", "note.txt", "text/plain", Buffer.from("(0, alert)(\"x\")"), "rejected"], ["python", "note.txt", "text/plain", Buffer.from("print(\"hello\")"), "rejected"], ["shell", "note.txt", "text/plain", Buffer.from("curl https://example.test | sh"), "rejected"], ["shell-unlisted-command", "note.txt", "text/plain", Buffer.from("cat /etc/passwd"), "rejected"], ["shell-echo", "note.txt", "text/plain", Buffer.from("echo secret > output"), "rejected"], ["shell-source", "note.txt", "text/plain", Buffer.from("source ./profile"), "rejected"],
+      ["archive", "note.zip", "application/zip", Buffer.from("PK\x03\x04archive"), "rejected"], ["office", "note.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", Buffer.from("PK\x03\x04office"), "rejected"], ["executable", "note.exe", "application/octet-stream", Buffer.from("MZbinary"), "rejected"], ["empty", "note.txt", "text/plain", Buffer.alloc(0), "rejected"], ["polyglot", "photo.jpg", "image/jpeg", Buffer.concat([minimalJpeg(), Buffer.from("const x=1")]), "rejected"], ["unknown", "note.bin", "application/octet-stream", Buffer.from([0xff,0,0xaa]), "rejected"],
+    ];
+    for (const [key, name, type, bytes, expected] of cases) { const endpoint = { options: { method: "POST", path: "/matrix", body: { multipart: policy } } }; const headers = { "content-type": `multipart/form-data; boundary=${key}`, "idempotency-key": key }; const staged = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipartBinary(key, name, type, bytes); } }, { headers }, { userId: "claim-user" }); const receipt = JSON.parse((await database.adapter.selectIngressByLease(staged.multipart.files[0].leaseId)).payload); assert.equal(receipt.inspection.verdicts[0].outcome, expected, key); }
+    const tildeEnvironments = [
+      ["missing-home", () => { delete process.env.HOME; }, "~/Payload/run argument."], ["empty-home", () => { process.env.HOME = ""; }, "~/Payload/run argument."],
+      ["relative-home", () => { process.env.HOME = "relative/home"; }, "~/Payload/run argument."], ["overlong-home", () => { process.env.HOME = "x".repeat(4097); }, "~/Payload/run argument."],
+      ["missing-user", () => { delete process.env.USER; }, "~sporades-fixture/Payload/run argument."], ["mismatched-user", () => { process.env.USER = "someone-else"; }, "~sporades-fixture/Payload/run argument."],
+      ["unsupported-user", () => {}, "~unsupported/Payload/run argument."],
+    ];
+    for (const [key, mutate, text] of tildeEnvironments) { process.env.HOME = dir; process.env.USER = "sporades-fixture"; mutate(); const endpoint = { options: { method: "POST", path: "/matrix", body: { multipart: policy } } }; const headers = { "content-type": `multipart/form-data; boundary=tilde-${key}`, "idempotency-key": `tilde-${key}` }; const staged = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipartBinary(`tilde-${key}`, "note.txt", "text/plain", Buffer.from(text)); } }, { headers }, { userId: "claim-user" }); const receipt = JSON.parse((await database.adapter.selectIngressByLease(staged.multipart.files[0].leaseId)).payload); assert.equal(receipt.inspection.verdicts[0].outcome, "rejected", key); }
+  } finally { process.chdir(originalCwd); if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome; if (originalUser === undefined) delete process.env.USER; else process.env.USER = originalUser; if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath; await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("strict text inspection accepts its exact 1 MiB parser limit and rejects one byte beyond it", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-text-bound-")); let database;
+  try {
+    const limit = 1024 * 1024; const inspection = { policyRevision: "text-bound-v1", requiredInspectors: ["content-policy-v1"] };
+    const endpoint = { options: { method: "POST", path: "/text-bound", body: { multipart: { ...ingressPolicy(), maxFileBytes: limit + 1, maxTotalFileBytes: limit + 1, inspection } } } };
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "text-bound", files: { storagePath: path.join(dir, "files"), maxSizeBytes: limit + 1 } }, capsule({ name: "text-bound" }));
+    for (const [key, size, expected] of [["at-limit", limit, "clean"], ["over-limit", limit + 1, "rejected"]]) {
+      const headers = { "content-type": `multipart/form-data; boundary=${key}`, "idempotency-key": key };
+      const staged = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipartBinary(key, "note.txt", "text/plain", Buffer.alloc(size, 97)); } }, { headers }, { userId: "claim-user" });
+      const receipt = JSON.parse((await database.adapter.selectIngressByLease(staged.multipart.files[0].leaseId)).payload);
+      assert.equal(receipt.inspection.verdicts[0].outcome, expected, key);
+    }
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("PDF inspection times out and destroys work during the operator-list phase", async () => {
+  let entered = false; const accepted = await validatePdfIngress(minimalPdf(), { timeoutMs: 10, beforeOperatorList: async () => { entered = true; await new Promise((resolve) => setTimeout(resolve, 100)); } }); assert.equal(entered, true); assert.equal(accepted, false);
+});
+
+test("inspection-gated clean claims have the same evidence and File semantics on fake MinIO", async () => {
+  await withFakeS3CompatibleService(async ({ endpoint: storageEndpoint, objects }) => {
+    const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-inspection-minio-")); let database; const namespace = `inspection-${randomUUID()}`;
+    try { const serviceEnv = { SPORADES_SERVICE_STORAGE_ENGINE: "minio", SPORADES_SERVICE_STORAGE_ENDPOINT: storageEndpoint, SPORADES_SERVICE_STORAGE_ACCESS_KEY: "sporades", SPORADES_SERVICE_STORAGE_SECRET_KEY: "sporades-minio-local-secret", SPORADES_SERVICE_STORAGE_BUCKET: "sporades-files", SPORADES_SERVICE_STORAGE_REGION: "eu-west-2", SPORADES_SERVICE_STORAGE_NAMESPACE: namespace }; const config = { name: namespace, services: { storage: { kind: "storage", engine: "minio" } } };
+      database = await openDevDatabase(path.join(dir, "data.db"), "", serviceEnv, config, capsule({ name: namespace }), { serviceEnv }); const endpoint = { options: { method: "POST", path: "/inspection-minio", body: { multipart: { ...ingressPolicy(), inspection: { policyRevision: "minio-v1", requiredInspectors: ["content-policy-v1"] } } } } }; const request = ingressRequest("inspection-minio"); const staged = await stageMultipartIngress(database, endpoint, request, { headers: request.headers }, { userId: "claim-user" }); const lease = staged.multipart.files[0]; const api = createEndpointIngressApi(database, endpoint, { __ingressRequestKey: "inspection-minio", __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } }); const file = await api.claim(lease, { path: "/attachments/minio.txt" }); const evidence = await api.inspection(lease); assert.equal(evidence.verdicts[0].outcome, "clean"); assert.equal(evidence.verdicts[0].version, file.version); assert.ok([...objects.keys()].some((key) => key.includes(file.id)));
+    } finally { await database?.close(); for (const key of [...objects.keys()].filter((value) => value.startsWith(`capsules/${namespace}/`))) objects.delete(key); await rm(dir, { recursive: true, force: true }); }
+  });
+});
+
+test("a clean required verdict must remain current and exactly match the staged receipt", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-inspection-current-")); let database;
+  try {
+    const inspection = { policyRevision: "attachments-v1", maxVerdictAgeMs: 1_000, requiredInspectors: ["content-policy-v1"] };
+    const endpoint = { options: { method: "POST", path: "/inspection-current", body: { multipart: { ...ingressPolicy(), inspection } } } };
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "inspection-current", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "inspection-current" }));
+    const staged = await stageMultipartIngress(database, endpoint, ingressRequest("inspection-current"), { headers: ingressRequest("inspection-current").headers }, { userId: "claim-user" }); const lease = staged.multipart.files[0];
+    const api = createEndpointIngressApi(database, endpoint, { __ingressRequestKey: "inspection-current", __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
+    const row = await database.adapter.selectIngressByLease(lease.leaseId); const original = JSON.parse(row.payload);
+    for (const mutate of [
+      (verdict) => { verdict.leaseId = "wrong"; }, (verdict) => { verdict.size += 1; }, (verdict) => { verdict.digest = "0".repeat(64); }, (verdict) => { verdict.version = "wrong"; }, (verdict) => { verdict.policyRevision = "wrong"; },
+      (verdict) => { verdict.inspectedAt = "2000-01-01T00:00:00.000Z"; }, (verdict) => { verdict.inspectedAt = "2999-01-01T00:00:00.000Z"; }, (verdict) => { verdict.inspectedAt = "malformed"; },
+    ]) { const receipt = structuredClone(original); mutate(receipt.inspection.verdicts[0]); await database.adapter.prepare("UPDATE [sporades_file_ingress] SET [payload] = ? WHERE [leaseId] = ?").run(JSON.stringify(receipt), lease.leaseId); await assert.rejects(api.claim(lease, { path: "/attachments/mismatch.txt" }), { code: "INGRESS_INSPECTION_REQUIRED" }); }
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_files]").get()).count), 0);
+    const fresh = await stageMultipartIngress(database, endpoint, ingressRequest("inspection-current-fresh"), { headers: ingressRequest("inspection-current-fresh").headers }, { userId: "claim-user" }); const freshLease = fresh.multipart.files[0];
+    const freshApi = createEndpointIngressApi(database, endpoint, { __ingressRequestKey: "inspection-current-fresh", __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
+    const changedPolicy = { options: { ...endpoint.options, body: { multipart: { ...endpoint.options.body.multipart, inspection: { ...inspection, policyRevision: "attachments-v2" } } } } };
+    const changedApi = createEndpointIngressApi(database, changedPolicy, { __ingressRequestKey: "inspection-current-fresh", __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
+    await assert.rejects(changedApi.claim(freshLease, { path: "/attachments/revision.txt" }), { code: "INGRESS_INSPECTION_REQUIRED" });
+    assert.equal((await freshApi.claim(freshLease, { path: "/attachments/current.txt" })).path, "/attachments/current.txt");
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a completed pre-inspection receipt requires fresh current ClamAV evidence before idempotent replay", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-completed-reinspection-")); let database;
+  const databasePath = path.join(dir, "data.db"); const filesPath = path.join(dir, "files");
+  const requestKey = "completed-reinspection"; const bytes = Buffer.from("stable completed bytes");
+  const request = (boundary) => ({ headers: { "content-type": `multipart/form-data; boundary=${boundary}`, "idempotency-key": requestKey }, async *[Symbol.asyncIterator]() { yield multipartBinary(boundary, "claim.txt", "text/plain", bytes); } });
+  const legacyEndpoint = { options: { method: "POST", path: "/completed-reinspection", body: { multipart: ingressPolicy() } } };
+  const inspection = { policyRevision: "completed-clamav-v2", maxVerdictAgeMs: 60_000, requiredInspectors: ["clamav"] };
+  const inspectedEndpoint = { options: { ...legacyEndpoint.options, body: { multipart: { ...ingressPolicy(), inspection } } } };
+  const endpointRequest = (boundary) => ({ headers: request(boundary).headers });
+  const api = (endpoint) => createEndpointIngressApi(database, endpoint, { __ingressRequestKey: requestKey, __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
+  const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`); let scanner;
+  try {
+    database = await openDevDatabase(databasePath, "", {}, { name: "completed-reinspection", files: { storagePath: filesPath } }, capsule({ name: "completed-reinspection" }));
+    const firstRequest = request("completed-old");
+    const first = await stageMultipartIngress(database, legacyEndpoint, firstRequest, endpointRequest("completed-old"), { userId: "claim-user" });
+    const originalFile = await api(legacyEndpoint).claim(first.multipart.files[0], { path: "/attachments/completed.txt" });
+    database.__clamavTest = { socketPath, loadedSignature: "daily:42", signature: { version: "daily:42", updatedAt: new Date().toISOString() } };
+
+    scanner = await fakeClamSocket(socketPath, { response: "stream: Malware FOUND\0" });
+    const rejectedRequest = request("completed-reject");
+    await assert.rejects(stageMultipartIngress(database, inspectedEndpoint, rejectedRequest, endpointRequest("completed-reject"), { userId: "claim-user" }), { code: "INGRESS_INSPECTION_REQUIRED" });
+    let stored = JSON.parse((await database.adapter.selectIngressByLease(first.multipart.files[0].leaseId)).payload);
+    assert.equal(stored.inspection.policyRevision, "completed-clamav-v2"); assert.equal(stored.inspection.verdicts[0].outcome, "rejected");
+
+    await new Promise((resolve) => scanner.server.close(resolve)); scanner = await fakeClamSocket(socketPath, { response: "stream: OK\0" });
+    const cleanRequest = request("completed-clean");
+    const clean = await stageMultipartIngress(database, inspectedEndpoint, cleanRequest, endpointRequest("completed-clean"), { userId: "claim-user" });
+    const replayed = await api(inspectedEndpoint).claim(clean.multipart.files[0], { path: "/attachments/completed.txt" });
+    assert.equal(replayed.id, originalFile.id); assert.equal(replayed.version, originalFile.version);
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress_audit_outbox]").get()).count), 1);
+
+    await database.close();
+    database = await openDevDatabase(databasePath, "", {}, { name: "completed-reinspection", files: { storagePath: filesPath } }, capsule({ name: "completed-reinspection" }));
+    const afterRestart = await api(inspectedEndpoint).claim(clean.multipart.files[0], { path: "/attachments/completed.txt" });
+    assert.equal(afterRestart.id, originalFile.id);
+    stored = JSON.parse((await database.adapter.selectIngressByLease(clean.multipart.files[0].leaseId)).payload);
+    assert.equal(stored.inspection.verdicts[0].outcome, "clean");
+  } finally { if (scanner) await new Promise((resolve) => scanner.server.close(resolve)); await database?.close(); await rm(socketPath, { force: true }); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("concurrent completed retries follow the inspection evidence that wins the durable refresh", async () => {
+  for (const race of [
+    { name: "rejected-wins", responses: ["stream: OK\0", "stream: Malware FOUND\0"], delays: [30, 0], outcome: "rejected" },
+    { name: "clean-wins", responses: ["stream: Malware FOUND\0", "stream: OK\0"], delays: [30, 0], outcome: "clean" },
+  ]) {
+    const dir = await mkdtemp(path.join(tmpdir(), `sporades-ingress-refresh-${race.name}-`)); let database; let scanner;
+    const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`);
+    const requestKey = `refresh-${race.name}`; const bytes = Buffer.from("stable completed race bytes");
+    const legacyEndpoint = { options: { method: "POST", path: "/completed-refresh-race", body: { multipart: ingressPolicy() } } };
+    const inspection = { policyRevision: `race-${race.name}-v2`, maxVerdictAgeMs: 60_000, requiredInspectors: ["clamav"] };
+    const inspectedEndpoint = { options: { ...legacyEndpoint.options, body: { multipart: { ...ingressPolicy(), inspection } } } };
+    const request = (boundary) => ({ headers: { "content-type": `multipart/form-data; boundary=${boundary}`, "idempotency-key": requestKey }, async *[Symbol.asyncIterator]() { yield multipartBinary(boundary, "claim.txt", "text/plain", bytes); } });
+    const stage = async (boundary) => { const incoming = request(boundary); return await stageMultipartIngress(database, inspectedEndpoint, incoming, { headers: incoming.headers }, { userId: "claim-user" }); };
+    const api = (endpoint) => createEndpointIngressApi(database, endpoint, { __ingressRequestKey: requestKey, __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
+    try {
+      database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: `refresh-${race.name}`, files: { storagePath: path.join(dir, "files") } }, capsule({ name: `refresh-${race.name}` }));
+      const initialRequest = request("legacy");
+      const initial = await stageMultipartIngress(database, legacyEndpoint, initialRequest, { headers: initialRequest.headers }, { userId: "claim-user" });
+      const file = await api(legacyEndpoint).claim(initial.multipart.files[0], { path: "/attachments/race.txt" });
+      database.__clamavTest = { socketPath, loadedSignature: "daily:42", signature: { version: "daily:42", updatedAt: new Date().toISOString() } };
+      scanner = await fakeClamSocket(socketPath, { response: (_request, index) => race.responses[index], delayMs: (_request, index) => race.delays[index] });
+
+      const results = await Promise.allSettled([stage("race-first"), stage("race-second")]);
+      const stored = JSON.parse((await database.adapter.selectIngressByLease(initial.multipart.files[0].leaseId)).payload);
+      assert.equal(stored.inspection.verdicts[0].outcome, race.outcome, race.name);
+      if (race.outcome === "rejected") {
+        assert.deepEqual(results.map((result) => result.status), ["rejected", "rejected"]);
+        for (const result of results) assert.equal(result.reason?.code, "INGRESS_INSPECTION_REQUIRED");
+        await assert.rejects(api(inspectedEndpoint).claim(initial.multipart.files[0], { path: "/attachments/race.txt" }), { code: "INGRESS_INSPECTION_REQUIRED" });
+      } else {
+        assert.deepEqual(results.map((result) => result.status), ["fulfilled", "fulfilled"]);
+        assert.equal((await api(inspectedEndpoint).claim(initial.multipart.files[0], { path: "/attachments/race.txt" })).id, file.id);
+      }
+    } finally { if (scanner) await new Promise((resolve) => scanner.server.close(resolve)); await database?.close(); await rm(socketPath, { force: true }); await rm(dir, { recursive: true, force: true }); }
+  }
+});
+
+test("concurrent leased retries expose claim readiness only from the durable inspection winner", async () => {
+  for (const race of [
+    { name: "rejected-wins", responses: ["stream: OK\0", "stream: Malware FOUND\0"], delays: [30, 0], outcome: "rejected" },
+    { name: "clean-wins", responses: ["stream: Malware FOUND\0", "stream: OK\0"], delays: [30, 0], outcome: "clean" },
+  ]) {
+    const dir = await mkdtemp(path.join(tmpdir(), `sporades-ingress-leased-race-${race.name}-`)); let database; let scanner;
+    const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`);
+    const requestKey = `leased-race-${race.name}`; const bytes = Buffer.from("stable leased race bytes");
+    const legacyEndpoint = { options: { method: "POST", path: "/leased-refresh-race", body: { multipart: ingressPolicy() } } };
+    const inspection = { policyRevision: `leased-race-${race.name}-v2`, maxVerdictAgeMs: 60_000, requiredInspectors: ["clamav"] };
+    const inspectedEndpoint = { options: { ...legacyEndpoint.options, body: { multipart: { ...ingressPolicy(), inspection } } } };
+    const request = (boundary) => ({ headers: { "content-type": `multipart/form-data; boundary=${boundary}`, "idempotency-key": requestKey }, async *[Symbol.asyncIterator]() { yield multipartBinary(boundary, "claim.txt", "text/plain", bytes); } });
+    const stage = async (boundary) => { const incoming = request(boundary); return await stageMultipartIngress(database, inspectedEndpoint, incoming, { headers: incoming.headers }, { userId: "claim-user" }); };
+    const api = () => createEndpointIngressApi(database, inspectedEndpoint, { __ingressRequestKey: requestKey, __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
+    try {
+      database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: `leased-race-${race.name}`, files: { storagePath: path.join(dir, "files") } }, capsule({ name: `leased-race-${race.name}` }));
+      const initialRequest = request("legacy");
+      const initial = await stageMultipartIngress(database, legacyEndpoint, initialRequest, { headers: initialRequest.headers }, { userId: "claim-user" });
+      database.__clamavTest = { socketPath, loadedSignature: "daily:42", signature: { version: "daily:42", updatedAt: new Date().toISOString() } };
+      scanner = await fakeClamSocket(socketPath, { response: (_request, index) => race.responses[index], delayMs: (_request, index) => race.delays[index] });
+
+      const retries = await Promise.all([stage("race-first"), stage("race-second")]);
+      const stored = JSON.parse((await database.adapter.selectIngressByLease(initial.multipart.files[0].leaseId)).payload);
+      assert.equal(stored.inspection.verdicts[0].outcome, race.outcome, race.name);
+      const claims = await Promise.allSettled(retries.map((retry) => api().claim(retry.multipart.files[0], { path: "/attachments/leased-race.txt" })));
+      if (race.outcome === "rejected") {
+        assert.deepEqual(claims.map((result) => result.status), ["rejected", "rejected"]);
+        for (const result of claims) assert.equal(result.reason?.code, "INGRESS_INSPECTION_REQUIRED");
+      } else {
+        assert.deepEqual(claims.map((result) => result.status), ["fulfilled", "fulfilled"]);
+        assert.equal(claims[0].value.id, claims[1].value.id);
+      }
+    } finally { if (scanner) await new Promise((resolve) => scanner.server.close(resolve)); await database?.close(); await rm(socketPath, { force: true }); await rm(dir, { recursive: true, force: true }); }
+  }
+});
+
+test("stable retries atomically refresh a matching leased receipt's inspection without accepting descriptor changes", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-leased-reinspection-")); let database;
+  const databasePath = path.join(dir, "data.db"); const filesPath = path.join(dir, "files"); const requestKey = "leased-reinspection";
+  const endpoint = (revision) => ({ options: { method: "POST", path: "/leased-reinspection", body: { multipart: { ...ingressPolicy(), inspection: { policyRevision: revision, maxVerdictAgeMs: 60_000, requiredInspectors: ["clamav"] } } } } });
+  const request = (boundary, bytes = "stable leased bytes") => ({ headers: { "content-type": `multipart/form-data; boundary=${boundary}`, "idempotency-key": requestKey }, async *[Symbol.asyncIterator]() { yield multipartBinary(boundary, "claim.txt", "text/plain", Buffer.from(bytes)); } });
+  const stage = async (activeEndpoint, boundary, bytes) => { const incoming = request(boundary, bytes); return await stageMultipartIngress(database, activeEndpoint, incoming, { headers: incoming.headers }, { userId: "claim-user" }); };
+  const api = (activeEndpoint) => createEndpointIngressApi(database, activeEndpoint, { __ingressRequestKey: requestKey, __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
+  const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`); let scanner; let scannerCalls = 0;
+  try {
+    database = await openDevDatabase(databasePath, "", {}, { name: "leased-reinspection", files: { storagePath: filesPath } }, capsule({ name: "leased-reinspection" }));
+    database.__clamavTest = { socketPath, timeoutMs: 5, loadedSignature: "daily:42", signature: { version: "daily:42", updatedAt: new Date().toISOString() } };
+    const v1 = endpoint("leased-clamav-v1"); const initial = await stage(v1, "leased-v1"); const lease = initial.multipart.files[0];
+    await assert.rejects(api(v1).claim(lease, { path: "/attachments/leased.txt" }), { code: "INGRESS_INSPECTION_REQUIRED" });
+
+    scanner = await fakeClamSocket(socketPath, { response: "stream: OK\0", onRequest: () => { scannerCalls += 1; } });
+    const v2 = endpoint("leased-clamav-v2"); const callsBeforeConflict = scannerCalls;
+    await assert.rejects(stage(v2, "leased-conflict", "different bytes"), { code: "INGRESS_DESCRIPTOR_CONFLICT" });
+    assert.equal(scannerCalls, callsBeforeConflict, "a descriptor mismatch must fail before scanner work or evidence publication");
+
+    const retries = await Promise.all(Array.from({ length: 12 }, (_, index) => stage(v2, `leased-clean-${index}`)));
+    assert.deepEqual([...new Set(retries.map((retry) => retry.multipart.files[0].leaseId))], [lease.leaseId]);
+    const refreshed = JSON.parse((await database.adapter.selectIngressByLease(lease.leaseId)).payload);
+    assert.equal(refreshed.state, "leased"); assert.equal(refreshed.inspection.policyRevision, "leased-clamav-v2"); assert.equal(refreshed.inspection.verdicts[0].outcome, "clean");
+
+    await database.close();
+    database = await openDevDatabase(databasePath, "", {}, { name: "leased-reinspection", files: { storagePath: filesPath } }, capsule({ name: "leased-reinspection" }));
+    const claimed = await api(v2).claim(lease, { path: "/attachments/leased.txt" });
+    assert.equal(claimed.path, "/attachments/leased.txt");
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress_audit_outbox]").get()).count), 1);
+  } finally { if (scanner) await new Promise((resolve) => scanner.server.close(resolve)); await database?.close(); await rm(socketPath, { force: true }); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("an inspected lease cannot substitute its inspected name or MIME type at claim", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-inspected-descriptor-")); let database;
+  try {
+    const inspection = { policyRevision: "descriptor-v1", requiredInspectors: ["content-policy-v1"] };
+    const inspectedEndpoint = { options: { method: "POST", path: "/inspected", body: { multipart: { ...ingressPolicy(), inspection } } } };
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "inspected-descriptor" }, capsule({ name: "inspected-descriptor" }));
+    const staged = await stageMultipartIngress(database, inspectedEndpoint, ingressRequest("inspected-descriptor"), { headers: ingressRequest("inspected-descriptor").headers }, { userId: "claim-user" });
+    const api = createEndpointIngressApi(database, inspectedEndpoint, { __ingressRequestKey: "inspected-descriptor", __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
+    await assert.rejects(api.claim(staged.multipart.files[0], { path: "/attachments/changed-name.txt", name: "changed.txt" }), { code: "INGRESS_INSPECTION_REQUIRED" });
+    await assert.rejects(api.claim(staged.multipart.files[0], { path: "/attachments/changed-type.txt", type: "application/javascript" }), { code: "INGRESS_INSPECTION_REQUIRED" });
+    assert.equal((await api.claim(staged.multipart.files[0], { path: "/attachments/original.txt", name: "claim.txt", type: "text/plain" })).name, "claim.txt");
+
+    const legacyEndpoint = { options: { method: "POST", path: "/legacy", body: { multipart: ingressPolicy() } } };
+    const legacy = await stageMultipartIngress(database, legacyEndpoint, ingressRequest("legacy-descriptor"), { headers: ingressRequest("legacy-descriptor").headers }, { userId: "claim-user" });
+    const legacyApi = createEndpointIngressApi(database, legacyEndpoint, { __ingressRequestKey: "legacy-descriptor", __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
+    const legacyFile = await legacyApi.claim(legacy.multipart.files[0], { path: "/attachments/legacy.bin", name: "renamed.bin", type: "application/octet-stream" });
+    assert.deepEqual({ name: legacyFile.name, type: legacyFile.type }, { name: "renamed.bin", type: "application/octet-stream" });
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });

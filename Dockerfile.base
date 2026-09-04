@@ -1,17 +1,39 @@
-FROM node:22-alpine
+FROM node:22.14-alpine
 
 LABEL org.opencontainers.image.title="Sporades Base Image"
 LABEL org.opencontainers.image.description="Thin Node 22 Base image for Sporades Container sessions and Hosted Capsules"
-LABEL org.opencontainers.image.version="0.1.0-node22-alpine"
+LABEL org.opencontainers.image.version="0.2.0-node22-alpine"
 LABEL org.opencontainers.image.source="https://github.com/sporades/sporades"
 LABEL com.sporades.base-image.name="sporades-base"
-LABEL com.sporades.base-image.version="0.1.0-node22-alpine"
+LABEL com.sporades.base-image.version="0.2.0-node22-alpine"
 LABEL com.sporades.base-image.node="22"
 
-RUN apk add --no-cache openssh-server fail2ban \
+RUN apk add --no-cache openssh-server fail2ban clamav clamav-daemon \
   && addgroup -g 10001 -S sporades \
   && adduser -u 10001 -S sporades -G sporades -s /bin/sh \
-  && mkdir -p /app /app/data /run/sshd \
+  && mkdir -p /app /app/data /app/data/clamav /run/sshd \
+  && printf '%s\n' \
+    'Foreground yes' \
+    'DatabaseDirectory /app/data/clamav' \
+    'LocalSocket /tmp/sporades-clamd.sock' \
+    'LocalSocketMode 0600' \
+    'FixStaleSocket yes' \
+    'StreamMaxLength 10M' \
+    'MaxFileSize 10M' \
+    'MaxScanSize 10M' \
+    'MaxRecursion 4' \
+    'MaxFiles 100' \
+    'MaxScanTime 10000' \
+    'MaxThreads 4' \
+    'MaxQueue 10' \
+    > /etc/clamav/clamd.conf \
+  && printf '%s\n' \
+    'DatabaseDirectory /app/data/clamav' \
+    'DatabaseMirror database.clamav.net' \
+    'Checks 24' \
+    'Foreground yes' \
+    'NotifyClamd /etc/clamav/clamd.conf' \
+    > /etc/clamav/freshclam.conf \
   && ssh-keygen -A \
   && printf '%s\n' \
     '#!/bin/sh' \

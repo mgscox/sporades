@@ -23,6 +23,7 @@ type RuntimeEnv = Record<string, string | undefined>;
 export declare function shutdownAndCloseDatabase(database: LooseRecord): Promise<void>;
 export declare function shutdownHttpServerAndRuntime(server: LooseRecord, shutdownRuntime: () => any): Promise<void>;
 export declare function replaceRuntimeDatabase(currentDatabase: LooseRecord, candidateDatabase: LooseRecord): Promise<LooseRecord>;
+export declare function replacePreparedRuntimeDatabase(currentDatabase: LooseRecord, candidateDatabase: LooseRecord, prepareCandidate: (candidate: LooseRecord) => Promise<any>, cleanupPreparation: () => Promise<any>): Promise<LooseRecord>;
 export declare function openDevDatabase(databasePath: string, serverSource: any, serverEnv?: RuntimeEnv, config?: RuntimeConfig, capsuleDefinition?: any, options?: LooseRecord): Promise<LooseRecord>;
 export declare function enqueueScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date): Promise<any>;
 /** Internal runtime/test seam; not exported from sporades/server. */

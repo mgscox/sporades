@@ -100,6 +100,7 @@ import { emitAuthDeniedLog, resolveAnonymousSession } from "./auth-runtime.js";
 import { accessKeyGrantsSatisfyScopes } from "./auth-admission.js";
 import { accessKeyAuthenticationError, emitAccessKeyAdmittedAudit, recordAccessKeyUsage, resolveAccessKeyCredential, } from "./access-keys-runtime.js";
 import { checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, fileRowForActor, } from "./file-storage-runtime.js";
+import { checkClamavRuntime } from "./file-ingress-runtime.js";
 import { commandError } from "./runtime-errors.js";
 import { attachmentContentDisposition, consumeSealedEndpointFileAttachment, isGuardedAttachmentHttpResponse, markGuardedAttachmentHttpResponse } from "./endpoint-file-response.js";
 const CLIENT_REQUEST_ERROR_CODES = new Set([
@@ -529,16 +530,26 @@ export async function routeRuntimeHealth(database, request, response) {
         writeNotFound(response);
         return true;
     }
+    if (database.clamavRequired && !runtimeProbeMatches(probe, database.runtimeProbeToken)) {
+        writeNotFound(response);
+        return true;
+    }
     const result = await createRuntimeHealthResult(database);
     writeJsonHttpResponse(response, result.ok ? 200 : 503, result);
     return true;
+}
+function runtimeProbeMatches(actualToken, expectedToken) {
+    if (!/^[a-f0-9]{64}$/.test(actualToken) || typeof expectedToken !== "string" || !/^[a-f0-9]{64}$/.test(expectedToken))
+        return false;
+    return process.getBuiltinModule("node:crypto").timingSafeEqual(Buffer.from(actualToken, "hex"), Buffer.from(expectedToken, "hex"));
 }
 async function createRuntimeHealthResult(database) {
     const checks = {
         sqlite: await checkRuntimeSqlite(database),
         fileStorage: await checkRuntimeFileStorage(database),
+        fileInspection: await checkClamavRuntime(database),
     };
-    const ready = checks.sqlite.ok && checks.fileStorage.ok;
+    const ready = checks.sqlite.ok && checks.fileStorage.ok && checks.fileInspection.ok;
     return {
         ok: ready,
         data: {

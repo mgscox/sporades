@@ -543,7 +543,7 @@ arbitrary client packets directly to other clients.
 
 ## Data and Migrations
 
-Sporades uses SQLite through Node 22+ `node:sqlite`. Dev sessions store the
+Sporades uses SQLite through Node `>=22.13 <23` or `>=24` built-in `node:sqlite`. Dev sessions store the
 database at `.sporades/data.db`. Local Container sessions and Hosted Capsules
 mount persistent data at `/app/data`, where the runtime stores SQLite data and
 uploaded file bytes.

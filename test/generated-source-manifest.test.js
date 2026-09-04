@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { copyFile, mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -8,6 +9,21 @@ import {
   assertGeneratedSourceManifest,
   writeGeneratedSourceManifest,
 } from "../scripts/generated-source-manifest.mjs";
+
+test("standalone generated entrypoints start quietly without PDF rendering support", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-standalone-entrypoints-"));
+  try {
+    for (const name of ["sporades.js", "sporades-host-helper.js"]) {
+      const artifact = path.join(root, name);
+      await copyFile(path.join(process.cwd(), "bin", name), artifact);
+      const result = spawnSync(process.execPath, [artifact, "--help"], { cwd: root, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stderr, "", `${name} initialized optional PDF rendering support:\n${result.stderr}`);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("bin-only generation cannot bless stale dist against changed TypeScript sources", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-generated-manifest-"));
