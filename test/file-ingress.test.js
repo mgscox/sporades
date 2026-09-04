@@ -1808,6 +1808,119 @@ test("ClamAV inspection uses only bounded Unix INSTREAM framing and fails closed
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("one multipart request keeps its authenticated ClamAV identity through a signature publication race", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-clamav-multifile-race-")); let database; let scanner;
+  try {
+    const inspection = { policyRevision: "clamav-request-identity-v1", requiredInspectors: ["content-policy-v1", "clamav"] };
+    const endpoint = { options: { method: "POST", path: "/clamav-multifile", body: { multipart: { ...ingressPolicy(), maxFiles: 5, maxTotalFileBytes: 5 * 1024 * 1024, inspection } } } };
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "clamav-multifile-race", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "clamav-multifile-race" }));
+    const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`); scanner = await fakeClamSocket(socketPath, { response: "stream: OK\0" });
+    let signatureReads = 0;
+    database.__clamavTest = {
+      socketPath,
+      loadedSignature: "daily:42",
+      get signature() {
+        signatureReads += 1;
+        return signatureReads <= 2 ? { version: "daily:42", updatedAt: new Date().toISOString() } : null;
+      },
+    };
+    const boundary = "clamav-multifile-race"; const requestKey = "stable-five";
+    const body = multipartMany(boundary, Array.from({ length: 5 }, (_, index) => ({ headers: `Content-Disposition: form-data; name="file"; filename="stable-${index}.txt"\r\nContent-Type: text/plain\r\nContent-ID: stable-five-${index}`, body: "hello" })));
+    const staged = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield body; } }, { headers: { "content-type": `multipart/form-data; boundary=${boundary}`, "idempotency-key": requestKey } }, { userId: "claim-user" });
+    assert.equal(staged.multipart.files.length, 5);
+    for (const lease of staged.multipart.files) {
+      const receipt = JSON.parse((await database.adapter.selectIngressByLease(lease.leaseId)).payload);
+      assert.deepEqual(receipt.inspection.verdicts.map((verdict) => [verdict.inspector, verdict.outcome, verdict.signatureVersion]), [["content-policy-v1", "clean", "content-policy-v1"], ["clamav", "clean", "daily:42"]]);
+    }
+    assert.equal(signatureReads, 2, "the authenticated signature/version binding is read once per multipart request");
+  } finally { if (scanner) await new Promise((resolve) => scanner.server.close(resolve)); await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("concurrent five-file multipart requests retain independent clean ClamAV evidence", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-clamav-concurrent-multifile-")); let database; let scanner;
+  try {
+    const inspection = { policyRevision: "clamav-concurrent-multipart-v1", requiredInspectors: ["clamav"] };
+    const endpoint = { options: { method: "POST", path: "/clamav-concurrent-multifile", body: { multipart: { ...ingressPolicy(), maxFiles: 5, maxTotalFileBytes: 5 * 1024 * 1024, inspection } } } };
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "clamav-concurrent-multifile", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "clamav-concurrent-multifile" }));
+    const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`); scanner = await fakeClamSocket(socketPath, { response: "stream: OK\0" });
+    database.__clamavTest = { socketPath, loadedSignature: "daily:42", signature: { version: "daily:42", updatedAt: new Date().toISOString() } };
+    const stage = async (requestIndex) => {
+      const boundary = `clamav-concurrent-${requestIndex}`; const body = multipartMany(boundary, Array.from({ length: 5 }, (_, partIndex) => ({ headers: `Content-Disposition: form-data; name="file"; filename="stable-${requestIndex}-${partIndex}.txt"\r\nContent-Type: text/plain\r\nContent-ID: stable-${requestIndex}-${partIndex}`, body: "hello" })));
+      return await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield body; } }, { headers: { "content-type": `multipart/form-data; boundary=${boundary}`, "idempotency-key": `concurrent-${requestIndex}` } }, { userId: "claim-user" });
+    };
+    const staged = await Promise.all(Array.from({ length: 3 }, (_, requestIndex) => stage(requestIndex)));
+    assert.deepEqual(staged.map((result) => result.multipart.files.length), [5, 5, 5]);
+    for (const result of staged) for (const lease of result.multipart.files) {
+      const receipt = JSON.parse((await database.adapter.selectIngressByLease(lease.leaseId)).payload);
+      assert.deepEqual(receipt.inspection.verdicts.map((verdict) => [verdict.outcome, verdict.signatureVersion]), [["clean", "daily:42"]]);
+    }
+  } finally { if (scanner) await new Promise((resolve) => scanner.server.close(resolve)); await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a ClamAV reload or later malware verdict fails the affected multipart claim closed", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-clamav-transition-")); let database; let scanner;
+  try {
+    const inspection = { policyRevision: "clamav-transition-v1", requiredInspectors: ["clamav"] };
+    const endpoint = { options: { method: "POST", path: "/clamav-transition", body: { multipart: { ...ingressPolicy(), maxFiles: 2, inspection } } } };
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "clamav-transition", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "clamav-transition" }));
+    const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`); let loadedSignature = "daily:42";
+    scanner = await fakeClamSocket(socketPath, { response: (_request, index) => { if (index === 0) loadedSignature = "daily:43"; return index === 3 ? "stream: Eicar-Test-Signature FOUND\0" : "stream: OK\0"; } });
+    database.__clamavTest = { socketPath, get loadedSignature() { return loadedSignature; }, signature: { version: "daily:42", updatedAt: new Date().toISOString() } };
+    const stage = async (key) => { const boundary = `clamav-transition-${key}`; const body = multipartMany(boundary, Array.from({ length: 2 }, (_, index) => ({ headers: `Content-Disposition: form-data; name="file"; filename="stable-${index}.txt"\r\nContent-Type: text/plain\r\nContent-ID: stable-${index}`, body: "hello" }))); return await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield body; } }, { headers: { "content-type": `multipart/form-data; boundary=${boundary}`, "idempotency-key": key } }, { userId: "claim-user" }); };
+    const reloaded = await stage("reload"); const reloadedReceipt = JSON.parse((await database.adapter.selectIngressByLease(reloaded.multipart.files[0].leaseId)).payload);
+    assert.deepEqual(reloadedReceipt.inspection.verdicts.map((verdict) => [verdict.outcome, verdict.signatureVersion]), [["inconclusive", "daily:43"]]);
+    const api = createEndpointIngressApi(database, endpoint, { __ingressRequestKey: "reload", __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
+    await assert.rejects(api.claim(reloaded.multipart.files[0], { path: "/attachments/reload.txt" }), { code: "INGRESS_INSPECTION_REQUIRED" });
+    loadedSignature = "daily:42";
+    const recovered = await stage("malware"); const malwareReceipt = JSON.parse((await database.adapter.selectIngressByLease(recovered.multipart.files[1].leaseId)).payload);
+    assert.deepEqual(malwareReceipt.inspection.verdicts.map((verdict) => [verdict.outcome, verdict.signatureVersion]), [["rejected", "daily:42"]]);
+    const recoveredApi = createEndpointIngressApi(database, endpoint, { __ingressRequestKey: "malware", __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
+    await assert.rejects(recoveredApi.claim(recovered.multipart.files[1], { path: "/attachments/malware.txt" }), { code: "INGRESS_INSPECTION_REQUIRED" });
+  } finally { if (scanner) await new Promise((resolve) => scanner.server.close(resolve)); await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a FOUND verdict remains rejected when post-scan ClamAV identity changes or disappears", async () => {
+  for (const [name, loadedAfterScan] of [["changed", "daily:43"], ["unavailable", undefined]]) {
+    const dir = await mkdtemp(path.join(tmpdir(), `sporades-ingress-clamav-found-${name}-`)); let database; let scanner;
+    try {
+      const inspection = { policyRevision: `clamav-found-${name}-v1`, requiredInspectors: ["clamav"] };
+      const endpoint = { options: { method: "POST", path: "/clamav-found", body: { multipart: { ...ingressPolicy(), inspection } } } };
+      database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: `clamav-found-${name}`, files: { storagePath: path.join(dir, "files") } }, capsule({ name: `clamav-found-${name}` }));
+      const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`); let scans = 0; let reads = 0;
+      scanner = await fakeClamSocket(socketPath, { response: () => { scans += 1; return "stream: Eicar-Test-Signature FOUND\0"; } });
+      database.__clamavTest = {
+        socketPath,
+        get loadedSignature() { reads += 1; return reads <= 2 ? "daily:42" : loadedAfterScan; },
+        signature: { version: "daily:42", updatedAt: new Date().toISOString() },
+        socketCommand: async () => null,
+      };
+      const boundary = `clamav-found-${name}`; const headers = { "content-type": `multipart/form-data; boundary=${boundary}`, "idempotency-key": name };
+      const staged = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipartBinary(boundary, "found.txt", "text/plain", Buffer.from("malware evidence")); } }, { headers }, { userId: "claim-user" }); const lease = staged.multipart.files[0];
+      const receipt = JSON.parse((await database.adapter.selectIngressByLease(lease.leaseId)).payload);
+      assert.deepEqual(receipt.inspection.verdicts.map((verdict) => [verdict.outcome, verdict.signatureVersion]), [["rejected", "unavailable"]], name);
+      assert.equal(scans, 1, `${name}: no retry hides the malware result`);
+      const api = createEndpointIngressApi(database, endpoint, { __ingressRequestKey: name, __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
+      await assert.rejects(api.claim(lease, { path: `/attachments/${name}.txt` }), { code: "INGRESS_INSPECTION_REQUIRED" });
+    } finally { if (scanner) await new Promise((resolve) => scanner.server.close(resolve)); await database?.close(); await rm(dir, { recursive: true, force: true }); }
+  }
+});
+
+test("a request-scoped ClamAV signature stays claimable exactly at its age boundary and fails closed after a slow body", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-clamav-freshness-")); let database; let scanner;
+  try {
+    const inspection = { policyRevision: "clamav-freshness-v1", requiredInspectors: ["clamav"] };
+    const endpoint = { options: { method: "POST", path: "/clamav-freshness", body: { multipart: { ...ingressPolicy(), inspection } } } };
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "clamav-freshness", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "clamav-freshness" }));
+    const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`); let now = Date.parse("2030-01-02T00:00:00.000Z"); let updatedAt = new Date(now - 24 * 60 * 60 * 1000).toISOString(); let scans = 0;
+    scanner = await fakeClamSocket(socketPath, { response: () => { scans += 1; return "stream: OK\0"; } });
+    database.__clamavTest = { socketPath, now: () => now, loadedSignature: "daily:42", get signature() { return { version: "daily:42", updatedAt }; } };
+    const stage = async (key, delayBeforeBody = 0) => { const boundary = `clamav-freshness-${key}`; const headers = { "content-type": `multipart/form-data; boundary=${boundary}`, "idempotency-key": key }; const staged = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { now += delayBeforeBody; yield multipartBinary(boundary, "fresh.txt", "text/plain", Buffer.from("hello")); } }, { headers }, { userId: "claim-user" }); const lease = staged.multipart.files[0]; const receipt = JSON.parse((await database.adapter.selectIngressByLease(lease.leaseId)).payload); const api = createEndpointIngressApi(database, endpoint, { __ingressRequestKey: key, __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } }); return { lease, receipt, api }; };
+    const exact = await stage("exact"); assert.deepEqual(exact.receipt.inspection.verdicts.map((verdict) => [verdict.outcome, verdict.signatureVersion]), [["clean", "daily:42"]]); assert.equal((await exact.api.claim(exact.lease, { path: "/attachments/exact.txt" })).path, "/attachments/exact.txt");
+    const expired = await stage("slow", 1); assert.deepEqual(expired.receipt.inspection.verdicts.map((verdict) => [verdict.outcome, verdict.signatureVersion]), [["inconclusive", "unavailable"]]); await assert.rejects(expired.api.claim(expired.lease, { path: "/attachments/slow.txt" }), { code: "INGRESS_INSPECTION_REQUIRED" });
+    updatedAt = new Date(now).toISOString(); const recovered = await stage("recovered"); assert.deepEqual(recovered.receipt.inspection.verdicts.map((verdict) => [verdict.outcome, verdict.signatureVersion]), [["clean", "daily:42"]]); assert.equal((await recovered.api.claim(recovered.lease, { path: "/attachments/recovered.txt" })).path, "/attachments/recovered.txt"); assert.equal(scans, 3, "freshness failures do not retry scanner bytes");
+  } finally { if (scanner) await new Promise((resolve) => scanner.server.close(resolve)); await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("the one ClamAV freshness predicate rejects stale, future, malformed, and over-24-hour signatures", () => {
   const now = Date.parse("2026-09-02T12:00:00.000Z"); assert.equal(isCurrentClamavSignature({ version: "daily:42", updatedAt: new Date(now - 24 * 60 * 60 * 1000).toISOString() }, now), true); assert.equal(isCurrentClamavSignature({ version: "daily:42", updatedAt: new Date(now - 24 * 60 * 60 * 1000 - 1).toISOString() }, now), false); assert.equal(isCurrentClamavSignature({ version: "daily:42", updatedAt: new Date(now + 1).toISOString() }, now), false); assert.equal(isCurrentClamavSignature({ version: "forged", updatedAt: new Date(now).toISOString() }, now), false);
 });
@@ -1932,6 +2045,19 @@ test("ClamAV readiness consumes one absolute deadline across probes and retry de
     __clamavTest: { startupTimeoutMs: 75, now: () => now, delay: async (milliseconds) => { now += milliseconds; }, socketExists: () => true, signature: { version: "daily:1", updatedAt: new Date(now).toISOString() }, loadedSignature: "daily:1", socketCommand: async (_command, timeoutMs) => { devTimeouts.push(timeoutMs); now += timeoutMs; return null; } },
   };
   assert.equal(await initializeClamavRuntime(devDatabase), false); assert.equal(now, Date.parse("2030-01-01T00:00:00.075Z")); assert.deepEqual(devTimeouts, [75]);
+
+  let signatureNow = 0; const signatureTimeouts = []; const signatureDatabase = {
+    endpoints: [{ options: { body: { multipart: { inspection: { requiredInspectors: ["clamav"] } } } } }],
+    __clamavTest: {
+      startupTimeoutMs: 75,
+      now: () => signatureNow,
+      signature: { version: "daily:1", updatedAt: new Date(0).toISOString() },
+      socketCommand: async (command, timeoutMs) => { signatureTimeouts.push([command.toString(), timeoutMs]); signatureNow += timeoutMs; return null; },
+    },
+  };
+  assert.equal(await initializeClamavRuntime(signatureDatabase), false);
+  assert.equal(signatureNow, 75, "the VERSION check cannot outlive the startup deadline");
+  assert.deepEqual(signatureTimeouts, [["zVERSION\0", 75]]);
 });
 
 test("ClamAV shutdown retains stubborn children for a later successful cleanup retry", async () => {

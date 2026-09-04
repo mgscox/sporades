@@ -87037,13 +87037,19 @@ function clamavSocketCommand(database, command, maximumReplyBytes = 4096, timeou
     });
   });
 }
-async function clamavInstream(database, bytes) {
-  const signature = await currentLoadedClamavSignature(database);
+async function loadedClamavSignatureVersion(database, timeoutMs = 500) {
+  if (typeof database.__clamavTest?.loadedSignature === "string") return /^daily:\d{1,12}$/.test(database.__clamavTest.loadedSignature) ? database.__clamavTest.loadedSignature : null;
+  const versionReply = await clamavSocketCommand(database, Buffer.from("zVERSION\0"), 512, Math.max(1, Math.min(500, timeoutMs)));
+  const loadedVersion = /^ClamAV\s+[^/]{1,64}\/(\d{1,12})\//.exec(versionReply ?? "")?.[1];
+  return loadedVersion ? `daily:${loadedVersion}` : null;
+}
+async function clamavInstream(database, bytes, requestSignature) {
+  const signature = requestSignature === void 0 ? await currentLoadedClamavSignature(database) : requestSignature;
   if (!signature) return { outcome: "inconclusive", signatureVersion: "unavailable" };
   if (bytes.length > clamavMaximumStreamBytes) return { outcome: "inconclusive", signatureVersion: String(signature.version).slice(0, 128) };
   const socketPath = database.__clamavTest?.socketPath ?? database.__clamavDevSidecar?.socketPath ?? "/tmp/sporades-clamd.sock";
   const timeoutMs = database.__clamavTest?.timeoutMs ?? 1e4;
-  return await new Promise((resolve) => {
+  const scanned = await new Promise((resolve) => {
     let settled = false;
     let response = Buffer.alloc(0);
     const socket = net.createConnection({ path: socketPath });
@@ -87081,6 +87087,11 @@ async function clamavInstream(database, bytes) {
       if (!settled) finish("inconclusive");
     });
   });
+  if (scanned.outcome !== "clean" && scanned.outcome !== "rejected") return scanned;
+  const loadedSignature = await loadedClamavSignatureVersion(database);
+  const signatureFresh = isCurrentClamavSignature(signature, clamavNow(database));
+  if (scanned.outcome === "rejected") return signatureFresh && loadedSignature === signature.version ? scanned : { outcome: "rejected", signatureVersion: "unavailable" };
+  return signatureFresh && loadedSignature === signature.version ? scanned : { outcome: "inconclusive", signatureVersion: signatureFresh ? String(loadedSignature ?? "unavailable").slice(0, 128) : "unavailable" };
 }
 function waitForChild(child, timeoutMs) {
   if (clamavChildTerminated(child)) return Promise.resolve(child?.exitCode === 0);
@@ -87202,9 +87213,8 @@ async function currentLoadedClamavSignature(database, deadline = Number.POSITIVE
   if (database.__clamavTest?.loadedSignature) return database.__clamavTest.loadedSignature === signature.version ? signature : null;
   const remaining = clamavRemaining(database, deadline);
   if (remaining <= 0) return null;
-  const versionReply = await clamavSocketCommand(database, Buffer.from("zVERSION\0"), 512, Math.min(500, remaining));
-  const loadedVersion = /^ClamAV\s+[^/]{1,64}\/(\d{1,12})\//.exec(versionReply ?? "")?.[1];
-  return loadedVersion && `daily:${loadedVersion}` === signature.version ? signature : null;
+  const loadedSignature = await loadedClamavSignatureVersion(database, Math.min(500, remaining));
+  return loadedSignature === signature.version ? signature : null;
 }
 async function probeClamavReadiness(database, deadline) {
   const remaining = clamavRemaining(database, deadline);
@@ -87306,10 +87316,10 @@ async function checkClamavRuntime(database) {
   database.clamavReady = pong === "PONG";
   return { ok: database.clamavReady };
 }
-async function inspectIngressLease(database, policy, row, bytes) {
+async function inspectIngressLease(database, policy, row, bytes, clamavRequestSignature) {
   if (!policy) return void 0;
   const verdicts = await Promise.all(policy.requiredInspectors.map(async (inspector) => {
-    const result = inspector === "content-policy-v1" ? { outcome: await contentPolicyOutcome(row, bytes), signatureVersion: "content-policy-v1" } : await clamavInstream(database, bytes);
+    const result = inspector === "content-policy-v1" ? { outcome: await contentPolicyOutcome(row, bytes), signatureVersion: "content-policy-v1" } : await clamavInstream(database, bytes, clamavRequestSignature);
     const inspectedAt = ingressAuditNow(database);
     return Object.freeze({ inspector, outcome: result.outcome, leaseId: row.leaseId, size: row.size, digest: row.digest, version: row.version, policyRevision: policy.policyRevision, engine: inspector === "content-policy-v1" ? "sporades-content-policy" : "clamav", signatureVersion: result.signatureVersion, inspectedAt });
   }));
@@ -87499,6 +87509,7 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
     throw error;
   }
   await emitIngressAudit(database, "started", { outcome: "started" });
+  const clamavRequestSignature = policy.inspection?.requiredInspectors?.includes("clamav") ? await currentLoadedClamavSignature(database) : void 0;
   const maxBytes = Number(policy.maxTotalFileBytes) + Number(policy.maxTotalFieldBytes) + 65536;
   const files = [];
   const fields = /* @__PURE__ */ Object.create(null);
@@ -87557,7 +87568,7 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
       if (!acquired.winner && row.state === "staging") row = await awaitCompletedStagingReceipt(database, row.key);
       if (!row || !sameIngressRetryDescriptor(row, candidate)) throw Object.assign(new Error("Multipart retry descriptor conflicts with the original part."), { code: "INGRESS_DESCRIPTOR_CONFLICT" });
       if (acquired.winner && row.state !== "staging" || !acquired.winner && row.state !== "leased" && row.state !== "complete") throw Object.assign(new Error("Multipart ingress staging did not complete."), { code: "INGRESS_STAGING_INCOMPLETE" });
-      const inspection = await inspectIngressLease(database, policy.inspection, row, body);
+      const inspection = await inspectIngressLease(database, policy.inspection, row, body, clamavRequestSignature);
       if (inspection) {
         if (acquired.winner) Object.assign(row, { inspection });
         else row = await refreshReceiptInspection(database, row, inspection);
