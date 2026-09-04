@@ -1785,8 +1785,15 @@ function verificationHealthSummary(result: any) {
 
 function hostedRuntimeReadinessTimeoutMs(request: HostHelperRequest, record: any, releaseId: string) {
   const recorded = normaliseReleaseHistory(record).find((release: HostHelperRelease) => release.id === releaseId);
-  const requiredInspectors = request.release?.inspection?.requiredInspectors ?? recorded?.source?.inspection?.requiredInspectors;
-  const fallback = requiredInspectors?.includes("clamav") ? 160_000 : 10_000;
+  const recordedInspection = recorded?.source?.inspection;
+  const inspection = recordedInspection !== undefined
+    ? recordedInspection
+    : request.release?.id === releaseId
+      ? request.release.inspection
+      : null;
+  const requiredInspectors = inspection?.requiredInspectors;
+  const corruptInspection = inspection != null && (!Array.isArray(requiredInspectors) || requiredInspectors.some((value: unknown) => typeof value !== "string"));
+  const fallback = corruptInspection || requiredInspectors?.includes("clamav") ? 160_000 : 10_000;
   const configured = Number(request.verification?.healthTimeoutMs ?? fallback);
   return Number.isFinite(configured) && configured >= 1 ? Math.min(configured, 180_000) : fallback;
 }

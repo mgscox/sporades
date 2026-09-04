@@ -6681,6 +6681,97 @@ test("Hosted Capsule startup distinguishes delayed readiness, probe authenticati
   });
 });
 
+test("Hosted Capsule fallback restart uses the recorded ClamAV readiness window for the selected release", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "fallback-recorded-clamav", restart: false });
+    const lifecycle = await alignSealedFixtureWithBuiltLifecycle(fixture);
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    record.releases[0].source.inspection = { requiredInspectors: ["clamav"] };
+    await writeFile(fixture.registryRecordPath, `${JSON.stringify(record, null, 2)}\n`);
+    const clock = path.join(dir, "stepping-monotonic-clock.mjs");
+    await writeFile(clock, "let now = 0; Object.defineProperty(globalThis, 'performance', { value: { now: () => { const current = now; now += 20000; return current; } } });\n");
+    const docker = await installFakeDocker(path.join(dir, "docker"));
+
+    const result = await runHostHelper({
+      action: "capsule.restart",
+      host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+      release: { id: fixture.releaseId, inspection: { requiredInspectors: [] } },
+      lifecycle,
+    }, { cwd: dir, env: { ...docker.env, NODE_OPTIONS: `--import=${clock}` } });
+
+    assert.equal(JSON.parse(result.stdout).ok, true, result.stdout);
+    assert.equal((await docker.calls()).filter((call) => call.args[0] === "exec").length, 1);
+  });
+});
+
+test("Hosted Capsule fallback restart ignores a failed candidate's ClamAV readiness window", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "fallback-recorded-ordinary", restart: false });
+    const lifecycle = await alignSealedFixtureWithBuiltLifecycle(fixture);
+    const clock = path.join(dir, "stepping-monotonic-clock.mjs");
+    await writeFile(clock, "let now = 0; Object.defineProperty(globalThis, 'performance', { value: { now: () => { const current = now; now += 20000; return current; } } });\n");
+    const docker = await installFakeDocker(path.join(dir, "docker"));
+
+    const result = await runHostHelper({
+      action: "capsule.restart",
+      host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+      release: { id: fixture.releaseId, inspection: { requiredInspectors: ["clamav"] } },
+      lifecycle,
+    }, { cwd: dir, env: { ...docker.env, NODE_OPTIONS: `--import=${clock}` } });
+
+    assert.equal(JSON.parse(result.stdout).ok, false, result.stdout);
+    assert.equal((await docker.calls()).filter((call) => call.args[0] === "exec").length, 0);
+  });
+});
+
+test("Hosted Capsule restart gives corrupt recorded inspection metadata a conservative bounded readiness window", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "restart-corrupt-inspection", restart: false });
+    const lifecycle = await alignSealedFixtureWithBuiltLifecycle(fixture);
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    record.releases[0].source.inspection = { requiredInspectors: "clamav" };
+    await writeFile(fixture.registryRecordPath, `${JSON.stringify(record, null, 2)}\n`);
+    const clock = path.join(dir, "stepping-monotonic-clock.mjs");
+    await writeFile(clock, "let now = 0; Object.defineProperty(globalThis, 'performance', { value: { now: () => { const current = now; now += 20000; return current; } } });\n");
+    const docker = await installFakeDocker(path.join(dir, "docker"));
+
+    const result = await runHostHelper({
+      action: "capsule.restart",
+      host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+      lifecycle,
+    }, { cwd: dir, env: { ...docker.env, NODE_OPTIONS: `--import=${clock}` } });
+
+    assert.equal(JSON.parse(result.stdout).ok, true, result.stdout);
+    assert.equal((await docker.calls()).filter((call) => call.args[0] === "exec").length, 1);
+  });
+});
+
+test("Hosted Capsule start uses request inspection metadata only for its exact unrecorded release", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "start-exact-request-inspection", restart: false });
+    const lifecycle = await alignSealedFixtureWithBuiltLifecycle(fixture);
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8")); record.releases = [];
+    await writeFile(fixture.registryRecordPath, `${JSON.stringify(record, null, 2)}\n`);
+    const clock = path.join(dir, "stepping-monotonic-clock.mjs");
+    await writeFile(clock, "let now = 0; Object.defineProperty(globalThis, 'performance', { value: { now: () => { const current = now; now += 20000; return current; } } });\n");
+    const docker = await installFakeDocker(path.join(dir, "docker"));
+
+    const result = await runHostHelper({
+      action: "capsule.start",
+      host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+      release: { id: fixture.previousReleaseId, inspection: { requiredInspectors: ["clamav"] } },
+      lifecycle,
+    }, { cwd: dir, env: { ...docker.env, NODE_OPTIONS: `--import=${clock}` } });
+
+    assert.equal(JSON.parse(result.stdout).ok, true, result.stdout);
+    assert.equal((await docker.calls()).filter((call) => call.args[0] === "exec").length, 1);
+  });
+});
+
 test("sporades host helper checks Hosted Capsule runtime health with a Host-owned probe credential", async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
@@ -11268,7 +11359,7 @@ test("sporades host helper marks verified push failed when the Capsule route doe
   });
 });
 
-test("sporades host helper applies verification fallback only after the previous release restarts", async () => {
+test("sporades host helper applies verification fallback with the selected release's recorded ClamAV readiness window", async () => {
   await withTempDir(async (dir) => {
     const port = await reserveUnusedPort();
     const fixture = await writeHostedCapsuleInstallFixture(dir, {
@@ -11282,6 +11373,12 @@ test("sporades host helper applies verification fallback only after the previous
     await writeFile(path.join(previousReleaseDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
     await writeFile(path.join(previousReleaseDir, "public", "index.html"), '<script type="module" src="/assets/previous-deadbeef.js"></script>\n');
     await writeFile(path.join(previousReleaseDir, "public", "assets", "previous-deadbeef.js"), "console.log('previous complete release');\n");
+    const before = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    before.releases[0].source = { inspection: { requiredInspectors: ["clamav"] } };
+    await writeFile(fixture.registryRecordPath, `${JSON.stringify(before, null, 2)}\n`);
+    fixture.release.inspection = { requiredInspectors: [] };
+    const clock = path.join(dir, "fallback-stepping-clock.mjs");
+    await writeFile(clock, "const values = [0, 1, 2, 3, 20000, 20001]; let index = 0; Object.defineProperty(globalThis, 'performance', { value: { now: () => values[Math.min(index++, values.length - 1)] } }); let wall = 0; Date.now = () => { wall += 200000; return wall; };\n");
     const docker = await installFakeDocker(path.join(dir, "verify-fallback-success-docker"));
 
     const install = await runHostHelper(
@@ -11294,10 +11391,9 @@ test("sporades host helper applies verification fallback only after the previous
         verification: {
           enabled: true,
           fallbackToPreviousRelease: true,
-          healthTimeoutMs: 25,
         },
       },
-      { cwd: dir, env: docker.env },
+      { cwd: dir, env: { ...docker.env, NODE_OPTIONS: `--import=${clock}` } },
     );
 
     assert.equal(install.code, 1, install.stderr);
@@ -11370,7 +11466,7 @@ test("sporades host helper leaves current unchanged when fallback inventory is m
   });
 });
 
-test("sporades host helper keeps failed release current when verification fallback restart fails", async () => {
+test("sporades host helper keeps failed release current when ordinary fallback ignores the candidate ClamAV window", async () => {
   await withTempDir(async (dir) => {
     const fixture = await writeHostedCapsuleInstallFixture(dir, {
       rootName: "verify-fallback-restart-failure",
@@ -11380,9 +11476,13 @@ test("sporades host helper keeps failed release current when verification fallba
     await writePublicRuntimeFiles(previousReleaseDir);
     await writeFile(path.join(previousReleaseDir, "server.mjs"), "export default 'previous';\n");
     await writeFile(path.join(previousReleaseDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
-    const docker = await installFakeDocker(path.join(dir, "verify-fallback-restart-failure-docker"), {
-      env: { FAKE_DOCKER_RUN_STATUSES: "0,1" },
-    });
+    const before = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    before.releases[0].source = { inspection: { requiredInspectors: [] } };
+    await writeFile(fixture.registryRecordPath, `${JSON.stringify(before, null, 2)}\n`);
+    fixture.release.inspection = { requiredInspectors: ["clamav"] };
+    const clock = path.join(dir, "fallback-stepping-clock.mjs");
+    await writeFile(clock, "const values = [0, 1, 2, 3, 20000, 20001]; let index = 0; Object.defineProperty(globalThis, 'performance', { value: { now: () => values[Math.min(index++, values.length - 1)] } }); let wall = 0; Date.now = () => { wall += 200000; return wall; };\n");
+    const docker = await installFakeDocker(path.join(dir, "verify-fallback-restart-failure-docker"));
 
     const install = await runHostHelper(
       {
@@ -11396,7 +11496,7 @@ test("sporades host helper keeps failed release current when verification fallba
           fallbackToPreviousRelease: true,
         },
       },
-      { cwd: dir, env: docker.env },
+      { cwd: dir, env: { ...docker.env, NODE_OPTIONS: `--import=${clock}` } },
     );
 
     assert.equal(install.code, 1, install.stderr);

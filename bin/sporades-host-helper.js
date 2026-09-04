@@ -44797,8 +44797,11 @@ function verificationHealthSummary(result) {
 }
 function hostedRuntimeReadinessTimeoutMs(request, record, releaseId) {
   const recorded = normaliseReleaseHistory(record).find((release) => release.id === releaseId);
-  const requiredInspectors = request.release?.inspection?.requiredInspectors ?? recorded?.source?.inspection?.requiredInspectors;
-  const fallback = requiredInspectors?.includes("clamav") ? 16e4 : 1e4;
+  const recordedInspection = recorded?.source?.inspection;
+  const inspection = recordedInspection !== void 0 ? recordedInspection : request.release?.id === releaseId ? request.release.inspection : null;
+  const requiredInspectors = inspection?.requiredInspectors;
+  const corruptInspection = inspection != null && (!Array.isArray(requiredInspectors) || requiredInspectors.some((value) => typeof value !== "string"));
+  const fallback = corruptInspection || requiredInspectors?.includes("clamav") ? 16e4 : 1e4;
   const configured = Number(request.verification?.healthTimeoutMs ?? fallback);
   return Number.isFinite(configured) && configured >= 1 ? Math.min(configured, 18e4) : fallback;
 }
