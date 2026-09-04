@@ -555,7 +555,15 @@ if (args[0] === "run") {
   process.exit(Number(process.env.FAKE_DOCKER_RUN_STATUS || "0"));
 }
 if (args[0] === "inspect" && args.includes("{{.State.Running}}")) {
-  process.stdout.write(process.env.FAKE_DOCKER_RUNNING || "true");
+  let running = process.env.FAKE_DOCKER_RUNNING || "true";
+  if (process.env.FAKE_DOCKER_RUNNING_VALUES) {
+    const { existsSync, readFileSync, writeFileSync } = require("node:fs");
+    const statePath = process.env.FAKE_DOCKER_RUNNING_STATE;
+    const count = statePath && existsSync(statePath) ? Number(readFileSync(statePath, "utf8")) : 0;
+    const values = process.env.FAKE_DOCKER_RUNNING_VALUES.split(","); running = values[Math.min(count, values.length - 1)];
+    if (statePath) writeFileSync(statePath, String(count + 1));
+  }
+  process.stdout.write(running);
   process.exit(Number(process.env.FAKE_DOCKER_RUNNING_STATUS || "0"));
 }
 if (args[0] === "inspect" && args.includes("{{json .}}")) {
@@ -565,6 +573,23 @@ if (args[0] === "inspect" && args.includes("{{json .}}")) {
 if (args[0] === "inspect" && args.some((arg) => arg.includes("NetworkSettings.Ports"))) {
   process.stdout.write(process.env.FAKE_DOCKER_PUBLISHED_PORT || "127.0.0.1:49153");
   process.exit(Number(process.env.FAKE_DOCKER_PUBLISHED_PORT_STATUS || "0"));
+}
+if (args[0] === "exec") {
+  const { existsSync, readFileSync, writeFileSync } = require("node:fs");
+  if (process.env.FAKE_DOCKER_RUNTIME_PROBE_OBSERVATION) {
+    const route = existsSync(process.env.FAKE_DOCKER_RUNTIME_PROBE_ROUTE) ? readFileSync(process.env.FAKE_DOCKER_RUNTIME_PROBE_ROUTE, "utf8") : "";
+    const registry = existsSync(process.env.FAKE_DOCKER_RUNTIME_PROBE_REGISTRY) ? JSON.parse(readFileSync(process.env.FAKE_DOCKER_RUNTIME_PROBE_REGISTRY, "utf8")) : {};
+    writeFileSync(process.env.FAKE_DOCKER_RUNTIME_PROBE_OBSERVATION, JSON.stringify({ routeRunning: route.includes("reverse_proxy"), registryStatus: registry.status }));
+  }
+  const statePath = process.env.FAKE_DOCKER_RUNTIME_PROBE_STATE;
+  const count = statePath && existsSync(statePath) ? Number(readFileSync(statePath, "utf8")) : 0;
+  const configured = process.env.FAKE_DOCKER_RUNTIME_PROBE_RESULTS ? JSON.parse(process.env.FAKE_DOCKER_RUNTIME_PROBE_RESULTS) : [];
+  const result = configured[Math.min(count, configured.length - 1)] || { status: 200, body: { ok: true, data: { runtime: { ready: true }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: true } } }, error: null } };
+  if (statePath) writeFileSync(statePath, String(count + 1));
+  if (result.stdout !== undefined) process.stdout.write(result.stdout);
+  else { const checks = result.body?.data?.checks; process.stdout.write(JSON.stringify({ kind: "response", status: result.status, valid: typeof result.body?.ok === "boolean" && typeof result.body?.data?.runtime?.ready === "boolean" && typeof checks?.sqlite?.ok === "boolean" && typeof checks?.fileStorage?.ok === "boolean" && (checks?.fileInspection === undefined || typeof checks.fileInspection?.ok === "boolean"), ok: result.body?.ok === true, ready: result.body?.data?.runtime?.ready === true, sqlite: checks?.sqlite?.ok === true, fileStorage: checks?.fileStorage?.ok === true, fileInspection: checks?.fileInspection === undefined ? null : checks.fileInspection?.ok === true })); }
+  if (result.stderr) process.stderr.write(result.stderr);
+  process.exit(Number(result.exitStatus || "0"));
 }
 if (args[0] === "stats") {
   process.stdout.write(process.env.FAKE_DOCKER_STATS_JSON || "{}");
@@ -632,6 +657,8 @@ process.exit(Number(status || "0"));
       FAKE_DOCKER_CADDY_LOG: caddyLogPath,
       FAKE_DOCKER_CADDY_STATE: path.join(dir, "caddy-state.txt"),
       FAKE_DOCKER_RUN_STATE: path.join(dir, "docker-run-state.txt"),
+      FAKE_DOCKER_RUNNING_STATE: path.join(dir, "docker-running-state.txt"),
+      FAKE_DOCKER_RUNTIME_PROBE_STATE: path.join(dir, "docker-runtime-probe-state.txt"),
       SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1",
       ...options.env,
     },
@@ -3708,7 +3735,7 @@ test("sporades host helper restores the exact pre-rotation running state", async
       assert.equal(JSON.parse(result.stdout).ok, true, `${label}: ${result.stdout}\n${result.stderr}\n${JSON.stringify(await docker.calls())}`);
       const calls = (await docker.calls()).map((call) => call.args[0]);
       if (running) {
-        assert.deepEqual(calls, ["inspect", "stop", "rm", "image", "run", "inspect", "inspect"], label);
+        assert.deepEqual(calls, ["inspect", "stop", "rm", "image", "run", "inspect", "inspect", "inspect", "exec"], label);
         assert.equal(JSON.parse(await readFile(fixture.registryRecordPath, "utf8")).status, "running");
       } else {
         assert.deepEqual(calls, ["inspect"], label);
@@ -6518,7 +6545,7 @@ test("sporades host helper starts the current release in Docker and routes throu
     assert.equal(output.data.route.upstream, "127.0.0.1:49153");
 
     const calls = await docker.calls();
-    assert.deepEqual(calls.map((call) => call.args[0]), ["stop", "rm", "image", "run", "inspect", "inspect"]);
+    assert.deepEqual(calls.map((call) => call.args[0]), ["stop", "rm", "image", "run", "inspect", "inspect", "inspect", "exec"]);
     assert.deepEqual(calls[2].args, ["image", "inspect", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine"]);
     const runCall = calls.find((call) => call.args[0] === "run");
     assert.equal(runCall.args[runCall.args.indexOf("--name") + 1], "sporades-capsules-example-dev-team-notes");
@@ -6583,6 +6610,74 @@ test("sporades host helper starts the current release in Docker and routes throu
       assert.equal(preparedDatabase.uid, 10001);
       assert.equal(preparedDatabase.gid, 10001);
     }
+  });
+});
+
+test("Hosted Capsule restart never publishes a running route before authenticated runtime readiness", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "restart-runtime-readiness", restart: false });
+    const lifecycle = await alignSealedFixtureWithBuiltLifecycle(fixture);
+    const docker = await installFakeDocker(path.join(dir, "docker"), {
+      env: {
+        FAKE_DOCKER_RUNTIME_PROBE_RESULTS: JSON.stringify([{ status: 503, body: { ok: false, data: { runtime: { ready: false }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: false } } }, error: null } }]),
+        FAKE_DOCKER_RUNTIME_PROBE_OBSERVATION: path.join(dir, "readiness-observation.json"),
+        FAKE_DOCKER_RUNTIME_PROBE_ROUTE: fixture.routeFile,
+        FAKE_DOCKER_RUNTIME_PROBE_REGISTRY: fixture.registryRecordPath,
+      },
+    });
+    const result = await runHostHelper({
+      action: "capsule.restart",
+      host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+      lifecycle,
+      verification: { healthTimeoutMs: 25 },
+    }, { cwd: dir, env: docker.env });
+
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, false, result.stdout);
+    assert.equal(output.error.message, "Hosted Capsule restart failed.");
+    assert.match(await readFile(fixture.routeFile, "utf8"), /respond "Hosted Capsule unavailable" 503/);
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    assert.notEqual(record.status, "running");
+    assert((await docker.calls()).some((call) => call.args[0] === "exec"), "authenticated runtime probe was not attempted");
+    assert.deepEqual(JSON.parse(await readFile(path.join(dir, "readiness-observation.json"), "utf8")), { routeRunning: false, registryStatus: "running" });
+  });
+});
+
+test("Hosted Capsule startup distinguishes delayed readiness, probe authentication failure, and exit during initialization", async () => {
+  const readyBody = { ok: true, data: { runtime: { ready: true }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: true } } }, error: null };
+  const startingBody = { ok: false, data: { runtime: { ready: false }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: false } } }, error: null };
+  for (const scenario of ["delayed", "authentication", "exit"]) await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: `runtime-readiness-${scenario}`, restart: false });
+    const lifecycle = await alignSealedFixtureWithBuiltLifecycle(fixture);
+    if (scenario === "delayed") {
+      const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8")); record.status = "released";
+      await writeFile(fixture.registryRecordPath, `${JSON.stringify(record, null, 2)}\n`);
+    }
+    const results = scenario === "delayed"
+      ? [{ status: 503, body: startingBody }, { status: 200, body: readyBody }]
+      : scenario === "authentication" ? [{ status: 404, body: startingBody }] : [{ status: 503, body: startingBody }];
+    const docker = await installFakeDocker(path.join(dir, "docker"), { env: {
+      FAKE_DOCKER_RUNTIME_PROBE_RESULTS: JSON.stringify(results),
+      ...(scenario === "delayed" ? {
+        FAKE_DOCKER_RUNTIME_PROBE_OBSERVATION: path.join(dir, "readiness-observation.json"),
+        FAKE_DOCKER_RUNTIME_PROBE_ROUTE: fixture.routeFile,
+        FAKE_DOCKER_RUNTIME_PROBE_REGISTRY: fixture.registryRecordPath,
+      } : {}),
+      ...(scenario === "exit" ? { FAKE_DOCKER_RUNNING_VALUES: "true,true,false" } : {}),
+    } });
+    const result = await runHostHelper({ action: "capsule.start", host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname }, lifecycle, verification: { healthTimeoutMs: 500 } }, { cwd: dir, env: docker.env });
+    const output = JSON.parse(result.stdout); const calls = await docker.calls(); const probes = calls.filter((call) => call.args[0] === "exec");
+    if (scenario === "delayed") {
+      assert.equal(output.ok, true, result.stdout); assert.equal(probes.length, 2); assert.match(await readFile(fixture.routeFile, "utf8"), /reverse_proxy 127\.0\.0\.1:49153/);
+      assert.equal(JSON.parse(await readFile(fixture.registryRecordPath, "utf8")).status, "running");
+      assert.deepEqual(JSON.parse(await readFile(path.join(dir, "readiness-observation.json"), "utf8")), { routeRunning: false, registryStatus: "released" });
+    } else {
+      assert.equal(output.ok, false, result.stdout); assert.equal(probes.length, 1); assert.match(await readFile(fixture.routeFile, "utf8"), /Hosted Capsule unavailable/);
+      assert.notEqual(JSON.parse(await readFile(fixture.registryRecordPath, "utf8")).status, "running");
+    }
+    const recordText = await readFile(fixture.registryRecordPath, "utf8");
+    assert.equal(result.stdout.includes(JSON.parse(recordText).runtimeProbe.token), false);
   });
 });
 
@@ -10830,7 +10925,7 @@ test("sporades host helper restarts the current release after install when reque
     assert.equal(output.data.lifecycle.release.id, "20260630T221500Z-feedface");
     assert.deepEqual(
       (await docker.calls()).map((call) => call.args[0]),
-      ["inspect", "stop", "rm", "image", "run", "inspect", "inspect"],
+      ["inspect", "stop", "rm", "image", "run", "inspect", "inspect", "inspect", "exec"],
     );
     const runCall = (await docker.calls()).find((call) => call.args[0] === "run");
     assert.equal(runCall.args[runCall.args.indexOf("--publish") + 1], "127.0.0.1::4000");
@@ -11115,6 +11210,8 @@ test("ClamAV-declaring release verification allows a cold scanner to exceed the 
       assert.equal(install.code, 0, install.stderr);
       assert.equal(JSON.parse(install.stdout).data.verified, true);
       assert.ok(Date.now() - startedAt >= 10_000);
+      const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+      assert.deepEqual(record.releases.find((entry) => entry.id === fixture.release.id).source.inspection, { requiredInspectors: ["clamav"] });
     });
   });
 });
@@ -11223,6 +11320,7 @@ test("sporades host helper applies verification fallback only after the previous
     assert.equal(failedRelease.fallbackAttempts.length, 1);
     assert.equal(failedRelease.fallbackAttempts[0].releaseId, fixture.previousReleaseId);
     assert.equal(fallbackRelease.current, true);
+    assert.equal((await docker.calls()).filter((call) => call.args[0] === "exec").length, 2, "candidate and fallback both require authenticated runtime readiness");
   });
 });
 

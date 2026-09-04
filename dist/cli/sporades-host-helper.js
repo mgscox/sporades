@@ -20,6 +20,16 @@ import { defaultHostHelperConfig, loadHostHelperConfig } from "./host-helper-con
 import { hostRegistryRetryCommand, missingCapsuleHint, validateBootstrapRequest, validateDeleteRequest, validateHealthRequest, validateHostLogsRequest, validateHostStatsRequest, validateInstallRequest, validateLifecycleRequest, validateListRegistryRecord, validateListRequest, validateRegisterRequest, validateReleaseListRequest, validateScheduleInspectionRequest, validateRollbackRequest, validateSealedEnvRotationRequest, validateStatsRequest, validateUnregisterRequest, } from "./host-helper-validation.js";
 const CAPSULE_RUNTIME_HEALTH_PATH = "/__sporades/health/runtime";
 const RUNTIME_PROBE_HEADER = "x-sporades-host-probe";
+const HOSTED_RUNTIME_PROBE_SCRIPT = String.raw `const timeoutMs = Math.max(1, Math.min(5000, Number(process.argv[1]) || 1000)); const port = Number(process.argv[2]) || 4000;
+try {
+  const response = await fetch("http://127.0.0.1:" + port + "/__sporades/health/runtime", { headers: { accept: "application/json", "x-sporades-host-probe": process.env.SPORADES_RUNTIME_PROBE_TOKEN || "" }, signal: AbortSignal.timeout(timeoutMs) });
+  const text = await response.text();
+  if (text.length > 65536) { process.stdout.write(JSON.stringify({ kind: "invalid", status: response.status })); process.exit(0); }
+  let body; try { body = JSON.parse(text); } catch { process.stdout.write(JSON.stringify({ kind: "invalid", status: response.status })); process.exit(0); }
+  const checks = body?.data?.checks; const ready = body?.data?.runtime?.ready;
+  const valid = typeof body?.ok === "boolean" && typeof ready === "boolean" && typeof checks?.sqlite?.ok === "boolean" && typeof checks?.fileStorage?.ok === "boolean" && (checks?.fileInspection === undefined || typeof checks.fileInspection?.ok === "boolean");
+  process.stdout.write(JSON.stringify({ kind: "response", status: response.status, valid, ok: body?.ok === true, ready: ready === true, sqlite: checks?.sqlite?.ok === true, fileStorage: checks?.fileStorage?.ok === true, fileInspection: checks?.fileInspection === undefined ? null : checks.fileInspection?.ok === true }));
+} catch { process.stdout.write(JSON.stringify({ kind: "connection" })); }`;
 // Published by Cloudflare at https://www.cloudflare.com/ips/ and checked on 2026-08-21.
 // cloudflare-origin routes reject every other peer before trusting CF-Connecting-IP.
 const CLOUDFLARE_ORIGIN_IP_RANGES = Object.freeze([
@@ -1588,6 +1598,49 @@ function verificationHealthSummary(result) {
         runtime: result.data?.runtime ?? null,
     };
 }
+function hostedRuntimeReadinessTimeoutMs(request, record, releaseId) {
+    const recorded = normaliseReleaseHistory(record).find((release) => release.id === releaseId);
+    const requiredInspectors = request.release?.inspection?.requiredInspectors ?? recorded?.source?.inspection?.requiredInspectors;
+    const fallback = requiredInspectors?.includes("clamav") ? 160_000 : 10_000;
+    const configured = Number(request.verification?.healthTimeoutMs ?? fallback);
+    return Number.isFinite(configured) && configured >= 1 ? Math.min(configured, 180_000) : fallback;
+}
+async function waitForHostedRuntimeReadiness(lifecycle, timeoutMs) {
+    const deadline = performance.now() + timeoutMs;
+    let lastFailure = { ok: false, failure: "connection" };
+    while (performance.now() < deadline) {
+        const running = inspectContainerRunning(lifecycle.container.name);
+        if (!running.ok || !running.running)
+            return { ok: false, failure: "exited" };
+        const remaining = deadline - performance.now();
+        const probeTimeoutMs = Math.max(1, Math.min(1_000, remaining));
+        const probe = runDocker(["exec", lifecycle.container.name, "node", "--input-type=module", "--eval", HOSTED_RUNTIME_PROBE_SCRIPT, String(probeTimeoutMs), String(lifecycle.routes.running.port ?? 4000)], { maxBuffer: 128 * 1024, timeoutMs: Math.ceil(probeTimeoutMs + 250) });
+        if (!probe.ok) {
+            const after = inspectContainerRunning(lifecycle.container.name);
+            if (!after.ok || !after.running)
+                return { ok: false, failure: "exited" };
+            lastFailure = { ok: false, failure: "connection" };
+        }
+        else {
+            let result;
+            try {
+                result = JSON.parse(probe.stdout);
+            }
+            catch {
+                result = null;
+            }
+            if (result?.kind === "response" && [401, 403, 404].includes(result.status))
+                return { ok: false, failure: "authentication" };
+            if (result?.kind === "response" && result.status === 200 && result.valid === true && result.ok === true && result.ready === true && result.sqlite === true && result.fileStorage === true && result.fileInspection !== false)
+                return { ok: true };
+            lastFailure = { ok: false, failure: result?.kind === "response" && result.valid === true ? "unhealthy" : result?.kind === "connection" ? "connection" : "invalid" };
+        }
+        const waitMs = deadline - performance.now();
+        if (waitMs > 0)
+            await delay(Math.min(100, waitMs));
+    }
+    return lastFailure.ok ? lastFailure : { ok: false, failure: lastFailure.failure === "connection" ? "timeout" : lastFailure.failure };
+}
 async function startCapsule(request, options = {}) {
     validateLifecycleRequest(request);
     const registryRecord = await verifyRegisteredCapsule(request, "lifecycle");
@@ -1649,6 +1702,24 @@ async function startCapsule(request, options = {}) {
         if (options.write !== false) {
             writeEnvelope(result);
         }
+        return null;
+    }
+    const readiness = await waitForHostedRuntimeReadiness(lifecycle, hostedRuntimeReadinessTimeoutMs(request, registryRecord, releaseId));
+    if (!readiness.ok) {
+        stopAndRemoveContainer(lifecycle.container.name);
+        await recordFailedStartAndUnavailableRoute(request, lifecycle, releaseId, `Hosted Capsule runtime readiness failed (${readiness.failure}).`);
+        const result = {
+            ok: false,
+            data: null,
+            error: {
+                message: "Hosted Capsule runtime did not become ready.",
+                hint: readiness.failure === "authentication"
+                    ? "Restart the Hosted Capsule so its Host-owned runtime probe credential is refreshed, then inspect runtime logs if readiness still fails."
+                    : `Check Docker logs for ${lifecycle.container.name}; the route has been returned to the Hosted Capsule unavailable response.`,
+            },
+        };
+        if (options.write !== false)
+            writeEnvelope(result);
         return null;
     }
     const runningRoute = loopbackRunningRoute({ ...lifecycle.routes.running, runtimeProbe }, publishedPort);
@@ -4168,7 +4239,7 @@ function ensureHostedBaseImage(lifecycle) {
     }
 }
 function runDocker(args, options = {}) {
-    const result = spawnSync("docker", args, { encoding: "utf8", ...(options.maxBuffer ? { maxBuffer: options.maxBuffer } : {}) });
+    const result = spawnSync("docker", args, { encoding: "utf8", ...(options.maxBuffer ? { maxBuffer: options.maxBuffer } : {}), ...(options.timeoutMs ? { timeout: options.timeoutMs } : {}) });
     if (options.ignoreFailure) {
         return { ok: result.status === 0, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
     }
@@ -4830,6 +4901,9 @@ async function recordReleaseUploaded(request, release, fileInventory) {
                 files: Array.isArray(release.files) ? [...release.files] : [],
                 fileInventory: fileInventory.map((file) => ({ ...file })),
                 serverEnvIncluded: Boolean(release.serverEnvIncluded),
+                inspection: Array.isArray(release.inspection?.requiredInspectors)
+                    ? { requiredInspectors: [...release.inspection.requiredInspectors] }
+                    : undefined,
                 sealedServerEnvIncluded: Boolean(release.sealedServerEnvIncluded),
                 sealedServerEnv: release.sealedServerEnv?.publicKeyFingerprint
                     ? {
