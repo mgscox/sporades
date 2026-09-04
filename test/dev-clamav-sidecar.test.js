@@ -124,8 +124,8 @@ test("Dev ClamAV sidecar is exact-task scoped, UID-safe, Unix-only, and residue-
     for (let attempt = 0; attempt < 100; attempt += 1) { try { await access(state); break; } catch { await new Promise((resolve) => setTimeout(resolve, 10)); } }
     const socketDir = path.dirname(manager.descriptor.socketPath); await manager.stop(); await assert.rejects(access(socketDir)); await manager.stop();
     const calls = (await readFile(log, "utf8")).trim().split("\n").map(JSON.parse); const run = calls.find((args) => args[0] === "run"); assert(run.includes("ghcr.io/sporades/sporades-base:0.2.0-node22-alpine")); assert(run.includes("--user")); assert(run.includes("--volume")); assert.equal(run.includes("--publish"), false); assert.equal(run.some((value) => /TCP(?:Addr|Socket)/.test(value)), false);
-    const script = run.at(-1); const clamdStart = script.indexOf("/usr/sbin/clamd --foreground --config-file=/etc/clamav/clamd.conf"); const readinessScan = script.indexOf("clamdscan --config-file=/etc/clamav/clamd.conf --stream -"); const daemonUpdaterStart = script.indexOf("/usr/bin/freshclam --daemon --foreground=true --config-file=/etc/clamav/freshclam.conf");
-    assert(clamdStart >= 0); assert(readinessScan > clamdStart); assert(daemonUpdaterStart > readinessScan, "the notifying updater starts only after a clean scan proves clamd ready");
+    const script = run.at(-1); const clamdStart = script.indexOf("/usr/sbin/clamd --foreground --config-file=/etc/clamav/clamd.conf"); const readinessScan = script.indexOf("clamdscan --config-file=/etc/clamav/clamd.conf --stream -"); const daemonUpdaterStart = script.indexOf("/usr/bin/freshclam --daemon --foreground=true --config-file=/etc/clamav/freshclam.conf"); const updaterAlive = script.indexOf('kill -0 "$updater"'); const readinessMarker = script.indexOf("sporades-clamav-ready-v1", updaterAlive);
+    assert(clamdStart >= 0); assert(readinessScan > clamdStart); assert(daemonUpdaterStart > readinessScan, "the notifying updater starts only after a clean scan proves clamd ready"); assert(updaterAlive > daemonUpdaterStart); assert(readinessMarker > updaterAlive, "a dead updater exits before readiness can be published"); assert.doesNotMatch(script, /seq 1 1200/, "the host owns the single readiness deadline");
     const name = run[run.indexOf("--name") + 1]; assert.equal(calls.some((args) => args[0] === "rm" && args.at(-1) === name), true); assert.equal(calls.some((args) => args[0] === "container" && args[1] === "inspect" && args[2] === name), true);
   } finally { await manager?.stop().catch(() => {}); await rm(dir, { recursive: true, force: true }); }
 });
@@ -140,6 +140,41 @@ test("Dev ClamAV sidecar start waits for the container readiness proof", async (
     await new Promise((resolve) => setTimeout(resolve, 40)); const settledBeforeReadiness = settled;
     manager = await pending; assert.equal(settledBeforeReadiness, false, "start must not publish a sidecar before clamd is ready"); assert.equal(settled, true);
   } finally { await manager?.stop().catch(() => {}); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("Dev ClamAV readiness accepts only an exact newline-framed stdout control", async () => {
+  const marker = "sporades-clamav-ready-v1";
+  const cases = [
+    ["stdout-lf", `process.stdout.write(${JSON.stringify(`${marker}\n`)});`, true],
+    ["stdout-crlf", `process.stdout.write(${JSON.stringify(`${marker}\r\n`)});`, true],
+    ["stdout-chunked", `process.stdout.write("sporades-");setTimeout(()=>process.stdout.write("clamav-ready-v1\\n"),5);`, true],
+    ["stdout-lines", `process.stdout.write(${JSON.stringify(`diagnostic\n${marker}\nfinished\n`)});`, true],
+    ["stderr-exact", `process.stderr.write(${JSON.stringify(`${marker}\n`)});`, false],
+    ["stderr-then-stdout", `process.stderr.write(${JSON.stringify(`${marker}\n`)});process.stdout.write("diagnostic\\n");`, false],
+    ["stdout-prefix", `process.stdout.write(${JSON.stringify(`prefix-${marker}\n`)});`, false],
+    ["stdout-suffix", `process.stdout.write(${JSON.stringify(`${marker}-suffix\n`)});`, false],
+    ["stdout-embedded", `process.stdout.write(${JSON.stringify(`before ${marker} after\n`)});`, false],
+    ["stdout-partial", `process.stdout.write(${JSON.stringify(marker)});`, false],
+  ];
+  for (const [name, emission, expectedReady] of cases) {
+    const dir = await mkdtemp(path.join(tmpdir(), `sporades-dev-clamav-frame-${name}-`)); const docker = path.join(dir, "docker.mjs"); const state = path.join(dir, "state.json"); let manager;
+    await writeFile(docker, `#!/usr/bin/env node\nimport fs from "node:fs";\nconst args=process.argv.slice(2);\nif(args[0]==="image")process.exit(0);\nif(args[0]==="run"){fs.writeFileSync(${JSON.stringify(state)},String(process.pid));${emission}process.on("SIGTERM",()=>process.exit(0));setInterval(()=>{},1000);}\nelse if(args[0]==="rm"){try{process.kill(Number(fs.readFileSync(${JSON.stringify(state)},"utf8")),"SIGTERM");}catch{}process.exit(0);}\nelse if(args[0]==="container"&&args[1]==="inspect")process.exit(1);\nelse process.exit(1);\n`); await chmod(docker, 0o755);
+    try {
+      const outcome = await startDevClamavSidecar({ projectDir: dir, dockerfile: path.join(dir, "Dockerfile.base"), buildContext: dir, dockerCommand: docker, readinessTimeoutMs: 200 }).then((value) => ({ value }), (error) => ({ error })); manager = outcome.value;
+      assert.equal(Boolean(outcome.value), expectedReady, name); if (!expectedReady) assert.equal(outcome.error?.code, "FILE_INSPECTION_UNAVAILABLE", name);
+    } finally { await manager?.stop().catch(() => {}); await rm(dir, { recursive: true, force: true }); }
+  }
+});
+
+test("Dev ClamAV readiness uses its host monotonic deadline at the exact proof boundary", async () => {
+  for (const [name, clock, expectedReady] of [["before", [0, 0, 99], true], ["at", [0, 0, 100], true], ["after", [0, 0, 101], false]]) {
+    const dir = await mkdtemp(path.join(tmpdir(), `sporades-dev-clamav-deadline-${name}-`)); const docker = path.join(dir, "docker.mjs"); const state = path.join(dir, "state.json"); let manager; let last = clock.at(-1);
+    await writeFile(docker, `#!/usr/bin/env node\nimport fs from "node:fs";\nconst args=process.argv.slice(2);\nif(args[0]==="image")process.exit(0);\nif(args[0]==="run"){fs.writeFileSync(${JSON.stringify(state)},String(process.pid));setTimeout(()=>process.stdout.write("sporades-clamav-ready-v1\\n"),10);process.on("SIGTERM",()=>process.exit(0));setInterval(()=>{},1000);}\nelse if(args[0]==="rm"){try{process.kill(Number(fs.readFileSync(${JSON.stringify(state)},"utf8")),"SIGTERM");}catch{}process.exit(0);}\nelse process.exit(1);\n`); await chmod(docker, 0o755);
+    try {
+      const values = [...clock]; const outcome = await startDevClamavSidecar({ projectDir: dir, dockerfile: path.join(dir, "Dockerfile.base"), buildContext: dir, dockerCommand: docker, readinessTimeoutMs: 100, readinessTiming: { now: () => { if (values.length) last = values.shift(); return last; } } }).then((value) => ({ value }), (error) => ({ error })); manager = outcome.value;
+      assert.equal(Boolean(outcome.value), expectedReady, name); if (!expectedReady) assert.equal(outcome.error?.code, "FILE_INSPECTION_UNAVAILABLE", name);
+    } finally { await manager?.stop().catch(() => {}); await rm(dir, { recursive: true, force: true }); }
+  }
 });
 
 test("Dev ClamAV sidecar readiness timeout and early exit clean the exact unpublished container", async () => {

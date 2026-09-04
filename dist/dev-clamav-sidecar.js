@@ -121,8 +121,8 @@ export async function ensureDevClamavChildExit(child, timeoutMs, timing) {
         return true;
     return await waitForDevClamavChildExitAttempt(child, Math.max(0, deadline - devClamavNow(timing)), timing, "SIGKILL");
 }
-function waitForDevClamavReadinessProof(child, timeoutMs, output) {
-    if (output().includes(DEV_CLAMAV_READY_MARKER))
+function waitForDevClamavReadinessProof(child, deadline, ready, now) {
+    if (ready() && now() <= deadline)
         return Promise.resolve(true);
     if (!child || devClamavChildTerminated(child))
         return Promise.resolve(false);
@@ -133,15 +133,19 @@ function waitForDevClamavReadinessProof(child, timeoutMs, output) {
         const finish = (ready) => { if (settled)
             return; settled = true; if (timer)
             clearTimeout(timer); remove(); resolve(ready); };
-        const onData = () => { if (output().includes(DEV_CLAMAV_READY_MARKER))
+        const onData = () => { if (ready() && now() <= deadline)
             finish(true); };
         const onTerminated = () => finish(false);
+        const expire = () => { const remaining = deadline - now(); if (remaining <= 0)
+            finish(false);
+        else
+            timer = setTimeout(expire, Math.max(1, Math.ceil(remaining))); };
         child.stdout?.on?.("data", onData);
         child.once("exit", onTerminated);
         child.once("close", onTerminated);
         child.once("error", onTerminated);
-        timer = setTimeout(() => finish(false), timeoutMs);
-        if (output().includes(DEV_CLAMAV_READY_MARKER))
+        expire();
+        if (ready() && now() <= deadline)
             finish(true);
     });
 }
@@ -158,6 +162,9 @@ export async function startDevClamavSidecar(options) {
     const proxySockets = new Set();
     let stopped = false;
     let output = "";
+    let readinessLine = "";
+    let readinessLineOverflow = false;
+    let readinessProven = false;
     try {
         const dockerCommand = options.dockerCommand ?? "docker";
         await ensureBaseImage(dockerCommand, options.dockerfile, options.buildContext);
@@ -169,7 +176,7 @@ export async function startDevClamavSidecar(options) {
             "/usr/sbin/clamd --foreground --config-file=/etc/clamav/clamd.conf >/tmp/clamd.log 2>&1 & daemon=$!",
             "trap 'kill -TERM \"$daemon\" 2>/dev/null || true; wait \"$daemon\" 2>/dev/null || true' EXIT INT TERM",
             "ready=0",
-            "for attempt in $(seq 1 1200); do kill -0 \"$daemon\" 2>/dev/null || break; if printf '%s' 'sporades file inspection readiness' | /usr/bin/clamdscan --config-file=/etc/clamav/clamd.conf --stream - >/tmp/clamd-ready.log 2>&1; then ready=1; break; fi; sleep .1; done",
+            "while kill -0 \"$daemon\" 2>/dev/null; do if printf '%s' 'sporades file inspection readiness' | /usr/bin/clamdscan --config-file=/etc/clamav/clamd.conf --stream - >/tmp/clamd-ready.log 2>&1; then ready=1; break; fi; sleep .1; done",
             "if [ \"$ready\" -ne 1 ]; then cat /tmp/clamd.log /tmp/clamd-ready.log >&2 2>/dev/null || true; exit 1; fi",
             "/usr/bin/freshclam --daemon --foreground=true --config-file=/etc/clamav/freshclam.conf >/tmp/freshclam.log 2>&1 & updater=$!",
             "kill -0 \"$updater\" 2>/dev/null",
@@ -181,14 +188,37 @@ export async function startDevClamavSidecar(options) {
         ].join("\n");
         child = spawn(dockerCommand, ["run", "--rm", "--name", containerName, "--label", `com.sporades.dev-task=${identity}`, "--user", `${uid}:${gid}`, "--volume", `${dataRoot}:/app/data`, "--entrypoint", "/bin/sh", SPORADES_BASE_IMAGE.image, "-ec", script], { stdio: ["ignore", "pipe", "pipe"] });
         const retain = (chunk) => { output = (output + chunk.toString("utf8")).slice(-8192); };
-        child.stdout.on("data", retain);
+        const retainStdout = (chunk) => {
+            retain(chunk);
+            const text = chunk.toString("utf8");
+            let cursor = 0;
+            while (cursor < text.length) {
+                const newline = text.indexOf("\n", cursor);
+                const segment = text.slice(cursor, newline < 0 ? text.length : newline);
+                if (!readinessLineOverflow) {
+                    readinessLine += segment;
+                    if (readinessLine.length > DEV_CLAMAV_READY_MARKER.length + 1) {
+                        readinessLine = "";
+                        readinessLineOverflow = true;
+                    }
+                }
+                if (newline < 0)
+                    break;
+                if (!readinessLineOverflow && (readinessLine === DEV_CLAMAV_READY_MARKER || readinessLine === `${DEV_CLAMAV_READY_MARKER}\r`))
+                    readinessProven = true;
+                readinessLine = "";
+                readinessLineOverflow = false;
+                cursor = newline + 1;
+            }
+        };
+        child.stdout.on("data", retainStdout);
         child.stderr.on("data", retain);
         await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
-        // The container's clean-scan loop is bounded at 120 seconds. Keep a small
-        // outer margin so a proof emitted at that boundary cannot lose a timer race.
         const requestedReadinessTimeout = options.readinessTimeoutMs;
         const readinessTimeoutMs = Number.isFinite(requestedReadinessTimeout) ? Math.max(1, Math.min(DEV_CLAMAV_HOST_READY_TIMEOUT_MS, Math.trunc(requestedReadinessTimeout))) : DEV_CLAMAV_HOST_READY_TIMEOUT_MS;
-        if (!await waitForDevClamavReadinessProof(child, readinessTimeoutMs, () => output))
+        const readinessNow = options.readinessTiming?.now ?? (() => performance.now());
+        const readinessDeadline = readinessNow() + readinessTimeoutMs;
+        if (!await waitForDevClamavReadinessProof(child, readinessDeadline, () => readinessProven, readinessNow))
             throw Object.assign(new Error("Required Dev File inspection scanner did not become ready."), { code: "FILE_INSPECTION_UNAVAILABLE" });
         const bridgeSource = "const net=require('node:net');const socket=net.createConnection('/tmp/sporades-clamd.sock');process.stdin.pipe(socket);socket.pipe(process.stdout);socket.on('error',()=>process.exit(1));";
         proxy = (options.proxyServerFactory ?? createServer)((socket) => { proxySockets.add(socket); const bridge = spawn(dockerCommand, ["exec", "-i", containerName, "node", "-e", bridgeSource], { stdio: ["pipe", "pipe", "ignore"] }); bridges.add(bridge); socket.pipe(bridge.stdin); bridge.stdout.pipe(socket); const close = () => { bridges.delete(bridge); proxySockets.delete(socket); socket.destroy(); }; bridge.once("close", close); bridge.once("error", close); socket.once("error", () => { try {
