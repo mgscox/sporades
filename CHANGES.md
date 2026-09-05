@@ -2,11 +2,11 @@
 
 ## Unreleased - 2026-09-05
 
-Changes since v0.9.15.
+Changes since v0.9.16.
 
-### 🚀 Features
+### 🐛 Bug Fixes
 
-- Add authenticated multipart endpoint admission (0811bb28).
+- Prevent caching denied principal ingress (07daff9c).
 
 ## v0.9.11 - 2026-09-02
 
@@ -95,6 +95,7 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
+
 
 
 
