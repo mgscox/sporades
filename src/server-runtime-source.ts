@@ -3446,13 +3446,13 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
         actor: { userId: null, provider: null, isAuthenticated: null, isGuest: null },
       } });
     }
-    if ((request as LooseRecord).__sporadesAccessKeyAdmitted || error?.sporadesAccessKeyFailure) {
+    if ((request as LooseRecord).__sporadesAccessKeyAdmitted || error?.sporadesAccessKeyFailure || (request as LooseRecord).__sporadesCapsuleIngressAdmissionDenied) {
       response.setHeader("cache-control", "no-store");
       response.setHeader("pragma", "no-cache");
     }
     emitHttpFailureLog(database as LooseRecord, request, error);
     writeEndpointError(response, error);
-  } finally { request.removeListener?.("aborted", abortRequest); delete (request as LooseRecord).__sporadesEndpointSignal; }
+  } finally { request.removeListener?.("aborted", abortRequest); delete (request as LooseRecord).__sporadesEndpointSignal; delete (request as LooseRecord).__sporadesCapsuleIngressAdmissionDenied; }
   return true;
 }
 
@@ -3647,6 +3647,9 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
       endpointRequest = { ...endpointRequest, ...payload };
     } catch (error: any) {
       if (error?.code === "UNAUTHENTICATED") {
+        if (endpointIngressClaimAuthority(endpoint as LooseRecord) === "capsule-principal") {
+          (request as LooseRecord).__sporadesCapsuleIngressAdmissionDenied = true;
+        }
         try { await database.log.emit({ category: "platform", event: "file.ingress.denied", level: "warn", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "denied", code: "UNAUTHENTICATED" } }); } catch {}
       }
       throw error;

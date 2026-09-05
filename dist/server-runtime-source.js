@@ -3245,7 +3245,7 @@ export async function routeEndpoint(database, request, response) {
                     actor: { userId: null, provider: null, isAuthenticated: null, isGuest: null },
                 } });
         }
-        if (request.__sporadesAccessKeyAdmitted || error?.sporadesAccessKeyFailure) {
+        if (request.__sporadesAccessKeyAdmitted || error?.sporadesAccessKeyFailure || request.__sporadesCapsuleIngressAdmissionDenied) {
             response.setHeader("cache-control", "no-store");
             response.setHeader("pragma", "no-cache");
         }
@@ -3255,6 +3255,7 @@ export async function routeEndpoint(database, request, response) {
     finally {
         request.removeListener?.("aborted", abortRequest);
         delete request.__sporadesEndpointSignal;
+        delete request.__sporadesCapsuleIngressAdmissionDenied;
     }
     return true;
 }
@@ -3440,6 +3441,9 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
         }
         catch (error) {
             if (error?.code === "UNAUTHENTICATED") {
+                if (endpointIngressClaimAuthority(endpoint) === "capsule-principal") {
+                    request.__sporadesCapsuleIngressAdmissionDenied = true;
+                }
                 try {
                     await database.log.emit({ category: "platform", event: "file.ingress.denied", level: "warn", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "denied", code: "UNAUTHENTICATED" } });
                 }
