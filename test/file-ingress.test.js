@@ -1637,6 +1637,26 @@ test("a route-level already-aborted request cannot enter endpoint multipart admi
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("a denied Capsule-principal multipart admission returns an opaque no-store response before ingress work", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-principal-denied-response-")); let database;
+  try {
+    let admissions = 0; let handlers = 0; let reads = 0; let writes = 0;
+    const definition = capsule({ name: "principal-denied-response", files: { acl: { read: () => false, delete: () => false }, ingress: { principalNamespaces: ["application"], admit: () => { admissions += 1; return { allow: false, private: "do not disclose" }; } } }, endpoints: {
+      upload: endpoint({ method: "POST", path: "/principal-denied", body: { multipart: { ...ingressPolicy(), claimAuthorities: ["capsule-principal"] } } }, async () => { handlers += 1; return { body: { impossible: true } }; }),
+    } });
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "principal-denied-response", files: { storagePath: path.join(dir, "files") } }, definition);
+    const write = database.fileStorage.writeFileVersion.bind(database.fileStorage); database.fileStorage.writeFileVersion = async (input) => { writes += 1; return await write(input); };
+    const request = Object.assign(new EventEmitter(), ingressRequest("principal-denied")); delete request.headers["x-sporades-session-token"]; request.url = "/principal-denied"; request.aborted = false; request.destroyed = false;
+    request[Symbol.asyncIterator] = async function* () { reads += 1; yield multipart("claim"); };
+    const response = { status: null, body: "", headers: {}, setHeader(name, value) { this.headers[name.toLowerCase()] = value; }, writeHead(status, headers = {}) { this.status = status; Object.assign(this.headers, headers); }, end(body = "") { this.body = String(body); } };
+    assert.equal(await routeEndpoint(database, request, response), true);
+    assert.equal(response.status, 401); assert.equal(response.headers["cache-control"], "no-store"); assert.equal(response.headers.pragma, "no-cache");
+    assert.deepEqual(JSON.parse(response.body), { ok: false, data: null, error: { code: "UNAUTHENTICATED", message: "Unauthenticated.", hint: "Provide valid ingress authority and retry." } });
+    assert.equal(admissions, 1); assert.equal(reads, 0); assert.equal(writes, 0); assert.equal(handlers, 0);
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_file_ingress]").get()).count), 0);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("Capsule-principal claims persist a reserved owner and digest, never the raw principal key", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-principal-owner-")); let database;
   try {

@@ -804,6 +804,9 @@ cross-principal, and cross-Capsule claims all fail opaquely with
 `INGRESS_AUTHORITY_DENIED`; callers cannot use the error to discover whether a
 lease exists. Completed retries enforce the same authority.
 
+A rejected Capsule-principal admission returns an opaque `401` before consuming
+request bytes, with `Cache-Control: no-store` and `Pragma: no-cache`.
+
 Trusted server code claims a lease inside the endpoint transaction with an
 application-chosen absolute path:
 
