@@ -61168,6 +61168,11 @@ export function endpoint(options, handler) {
   };
 }
 
+export function endpointFor(schema) {
+  void schema;
+  return endpoint;
+}
+
 export function emailEvent(handler) {
   return {
     kind: "emailEvent",
@@ -87635,13 +87640,15 @@ function validateMultipartIngressPolicy(policy) {
   if (!policy || typeof policy !== "object" || Array.isArray(policy)) invalid();
   for (const name2 of ["maxFiles", "maxFileBytes", "maxTotalFileBytes"]) if (typeof policy[name2] !== "number" || !Number.isFinite(policy[name2]) || !Number.isInteger(policy[name2]) || policy[name2] <= 0) invalid();
   for (const name2 of ["maxFieldCount", "maxFieldBytes", "maxTotalFieldBytes"]) if (typeof policy[name2] !== "number" || !Number.isFinite(policy[name2]) || !Number.isInteger(policy[name2]) || policy[name2] < 0) invalid();
-  const allowedKeys = /* @__PURE__ */ new Set(["maxFiles", "maxFileBytes", "maxTotalFileBytes", "maxFieldCount", "maxFieldBytes", "maxTotalFieldBytes", "allowedPathPrefixes", "allowedMimeTypes", "requestKeyHeader", "partKeyHeader", "requireStablePartKeys", "claimAuthorities", "inspection"]);
+  const allowedKeys = /* @__PURE__ */ new Set(["maxFiles", "maxFileBytes", "maxTotalFileBytes", "maxFieldCount", "maxFieldBytes", "maxTotalFieldBytes", "allowedPathPrefixes", "allowedMimeTypes", "requestKeyHeader", "partKeyHeader", "requireStablePartKeys", "claimAuthorities", "inspection", "admit"]);
   if (Object.keys(policy).some((key) => !allowedKeys.has(key))) invalid();
   if (!Array.isArray(policy.allowedPathPrefixes) || policy.allowedPathPrefixes.length === 0 || policy.allowedPathPrefixes.some((value) => !validPathPrefix(value))) invalid();
   if (policy.allowedMimeTypes !== void 0 && (!Array.isArray(policy.allowedMimeTypes) || policy.allowedMimeTypes.some((value) => typeof value !== "string" || safeType(value) !== value.toLowerCase()))) invalid();
   for (const name2 of ["requestKeyHeader", "partKeyHeader"]) if (typeof policy[name2] !== "string" || policy[name2].length > 100 || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(policy[name2])) invalid();
   if (policy.requireStablePartKeys !== void 0 && typeof policy.requireStablePartKeys !== "boolean") invalid();
   if (policy.claimAuthorities !== void 0 && (!Array.isArray(policy.claimAuthorities) || policy.claimAuthorities.length !== 1 || !["actor", "capsule-principal"].includes(policy.claimAuthorities[0]))) invalid();
+  if (policy.admit !== void 0 && typeof policy.admit !== "function") invalid();
+  if (policy.admit !== void 0 && policy.claimAuthorities?.[0] === "capsule-principal") invalid();
   const inspection = normalizedInspectionPolicy(policy.inspection);
   return inspection ? { ...policy, inspection } : policy;
 }
@@ -95439,7 +95446,8 @@ function createConnectionTransactionGate() {
     if (!transactionActive) return operation();
     return new Promise((resolve, reject) => pending.push({ operation, resolve, reject }));
   };
-  const runTransaction = async (operation) => {
+  const cancelledTransaction = () => Object.assign(new Error("Database transaction acquisition was cancelled."), { code: "TRANSACTION_ACQUISITION_CANCELLED" });
+  const runTransaction = async (operation, options = {}) => {
     if (transactionOwnership.getStore() === transactionOwner) return await rejectNestedTransactionScope();
     const previous = transactionTail;
     let release = () => {
@@ -95447,15 +95455,38 @@ function createConnectionTransactionGate() {
     transactionTail = new Promise((resolve) => {
       release = resolve;
     });
-    await previous.catch(() => {
+    const waitForPrevious = previous.catch(() => {
     });
-    transactionActive = true;
+    if (options.signal?.aborted) {
+      void waitForPrevious.then(release);
+      throw cancelledTransaction();
+    }
+    let removeAbort = () => {
+    };
+    let entered = false;
     try {
+      await Promise.race([
+        waitForPrevious,
+        new Promise((_, reject) => {
+          const abort = () => reject(cancelledTransaction());
+          options.signal?.addEventListener?.("abort", abort, { once: true });
+          removeAbort = () => options.signal?.removeEventListener?.("abort", abort);
+        })
+      ]);
+      removeAbort();
+      if (options.signal?.aborted) throw cancelledTransaction();
+      transactionActive = true;
+      entered = true;
       return await transactionOwnership.run(transactionOwner, operation);
     } finally {
-      transactionActive = false;
-      await drainPending();
-      release();
+      removeAbort();
+      if (entered) {
+        transactionActive = false;
+        await drainPending();
+        release();
+      } else {
+        void waitForPrevious.then(release);
+      }
     }
   };
   const whenIdle = async () => await transactionTail.catch(() => {
@@ -96697,7 +96728,7 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     engine: "sqlite",
     dialect,
     normalization: sqliteRowNormalization(),
-    async withTransaction(fn) {
+    async withTransaction(fn, options2 = {}) {
       return await connectionGate.runTransaction(async () => {
         const ownerOperations = typeof this[transactionOperations] === "function" ? this[transactionOperations]() : { exec: this.exec.bind(this), prepare: this.prepare.bind(this) };
         const transactionAdapter = createTransactionScopedAdapter(this, ownerOperations, this, "transaction");
@@ -96717,7 +96748,7 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
           await transactionExec("ROLLBACK");
           throw error;
         }
-      });
+      }, options2);
     },
     async withReadOnlySnapshot(fn) {
       return await connectionGate.runTransaction(async () => {
@@ -96841,7 +96872,7 @@ async function createPostgresDatabaseAdapter(options) {
     // goes, or the moment a new engine composes the set without knowing to shadow it. `ensureLogStorage`
     // is the sharpest illustration — a copy of its bare `CREATE TABLE` here would be a Log index
     // that silently never ran ADR-0036's ordering migration.
-    async withTransaction(fn) {
+    async withTransaction(fn, options2 = {}) {
       return await connectionGate.runTransaction(async () => {
         await rawQuery("BEGIN");
         try {
@@ -96862,7 +96893,7 @@ async function createPostgresDatabaseAdapter(options) {
           }
           throw error;
         }
-      });
+      }, options2);
     },
     async withReadOnlySnapshot(fn) {
       return await connectionGate.runTransaction(async () => {
@@ -97346,7 +97377,7 @@ async function createLibsqlDatabaseAdapter(options) {
     // Postgres adapter states above. Six used to: the two storage bootstraps, the OAuth state
     // consume, and three await-shims over Log index methods that ADR-0036 corrected in the shared
     // body instead.
-    async withTransaction(fn) {
+    async withTransaction(fn, options2 = {}) {
       assertLibsqlOpen(closed);
       return await connectionGate.runTransaction(async () => {
         assertLibsqlOpen(closed);
@@ -97376,7 +97407,7 @@ async function createLibsqlDatabaseAdapter(options) {
         } finally {
           activeTransactions.delete(transaction);
         }
-      });
+      }, options2);
     },
     async withReadOnlySnapshot(fn) {
       assertLibsqlOpen(closed);
@@ -97872,7 +97903,7 @@ async function dispatchVerifiedStripeEvent(ctx, event, subscription) {
 
 // src/server-runtime-source.ts
 var mutationResultsWithWrites = /* @__PURE__ */ new WeakSet();
-var trustedReadPurposes = /* @__PURE__ */ new Set(["teams.join-admission", "team-billing.authority", "files.ingress-admission"]);
+var trustedReadPurposes = /* @__PURE__ */ new Set(["teams.join-admission", "team-billing.authority", "files.ingress-admission", "endpoint.multipart-admission"]);
 var trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 var runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
 var atomicStripeEventDefinitionBrand2 = Symbol.for("sporades.stripeEvent.atomicDefinition");
@@ -100451,6 +100482,11 @@ async function routeEndpoint(database, request, response) {
   if (!endpoint) {
     return false;
   }
+  const requestAbort = new AbortController();
+  const abortRequest = () => requestAbort.abort();
+  if (request.aborted || request.destroyed) abortRequest();
+  else request.once?.("aborted", abortRequest);
+  request.__sporadesEndpointSignal = requestAbort.signal;
   try {
     const result = await runEndpoint(database, endpoint, requestUrl, request);
     const sensitiveResponseHeaders = request.__sporadesAccessKeyAdmitted || request.__sporadesSecretDisclosed ? { "cache-control": "private, no-store", pragma: "no-cache" } : void 0;
@@ -100474,6 +100510,9 @@ async function routeEndpoint(database, request, response) {
     }
     emitHttpFailureLog(database, request, error);
     writeEndpointError(response, error);
+  } finally {
+    request.removeListener?.("aborted", abortRequest);
+    delete request.__sporadesEndpointSignal;
   }
   return true;
 }
@@ -100504,6 +100543,73 @@ async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest,
     throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
   }
   return Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash8("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId });
+}
+var endpointMultipartAdmissionTimeoutMs = 5e3;
+function multipartAdmissionDenied() {
+  return commandError("Multipart request was not admitted.", "Check the request conditions and retry.", "MULTIPART_ADMISSION_DENIED");
+}
+async function admitEndpointMultipart(database, endpoint, endpointRequest, admission, signal) {
+  const policy = endpoint.options?.body?.multipart;
+  if (typeof policy?.admit !== "function") return;
+  if (!admission?.auth?.isAuthenticated || admission.auth.isGuest || isReservedAuthUserId(admission.auth.userId)) throw commandError("Unauthenticated.", "Sign in with a linked human or service User and retry.", "UNAUTHENTICATED");
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener?.("abort", onAbort, { once: true });
+  const deadline = Date.now() + endpointMultipartAdmissionTimeoutMs;
+  const timer = setTimeout(() => controller.abort(), endpointMultipartAdmissionTimeoutMs);
+  const requestHead = Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) });
+  let timeoutTimer;
+  try {
+    const transaction = database.adapter.withTransaction((transaction2) => withTrustedRead(database, {
+      transaction: transaction2,
+      purpose: "endpoint.multipart-admission",
+      subject: { method: endpoint.options.method, path: endpoint.options.path },
+      signal: controller.signal
+    }, (db) => {
+      const policyEvaluation = Promise.resolve().then(() => policy.admit(Object.freeze({
+        auth: Object.freeze({ ...admission.auth }),
+        credential: Object.freeze({ ...admission.credential ?? { kind: "session" } }),
+        db,
+        env: database.serverEnv,
+        signal: controller.signal,
+        request: requestHead
+      }), requestHead));
+      void policyEvaluation.catch(() => {
+      });
+      let removeAbort = () => {
+      };
+      const aborted = new Promise((_, reject) => {
+        const abort = () => reject(multipartAdmissionDenied());
+        controller.signal.addEventListener("abort", abort, { once: true });
+        removeAbort = () => controller.signal.removeEventListener("abort", abort);
+      });
+      return Promise.race([policyEvaluation, aborted, new Promise((_, reject) => {
+        timeoutTimer = setTimeout(() => reject(multipartAdmissionDenied()), endpointMultipartAdmissionTimeoutMs);
+      })]).finally(removeAbort);
+    }), { signal: controller.signal });
+    void transaction.catch(() => {
+    });
+    let removeSettlementAbort = () => {
+    };
+    const settlementAbort = new Promise((_, reject) => {
+      const abort = () => reject(multipartAdmissionDenied());
+      if (controller.signal.aborted) abort();
+      else {
+        controller.signal.addEventListener("abort", abort, { once: true });
+        removeSettlementAbort = () => controller.signal.removeEventListener("abort", abort);
+      }
+    });
+    const decision = await Promise.race([transaction, settlementAbort]).finally(removeSettlementAbort);
+    if (controller.signal.aborted || Date.now() >= deadline || !decision || typeof decision !== "object" || Array.isArray(decision) || Object.keys(decision).length !== 1 || typeof decision.allow !== "boolean" || decision.allow !== true) throw multipartAdmissionDenied();
+  } catch {
+    throw multipartAdmissionDenied();
+  } finally {
+    clearTimeout(timer);
+    if (timeoutTimer) clearTimeout(timeoutTimer);
+    signal?.removeEventListener?.("abort", onAbort);
+    controller.abort();
+  }
 }
 async function runEndpoint(database, endpoint, requestUrl, request) {
   const handler = typeof endpoint.handler === "function" ? endpoint.handler : new Function(`return (${endpoint.handlerSource});`)();
@@ -100554,6 +100660,9 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
         ingressAuthority = await admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, request.signal);
       } else {
         if (!admitted?.auth?.isAuthenticated || admitted.auth.isGuest || isReservedAuthUserId(admitted.auth.userId)) throw commandError("Unauthenticated.", "Sign in with a linked human or service User and retry.", "UNAUTHENTICATED");
+        const endpointSignal = request.signal ?? request.__sporadesEndpointSignal;
+        await admitEndpointMultipart(database, endpoint, endpointRequest, admitted, endpointSignal);
+        if (endpointSignal?.aborted) throw multipartAdmissionDenied();
         ingressAuthority = Object.freeze({ kind: "actor", actorId: String(admitted.auth.userId), ownerId: String(admitted.auth.userId) });
       }
       const payload = await stageMultipartIngress(database, endpoint, request, endpointRequest, admitted.auth, ingressAuthority);

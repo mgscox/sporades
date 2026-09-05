@@ -167,7 +167,7 @@ import {
 import { dispatchVerifiedStripeEvent } from "./stripe-events-runtime.js";
 
 const mutationResultsWithWrites = new WeakSet<object>();
-const trustedReadPurposes = new Set(["teams.join-admission", "team-billing.authority", "files.ingress-admission"]);
+const trustedReadPurposes = new Set(["teams.join-admission", "team-billing.authority", "files.ingress-admission", "endpoint.multipart-admission"]);
 const trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 const runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
 const atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
@@ -3421,6 +3421,11 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
     return false;
   }
 
+  const requestAbort = new AbortController();
+  const abortRequest = () => requestAbort.abort();
+  if (request.aborted || request.destroyed) abortRequest();
+  else request.once?.("aborted", abortRequest);
+  (request as LooseRecord).__sporadesEndpointSignal = requestAbort.signal;
   try {
     const result = await runEndpoint(database, endpoint, requestUrl, request);
     const sensitiveResponseHeaders = (request as LooseRecord).__sporadesAccessKeyAdmitted
@@ -3447,7 +3452,7 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
     }
     emitHttpFailureLog(database as LooseRecord, request, error);
     writeEndpointError(response, error);
-  }
+  } finally { request.removeListener?.("aborted", abortRequest); delete (request as LooseRecord).__sporadesEndpointSignal; }
   return true;
 }
 
@@ -3496,6 +3501,75 @@ async function admitCapsuleIngressPrincipal(database: LooseRecord, endpoint: Loo
     throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
   }
   return Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId });
+}
+
+const endpointMultipartAdmissionTimeoutMs = 5_000;
+function multipartAdmissionDenied() {
+  return commandError("Multipart request was not admitted.", "Check the request conditions and retry.", "MULTIPART_ADMISSION_DENIED");
+}
+
+async function admitEndpointMultipart(database: LooseRecord, endpoint: LooseRecord, endpointRequest: LooseRecord, admission: LooseRecord, signal: any) {
+  const policy = endpoint.options?.body?.multipart;
+  if (typeof policy?.admit !== "function") return;
+  if (!admission?.auth?.isAuthenticated || admission.auth.isGuest || isReservedAuthUserId(admission.auth.userId)) throw commandError("Unauthenticated.", "Sign in with a linked human or service User and retry.", "UNAUTHENTICATED");
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener?.("abort", onAbort, { once: true });
+  const deadline = Date.now() + endpointMultipartAdmissionTimeoutMs;
+  const timer = setTimeout(() => controller.abort(), endpointMultipartAdmissionTimeoutMs);
+  const requestHead = Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) });
+  let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const transaction = database.adapter.withTransaction((transaction: LooseRecord) => withTrustedRead(database, {
+      transaction,
+      purpose: "endpoint.multipart-admission",
+      subject: { method: endpoint.options.method, path: endpoint.options.path },
+      signal: controller.signal,
+    }, (db) => {
+      const policyEvaluation = Promise.resolve().then(() => policy.admit(Object.freeze({
+        auth: Object.freeze({ ...admission.auth }),
+        credential: Object.freeze({ ...(admission.credential ?? { kind: "session" }) }),
+        db,
+        env: database.serverEnv,
+        signal: controller.signal,
+        request: requestHead,
+      }), requestHead));
+      // The race itself is inside the transaction: timeout closes the read
+      // capability and transaction before this request can return. A late,
+      // non-cooperative policy cannot retain either one.
+      void policyEvaluation.catch(() => {});
+      let removeAbort = () => {};
+      const aborted = new Promise<never>((_, reject) => {
+        const abort = () => reject(multipartAdmissionDenied());
+        controller.signal.addEventListener("abort", abort, { once: true });
+        removeAbort = () => controller.signal.removeEventListener("abort", abort);
+      });
+      return Promise.race([policyEvaluation, aborted, new Promise<never>((_, reject) => { timeoutTimer = setTimeout(() => reject(multipartAdmissionDenied()), endpointMultipartAdmissionTimeoutMs); })]).finally(removeAbort);
+    }), { signal: controller.signal });
+    // Engine commit/rollback may be asynchronous. The request boundary cannot
+    // wait beyond its deadline merely because later transaction cleanup is
+    // slow; the trusted read has already been revoked by the callback race.
+    void transaction.catch(() => {});
+    let removeSettlementAbort = () => {};
+    const settlementAbort = new Promise<never>((_, reject) => {
+      const abort = () => reject(multipartAdmissionDenied());
+      if (controller.signal.aborted) abort();
+      else {
+        controller.signal.addEventListener("abort", abort, { once: true });
+        removeSettlementAbort = () => controller.signal.removeEventListener("abort", abort);
+      }
+    });
+    const decision = await Promise.race([transaction, settlementAbort]).finally(removeSettlementAbort);
+    // A policy may settle before an asynchronous engine has committed and
+    // released its transaction. Keep the deadline live through that boundary:
+    // an expired or disconnected request never earns body-read authority.
+    if (controller.signal.aborted || Date.now() >= deadline || !decision || typeof decision !== "object" || Array.isArray(decision) || Object.keys(decision).length !== 1 || typeof (decision as LooseRecord).allow !== "boolean" || (decision as LooseRecord).allow !== true) throw multipartAdmissionDenied();
+  } catch {
+    throw multipartAdmissionDenied();
+  } finally {
+    clearTimeout(timer); if (timeoutTimer) clearTimeout(timeoutTimer); signal?.removeEventListener?.("abort", onAbort); controller.abort();
+  }
 }
 
 export async function runEndpoint(database: any, endpoint: { handler?: Function; handlerSource?: string; }, requestUrl: URL, request: any) {
@@ -3561,6 +3635,12 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
         ingressAuthority = await admitCapsuleIngressPrincipal(database, endpoint as LooseRecord, endpointRequest, request.signal);
       } else {
         if (!admitted?.auth?.isAuthenticated || admitted.auth.isGuest || isReservedAuthUserId(admitted.auth.userId)) throw commandError("Unauthenticated.", "Sign in with a linked human or service User and retry.", "UNAUTHENTICATED");
+        const endpointSignal = request.signal ?? (request as LooseRecord).__sporadesEndpointSignal;
+        await admitEndpointMultipart(database, endpoint as LooseRecord, endpointRequest, admitted, endpointSignal);
+        // Admission cleanup removes its request listener after it has settled.
+        // Recheck the outer request signal at the body/staging boundary so a
+        // disconnect in that small interval cannot create ingress state.
+        if (endpointSignal?.aborted) throw multipartAdmissionDenied();
         ingressAuthority = Object.freeze({ kind: "actor", actorId: String(admitted.auth.userId), ownerId: String(admitted.auth.userId) });
       }
       const payload = await stageMultipartIngress(database, endpoint as LooseRecord, request, endpointRequest, admitted.auth, ingressAuthority);
