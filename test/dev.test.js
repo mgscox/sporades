@@ -11314,6 +11314,8 @@ export default capsule({
 
     argumentBytes: query((_ctx, value) => ({ bytes: new TextEncoder().encode(value).byteLength })),
 
+    echoArguments: query((_ctx, ...args) => args),
+
     broken: query(() => {
       throw new Error("Imported helper went sideways.");
     }),
@@ -11351,6 +11353,12 @@ export default capsule({
             parts: ["argument-bearing", "query"],
           },
           error: null,
+        });
+
+        const multipleArgs = ["Grace", { items: Array.from({ length: 12 }, (_, i) => i) }, ["a", "b"]];
+        socket.send(JSON.stringify({ id: "multiple-args", type: "query.subscribe", query: "echoArguments", args: multipleArgs }));
+        assert.deepEqual(await readSocketMessage(socket), {
+          id: "multiple-args", type: "query.result", query: "echoArguments", data: multipleArgs, error: null,
         });
 
         socket.send(JSON.stringify({ id: "invalid-known-1", type: "query.subscribe", query: "greetingFor", args: { name: "Grace" } }));

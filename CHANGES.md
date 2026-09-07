@@ -6,6 +6,8 @@ Changes since v0.9.16.
 
 ### 🐛 Bug Fixes
 
+- Accept multiple query arguments and nested multi-element arrays by correcting server array-index validation.
+
 - Prevent caching denied principal ingress (07daff9c).
 
 ## v0.9.11 - 2026-09-02

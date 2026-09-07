@@ -262,6 +262,25 @@ test("framework-neutral query subscriptions structurally isolate argument tuples
   } finally { browser.cleanup(); }
 });
 
+test("generated browser subscriptions preserve multiple arguments and nested array indices", async () => {
+  const frames = [];
+  const browser = installBrowserFakes(anonymousAuth, { handlers: {
+    "query.subscribe": async (message) => {
+      frames.push(message);
+      return { type: "query.result", data: message.args, error: null };
+    },
+  }});
+  try {
+    const runtime = await importClientRuntime();
+    const args = ["team-a", { items: Array.from({ length: 12 }, (_, i) => i) }, ["a", "b"]];
+    const subscription = runtime.queries.subscribe("multiple", () => {}, ...args);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(frames.length, 1);
+    assert.deepEqual(frames[0].args, args);
+    subscription.unsubscribe();
+  } finally { browser.cleanup(); }
+});
+
 test("query argument normalization snapshots safe JSON values, rejects hostile inputs, and enforces the UTF-8 boundary", async () => {
   const frames = [];
   const browser = installBrowserFakes(anonymousAuth, { handlers: {
