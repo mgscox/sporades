@@ -6026,7 +6026,7 @@ function normalizeQueryArgumentValue(value, ancestors) {
     ancestors.add(value);
     try {
         if (Array.isArray(value)) {
-            if (Object.getOwnPropertyNames(value).some((key) => key !== "length" && (!/^(0|[1-9]\\d*)$/.test(key) || Number(key) >= value.length))) {
+            if (Object.getOwnPropertyNames(value).some((key) => key !== "length" && (!/^(0|[1-9]\d*)$/.test(key) || Number(key) >= value.length))) {
                 throw new Error("Query arguments must not contain non-index array properties.");
             }
             const copy = [];
