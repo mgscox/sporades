@@ -1,6 +1,6 @@
 # Document shell quote handlers in the SQL lexer census
 
-Status: implementation pending
+Status: complete
 
 The SQL architecture test deliberately scans all shipped runtime functions for
 quote/comment delimiter handling. `exactShellVocabularyToken` and
@@ -15,3 +15,11 @@ SQL tokenizer invariants. No runtime behavior or generated artifact change.
 
 Verify the original failure, then run the database-adapter engine seam test file
 and generated-artifact validation after the change.
+
+## Verification
+
+The original focused test failed before the change. After adding the two
+purpose-documented entries, the full `database-adapter-engine-seam.test.js` file
+passed: 25 passed, 5 PostgreSQL tests skipped because no test service was
+configured. Generated-artifact validation and diff whitespace checks passed.
+The detector and runtime source are unchanged.

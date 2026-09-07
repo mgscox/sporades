@@ -1257,10 +1257,9 @@ const namesRunDelimiters = (source) => {
 // because it is not listed; a listed one that disappears fails too, so the reasons below cannot
 // quietly go stale. Each entry says why it is not the one tokenizer.
 //
-// Four of the seven lex JavaScript rather than SQL. They are here because no detector working from
-// delimiter literals can tell the two apart — both spell a string run with the same three quote
-// characters — and listing them with the reason is honest where narrowing the detector to exclude
-// them would just be the spelling-coupled guard again under a new name.
+// Some entries handle JavaScript or shell syntax rather than SQL. Delimiter literals alone cannot
+// distinguish these languages, which share quote characters. Listing each non-SQL purpose keeps
+// the detector broad instead of hiding new walkers behind language-specific exclusions.
 const RUN_LEXER_CENSUS = {
   skipSqlQuotedOrCommented: "the one tokenizer every read-only inspection consumer asks a dialect of",
   // On the inspection path — every Postgres inspection query passes through it twice — and left
@@ -1272,6 +1271,8 @@ const RUN_LEXER_CENSUS = {
   // Off the inspection path: reached only from libSQL's `exec`, and `runReadOnlyInspectionQuery`
   // goes through `prepare`. Latent duplication of the same class; has its own ticket.
   splitSqlStatements: "recorded exception: reached only from libSQL exec, not from the inspection path",
+  exactShellVocabularyToken: "recognizes quoted Bash vocabulary during uploaded-text screening, not SQL",
+  shellWordHasPathExpansion: "tracks shell quoting for path expansion during uploaded-text screening, not SQL",
   extractObjectPropertySource: "lexes Capsule definition JavaScript, not SQL",
   findMatchingDelimiter: "lexes Capsule definition JavaScript, not SQL",
   findMatchingParen: "lexes Capsule definition JavaScript, not SQL",
