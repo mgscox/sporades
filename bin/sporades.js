@@ -100525,10 +100525,18 @@ async function routeEndpoint(database, request, response) {
   if (request.aborted || request.destroyed) abortRequest();
   else request.once?.("aborted", abortRequest);
   request.__sporadesEndpointSignal = requestAbort.signal;
+  const closeIncompleteMultipartRequest = () => {
+    if (endpoint.options?.body?.multipart && request.complete === false) {
+      response.shouldKeepAlive = false;
+      response.setHeader("connection", "close");
+      return { connection: "close" };
+    }
+    return {};
+  };
   try {
     const result = await runEndpoint(database, endpoint, requestUrl, request);
     const sensitiveResponseHeaders = request.__sporadesAccessKeyAdmitted || request.__sporadesSecretDisclosed ? { "cache-control": "private, no-store", pragma: "no-cache" } : void 0;
-    if (!await writeEndpointResult(database, response, result, sensitiveResponseHeaders)) {
+    if (!await writeEndpointResult(database, response, result, { ...sensitiveResponseHeaders, ...closeIncompleteMultipartRequest() })) {
       return true;
     }
   } catch (error) {
@@ -100546,6 +100554,7 @@ async function routeEndpoint(database, request, response) {
       response.setHeader("cache-control", "no-store");
       response.setHeader("pragma", "no-cache");
     }
+    closeIncompleteMultipartRequest();
     emitHttpFailureLog(database, request, error);
     writeEndpointError(response, error);
   } finally {

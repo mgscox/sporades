@@ -3201,13 +3201,22 @@ export async function routeEndpoint(database, request, response) {
     else
         request.once?.("aborted", abortRequest);
     request.__sporadesEndpointSignal = requestAbort.signal;
+    const closeIncompleteMultipartRequest = () => {
+        if (endpoint.options?.body?.multipart && request.complete === false) {
+            // Preserve the response, then close rather than wait for an unread body.
+            response.shouldKeepAlive = false;
+            response.setHeader("connection", "close");
+            return { connection: "close" };
+        }
+        return {};
+    };
     try {
         const result = await runEndpoint(database, endpoint, requestUrl, request);
         const sensitiveResponseHeaders = request.__sporadesAccessKeyAdmitted
             || request.__sporadesSecretDisclosed
             ? { "cache-control": "private, no-store", pragma: "no-cache" }
             : undefined;
-        if (!await writeEndpointResult(database, response, result, sensitiveResponseHeaders)) {
+        if (!await writeEndpointResult(database, response, result, { ...sensitiveResponseHeaders, ...closeIncompleteMultipartRequest() })) {
             return true;
         }
     }
@@ -3227,6 +3236,7 @@ export async function routeEndpoint(database, request, response) {
             response.setHeader("cache-control", "no-store");
             response.setHeader("pragma", "no-cache");
         }
+        closeIncompleteMultipartRequest();
         emitHttpFailureLog(database, request, error);
         writeEndpointError(response, error);
     }

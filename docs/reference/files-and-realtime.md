@@ -821,7 +821,9 @@ Capsule-level `files.ingress.admit` can return
 `{ allow: true, principal, allowFiles: false }` to admit bounded fields while
 prohibiting file parts for an Application credential. This permission reaches
 the same header-time enforcement as actor admission: empty files and files in
-any part order are rejected before staging or inspection. It requires no
+any part order are rejected before staging or inspection. When parsing ends
+before the complete HTTP request body arrives, the runtime sends its response
+and closes the connection rather than waiting for the unread body. It requires no
 Sporades User Session or Access key. Omitted, `undefined`, or `true` preserves
 the endpoint's declared upload capabilities; no value widens those limits.
 Admission must return own data properties with no extra own keys; malformed

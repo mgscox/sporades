@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { createServer as createNetServer } from "node:net";
+import { createConnection, createServer as createNetServer } from "node:net";
 import { access, chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -2830,7 +2830,7 @@ for (const authority of ["actor", "capsule-principal"]) for (const storage of ["
       }
       decisionOverride = undefined;
       assert.equal(getterCalls, 0, "authority validation never invokes accessors");
-      if (principalMode) {
+      {
         allowFiles = false;
         const completedRequests = [];
         const auditCodes = [];
@@ -2842,9 +2842,9 @@ for (const authority of ["actor", "capsule-principal"]) for (const storage of ["
         });
         await new Promise((resolve) => httpServer.listen(0, "127.0.0.1", resolve));
         const url = `http://127.0.0.1:${httpServer.address().port}/fields`;
-        const send = (parts, token = "valid-app-token") => fetch(url, { method: "POST", headers: {
+        const send = (parts, token = principalMode ? "valid-app-token" : "claim-session") => fetch(url, { method: "POST", headers: {
           "content-type": "multipart/form-data; boundary=claim", "idempotency-key": randomUUID(),
-          "x-app-token": token, "x-allow-files": "true",
+          [principalMode ? "x-app-token" : "x-sporades-session-token"]: token, "x-allow-files": "true",
         }, body: `--claim\r\n${parts.join("\r\n--claim\r\n")}\r\n--claim--\r\n` });
         const fieldsResponse = await send([field]);
         assert.equal(fieldsResponse.status, 200);
@@ -2858,8 +2858,25 @@ for (const authority of ["actor", "capsule-principal"]) for (const storage of ["
         }
         const invalidResponse = await send([field], "invalid-app-token");
         assert.equal(invalidResponse.status, 401);
-        assert.equal(invalidResponse.headers.get("cache-control"), "no-store");
+        if (principalMode) assert.equal(invalidResponse.headers.get("cache-control"), "no-store");
         await invalidResponse.arrayBuffer();
+        const sendPartial = (partialBody) => new Promise((resolve, reject) => {
+          let received = "";
+          const socket = createConnection({ host: "127.0.0.1", port: httpServer.address().port });
+          socket.setTimeout(2_000, () => { reject(new Error("Partial multipart connection did not close")); socket.destroy(); });
+          socket.on("error", reject);
+          socket.on("data", (chunk) => { received += chunk.toString(); });
+          socket.on("close", () => resolve(received));
+          socket.on("connect", () => socket.write(`POST /fields HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\nContent-Length: 1000000\r\nContent-Type: multipart/form-data; boundary=claim\r\nIdempotency-Key: partial-${authority}-${storage}\r\n${principalMode ? "X-App-Token: valid-app-token" : "X-Sporades-Session-Token: claim-session"}\r\n\r\n${partialBody}`));
+        });
+        const partialResponse = await sendPartial('--claim\r\nContent-Disposition: form-data; name="file"; filename="slow.txt"\r\n\r\n');
+        assert.match(partialResponse, /connection: close/i);
+        assert.match(partialResponse, /MULTIPART_ADMISSION_DENIED/);
+        const completedMultipartResponse = await sendPartial(`--claim\r\n${field}\r\n--claim--\r\n`);
+        assert.match(completedMultipartResponse, /HTTP\/1.1 200/);
+        assert.match(completedMultipartResponse, /connection: close/i);
+        assert.match(completedMultipartResponse, /"note":\["hello"\]/);
+        await Promise.all(completedRequests);
       }
       assert.equal(bodyReads, 0); assert.equal(receipts, 0); assert.equal(writes, 0); assert.equal(scans, 0);
       if (service) assert.equal(service.objects.size, 0);

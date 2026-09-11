@@ -3403,13 +3403,22 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
   if (request.aborted || request.destroyed) abortRequest();
   else request.once?.("aborted", abortRequest);
   (request as LooseRecord).__sporadesEndpointSignal = requestAbort.signal;
+  const closeIncompleteMultipartRequest = () => {
+    if (endpoint.options?.body?.multipart && request.complete === false) {
+      // Preserve the response, then close rather than wait for an unread body.
+      response.shouldKeepAlive = false;
+      response.setHeader("connection", "close");
+      return { connection: "close" };
+    }
+    return {};
+  };
   try {
     const result = await runEndpoint(database, endpoint, requestUrl, request);
     const sensitiveResponseHeaders = (request as LooseRecord).__sporadesAccessKeyAdmitted
       || (request as LooseRecord).__sporadesSecretDisclosed
       ? { "cache-control": "private, no-store", pragma: "no-cache" }
       : undefined;
-    if (!await writeEndpointResult(database as LooseRecord, response, result, sensitiveResponseHeaders)) {
+    if (!await writeEndpointResult(database as LooseRecord, response, result, { ...sensitiveResponseHeaders, ...closeIncompleteMultipartRequest() })) {
       return true;
     }
   } catch (error: any) {
@@ -3427,6 +3436,7 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
       response.setHeader("cache-control", "no-store");
       response.setHeader("pragma", "no-cache");
     }
+    closeIncompleteMultipartRequest();
     emitHttpFailureLog(database as LooseRecord, request, error);
     writeEndpointError(response, error);
   } finally { request.removeListener?.("aborted", abortRequest); delete (request as LooseRecord).__sporadesEndpointSignal; delete (request as LooseRecord).__sporadesCapsuleIngressAdmissionDenied; }
