@@ -50,6 +50,6 @@ Implemented in `bfb6bce1` on `codex/log-payload-cap-floor`.
 - `git diff --check` passed. Canonical guide, reference, CONTEXT, and PRD updated;
   shipped `bin/`, `dist/`, and generated-source manifest rebuilt.
 
-The branch is local. Automatic approval review blocked pushing to GitHub pending
-explicit authorization. PR #30 remains unchanged; this implementation supersedes
-its unratified global-floor proposal without modifying the Dev reload tracker.
+Published with explicit user authorization as https://github.com/mgscox/sporades/pull/41.
+PR #30 remains unchanged; this implementation supersedes its unratified
+global-floor proposal without modifying the Dev reload tracker.

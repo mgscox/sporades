@@ -63,5 +63,5 @@ Dev reload work from PR #29.
 
 Implemented in `bfb6bce1` on `codex/log-payload-cap-floor` in the isolated
 `/Users/mattcox/.codex/worktrees/dd0a/sporades` worktree. See the child issue for
-verification results. GitHub publication is pending explicit authorization;
-PR #30 itself remains unchanged.
+verification results. Published as https://github.com/mgscox/sporades/pull/41
+with explicit user authorization; PR #30 itself remains unchanged.
