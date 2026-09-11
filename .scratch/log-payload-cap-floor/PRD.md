@@ -1,6 +1,6 @@
 # Log payload cap floor
 
-Status: ready-for-agent
+Status: complete
 
 ## Source Planning
 
@@ -58,3 +58,10 @@ the required minimum.
 Do not change the truncation fallback or shedding order, restrict Capsule names,
 or claim that arbitrary events cannot truncate. Do not change the completed
 Dev reload work from PR #29.
+
+## Completion evidence
+
+Implemented in `bfb6bce1` on `codex/log-payload-cap-floor` in the isolated
+`/Users/mattcox/.codex/worktrees/dd0a/sporades` worktree. See the child issue for
+verification results. GitHub publication is pending explicit authorization;
+PR #30 itself remains unchanged.
