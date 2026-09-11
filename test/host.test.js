@@ -1471,6 +1471,8 @@ async function writePackage(projectDir, packageName, exports, files) {
 }
 
 test("sporades host stores Host profiles outside projects and resolves the current profile", async () => {
+  // This target is stored locally; the profile test does not connect over SSH.
+  const server = process.env.SPORADES_TEST_HOST_SERVER || "root@203.0.113.10";
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
@@ -1480,7 +1482,7 @@ test("sporades host stores Host profiles outside projects and resolves the curre
     const projectDir = path.join(dir, "todo-island");
 
     const addPersonal = await runCli(
-      ["host", "add", "personal", "--server", "root@168.119.161.21", "--domain", "capsules.example.dev", "--json"],
+      ["host", "add", "personal", "--server", server, "--domain", "capsules.example.dev", "--json"],
       { cwd: projectDir, env: hostEnv(configDir) },
     );
     assert.equal(addPersonal.code, 0, addPersonal.stderr);
@@ -1489,7 +1491,7 @@ test("sporades host stores Host profiles outside projects and resolves the curre
       data: {
         alias: "personal",
         profile: {
-          server: "root@168.119.161.21",
+          server,
           domain: "capsules.example.dev",
           scheme: "https",
           remoteRoot: "/srv/sporades",

@@ -244,9 +244,8 @@ sporades host use personal
 sporades host current --json
 ```
 
-For the current MVP server, replacing the example domain with
-`mattgscox.co.uk` and the server with `root@168.119.161.21` is enough once DNS
-has propagated:
+Replace `example.com` with your Hosted domain and `root@example.com` with
+your SSH target. Once DNS has propagated, configure the Host profile:
 
 ```sh
 sporades host add personal \

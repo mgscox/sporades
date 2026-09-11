@@ -17,7 +17,7 @@ Add the local Host profile and project remote binding path for the hosted Capsul
 - [ ] Host commands can explicitly select a Host profile instead of relying on the current profile.
 - [ ] Host profile data is stored outside projects, while project remote binding data is stored under the project's Sporades runtime directory.
 - [ ] Host profile validation rejects missing aliases, invalid Hosted domains, and invalid remote roots with standard Sporades JSON errors under `--json`.
-- [ ] Tests cover current profile resolution, explicit profile overrides, arbitrary domains, arbitrary SSH targets, and absence of hard-coded `mattgscox.co.uk`.
+- [ ] Tests cover current profile resolution, explicit profile overrides, arbitrary domains, arbitrary SSH targets, and absence of hard-coded `example.com`.
 
 ## Blocked by
 

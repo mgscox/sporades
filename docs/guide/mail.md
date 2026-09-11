@@ -60,7 +60,7 @@ Certificate verification defaults to enabled. Do not set
 
 ```json
 {
-  "host": "192.0.2.25",
+  "host": "203.0.113.25",
   "port": 465,
   "tls": {
     "mode": "implicit",

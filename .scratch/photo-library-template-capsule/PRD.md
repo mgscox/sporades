@@ -24,5 +24,5 @@ Add a `photo-library` scaffold template that demonstrates Sporades auth and Stor
 ## Verification
 
 - `sporades create --template photo-library` writes a runnable Capsule.
-- A disposable Hosted Capsule on `168.119.161.21` can be opened in an HTTP browser.
+- A disposable Hosted Capsule on the configured Host server can be opened in an HTTP browser.
 - Browser verification covers anonymous public upload, Google simulated linked identity upload defaulting private, visibility toggle, public gallery filtering, and authenticated personal library status display.

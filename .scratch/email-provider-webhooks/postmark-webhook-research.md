@@ -300,7 +300,7 @@ or future first-party contract proves it exists.
   fixture for local parser testing.
 - Postmark provides a black-hole domain for safe fake bounce generation, but
   that would violate the user's current account restriction that live sends may
-  only target `matt.c@mattgscox.com`.
+  only target `approved-recipient@example.com`.
 - No first-party test-webhook API endpoint was found in the Webhooks API. The
   synthetic **Send test** facility is a UI operation, not a documented Server
   API operation.
@@ -314,8 +314,11 @@ it is not a webhook trigger and should not be mistaken for callback validation.
 
 ## Safe live-validation plan
 
+`approved-recipient@example.com` below redacts the originally approved recipient.
+For any new live validation, use only a recipient explicitly approved for that run.
+
 Constraints: never print or persist `POSTMARK_API_KEY`; never send to any address
-other than `matt.c@mattgscox.com`; do not mutate existing webhooks or suppression
+other than `approved-recipient@example.com`; do not mutate existing webhooks or suppression
 state; remove all temporary resources afterward.
 
 1. Source the refreshed key only inside a short-lived process and call
@@ -339,7 +342,7 @@ state; remove all temporary resources afterward.
    `POST /webhooks`, recording only its returned ID. Enable Delivery, Open, and
    Click, with content inclusion disabled for Bounce/SpamComplaint.
 6. Send exactly one tracked message through `POST /email` to
-   `matt.c@mattgscox.com`, using a confirmed sender on the Server, a unique
+   `approved-recipient@example.com`, using a confirmed sender on the Server, a unique
    `sporades-correlation-id` Metadata value, `TrackOpens: true`, and
    `TrackLinks: "HtmlOnly"`. The body should contain one harmless unique link.
    Validate Delivery, then have the user open and click the message to validate
@@ -369,7 +372,7 @@ Observed account and authentication behavior:
   unauthenticated requests in automated coverage and accepted all six live test
   requests through the same verifier and dispatcher.
 - The test-mode account accepted exactly one approved API send from and to
-  `matt.c@mattgscox.com`. Postmark retained it as `Sent` with no recorded
+  `approved-recipient@example.com`. Postmark retained it as `Sent` with no recorded
   Delivery event during the four-minute observation window, so it emitted no
   real Delivery callback. No second message was sent.
 

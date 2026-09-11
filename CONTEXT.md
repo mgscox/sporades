@@ -61,7 +61,7 @@ A local CLI configuration entry that names a Host server plus a Hosted domain, s
 _Avoid_: host, remote config, environment
 
 **Hosted domain**:
-A DNS domain where Capsule subnames resolve to a Host server, such as `mattgscox.co.uk`.
+A DNS domain where Capsule subnames resolve to a Host server, such as `example.com`.
 _Avoid_: host, hostname, server domain
 
 **Hosted Capsule**:
