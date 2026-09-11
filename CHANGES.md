@@ -2,9 +2,12 @@
 
 ## Unreleased - 2026-09-11
 
-Changes since v0.9.19.
+Changes since v0.9.20.
 
-No changes detected.
+### 📝 Documentation
+
+- Close incomplete multipart connections after sending responses (b9e4049c).
+- Honor Capsule-principal file permission before multipart staging (#39) (c69534c6).
 
 ## v0.9.11 - 2026-09-02
 
@@ -93,6 +96,7 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
+
 
 
 
