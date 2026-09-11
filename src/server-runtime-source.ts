@@ -3403,13 +3403,22 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
   if (request.aborted || request.destroyed) abortRequest();
   else request.once?.("aborted", abortRequest);
   (request as LooseRecord).__sporadesEndpointSignal = requestAbort.signal;
+  const closeIncompleteMultipartRequest = () => {
+    if (endpoint.options?.body?.multipart && request.complete === false) {
+      // Preserve the response, then close rather than wait for an unread body.
+      response.shouldKeepAlive = false;
+      response.setHeader("connection", "close");
+      return { connection: "close" };
+    }
+    return {};
+  };
   try {
     const result = await runEndpoint(database, endpoint, requestUrl, request);
     const sensitiveResponseHeaders = (request as LooseRecord).__sporadesAccessKeyAdmitted
       || (request as LooseRecord).__sporadesSecretDisclosed
       ? { "cache-control": "private, no-store", pragma: "no-cache" }
       : undefined;
-    if (!await writeEndpointResult(database as LooseRecord, response, result, sensitiveResponseHeaders)) {
+    if (!await writeEndpointResult(database as LooseRecord, response, result, { ...sensitiveResponseHeaders, ...closeIncompleteMultipartRequest() })) {
       return true;
     }
   } catch (error: any) {
@@ -3427,6 +3436,7 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
       response.setHeader("cache-control", "no-store");
       response.setHeader("pragma", "no-cache");
     }
+    closeIncompleteMultipartRequest();
     emitHttpFailureLog(database as LooseRecord, request, error);
     writeEndpointError(response, error);
   } finally { request.removeListener?.("aborted", abortRequest); delete (request as LooseRecord).__sporadesEndpointSignal; delete (request as LooseRecord).__sporadesCapsuleIngressAdmissionDenied; }
@@ -3458,6 +3468,20 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
 
 
 
+/** Snapshot explicit admission authority without invoking property accessors. */
+function multipartAdmissionFilePermission(decision: unknown, principalMode = false): boolean {
+  if (!decision || typeof decision !== "object" || Array.isArray(decision)) throw multipartAdmissionDenied();
+  const keys = Reflect.ownKeys(decision);
+  const allow = Object.getOwnPropertyDescriptor(decision, "allow");
+  const allowFiles = Object.getOwnPropertyDescriptor(decision, "allowFiles");
+  const principal = principalMode ? Object.getOwnPropertyDescriptor(decision, "principal") : undefined;
+  if (keys.some((key) => key !== "allow" && key !== "allowFiles" && !(principalMode && key === "principal"))
+    || !allow || !Object.prototype.hasOwnProperty.call(allow, "value") || allow.value !== true
+    || (principalMode && (!principal || !Object.prototype.hasOwnProperty.call(principal, "value")))
+    || (allowFiles && (!Object.prototype.hasOwnProperty.call(allowFiles, "value") || (allowFiles.value !== undefined && typeof allowFiles.value !== "boolean")))) throw multipartAdmissionDenied();
+  return allowFiles?.value !== false;
+}
+
 async function admitCapsuleIngressPrincipal(database: LooseRecord, endpoint: LooseRecord, endpointRequest: LooseRecord, signal: any) {
   const definition = database.fileIngressDefinition;
   if (!definition) throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
@@ -3472,12 +3496,15 @@ async function admitCapsuleIngressPrincipal(database: LooseRecord, endpoint: Loo
     signal,
     request: Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }),
   }), Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }))));
+  let allowFiles: boolean;
+  try { allowFiles = multipartAdmissionFilePermission(decision, true); }
+  catch { throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED"); }
   const namespace = decision?.principal?.namespace; const key = decision?.principal?.key;
   const serialized = (() => { try { return JSON.stringify(decision); } catch { return ""; } })();
   if (decision?.allow !== true || typeof namespace !== "string" || !definition.principalNamespaces.includes(namespace) || typeof key !== "string" || key.length === 0 || Buffer.byteLength(key, "utf8") > 256 || /[\x00-\x1f\x7f]/.test(key) || Buffer.byteLength(serialized, "utf8") > 4096) {
     throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
   }
-  return Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId });
+  return Object.freeze({ allowFiles, authority: Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId }) });
 }
 
 const endpointMultipartAdmissionTimeoutMs = 5_000;
@@ -3541,15 +3568,8 @@ async function admitEndpointMultipart(database: LooseRecord, endpoint: LooseReco
     // A policy may settle before an asynchronous engine has committed and
     // released its transaction. Keep the deadline live through that boundary:
     // an expired or disconnected request never earns body-read authority.
-    if (controller.signal.aborted || Date.now() >= deadline || !decision || typeof decision !== "object" || Array.isArray(decision)) throw multipartAdmissionDenied();
-    const keys = Reflect.ownKeys(decision);
-    const allow = Object.getOwnPropertyDescriptor(decision, "allow");
-    const allowFiles = Object.getOwnPropertyDescriptor(decision, "allowFiles");
-    // Authority must be explicit own data, never inherited or accessor-driven.
-    if (keys.some((key) => key !== "allow" && key !== "allowFiles")
-      || !allow || !Object.prototype.hasOwnProperty.call(allow, "value") || allow.value !== true
-      || (allowFiles && (!Object.prototype.hasOwnProperty.call(allowFiles, "value") || (allowFiles.value !== undefined && typeof allowFiles.value !== "boolean")))) throw multipartAdmissionDenied();
-    return allowFiles?.value !== false;
+    if (controller.signal.aborted || Date.now() >= deadline) throw multipartAdmissionDenied();
+    return multipartAdmissionFilePermission(decision);
   } catch {
     throw multipartAdmissionDenied();
   } finally {
@@ -3618,7 +3638,9 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
       let ingressAuthority: LooseRecord;
       let allowFiles = true;
       if (claimAuthority === "capsule-principal") {
-        ingressAuthority = await admitCapsuleIngressPrincipal(database, endpoint as LooseRecord, endpointRequest, request.signal);
+        const admission = await admitCapsuleIngressPrincipal(database, endpoint as LooseRecord, endpointRequest, request.signal);
+        ingressAuthority = admission.authority;
+        allowFiles = admission.allowFiles;
       } else {
         if (!admitted?.auth?.isAuthenticated || admitted.auth.isGuest || isReservedAuthUserId(admitted.auth.userId)) throw commandError("Unauthenticated.", "Sign in with a linked human or service User and retry.", "UNAUTHENTICATED");
         const endpointSignal = request.signal ?? (request as LooseRecord).__sporadesEndpointSignal;

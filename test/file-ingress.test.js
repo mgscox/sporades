@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { createServer as createNetServer } from "node:net";
+import { createConnection, createServer as createNetServer } from "node:net";
 import { access, chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -2737,24 +2737,38 @@ test("an inspected lease cannot substitute its inspected name or MIME type at cl
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
-for (const storage of ["local", "s3"]) test(`${storage}: fields-only admission rejects file headers before staging and inspection`, async () => {
+for (const authority of ["actor", "capsule-principal"]) for (const storage of ["local", "s3"]) test(`${authority}/${storage}: fields-only admission rejects file headers before staging and inspection`, async () => {
   const exercise = async (service) => {
-    const dir = await mkdtemp(path.join(tmpdir(), "sporades-fields-only-")); let database; let scanner;
+    const dir = await mkdtemp(path.join(tmpdir(), "sporades-fields-only-")); let database; let scanner; let httpServer;
     try {
       let allowFiles = false; let decisionOverride; let claimAllowed = true; let scans = 0; let writes = 0; let receipts = 0; let admissions = 0;
-      const definition = capsule({ name: "fields-only", endpoints: {
-        upload: endpoint({ method: "POST", path: "/fields", body: { multipart: {
-          ...ingressPolicy(), inspection: { policyRevision: "fields-only-v1", requiredInspectors: ["clamav"] },
-          admit: () => { admissions += 1; return decisionOverride ?? { allow: true, allowFiles }; },
-        } } }, requireAuth(async (ctx) => {
-          if (!claimAllowed) throw Object.assign(new Error("Authority changed"), { code: "RESOURCE_UNAVAILABLE" });
-          return ctx.request.multipart.files.length ? await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/optional.txt" }) : ctx.request.multipart.fields;
-        })),
-      } });
+      const principalMode = authority === "capsule-principal";
+      const principal = { namespace: "application", key: "create-only-integration" };
+      const admit = (_ctx, request) => {
+        admissions += 1;
+        if (principalMode && request.headers["x-app-token"] !== "valid-app-token") return { allow: false };
+        return decisionOverride ?? { allow: true, allowFiles, ...(principalMode ? { principal } : {}) };
+      };
+      const handler = async (ctx) => {
+        if (!claimAllowed) throw Object.assign(new Error("Authority changed"), { code: "RESOURCE_UNAVAILABLE" });
+        return { body: ctx.request.multipart.files.length ? await ctx.files.claim(ctx.request.multipart.files[0], {
+          path: "/attachments/optional.txt",
+          ...(principalMode ? { authority: { kind: "capsule-principal", ...ctx.ingress.principal } } : {}),
+        }) : ctx.request.multipart.fields };
+      };
+      const definition = capsule({ name: "fields-only",
+        ...(principalMode ? { files: { acl: { read: () => false, delete: () => false }, ingress: { principalNamespaces: ["application"], admit } } } : {}),
+        endpoints: {
+          upload: endpoint({ method: "POST", path: "/fields", body: { multipart: {
+            ...ingressPolicy(), inspection: { policyRevision: "fields-only-v1", requiredInspectors: ["clamav"] },
+            ...(principalMode ? { claimAuthorities: ["capsule-principal"] } : { admit }),
+          } } }, principalMode ? handler : requireAuth(handler)),
+        },
+      });
       const serviceEnv = service ? { SPORADES_SERVICE_STORAGE_ENGINE: "minio", SPORADES_SERVICE_STORAGE_ENDPOINT: service.endpoint, SPORADES_SERVICE_STORAGE_ACCESS_KEY: "sporades", SPORADES_SERVICE_STORAGE_SECRET_KEY: "sporades-minio-local-secret", SPORADES_SERVICE_STORAGE_BUCKET: "sporades-files", SPORADES_SERVICE_STORAGE_REGION: "eu-west-2", SPORADES_SERVICE_STORAGE_NAMESPACE: randomUUID() } : {};
       const config = service ? { name: "fields-only", services: { storage: { kind: "storage", engine: "minio" } } } : { name: "fields-only", files: { storagePath: path.join(dir, "files") } };
       database = await openDevDatabase(path.join(dir, "data.db"), "", serviceEnv, config, definition, { serviceEnv });
-      await seedIngressUser(database);
+      if (!principalMode) await seedIngressUser(database);
       const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`);
       scanner = await fakeClamSocket(socketPath, { response: () => { scans += 1; return "stream: OK\0"; } });
       database.__clamavTest = { socketPath, loadedSignature: "daily:42", signature: { version: "daily:42", updatedAt: new Date().toISOString() } };
@@ -2774,10 +2788,11 @@ for (const storage of ["local", "s3"]) test(`${storage}: fields-only admission r
       const request = (parts, key = randomUUID()) => {
         const incoming = ingressRequest(key);
         incoming.headers["x-allow-files"] = "true";
+        if (principalMode) { delete incoming.headers["x-sporades-session-token"]; incoming.headers["x-app-token"] = "valid-app-token"; }
         incoming[Symbol.asyncIterator] = async function* () { yield Buffer.from(`--claim\r\n${parts.join("\r\n--claim\r\n")}\r\n--claim--\r\n`); };
         return incoming;
       };
-      const run = (incoming) => runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/fields"), incoming);
+      const run = async (incoming) => (await runEndpoint(database, database.endpoints[0], new URL("http://capsule.test/fields"), incoming)).body;
       assert.deepEqual({ ...await run(request([field])) }, { note: ["hello"] });
       for (const name of ["empty.txt", ""]) for (const bytes of ["", "payload"]) for (const parts of [[file(name, bytes), field], [field, file(name, bytes)]]) {
         await assert.rejects(run(request(parts)), { code: "MULTIPART_ADMISSION_DENIED" });
@@ -2791,14 +2806,15 @@ for (const storage of ["local", "s3"]) test(`${storage}: fields-only admission r
       await assert.rejects(run(headersOnly), { code: "MULTIPART_ADMISSION_DENIED" });
       assert.equal(bodyReads, 0, "deny at headers without asking for file bytes");
       const beforeAuth = admissions;
-      const invalid = request([field]); invalid.headers["x-sporades-session-token"] = "invalid";
+      const invalid = request([field]); invalid.headers[principalMode ? "x-app-token" : "x-sporades-session-token"] = "invalid";
       invalid[Symbol.asyncIterator] = async function* () { bodyReads += 1; yield Buffer.from("invalid"); };
       await assert.rejects(run(invalid), { code: "UNAUTHENTICATED" });
-      assert.equal(admissions, beforeAuth); assert.equal(bodyReads, 0);
+      assert.equal(admissions, beforeAuth + (principalMode ? 1 : 0)); assert.equal(bodyReads, 0);
+      const malformedCode = principalMode ? "UNAUTHENTICATED" : "MULTIPART_ADMISSION_DENIED";
       for (const invalidDecision of ["false", null, 0, {}]) {
         allowFiles = invalidDecision;
         const malformed = request([field]); malformed[Symbol.asyncIterator] = invalid[Symbol.asyncIterator];
-        await assert.rejects(run(malformed), { code: "MULTIPART_ADMISSION_DENIED" });
+        await assert.rejects(run(malformed), { code: malformedCode });
       }
       let getterCalls = 0;
       const accessorAllow = { get allow() { getterCalls += 1; return true; } };
@@ -2807,17 +2823,67 @@ for (const storage of ["local", "s3"]) test(`${storage}: fields-only admission r
       const inheritedAllowWithFiles = Object.assign(Object.create({ allow: true }), { allowFiles: false });
       const extraHidden = Object.defineProperty({ allow: true }, "extra", { value: true });
       for (const malformedDecision of [{}, inheritedAllow, inheritedAllowWithFiles, accessorAllow, accessorFiles, extraHidden, { allow: true, [Symbol("extra")]: true }]) {
+        if (principalMode) Object.defineProperty(malformedDecision, "principal", { value: principal });
         decisionOverride = malformedDecision;
         const malformed = request([field]); malformed[Symbol.asyncIterator] = invalid[Symbol.asyncIterator];
-        await assert.rejects(run(malformed), { code: "MULTIPART_ADMISSION_DENIED" });
+        await assert.rejects(run(malformed), { code: malformedCode });
       }
       decisionOverride = undefined;
       assert.equal(getterCalls, 0, "authority validation never invokes accessors");
+      {
+        allowFiles = false;
+        const completedRequests = [];
+        const auditCodes = [];
+        const emit = database.log.emit.bind(database.log);
+        database.log.emit = async (entry) => { if (entry.event === "file.ingress.failed") auditCodes.push(entry.data.code); return await emit(entry); };
+        httpServer = createServer((incoming, response) => {
+          const completion = routeEndpoint(database, incoming, response).catch((error) => response.destroy(error));
+          completedRequests.push(completion);
+        });
+        await new Promise((resolve) => httpServer.listen(0, "127.0.0.1", resolve));
+        const url = `http://127.0.0.1:${httpServer.address().port}/fields`;
+        const send = (parts, token = principalMode ? "valid-app-token" : "claim-session") => fetch(url, { method: "POST", headers: {
+          "content-type": "multipart/form-data; boundary=claim", "idempotency-key": randomUUID(),
+          [principalMode ? "x-app-token" : "x-sporades-session-token"]: token, "x-allow-files": "true",
+        }, body: `--claim\r\n${parts.join("\r\n--claim\r\n")}\r\n--claim--\r\n` });
+        const fieldsResponse = await send([field]);
+        assert.equal(fieldsResponse.status, 200);
+        assert.deepEqual(await fieldsResponse.json(), { note: ["hello"] });
+        for (const parts of [[file("", ""), field], [field, file("one.txt", "one"), file("two.txt", "two")]]) {
+          const auditCount = auditCodes.length;
+          const deniedResponse = await send(parts);
+          assert.equal((await deniedResponse.json()).error.code, "MULTIPART_ADMISSION_DENIED");
+          await Promise.all(completedRequests);
+          assert.deepEqual(auditCodes.slice(auditCount), ["MULTIPART_ADMISSION_DENIED"]);
+        }
+        const invalidResponse = await send([field], "invalid-app-token");
+        assert.equal(invalidResponse.status, 401);
+        if (principalMode) assert.equal(invalidResponse.headers.get("cache-control"), "no-store");
+        await invalidResponse.arrayBuffer();
+        const sendPartial = (partialBody) => new Promise((resolve, reject) => {
+          let received = "";
+          const socket = createConnection({ host: "127.0.0.1", port: httpServer.address().port });
+          socket.setTimeout(2_000, () => { reject(new Error("Partial multipart connection did not close")); socket.destroy(); });
+          socket.on("error", reject);
+          socket.on("data", (chunk) => { received += chunk.toString(); });
+          socket.on("close", () => resolve(received));
+          socket.on("connect", () => socket.write(`POST /fields HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\nContent-Length: 1000000\r\nContent-Type: multipart/form-data; boundary=claim\r\nIdempotency-Key: partial-${authority}-${storage}\r\n${principalMode ? "X-App-Token: valid-app-token" : "X-Sporades-Session-Token: claim-session"}\r\n\r\n${partialBody}`));
+        });
+        const partialResponse = await sendPartial('--claim\r\nContent-Disposition: form-data; name="file"; filename="slow.txt"\r\n\r\n');
+        assert.match(partialResponse, /connection: close/i);
+        assert.match(partialResponse, /MULTIPART_ADMISSION_DENIED/);
+        const completedMultipartResponse = await sendPartial(`--claim\r\n${field}\r\n--claim--\r\n`);
+        assert.match(completedMultipartResponse, /HTTP\/1.1 200/);
+        assert.match(completedMultipartResponse, /connection: close/i);
+        assert.match(completedMultipartResponse, /"note":\["hello"\]/);
+        await Promise.all(completedRequests);
+      }
       assert.equal(bodyReads, 0); assert.equal(receipts, 0); assert.equal(writes, 0); assert.equal(scans, 0);
       if (service) assert.equal(service.objects.size, 0);
       allowFiles = true;
       const positive = () => request([field, file("yes.txt", "hello")], "positive");
       const claimed = await run(positive()); assert.ok(claimed.id);
+      assert.equal((await database.adapter.selectFileById(claimed.id)).ownerId, principalMode ? database.capsuleIngressOwnerId : "claim-user");
       assert.ok(receipts > 0); assert.equal(writes, 1); assert.equal(scans, 1);
       assert.equal((await run(positive())).id, claimed.id, "retry preserves the claim");
       assert.equal(writes, 1);
@@ -2835,7 +2901,7 @@ for (const storage of ["local", "s3"]) test(`${storage}: fields-only admission r
       await assert.rejects(run(revoked), { code: "RESOURCE_UNAVAILABLE" });
       assert.equal(writes, 2); assert.ok(scans >= 2, "revocation is rechecked after admitted inspection and staging");
       assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_files]").get()).count), 1);
-    } finally { if (scanner) await new Promise((resolve) => scanner.server.close(resolve)); await database?.close(); await rm(dir, { recursive: true, force: true }); }
+    } finally { if (httpServer) await new Promise((resolve) => httpServer.close(resolve)); if (scanner) await new Promise((resolve) => scanner.server.close(resolve)); await database?.close(); await rm(dir, { recursive: true, force: true }); }
   };
   if (storage === "s3") await withFakeS3CompatibleService(exercise); else await exercise();
 });

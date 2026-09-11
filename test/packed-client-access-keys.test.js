@@ -60,6 +60,7 @@ test("the packed package exposes the complete server and client Access-key contr
         assert.match(declaration, new RegExp(`/\\*\\* ${escapedDescription} \\*/\\s*export type ${name}`));
       }
       assert.match(declaration, /EndpointMultipartAdmissionDecision = Readonly<\{\s*allow: true;\s*allowFiles\?: boolean/);
+      assert.match(declaration, /FileIngressAdmissionDecision = Readonly<\{[\s\S]*?principal: FileIngressPrincipal;\s*allowFiles\?: boolean/);
       for (const name of supportedAdmissionTypes) {
         assert.doesNotMatch(declaration, new RegExp(`/\\*\\*[^*]*@deprecated[^*]*\\*/\\s*export type ${name}`));
       }

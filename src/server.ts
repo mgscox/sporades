@@ -61,7 +61,7 @@ export type ReadOnlyDatabaseFromSchema<Schema extends SchemaDefinition> = {
 };
 export type FileIngressPrincipal = Readonly<{ namespace: string; key: string }>;
 export type FileIngressAdmissionRequest = Readonly<{ method: string; path: string; headers: Readonly<Record<string, string>>; query: Readonly<Record<string, string>> }>;
-export type FileIngressAdmissionDecision = Readonly<{ allow: false } | { allow: true; principal: FileIngressPrincipal }>;
+export type FileIngressAdmissionDecision = Readonly<{ allow: false } | { allow: true; principal: FileIngressPrincipal; allowFiles?: boolean }>;
 export type FileIngressAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
 /** Shared immutable request head supplied to endpoint multipart admission. */
 export type EndpointMultipartAdmissionRequest = FileIngressAdmissionRequest;

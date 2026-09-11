@@ -1449,7 +1449,11 @@ export async function* multipartParts(request: AsyncIterable<Uint8Array>, bounda
   const boundary = Buffer.from(`--${boundaryText}`); const marker = Buffer.from(`\r\n--${boundaryText}`);
   let pending = Buffer.alloc(0); let wire = 0; let state: "preamble" | "headers" | "body" | "separator" | "closing" = "preamble";
   let rawHeaders = ""; let pieces: Buffer[] = []; let size = 0; let partLimit = typeof maxPartBytes === "number" ? maxPartBytes : Math.max(maxPartBytes.file, maxPartBytes.field);
-  for await (const source of request) {
+  // Returning after a boundary or rejecting a file must not destroy an HTTP
+  // request's socket before routeEndpoint can write its response.
+  const stream = request as AsyncIterable<Uint8Array> & { iterator?: (options: { destroyOnReturn: boolean }) => AsyncIterable<Uint8Array> };
+  const chunks = typeof stream.iterator === "function" ? stream.iterator({ destroyOnReturn: false }) : stream;
+  for await (const source of chunks) {
     wire += source.byteLength; if (wire > maxWireBytes) throw Object.assign(new Error("Multipart body exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" }); pending = Buffer.concat([pending, Buffer.from(source)]);
     while (true) {
       if (state === "preamble") { if (pending.length < boundary.length + 2) break; if (!pending.subarray(0, boundary.length).equals(boundary) || pending.subarray(boundary.length, boundary.length + 2).toString() !== "\r\n") throw Object.assign(new Error("Malformed multipart request."), { code: "INVALID_MULTIPART" }); pending = pending.subarray(boundary.length + 2); state = "headers"; continue; }
