@@ -92842,8 +92842,65 @@ function restartPolicyStatus(mode, overrides2 = {}) {
 }
 
 // src/server-runtime-source.ts
-import { createHash as createHash8, randomBytes as randomBytes5, randomUUID as randomUUID7 } from "node:crypto";
+import { createHash as createHash8, randomBytes as randomBytes5, randomUUID as randomUUID8 } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+
+// src/log-envelope.ts
+import { randomUUID as randomUUID6 } from "node:crypto";
+function uncappedLogEnvelope(input) {
+  const config = input.config ?? {};
+  const capsuleName = String(config.name ?? "unknown");
+  return {
+    schema: "sporades.log.v1",
+    timestamp: input.timestamp ?? (/* @__PURE__ */ new Date()).toISOString(),
+    category: input.category ?? "platform",
+    event: input.event ?? "runtime.event",
+    level: input.level ?? "info",
+    message: String(input.message ?? ""),
+    capsule: {
+      name: capsuleName,
+      id: String(config.capsule?.id ?? config.id ?? capsuleName)
+    },
+    release: input.release ?? config.release ?? null,
+    request: input.request ? {
+      id: input.request.id ?? randomUUID6(),
+      method: input.request.method ?? null,
+      path: input.request.path ?? null
+    } : null,
+    correlation: input.correlation ?? null,
+    data: input.data ?? null
+  };
+}
+function minimumLogPayloadMaxBytes(config = {}) {
+  const envelope = uncappedLogEnvelope({
+    config,
+    timestamp: "2000-01-01T00:00:00.000Z",
+    category: "c".repeat(16),
+    level: "l".repeat(16),
+    event: "e".repeat(64),
+    message: "m".repeat(128),
+    data: null
+  });
+  return Buffer.byteLength(JSON.stringify({ ...envelope, truncated: false }), "utf8") - 4 + 256;
+}
+function logPayloadMaxBytes(config = {}) {
+  return config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes ?? 4096;
+}
+function validateLogConfig(config = {}) {
+  const minimum = minimumLogPayloadMaxBytes(config);
+  const fail2 = (key) => {
+    throw commandError(
+      "Invalid log payload cap.",
+      `Set \`${key}.payloadMaxBytes\` to an integer of at least ${minimum} bytes for this Capsule in sporades.json.`,
+      "INVALID_LOG_CONFIG"
+    );
+  };
+  for (const key of ["logs", "logging"]) {
+    const value = config[key]?.payloadMaxBytes;
+    if (value !== void 0 && (!Number.isSafeInteger(value) || value < minimum)) fail2(key);
+  }
+  if (logPayloadMaxBytes(config) < minimum) fail2("logs");
+}
 
 // src/mail-config-validation.ts
 function invalidMailConfig(message, hint) {
@@ -94871,7 +94928,7 @@ function sanitizeAccessKeyOperatorEnvelope(value, action, input, invalid) {
 }
 
 // src/database-runtime.ts
-import { randomUUID as randomUUID6 } from "node:crypto";
+import { randomUUID as randomUUID7 } from "node:crypto";
 
 // src/inspection-sql.ts
 function validateReadOnlyInspectionSql(sql) {
@@ -97700,7 +97757,7 @@ function migrateExistingAppTableInTransaction(sqlite, existingTable, nextTable) 
     const occupiedNames = new Set(tableNames);
     let tempTableName;
     do {
-      tempTableName = `__sporades_migrating_${randomUUID6().replaceAll("-", "")}`;
+      tempTableName = `__sporades_migrating_${randomUUID7().replaceAll("-", "")}`;
     } while (occupiedNames.has(tempTableName));
     return chainMaybePromise([
       ...addedFieldsForTable(existingTable, nextTable).filter((field) => field.kind === "Reference" && field.defaultValue !== void 0 && field.defaultValue !== null).map(
@@ -98088,6 +98145,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     validateStripeEventSubscription(capsuleDefinition.stripeEvents);
     validateEndpointResponseDeclarations(capsuleDefinition);
   }
+  validateLogConfig(config);
   const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
   if (capsuleDefinition?.teams !== void 0 && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
     throw commandError("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
@@ -98748,7 +98806,7 @@ async function reconcileSchedules(database) {
               }
             }
           }
-          plans.push({ definition, row, nextOccurrence, exhausted, recoveredOccurrence, generationToken: randomUUID7() });
+          plans.push({ definition, row, nextOccurrence, exhausted, recoveredOccurrence, generationToken: randomUUID8() });
         }
         for (const row of persisted) {
           if (!declaredNames.has(String(row.name))) {
@@ -99059,7 +99117,7 @@ async function recordScheduledOccurrence(database, definition, occurrence) {
 async function claimScheduledOccurrence(database, definition, occurrence) {
   const scheduledFor = occurrence.toISOString();
   const id2 = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
-  const token = randomUUID7();
+  const token = randomUUID8();
   const now2 = database.clock.now();
   const nowIso2 = now2.toISOString();
   const fullLeaseExpiresAt = jobTimestampAfter(now2, RUNTIME_CLAIM_LEASE_MS);
@@ -99553,10 +99611,6 @@ function jobClaimOwnership(claimToken) {
 function jobClaimTokenIsMalformed(claimToken) {
   return claimToken !== null && claimToken !== void 0 && (typeof claimToken !== "string" || claimToken.length === 0);
 }
-function logPayloadMaxBytes(config = {}) {
-  const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
-  return Number.isInteger(configured) && configured > 0 ? configured : 4096;
-}
 function logRedactedValue() {
   return "[REDACTED]";
 }
@@ -99772,29 +99826,11 @@ function createPrivilegedHandlerContext(database, context, signal) {
   return privilegedContext;
 }
 function createLogEnvelope(input) {
-  const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const config = input.config ?? {};
-  const capsuleName = String(config.name ?? "unknown");
-  const envelope = {
-    schema: "sporades.log.v1",
-    timestamp: input.timestamp ?? now2,
-    category: input.category ?? "platform",
-    event: input.event ?? "runtime.event",
-    level: input.level ?? "info",
-    message: String(input.message ?? ""),
-    capsule: {
-      name: capsuleName,
-      id: String(config.capsule?.id ?? config.id ?? capsuleName)
-    },
-    release: input.release ?? config.release ?? null,
-    request: input.request ? {
-      id: input.request.id ?? randomUUID7(),
-      method: input.request.method ?? null,
-      path: input.request.path ?? null
-    } : null,
-    correlation: input.correlation ?? null,
+  const envelope = uncappedLogEnvelope({
+    ...input,
     data: sanitizeLogData(input.data ?? null, input.serverEnv ?? {})
-  };
+  });
   return capLogEnvelope(envelope, logPayloadMaxBytes(config));
 }
 function sanitizeLogData(value, serverEnv) {
@@ -101406,7 +101442,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
     insert(values) {
       const now2 = (/* @__PURE__ */ new Date()).toISOString();
       const row = {
-        id: randomUUID7(),
+        id: randomUUID8(),
         createdAt: now2,
         updatedAt: now2
       };
@@ -101443,7 +101479,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       }
       const now2 = (/* @__PURE__ */ new Date()).toISOString();
       const row = {
-        id: randomUUID7(),
+        id: randomUUID8(),
         createdAt: now2,
         updatedAt: now2
       };
@@ -102177,7 +102213,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
               const currentAuth = { userId: current2.userId, displayName: current2.displayName, email: current2.email, picture: current2.picture, isAuthenticated: Boolean(current2.isAuthenticated), isGuest: Boolean(current2.isGuest), provider: current2.provider };
               if (!await tx.claimEmailCredentialVersion(normalized.email, credential.passwordHash, credential.passwordSalt)) return;
               if (!await database.authorizeReauthentication(tx, currentAuth, purpose)) return;
-              await tx.replaceReauthenticationProof({ id: randomUUID7(), userId: current2.userId, sessionToken: current2.token, purpose, createdAt: now2.toISOString(), expiresAt });
+              await tx.replaceReauthenticationProof({ id: randomUUID8(), userId: current2.userId, sessionToken: current2.token, purpose, createdAt: now2.toISOString(), expiresAt });
               ok = true;
               await tx.clearEmailReauthenticationAttempts(reauthenticationThrottleKeys);
             });
@@ -102892,7 +102928,7 @@ async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey,
       "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, '[]', NULL, NULL)"
     )
   ).run(
-    randomUUID7(),
+    randomUUID8(),
     handlerName,
     PRIVILEGED_AUTH_USER_ID,
     PRIVILEGED_AUTH_USER_ID,
@@ -103971,7 +104007,7 @@ async function runCurrentUserJobWorker(database) {
         await failInvalidQueuedJob(database, row, { code: "JOB_AVAILABLE_AT_INVALID", message: "The Job cannot acquire a canonical claim lease." });
         continue;
       }
-      const claimToken = randomUUID7();
+      const claimToken = randomUUID8();
       const claimed = await database.adapter.prepare(sql(
         "UPDATE [sporades_jobs] SET [status] = 'running', [attempts] = [attempts] + 1, [startedAt] = ?, [leaseExpiresAt] = ?, [claimToken] = ? WHERE [id] = ? AND [status] = 'queued' AND [availableAt] = ? AND COALESCE([retryJson], '') = COALESCE(?, '')"
       )).run(startedAt, leaseExpiresAt, claimToken, row.id, row.availableAt, row.retryJson);
@@ -104121,7 +104157,7 @@ async function runInsertMutation(database, context, mutationName, args) {
   }
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const values = {
-    id: randomUUID7(),
+    id: randomUUID8(),
     createdAt: now2,
     updatedAt: now2
   };
@@ -108828,6 +108864,7 @@ async function readProjectConfig(projectDir) {
   } catch {
     throw commandError4("Invalid project configuration: sporades.json", "Fix the JSON syntax in sporades.json.");
   }
+  validateLogConfig(config);
   validateSecurityConfig(config.security);
   validateClientConfig(config.client);
   validateSchedulingConfig(config.scheduling);

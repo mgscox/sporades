@@ -312,6 +312,7 @@ const MIGRATED_RUNTIME_MODULES = [
   // this batch, so it was visible to these guards by being registered; finding it here is the
   // evidence that it did not leave the census by moving.
   { file: "runtime-log-policy.js", atLeast: 1, sentinel: "isSensitiveLogKey" },
+  { file: "log-envelope.js", atLeast: 1, sentinel: "uncappedLogEnvelope" },
   // Batch 9 renamed this file from `stored-row-decoding.js` and gave it the writing half —
   // `serializeFieldValue` and `normalizeDateValue`, plus the private `toSqlNumber` and
   // `dateValueError` — so it holds six functions rather than two and the floor rises with it. The

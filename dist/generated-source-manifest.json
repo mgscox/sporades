@@ -51,6 +51,7 @@
       "src/http-runtime.ts",
       "src/inspection-sql.ts",
       "src/jobs-runtime.ts",
+      "src/log-envelope.ts",
       "src/log-index-guard.ts",
       "src/log-index-storage.ts",
       "src/mail-config-validation.ts",
@@ -94,7 +95,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "2c5fd8497bdb3def05b2ebe5a47b0f2569cc9a88c8846ffb314b0ce046fe28fc"
+    "digest": "d78485a4efa8bb323fd4509c2da0b7dd72468a8da7c0f947b0a69672aa0bc444"
   },
   "outputs": {
     "files": [
@@ -268,6 +269,10 @@
       "dist/jobs-runtime.d.ts.map",
       "dist/jobs-runtime.js",
       "dist/jobs-runtime.js.map",
+      "dist/log-envelope.d.ts",
+      "dist/log-envelope.d.ts.map",
+      "dist/log-envelope.js",
+      "dist/log-envelope.js.map",
       "dist/log-index-guard.d.ts",
       "dist/log-index-guard.d.ts.map",
       "dist/log-index-guard.js",
@@ -409,6 +414,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "29cf540b0346bf951020e6c54cea2769b201c865c933238568ba5fa07089f4c9"
+    "digest": "e108f6938ad05b76dd178e93f0b6ac644bf843f70a1539626123fe2c480d1310"
   }
 }
