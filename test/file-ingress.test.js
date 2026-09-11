@@ -2741,11 +2741,11 @@ for (const storage of ["local", "s3"]) test(`${storage}: fields-only admission r
   const exercise = async (service) => {
     const dir = await mkdtemp(path.join(tmpdir(), "sporades-fields-only-")); let database; let scanner;
     try {
-      let allowFiles = false; let claimAllowed = true; let scans = 0; let writes = 0; let receipts = 0; let admissions = 0;
+      let allowFiles = false; let decisionOverride; let claimAllowed = true; let scans = 0; let writes = 0; let receipts = 0; let admissions = 0;
       const definition = capsule({ name: "fields-only", endpoints: {
         upload: endpoint({ method: "POST", path: "/fields", body: { multipart: {
           ...ingressPolicy(), inspection: { policyRevision: "fields-only-v1", requiredInspectors: ["clamav"] },
-          admit: () => { admissions += 1; return { allow: true, allowFiles }; },
+          admit: () => { admissions += 1; return decisionOverride ?? { allow: true, allowFiles }; },
         } } }, requireAuth(async (ctx) => {
           if (!claimAllowed) throw Object.assign(new Error("Authority changed"), { code: "RESOURCE_UNAVAILABLE" });
           return ctx.request.multipart.files.length ? await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/optional.txt" }) : ctx.request.multipart.fields;
@@ -2800,6 +2800,19 @@ for (const storage of ["local", "s3"]) test(`${storage}: fields-only admission r
         const malformed = request([field]); malformed[Symbol.asyncIterator] = invalid[Symbol.asyncIterator];
         await assert.rejects(run(malformed), { code: "MULTIPART_ADMISSION_DENIED" });
       }
+      let getterCalls = 0;
+      const accessorAllow = { get allow() { getterCalls += 1; return true; } };
+      const accessorFiles = { allow: true, get allowFiles() { getterCalls += 1; return true; } };
+      const inheritedAllow = Object.create({ allow: true });
+      const inheritedAllowWithFiles = Object.assign(Object.create({ allow: true }), { allowFiles: false });
+      const extraHidden = Object.defineProperty({ allow: true }, "extra", { value: true });
+      for (const malformedDecision of [{}, inheritedAllow, inheritedAllowWithFiles, accessorAllow, accessorFiles, extraHidden, { allow: true, [Symbol("extra")]: true }]) {
+        decisionOverride = malformedDecision;
+        const malformed = request([field]); malformed[Symbol.asyncIterator] = invalid[Symbol.asyncIterator];
+        await assert.rejects(run(malformed), { code: "MULTIPART_ADMISSION_DENIED" });
+      }
+      decisionOverride = undefined;
+      assert.equal(getterCalls, 0, "authority validation never invokes accessors");
       assert.equal(bodyReads, 0); assert.equal(receipts, 0); assert.equal(writes, 0); assert.equal(scans, 0);
       if (service) assert.equal(service.objects.size, 0);
       allowFiles = true;

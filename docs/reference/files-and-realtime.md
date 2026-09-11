@@ -438,7 +438,10 @@ but before any multipart bytes are consumed. The callback receives the admitted
 transactionally consistent read-only `db` view. It returns `{ allow: true }`, `{ allow: true, allowFiles: false }`, or
 `{ allow: false }`; a denial, malformed result, throw, cancellation, or
 timeout returns the same bounded rejection and does not invoke the handler,
-stage a lease, or create a File.
+stage a lease, or create a File. The decision must explicitly supply an own
+`allow` data property; an optional `allowFiles` must also be a data property.
+Accessors and additional own keys are rejected, including symbol or
+non-enumerable keys.
 
 ```ts
 const schema = { resources: table({ state: String() }) };

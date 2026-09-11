@@ -100638,8 +100638,12 @@ async function admitEndpointMultipart(database, endpoint, endpointRequest, admis
       }
     });
     const decision = await Promise.race([transaction, settlementAbort]).finally(removeSettlementAbort);
-    if (controller.signal.aborted || Date.now() >= deadline || !decision || typeof decision !== "object" || Array.isArray(decision) || Object.keys(decision).some((key) => key !== "allow" && key !== "allowFiles") || decision.allowFiles !== void 0 && typeof decision.allowFiles !== "boolean" || typeof decision.allow !== "boolean" || decision.allow !== true) throw multipartAdmissionDenied();
-    return decision.allowFiles !== false;
+    if (controller.signal.aborted || Date.now() >= deadline || !decision || typeof decision !== "object" || Array.isArray(decision)) throw multipartAdmissionDenied();
+    const keys = Reflect.ownKeys(decision);
+    const allow = Object.getOwnPropertyDescriptor(decision, "allow");
+    const allowFiles = Object.getOwnPropertyDescriptor(decision, "allowFiles");
+    if (keys.some((key) => key !== "allow" && key !== "allowFiles") || !allow || !Object.prototype.hasOwnProperty.call(allow, "value") || allow.value !== true || allowFiles && (!Object.prototype.hasOwnProperty.call(allowFiles, "value") || allowFiles.value !== void 0 && typeof allowFiles.value !== "boolean")) throw multipartAdmissionDenied();
+    return allowFiles?.value !== false;
   } catch {
     throw multipartAdmissionDenied();
   } finally {
