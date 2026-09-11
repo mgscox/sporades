@@ -2,21 +2,9 @@
 
 ## Unreleased - 2026-09-11
 
-Changes since v0.9.18.
+Changes since v0.9.19.
 
-### 🚀 Features
-
-- Allow trusted multipart admission to prohibit files (#39) (47602ddf).
-
-### 📝 Documentation
-
-- Require explicit own data for multipart admission authority (3b118d0d).
-- Treat undefined multipart file permission as omitted (5cfe8aca).
-- Regenerate multipart admission API documentation (ac92dcf8).
-
-### 🧪 Tests
-
-- Verify file permission in packed admission declarations (0465c97f).
+No changes detected.
 
 ## v0.9.11 - 2026-09-02
 
@@ -105,6 +93,7 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
+
 
 
 
