@@ -3237,6 +3237,21 @@ export async function routeEndpoint(database, request, response) {
     }
     return true;
 }
+/** Snapshot explicit admission authority without invoking property accessors. */
+function multipartAdmissionFilePermission(decision, principalMode = false) {
+    if (!decision || typeof decision !== "object" || Array.isArray(decision))
+        throw multipartAdmissionDenied();
+    const keys = Reflect.ownKeys(decision);
+    const allow = Object.getOwnPropertyDescriptor(decision, "allow");
+    const allowFiles = Object.getOwnPropertyDescriptor(decision, "allowFiles");
+    const principal = principalMode ? Object.getOwnPropertyDescriptor(decision, "principal") : undefined;
+    if (keys.some((key) => key !== "allow" && key !== "allowFiles" && !(principalMode && key === "principal"))
+        || !allow || !Object.prototype.hasOwnProperty.call(allow, "value") || allow.value !== true
+        || (principalMode && (!principal || !Object.prototype.hasOwnProperty.call(principal, "value")))
+        || (allowFiles && (!Object.prototype.hasOwnProperty.call(allowFiles, "value") || (allowFiles.value !== undefined && typeof allowFiles.value !== "boolean"))))
+        throw multipartAdmissionDenied();
+    return allowFiles?.value !== false;
+}
 async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, signal) {
     const definition = database.fileIngressDefinition;
     if (!definition)
@@ -3252,6 +3267,13 @@ async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest,
         signal,
         request: Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }),
     }), Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }))));
+    let allowFiles;
+    try {
+        allowFiles = multipartAdmissionFilePermission(decision, true);
+    }
+    catch {
+        throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
+    }
     const namespace = decision?.principal?.namespace;
     const key = decision?.principal?.key;
     const serialized = (() => { try {
@@ -3263,7 +3285,7 @@ async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest,
     if (decision?.allow !== true || typeof namespace !== "string" || !definition.principalNamespaces.includes(namespace) || typeof key !== "string" || key.length === 0 || Buffer.byteLength(key, "utf8") > 256 || /[\x00-\x1f\x7f]/.test(key) || Buffer.byteLength(serialized, "utf8") > 4096) {
         throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
     }
-    return Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId });
+    return Object.freeze({ allowFiles, authority: Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId }) });
 }
 const endpointMultipartAdmissionTimeoutMs = 5_000;
 function multipartAdmissionDenied() {
@@ -3330,17 +3352,9 @@ async function admitEndpointMultipart(database, endpoint, endpointRequest, admis
         // A policy may settle before an asynchronous engine has committed and
         // released its transaction. Keep the deadline live through that boundary:
         // an expired or disconnected request never earns body-read authority.
-        if (controller.signal.aborted || Date.now() >= deadline || !decision || typeof decision !== "object" || Array.isArray(decision))
+        if (controller.signal.aborted || Date.now() >= deadline)
             throw multipartAdmissionDenied();
-        const keys = Reflect.ownKeys(decision);
-        const allow = Object.getOwnPropertyDescriptor(decision, "allow");
-        const allowFiles = Object.getOwnPropertyDescriptor(decision, "allowFiles");
-        // Authority must be explicit own data, never inherited or accessor-driven.
-        if (keys.some((key) => key !== "allow" && key !== "allowFiles")
-            || !allow || !Object.prototype.hasOwnProperty.call(allow, "value") || allow.value !== true
-            || (allowFiles && (!Object.prototype.hasOwnProperty.call(allowFiles, "value") || (allowFiles.value !== undefined && typeof allowFiles.value !== "boolean"))))
-            throw multipartAdmissionDenied();
-        return allowFiles?.value !== false;
+        return multipartAdmissionFilePermission(decision);
     }
     catch {
         throw multipartAdmissionDenied();
@@ -3410,7 +3424,9 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
             let ingressAuthority;
             let allowFiles = true;
             if (claimAuthority === "capsule-principal") {
-                ingressAuthority = await admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, request.signal);
+                const admission = await admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, request.signal);
+                ingressAuthority = admission.authority;
+                allowFiles = admission.allowFiles;
             }
             else {
                 if (!admitted?.auth?.isAuthenticated || admitted.auth.isGuest || isReservedAuthUserId(admitted.auth.userId))

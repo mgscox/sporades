@@ -54,6 +54,7 @@ export type FileIngressAdmissionDecision = Readonly<{
 } | {
     allow: true;
     principal: FileIngressPrincipal;
+    allowFiles?: boolean;
 }>;
 export type FileIngressAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{
     db: ReadOnlyDatabaseFromSchema<Schema>;

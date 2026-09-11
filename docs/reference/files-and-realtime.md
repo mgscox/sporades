@@ -817,6 +817,20 @@ cross-principal, and cross-Capsule claims all fail opaquely with
 `INGRESS_AUTHORITY_DENIED`; callers cannot use the error to discover whether a
 lease exists. Completed retries enforce the same authority.
 
+Capsule-level `files.ingress.admit` can return
+`{ allow: true, principal, allowFiles: false }` to admit bounded fields while
+prohibiting file parts for an Application credential. This permission reaches
+the same header-time enforcement as actor admission: empty files and files in
+any part order are rejected before staging or inspection. It requires no
+Sporades User Session or Access key. Omitted, `undefined`, or `true` preserves
+the endpoint's declared upload capabilities; no value widens those limits.
+Admission must return own data properties with no extra own keys; malformed
+permissions fail closed before consuming the body. Validate the Application
+credential and derive this flag from trusted authorization, never a claimed
+file count or permission header. The principal remains unchanged for claims,
+retries, and isolation, and handlers must still recheck mutable authorization
+inside their transaction before claiming files or writing domain records.
+
 A rejected Capsule-principal admission returns an opaque `401` before consuming
 request bytes, with `Cache-Control: no-store` and `Pragma: no-cache`.
 

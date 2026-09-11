@@ -2836,7 +2836,11 @@ export async function* multipartParts(request, boundaryText, maxWireBytes, maxPa
     let pieces = [];
     let size = 0;
     let partLimit = typeof maxPartBytes === "number" ? maxPartBytes : Math.max(maxPartBytes.file, maxPartBytes.field);
-    for await (const source of request) {
+    // Returning after a boundary or rejecting a file must not destroy an HTTP
+    // request's socket before routeEndpoint can write its response.
+    const stream = request;
+    const chunks = typeof stream.iterator === "function" ? stream.iterator({ destroyOnReturn: false }) : stream;
+    for await (const source of chunks) {
         wire += source.byteLength;
         if (wire > maxWireBytes)
             throw Object.assign(new Error("Multipart body exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });

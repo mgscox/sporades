@@ -87402,7 +87402,9 @@ async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes
   let pieces = [];
   let size = 0;
   let partLimit = typeof maxPartBytes === "number" ? maxPartBytes : Math.max(maxPartBytes.file, maxPartBytes.field);
-  for await (const source of request) {
+  const stream = request;
+  const chunks = typeof stream.iterator === "function" ? stream.iterator({ destroyOnReturn: false }) : stream;
+  for await (const source of chunks) {
     wire += source.byteLength;
     if (wire > maxWireBytes) throw Object.assign(new Error("Multipart body exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
     pending = Buffer.concat([pending, Buffer.from(source)]);
@@ -100553,6 +100555,15 @@ async function routeEndpoint(database, request, response) {
   }
   return true;
 }
+function multipartAdmissionFilePermission(decision, principalMode = false) {
+  if (!decision || typeof decision !== "object" || Array.isArray(decision)) throw multipartAdmissionDenied();
+  const keys = Reflect.ownKeys(decision);
+  const allow = Object.getOwnPropertyDescriptor(decision, "allow");
+  const allowFiles = Object.getOwnPropertyDescriptor(decision, "allowFiles");
+  const principal = principalMode ? Object.getOwnPropertyDescriptor(decision, "principal") : void 0;
+  if (keys.some((key) => key !== "allow" && key !== "allowFiles" && !(principalMode && key === "principal")) || !allow || !Object.prototype.hasOwnProperty.call(allow, "value") || allow.value !== true || principalMode && (!principal || !Object.prototype.hasOwnProperty.call(principal, "value")) || allowFiles && (!Object.prototype.hasOwnProperty.call(allowFiles, "value") || allowFiles.value !== void 0 && typeof allowFiles.value !== "boolean")) throw multipartAdmissionDenied();
+  return allowFiles?.value !== false;
+}
 async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, signal) {
   const definition = database.fileIngressDefinition;
   if (!definition) throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
@@ -100567,6 +100578,12 @@ async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest,
     signal,
     request: Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) })
   }), Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }))));
+  let allowFiles;
+  try {
+    allowFiles = multipartAdmissionFilePermission(decision, true);
+  } catch {
+    throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
+  }
   const namespace = decision?.principal?.namespace;
   const key = decision?.principal?.key;
   const serialized = (() => {
@@ -100579,7 +100596,7 @@ async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest,
   if (decision?.allow !== true || typeof namespace !== "string" || !definition.principalNamespaces.includes(namespace) || typeof key !== "string" || key.length === 0 || Buffer.byteLength(key, "utf8") > 256 || /[\x00-\x1f\x7f]/.test(key) || Buffer.byteLength(serialized, "utf8") > 4096) {
     throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
   }
-  return Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash8("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId });
+  return Object.freeze({ allowFiles, authority: Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash8("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId }) });
 }
 var endpointMultipartAdmissionTimeoutMs = 5e3;
 function multipartAdmissionDenied() {
@@ -100638,12 +100655,8 @@ async function admitEndpointMultipart(database, endpoint, endpointRequest, admis
       }
     });
     const decision = await Promise.race([transaction, settlementAbort]).finally(removeSettlementAbort);
-    if (controller.signal.aborted || Date.now() >= deadline || !decision || typeof decision !== "object" || Array.isArray(decision)) throw multipartAdmissionDenied();
-    const keys = Reflect.ownKeys(decision);
-    const allow = Object.getOwnPropertyDescriptor(decision, "allow");
-    const allowFiles = Object.getOwnPropertyDescriptor(decision, "allowFiles");
-    if (keys.some((key) => key !== "allow" && key !== "allowFiles") || !allow || !Object.prototype.hasOwnProperty.call(allow, "value") || allow.value !== true || allowFiles && (!Object.prototype.hasOwnProperty.call(allowFiles, "value") || allowFiles.value !== void 0 && typeof allowFiles.value !== "boolean")) throw multipartAdmissionDenied();
-    return allowFiles?.value !== false;
+    if (controller.signal.aborted || Date.now() >= deadline) throw multipartAdmissionDenied();
+    return multipartAdmissionFilePermission(decision);
   } catch {
     throw multipartAdmissionDenied();
   } finally {
@@ -100700,7 +100713,9 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
       let ingressAuthority;
       let allowFiles = true;
       if (claimAuthority === "capsule-principal") {
-        ingressAuthority = await admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, request.signal);
+        const admission = await admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, request.signal);
+        ingressAuthority = admission.authority;
+        allowFiles = admission.allowFiles;
       } else {
         if (!admitted?.auth?.isAuthenticated || admitted.auth.isGuest || isReservedAuthUserId(admitted.auth.userId)) throw commandError("Unauthenticated.", "Sign in with a linked human or service User and retry.", "UNAUTHENTICATED");
         const endpointSignal = request.signal ?? request.__sporadesEndpointSignal;

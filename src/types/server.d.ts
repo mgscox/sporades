@@ -181,7 +181,7 @@ export type FileAclRules = Partial<Record<FileAclOperation, FileAclRule>>;
 export type FileIngressPrincipal = Readonly<{ namespace: string; key: string }>;
 /** Runtime-owned inspector names; Capsule code cannot supply verdicts. */
 export type FileIngressInspection = Readonly<{ policyRevision: string; maxVerdictAgeMs?: number; requiredInspectors: readonly ("content-policy-v1" | "clamav")[] }>;
-export type FileIngressAdmissionDecision = Readonly<{ allow: false } | { allow: true; principal: FileIngressPrincipal }>;
+export type FileIngressAdmissionDecision = Readonly<{ allow: false } | { allow: true; principal: FileIngressPrincipal; allowFiles?: boolean }>;
 export type FileIngressAdmissionRequest = Readonly<{ method: string; path: string; headers: Readonly<Record<string, string>>; query: Readonly<Record<string, string>> }>;
 /** Shared immutable request head supplied to endpoint multipart admission. */
 export type EndpointMultipartAdmissionRequest = FileIngressAdmissionRequest;
