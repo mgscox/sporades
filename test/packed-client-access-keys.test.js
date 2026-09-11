@@ -35,7 +35,7 @@ test("the packed package exposes the complete server and client Access-key contr
     const admissionTypeMetadata = [
       ["EndpointMultipartAdmissionRequest", "Shared immutable request head supplied to endpoint multipart admission."],
       ["EndpointMultipartAdmissionContext", "An authenticated, read-only policy context evaluated before a multipart endpoint reads its request body."],
-      ["EndpointMultipartAdmissionDecision", "The endpoint policy can only continue or reject this request; it cannot provide file claim authority."],
+      ["EndpointMultipartAdmissionDecision", "The endpoint policy may prohibit file parts before staging; it cannot widen limits or provide file claim authority."],
       ["EndpointMultipartIngressLimits", "Runtime-owned bounds and stable identifiers for one endpoint multipart ingress request."],
       ["EndpointActorMultipartIngressOptions", "Actor-owned ingress may apply a request-specific admission policy."],
       ["EndpointCapsulePrincipalMultipartIngressOptions", "Capsule-principal ingress has its separate Capsule-level admission policy and cannot add actor admission."],
@@ -59,6 +59,7 @@ test("the packed package exposes the complete server and client Access-key contr
         const escapedDescription = description.replaceAll(".", "\\.");
         assert.match(declaration, new RegExp(`/\\*\\* ${escapedDescription} \\*/\\s*export type ${name}`));
       }
+      assert.match(declaration, /EndpointMultipartAdmissionDecision = Readonly<\{\s*allow: true;\s*allowFiles\?: boolean/);
       for (const name of supportedAdmissionTypes) {
         assert.doesNotMatch(declaration, new RegExp(`/\\*\\*[^*]*@deprecated[^*]*\\*/\\s*export type ${name}`));
       }

@@ -3330,8 +3330,17 @@ async function admitEndpointMultipart(database, endpoint, endpointRequest, admis
         // A policy may settle before an asynchronous engine has committed and
         // released its transaction. Keep the deadline live through that boundary:
         // an expired or disconnected request never earns body-read authority.
-        if (controller.signal.aborted || Date.now() >= deadline || !decision || typeof decision !== "object" || Array.isArray(decision) || Object.keys(decision).length !== 1 || typeof decision.allow !== "boolean" || decision.allow !== true)
+        if (controller.signal.aborted || Date.now() >= deadline || !decision || typeof decision !== "object" || Array.isArray(decision))
             throw multipartAdmissionDenied();
+        const keys = Reflect.ownKeys(decision);
+        const allow = Object.getOwnPropertyDescriptor(decision, "allow");
+        const allowFiles = Object.getOwnPropertyDescriptor(decision, "allowFiles");
+        // Authority must be explicit own data, never inherited or accessor-driven.
+        if (keys.some((key) => key !== "allow" && key !== "allowFiles")
+            || !allow || !Object.prototype.hasOwnProperty.call(allow, "value") || allow.value !== true
+            || (allowFiles && (!Object.prototype.hasOwnProperty.call(allowFiles, "value") || (allowFiles.value !== undefined && typeof allowFiles.value !== "boolean"))))
+            throw multipartAdmissionDenied();
+        return allowFiles?.value !== false;
     }
     catch {
         throw multipartAdmissionDenied();
@@ -3399,6 +3408,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
             const claimAuthority = endpointIngressClaimAuthority(endpoint);
             const admitted = (accessKeyAdmission ?? session);
             let ingressAuthority;
+            let allowFiles = true;
             if (claimAuthority === "capsule-principal") {
                 ingressAuthority = await admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, request.signal);
             }
@@ -3406,7 +3416,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                 if (!admitted?.auth?.isAuthenticated || admitted.auth.isGuest || isReservedAuthUserId(admitted.auth.userId))
                     throw commandError("Unauthenticated.", "Sign in with a linked human or service User and retry.", "UNAUTHENTICATED");
                 const endpointSignal = request.signal ?? request.__sporadesEndpointSignal;
-                await admitEndpointMultipart(database, endpoint, endpointRequest, admitted, endpointSignal);
+                allowFiles = (await admitEndpointMultipart(database, endpoint, endpointRequest, admitted, endpointSignal)) !== false;
                 // Admission cleanup removes its request listener after it has settled.
                 // Recheck the outer request signal at the body/staging boundary so a
                 // disconnect in that small interval cannot create ingress state.
@@ -3414,7 +3424,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                     throw multipartAdmissionDenied();
                 ingressAuthority = Object.freeze({ kind: "actor", actorId: String(admitted.auth.userId), ownerId: String(admitted.auth.userId) });
             }
-            const payload = await stageMultipartIngress(database, endpoint, request, endpointRequest, admitted.auth, ingressAuthority);
+            const payload = await stageMultipartIngress(database, endpoint, request, endpointRequest, admitted.auth, ingressAuthority, allowFiles);
             endpointRequest = { ...endpointRequest, ...payload };
         }
         catch (error) {

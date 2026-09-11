@@ -435,10 +435,13 @@ An actor-owned multipart endpoint may add `admit` to apply a bounded,
 request-specific domain check after its Session or Access key is authenticated,
 but before any multipart bytes are consumed. The callback receives the admitted
 `auth` and credential provenance, immutable method/path/query/headers, and a
-transactionally consistent read-only `db` view. It returns only `{ allow: true
-}` or `{ allow: false }`; a denial, malformed result, throw, cancellation, or
+transactionally consistent read-only `db` view. It returns `{ allow: true }`, `{ allow: true, allowFiles: false }`, or
+`{ allow: false }`; a denial, malformed result, throw, cancellation, or
 timeout returns the same bounded rejection and does not invoke the handler,
-stage a lease, or create a File.
+stage a lease, or create a File. The decision must explicitly supply an own
+`allow` data property; an optional `allowFiles` must also be a data property.
+Accessors and additional own keys are rejected, including symbol or
+non-enumerable keys.
 
 ```ts
 const schema = { resources: table({ state: String() }) };
@@ -455,6 +458,16 @@ capsule({ schema, endpoints: {
   } } }, handler),
 } });
 ```
+
+Return `{ allow: true, allowFiles: false }` for an authenticated principal whose
+trusted authorization permits fields only. Fields retain all declared bounds;
+any file part (including an empty filename or empty content) is rejected with
+`MULTIPART_ADMISSION_DENIED` when its headers are recognized, before file-body
+buffering, lease creation, storage writes, or content inspection, in any part
+order. Omitted, `undefined`, or `true` `allowFiles` preserves the declared upload
+capabilities; it never widens endpoint limits. When set, the flag must be a
+boolean supplied by trusted authorization, never a caller-provided file-count
+or permission header.
 
 Use `endpointFor(schema)` when an endpoint callback needs schema-aware database
 typing, such as multipart admission. It binds the declared schema once; the
