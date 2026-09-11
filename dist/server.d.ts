@@ -72,9 +72,10 @@ export type EndpointMultipartAdmissionContext<Schema extends SchemaDefinition = 
     signal?: AbortSignal;
     request: FileIngressAdmissionRequest;
 }>;
-/** The endpoint policy can only continue or reject this request; it cannot provide file claim authority. */
+/** The endpoint policy may prohibit file parts before staging; it cannot widen limits or provide file claim authority. */
 export type EndpointMultipartAdmissionDecision = Readonly<{
     allow: true;
+    allowFiles?: boolean;
 } | {
     allow: false;
 }>;

@@ -67,8 +67,8 @@ export type FileIngressAdmissionContext<Schema extends SchemaDefinition = Schema
 export type EndpointMultipartAdmissionRequest = FileIngressAdmissionRequest;
 /** An authenticated, read-only policy context evaluated before a multipart endpoint reads its request body. */
 export type EndpointMultipartAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ auth: AuthContext; credential: CredentialProvenance; db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
-/** The endpoint policy can only continue or reject this request; it cannot provide file claim authority. */
-export type EndpointMultipartAdmissionDecision = Readonly<{ allow: true } | { allow: false }>;
+/** The endpoint policy may prohibit file parts before staging; it cannot widen limits or provide file claim authority. */
+export type EndpointMultipartAdmissionDecision = Readonly<{ allow: true; allowFiles?: boolean } | { allow: false }>;
 /** Runtime-owned bounds and stable identifiers for one endpoint multipart ingress request. */
 export type EndpointMultipartIngressLimits = Readonly<{
   maxFiles: number; maxFileBytes: number; maxTotalFileBytes: number; maxFieldCount: number; maxFieldBytes: number; maxTotalFieldBytes: number;

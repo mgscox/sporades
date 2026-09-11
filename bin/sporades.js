@@ -87363,7 +87363,7 @@ function idempotencyConflict(message = "Ingress claim conflicts with the complet
 function ingressAuthorityDenied() {
   return Object.assign(new Error("File ingress authority is unavailable."), { code: "INGRESS_AUTHORITY_DENIED" });
 }
-var ingressAuditCodes = /* @__PURE__ */ new Set(["INVALID_MULTIPART", "MULTIPART_LIMIT_EXCEEDED", "INVALID_MULTIPART_REQUEST_KEY", "INVALID_MULTIPART_PART_KEY", "INGRESS_AUTHORITY_DENIED", "INGRESS_LEASE_EXPIRED", "INGRESS_PATH_DENIED", "INGRESS_DESCRIPTOR_CONFLICT", "INGRESS_STAGING_INCOMPLETE", "INGRESS_ORPHAN_CLEANUP_FAILED", "FILE_PATH_EXISTS"]);
+var ingressAuditCodes = /* @__PURE__ */ new Set(["MULTIPART_ADMISSION_DENIED", "INVALID_MULTIPART", "MULTIPART_LIMIT_EXCEEDED", "INVALID_MULTIPART_REQUEST_KEY", "INVALID_MULTIPART_PART_KEY", "INGRESS_AUTHORITY_DENIED", "INGRESS_LEASE_EXPIRED", "INGRESS_PATH_DENIED", "INGRESS_DESCRIPTOR_CONFLICT", "INGRESS_STAGING_INCOMPLETE", "INGRESS_ORPHAN_CLEANUP_FAILED", "FILE_PATH_EXISTS"]);
 async function emitIngressAudit(database, event, data2) {
   try {
     await database.log?.emit?.({ category: "platform", event: `file.ingress.${event}`, level: event === "failed" || event === "cleanup-failed" ? "warn" : "info", message: "Multipart ingress lifecycle event", data: { schema: "v1", ...data2 } });
@@ -87391,7 +87391,7 @@ function multipartBoundary(contentType) {
   const validToken = /^[0-9A-Za-z'+_.-]+$/.test(value);
   return value.length <= 70 && validBchars && (quoted || validToken) ? value : null;
 }
-async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes) {
+async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes, allowFiles = true) {
   const boundary = Buffer.from(`--${boundaryText}`);
   const marker = Buffer.from(`\r
 --${boundaryText}`);
@@ -87421,10 +87421,10 @@ async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes
           break;
         }
         rawHeaders = pending.subarray(0, headerEnd).toString("latin1");
-        if (typeof maxPartBytes !== "number") {
-          const disposition = /^content-disposition:\s*form-data;\s*name="[^"]+"(?:;\s*filename="([^"]*)")?/im.exec(rawHeaders);
-          partLimit = disposition?.[1] !== void 0 ? maxPartBytes.file : maxPartBytes.field;
-        }
+        const disposition = /^content-disposition:\s*form-data;\s*name="[^"]+"(?:;\s*filename="([^"]*)")?/im.exec(rawHeaders);
+        const isFile = disposition?.[1] !== void 0;
+        if (isFile && !allowFiles) throw Object.assign(new Error("Multipart request was not admitted."), { code: "MULTIPART_ADMISSION_DENIED" });
+        if (typeof maxPartBytes !== "number") partLimit = isFile ? maxPartBytes.file : maxPartBytes.field;
         pending = pending.subarray(headerEnd + 4);
         pieces = [];
         size = 0;
@@ -87492,7 +87492,7 @@ async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes
   if (state === "closing" && pending.length === 0) return;
   throw Object.assign(new Error("Truncated multipart request."), { code: "INVALID_MULTIPART" });
 }
-async function stageMultipartIngress(database, endpoint, request, endpointRequest, actor, admittedAuthority) {
+async function stageMultipartIngress(database, endpoint, request, endpointRequest, actor, admittedAuthority, allowFiles = true) {
   let policy;
   try {
     policy = validateMultipartIngressPolicy(endpoint.options.body.multipart);
@@ -87525,7 +87525,7 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
   const wonReceipts = [];
   const streamingFileLimit = Math.min(Number(policy.maxFileBytes), Number(database.fileMaxSizeBytes));
   try {
-    for await (const part of multipartParts(request, boundary, maxBytes, { file: streamingFileLimit, field: policy.maxFieldBytes })) {
+    for await (const part of multipartParts(request, boundary, maxBytes, { file: streamingFileLimit, field: policy.maxFieldBytes }, allowFiles)) {
       const rawHeaders = part.rawHeaders;
       const body = part.body;
       if (rawHeaders.length > 16384) throw Object.assign(new Error("Multipart headers exceed limit."), { code: "MULTIPART_LIMIT_EXCEEDED" });
@@ -100638,7 +100638,8 @@ async function admitEndpointMultipart(database, endpoint, endpointRequest, admis
       }
     });
     const decision = await Promise.race([transaction, settlementAbort]).finally(removeSettlementAbort);
-    if (controller.signal.aborted || Date.now() >= deadline || !decision || typeof decision !== "object" || Array.isArray(decision) || Object.keys(decision).length !== 1 || typeof decision.allow !== "boolean" || decision.allow !== true) throw multipartAdmissionDenied();
+    if (controller.signal.aborted || Date.now() >= deadline || !decision || typeof decision !== "object" || Array.isArray(decision) || Object.keys(decision).some((key) => key !== "allow" && key !== "allowFiles") || Object.prototype.hasOwnProperty.call(decision, "allowFiles") && typeof decision.allowFiles !== "boolean" || typeof decision.allow !== "boolean" || decision.allow !== true) throw multipartAdmissionDenied();
+    return decision.allowFiles !== false;
   } catch {
     throw multipartAdmissionDenied();
   } finally {
@@ -100693,16 +100694,17 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
       const claimAuthority = endpointIngressClaimAuthority(endpoint);
       const admitted = accessKeyAdmission ?? session;
       let ingressAuthority;
+      let allowFiles = true;
       if (claimAuthority === "capsule-principal") {
         ingressAuthority = await admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, request.signal);
       } else {
         if (!admitted?.auth?.isAuthenticated || admitted.auth.isGuest || isReservedAuthUserId(admitted.auth.userId)) throw commandError("Unauthenticated.", "Sign in with a linked human or service User and retry.", "UNAUTHENTICATED");
         const endpointSignal = request.signal ?? request.__sporadesEndpointSignal;
-        await admitEndpointMultipart(database, endpoint, endpointRequest, admitted, endpointSignal);
+        allowFiles = await admitEndpointMultipart(database, endpoint, endpointRequest, admitted, endpointSignal) !== false;
         if (endpointSignal?.aborted) throw multipartAdmissionDenied();
         ingressAuthority = Object.freeze({ kind: "actor", actorId: String(admitted.auth.userId), ownerId: String(admitted.auth.userId) });
       }
-      const payload = await stageMultipartIngress(database, endpoint, request, endpointRequest, admitted.auth, ingressAuthority);
+      const payload = await stageMultipartIngress(database, endpoint, request, endpointRequest, admitted.auth, ingressAuthority, allowFiles);
       endpointRequest = { ...endpointRequest, ...payload };
     } catch (error) {
       if (error?.code === "UNAUTHENTICATED") {

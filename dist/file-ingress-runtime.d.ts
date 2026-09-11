@@ -21,12 +21,12 @@ export declare function checkClamavRuntime(database: RecordLike): Promise<{
 export declare function multipartParts(request: AsyncIterable<Uint8Array>, boundaryText: string, maxWireBytes: number, maxPartBytes: number | {
     file: number;
     field: number;
-}): AsyncGenerator<{
+}, allowFiles?: boolean): AsyncGenerator<{
     rawHeaders: string;
     body: Buffer<ArrayBuffer>;
 }, void, unknown>;
 /** Parse only after endpoint credential admission. The bounded body is never exposed as an ordinary endpoint body. */
-export declare function stageMultipartIngress(database: RecordLike, endpoint: RecordLike, request: any, endpointRequest: RecordLike, actor: RecordLike, admittedAuthority?: RecordLike): Promise<{
+export declare function stageMultipartIngress(database: RecordLike, endpoint: RecordLike, request: any, endpointRequest: RecordLike, actor: RecordLike, admittedAuthority?: RecordLike, allowFiles?: boolean): Promise<{
     body: null;
     bodyBytes: Readonly<{
         byteLength: 0;
