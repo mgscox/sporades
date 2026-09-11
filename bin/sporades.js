@@ -110765,7 +110765,7 @@ jobs:
 }
 
 // src/cli/cli-version.ts
-var CLI_VERSION = "0.9.19";
+var CLI_VERSION = "0.9.20";
 
 // src/cli/sporades.ts
 var SUPPORTED_TEMPLATES = new Set(CLIENT_TEMPLATES);
