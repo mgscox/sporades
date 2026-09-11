@@ -1,14 +1,20 @@
 # Changes
 
-## Unreleased - 2026-09-05
+## Unreleased - 2026-09-11
 
-Changes since v0.9.16.
+Changes since v0.9.17.
 
 ### 🐛 Bug Fixes
 
-- Accept multiple query arguments and nested multi-element arrays by correcting server array-index validation.
+- Reject caps below the configured envelope floor (bfb6bce1).
+- Fix query arguments containing multi-element arrays (#37) (8cfef157).
 
-- Prevent caching denied principal ingress (07daff9c).
+### 📝 Documentation
+
+- Remove personal infrastructure from documentation and host fixture (628363b1).
+- Link log cap implementation PR (a0b2fb88).
+- Record log cap validation completion (675226cd).
+- Document shell quote handlers in SQL lexer census (#38) (125355ab).
 
 ## v0.9.11 - 2026-09-02
 
@@ -97,6 +103,7 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
+
 
 
 
