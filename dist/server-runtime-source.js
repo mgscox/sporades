@@ -4,6 +4,7 @@
 // tsc elides an unused import, so the generated `dist/` has carried only what is actually called.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { uncappedLogEnvelope, logPayloadMaxBytes, validateLogConfig } from "./log-envelope.js";
 import { validateMailConfig } from "./mail-config.js";
 import { validateStripePaymentsRuntimeConfig } from "./stripe-payment-config.js";
 import { createMailRuntime } from "./mail-runtime.js";
@@ -555,6 +556,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         validateStripeEventSubscription(capsuleDefinition.stripeEvents);
         validateEndpointResponseDeclarations(capsuleDefinition);
     }
+    validateLogConfig(config);
     const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
     if (capsuleDefinition?.teams !== undefined && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
         throw commandError("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
@@ -2215,10 +2217,6 @@ function jobClaimTokenIsMalformed(claimToken) {
     return claimToken !== null && claimToken !== undefined
         && (typeof claimToken !== "string" || claimToken.length === 0);
 }
-function logPayloadMaxBytes(config = {}) {
-    const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
-    return Number.isInteger(configured) && configured > 0 ? configured : 4096;
-}
 function logRedactedValue() {
     return "[REDACTED]";
 }
@@ -2514,31 +2512,11 @@ export async function runRuntimeAccessKeyOperatorAction(database, action, input 
     }
 }
 export function createLogEnvelope(input) {
-    const now = new Date().toISOString();
     const config = input.config ?? {};
-    const capsuleName = String(config.name ?? "unknown");
-    const envelope = {
-        schema: "sporades.log.v1",
-        timestamp: input.timestamp ?? now,
-        category: input.category ?? "platform",
-        event: input.event ?? "runtime.event",
-        level: input.level ?? "info",
-        message: String(input.message ?? ""),
-        capsule: {
-            name: capsuleName,
-            id: String(config.capsule?.id ?? config.id ?? capsuleName),
-        },
-        release: input.release ?? config.release ?? null,
-        request: input.request
-            ? {
-                id: input.request.id ?? randomUUID(),
-                method: input.request.method ?? null,
-                path: input.request.path ?? null,
-            }
-            : null,
-        correlation: input.correlation ?? null,
+    const envelope = uncappedLogEnvelope({
+        ...input,
         data: sanitizeLogData(input.data ?? null, input.serverEnv ?? {}),
-    };
+    });
     return capLogEnvelope(envelope, logPayloadMaxBytes(config));
 }
 function sanitizeLogData(value, serverEnv) {

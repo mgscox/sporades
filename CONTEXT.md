@@ -527,6 +527,13 @@ _Avoid_: streaming output, log lines
 An append-friendly sequence of JSON log events emitted by the runtime for app and platform behavior. It is distinct from `sporades dev --json`, which streams command lifecycle events.
 _Avoid_: text logs, dev JSONL events
 
+**Log payload cap**:
+The maximum serialized log envelope budget configured by `logs.payloadMaxBytes`
+(or `logging.payloadMaxBytes`). Validation computes its minimum from the actual
+Capsule identity and release plus bounded event fields and 256 bytes of redacted
+structured data. The configuration guide owns the exact protected shape.
+_Avoid_: data-only limit, fixed global minimum
+
 **Log index**:
 A bounded SQLite-backed index of recent JSON log events used for structured inspection queries. The JSONL log stream remains the durable append stream, so Log index write failures should degrade inspection rather than roll back app, auth, or file workflows.
 _Avoid_: log database, audit log

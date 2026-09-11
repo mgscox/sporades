@@ -583,3 +583,10 @@ For automation, use JSONL streaming:
 ```sh
 sporades dev --json
 ```
+
+## Log payload cap
+
+See the [structured log payload cap contract](../guide/configuration.md#structured-log-payload-cap)
+for `logs.payloadMaxBytes`, its `logging` alias, the identity-aware minimum,
+and the `INVALID_LOG_CONFIG` error. The default is 4096 bytes; validation
+never silently increases a configured cap.

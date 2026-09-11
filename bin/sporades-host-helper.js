@@ -26265,7 +26265,7 @@ var require_png2 = __commonJS({
 import { spawnSync as spawnSync2 } from "node:child_process";
 import { constants as fsConstants, createReadStream, statSync } from "node:fs";
 import { access, chmod, lstat, mkdir, open, opendir, readdir, readFile as readFile2, readlink, rename, rm, stat, statfs, symlink, writeFile } from "node:fs/promises";
-import { createHash as createHash2, generateKeyPairSync, randomBytes as randomBytes2 } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { freemem, loadavg, totalmem } from "node:os";
 import path3 from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -26421,8 +26421,35 @@ function validatePublicTreeFileSet(files) {
   return { ok: true, fileCount: files.length, totalBytes };
 }
 
-// src/server-runtime-source.ts
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+// src/log-envelope.ts
+import { randomUUID } from "node:crypto";
+function uncappedLogEnvelope(input) {
+  const config = input.config ?? {};
+  const capsuleName = String(config.name ?? "unknown");
+  return {
+    schema: "sporades.log.v1",
+    timestamp: input.timestamp ?? (/* @__PURE__ */ new Date()).toISOString(),
+    category: input.category ?? "platform",
+    event: input.event ?? "runtime.event",
+    level: input.level ?? "info",
+    message: String(input.message ?? ""),
+    capsule: {
+      name: capsuleName,
+      id: String(config.capsule?.id ?? config.id ?? capsuleName)
+    },
+    release: input.release ?? config.release ?? null,
+    request: input.request ? {
+      id: input.request.id ?? randomUUID(),
+      method: input.request.method ?? null,
+      path: input.request.path ?? null
+    } : null,
+    correlation: input.correlation ?? null,
+    data: input.data ?? null
+  };
+}
+function logPayloadMaxBytes(config = {}) {
+  return config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes ?? 4096;
+}
 
 // src/auth-admission.ts
 var AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
@@ -42424,38 +42451,16 @@ var runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandl
 var atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
 var atomicStripeFenceContention = Symbol("sporades.atomicStripeFenceContention");
 var INGRESS_AUDIT_RETENTION_MS = 24 * 60 * 60 * 1e3;
-function logPayloadMaxBytes(config = {}) {
-  const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
-  return Number.isInteger(configured) && configured > 0 ? configured : 4096;
-}
 function logRedactedValue() {
   return "[REDACTED]";
 }
 var transactionPendingLogWrites = Symbol("sporades.transactionPendingLogWrites");
 function createLogEnvelope(input) {
-  const now = (/* @__PURE__ */ new Date()).toISOString();
   const config = input.config ?? {};
-  const capsuleName = String(config.name ?? "unknown");
-  const envelope = {
-    schema: "sporades.log.v1",
-    timestamp: input.timestamp ?? now,
-    category: input.category ?? "platform",
-    event: input.event ?? "runtime.event",
-    level: input.level ?? "info",
-    message: String(input.message ?? ""),
-    capsule: {
-      name: capsuleName,
-      id: String(config.capsule?.id ?? config.id ?? capsuleName)
-    },
-    release: input.release ?? config.release ?? null,
-    request: input.request ? {
-      id: input.request.id ?? randomUUID(),
-      method: input.request.method ?? null,
-      path: input.request.path ?? null
-    } : null,
-    correlation: input.correlation ?? null,
+  const envelope = uncappedLogEnvelope({
+    ...input,
     data: sanitizeLogData(input.data ?? null, input.serverEnv ?? {})
-  };
+  });
   return capLogEnvelope(envelope, logPayloadMaxBytes(config));
 }
 function sanitizeLogData(value, serverEnv) {
@@ -43418,7 +43423,7 @@ async function installHostHelperPayload(stage, target, expectedChecksum) {
   const newPayloadName = `.sporades-host-helper-payload-${expectedChecksum}.mjs`;
   const newPayload = path3.join(directory, newPayloadName);
   await mkdir(directory, { recursive: true });
-  if (createHash2("sha256").update(await readFile2(stage)).digest("hex") !== expectedChecksum) {
+  if (createHash("sha256").update(await readFile2(stage)).digest("hex") !== expectedChecksum) {
     throw helperError("Staged Host helper checksum did not match.", "Upload the immutable Host helper again, then retry the upgrade.");
   }
   await publishHostHelperFile(stage, newPayload, 493);
@@ -43435,7 +43440,7 @@ async function installHostHelperPayload(stage, target, expectedChecksum) {
     previousPayloadName = (await readFile2(pointer, "utf8")).trim();
     await validateHostHelperPayload(directory, previousPayloadName);
   } else {
-    const previousChecksum = createHash2("sha256").update(currentTarget).digest("hex");
+    const previousChecksum = createHash("sha256").update(currentTarget).digest("hex");
     previousPayloadName = `.sporades-host-helper-payload-${previousChecksum}.mjs`;
     await publishHostHelperFile(target, path3.join(directory, previousPayloadName), 493);
     await writeHostHelperPointer(pointer, previousPayloadName);
@@ -43460,7 +43465,7 @@ async function publishHostHelperFile(source, target, mode) {
   await publishHostHelperBytes(contents, target, mode);
 }
 async function publishHostHelperBytes(contents, target, mode) {
-  const temporary = `${target}.tmp-${process.pid}-${randomBytes2(8).toString("hex")}`;
+  const temporary = `${target}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`;
   try {
     await writeFile(temporary, contents, { flag: "wx", mode });
     await chmod(temporary, mode);
@@ -43478,7 +43483,7 @@ async function validateHostHelperPayload(directory, payloadName) {
   const match = /^\.sporades-host-helper-payload-([a-f0-9]{64})\.mjs$/.exec(payloadName);
   if (!match) throw helperError("Host helper payload pointer was invalid.", "Retry the Host helper upgrade.");
   const payload = path3.join(directory, payloadName);
-  const actual = createHash2("sha256").update(await readFile2(payload)).digest("hex");
+  const actual = createHash("sha256").update(await readFile2(payload)).digest("hex");
   if (actual !== match[1]) throw helperError("Host helper payload checksum did not match.", "Retry the Host helper upgrade.");
 }
 async function drainUncooperativeHostHelpers(target) {
@@ -44460,7 +44465,7 @@ async function claimReleaseArchive(request) {
     throw helperError("Hosted Capsule release claim directory is unsafe.", "Repair Host helper ownership of the release claim directory and retry.");
   }
   await chmod(claimsDirectory, 448);
-  const claimedPath = path3.join(claimsDirectory, `${request.release.id}-${process.pid}-${randomBytes2(16).toString("hex")}.tar.gz`);
+  const claimedPath = path3.join(claimsDirectory, `${request.release.id}-${process.pid}-${randomBytes(16).toString("hex")}.tar.gz`);
   await rename(request.release.remoteArchive, claimedPath);
   try {
     const stats = await lstat(claimedPath);
@@ -44476,7 +44481,7 @@ async function claimReleaseArchive(request) {
 }
 async function releaseArchiveSha256(archivePath) {
   return new Promise((resolve, reject) => {
-    const hash2 = createHash2("sha256");
+    const hash2 = createHash("sha256");
     const stream = createReadStream(archivePath);
     stream.on("data", (chunk) => hash2.update(chunk));
     stream.on("error", reject);
@@ -44533,7 +44538,7 @@ async function validateExtractedReleaseTree(root, expectedFiles) {
         }
         publicClaims.push({ path: publicPath, size: stats.size });
       }
-      actual.push({ path: relative, size: stats.size, sha256: createHash2("sha256").update(await readFile2(entryPath)).digest("hex") });
+      actual.push({ path: relative, size: stats.size, sha256: createHash("sha256").update(await readFile2(entryPath)).digest("hex") });
     }
   }
   await visit(root);
@@ -45046,7 +45051,7 @@ async function captureReleaseInstallRoute(request, previousRecord) {
   return { lifecycle, routeFile, contents };
 }
 async function restoreCurrentReleasePointerTarget(currentLink, previousTarget) {
-  const temporary = `${currentLink}.restore-${process.pid}-${randomBytes2(8).toString("hex")}`;
+  const temporary = `${currentLink}.restore-${process.pid}-${randomBytes(8).toString("hex")}`;
   await rm(temporary, { force: true });
   if (!previousTarget) {
     await rm(currentLink, { force: true });
@@ -46094,7 +46099,7 @@ async function ensureRuntimeProbeCredential(request) {
   await mutateRegistryRecord(request, (record) => {
     probe = readRuntimeProbeCredential(record) ?? {
       header: RUNTIME_PROBE_HEADER,
-      token: randomBytes2(32).toString("hex"),
+      token: randomBytes(32).toString("hex"),
       createdAt: (/* @__PURE__ */ new Date()).toISOString()
     };
     return { ...record, runtimeProbe: probe };
@@ -46637,7 +46642,7 @@ async function writeExclusiveRuntimeFile(parentHandle, targetPath, contents, mod
   }
 }
 async function publishRuntimeFile(parentHandle, targetPath, contents, mode, boundary) {
-  const temporaryPath = path3.join(path3.dirname(targetPath), `.${path3.basename(targetPath)}.tmp-${process.pid}-${randomBytes2(8).toString("hex")}`);
+  const temporaryPath = path3.join(path3.dirname(targetPath), `.${path3.basename(targetPath)}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`);
   await writeExclusiveRuntimeFile(parentHandle, temporaryPath, contents, mode);
   const temporaryDescriptor = descriptorChildPath(parentHandle.fd, path3.basename(temporaryPath), temporaryPath);
   const targetDescriptor = descriptorChildPath(parentHandle.fd, path3.basename(targetPath), targetPath);
@@ -46826,7 +46831,7 @@ function hostSealedEnvKeyPaths(dataDirectory, fingerprint) {
   };
 }
 function fingerprintPublicKey(publicKey) {
-  return createHash2("sha256").update(publicKey).digest("hex").slice(0, 16);
+  return createHash("sha256").update(publicKey).digest("hex").slice(0, 16);
 }
 function reactivateRegistrationRecord(record, sealedServerEnv = null) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -47253,7 +47258,7 @@ ${end}
   await atomicPublishBootstrapFile(caddyfile, next, "bootstrap-caddyfile");
 }
 async function atomicPublishBootstrapFile(target, contents, boundary) {
-  const temporary = `${target}.sporades-${process.pid}-${randomBytes2(8).toString("hex")}.tmp`;
+  const temporary = `${target}.sporades-${process.pid}-${randomBytes(8).toString("hex")}.tmp`;
   await assertBootstrapMutationBoundary(`${boundary}-write`, [target, temporary]);
   await writeFile(temporary, contents, { flag: "wx", mode: 420 });
   try {

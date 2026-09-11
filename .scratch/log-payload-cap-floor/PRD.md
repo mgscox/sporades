@@ -1,27 +1,22 @@
-# Configuration
+# Log payload cap floor
 
-`sporades.json` owns declared Capsule configuration. Sealed Server env owns
-server-only values. `.sporades/` is generated runtime state and must not be hand-edited.
+Status: complete
 
-Use the detailed reference for:
+## Source Planning
 
-- [HTTP security policy](../reference/projects-and-configuration.md#security-policy)
-- [Sealed Server env](../reference/server-runtime.md#use-sealed-server-env)
-- [current-user preferences](../reference/client-auth-and-preferences.md#user-preferences)
+- Original tracker PR: https://github.com/mgscox/sporades/pull/30
+- User authorized implementation on 2026-09-11 using the actual configured identity.
+- `docs/guide/configuration.md` is the canonical shipped contract.
 
-For exact generated paths, see the [runtime layout](../runtime-layout.md).
+## Problem and decision
 
-## Database backend
+A 256-byte cap can discard the structured data in normal platform events.
+The original PR proposed a global floor based on 64-byte identities, but those
+identity limits do not exist. Use actual configured identity and release overhead
+instead, with the bounded event allowances below. This supersedes the global
+floor and the unratified identity limits in the original proposal.
 
-See [database configuration and local services](../reference/projects-and-configuration.md#configuration)
-to choose between embedded SQLite, libSQL, and PostgreSQL.
-
-## Mail
-
-See the dedicated [Mail guide](./mail.md) for SMTP delivery, provider
-configuration, durable delivery Jobs, and provider delivery-event webhooks.
-
-## Structured log payload cap
+## Contract
 
 `logs.payloadMaxBytes` caps the serialized JSON log envelope, including metadata
 and the truncation flag; it is not a data-only budget. `logging.payloadMaxBytes`
@@ -57,3 +52,16 @@ and release, set an explicit sufficient cap. Values are never silently raised.
 Existing very small caps, numeric strings, and other non-integer values must be
 replaced with valid numeric caps. Changing Capsule identity or release can change
 the required minimum.
+
+## Non-goals
+
+Do not change the truncation fallback or shedding order, restrict Capsule names,
+or claim that arbitrary events cannot truncate. Do not change the completed
+Dev reload work from PR #29.
+
+## Completion evidence
+
+Implemented in `bfb6bce1` on `codex/log-payload-cap-floor` in the isolated
+`/Users/mattcox/.codex/worktrees/dd0a/sporades` worktree. See the child issue for
+verification results. Published as https://github.com/mgscox/sporades/pull/41
+with explicit user authorization; PR #30 itself remains unchanged.
