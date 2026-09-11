@@ -100638,7 +100638,7 @@ async function admitEndpointMultipart(database, endpoint, endpointRequest, admis
       }
     });
     const decision = await Promise.race([transaction, settlementAbort]).finally(removeSettlementAbort);
-    if (controller.signal.aborted || Date.now() >= deadline || !decision || typeof decision !== "object" || Array.isArray(decision) || Object.keys(decision).some((key) => key !== "allow" && key !== "allowFiles") || Object.prototype.hasOwnProperty.call(decision, "allowFiles") && typeof decision.allowFiles !== "boolean" || typeof decision.allow !== "boolean" || decision.allow !== true) throw multipartAdmissionDenied();
+    if (controller.signal.aborted || Date.now() >= deadline || !decision || typeof decision !== "object" || Array.isArray(decision) || Object.keys(decision).some((key) => key !== "allow" && key !== "allowFiles") || decision.allowFiles !== void 0 && typeof decision.allowFiles !== "boolean" || typeof decision.allow !== "boolean" || decision.allow !== true) throw multipartAdmissionDenied();
     return decision.allowFiles !== false;
   } catch {
     throw multipartAdmissionDenied();

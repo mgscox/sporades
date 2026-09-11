@@ -3541,7 +3541,7 @@ async function admitEndpointMultipart(database: LooseRecord, endpoint: LooseReco
     // A policy may settle before an asynchronous engine has committed and
     // released its transaction. Keep the deadline live through that boundary:
     // an expired or disconnected request never earns body-read authority.
-    if (controller.signal.aborted || Date.now() >= deadline || !decision || typeof decision !== "object" || Array.isArray(decision) || Object.keys(decision).some((key) => key !== "allow" && key !== "allowFiles") || (Object.prototype.hasOwnProperty.call(decision, "allowFiles") && typeof (decision as LooseRecord).allowFiles !== "boolean") || typeof (decision as LooseRecord).allow !== "boolean" || (decision as LooseRecord).allow !== true) throw multipartAdmissionDenied();
+    if (controller.signal.aborted || Date.now() >= deadline || !decision || typeof decision !== "object" || Array.isArray(decision) || Object.keys(decision).some((key) => key !== "allow" && key !== "allowFiles") || ((decision as LooseRecord).allowFiles !== undefined && typeof (decision as LooseRecord).allowFiles !== "boolean") || typeof (decision as LooseRecord).allow !== "boolean" || (decision as LooseRecord).allow !== true) throw multipartAdmissionDenied();
     return (decision as LooseRecord).allowFiles !== false;
   } catch {
     throw multipartAdmissionDenied();

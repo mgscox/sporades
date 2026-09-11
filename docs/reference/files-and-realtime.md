@@ -461,9 +461,10 @@ trusted authorization permits fields only. Fields retain all declared bounds;
 any file part (including an empty filename or empty content) is rejected with
 `MULTIPART_ADMISSION_DENIED` when its headers are recognized, before file-body
 buffering, lease creation, storage writes, or content inspection, in any part
-order. Omitted or `true` `allowFiles` preserves the declared upload capabilities;
-it never widens endpoint limits. The flag must be a boolean supplied by trusted
-authorization, never a caller-provided file-count or permission header.
+order. Omitted, `undefined`, or `true` `allowFiles` preserves the declared upload
+capabilities; it never widens endpoint limits. When set, the flag must be a
+boolean supplied by trusted authorization, never a caller-provided file-count
+or permission header.
 
 Use `endpointFor(schema)` when an endpoint callback needs schema-aware database
 typing, such as multipart admission. It binds the declared schema once; the

@@ -3330,7 +3330,7 @@ async function admitEndpointMultipart(database, endpoint, endpointRequest, admis
         // A policy may settle before an asynchronous engine has committed and
         // released its transaction. Keep the deadline live through that boundary:
         // an expired or disconnected request never earns body-read authority.
-        if (controller.signal.aborted || Date.now() >= deadline || !decision || typeof decision !== "object" || Array.isArray(decision) || Object.keys(decision).some((key) => key !== "allow" && key !== "allowFiles") || (Object.prototype.hasOwnProperty.call(decision, "allowFiles") && typeof decision.allowFiles !== "boolean") || typeof decision.allow !== "boolean" || decision.allow !== true)
+        if (controller.signal.aborted || Date.now() >= deadline || !decision || typeof decision !== "object" || Array.isArray(decision) || Object.keys(decision).some((key) => key !== "allow" && key !== "allowFiles") || (decision.allowFiles !== undefined && typeof decision.allowFiles !== "boolean") || typeof decision.allow !== "boolean" || decision.allow !== true)
             throw multipartAdmissionDenied();
         return decision.allowFiles !== false;
     }

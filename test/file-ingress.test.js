@@ -2795,7 +2795,7 @@ for (const storage of ["local", "s3"]) test(`${storage}: fields-only admission r
       invalid[Symbol.asyncIterator] = async function* () { bodyReads += 1; yield Buffer.from("invalid"); };
       await assert.rejects(run(invalid), { code: "UNAUTHENTICATED" });
       assert.equal(admissions, beforeAuth); assert.equal(bodyReads, 0);
-      for (const invalidDecision of ["false", null, 0, {}, undefined]) {
+      for (const invalidDecision of ["false", null, 0, {}]) {
         allowFiles = invalidDecision;
         const malformed = request([field]); malformed[Symbol.asyncIterator] = invalid[Symbol.asyncIterator];
         await assert.rejects(run(malformed), { code: "MULTIPART_ADMISSION_DENIED" });
@@ -2807,6 +2807,10 @@ for (const storage of ["local", "s3"]) test(`${storage}: fields-only admission r
       const claimed = await run(positive()); assert.ok(claimed.id);
       assert.ok(receipts > 0); assert.equal(writes, 1); assert.equal(scans, 1);
       assert.equal((await run(positive())).id, claimed.id, "retry preserves the claim");
+      assert.equal(writes, 1);
+      allowFiles = undefined;
+      assert.deepEqual({ ...await run(request([field])) }, { note: ["hello"] });
+      assert.equal((await run(positive())).id, claimed.id, "explicit undefined preserves upload permission like omission");
       assert.equal(writes, 1);
       if (service) assert.equal(service.objects.size, 1);
       allowFiles = false;
