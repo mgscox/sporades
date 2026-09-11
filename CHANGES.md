@@ -2,19 +2,21 @@
 
 ## Unreleased - 2026-09-11
 
-Changes since v0.9.17.
+Changes since v0.9.18.
 
-### 🐛 Bug Fixes
+### 🚀 Features
 
-- Reject caps below the configured envelope floor (bfb6bce1).
-- Fix query arguments containing multi-element arrays (#37) (8cfef157).
+- Allow trusted multipart admission to prohibit files (#39) (47602ddf).
 
 ### 📝 Documentation
 
-- Remove personal infrastructure from documentation and host fixture (628363b1).
-- Link log cap implementation PR (a0b2fb88).
-- Record log cap validation completion (675226cd).
-- Document shell quote handlers in SQL lexer census (#38) (125355ab).
+- Require explicit own data for multipart admission authority (3b118d0d).
+- Treat undefined multipart file permission as omitted (5cfe8aca).
+- Regenerate multipart admission API documentation (ac92dcf8).
+
+### 🧪 Tests
+
+- Verify file permission in packed admission declarations (0465c97f).
 
 ## v0.9.11 - 2026-09-02
 
@@ -103,6 +105,7 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
+
 
 
 
