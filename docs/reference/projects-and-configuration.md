@@ -640,7 +640,7 @@ regular single-link file and tightened back to owner-only if an editor
 loosened it. Removing a local Container removes its replacement snapshot while
 preserving stored edits.
 
-Local snapshot attempts and Hosted seed attempts are recorded before publication in `deploy-file-attempt.jsonl`
+Every local or Hosted deployment that declares `deploy.files` is recorded before publication in `deploy-file-attempt.jsonl`
 under the local `.sporades/` directory or the Hosted Capsule directory. The
 journal names the attempted release, the candidate and previous Containers, every
 temporary `.seed-*` path before it is created, and each seeded file's inode and
