@@ -5051,10 +5051,45 @@ fs.promises.lstat = async function(file, ...args) {
     assert.match(revokedAccess.args.at(-1), /fchmodSync\(fd, 384\)/);
     assert.match(revokedAccess.args.at(-1), new RegExp(`fchownSync\\(fd, ${process.getuid()}, ${process.getgid()}\\)`));
     assert.equal(ordinaryDeploy.code, 0, ordinaryDeploy.stdout + ordinaryDeploy.stderr);
-    const binding = JSON.parse(await readFile(path.join(projectDir, ".sporades/binding.json"), "utf8"));
+    for (const policy of ["replace", "remove"]) {
+      config.ssh = { authorizedKeys: [{ key: TEST_PUBLIC_KEY }] };
+      config.deploy.files = [{ path: "settings.json", update: "preserve" }, { path: "defaults.json" }];
+      await writeFile(configPath, JSON.stringify(config));
+      const enabled = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+      assert.equal(enabled.code, 0, enabled.stdout + enabled.stderr);
+      config.deploy.files = policy === "replace" ? [{ path: "settings.json" }, { path: "defaults.json" }] : [{ path: "defaults.json" }];
+      if (policy === "remove") delete config.ssh;
+      await writeFile(configPath, JSON.stringify(config));
+      const inactive = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...docker.env, NODE_OPTIONS: `--import=${staleGrant}` } });
+      assert.equal(inactive.code, 0, inactive.stdout + inactive.stderr);
+      const revoked = (await docker.calls()).filter((call) => call.args.includes(`${preserved}:/file:rw`)).at(-1);
+      assert.match(revoked.args.at(-1), /fchmodSync\(fd, 384\)/);
+      assert.match(revoked.args.at(-1), new RegExp(`fchownSync\\(fd, ${process.getuid()}, ${process.getgid()}\\)`));
+      assert.equal(await readFile(preserved, "utf8"), "server edit");
+    }
+    let binding = JSON.parse(await readFile(path.join(projectDir, ".sporades/binding.json"), "utf8"));
     assert.equal(await readFile(path.join(binding.deployFilesRoot, "defaults.json"), "utf8"), "new local bytes");
-    const removed = await runCli(["deploy", "remove", "--json"], { cwd: projectDir, env: docker.env });
+    config.ssh = { authorizedKeys: [{ key: TEST_PUBLIC_KEY }] };
+    config.deploy.files = [{ path: "settings.json", update: "preserve" }, { path: "defaults.json" }];
+    await writeFile(configPath, JSON.stringify(config));
+    const finalDeploy = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(finalDeploy.code, 0, finalDeploy.stdout + finalDeploy.stderr);
+    binding = JSON.parse(await readFile(path.join(projectDir, ".sporades/binding.json"), "utf8"));
+    const failRemoval = path.join(dir, "fail-snapshot-removal.mjs");
+    await writeFile(failRemoval, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const original = fs.promises.rm;
+fs.promises.rm = async function(file, ...args) {
+  if (String(file).includes('/.sporades/deploy-files/')) throw Object.assign(new Error('injected snapshot removal denial'), { code: 'EACCES' });
+  return original.call(this, file, ...args);
+}; syncBuiltinESMExports();`);
+    const removalFailure = await runCli(["deploy", "remove", "--json"], { cwd: projectDir, env: { ...docker.env, NODE_OPTIONS: `--import=${failRemoval}` } });
+    assert.notEqual(removalFailure.code, 0);
+    assert.match(removalFailure.stdout + removalFailure.stderr, /injected snapshot removal denial/);
+    const removed = await runCli(["deploy", "remove", "--json"], { cwd: projectDir, env: { ...docker.env, NODE_OPTIONS: `--import=${staleGrant}` } });
     assert.equal(removed.code, 0, removed.stdout + removed.stderr);
+    const removalAccess = (await docker.calls()).filter((call) => call.args.includes(`${preserved}:/file:rw`)).at(-1);
+    assert.match(removalAccess.args.at(-1), /fchmodSync\(fd, 384\)/);
+    assert.match(removalAccess.args.at(-1), new RegExp(`fchownSync\\(fd, ${process.getuid()}, ${process.getgid()}\\)`));
     await assert.rejects(stat(binding.deployFilesRoot), { code: "ENOENT" });
     assert.equal(await readFile(preserved, "utf8"), "server edit");
   });

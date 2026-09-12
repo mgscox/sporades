@@ -114842,15 +114842,22 @@ async function startContainerSession(options) {
     }
     const localUser = localContainerRuntimeUser();
     const desiredUid = Number(localUser.split(":")[0]);
-    const desiredGid = Number(runtimeUser.split(":")[1]);
-    const desiredMode = runtimeUser === localUser ? 384 : 432;
-    for (const file of bundle.deployFiles.filter((entry) => entry.update === "preserve")) {
-      const target = await assertPreservedDeployFile(preservedRoot, file.path);
+    const activePreserved = new Set(bundle.deployFiles.filter((entry) => entry.update === "preserve").map((entry) => entry.path));
+    const previouslyPreserved = resolveDeployFiles(existingBinding?.deployFiles).filter((entry) => entry.update === "preserve").map((entry) => entry.path);
+    for (const relative of /* @__PURE__ */ new Set([...activePreserved, ...previouslyPreserved])) {
+      const fileUser = activePreserved.has(relative) ? runtimeUser : localUser;
+      const desiredGid = Number(fileUser.split(":")[1]);
+      const desiredMode = fileUser === localUser ? 384 : 432;
+      const target = await assertPreservedDeployFile(preservedRoot, relative).catch((error) => {
+        if (error.code === "ENOENT" && !activePreserved.has(relative)) return null;
+        throw error;
+      });
+      if (!target) continue;
       const info2 = await lstat8(target);
       if (info2.uid !== desiredUid || info2.gid !== desiredGid || (info2.mode & 511) !== desiredMode) {
         previousFileAccess.push({ host: target, uid: info2.uid, gid: info2.gid, mode: info2.mode & 511, dev: info2.dev, ino: info2.ino });
         runDocker(
-          localPreservedFileAccessArgs(target, localUser, runtimeUser, SPORADES_BASE_IMAGE.image),
+          localPreservedFileAccessArgs(target, localUser, fileUser, SPORADES_BASE_IMAGE.image),
           options.projectDir,
           "Failed to prepare preserved file access.",
           "Check Docker can adjust the declared preserved file for the local and SSH runtime users."
@@ -114893,7 +114900,7 @@ async function startContainerSession(options) {
       containerId,
       containerName,
       clientRelease,
-      ...bundle.deployFiles.length ? { deployFilesRoot: deployReleaseRoot } : {},
+      ...bundle.deployFiles.length ? { deployFilesRoot: deployReleaseRoot, deployFiles: bundle.deployFiles.map(({ path: path14, update }) => ({ path: path14, update })) } : {},
       ...sshAccess.enabled ? {
         ssh: {
           enabled: true,
@@ -116706,6 +116713,24 @@ async function removeLocalContainerSession(options) {
       "Check Docker is running, then retry `sporades deploy remove`.",
       true
     );
+    const localUser = localContainerRuntimeUser();
+    for (const file of resolveDeployFiles(binding.deployFiles).filter((entry) => entry.update === "preserve")) {
+      const target = await assertPreservedDeployFile(path13.join(options.projectDir, ".sporades", "preserved-files"), file.path).catch((error) => {
+        if (error.code !== "ENOENT") throw error;
+        return null;
+      });
+      if (!target) continue;
+      const info2 = await lstat8(target);
+      if (info2.uid !== Number(localUser.split(":")[0]) || info2.gid !== Number(localUser.split(":")[1]) || (info2.mode & 511) !== 384) {
+        runDocker(
+          localPreservedFileAccessArgs(target, localUser, localUser, SPORADES_BASE_IMAGE.image),
+          options.projectDir,
+          "Failed to revoke preserved file runtime access.",
+          "Retry Container removal after Docker can restore local file access."
+        );
+      }
+    }
+    await removeDeployFileSnapshot(path13.join(options.projectDir, ".sporades"), binding.deployFilesRoot);
   } catch (error) {
     if (claimedConsumer && currentConsumer) {
       await restorePublicTreeConsumer(
@@ -116723,7 +116748,6 @@ async function removeLocalContainerSession(options) {
     "container",
     claimedConsumer ? { token: claimedConsumer.token, identity: claimedConsumer.identity } : null
   );
-  await removeDeployFileSnapshot(path13.join(options.projectDir, ".sporades"), binding.deployFilesRoot);
   await rm8(bindingPath, { force: true });
   const services = options.stopServices === false ? {} : await stopLocalCapsuleServices({ ...options, silent: true });
   const container = containerLifecycleSummary("removed", binding);

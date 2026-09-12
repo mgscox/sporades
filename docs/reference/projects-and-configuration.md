@@ -629,9 +629,10 @@ Switching to `replace` also retains the inactive copy; switching back to
 Local SSH deployments keep the invoking user as file owner and grant the
 container runtime group read/write access through a Docker helper mounted to
 one declared file at a time. Disabling SSH restores the invoking user’s group
-and owner-only permissions. Failed replacements restore the previous file
+and owner-only permissions. Removing a preserved declaration or switching it
+to `replace` also revokes the inactive copy’s runtime group access. Failed replacements restore the previous file
 permissions before restarting the old Container. Removing a local Container also removes its
-replacement snapshot, while preserving stored edits.
+replacement snapshot and revokes runtime group access, while preserving stored edits.
 
 Edit the file contents in place when editing a bind-mounted file. Replacing its
 inode with an editor's atomic-save operation requires restarting the container

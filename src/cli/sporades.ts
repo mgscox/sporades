@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { assertPreservedDeployFile, deployFileMounts, preparePreservedFiles, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, localPreservedFileAccessArgs, removeDeployFileSnapshot } from "../deploy-files.js";
+import { resolveDeployFiles, assertPreservedDeployFile, deployFileMounts, preparePreservedFiles, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, localPreservedFileAccessArgs, removeDeployFileSnapshot } from "../deploy-files.js";
 import { validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual } from "node:crypto";
@@ -4351,14 +4351,21 @@ async function startContainerSession(options: LooseRecord) {
 
     const localUser = localContainerRuntimeUser();
     const desiredUid = Number(localUser.split(":")[0]);
-    const desiredGid = Number(runtimeUser.split(":")[1]);
-    const desiredMode = runtimeUser === localUser ? 0o600 : 0o660;
-    for (const file of bundle.deployFiles.filter((entry) => entry.update === "preserve")) {
-      const target = await assertPreservedDeployFile(preservedRoot, file.path);
+    const activePreserved = new Set(bundle.deployFiles.filter((entry) => entry.update === "preserve").map((entry) => entry.path));
+    const previouslyPreserved = resolveDeployFiles(existingBinding?.deployFiles).filter((entry) => entry.update === "preserve").map((entry) => entry.path);
+    for (const relative of new Set([...activePreserved, ...previouslyPreserved])) {
+      const fileUser = activePreserved.has(relative) ? runtimeUser : localUser;
+      const desiredGid = Number(fileUser.split(":")[1]);
+      const desiredMode = fileUser === localUser ? 0o600 : 0o660;
+      const target = await assertPreservedDeployFile(preservedRoot, relative).catch((error) => {
+        if (error.code === "ENOENT" && !activePreserved.has(relative)) return null;
+        throw error;
+      });
+      if (!target) continue;
       const info = await lstat(target);
       if (info.uid !== desiredUid || info.gid !== desiredGid || (info.mode & 0o777) !== desiredMode) {
         previousFileAccess.push({ host: target, uid: info.uid, gid: info.gid, mode: info.mode & 0o777, dev: info.dev, ino: info.ino });
-        runDocker(localPreservedFileAccessArgs(target, localUser, runtimeUser, SPORADES_BASE_IMAGE.image), options.projectDir,
+        runDocker(localPreservedFileAccessArgs(target, localUser, fileUser, SPORADES_BASE_IMAGE.image), options.projectDir,
           "Failed to prepare preserved file access.", "Check Docker can adjust the declared preserved file for the local and SSH runtime users.");
       }
     }
@@ -4400,7 +4407,7 @@ async function startContainerSession(options: LooseRecord) {
       containerId,
       containerName,
       clientRelease,
-      ...(bundle.deployFiles.length ? { deployFilesRoot: deployReleaseRoot } : {}),
+      ...(bundle.deployFiles.length ? { deployFilesRoot: deployReleaseRoot, deployFiles: bundle.deployFiles.map(({ path, update }) => ({ path, update })) } : {}),
       ...(sshAccess.enabled ? {
         ssh: {
           enabled: true,
@@ -6383,6 +6390,18 @@ async function removeLocalContainerSession(options: LooseRecord) {
       "Check Docker is running, then retry `sporades deploy remove`.",
       true,
     );
+    const localUser = localContainerRuntimeUser();
+    for (const file of resolveDeployFiles(binding.deployFiles).filter((entry) => entry.update === "preserve")) {
+      const target = await assertPreservedDeployFile(path.join(options.projectDir, ".sporades", "preserved-files"), file.path)
+        .catch((error) => { if (error.code !== "ENOENT") throw error; return null; });
+      if (!target) continue;
+      const info = await lstat(target);
+      if (info.uid !== Number(localUser.split(":")[0]) || info.gid !== Number(localUser.split(":")[1]) || (info.mode & 0o777) !== 0o600) {
+        runDocker(localPreservedFileAccessArgs(target, localUser, localUser, SPORADES_BASE_IMAGE.image), options.projectDir,
+          "Failed to revoke preserved file runtime access.", "Retry Container removal after Docker can restore local file access.");
+      }
+    }
+    await removeDeployFileSnapshot(path.join(options.projectDir, ".sporades"), binding.deployFilesRoot);
   } catch (error) {
     if (claimedConsumer && currentConsumer) {
       await restorePublicTreeConsumer(
@@ -6399,7 +6418,6 @@ async function removeLocalContainerSession(options: LooseRecord) {
     "container",
     claimedConsumer ? { token: claimedConsumer.token, identity: claimedConsumer.identity } : null,
   );
-  await removeDeployFileSnapshot(path.join(options.projectDir, ".sporades"), binding.deployFilesRoot);
   await rm(bindingPath, { force: true });
   const services = options.stopServices === false ? {} : await stopLocalCapsuleServices({ ...options, silent: true });
   const container = containerLifecycleSummary("removed", binding);
