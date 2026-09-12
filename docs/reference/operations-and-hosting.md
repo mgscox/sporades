@@ -294,7 +294,8 @@ where possible. Empty effective key sets leave SSH disabled.
 When SSH is enabled, sessions log in as the `sporades` user with key-based
 authentication only. Sporades does not provide root login, sudoers access,
 passwords, custom SSH ports, or public SSH port exposure. Release files remain
-read-only; Capsule data remains the writable runtime area. Hosted Capsule SSH
+read-only; Capsule data and explicitly declared preserved deployment files are
+the writable runtime areas. Hosted Capsule SSH
 ports are Docker-assigned and loopback-only on the Host server, separate from
 Caddy HTTP routing.
 
