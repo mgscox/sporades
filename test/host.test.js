@@ -3513,6 +3513,8 @@ test("sporades host helper registers Hosted Capsules with registry state and una
     assert.equal(output.data.registered, true);
     assert.equal(output.data.authoritative, true);
     assert.deepEqual(output.data.capsule, {
+      aliasDomains: [],
+      aliasUrls: [],
       subname: "team-notes",
       domain: "capsules.example.dev",
       hostedUrl: "https://team-notes.capsules.example.dev",
@@ -4004,7 +4006,8 @@ test("sporades host helper does not commit registration when the unavailable rou
     const failedOutput = JSON.parse(failed.stdout);
     assert.equal(failedOutput.ok, false);
     assert.equal(failedOutput.data, null);
-    assert.match(failedOutput.error.message, /^Failed to apply Hosted Capsule route/);
+    assert.equal(failedOutput.error.message, "Hosted Capsule registration recovery failed.");
+    assert.match(failedOutput.error.hint, /Registration: Failed to apply Hosted Capsule route/);
     await assert.rejects(readFile(registryRecord, "utf8"), { code: "ENOENT" });
     await assert.rejects(readFile(routeFile, "utf8"), { code: "ENOENT" });
 
@@ -4040,7 +4043,8 @@ process.stdout.write(JSON.stringify({
       subname: request.capsule.subname,
       domain: request.host.domain,
       hostedUrl: request.registration.hostedUrl,
-      remoteCapsuleId: request.registration.remoteCapsuleId
+      remoteCapsuleId: request.registration.remoteCapsuleId,
+      aliasDomains: request.registration.aliasDomains
     },
     registryRecord: request.registration.registryRecord,
     directories: request.registration.directories,
@@ -4064,7 +4068,7 @@ process.exit(0);
     );
     assert.equal(addHost.code, 0, addHost.stderr);
 
-    const register = await runCli(["host", "register", "team-notes", "--host", "personal", "--json"], {
+    const register = await runCli(["host", "register", "team-notes", "--host", "personal", "--alias-domain", "fourteen.example", "--alias-domain", "app.fourteen.example", "--json"], {
       cwd: projectDir,
       env: { ...hostEnv(configDir), ...fakeSsh.env },
     });
@@ -4083,6 +4087,7 @@ process.exit(0);
     assert.equal(output.ok, true);
     assert.equal(output.error, null);
     assert.equal(output.data.registered, true);
+    assert.deepEqual(output.data.capsule.aliasDomains, ["fourteen.example", "app.fourteen.example"]);
     assert.equal(output.data.authoritative, true);
     assert.equal(output.data.localBinding, true);
     assert.match(output.data.bindingPath, /\.sporades\/remote-binding\.json$/);
@@ -4119,6 +4124,7 @@ process.exit(0);
         subname: "team-notes",
       },
       registration: {
+        aliasDomains: ["fourteen.example", "app.fourteen.example"],
         subname: "team-notes",
         domain: "capsules.example.dev",
         hostedUrl: "https://team-notes.capsules.example.dev",
@@ -7007,12 +7013,13 @@ test("sporades host helper serializes two stale health route repairs across help
       await writeFile(path.join(remoteRoot, "caddy", "Caddyfile"), "import ./hosts/*.caddy\n");
       await writeFile(
         routeFile,
-        `team-notes.${domain} {\n  reverse_proxy 127.0.0.1:49153 {\n  }\n}\n`,
+        `team-notes.${domain} {\n  reverse_proxy 127.0.0.1:49153 {\n  }\n}\nfourteen.example {\n  reverse_proxy 127.0.0.1:49153 {\n  }\n}\n`,
       );
       await writeFile(
         registryRecordPath,
         `${JSON.stringify({
           subname: "team-notes",
+          aliasDomains: ["fourteen.example"],
           domain,
           remoteCapsuleId: `${domain}/team-notes`,
           hostedUrl,
@@ -7056,7 +7063,8 @@ test("sporades host helper serializes two stale health route repairs across help
         assert.equal(JSON.parse(result.stdout).ok, true, result.stdout);
       }
       const route = await readFile(routeFile, "utf8");
-      assert.equal((route.match(/reverse_proxy 127\.0\.0\.1:49154/g) ?? []).length, 1);
+      assert.equal((route.match(/reverse_proxy 127\.0\.0\.1:49154/g) ?? []).length, 2);
+      assert.ok(route.includes("fourteen.example {\n"));
       assert.doesNotMatch(route, /127\.0\.0\.1:49153/);
       assert.deepEqual(
         (await docker.caddyCalls()).map((call) => call.args),
@@ -8578,6 +8586,7 @@ test("sporades host helper lists registry records enriched with Docker container
         },
         capsules: [
           {
+            aliasDomains: [],
             subname: "archive",
             domain: "capsules.example.dev",
             hostedUrl: "https://archive.capsules.example.dev",
@@ -8607,6 +8616,7 @@ test("sporades host helper lists registry records enriched with Docker container
             },
           },
           {
+            aliasDomains: [],
             subname: "drafts",
             domain: "capsules.example.dev",
             hostedUrl: "https://drafts.capsules.example.dev",
@@ -8638,6 +8648,7 @@ test("sporades host helper lists registry records enriched with Docker container
             },
           },
           {
+            aliasDomains: [],
             subname: "notes",
             domain: "capsules.example.dev",
             hostedUrl: "https://notes.capsules.example.dev",
@@ -10055,7 +10066,7 @@ test("sporades host helper fails start when Docker does not report a usable loop
         ["stop", "sporades-capsules-example-dev-team-notes"],
         ["rm", "sporades-capsules-example-dev-team-notes"],
         ["image", "inspect", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine"],
-        ["run", "--detach", "--name", "sporades-capsules-example-dev-team-notes", "--network", "sporades-hosted-capsules", "--restart", "on-failure:3", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=5", "--label", "com.sporades.managed=true", "--label", "com.sporades.hosted-domain=capsules.example.dev", "--label", "com.sporades.capsule-subname=team-notes", "--label", "com.sporades.capsule-id=capsules.example.dev/team-notes", "--label", "com.sporades.base-image.name=sporades-base", "--label", "com.sporades.base-image.version=0.2.0-node22-alpine", "--label", "com.sporades.base-image.update-policy=host-managed", "--label", "com.sporades.release-id=20260630T221500Z-feedface", "--volume", `${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`, "--volume", `${path.join(capsuleDir, "current", "public")}:/app/public:ro`, "--volume", `${path.join(capsuleDir, "current", "sporades.json")}:/app/sporades.json:ro`, "--volume", `${path.join(capsuleDir, "data")}:/app/data:rw`, "--workdir", "/app", "--env", "PORT=4000", "--env", "SPORADES_LOG_STDOUT=1", "--env", "SPORADES_SECURITY_SESSION=hosted", "--env", "SPORADES_CLAMAV_MANAGED=1", "--env", `SPORADES_RUNTIME_PROBE_TOKEN=${record.runtimeProbe.token}`, "--env", "SPORADES_PUBLIC_ORIGIN=https://team-notes.capsules.example.dev", "--env", "SPORADES_RELEASE_ID=20260630T221500Z-feedface", "--publish", "127.0.0.1::4000", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine", "node", "/app/server.mjs"],
+        ["run", "--detach", "--name", "sporades-capsules-example-dev-team-notes", "--network", "sporades-hosted-capsules", "--restart", "on-failure:3", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=5", "--label", "com.sporades.managed=true", "--label", "com.sporades.hosted-domain=capsules.example.dev", "--label", "com.sporades.capsule-subname=team-notes", "--label", "com.sporades.capsule-id=capsules.example.dev/team-notes", "--label", "com.sporades.base-image.name=sporades-base", "--label", "com.sporades.base-image.version=0.2.0-node22-alpine", "--label", "com.sporades.base-image.update-policy=host-managed", "--label", "com.sporades.release-id=20260630T221500Z-feedface", "--volume", `${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`, "--volume", `${path.join(capsuleDir, "current", "public")}:/app/public:ro`, "--volume", `${path.join(capsuleDir, "current", "sporades.json")}:/app/sporades.json:ro`, "--volume", `${path.join(capsuleDir, "data")}:/app/data:rw`, "--workdir", "/app", "--env", "PORT=4000", "--env", "SPORADES_LOG_STDOUT=1", "--env", "SPORADES_SECURITY_SESSION=hosted", "--env", "SPORADES_CLAMAV_MANAGED=1", "--env", `SPORADES_RUNTIME_PROBE_TOKEN=${record.runtimeProbe.token}`, "--env", "SPORADES_PUBLIC_ORIGIN=https://team-notes.capsules.example.dev", "--env", "SPORADES_PUBLIC_ALIASES=[]", "--env", "SPORADES_RELEASE_ID=20260630T221500Z-feedface", "--publish", "127.0.0.1::4000", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine", "node", "/app/server.mjs"],
         ["inspect", "-f", "{{.State.Running}}", "sporades-capsules-example-dev-team-notes"],
         ["inspect", "-f", "{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostIp}}:{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostPort}}", "sporades-capsules-example-dev-team-notes"],
         ["stop", "sporades-capsules-example-dev-team-notes"],
@@ -10980,7 +10991,7 @@ test("sporades host helper restarts the current release after install when reque
     await createTarGz(archivePath, runtimeDir, ["server.mjs", "public/client.js", "public/index.html", "sporades.json"]);
     const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
     await mkdir(path.dirname(registryRecordPath), { recursive: true });
-    await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
+    await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev", aliasDomains: ["fourteen.example"] })}\n`);
     const docker = await installFakeDocker(dir);
 
     const install = await runHostHelper(
@@ -11036,6 +11047,8 @@ test("sporades host helper restarts the current release after install when reque
     assert.equal(runCall.args[runCall.args.indexOf("--publish") + 1], "127.0.0.1::4000");
     assert.equal(output.data.lifecycle.container.publishedPort.hostPort, 49153);
     assert.equal(output.data.lifecycle.route.upstream, "127.0.0.1:49153");
+    assert.ok((await readFile(output.data.lifecycle.route.routeFile, "utf8")).includes("fourteen.example {\n"));
+    assert.ok(runCall.args.includes('SPORADES_PUBLIC_ALIASES=["https://fourteen.example"]'));
   });
 });
 
@@ -11329,6 +11342,8 @@ test("sporades host helper marks verified push failed when the Capsule route doe
       domain: `localhost:${port}`,
       scheme: "http",
     });
+    const registered = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    await writeFile(fixture.registryRecordPath, JSON.stringify({ ...registered, aliasDomains: ["fourteen.example"] }));
     const docker = await installFakeDocker(path.join(dir, "verify-route-failure-docker"));
 
     const install = await runHostHelper(
@@ -11361,7 +11376,9 @@ test("sporades host helper marks verified push failed when the Capsule route doe
     assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), path.join(fixture.capsuleDir, "releases", fixture.releaseId));
     assert.match(await readFile(fixture.lifecycle.routes.unavailable.routeFile, "utf8"), /respond "Hosted Capsule unavailable" 503/);
 
+    assert.ok((await readFile(fixture.lifecycle.routes.unavailable.routeFile, "utf8")).includes("fourteen.example {\n"));
     const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    assert.deepEqual(record.aliasDomains, ["fourteen.example"]);
     const release = record.releases.find((entry) => entry.id === fixture.releaseId);
     assert.equal(record.currentRelease.id, fixture.releaseId);
     assert.equal(record.status, "failed");
@@ -12175,6 +12192,38 @@ process.exit(0);
       },
     });
     await assert.rejects(readFile(path.join(projectDir, ".sporades", "remote-binding.json"), "utf8"), { code: "ENOENT" });
+  });
+});
+
+test("sporades host register requires complete alias confirmation before writing a binding", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(dir, `
+const capsule = JSON.parse(process.env.FAKE_REGISTER_CAPSULE);
+process.stdout.write(JSON.stringify({ ok: true, data: { registered: true, capsule }, error: null }) + "\\n");
+`);
+    const create = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(create.code, 0, create.stderr);
+    const projectDir = path.join(dir, "todo-island");
+    const env = { ...hostEnv(configDir), ...fakeSsh.env };
+    const add = await runCli(["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--json"], { cwd: projectDir, env });
+    assert.equal(add.code, 0, add.stderr);
+    const bindingPath = path.join(projectDir, ".sporades", "remote-binding.json");
+    const args = ["host", "register", "team-notes", "--host", "personal", "--alias-domain", "fourteen.example", "--alias-domain", "app.fourteen.example", "--json"];
+    for (const capsule of [{}, { aliasDomains: [] }, { aliasDomains: ["fourteen.example"] }, { aliasDomains: ["fourteen.example", "fourteen.example"] }, { aliasDomains: ["fourteen.example", "app.fourteen.example", "extra.example"] }, { aliasDomains: "fourteen.example" }]) {
+      const result = await runCli(args, { cwd: projectDir, env: { ...env, FAKE_REGISTER_CAPSULE: JSON.stringify(capsule) } });
+      assert.equal(result.code, 1, result.stdout);
+      assert.match(JSON.parse(result.stdout).error.message, /did not confirm the requested alias domains/);
+      await assert.rejects(readFile(bindingPath), { code: "ENOENT" });
+    }
+    await mkdir(path.dirname(bindingPath), { recursive: true });
+    await writeFile(bindingPath, "existing binding\n");
+    const denied = await runCli(args, { cwd: projectDir, env: { ...env, FAKE_REGISTER_CAPSULE: "{}" } });
+    assert.equal(denied.code, 1);
+    assert.equal(await readFile(bindingPath, "utf8"), "existing binding\n");
+    const confirmed = await runCli(args, { cwd: projectDir, env: { ...env, FAKE_REGISTER_CAPSULE: JSON.stringify({ aliasDomains: ["app.fourteen.example", "fourteen.example"] }) } });
+    assert.equal(confirmed.code, 0, confirmed.stdout + confirmed.stderr);
+    assert.equal(JSON.parse(confirmed.stdout).data.localBinding, true);
   });
 });
 
@@ -14262,4 +14311,261 @@ test("sporades host validation returns standard JSON errors", async () => {
 test("host profile implementation does not hard-code the first Hosted domain", async () => {
   const source = await readFile(cliPath, "utf8");
   assert.doesNotMatch(source, /mattgscox\.co\.uk/);
+});
+
+async function customDomainFixture(dir, domains = ["capsules.example.dev"]) {
+  const remoteRoot = path.join(dir, "remote-root");
+  const docker = await installFakeDocker(dir);
+  await mkdir(path.join(remoteRoot, "caddy", "hosts"), { recursive: true });
+  await writeFile(path.join(remoteRoot, "caddy", "Caddyfile"), "import ./sporades-hosted-domains.caddy\n");
+  for (const domain of domains) {
+    await writeFile(path.join(remoteRoot, "caddy", "hosts", `${domain}.caddy`), `import ./${domain}/*.caddy\n`);
+  }
+  const request = {
+    action: "capsule.register",
+    host: { alias: "personal", domain: domains[0], scheme: "https", remoteRoot },
+    capsule: { subname: "team-notes" },
+    registration: { aliasDomains: ["fourteen.example", "app.fourteen.example"] },
+  };
+  const invoke = (input = request, env = {}) => runHostHelper(input, { cwd: dir, env: { ...docker.env, ...env } });
+  return { remoteRoot, docker, request, invoke };
+}
+
+test("custom domains register apex and app aliases, survive lifecycle and release on unregister", async () => {
+  await withTempDir(async (dir) => {
+    const { request, invoke, docker } = await customDomainFixture(dir);
+    const registered = await invoke();
+    assert.equal(JSON.parse(registered.stdout).ok, true, registered.stdout + registered.stderr);
+    const data = JSON.parse(registered.stdout).data;
+    assert.deepEqual(data.capsule.aliasDomains, ["fourteen.example", "app.fourteen.example"]);
+    assert.deepEqual(data.capsule.aliasUrls, ["https://fourteen.example", "https://app.fourteen.example"]);
+    assert.equal(data.capsule.remoteCapsuleId, "capsules.example.dev/team-notes");
+    const routeFile = data.route.routeFile;
+    const unavailable = await readFile(routeFile, "utf8");
+    for (const hostname of ["team-notes.capsules.example.dev", "fourteen.example", "app.fourteen.example"]) {
+      assert.ok(unavailable.includes(`${hostname} {\n`), unavailable);
+    }
+    assert.equal((unavailable.match(/Hosted Capsule unavailable/g) ?? []).length, 3);
+    const list = await invoke({ ...request, action: "capsule.list", registration: undefined });
+    assert.equal(JSON.parse(list.stdout).ok, true, list.stdout + list.stderr);
+    assert.deepEqual(JSON.parse(list.stdout).data.capsules[0].aliasDomains, request.registration.aliasDomains);
+    const forged = await invoke({ ...request, action: "capsule.stop", registration: undefined,
+      lifecycle: { routes: { unavailable: { aliasDomains: ["evil.example"] } } },
+    });
+    assert.equal(JSON.parse(forged.stdout).ok, false, forged.stdout);
+    assert.equal(await readFile(routeFile, "utf8"), unavailable);
+    const stopped = await invoke({ ...request, action: "capsule.stop", registration: undefined });
+    assert.equal(JSON.parse(stopped.stdout).ok, true, stopped.stdout + stopped.stderr);
+    assert.equal(await readFile(routeFile, "utf8"), unavailable);
+
+    // Give this registered Capsule two immutable releases using the existing lifecycle fixture.
+    const originalRecord = JSON.parse(await readFile(data.registryRecord, "utf8"));
+    const fixture = await writeHostedCapsuleRollbackFixture(dir);
+    const releaseRecord = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    await writeFile(data.registryRecord, JSON.stringify({ ...releaseRecord, aliasDomains: originalRecord.aliasDomains }));
+    for (const action of ["capsule.start", "capsule.restart", "capsule.release.rollback"]) {
+      const result = await invoke({ ...request, action, registration: undefined,
+        ...(action === "capsule.release.rollback" ? { rollback: { releaseId: fixture.rollbackReleaseId } } : {}),
+      });
+      assert.equal(JSON.parse(result.stdout).ok, true, result.stdout + result.stderr);
+      const contents = await readFile(routeFile, "utf8");
+      assert.equal((contents.match(/reverse_proxy 127\.0\.0\.1:/g) ?? []).length >= 3, true, contents);
+      assert.ok(contents.includes("fourteen.example {\n"), contents);
+      assert.ok(contents.includes("app.fourteen.example {\n"), contents);
+    }
+    const calls = await docker.calls();
+    assert.ok(calls.some(({ args }) => args.includes('SPORADES_PUBLIC_ALIASES=["https://fourteen.example","https://app.fourteen.example"]')));
+    const removed = await invoke({ ...request, action: "capsule.unregister", registration: undefined });
+    assert.equal(JSON.parse(removed.stdout).ok, true, removed.stdout + removed.stderr);
+    await assert.rejects(readFile(routeFile), { code: "ENOENT" });
+    const reactivated = await invoke({ ...request, registration: undefined });
+    assert.equal(JSON.parse(reactivated.stdout).ok, true, reactivated.stdout + reactivated.stderr);
+    assert.deepEqual(JSON.parse(reactivated.stdout).data.capsule.aliasDomains, request.registration.aliasDomains);
+    assert.equal(JSON.parse((await invoke({ ...request, action: "capsule.unregister", registration: undefined })).stdout).ok, true);
+    const cleared = await invoke({ ...request, registration: { aliasDomains: [] } });
+    assert.equal(JSON.parse(cleared.stdout).ok, true, cleared.stdout);
+    assert.deepEqual(JSON.parse(cleared.stdout).data.capsule.aliasDomains, []);
+    assert.doesNotMatch(await readFile(routeFile, "utf8"), /fourteen.example/);
+  });
+});
+
+test("custom domains reject invalid input, cross-domain collisions and concurrent claims", async () => {
+  await withTempDir(async (dir) => {
+    const { request, invoke } = await customDomainFixture(dir, ["capsules.example.dev", "other.example.dev"]);
+    for (const aliasDomains of [["*.example.com"], ["https://example.com"], ["x.example\nrespond 200"], ["127.0.0.1"], ["app.example:443"], ["Upper.example"], ["x.example", "x.example"], ["team-notes.capsules.example.dev"], ["host.other.example.dev"], "fourteen.example", null]) {
+      const invalid = await invoke({ ...request, registration: { aliasDomains } });
+      assert.equal(JSON.parse(invalid.stdout).ok, false, JSON.stringify(aliasDomains) + invalid.stdout);
+    }
+    const competitor = { ...request, host: { ...request.host, domain: "other.example.dev" }, capsule: { subname: "second" } };
+    const results = await Promise.all([invoke(), invoke(competitor)]);
+    assert.deepEqual(results.map((result) => JSON.parse(result.stdout).ok).sort(), [false, true], JSON.stringify(results));
+    const winner = JSON.parse(results[0].stdout).ok ? request : competitor;
+    const loser = JSON.parse(results[0].stdout).ok ? competitor : request;
+    const canonicalConflict = await invoke({ ...loser, registration: { aliasDomains: [`${winner.capsule.subname}.${winner.host.domain}`] } });
+    assert.equal(JSON.parse(canonicalConflict.stdout).ok, false, canonicalConflict.stdout);
+    // An alias that is a future Capsule's canonical hostname must block that registration too.
+    const aliasOwner = await invoke({ ...loser, capsule: { subname: "owner" }, registration: { aliasDomains: [`future.${loser.host.domain}`, "host.future.example"] } });
+    assert.equal(JSON.parse(aliasOwner.stdout).ok, true, aliasOwner.stdout + aliasOwner.stderr);
+    const healthConflict = await invoke({ action: "host.bootstrap", host: { ...request.host, domain: "future.example" } });
+    assert.equal(JSON.parse(healthConflict.stdout).ok, false, healthConflict.stdout);
+    assert.equal(JSON.parse(healthConflict.stdout).error.message, "Hosted Capsule hostname is already reserved.");
+    const future = await invoke({ ...loser, capsule: { subname: "future" }, registration: undefined });
+    assert.equal(JSON.parse(future.stdout).ok, false, future.stdout);
+    const removed = await invoke({ ...winner, action: "capsule.unregister", registration: undefined });
+    assert.equal(JSON.parse(removed.stdout).ok, true, removed.stdout + removed.stderr);
+    const reassigned = await invoke(loser);
+    assert.equal(JSON.parse(reassigned.stdout).ok, true, reassigned.stdout + reassigned.stderr);
+    const reactivation = await invoke(winner);
+    assert.equal(JSON.parse(reactivation.stdout).ok, false, reactivation.stdout);
+  });
+});
+
+test("custom domains roll back failed registration and keep automatic TLS separate from origin certificates", async () => {
+  await withTempDir(async (dir) => {
+    const { remoteRoot, request, invoke } = await customDomainFixture(dir);
+    const failed = await invoke(request, { SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE: "1" });
+    assert.equal(JSON.parse(failed.stdout).ok, false, failed.stdout);
+    const routeFile = path.join(remoteRoot, "caddy", "hosts", request.host.domain, "team-notes.caddy");
+    await assert.rejects(readFile(routeFile), { code: "ENOENT" });
+    const registered = await invoke({ ...request, registration: { ...request.registration, bootstrap: { tls: { mode: "cloudflare-origin" } } } });
+    assert.equal(JSON.parse(registered.stdout).ok, true, registered.stdout + registered.stderr);
+    const contents = await readFile(routeFile, "utf8");
+    assert.equal((contents.match(/tls .*origin.crt/g) ?? []).length, 1, contents);
+    assert.ok(contents.includes("fourteen.example {\n"));
+    assert.doesNotMatch(contents.slice(contents.indexOf("\nfourteen.example {")), /origin.crt/);
+  });
+});
+
+test("custom domains allow same-origin HTTP and WebSockets while rejecting unregistered origins", async () => {
+  await withTempDir(async (dir) => {
+    await withHostedRuntimeTransportServer(dir, { __sporadesPublicAliases: ["https://fourteen.example"] }, async (baseUrl, token) => {
+      const headers = { origin: "https://fourteen.example", "x-forwarded-host": "fourteen.example", "x-forwarded-proto": "https" };
+      const response = await fetch(baseUrl, { headers });
+      assert.equal(response.headers.get("access-control-allow-origin"), "https://fourteen.example");
+      assert.match(await openRawWebSocketHandshake(baseUrl, headers, token()), /^HTTP\/1\.1 101/m);
+      for (const rejected of [
+        { ...headers, origin: "https://evil.example", "x-forwarded-host": "evil.example" },
+        { ...headers, "x-forwarded-host": "unrelated.example" },
+      ]) {
+        assert.equal((await fetch(baseUrl, { headers: rejected })).headers.get("access-control-allow-origin"), null);
+        assert.doesNotMatch(await openRawWebSocketHandshake(baseUrl, rejected, token()), /^HTTP\/1\.1 101/m);
+      }
+    });
+  });
+});
+
+test("custom domains retain ownership when registration and route rollback both fail", async () => {
+  await withTempDir(async (dir) => {
+    const { remoteRoot, request, invoke } = await customDomainFixture(dir, ["capsules.example.dev", "other.example.dev"]);
+    const failed = await invoke(request, {
+      SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE: "1",
+      FAKE_DOCKER_CADDY_RELOAD_STATUSES: "0,1,0",
+    });
+    const error = JSON.parse(failed.stdout).error;
+    assert.equal(error.message, "Hosted Capsule registration recovery failed.");
+    assert.match(error.hint, /Registration: Failed to write Hosted Capsule registry record/);
+    assert.match(error.hint, /Route rollback: Failed to remove Hosted Capsule route/);
+    const registry = path.join(remoteRoot, "hosts", request.host.domain, "registry");
+    await assert.rejects(readFile(path.join(registry, "capsules", "team-notes.json")), { code: "ENOENT" });
+    const claimPath = path.join(registry, "registration-claims", "team-notes.json");
+    assert.deepEqual(JSON.parse(await readFile(claimPath, "utf8")).aliasDomains, request.registration.aliasDomains);
+    for (const action of ["capsule.unregister", "capsule.delete"]) {
+      const denied = JSON.parse((await invoke({ ...request, action })).stdout);
+      assert.match(denied.error.message, /registration recovery is required before teardown/);
+      assert.deepEqual(JSON.parse(await readFile(claimPath, "utf8")).aliasDomains, request.registration.aliasDomains);
+    }
+    // A separate helper process sees the durable reservation even without a Capsule record.
+    const competitor = { ...request, host: { ...request.host, domain: "other.example.dev" }, capsule: { subname: "competitor" } };
+    assert.equal(JSON.parse((await invoke(competitor)).stdout).error.message, "Hosted Capsule hostname is already reserved.");
+    // Another failed retry must not discard the original orphan-route claim.
+    const retriedFailure = await invoke(request, { SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE: "1" });
+    assert.equal(JSON.parse(retriedFailure.stdout).ok, false);
+    assert.equal(JSON.parse((await invoke(competitor)).stdout).error.message, "Hosted Capsule hostname is already reserved.");
+    const changedAliases = await invoke({ ...request, registration: { aliasDomains: ["replacement.example"] } });
+    assert.equal(JSON.parse(changedAliases.stdout).error.message, "Hosted Capsule registration recovery is required.");
+    const repaired = await invoke({ ...request, registration: undefined });
+    assert.equal(JSON.parse(repaired.stdout).ok, true, repaired.stdout);
+    assert.deepEqual(JSON.parse(repaired.stdout).data.capsule.aliasDomains, request.registration.aliasDomains);
+    await assert.rejects(readFile(claimPath), { code: "ENOENT" });
+  });
+});
+
+test("custom domains always settle a quiesced runtime after registration rollback failure", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleRollbackFixture(dir);
+    const { remoteRoot, request, invoke, docker } = await customDomainFixture(dir, ["capsules.example.dev", "other.example.dev"]);
+    const existing = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    await writeFile(fixture.registryRecordPath, JSON.stringify({ ...existing, status: "unregistered", aliasDomains: ["old.example"] }));
+    const failed = await invoke(request, {
+      SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE: "1",
+      FAKE_DOCKER_CADDY_RELOAD_STATUSES: "0,1,1",
+    });
+    const error = JSON.parse(failed.stdout).error;
+    assert.equal(error.message, "Hosted Capsule registration recovery failed.");
+    assert.match(error.hint, /Registration: Failed to write Hosted Capsule registry record/);
+    assert.match(error.hint, /Route rollback:/);
+    assert.match(error.hint, /Runtime settlement: Hosted Capsule runtime restoration failed/);
+    assert.ok((await docker.calls()).some(({ args }) => args[0] === "stop"));
+    const claimPath = path.join(remoteRoot, "hosts", request.host.domain, "registry", "registration-claims", "team-notes.json");
+    assert.deepEqual(JSON.parse(await readFile(claimPath, "utf8")).previousAliasDomains, ["old.example"]);
+    for (const hostname of ["old.example", "fourteen.example"]) {
+      const competitor = await invoke({ ...request, host: { ...request.host, domain: "other.example.dev" }, capsule: { subname: "competitor" }, registration: { aliasDomains: [hostname] } });
+      assert.equal(JSON.parse(competitor.stdout).error.message, "Hosted Capsule hostname is already reserved.");
+    }
+    const repaired = await invoke();
+    assert.equal(JSON.parse(repaired.stdout).ok, true, repaired.stdout);
+    await assert.rejects(readFile(claimPath), { code: "ENOENT" });
+  });
+});
+
+
+test("custom domains preserve committed registration when registry lock cleanup fails", async () => {
+  for (const reactivate of [false, true]) {
+    await withTempDir(async (dir) => {
+      const { remoteRoot, request, invoke: invokeHelper } = await customDomainFixture(dir);
+      const invoke = (input = request, env = {}) => invokeHelper(input, { FAKE_DOCKER_RUNNING: "false", ...env });
+      if (reactivate) {
+        assert.equal(JSON.parse((await invoke()).stdout).ok, true);
+        assert.equal(JSON.parse((await invoke({ ...request, action: "capsule.unregister" })).stdout).ok, true);
+      }
+      const hook = path.join(dir, "fail-lock-cleanup.mjs");
+      await writeFile(hook, `
+import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+const original = fs.rm;
+fs.rm = async (target, ...args) => {
+  if (String(target).endsWith("/registry/.lock")) throw new Error("Injected registry lock cleanup failure");
+  return original(target, ...args);
+};
+syncBuiltinESMExports();
+`);
+      const failed = JSON.parse((await invoke(request, { NODE_OPTIONS: "--import=" + hook })).stdout);
+      assert.equal(failed.ok, false);
+      assert.match(failed.error.hint, /Registration committed.*Registry lock cleanup: Injected registry lock cleanup failure/);
+      const registry = path.join(remoteRoot, "hosts", request.host.domain, "registry");
+      const record = JSON.parse(await readFile(path.join(registry, "capsules", "team-notes.json"), "utf8"));
+      assert.notEqual(record.status, "unregistered");
+      assert.deepEqual(record.aliasDomains, request.registration.aliasDomains);
+      const route = path.join(remoteRoot, "caddy", "hosts", request.host.domain, "team-notes.caddy");
+      assert.match(await readFile(route, "utf8"), /fourteen\.example/);
+      const claim = path.join(registry, "registration-claims", "team-notes.json");
+      assert.deepEqual(JSON.parse(await readFile(claim, "utf8")).aliasDomains, request.registration.aliasDomains);
+      // Simulate operator repair of the failed lock cleanup before retrying.
+      await rm(path.join(registry, ".lock"), { recursive: true });
+      for (const action of ["capsule.unregister", "capsule.delete"]) {
+        const denied = JSON.parse((await invoke({ ...request, action })).stdout);
+        assert.equal(denied.ok, false);
+        assert.match(denied.error.message, /registration recovery is required before teardown/);
+        assert.deepEqual(JSON.parse(await readFile(claim, "utf8")).aliasDomains, request.registration.aliasDomains);
+        assert.match(await readFile(route, "utf8"), /fourteen\.example/);
+      }
+      const repaired = JSON.parse((await invoke()).stdout);
+      assert.equal(repaired.ok, true, JSON.stringify(repaired));
+      await assert.rejects(readFile(claim), { code: "ENOENT" });
+      assert.match(await readFile(route, "utf8"), /fourteen\.example/);
+      assert.equal(JSON.parse((await invoke({ ...request, action: "capsule.unregister" })).stdout).ok, true);
+      assert.equal(JSON.parse((await invoke({ ...request, action: "capsule.delete" })).stdout).ok, true);
+      assert.equal(JSON.parse((await invoke({ ...request, capsule: { subname: "new-owner" } })).stdout).ok, true);
+    });
+  }
 });

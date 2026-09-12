@@ -50,7 +50,7 @@ export declare function createHostBootstrapRequest(profile: LooseRecord): {
         domainInclude: string;
     };
 };
-export declare function createHostRegistrationRequest(alias: string, profile: LooseRecord, subname: string): {
+export declare function createHostRegistrationRequest(alias: string, profile: LooseRecord, subname: string, aliasDomains?: string[]): {
     subname: string;
     domain: any;
     hostedUrl: string;
@@ -98,6 +98,7 @@ export declare function createHostRegistrationRequest(alias: string, profile: Lo
             key: string | null;
         };
     };
+    aliasDomains?: string[] | undefined;
 };
 export declare function createHostUnregisterRequest(profile: LooseRecord, subname: string): {
     subname: string;

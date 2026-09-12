@@ -23,6 +23,7 @@
       "src/cli/cli-version.ts",
       "src/cli/doctor.ts",
       "src/cli/github-autodeploy-workflow.ts",
+      "src/cli/host-domain-aliases.ts",
       "src/cli/host-helper-archive.ts",
       "src/cli/host-helper-config.ts",
       "src/cli/host-helper-contract.ts",
@@ -95,7 +96,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "194b31976ac111ba03d1b421c82c2397557f7f840f2f3bfafaacd779e6f6e750"
+    "digest": "df4afcee55e6b07ba00fff3659775bcc8c9df3351060e33e93288adf9a348f15"
   },
   "outputs": {
     "files": [
@@ -157,6 +158,10 @@
       "dist/cli/github-autodeploy-workflow.d.ts.map",
       "dist/cli/github-autodeploy-workflow.js",
       "dist/cli/github-autodeploy-workflow.js.map",
+      "dist/cli/host-domain-aliases.d.ts",
+      "dist/cli/host-domain-aliases.d.ts.map",
+      "dist/cli/host-domain-aliases.js",
+      "dist/cli/host-domain-aliases.js.map",
       "dist/cli/host-helper-archive.d.ts",
       "dist/cli/host-helper-archive.d.ts.map",
       "dist/cli/host-helper-archive.js",
@@ -414,6 +419,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "a380d475c49fad27d19dae0d1054d29e494fd53ab3e84c6417a63a6560881f76"
+    "digest": "17a810bdc6e1e26daa92a3e7350a7626209ea42872dbf208533af9ae0f0c909a"
   }
 }

@@ -177,11 +177,12 @@ export function createHostBootstrapRequest(profile) {
         },
     };
 }
-export function createHostRegistrationRequest(alias, profile, subname) {
+export function createHostRegistrationRequest(alias, profile, subname, aliasDomains = []) {
     const bootstrap = createHostBootstrapRequest(profile);
     const capsuleDirectory = posixJoin(bootstrap.directories.capsules, subname);
     const capsuleLog = posixJoin(capsuleDirectory, "logs", "http.log");
     return {
+        ...(aliasDomains.length ? { aliasDomains } : {}),
         subname,
         domain: profile.domain,
         hostedUrl: `${profile.scheme}://${subname}.${profile.domain}`,

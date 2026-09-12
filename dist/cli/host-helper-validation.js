@@ -1,4 +1,5 @@
 import path from "node:path";
+import { validateAliasDomains } from "./host-domain-aliases.js";
 import { validatePublicTreeFileSet } from "../public-tree-contract.js";
 import { helperError } from "./cli-support.js";
 import { expectedReleaseFiles, isExpectedClaimedReleaseFile } from "./host-helper-release-files.js";
@@ -174,6 +175,7 @@ export function validateRegisterRequest(request) {
         throw helperError("Invalid Hosted Capsule registration request.", "Update the Sporades CLI and retry `sporades host register`.");
     }
     const registration = request.registration ?? {};
+    validateAliasDomains(registration.aliasDomains);
     const mismatchedIdentity = (registration.subname && registration.subname !== request.capsule.subname) ||
         (registration.domain && registration.domain !== request.host.domain) ||
         (registration.remoteCapsuleId && registration.remoteCapsuleId !== `${request.host.domain}/${request.capsule.subname}`);

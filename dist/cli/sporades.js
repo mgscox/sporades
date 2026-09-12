@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual } from "node:crypto";
 import { readdirSync, readFileSync, statSync, watch } from "node:fs";
@@ -852,6 +853,7 @@ function parseHostArgs(args) {
     let hostAlias = null;
     let server = null;
     let domain = null;
+    const aliasDomains = [];
     let remoteRoot = DEFAULT_HOST_REMOTE_ROOT;
     let tlsMode = DEFAULT_HOST_TLS_MODE;
     let subname = null;
@@ -875,6 +877,11 @@ function parseHostArgs(args) {
                 break;
             case "--server":
                 server = readFlagValue(rest, ++index, "--server");
+                break;
+            case "--alias-domain":
+                if (subcommand !== "register")
+                    throw commandError("--alias-domain is only supported by host register.", "Use `sporades host register <subname> --alias-domain <hostname>`.");
+                aliasDomains.push(readFlagValue(rest, ++index, "--alias-domain"));
                 break;
             case "--domain":
                 domain = readFlagValue(rest, ++index, "--domain");
@@ -1000,7 +1007,8 @@ function parseHostArgs(args) {
                 validateHostAlias(hostAlias);
             }
             validateCapsuleSubname(positionalSubname);
-            return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
+            validateAliasDomains(aliasDomains);
+            return { subcommand, subname: positionalSubname, hostAlias, aliasDomains, json, projectDir: process.cwd() };
         }
         case "rotate-key": {
             const [positionalSubname, ...extra] = positional;
@@ -3126,7 +3134,7 @@ async function manageHost(options) {
                 profile: resolved.profile,
                 action: "capsule.register",
                 subname: options.subname,
-                registration: createHostRegistrationRequest(resolved.alias, resolved.profile, options.subname),
+                registration: createHostRegistrationRequest(resolved.alias, resolved.profile, options.subname, options.aliasDomains),
                 projectDir: options.projectDir,
             });
             if (!result.ok) {
@@ -3135,6 +3143,12 @@ async function manageHost(options) {
                     return;
                 }
                 throw commandError(result.error.message, result.error.hint);
+            }
+            const confirmedAliases = result.data?.capsule?.aliasDomains;
+            if (options.aliasDomains.length && (!Array.isArray(confirmedAliases)
+                || confirmedAliases.length !== options.aliasDomains.length
+                || !options.aliasDomains.every((hostname) => confirmedAliases.includes(hostname)))) {
+                throw commandError("Host helper did not confirm the requested alias domains.", "Upgrade the Host helper and inspect the remote registration before retrying. The canonical Capsule may have been registered, but alias ownership is unconfirmed; no local binding was written.");
             }
             const bindingPath = path.join(options.projectDir, REMOTE_BINDING_FILE);
             await mkdir(path.dirname(bindingPath), { recursive: true });

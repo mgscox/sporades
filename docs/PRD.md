@@ -779,6 +779,14 @@ immutable release. Start and restart run the current release. Stop leaves data
 intact and routes the registered Capsule to the Hosted Capsule unavailable
 response.
 
+Registration optionally accepts repeatable `--alias-domain <hostname>` flags
+for apex or custom HTTPS domains. The Host registry owns the alias list and
+rejects hostname collisions across Hosted domains under the Host-wide route
+lock. Aliases share the canonical route file and lifecycle, use Caddy automatic
+TLS, and are removed on unregister. The original subdomain, canonical URL,
+Capsule identity, and storage layout remain unchanged. Browser and OAuth
+origin checks admit only the registered aliases with matching request headers.
+
 Host profiles store the SSH target, Hosted domain, scheme, remote root, and TLS
 mode. The Host server registry is authoritative; project-local
 `.sporades/remote-binding.json` is only a convenience pointer.

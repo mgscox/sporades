@@ -78,6 +78,7 @@ const runtimeConfig = {
   ...sporadesConfig,
   __sporadesSession: process.env.SPORADES_SECURITY_SESSION ?? sporadesConfig.__sporadesSession,
   __sporadesPublicOrigin: process.env.SPORADES_PUBLIC_ORIGIN ?? sporadesConfig.__sporadesPublicOrigin,
+  __sporadesPublicAliases: JSON.parse(process.env.SPORADES_PUBLIC_ALIASES ?? "[]"),
 };
 const runtimeServerEnv = await readRuntimeServerEnv(sporadesServerEnv, sporadesSealedServerEnv);
 const runtimeServiceEnv = readRuntimeServiceEnv();

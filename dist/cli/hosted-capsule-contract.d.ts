@@ -44,6 +44,7 @@ export type HostedCapsuleRegistryRecord = JsonObject & {
     domain: string;
     hostedUrl: string;
     remoteCapsuleId: string;
+    aliasDomains?: string[];
     status?: HostedCapsuleStatus | string;
     currentRelease?: {
         id: string;
@@ -52,6 +53,7 @@ export type HostedCapsuleRegistryRecord = JsonObject & {
     sealedServerEnv?: HostHelperSealedServerEnv | null;
 };
 export type HostedCapsuleRoute = JsonObject & {
+    aliasDomains?: string[];
     url?: string;
     routeFile: string;
     previousRouteFile?: string;

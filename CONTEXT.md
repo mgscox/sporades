@@ -81,7 +81,7 @@ A Host-server-owned HTTP `503 Service Unavailable` response for a registered Hos
 _Avoid_: 404, proxy error, default error page
 
 **Capsule route**:
-A generated reverse-proxy route for one Hosted Capsule's full subdomain, pointing either to its running container or to the Hosted Capsule unavailable response.
+A generated reverse-proxy route file for one Hosted Capsule's full subdomain and optional custom domain aliases, pointing each hostname either to its running container or to the Hosted Capsule unavailable response. Aliases do not change the Capsule identity or canonical hostedUrl.
 _Avoid_: wildcard route, dynamic route, proxy rule
 
 **Edge TLS**:
