@@ -1802,7 +1802,7 @@ async function startCapsule(request, options = {}) {
     const releaseId = await currentReleaseId(paths.currentLink, request);
     const lifecycle = normaliseLifecycle(request, registryRecord, { ...(options.trustedRegistryLifecycle === true ? { ignoreProvidedLifecycle: true } : {}), releaseId });
     const recordedRelease = normaliseReleaseHistory(registryRecord).find((entry) => entry.id === releaseId);
-    await assertPreservedReleaseFiles(request, recordedRelease);
+    await preparePreservedReleaseFiles(request, recordedRelease);
     if (options.containerQuiesced !== true)
         stopAndRemoveContainer(lifecycle.container.name);
     if (options.dataPrepared !== true)
@@ -5699,7 +5699,7 @@ function capsuleHttpLogTrustManifest(request, validatedRemoteRoot) {
 function invalidCapsuleHttpLogPathError() {
     return helperError("Invalid Hosted Capsule HTTP log path.", "Use the canonical Capsule-scoped Host HTTP log path and retry the lifecycle command.");
 }
-async function assertPreservedReleaseFiles(request, recordedRelease) {
+async function preparePreservedReleaseFiles(request, recordedRelease) {
     if (!recordedRelease)
         throw helperError("Current Hosted release is not recorded.", "Reconcile the interrupted release install and its deploy-file-attempt.jsonl journal before starting the Capsule.");
     const paths = canonicalReleasePaths(request);
@@ -5708,12 +5708,24 @@ async function assertPreservedReleaseFiles(request, recordedRelease) {
         throw helperError("Interrupted deploy.files attempt requires recovery.", `Reconcile ${journal} before starting, restarting or selecting a release.`);
     }
     for (const file of resolveDeployFiles(recordedRelease.source?.deployFiles)) {
-        if (file.update === "preserve")
-            await assertPreservedDeployFile(path.join(paths.capsule, "preserved-files"), file.path);
+        if (file.update !== "preserve")
+            continue;
+        const target = await assertPreservedDeployFile(path.join(paths.capsule, "preserved-files"), file.path);
+        const handle = await open(target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+        try {
+            const identity = await handle.stat();
+            if (!identity.isFile() || identity.nlink !== 1)
+                throw helperError("Unsafe preserved release file.", "Restore a regular preserved file before restarting.");
+            await prepareRuntimeDataOwnershipHandle(handle, target, identity);
+            await handle.chmod(0o600);
+        }
+        finally {
+            await handle.close();
+        }
     }
 }
 async function assertRollbackReleaseFiles(request, releaseDirectory, recordedRelease = null) {
-    await assertPreservedReleaseFiles(request, recordedRelease);
+    await preparePreservedReleaseFiles(request, recordedRelease);
     try {
         const expected = await recordedReleaseFileClaims(releaseDirectory, recordedRelease);
         const actual = await validateExtractedReleaseTree(releaseDirectory, expected);

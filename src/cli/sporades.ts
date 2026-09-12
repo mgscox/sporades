@@ -6345,6 +6345,19 @@ async function stopLocalContainerSession(options: LooseRecord) {
 
 async function restartLocalContainerSession(options: LooseRecord) {
   const { binding } = await requireLocalContainerBinding(options, "restart");
+  const preservedRoot = path.join(options.projectDir, ".sporades", "preserved-files");
+  await beginPreservedFileAttempt(preservedRoot, "restart", false);
+  const localUser = localContainerRuntimeUser();
+  const runtimeUser = binding.ssh?.enabled ? baseImageRuntimeUser() : localUser;
+  for (const relative of new Set(resolveDeployFiles(binding.deployFiles).filter((file) => file.update === "preserve").map((file) => file.path.normalize("NFC")))) {
+    const target = await assertPreservedDeployFile(preservedRoot, relative);
+    const info = await lstat(target);
+    const mode = runtimeUser === localUser ? 0o600 : 0o660;
+    if (info.uid !== Number(localUser.split(":")[0]) || info.gid !== Number(runtimeUser.split(":")[1]) || (info.mode & 0o777) !== mode) {
+      runDocker(localPreservedFileAccessArgs(target, localUser, runtimeUser, SPORADES_BASE_IMAGE.image), options.projectDir,
+        "Failed to restore preserved file access.", "Check Docker can repair file access for the bound Container runtime before restarting.");
+    }
+  }
   const config = await readProjectConfig(options.projectDir);
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
   const serviceState = await startCapsuleServices(capsuleServices, options.projectDir, {

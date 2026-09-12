@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { Buffer } from "node:buffer";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -5252,5 +5252,50 @@ fs.promises.lstat = async function(file, ...args) {
       else assert.equal((await docker.calls()).slice(before).filter((call) => call.args.includes(`${stored}:/file:rw`)).length, 0, "the equivalent previous spelling must not revoke the active grant");
     }
     assert.equal(await readFile(stored, "utf8"), "server edit");
+  });
+});
+
+test("local deploy.files restart repairs atomic-save access and rejects unsafe or pending storage", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "restart-files", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "restart-files"));
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.ssh = { authorizedKeys: [{ key: TEST_PUBLIC_KEY }] };
+    config.deploy.files = [{ path: "settings.json", update: "preserve" }];
+    await writeFile(configPath, JSON.stringify(config));
+    await writeFile(path.join(projectDir, "settings.json"), "seed");
+    const docker = await installFakeDocker(dir, "restart-files-candidate");
+    const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(deployed.code, 0, deployed.stdout + deployed.stderr);
+    const stopped = await runCli(["deploy", "stop", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(stopped.code, 0, stopped.stdout + stopped.stderr);
+    const stored = preservedDeployFilePath(path.join(projectDir, ".sporades/preserved-files"), "settings.json");
+    await writeFile(path.join(projectDir, "replacement"), "atomic edit", { mode: 0o600 });
+    await rename(path.join(projectDir, "replacement"), stored);
+    const before = (await docker.calls()).length;
+    const restarted = await runCli(["deploy", "restart", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(restarted.code, 0, restarted.stdout + restarted.stderr);
+    const calls = (await docker.calls()).slice(before);
+    const repair = calls.findIndex((call) => call.args.includes(`${stored}:/file:rw`));
+    assert(repair >= 0 && repair < calls.findIndex((call) => call.args[0] === "start"));
+    assert.match(calls[repair].args.at(-1), /fchownSync\(fd, \d+, 10001\)/);
+    assert.match(calls[repair].args.at(-1), /fchmodSync\(fd, 432\)/);
+    assert.equal(await readFile(stored, "utf8"), "atomic edit");
+    await runCli(["deploy", "stop", "--json"], { cwd: projectDir, env: docker.env });
+    for (const failure of ["missing", "symlink", "journal"]) {
+      await rm(stored, { force: true });
+      if (failure === "symlink") await symlink(path.join(projectDir, "settings.json"), stored);
+      if (failure === "journal") {
+        await writeFile(stored, "uncommitted seed");
+        await writeFile(path.join(projectDir, ".sporades/deploy-file-attempt.jsonl"), "pending");
+      }
+      const count = (await docker.calls()).length;
+      const failed = await runCli(["deploy", "restart", "--json"], { cwd: projectDir, env: docker.env });
+      assert.notEqual(failed.code, 0, failed.stdout);
+      assert.equal((await docker.calls()).length, count);
+    }
   });
 });

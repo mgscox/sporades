@@ -14871,3 +14871,50 @@ test("Hosted deploy.files retains historical path shapes across deploy and rollb
     assert(run.args.includes(`${preservedDeployFilePath(root, "config/settings.json")}:/app/config/settings.json:rw`));
   });
 });
+
+test("Hosted deploy.files repairs atomic-save ownership before quiescing and preserves service on repair failure", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleInstallFixture(dir, { rootName: "restart-file-access", previousReleaseId: null,
+      deployFiles: [{ path: "settings.json", update: "preserve" }] });
+    const docker = await installFakeDocker(path.join(dir, "restart-access-docker"));
+    const request = { host: { alias: "personal", domain: fixture.domain, remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname } };
+    const installed = await runHostHelper({ ...request, action: "capsule.release.install", release: fixture.release }, { cwd: dir, env: docker.env });
+    assert.equal(installed.code, 0, installed.stdout + installed.stderr);
+    const stored = preservedDeployFilePath(path.join(fixture.capsuleDir, "preserved-files"), "settings.json");
+    await writeFile(path.join(dir, "replacement"), "atomic edit", { mode: 0o400 });
+    await rename(path.join(dir, "replacement"), stored);
+    const registry = await readFile(fixture.registryRecordPath);
+    const route = path.join(fixture.remoteRoot, "caddy/hosts", fixture.domain, `${fixture.subname}.caddy`);
+    const routeBefore = await readFile(route);
+    const count = (await docker.calls()).length;
+    const failed = await runHostHelper({ ...request, action: "capsule.restart" }, { cwd: dir, env: { ...docker.env, SPORADES_TEST_FORCE_RUNTIME_DATA_CHOWN_FAILURE: "1" } });
+    assert.equal(JSON.parse(failed.stdout).ok, false, failed.stdout);
+    assert.equal((await docker.calls()).slice(count).filter((call) => ["stop", "rm", "run"].includes(call.args[0])).length, 0);
+    assert.deepEqual(await readFile(fixture.registryRecordPath), registry);
+    assert.deepEqual(await readFile(route), routeBefore);
+    const timeline = path.join(dir, "access-timeline.jsonl");
+    const preload = path.join(dir, "track-file-repair.mjs");
+    await writeFile(preload, `import fs from 'node:fs'; import child from 'node:child_process'; import { syncBuiltinESMExports } from 'node:module';
+const original = fs.promises.open;
+fs.promises.open = async function(file, ...args) {
+  const handle = await original.call(this, file, ...args);
+  if (String(file).endsWith(${JSON.stringify(`/preserved-files/${path.basename(stored)}`)})) {
+    const chown = handle.chown.bind(handle);
+    handle.chown = async (...values) => { fs.appendFileSync(${JSON.stringify(timeline)}, JSON.stringify({ chown: values }) + '\\n'); return chown(...values); };
+  }
+  return handle;
+};
+const spawn = child.spawnSync;
+child.spawnSync = function(command, args, ...rest) {
+  if (command === 'docker' && ['stop', 'rm', 'run'].includes(args[0])) fs.appendFileSync(${JSON.stringify(timeline)}, JSON.stringify({ docker: args[0] }) + '\\n');
+  return spawn.call(this, command, args, ...rest);
+}; syncBuiltinESMExports();`);
+    const repaired = await runHostHelper({ ...request, action: "capsule.restart" }, { cwd: dir, env: { ...docker.env, NODE_OPTIONS: `--import=${preload}` } });
+    assert.equal(repaired.code, 0, repaired.stdout + repaired.stderr);
+    const events = (await readFile(timeline, "utf8")).trim().split("\n").map(JSON.parse);
+    assert.deepEqual(events[0], { chown: [10001, 10001] });
+    assert(events.findIndex((event) => event.docker === "stop") > 0);
+    assert.equal((await stat(stored)).mode & 0o777, 0o600);
+    assert.equal(await readFile(stored, "utf8"), "atomic edit");
+  });
+});

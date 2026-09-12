@@ -688,7 +688,10 @@ substitution during a build. Other platforms do not support `deploy.files`.
 
 Edit the file contents in place when editing a bind-mounted file. Replacing its
 inode with an editor's atomic-save operation requires restarting the container
-to refresh the bind mount.
+to refresh the bind mount. Locally, use `sporades deploy stop` followed by
+`sporades deploy restart`; Hosted Capsules use `sporades host restart`. These
+paths validate preserved files and restore the bound runtime's file access before
+starting it. A surviving local attempt journal also blocks restart.
 
 Paths are normalized using Node path resolution. They must stay under the
 project root and cannot collide with `.sporades/`, `public/`, `data/`, the server
