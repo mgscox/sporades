@@ -5082,6 +5082,13 @@ fs.promises.rm = async function(file, ...args) {
   if (String(file).includes('/.sporades/deploy-files/')) throw Object.assign(new Error('injected snapshot removal denial'), { code: 'EACCES' });
   return original.call(this, file, ...args);
 }; syncBuiltinESMExports();`);
+    const priorSnapshot = binding.deployFilesRoot;
+    const cleanupFailure = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...docker.env, NODE_OPTIONS: `--import=${failRemoval}` } });
+    assert.notEqual(cleanupFailure.code, 0);
+    assert.match(cleanupFailure.stdout + cleanupFailure.stderr, /injected snapshot removal denial/);
+    binding = JSON.parse(await readFile(path.join(projectDir, ".sporades/binding.json"), "utf8"));
+    assert(binding.pendingDeployFileCleanup.includes(priorSnapshot));
+    assert.notEqual(binding.deployFilesRoot, priorSnapshot);
     const removalFailure = await runCli(["deploy", "remove", "--json"], { cwd: projectDir, env: { ...docker.env, NODE_OPTIONS: `--import=${failRemoval}` } });
     assert.notEqual(removalFailure.code, 0);
     assert.match(removalFailure.stdout + removalFailure.stderr, /injected snapshot removal denial/);
@@ -5091,6 +5098,7 @@ fs.promises.rm = async function(file, ...args) {
     assert.match(removalAccess.args.at(-1), /fchmodSync\(fd, 384\)/);
     assert.match(removalAccess.args.at(-1), new RegExp(`fchownSync\\(fd, ${process.getuid()}, ${process.getgid()}\\)`));
     await assert.rejects(stat(binding.deployFilesRoot), { code: "ENOENT" });
+    await assert.rejects(stat(priorSnapshot), { code: "ENOENT" });
     assert.equal(await readFile(preserved, "utf8"), "server edit");
   });
 });

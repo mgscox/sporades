@@ -58593,7 +58593,36 @@ function deployFileMounts(files, releaseRoot, preservedRoot) {
     mode: file.update === "preserve" ? "rw" : "ro"
   }));
 }
-async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, created = []) {
+async function beginPreservedFileAttempt(preservedRoot, release, needed) {
+  const journal = path.join(path.dirname(preservedRoot), "deploy-file-attempt.jsonl");
+  if (!needed) {
+    try {
+      await lstat(journal);
+    } catch (error) {
+      if (error.code === "ENOENT") return void 0;
+      throw error;
+    }
+    throw new Error(`Interrupted deploy.files attempt requires recovery: ${journal}`);
+  }
+  let handle;
+  try {
+    handle = await open(journal, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 384);
+  } catch (error) {
+    if (error.code === "EEXIST") throw new Error(`Interrupted deploy.files attempt requires recovery: ${journal}`);
+    throw error;
+  }
+  try {
+    await handle.writeFile(JSON.stringify({ release, preservedRoot }) + "\n");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  return journal;
+}
+async function finishPreservedFileAttempt(journal) {
+  if (journal) await rm(journal, { force: true });
+}
+async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, created = [], journal) {
   for (const file of files.filter((entry) => entry.update === "preserve")) {
     let directory = preservedRoot;
     for (const part of ["", ...file.path.split("/").slice(0, -1)]) {
@@ -58620,8 +58649,18 @@ async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, c
       await handle.writeFile(contents);
       if (owner) await owner(handle, destination, await handle.stat());
       const identity = await handle.stat();
+      const seed = { root: preservedRoot, path: file.path, dev: identity.dev, ino: identity.ino, sha256: createHash("sha256").update(contents).digest("hex") };
+      if (journal) {
+        const record = await open(journal, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW);
+        try {
+          await record.writeFile(JSON.stringify(seed) + "\n");
+          await record.sync();
+        } finally {
+          await record.close();
+        }
+      }
       await link(temporary, destination);
-      created.push({ root: preservedRoot, path: file.path, dev: identity.dev, ino: identity.ino, sha256: createHash("sha256").update(contents).digest("hex") });
+      created.push(seed);
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
     } finally {
@@ -114757,16 +114796,20 @@ async function startContainerSession(options) {
   const deployReleaseRoot = path13.join(runtimeDir, "deploy-files", randomBytes8(16).toString("hex"));
   const preservedRoot = path13.join(runtimeDir, "preserved-files");
   const createdSeeds = [];
+  const seedJournal = await beginPreservedFileAttempt(preservedRoot, deployReleaseRoot, bundle.deployFiles.some((file) => file.update === "preserve"));
   try {
     for (const file of bundle.deployFiles) {
       const destination = path13.join(deployReleaseRoot, file.path);
       await mkdir8(path13.dirname(destination), { recursive: true });
       await writeFile7(destination, file.contents, { mode: 420 });
     }
-    await preparePreservedFiles(bundle.deployFiles, deployReleaseRoot, preservedRoot, void 0, createdSeeds);
+    await preparePreservedFiles(bundle.deployFiles, deployReleaseRoot, preservedRoot, void 0, createdSeeds, seedJournal);
   } catch (error) {
     await rethrowAfterDeployCleanup(error, [
-      () => rollbackPreservedFiles(createdSeeds),
+      async () => {
+        await rollbackPreservedFiles(createdSeeds);
+        await finishPreservedFileAttempt(seedJournal);
+      },
       () => rm8(deployReleaseRoot, { recursive: true, force: true }),
       () => discardPublicTree(bundle.staticFiles.publicTree)
     ]);
@@ -114900,6 +114943,7 @@ async function startContainerSession(options) {
       containerId,
       containerName,
       clientRelease,
+      pendingDeployFileCleanup: [...existingBinding?.pendingDeployFileCleanup ?? [], ...existingBinding?.deployFilesRoot ? [existingBinding.deployFilesRoot] : []],
       ...bundle.deployFiles.length ? { deployFilesRoot: deployReleaseRoot, deployFiles: bundle.deployFiles.map(({ path: path14, update }) => ({ path: path14, update })) } : {},
       ...sshAccess.enabled ? {
         ssh: {
@@ -114997,6 +115041,7 @@ async function startContainerSession(options) {
     if (!candidateRetained) {
       try {
         await rollbackPreservedFiles(createdSeeds);
+        await finishPreservedFileAttempt(seedJournal);
       } catch {
         rollbackFailures.push("preserved-seeds");
       }
@@ -115016,7 +115061,10 @@ async function startContainerSession(options) {
     throw error;
   }
   if (!containerId || !binding) throw commandError("Container replacement did not commit.", "Retry deployment.");
-  await removeDeployFileSnapshot(runtimeDir, existingBinding?.deployFilesRoot);
+  await finishPreservedFileAttempt(seedJournal);
+  for (const snapshot of binding.pendingDeployFileCleanup) await removeDeployFileSnapshot(runtimeDir, snapshot);
+  binding.pendingDeployFileCleanup = [];
+  await replaceContainerBinding(bindingPath, binding);
   if (sshAccess.enabled || explicitSshConfigured(config)) {
     await emitCliSshAuditEvent(config, options.projectDir, {
       event: sshAccess.enabled ? "ssh.access.enabled" : "ssh.access.disabled",
@@ -116730,7 +116778,9 @@ async function removeLocalContainerSession(options) {
         );
       }
     }
-    await removeDeployFileSnapshot(path13.join(options.projectDir, ".sporades"), binding.deployFilesRoot);
+    for (const snapshot of [...binding.pendingDeployFileCleanup ?? [], binding.deployFilesRoot]) {
+      await removeDeployFileSnapshot(path13.join(options.projectDir, ".sporades"), snapshot);
+    }
   } catch (error) {
     if (claimedConsumer && currentConsumer) {
       await restorePublicTreeConsumer(

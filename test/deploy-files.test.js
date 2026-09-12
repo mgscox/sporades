@@ -1,9 +1,10 @@
+import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { mkdtemp, mkdir, readFile, writeFile, rm, symlink, link, stat, open, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { buildDeployFiles, resolveDeployFiles, preparePreservedFiles, deployFileMounts, assertPreservedDeployFile, rollbackPreservedFiles, localPreservedFileAccessArgs, rethrowAfterDeployCleanup } from "../dist/deploy-files.js";
+import { beginPreservedFileAttempt, finishPreservedFileAttempt, buildDeployFiles, resolveDeployFiles, preparePreservedFiles, deployFileMounts, assertPreservedDeployFile, rollbackPreservedFiles, localPreservedFileAccessArgs, rethrowAfterDeployCleanup } from "../dist/deploy-files.js";
 import { createBundle } from "../dist/bundle-pipeline.js";
 
 async function temporary(fn) {
@@ -149,4 +150,36 @@ test("deployment cleanup attempts core restoration even when another cleanup fai
     async () => { attempted.push("release"); },
   ]), (error) => error instanceof AggregateError && error.errors[0] === original);
   assert.deepEqual(attempted, ["seed", "pointer", "release"]);
+});
+
+
+test("deploy.files journals seed ownership before publication and blocks interrupted attempts", async () => {
+  for (const duringLink of [false, true]) await temporary(async (root) => {
+    const release = path.join(root, "release");
+    const preserved = path.join(root, "preserved-files");
+    await mkdir(release);
+    await writeFile(path.join(release, "settings.json"), "uncommitted seed");
+    const moduleUrl = new URL("../dist/deploy-files.js", import.meta.url).href;
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+      if (${duringLink}) { const original = fs.promises.link; fs.promises.link = async (...args) => { await original(...args); process.exit(17); }; syncBuiltinESMExports(); }
+      const { beginPreservedFileAttempt, preparePreservedFiles } = await import(${JSON.stringify(moduleUrl)});
+      const journal = await beginPreservedFileAttempt(${JSON.stringify(preserved)}, 'attempt-one', true);
+      await preparePreservedFiles([{ path: 'settings.json', update: 'preserve' }], ${JSON.stringify(release)}, ${JSON.stringify(preserved)}, undefined, [], journal);
+      process.exit(17);
+    `], { encoding: "utf8" });
+    assert.equal(child.status, 17, child.stderr);
+    const journal = path.join(root, "deploy-file-attempt.jsonl");
+    const records = (await readFile(journal, "utf8")).trim().split("\n").map(JSON.parse);
+    assert.equal(records[0].release, "attempt-one");
+    assert.equal(records[1].ino, (await stat(path.join(preserved, "settings.json"))).ino);
+    await assert.rejects(beginPreservedFileAttempt(preserved, "attempt-two", true), /requires recovery/);
+    await assert.rejects(beginPreservedFileAttempt(preserved, "attempt-two", false), /requires recovery/);
+    // Simulate explicit recovery after the interrupted runtime has been stopped.
+    await rollbackPreservedFiles(records.slice(1));
+    await finishPreservedFileAttempt(journal);
+    await assert.rejects(stat(path.join(preserved, "settings.json")), { code: "ENOENT" });
+    const retry = await beginPreservedFileAttempt(preserved, "attempt-two", true);
+    await finishPreservedFileAttempt(retry);
+  });
 });

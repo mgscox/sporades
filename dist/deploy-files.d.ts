@@ -21,7 +21,9 @@ export declare function deployFileMounts(files: DeployFile[], releaseRoot: strin
     container: string;
     mode: string;
 }[];
-export declare function preparePreservedFiles(files: DeployFile[], releaseRoot: string, preservedRoot: string, owner?: (handle: FileHandle, target: string, stats: Awaited<ReturnType<FileHandle["stat"]>>) => Promise<void>, created?: PreservedSeed[]): Promise<void>;
+export declare function beginPreservedFileAttempt(preservedRoot: string, release: string, needed: boolean): Promise<string | undefined>;
+export declare function finishPreservedFileAttempt(journal?: string): Promise<void>;
+export declare function preparePreservedFiles(files: DeployFile[], releaseRoot: string, preservedRoot: string, owner?: (handle: FileHandle, target: string, stats: Awaited<ReturnType<FileHandle["stat"]>>) => Promise<void>, created?: PreservedSeed[], journal?: string): Promise<void>;
 export declare function rollbackPreservedFiles(created: PreservedSeed[], hooks?: {
     beforeClaim?: (target: string) => Promise<void>;
 }): Promise<void>;

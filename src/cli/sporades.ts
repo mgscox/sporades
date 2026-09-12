@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { resolveDeployFiles, assertPreservedDeployFile, deployFileMounts, preparePreservedFiles, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, localPreservedFileAccessArgs, removeDeployFileSnapshot } from "../deploy-files.js";
+import { beginPreservedFileAttempt, finishPreservedFileAttempt, resolveDeployFiles, assertPreservedDeployFile, deployFileMounts, preparePreservedFiles, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, localPreservedFileAccessArgs, removeDeployFileSnapshot } from "../deploy-files.js";
 import { validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual } from "node:crypto";
@@ -4265,16 +4265,17 @@ async function startContainerSession(options: LooseRecord) {
   const deployReleaseRoot = path.join(runtimeDir, "deploy-files", randomBytes(16).toString("hex"));
   const preservedRoot = path.join(runtimeDir, "preserved-files");
   const createdSeeds: PreservedSeed[] = [];
+  const seedJournal = await beginPreservedFileAttempt(preservedRoot, deployReleaseRoot, bundle.deployFiles.some((file) => file.update === "preserve"));
   try {
     for (const file of bundle.deployFiles) {
       const destination = path.join(deployReleaseRoot, file.path);
       await mkdir(path.dirname(destination), { recursive: true });
       await writeFile(destination, file.contents, { mode: 0o644 });
     }
-    await preparePreservedFiles(bundle.deployFiles, deployReleaseRoot, preservedRoot, undefined, createdSeeds);
+    await preparePreservedFiles(bundle.deployFiles, deployReleaseRoot, preservedRoot, undefined, createdSeeds, seedJournal);
   } catch (error) {
     await rethrowAfterDeployCleanup(error, [
-      () => rollbackPreservedFiles(createdSeeds),
+      async () => { await rollbackPreservedFiles(createdSeeds); await finishPreservedFileAttempt(seedJournal); },
       () => rm(deployReleaseRoot, { recursive: true, force: true }),
       () => discardPublicTree(bundle.staticFiles.publicTree),
     ]);
@@ -4407,6 +4408,7 @@ async function startContainerSession(options: LooseRecord) {
       containerId,
       containerName,
       clientRelease,
+      pendingDeployFileCleanup: [...(existingBinding?.pendingDeployFileCleanup ?? []), ...(existingBinding?.deployFilesRoot ? [existingBinding.deployFilesRoot] : [])],
       ...(bundle.deployFiles.length ? { deployFilesRoot: deployReleaseRoot, deployFiles: bundle.deployFiles.map(({ path, update }) => ({ path, update })) } : {}),
       ...(sshAccess.enabled ? {
         ssh: {
@@ -4471,7 +4473,7 @@ async function startContainerSession(options: LooseRecord) {
     }
     try { await discardPublicTree(bundle.staticFiles.publicTree); } catch { rollbackFailures.push("candidate-public-tree"); }
     if (!candidateRetained) {
-      try { await rollbackPreservedFiles(createdSeeds); } catch { rollbackFailures.push("preserved-seeds"); }
+      try { await rollbackPreservedFiles(createdSeeds); await finishPreservedFileAttempt(seedJournal); } catch { rollbackFailures.push("preserved-seeds"); }
       try { await rm(deployReleaseRoot, { recursive: true, force: true }); } catch { rollbackFailures.push("candidate-deploy-files"); }
     }
     if (rollbackFailures.length > 0) {
@@ -4485,7 +4487,10 @@ async function startContainerSession(options: LooseRecord) {
   }
 
   if (!containerId || !binding) throw commandError("Container replacement did not commit.", "Retry deployment.");
-  await removeDeployFileSnapshot(runtimeDir, existingBinding?.deployFilesRoot);
+  await finishPreservedFileAttempt(seedJournal);
+  for (const snapshot of binding.pendingDeployFileCleanup) await removeDeployFileSnapshot(runtimeDir, snapshot);
+  binding.pendingDeployFileCleanup = [];
+  await replaceContainerBinding(bindingPath, binding);
 
   if (sshAccess.enabled || explicitSshConfigured(config)) {
     await emitCliSshAuditEvent(config, options.projectDir, {
@@ -6401,7 +6406,9 @@ async function removeLocalContainerSession(options: LooseRecord) {
           "Failed to revoke preserved file runtime access.", "Retry Container removal after Docker can restore local file access.");
       }
     }
-    await removeDeployFileSnapshot(path.join(options.projectDir, ".sporades"), binding.deployFilesRoot);
+    for (const snapshot of [...(binding.pendingDeployFileCleanup ?? []), binding.deployFilesRoot]) {
+      await removeDeployFileSnapshot(path.join(options.projectDir, ".sporades"), snapshot);
+    }
   } catch (error) {
     if (claimedConsumer && currentConsumer) {
       await restorePublicTreeConsumer(

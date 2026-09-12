@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { assertPreservedDeployFile, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, deployFileMounts, preparePreservedFiles, resolveDeployFiles } from "../deploy-files.js";
+import { beginPreservedFileAttempt, finishPreservedFileAttempt, assertPreservedDeployFile, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, deployFileMounts, preparePreservedFiles, resolveDeployFiles } from "../deploy-files.js";
 import { assertHostnamesAvailable, validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
 import { constants as fsConstants, createReadStream, statSync } from "node:fs";
@@ -1377,8 +1377,16 @@ async function installClaimedRelease(request: HostHelperRequest, previousRecord:
   }
 
   const createdSeeds: PreservedSeed[] = [];
+  let seedJournal: string | undefined;
   try {
-    await preparePreservedFiles(resolveDeployFiles(release.deployFiles), paths.release, path.join(paths.capsule, "preserved-files"), prepareRuntimeDataOwnershipHandle, createdSeeds);
+    seedJournal = await beginPreservedFileAttempt(path.join(paths.capsule, "preserved-files"), release.id, resolveDeployFiles(release.deployFiles).some((file) => file.update === "preserve"));
+  } catch (error) {
+    await removeInstalledReleasePrivateKey(release, paths);
+    await rm(paths.release, { recursive: true, force: true });
+    throw error;
+  }
+  try {
+    await preparePreservedFiles(resolveDeployFiles(release.deployFiles), paths.release, path.join(paths.capsule, "preserved-files"), prepareRuntimeDataOwnershipHandle, createdSeeds, seedJournal);
     await symlink(paths.release, tempCurrentLink);
     await rename(tempCurrentLink, paths.currentLink);
     await recordReleaseUploaded(request, release, installedInventory);
@@ -1388,7 +1396,7 @@ async function installClaimedRelease(request: HostHelperRequest, previousRecord:
       async () => { await restoreCurrentReleasePointerTarget(paths.currentLink, previousCurrentTarget); pointerRestored = true; },
       async () => { if (pointerRestored) await removeInstalledReleasePrivateKey(release, paths); },
       async () => { if (pointerRestored) await rm(paths.release, { recursive: true, force: true }); },
-      () => rollbackPreservedFiles(createdSeeds),
+      async () => { if (pointerRestored) { await rollbackPreservedFiles(createdSeeds); await finishPreservedFileAttempt(seedJournal); } },
     ]);
   }
 
@@ -1419,12 +1427,14 @@ async function installClaimedRelease(request: HostHelperRequest, previousRecord:
           release,
         );
         installRolledBack = true;
-        try { await rollbackPreservedFiles(createdSeeds); } catch (error) { seedCleanupError = error; }
+        try { await rollbackPreservedFiles(createdSeeds); await finishPreservedFileAttempt(seedJournal); } catch (error) { seedCleanupError = error; }
       } catch (error) {
         restartError = error;
       }
     }
   }
+
+  if (!release.restart || restartResult) await finishPreservedFileAttempt(seedJournal);
 
   const data: LooseRecord = {
     installed: !installRolledBack,

@@ -14726,3 +14726,29 @@ fs.promises.lstat = async function(file, ...args) {
     assert.deepEqual(await readFile(fixture.registryRecordPath), registry);
   });
 });
+
+
+test("Hosted deploy.files retains candidate seeds when pointer restoration fails", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleInstallFixture(dir, { rootName: "pointer-failure", previousReleaseId: null,
+      deployFiles: [{ path: "new.json", update: "preserve" }], fileContents: "retained candidate" });
+    fixture.release.restart = false;
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    record.status = "registered";
+    await writeFile(fixture.registryRecordPath, JSON.stringify(record));
+    const preload = path.join(dir, "fail-pointer.mjs");
+    await writeFile(preload, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const original = fs.promises.rm;
+fs.promises.rm = async function(file, ...args) {
+  if (String(file).endsWith('/current')) throw Object.assign(new Error('injected pointer restoration denial'), { code: 'EACCES' });
+  return original.call(this, file, ...args);
+}; syncBuiltinESMExports();`);
+    const result = await runHostHelper({ action: "capsule.release.install", host: { alias: "personal", domain: fixture.domain, remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname }, release: fixture.release },
+      { cwd: dir, env: { NODE_OPTIONS: `--import=${preload}`, SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE: "1", SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1" } });
+    assert.equal(JSON.parse(result.stdout).ok, false, result.stdout);
+    assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), fixture.release.directories.release);
+    assert.equal(await readFile(path.join(fixture.capsuleDir, "preserved-files/new.json"), "utf8"), "retained candidate");
+    await stat(fixture.release.directories.release);
+    await stat(path.join(fixture.capsuleDir, "deploy-file-attempt.jsonl"));
+  });
+});

@@ -26343,7 +26343,36 @@ function deployFileMounts(files, releaseRoot, preservedRoot) {
     mode: file.update === "preserve" ? "rw" : "ro"
   }));
 }
-async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, created = []) {
+async function beginPreservedFileAttempt(preservedRoot, release, needed) {
+  const journal = path.join(path.dirname(preservedRoot), "deploy-file-attempt.jsonl");
+  if (!needed) {
+    try {
+      await lstat(journal);
+    } catch (error) {
+      if (error.code === "ENOENT") return void 0;
+      throw error;
+    }
+    throw new Error(`Interrupted deploy.files attempt requires recovery: ${journal}`);
+  }
+  let handle;
+  try {
+    handle = await open(journal, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 384);
+  } catch (error) {
+    if (error.code === "EEXIST") throw new Error(`Interrupted deploy.files attempt requires recovery: ${journal}`);
+    throw error;
+  }
+  try {
+    await handle.writeFile(JSON.stringify({ release, preservedRoot }) + "\n");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  return journal;
+}
+async function finishPreservedFileAttempt(journal) {
+  if (journal) await rm(journal, { force: true });
+}
+async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, created = [], journal) {
   for (const file of files.filter((entry) => entry.update === "preserve")) {
     let directory = preservedRoot;
     for (const part of ["", ...file.path.split("/").slice(0, -1)]) {
@@ -26370,8 +26399,18 @@ async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, c
       await handle.writeFile(contents);
       if (owner) await owner(handle, destination, await handle.stat());
       const identity = await handle.stat();
+      const seed = { root: preservedRoot, path: file.path, dev: identity.dev, ino: identity.ino, sha256: createHash("sha256").update(contents).digest("hex") };
+      if (journal) {
+        const record = await open(journal, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW);
+        try {
+          await record.writeFile(JSON.stringify(seed) + "\n");
+          await record.sync();
+        } finally {
+          await record.close();
+        }
+      }
       await link(temporary, destination);
-      created.push({ root: preservedRoot, path: file.path, dev: identity.dev, ino: identity.ino, sha256: createHash("sha256").update(contents).digest("hex") });
+      created.push(seed);
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
     } finally {
@@ -44662,8 +44701,16 @@ async function installClaimedRelease(request, previousRecord, paths, claimedArch
     }
   }
   const createdSeeds = [];
+  let seedJournal;
   try {
-    await preparePreservedFiles(resolveDeployFiles(release.deployFiles), paths.release, path5.join(paths.capsule, "preserved-files"), prepareRuntimeDataOwnershipHandle, createdSeeds);
+    seedJournal = await beginPreservedFileAttempt(path5.join(paths.capsule, "preserved-files"), release.id, resolveDeployFiles(release.deployFiles).some((file) => file.update === "preserve"));
+  } catch (error) {
+    await removeInstalledReleasePrivateKey(release, paths);
+    await rm2(paths.release, { recursive: true, force: true });
+    throw error;
+  }
+  try {
+    await preparePreservedFiles(resolveDeployFiles(release.deployFiles), paths.release, path5.join(paths.capsule, "preserved-files"), prepareRuntimeDataOwnershipHandle, createdSeeds, seedJournal);
     await symlink(paths.release, tempCurrentLink);
     await rename2(tempCurrentLink, paths.currentLink);
     await recordReleaseUploaded(request, release, installedInventory);
@@ -44680,7 +44727,12 @@ async function installClaimedRelease(request, previousRecord, paths, claimedArch
       async () => {
         if (pointerRestored) await rm2(paths.release, { recursive: true, force: true });
       },
-      () => rollbackPreservedFiles(createdSeeds)
+      async () => {
+        if (pointerRestored) {
+          await rollbackPreservedFiles(createdSeeds);
+          await finishPreservedFileAttempt(seedJournal);
+        }
+      }
     ]);
   }
   let restartResult = null;
@@ -44712,6 +44764,7 @@ async function installClaimedRelease(request, previousRecord, paths, claimedArch
         installRolledBack = true;
         try {
           await rollbackPreservedFiles(createdSeeds);
+          await finishPreservedFileAttempt(seedJournal);
         } catch (error) {
           seedCleanupError = error;
         }
@@ -44720,6 +44773,7 @@ async function installClaimedRelease(request, previousRecord, paths, claimedArch
       }
     }
   }
+  if (!release.restart || restartResult) await finishPreservedFileAttempt(seedJournal);
   const data2 = {
     installed: !installRolledBack,
     restartRequested: Boolean(release.restart),

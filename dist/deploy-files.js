@@ -98,8 +98,45 @@ export function deployFileMounts(files, releaseRoot, preservedRoot) {
         mode: file.update === "preserve" ? "rw" : "ro",
     }));
 }
+// A surviving journal blocks another attempt until the interrupted runtime and
+// seeds have been reconciled. Never silently adopt an uncommitted seed after exit.
+export async function beginPreservedFileAttempt(preservedRoot, release, needed) {
+    const journal = path.join(path.dirname(preservedRoot), "deploy-file-attempt.jsonl");
+    if (!needed) {
+        try {
+            await lstat(journal);
+        }
+        catch (error) {
+            if (error.code === "ENOENT")
+                return undefined;
+            throw error;
+        }
+        throw new Error(`Interrupted deploy.files attempt requires recovery: ${journal}`);
+    }
+    let handle;
+    try {
+        handle = await open(journal, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    }
+    catch (error) {
+        if (error.code === "EEXIST")
+            throw new Error(`Interrupted deploy.files attempt requires recovery: ${journal}`);
+        throw error;
+    }
+    try {
+        await handle.writeFile(JSON.stringify({ release, preservedRoot }) + "\n");
+        await handle.sync();
+    }
+    finally {
+        await handle.close();
+    }
+    return journal;
+}
+export async function finishPreservedFileAttempt(journal) {
+    if (journal)
+        await rm(journal, { force: true });
+}
 // Parent directories stay host-owned; only explicitly declared files are writable.
-export async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, created = []) {
+export async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, created = [], journal) {
     for (const file of files.filter((entry) => entry.update === "preserve")) {
         let directory = preservedRoot;
         for (const part of ["", ...file.path.split("/").slice(0, -1)]) {
@@ -128,8 +165,19 @@ export async function preparePreservedFiles(files, releaseRoot, preservedRoot, o
             if (owner)
                 await owner(handle, destination, await handle.stat());
             const identity = await handle.stat();
+            const seed = { root: preservedRoot, path: file.path, dev: identity.dev, ino: identity.ino, sha256: createHash("sha256").update(contents).digest("hex") };
+            if (journal) {
+                const record = await open(journal, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW);
+                try {
+                    await record.writeFile(JSON.stringify(seed) + "\n");
+                    await record.sync();
+                }
+                finally {
+                    await record.close();
+                }
+            }
             await link(temporary, destination);
-            created.push({ root: preservedRoot, path: file.path, dev: identity.dev, ino: identity.ino, sha256: createHash("sha256").update(contents).digest("hex") });
+            created.push(seed);
         }
         catch (error) {
             if (error.code !== "EEXIST")
