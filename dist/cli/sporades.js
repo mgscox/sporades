@@ -3726,6 +3726,10 @@ async function startContainerSession(options) {
             "127.0.0.1::22",
         ]
         : [];
+    if (bundle.deployFiles.length) {
+        await mkdir(path.join(runtimeDir, "deploy-files"), { recursive: true, mode: 0o700 });
+        await chmod(path.join(runtimeDir, "deploy-files"), 0o700);
+    }
     const deployReleaseRoot = path.join(runtimeDir, "deploy-files", randomBytes(16).toString("hex"));
     const preservedRoot = path.join(runtimeDir, "preserved-files");
     const createdSeeds = [];
@@ -3820,8 +3824,8 @@ async function startContainerSession(options) {
         }
         const localUser = localContainerRuntimeUser();
         const desiredUid = Number(localUser.split(":")[0]);
-        const activePreserved = new Set(bundle.deployFiles.filter((entry) => entry.update === "preserve").map((entry) => entry.path));
-        const previouslyPreserved = resolveDeployFiles(existingBinding?.deployFiles).filter((entry) => entry.update === "preserve").map((entry) => entry.path);
+        const activePreserved = new Set(bundle.deployFiles.filter((entry) => entry.update === "preserve").map((entry) => entry.path.normalize("NFC")));
+        const previouslyPreserved = resolveDeployFiles(existingBinding?.deployFiles).filter((entry) => entry.update === "preserve").map((entry) => entry.path.normalize("NFC"));
         for (const relative of new Set([...activePreserved, ...previouslyPreserved])) {
             const fileUser = activePreserved.has(relative) ? runtimeUser : localUser;
             const desiredGid = Number(fileUser.split(":")[1]);
@@ -4875,7 +4879,8 @@ async function readHostedCapsuleSealedEnvPublicKey(alias, profile, subname, proj
 async function createHostReleaseArchive(options) {
     const releaseId = createHostReleaseId();
     const hostPushDir = path.join(options.projectDir, ".sporades", "host-push");
-    await mkdir(hostPushDir, { recursive: true });
+    await mkdir(hostPushDir, { recursive: true, mode: 0o700 });
+    await chmod(hostPushDir, 0o700);
     const localArchive = path.join(hostPushDir, `${releaseId}.tar.gz`);
     const packageDir = path.join(hostPushDir, `${releaseId}-files`);
     const remoteArchive = posixJoin(options.profile.remoteRoot, "incoming", `${releaseId}.tar.gz`);
@@ -4901,13 +4906,14 @@ async function createHostReleaseArchive(options) {
         requiredInspectors,
     });
     await rm(packageDir, { recursive: true, force: true });
-    await mkdir(path.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true });
-    await mkdir(path.join(packageDir, ".sporades", "ssh"), { recursive: true });
+    await mkdir(packageDir, { mode: 0o700 });
+    await mkdir(path.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true, mode: 0o700 });
+    await mkdir(path.join(packageDir, ".sporades", "ssh"), { recursive: true, mode: 0o700 });
     await cp(options.bundle.staticFiles.publicDir, path.join(packageDir, "public"), { recursive: true, errorOnExist: true });
     for (const file of options.bundle.deployFiles) {
         const destination = path.join(packageDir, file.path);
-        await mkdir(path.dirname(destination), { recursive: true });
-        await writeFile(destination, file.contents, { mode: 0o644 });
+        await mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
+        await writeFile(destination, file.contents, { mode: 0o600 });
     }
     const releaseConfig = sanitizeHostedReleaseConfig(options.projectConfig, options.sshAccess);
     await Promise.all([
@@ -4950,6 +4956,7 @@ async function createHostReleaseArchive(options) {
     if (result.error || result.status !== 0) {
         throw commandError("Failed to package Hosted Capsule release.", "Check that tar is available and the Capsule runtime files are readable, then retry `sporades host push`.");
     }
+    await chmod(localArchive, 0o600);
     return {
         id: releaseId,
         localArchive,

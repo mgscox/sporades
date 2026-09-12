@@ -5017,6 +5017,8 @@ fs.promises.writeFile = async function(file, ...args) {
   return original.call(this, file, ...args);
 }; syncBuiltinESMExports();`);
     const snapshots = path.join(projectDir, ".sporades/deploy-files");
+    assert.equal((await stat(snapshots)).mode & 0o777, 0o700);
+    assert.equal((await stat(path.dirname(preserved))).mode & 0o777, 0o700);
     const before = (await readdir(snapshots)).sort();
     const snapshotFailure = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...docker.env, NODE_OPTIONS: `--import=${preload}` } });
     assert.notEqual(snapshotFailure.code, 0, snapshotFailure.stdout);
@@ -5217,5 +5219,38 @@ test("local deploy.files switches historical ancestor and descendant paths witho
     }
     assert.equal(await readFile(preservedDeployFilePath(root, "config"), "utf8"), "edit-0");
     assert.equal(await readFile(preservedDeployFilePath(root, "config/settings.json"), "utf8"), "edit-1");
+  });
+});
+
+test("local deploy.files reconciles Unicode-equivalent preserved identities once", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "unicode-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "unicode-island"));
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.ssh = { authorizedKeys: [{ key: TEST_PUBLIC_KEY }] };
+    const docker = await installFakeDocker(dir, "unicode-candidate");
+    const stored = preservedDeployFilePath(path.join(projectDir, ".sporades/preserved-files"), "\u00e9.json");
+    const preload = path.join(dir, "existing-unicode-grant.mjs");
+    await writeFile(preload, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const original = fs.promises.lstat;
+fs.promises.lstat = async function(file, ...args) {
+  const result = await original.call(this, file, ...args);
+  if (String(file) === ${JSON.stringify(stored)}) { result.gid = 10001; result.mode = (result.mode & ~0o777) | 0o660; }
+  return result;
+}; syncBuiltinESMExports();`);
+    for (const [index, relative] of ["e\u0301.json", "\u00e9.json"].entries()) {
+      await writeFile(path.join(projectDir, relative), `seed-${index}`);
+      config.deploy.files = [{ path: relative, update: "preserve" }];
+      await writeFile(configPath, JSON.stringify(config));
+      const before = (await docker.calls()).length;
+      const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...docker.env, ...(index ? { NODE_OPTIONS: `--import=${preload}` } : {}) } });
+      assert.equal(deployed.code, 0, deployed.stdout + deployed.stderr);
+      if (index === 0) await writeFile(stored, "server edit");
+      else assert.equal((await docker.calls()).slice(before).filter((call) => call.args.includes(`${stored}:/file:rw`)).length, 0, "the equivalent previous spelling must not revoke the active grant");
+    }
+    assert.equal(await readFile(stored, "utf8"), "server edit");
   });
 });

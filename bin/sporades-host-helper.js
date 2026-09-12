@@ -26454,11 +26454,17 @@ async function finishPreservedFileAttempt(journal) {
 }
 async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, created = [], journal) {
   for (const file of files.filter((entry) => entry.update === "preserve")) {
-    await mkdir(preservedRoot, { mode: 493 }).catch((error) => {
+    await mkdir(preservedRoot, { mode: 448 }).catch((error) => {
       if (error.code !== "EEXIST") throw error;
     });
     const directory = await lstat(preservedRoot);
     if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error(`Unsafe preserved deploy.files directory: ${file.path}`);
+    const rootHandle = await open(preservedRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      await rootHandle.chmod(448);
+    } finally {
+      await rootHandle.close();
+    }
     const destination = preservedDeployFilePath(preservedRoot, file.path);
     try {
       await assertPreservedDeployFile(preservedRoot, file.path);
@@ -44742,6 +44748,18 @@ async function installClaimedRelease(request, previousRecord, paths, claimedArch
   let installedInventory;
   try {
     installedInventory = await validateExtractedReleaseTree(tempReleaseDirectory, validatedArchive.files);
+    for (const file of resolveDeployFiles(release.deployFiles)) {
+      const target = path5.join(tempReleaseDirectory, file.path);
+      const handle = await open2(target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      try {
+        const identity = await handle.stat();
+        if (!identity.isFile() || identity.nlink !== 1) throw helperError("Unsafe additional release file.", "Upload regular deployment files.");
+        await prepareRuntimeDataOwnershipHandle(handle, target, identity);
+        await handle.chmod(256);
+      } finally {
+        await handle.close();
+      }
+    }
     if (await releaseArchiveSha256(claimedArchive.path) !== claimedArchive.sha256) {
       throw helperError("Hosted Capsule release archive ownership changed.", "Upload the release again so the Host helper can claim immutable archive bytes.");
     }

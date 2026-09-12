@@ -204,9 +204,11 @@ export async function finishPreservedFileAttempt(journal?: string) {
 // Parent directories stay host-owned; only explicitly declared files are writable.
 export async function preparePreservedFiles(files: DeployFile[], releaseRoot: string, preservedRoot: string, owner?: (handle: FileHandle, target: string, stats: Awaited<ReturnType<FileHandle["stat"]>>) => Promise<void>, created: PreservedSeed[] = [], journal?: string) {
   for (const file of files.filter((entry) => entry.update === "preserve")) {
-    await mkdir(preservedRoot, { mode: 0o755 }).catch((error) => { if (error.code !== "EEXIST") throw error; });
+    await mkdir(preservedRoot, { mode: 0o700 }).catch((error) => { if (error.code !== "EEXIST") throw error; });
     const directory = await lstat(preservedRoot);
     if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error(`Unsafe preserved deploy.files directory: ${file.path}`);
+    const rootHandle = await open(preservedRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try { await rootHandle.chmod(0o700); } finally { await rootHandle.close(); }
     const destination = preservedDeployFilePath(preservedRoot, file.path);
     try {
       await assertPreservedDeployFile(preservedRoot, file.path);

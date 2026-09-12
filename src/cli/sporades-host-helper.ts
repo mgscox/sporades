@@ -1349,6 +1349,18 @@ async function installClaimedRelease(request: HostHelperRequest, previousRecord:
   let installedInventory: ReleaseFileIdentity[];
   try {
     installedInventory = await validateExtractedReleaseTree(tempReleaseDirectory, validatedArchive.files);
+    // Local staging stays private; grant only the Hosted runtime read access
+    // to the validated additional files after extraction.
+    for (const file of resolveDeployFiles(release.deployFiles)) {
+      const target = path.join(tempReleaseDirectory, file.path);
+      const handle = await open(target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      try {
+        const identity = await handle.stat();
+        if (!identity.isFile() || identity.nlink !== 1) throw helperError("Unsafe additional release file.", "Upload regular deployment files.");
+        await prepareRuntimeDataOwnershipHandle(handle, target, identity);
+        await handle.chmod(0o400);
+      } finally { await handle.close(); }
+    }
     if (await releaseArchiveSha256(claimedArchive.path) !== claimedArchive.sha256) {
       throw helperError("Hosted Capsule release archive ownership changed.", "Upload the release again so the Host helper can claim immutable archive bytes.");
     }

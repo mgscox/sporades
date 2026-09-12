@@ -672,6 +672,11 @@ A file set can therefore build or run in a local Container yet exceed Hosted
 limits and be rejected during Host installation. Keep additional files within
 the remaining archive budget; local build success does not establish that budget.
 
+Preserved storage roots, local snapshot roots and Host-push staging roots are
+owner-only. Additional staged
+files and archives are private; the Host helper grants its runtime read access
+to additional release files after validated extraction.
+
 Local bindings retain pending snapshot cleanup paths until deletion succeeds.
 A later deployment or Container removal retries that cleanup.
 

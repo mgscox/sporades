@@ -58704,11 +58704,17 @@ async function finishPreservedFileAttempt(journal) {
 }
 async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, created = [], journal) {
   for (const file of files.filter((entry) => entry.update === "preserve")) {
-    await mkdir(preservedRoot, { mode: 493 }).catch((error) => {
+    await mkdir(preservedRoot, { mode: 448 }).catch((error) => {
       if (error.code !== "EEXIST") throw error;
     });
     const directory = await lstat(preservedRoot);
     if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error(`Unsafe preserved deploy.files directory: ${file.path}`);
+    const rootHandle = await open(preservedRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      await rootHandle.chmod(448);
+    } finally {
+      await rootHandle.close();
+    }
     const destination = preservedDeployFilePath(preservedRoot, file.path);
     try {
       await assertPreservedDeployFile(preservedRoot, file.path);
@@ -114862,6 +114868,10 @@ async function startContainerSession(options) {
     "--publish",
     "127.0.0.1::22"
   ] : [];
+  if (bundle.deployFiles.length) {
+    await mkdir8(path13.join(runtimeDir, "deploy-files"), { recursive: true, mode: 448 });
+    await chmod2(path13.join(runtimeDir, "deploy-files"), 448);
+  }
   const deployReleaseRoot = path13.join(runtimeDir, "deploy-files", randomBytes8(16).toString("hex"));
   const preservedRoot = path13.join(runtimeDir, "preserved-files");
   const createdSeeds = [];
@@ -114962,8 +114972,8 @@ async function startContainerSession(options) {
     }
     const localUser = localContainerRuntimeUser();
     const desiredUid = Number(localUser.split(":")[0]);
-    const activePreserved = new Set(bundle.deployFiles.filter((entry) => entry.update === "preserve").map((entry) => entry.path));
-    const previouslyPreserved = resolveDeployFiles(existingBinding?.deployFiles).filter((entry) => entry.update === "preserve").map((entry) => entry.path);
+    const activePreserved = new Set(bundle.deployFiles.filter((entry) => entry.update === "preserve").map((entry) => entry.path.normalize("NFC")));
+    const previouslyPreserved = resolveDeployFiles(existingBinding?.deployFiles).filter((entry) => entry.update === "preserve").map((entry) => entry.path.normalize("NFC"));
     for (const relative of /* @__PURE__ */ new Set([...activePreserved, ...previouslyPreserved])) {
       const fileUser = activePreserved.has(relative) ? runtimeUser : localUser;
       const desiredGid = Number(fileUser.split(":")[1]);
@@ -116056,7 +116066,8 @@ async function readHostedCapsuleSealedEnvPublicKey(alias, profile, subname, proj
 async function createHostReleaseArchive(options) {
   const releaseId = createHostReleaseId();
   const hostPushDir = path13.join(options.projectDir, ".sporades", "host-push");
-  await mkdir8(hostPushDir, { recursive: true });
+  await mkdir8(hostPushDir, { recursive: true, mode: 448 });
+  await chmod2(hostPushDir, 448);
   const localArchive = path13.join(hostPushDir, `${releaseId}.tar.gz`);
   const packageDir = path13.join(hostPushDir, `${releaseId}-files`);
   const remoteArchive = posixJoin2(options.profile.remoteRoot, "incoming", `${releaseId}.tar.gz`);
@@ -116080,13 +116091,14 @@ async function createHostReleaseArchive(options) {
     requiredInspectors
   });
   await rm8(packageDir, { recursive: true, force: true });
-  await mkdir8(path13.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true });
-  await mkdir8(path13.join(packageDir, ".sporades", "ssh"), { recursive: true });
+  await mkdir8(packageDir, { mode: 448 });
+  await mkdir8(path13.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true, mode: 448 });
+  await mkdir8(path13.join(packageDir, ".sporades", "ssh"), { recursive: true, mode: 448 });
   await cp(options.bundle.staticFiles.publicDir, path13.join(packageDir, "public"), { recursive: true, errorOnExist: true });
   for (const file of options.bundle.deployFiles) {
     const destination = path13.join(packageDir, file.path);
-    await mkdir8(path13.dirname(destination), { recursive: true });
-    await writeFile7(destination, file.contents, { mode: 420 });
+    await mkdir8(path13.dirname(destination), { recursive: true, mode: 448 });
+    await writeFile7(destination, file.contents, { mode: 384 });
   }
   const releaseConfig = sanitizeHostedReleaseConfig(options.projectConfig, options.sshAccess);
   await Promise.all([
@@ -116138,6 +116150,7 @@ async function createHostReleaseArchive(options) {
       "Check that tar is available and the Capsule runtime files are readable, then retry `sporades host push`."
     );
   }
+  await chmod2(localArchive, 384);
   return {
     id: releaseId,
     localArchive,

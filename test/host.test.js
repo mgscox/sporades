@@ -4314,7 +4314,9 @@ process.exit(0);
     config.deploy.files = [{ path: "config/settings.json", update: "preserve" }, { path: "defaults.json" }];
     await writeFile(configPath, JSON.stringify(config));
     await mkdir(path.join(projectDir, "config"));
-    await writeFile(path.join(projectDir, "config/settings.json"), "settings seed");
+    await writeFile(path.join(projectDir, "config/settings.json"), "settings seed", { mode: 0o600 });
+    await mkdir(path.join(projectDir, ".sporades/host-push"), { recursive: true, mode: 0o755 });
+    await chmod(path.join(projectDir, ".sporades/host-push"), 0o755);
     await writeFile(path.join(projectDir, "defaults.json"), "defaults seed");
 
     const env = {
@@ -4353,6 +4355,13 @@ process.exit(0);
       "defaults.json",
     ]);
 
+    const stagingRoot = path.join(projectDir, ".sporades/host-push");
+    const staging = path.join(stagingRoot, `${output.data.release.id}-files`);
+    assert.equal((await stat(stagingRoot)).mode & 0o777, 0o700);
+    assert.equal((await stat(staging)).mode & 0o777, 0o700);
+    assert.equal((await stat(path.join(staging, "config"))).mode & 0o777, 0o700);
+    assert.equal((await stat(path.join(staging, "config/settings.json"))).mode & 0o777, 0o600);
+    assert.equal((await stat(path.join(stagingRoot, `${output.data.release.id}.tar.gz`))).mode & 0o777, 0o600);
     const [scpCall] = await readJsonl(fakeScp.logPath);
     assert.match(scpCall.source, /\.sporades\/host-push\/.+\.tar\.gz$/);
     assert.equal(scpCall.target, `root@example.test:/opt/sporades/incoming/${output.data.release.id}.tar.gz`);
@@ -14636,7 +14645,11 @@ test("Hosted deploy.files install preserves edits and uses recorded mounts acros
       const fileMounts = run.args.filter((arg) => arg.includes(":/app/config/settings.json:"));
       assert.deepEqual(fileMounts, policy ? [policy === "preserve" ? `${preserved}:/app/config/settings.json:rw` : `${path.join(fixture.capsuleDir, "current/config/settings.json")}:/app/config/settings.json:ro`] : []);
       savedRecord = await readFile(fixture.registryRecordPath, "utf8");
-      if (policy) assert.equal(await readFile(path.join(fixture.release.directories.release, "config/settings.json"), "utf8"), `local-${index}`);
+      if (policy) {
+        assert.equal(await readFile(path.join(fixture.release.directories.release, "config/settings.json"), "utf8"), `local-${index}`);
+        assert.equal((await stat(path.join(fixture.release.directories.release, "config/settings.json"))).mode & 0o777, 0o400);
+        assert.equal((await stat(path.join(fixture.capsuleDir, "preserved-files"))).mode & 0o777, 0o700);
+      }
     }
     const restart = await runHostHelper({
       action: "capsule.restart", host: { alias: "personal", domain: fixture.domain, remoteRoot: fixture.remoteRoot },
