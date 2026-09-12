@@ -330,6 +330,17 @@ sporades host register notes --host personal --json
 sporades host push --host personal --subname notes --verify --json
 ```
 
+## Additional Server Files
+
+Declare exact relative files in `sporades.json` with `deploy.files`, for example
+`{"deploy":{"files":[{"path":"config/settings.json","update":"preserve"},{"path":"resources/defaults.json"}]}}`.
+The local build fails on missing files. Files keep their relative paths under
+`/app`; `update` defaults to `replace`, while `preserve` keeps server edits across
+deployments and rollbacks. An interrupted deployment is settled with
+`sporades deploy reconcile` or `sporades host reconcile`. See
+[Additional deployment files](https://mgscox.github.io/sporades/reference/projects-and-configuration#additional-deployment-files)
+for path rules and storage semantics.
+
 ## Project Status
 
 Sporades is early, active platform work. It is useful for fast prototypes,
@@ -348,13 +359,3 @@ access path.
 ## License
 
 MIT
-
-
-### Additional server files
-
-Declare exact relative files in `sporades.json` with `deploy.files`, for example
-`{"deploy":{"files":[{"path":"config/settings.json","update":"preserve"},{"path":"resources/defaults.json"}]}}`.
-The local build fails on missing files. Files keep their relative paths under
-`/app`; `update` defaults to `replace`, while `preserve` keeps server edits across
-deployments and rollbacks. See [Additional deployment files](https://mgscox.github.io/sporades/reference/projects-and-configuration#additional-deployment-files)
-for path rules and storage semantics.

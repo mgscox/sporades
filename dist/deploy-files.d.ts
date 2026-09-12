@@ -23,13 +23,43 @@ export declare function deployFileMounts(files: DeployFile[], releaseRoot: strin
     container: string;
     mode: string;
 }[];
+export declare function attemptJournalPath(preservedRoot: string): string;
+export declare function assertNoPreservedFileAttempt(preservedRoot: string): Promise<void>;
 export declare function beginPreservedFileAttempt(preservedRoot: string, release: string, needed: boolean): Promise<string | undefined>;
+export type PreservedFileAttempt = {
+    journal: string;
+    release: string;
+    preservedRoot: string;
+    seeds: PreservedSeed[];
+    temporaries: string[];
+    records: Array<Record<string, unknown>>;
+};
+export declare function readPreservedFileAttempt(journal: string): Promise<PreservedFileAttempt | null>;
+export declare function recordPreservedFileAttempt(journal: string | undefined, entry: object): Promise<void>;
 export declare function finishPreservedFileAttempt(journal?: string): Promise<void>;
 export declare function preparePreservedFiles(files: DeployFile[], releaseRoot: string, preservedRoot: string, owner?: (handle: FileHandle, target: string, stats: Awaited<ReturnType<FileHandle["stat"]>>) => Promise<void>, created?: PreservedSeed[], journal?: string): Promise<void>;
 export declare function rollbackPreservedFiles(created: PreservedSeed[], hooks?: {
     beforeClaim?: (target: string) => Promise<void>;
 }): Promise<void>;
 export declare function rethrowAfterDeployCleanup(error: unknown, cleanups: Array<() => Promise<unknown>>): Promise<never>;
+export declare function parseUserIdentity(user: string): {
+    uid: number;
+    gid: number;
+};
+export declare function localPreservedFileAccess(localUser: string, fileUser: string): {
+    uid: number;
+    gid: number;
+    mode: number;
+};
+export declare function preservedFileAccessMatches(info: {
+    uid: number;
+    gid: number;
+    mode: number;
+}, desired: {
+    uid: number;
+    gid: number;
+    mode: number;
+}): boolean;
 export declare function localPreservedFileAccessArgs(file: string, localUser: string, runtimeUser: string, image: string, mode?: number, expected?: {
     dev: number;
     ino: number;

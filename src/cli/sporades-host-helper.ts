@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { beginPreservedFileAttempt, finishPreservedFileAttempt, assertPreservedDeployFile, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, deployFileMounts, preparePreservedFiles, resolveDeployFiles } from "../deploy-files.js";
+import { attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, assertPreservedDeployFile, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, deployFileMounts, preparePreservedFiles, resolveDeployFiles } from "../deploy-files.js";
 import { assertHostnamesAvailable, validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
 import { constants as fsConstants, createReadStream, statSync } from "node:fs";
@@ -536,6 +536,7 @@ function managedRouteMutationLockIdentity(request: HostHelperRequest) {
     case "capsule.delete": validateDeleteRequest(request); break;
     case "capsule.release.install": validateInstallRequest(request); break;
     case "capsule.release.rollback": validateRollbackRequest(request); break;
+    case "capsule.release.reconcile":
     case "capsule.start":
     case "capsule.stop":
     case "capsule.restart": validateLifecycleRequest(request); break;
@@ -830,6 +831,10 @@ async function main(request: HostHelperRequest) {
   }
   if (request.action === "capsule.release.rollback") {
     await rollbackRelease(request);
+    return;
+  }
+  if (request.action === "capsule.release.reconcile") {
+    await reconcileReleaseAttempt(request);
     return;
   }
   if (request.action === "capsule.start") {
@@ -1304,7 +1309,7 @@ async function installRelease(request: HostHelperRequest) {
   try {
     await installClaimedRelease(request, previousRecord, { ...paths, release: paths.release }, claimedArchive);
   } finally {
-    activePreservedAttempts.delete(path.join(paths.capsule, "deploy-file-attempt.jsonl"));
+    activePreservedAttempts.delete(attemptJournalPath(hostedPreservedFilesRoot(paths)));
     await rm(claimedArchive.path, { force: true });
     await rm(request.release.remoteArchive, { force: true });
   }
@@ -1352,14 +1357,9 @@ async function installClaimedRelease(request: HostHelperRequest, previousRecord:
     // Local staging stays private; grant only the Hosted runtime read access
     // to the validated additional files after extraction.
     for (const file of resolveDeployFiles(release.deployFiles)) {
-      const target = path.join(tempReleaseDirectory, file.path);
-      const handle = await open(target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-      try {
-        const identity = await handle.stat();
-        if (!identity.isFile() || identity.nlink !== 1) throw helperError("Unsafe additional release file.", "Upload regular deployment files.");
-        await prepareRuntimeDataOwnershipHandle(handle, target, identity);
-        await handle.chmod(0o400);
-      } finally { await handle.close(); }
+      await prepareHostedRuntimeFileAccess(path.join(tempReleaseDirectory, file.path), 0o400, {
+        message: "Unsafe additional release file.", hint: "Upload regular deployment files.",
+      });
     }
     if (await releaseArchiveSha256(claimedArchive.path) !== claimedArchive.sha256) {
       throw helperError("Hosted Capsule release archive ownership changed.", "Upload the release again so the Host helper can claim immutable archive bytes.");
@@ -1395,7 +1395,7 @@ async function installClaimedRelease(request: HostHelperRequest, previousRecord:
   const createdSeeds: PreservedSeed[] = [];
   let seedJournal: string | undefined;
   try {
-    seedJournal = await beginPreservedFileAttempt(path.join(paths.capsule, "preserved-files"), release.id, resolveDeployFiles(release.deployFiles).some((file) => file.update === "preserve"));
+    seedJournal = await beginPreservedFileAttempt(hostedPreservedFilesRoot(paths), release.id, resolveDeployFiles(release.deployFiles).some((file) => file.update === "preserve"));
     if (seedJournal) activePreservedAttempts.add(seedJournal);
   } catch (error) {
     await removeInstalledReleasePrivateKey(release, paths);
@@ -1403,7 +1403,7 @@ async function installClaimedRelease(request: HostHelperRequest, previousRecord:
     throw error;
   }
   try {
-    await preparePreservedFiles(resolveDeployFiles(release.deployFiles), paths.release, path.join(paths.capsule, "preserved-files"), prepareRuntimeDataOwnershipHandle, createdSeeds, seedJournal);
+    await preparePreservedFiles(resolveDeployFiles(release.deployFiles), paths.release, hostedPreservedFilesRoot(paths), prepareRuntimeDataOwnershipHandle, createdSeeds, seedJournal);
     await symlink(paths.release, tempCurrentLink);
     await rename(tempCurrentLink, paths.currentLink);
     await recordReleaseUploaded(request, release, installedInventory);
@@ -2135,7 +2135,11 @@ async function installSealedServerEnvPrivateKey(release: HostHelperRelease, path
 
 async function removeInstalledReleasePrivateKey(release: HostHelperRelease, paths: ReleasePaths) {
   if (!releaseIncludesSealedServerEnvPrivateKey(release)) return;
-  const privateKeyPath = releasePrivateKeyPath(paths, release.id);
+  await removeReleasePrivateKeyIfPresent(paths, release.id);
+}
+
+async function removeReleasePrivateKeyIfPresent(paths: ReleasePaths, releaseId: string) {
+  const privateKeyPath = releasePrivateKeyPath(paths, releaseId);
   const dataHandle = await openCanonicalRuntimeDataDirectory(paths.data, false);
   try {
     const rootHandle = await openOrCreateRuntimeDirectory(dataHandle, path.join(paths.data, "sealed-server-env"));
@@ -6366,24 +6370,82 @@ function invalidCapsuleHttpLogPathError() {
   );
 }
 
+function hostedPreservedFilesRoot(paths: ReleasePaths) {
+  return path.join(paths.capsule, "preserved-files");
+}
+
+// Open one runtime-owned file without following symlinks, verify it is a
+// regular single-link inode, then restore runtime ownership and the mode.
+async function prepareHostedRuntimeFileAccess(target: string, mode: number, failure: { message: string; hint: string }) {
+  const handle = await open(target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+  try {
+    const identity = await handle.stat();
+    if (!identity.isFile() || identity.nlink !== 1) throw helperError(failure.message, failure.hint);
+    await prepareRuntimeDataOwnershipHandle(handle, target, identity);
+    await handle.chmod(mode);
+  } finally { await handle.close(); }
+}
+
 async function preparePreservedReleaseFiles(request: HostHelperRequest, recordedRelease: any) {
-  if (!recordedRelease) throw helperError("Current Hosted release is not recorded.", "Reconcile the interrupted release install and its deploy-file-attempt.jsonl journal before starting the Capsule.");
+  if (!recordedRelease) throw helperError("Current Hosted release is not recorded.", "Run `sporades host reconcile <subname>` to settle the interrupted release install before starting the Capsule.");
   const paths = canonicalReleasePaths(request);
-  const journal = path.join(paths.capsule, "deploy-file-attempt.jsonl");
+  const journal = attemptJournalPath(hostedPreservedFilesRoot(paths));
   if (!activePreservedAttempts.has(journal) && await pathExists(journal)) {
-    throw helperError("Interrupted deploy.files attempt requires recovery.", `Reconcile ${journal} before starting, restarting or selecting a release.`);
+    throw helperError("Interrupted deploy.files attempt requires recovery.", "Run `sporades host reconcile <subname>` to settle the interrupted release install before starting, restarting or selecting a release.");
   }
   for (const file of resolveDeployFiles(recordedRelease.source?.deployFiles)) {
     if (file.update !== "preserve") continue;
-    const target = await assertPreservedDeployFile(path.join(paths.capsule, "preserved-files"), file.path);
-    const handle = await open(target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
-    try {
-      const identity = await handle.stat();
-      if (!identity.isFile() || identity.nlink !== 1) throw helperError("Unsafe preserved release file.", "Restore a regular preserved file before restarting.");
-      await prepareRuntimeDataOwnershipHandle(handle, target, identity);
-      await handle.chmod(0o600);
-    } finally { await handle.close(); }
+    const target = await assertPreservedDeployFile(hostedPreservedFilesRoot(paths), file.path);
+    await prepareHostedRuntimeFileAccess(target, 0o600, { message: "Unsafe preserved release file.", hint: "Restore a regular preserved file before restarting." });
   }
+}
+
+// Settle an interrupted release install from its journal. A release the
+// registry never recorded is discarded: unchanged seeds roll back, the current
+// pointer returns to the recorded release, and the candidate directory and
+// private key are removed. A recorded release keeps everything; only the
+// journal and its temporary seeds are cleared so lifecycle actions may resume.
+async function reconcileReleaseAttempt(request: HostHelperRequest) {
+  validateLifecycleRequest(request);
+  const record = await readRegistryRecordForCapsule(request, "reconcile");
+  assertRegistryRecordMatchesRequest(request, record);
+  const paths = canonicalReleasePaths(request);
+  const journal = attemptJournalPath(hostedPreservedFilesRoot(paths));
+  const attempt = await readPreservedFileAttempt(journal);
+  const lifecycle = normaliseLifecycle(request, record, { ignoreProvidedLifecycle: true });
+  const data: LooseRecord = { capsule: capsuleData(request, lifecycle), journal, reconciled: false, committed: null, release: null, actions: [] as string[] };
+  if (!attempt) {
+    writeEnvelope({ ok: true, data, error: null });
+    return;
+  }
+  if (!/^\d{8}T\d{6}Z-[a-f0-9]{8}$/.test(attempt.release)) {
+    throw helperError("Hosted deploy.files journal names an invalid release.", `Inspect ${journal} before reconciling manually.`);
+  }
+  const recorded = normaliseReleaseHistory(record).some((entry: any) => entry.id === attempt.release);
+  const committed = recorded && record.currentRelease?.id === attempt.release;
+  const actions: string[] = [];
+  if (!recorded) {
+    await rollbackPreservedFiles(attempt.seeds);
+    if (attempt.seeds.length) actions.push("seeds-rolled-back");
+    const recordedTarget = record.currentRelease?.id ? path.join(paths.releases, record.currentRelease.id) : null;
+    const currentTarget = await readlink(paths.currentLink).catch((error) => {
+      if (errorDetails(error).code === "ENOENT") return null;
+      throw error;
+    });
+    if (currentTarget !== recordedTarget) {
+      await restoreCurrentReleasePointerTarget(paths.currentLink, recordedTarget);
+      actions.push("current-pointer-restored");
+    }
+    const candidate = canonicalRollbackPaths(request, attempt.release);
+    await removeReleasePrivateKeyIfPresent(candidate, attempt.release);
+    if (await pathExists(candidate.release)) {
+      await rm(candidate.release, { recursive: true, force: true });
+      actions.push("candidate-release-removed");
+    }
+  }
+  await finishPreservedFileAttempt(journal);
+  actions.push("journal-removed");
+  writeEnvelope({ ok: true, data: { ...data, reconciled: true, committed, release: attempt.release, actions }, error: null });
 }
 
 async function assertRollbackReleaseFiles(request: HostHelperRequest, releaseDirectory: string, recordedRelease: any = null) {

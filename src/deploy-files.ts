@@ -153,18 +153,29 @@ export function deployFileMounts(files: DeployFile[], releaseRoot: string, prese
   }));
 }
 
+export function attemptJournalPath(preservedRoot: string) {
+  return path.join(path.dirname(preservedRoot), "deploy-file-attempt.jsonl");
+}
+
+function interruptedAttemptError(journal: string) {
+  return new Error(`Interrupted deploy.files attempt requires recovery: ${journal}. Run the matching reconcile command before retrying.`);
+}
+
 // A surviving journal blocks another attempt until the interrupted runtime and
 // seeds have been reconciled. Never silently adopt an uncommitted seed after exit.
+export async function assertNoPreservedFileAttempt(preservedRoot: string) {
+  const journal = attemptJournalPath(preservedRoot);
+  try { await lstat(journal); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+  throw interruptedAttemptError(journal);
+}
+
 export async function beginPreservedFileAttempt(preservedRoot: string, release: string, needed: boolean) {
-  const journal = path.join(path.dirname(preservedRoot), "deploy-file-attempt.jsonl");
-  if (!needed) {
-    try { await lstat(journal); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
-    throw new Error(`Interrupted deploy.files attempt requires recovery: ${journal}`);
-  }
+  if (!needed) { await assertNoPreservedFileAttempt(preservedRoot); return undefined; }
+  const journal = attemptJournalPath(preservedRoot);
   let handle: FileHandle;
   try { handle = await open(journal, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); }
   catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error(`Interrupted deploy.files attempt requires recovery: ${journal}`);
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw interruptedAttemptError(journal);
     throw error;
   }
   try { await handle.writeFile(JSON.stringify({ release, preservedRoot }) + "\n"); await handle.sync(); }
@@ -172,7 +183,36 @@ export async function beginPreservedFileAttempt(preservedRoot: string, release: 
   return journal;
 }
 
-async function recordPreservedFileAttempt(journal: string | undefined, entry: object) {
+export type PreservedFileAttempt = {
+  journal: string;
+  release: string;
+  preservedRoot: string;
+  seeds: PreservedSeed[];
+  temporaries: string[];
+  records: Array<Record<string, unknown>>;
+};
+
+// Parse a surviving journal so reconciliation can settle exactly what was attempted.
+export async function readPreservedFileAttempt(journal: string): Promise<PreservedFileAttempt | null> {
+  const handle = await open(journal, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    .catch((error) => { if (error.code !== "ENOENT") throw error; return null; });
+  if (!handle) return null;
+  let records: Array<Record<string, unknown>>;
+  try {
+    if (!(await handle.stat()).isFile()) throw new Error("Unsafe deploy.files journal.");
+    const contents = (await handle.readFile("utf8")).trim();
+    records = contents ? contents.split("\n").map((line) => JSON.parse(line)) : [];
+  } finally { await handle.close(); }
+  const header = records[0] ?? {};
+  const release = typeof header.release === "string" ? header.release : "";
+  const preservedRoot = typeof header.preservedRoot === "string" ? header.preservedRoot : path.join(path.dirname(journal), "preserved-files");
+  const seeds = records.filter((record): record is PreservedSeed & Record<string, unknown> =>
+    typeof record.root === "string" && typeof record.path === "string" && typeof record.dev === "number" && typeof record.ino === "number" && typeof record.sha256 === "string");
+  const temporaries = records.map((record) => record.temporary).filter((value): value is string => typeof value === "string");
+  return { journal, release, preservedRoot, seeds: seeds.map((seed) => ({ ...seed })), temporaries, records };
+}
+
+export async function recordPreservedFileAttempt(journal: string | undefined, entry: object) {
   if (!journal) return;
   const handle = await open(journal, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW);
   try { await handle.writeFile(JSON.stringify(entry) + "\n"); await handle.sync(); }
@@ -181,18 +221,10 @@ async function recordPreservedFileAttempt(journal: string | undefined, entry: ob
 
 export async function finishPreservedFileAttempt(journal?: string) {
   if (!journal) return;
-  const handle = await open(journal, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
-    .catch((error) => { if (error.code !== "ENOENT") throw error; return null; });
-  if (!handle) return;
-  let records: Array<{ temporary?: string }>;
-  try {
-    if (!(await handle.stat()).isFile()) throw new Error("Unsafe deploy.files journal.");
-    records = (await handle.readFile("utf8")).trim().split("\n").map((line) => JSON.parse(line));
-  } finally { await handle.close(); }
+  const attempt = await readPreservedFileAttempt(journal);
+  if (!attempt) return;
   const root = path.join(path.dirname(journal), "preserved-files");
-  for (const record of records) {
-    if (record.temporary === undefined) continue;
-    const relative = record.temporary;
+  for (const relative of attempt.temporaries) {
     const resolved = path.resolve(root, relative);
     if (path.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${path.sep}`) || path.relative(root, resolved) !== relative || !/^\.seed-[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(path.basename(relative))) {
       throw new Error("Unsafe temporary seed path in deploy.files journal.");
@@ -282,9 +314,23 @@ export async function rethrowAfterDeployCleanup(error: unknown, cleanups: Array<
   throw error;
 }
 
-export function localPreservedFileAccessArgs(file: string, localUser: string, runtimeUser: string, image: string, mode = localUser === runtimeUser ? 0o600 : 0o660, expected?: { dev: number; ino: number }) {
-  const uid = Number(localUser.split(":")[0]);
-  const gid = Number(runtimeUser.split(":")[1]);
+export function parseUserIdentity(user: string) {
+  const [uid, gid] = user.split(":").map(Number);
+  return { uid, gid };
+}
+
+// The invoking user keeps ownership; the runtime group receives access only
+// while a separate SSH runtime UID needs it.
+export function localPreservedFileAccess(localUser: string, fileUser: string) {
+  return { uid: parseUserIdentity(localUser).uid, gid: parseUserIdentity(fileUser).gid, mode: localUser === fileUser ? 0o600 : 0o660 };
+}
+
+export function preservedFileAccessMatches(info: { uid: number; gid: number; mode: number }, desired: { uid: number; gid: number; mode: number }) {
+  return info.uid === desired.uid && info.gid === desired.gid && (info.mode & 0o777) === desired.mode;
+}
+
+export function localPreservedFileAccessArgs(file: string, localUser: string, runtimeUser: string, image: string, mode = localPreservedFileAccess(localUser, runtimeUser).mode, expected?: { dev: number; ino: number }) {
+  const { uid, gid } = localPreservedFileAccess(localUser, runtimeUser);
   // Docker provides the ownership operation; the unprivileged CLI keeps ownership.
   // Owner access supports ordinary local sessions, group access supports SSH's UID.
   const identityCheck = expected ? `if (s.dev !== ${expected.dev} || s.ino !== ${expected.ino}) process.exit(0);` : "";

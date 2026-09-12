@@ -1322,4 +1322,8 @@ and Hosted Capsules mount files at matching paths under `/app`. Replacement
 bytes are release-owned; preserved bytes are seeded once in persistent storage,
 remain writable, and survive release changes and rollback. Removing a declaration
 or switching to replacement retains the inactive preserved copy. Apps own loading
-and reloading; Sporades supplies no configuration reload mechanism.
+and reloading; Sporades supplies no configuration reload mechanism. Dev sessions
+use project files directly and never snapshot them. Seed publication is journaled
+before it happens; an interrupted attempt blocks further lifecycle commands until
+`sporades deploy reconcile` or `sporades host reconcile` settles it, rolling back
+only unchanged seeds and always retaining edits.

@@ -153,28 +153,39 @@ export function deployFileMounts(files, releaseRoot, preservedRoot) {
         mode: file.update === "preserve" ? "rw" : "ro",
     }));
 }
+export function attemptJournalPath(preservedRoot) {
+    return path.join(path.dirname(preservedRoot), "deploy-file-attempt.jsonl");
+}
+function interruptedAttemptError(journal) {
+    return new Error(`Interrupted deploy.files attempt requires recovery: ${journal}. Run the matching reconcile command before retrying.`);
+}
 // A surviving journal blocks another attempt until the interrupted runtime and
 // seeds have been reconciled. Never silently adopt an uncommitted seed after exit.
-export async function beginPreservedFileAttempt(preservedRoot, release, needed) {
-    const journal = path.join(path.dirname(preservedRoot), "deploy-file-attempt.jsonl");
-    if (!needed) {
-        try {
-            await lstat(journal);
-        }
-        catch (error) {
-            if (error.code === "ENOENT")
-                return undefined;
-            throw error;
-        }
-        throw new Error(`Interrupted deploy.files attempt requires recovery: ${journal}`);
+export async function assertNoPreservedFileAttempt(preservedRoot) {
+    const journal = attemptJournalPath(preservedRoot);
+    try {
+        await lstat(journal);
     }
+    catch (error) {
+        if (error.code === "ENOENT")
+            return;
+        throw error;
+    }
+    throw interruptedAttemptError(journal);
+}
+export async function beginPreservedFileAttempt(preservedRoot, release, needed) {
+    if (!needed) {
+        await assertNoPreservedFileAttempt(preservedRoot);
+        return undefined;
+    }
+    const journal = attemptJournalPath(preservedRoot);
     let handle;
     try {
         handle = await open(journal, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     }
     catch (error) {
         if (error.code === "EEXIST")
-            throw new Error(`Interrupted deploy.files attempt requires recovery: ${journal}`);
+            throw interruptedAttemptError(journal);
         throw error;
     }
     try {
@@ -186,7 +197,31 @@ export async function beginPreservedFileAttempt(preservedRoot, release, needed) 
     }
     return journal;
 }
-async function recordPreservedFileAttempt(journal, entry) {
+// Parse a surviving journal so reconciliation can settle exactly what was attempted.
+export async function readPreservedFileAttempt(journal) {
+    const handle = await open(journal, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+        .catch((error) => { if (error.code !== "ENOENT")
+        throw error; return null; });
+    if (!handle)
+        return null;
+    let records;
+    try {
+        if (!(await handle.stat()).isFile())
+            throw new Error("Unsafe deploy.files journal.");
+        const contents = (await handle.readFile("utf8")).trim();
+        records = contents ? contents.split("\n").map((line) => JSON.parse(line)) : [];
+    }
+    finally {
+        await handle.close();
+    }
+    const header = records[0] ?? {};
+    const release = typeof header.release === "string" ? header.release : "";
+    const preservedRoot = typeof header.preservedRoot === "string" ? header.preservedRoot : path.join(path.dirname(journal), "preserved-files");
+    const seeds = records.filter((record) => typeof record.root === "string" && typeof record.path === "string" && typeof record.dev === "number" && typeof record.ino === "number" && typeof record.sha256 === "string");
+    const temporaries = records.map((record) => record.temporary).filter((value) => typeof value === "string");
+    return { journal, release, preservedRoot, seeds: seeds.map((seed) => ({ ...seed })), temporaries, records };
+}
+export async function recordPreservedFileAttempt(journal, entry) {
     if (!journal)
         return;
     const handle = await open(journal, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW);
@@ -201,25 +236,11 @@ async function recordPreservedFileAttempt(journal, entry) {
 export async function finishPreservedFileAttempt(journal) {
     if (!journal)
         return;
-    const handle = await open(journal, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
-        .catch((error) => { if (error.code !== "ENOENT")
-        throw error; return null; });
-    if (!handle)
+    const attempt = await readPreservedFileAttempt(journal);
+    if (!attempt)
         return;
-    let records;
-    try {
-        if (!(await handle.stat()).isFile())
-            throw new Error("Unsafe deploy.files journal.");
-        records = (await handle.readFile("utf8")).trim().split("\n").map((line) => JSON.parse(line));
-    }
-    finally {
-        await handle.close();
-    }
     const root = path.join(path.dirname(journal), "preserved-files");
-    for (const record of records) {
-        if (record.temporary === undefined)
-            continue;
-        const relative = record.temporary;
+    for (const relative of attempt.temporaries) {
         const resolved = path.resolve(root, relative);
         if (path.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${path.sep}`) || path.relative(root, resolved) !== relative || !/^\.seed-[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(path.basename(relative))) {
             throw new Error("Unsafe temporary seed path in deploy.files journal.");
@@ -339,9 +360,20 @@ export async function rethrowAfterDeployCleanup(error, cleanups) {
         throw new AggregateError([error, ...failures], "Deployment failed and cleanup is incomplete.");
     throw error;
 }
-export function localPreservedFileAccessArgs(file, localUser, runtimeUser, image, mode = localUser === runtimeUser ? 0o600 : 0o660, expected) {
-    const uid = Number(localUser.split(":")[0]);
-    const gid = Number(runtimeUser.split(":")[1]);
+export function parseUserIdentity(user) {
+    const [uid, gid] = user.split(":").map(Number);
+    return { uid, gid };
+}
+// The invoking user keeps ownership; the runtime group receives access only
+// while a separate SSH runtime UID needs it.
+export function localPreservedFileAccess(localUser, fileUser) {
+    return { uid: parseUserIdentity(localUser).uid, gid: parseUserIdentity(fileUser).gid, mode: localUser === fileUser ? 0o600 : 0o660 };
+}
+export function preservedFileAccessMatches(info, desired) {
+    return info.uid === desired.uid && info.gid === desired.gid && (info.mode & 0o777) === desired.mode;
+}
+export function localPreservedFileAccessArgs(file, localUser, runtimeUser, image, mode = localPreservedFileAccess(localUser, runtimeUser).mode, expected) {
+    const { uid, gid } = localPreservedFileAccess(localUser, runtimeUser);
     // Docker provides the ownership operation; the unprivileged CLI keeps ownership.
     // Owner access supports ordinary local sessions, group access supports SSH's UID.
     const identityCheck = expected ? `if (s.dev !== ${expected.dev} || s.ino !== ${expected.ino}) process.exit(0);` : "";

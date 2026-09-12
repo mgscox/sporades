@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { mkdtemp, mkdir, readFile, writeFile, rm, symlink, link, stat, open, readdir, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { preservedDeployFilePath, beginPreservedFileAttempt, finishPreservedFileAttempt, buildDeployFiles, resolveDeployFiles, preparePreservedFiles, deployFileMounts, assertPreservedDeployFile, rollbackPreservedFiles, localPreservedFileAccessArgs, rethrowAfterDeployCleanup } from "../dist/deploy-files.js";
+import { preservedDeployFilePath, attemptJournalPath, assertNoPreservedFileAttempt, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, recordPreservedFileAttempt, localPreservedFileAccess, parseUserIdentity, preservedFileAccessMatches, buildDeployFiles, resolveDeployFiles, preparePreservedFiles, deployFileMounts, assertPreservedDeployFile, rollbackPreservedFiles, localPreservedFileAccessArgs, rethrowAfterDeployCleanup } from "../dist/deploy-files.js";
 import { createBundle } from "../dist/bundle-pipeline.js";
 
 async function temporary(fn) {
@@ -37,6 +37,8 @@ test("deploy.files rejects case aliases of managed paths before reading source f
 
 test("missing deploy.files fails the local bundle before compilation; symlink files and parents fail", async () => temporary(async (root) => {
   await assert.rejects(createBundle(root, { deploy: { files: [{ path: "missing.json" }] } }), /Cannot build deploy.files entry missing.json/);
+  // Dev sessions use project files directly, so declared files are never read or validated there.
+  await assert.rejects(createBundle(root, { deploy: { files: [{ path: "missing.json" }] } }, { deployFiles: false }), /Missing HTML shell/);
   await mkdir(path.join(root, "config"));
   await writeFile(path.join(root, "config", "settings.json"), "original");
   const snapshot = await buildDeployFiles(root, [{ path: "config/settings.json" }]);
@@ -332,3 +334,39 @@ test("preserved path shapes coexist across manifests and recover their original 
   assert.equal(await readFile(descendant, "utf8"), "descendant seed");
   assert.deepEqual(deployFileMounts([{ path: "config", update: "preserve" }], source, stored), [{ host: ancestor, container: "/app/config", mode: "rw" }]);
 }));
+
+test("attempt journals are readable for reconciliation and block lifecycle actions until finished", async () => temporary(async (root) => {
+  const preservedRoot = path.join(root, "preserved-files");
+  await mkdir(preservedRoot);
+  const journal = attemptJournalPath(preservedRoot);
+  assert.equal(journal, path.join(root, "deploy-file-attempt.jsonl"));
+  assert.equal(await readPreservedFileAttempt(journal), null);
+  await assertNoPreservedFileAttempt(preservedRoot);
+  assert.equal(await beginPreservedFileAttempt(preservedRoot, "release-a", false), undefined);
+  assert.equal(await beginPreservedFileAttempt(preservedRoot, "release-a", true), journal);
+  await recordPreservedFileAttempt(journal, { candidate: { name: "app", transaction: "ab".repeat(16) } });
+  await recordPreservedFileAttempt(journal, { temporary: ".seed-0123abcd-0123-0123-0123-0123456789ab" });
+  await recordPreservedFileAttempt(journal, { root: preservedRoot, path: "settings.json", dev: 1, ino: 2, sha256: "c".repeat(64) });
+  await assert.rejects(assertNoPreservedFileAttempt(preservedRoot), /requires recovery.*reconcile/);
+  await assert.rejects(beginPreservedFileAttempt(preservedRoot, "release-b", true), /requires recovery/);
+  const attempt = await readPreservedFileAttempt(journal);
+  assert.equal(attempt.release, "release-a");
+  assert.equal(attempt.preservedRoot, preservedRoot);
+  assert.deepEqual(attempt.temporaries, [".seed-0123abcd-0123-0123-0123-0123456789ab"]);
+  assert.deepEqual(attempt.seeds, [{ root: preservedRoot, path: "settings.json", dev: 1, ino: 2, sha256: "c".repeat(64) }]);
+  assert.deepEqual(attempt.records[1], { candidate: { name: "app", transaction: "ab".repeat(16) } });
+  await writeFile(path.join(preservedRoot, ".seed-0123abcd-0123-0123-0123-0123456789ab"), "stale");
+  await finishPreservedFileAttempt(journal);
+  await assert.rejects(stat(journal), { code: "ENOENT" });
+  await assert.rejects(stat(path.join(preservedRoot, ".seed-0123abcd-0123-0123-0123-0123456789ab")), { code: "ENOENT" });
+  await assertNoPreservedFileAttempt(preservedRoot);
+}));
+
+test("preserved file access policy derives owner, runtime group, and mode from user identities", () => {
+  assert.deepEqual(parseUserIdentity("501:20"), { uid: 501, gid: 20 });
+  assert.deepEqual(localPreservedFileAccess("501:20", "501:20"), { uid: 501, gid: 20, mode: 0o600 });
+  assert.deepEqual(localPreservedFileAccess("501:20", "10001:10001"), { uid: 501, gid: 10001, mode: 0o660 });
+  assert.equal(preservedFileAccessMatches({ uid: 501, gid: 10001, mode: 0o100660 }, localPreservedFileAccess("501:20", "10001:10001")), true);
+  assert.equal(preservedFileAccessMatches({ uid: 501, gid: 20, mode: 0o100660 }, localPreservedFileAccess("501:20", "10001:10001")), false);
+  assert.equal(preservedFileAccessMatches({ uid: 501, gid: 10001, mode: 0o100600 }, localPreservedFileAccess("501:20", "10001:10001")), false);
+});

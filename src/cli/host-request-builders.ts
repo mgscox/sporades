@@ -1,4 +1,5 @@
 import { baseImageLabels, baseImageMetadata, baseImageRuntimeUser } from "../base-image.js";
+import type { DeployFile } from "../deploy-files.js";
 import type { HostHelperRelease, HostLifecycleOptions } from "./host-helper-contract.js";
 import type { LooseRecord } from "./cli-support.js";
 
@@ -48,7 +49,7 @@ export function createHostReleaseRequest(options: LooseRecord): HostHelperReleas
       ? { requiredInspectors: [...options.requiredInspectors] }
       : null,
     files,
-    deployFiles: (options.bundle.deployFiles ?? []).map(({ path, update }: { path: string; update: "replace" | "preserve" }) => ({ path, update })),
+    deployFiles: (options.bundle.deployFiles ?? []).map(({ path, update }: DeployFile) => ({ path, update })),
     directories: {
       capsule: registration.directories.capsule,
       releases: registration.directories.releases,

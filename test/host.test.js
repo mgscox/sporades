@@ -5429,10 +5429,17 @@ process.exit(0);
     assert.equal(restart.code, 0, restart.stderr);
     assert.equal(JSON.parse(restart.stdout).data.action, "capsule.restart");
 
+    const reconcile = await runCli(["host", "reconcile", "team-notes", "--host", "personal", "--json"], {
+      cwd: dir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(reconcile.code, 0, reconcile.stderr);
+    assert.equal(JSON.parse(reconcile.stdout).data.action, "capsule.release.reconcile");
+
     const calls = await readJsonl(fakeSsh.logPath);
     assert.deepEqual(
       calls.map((call) => JSON.parse(call.stdin).action),
-      ["capsule.start", "capsule.stop", "capsule.restart"],
+      ["capsule.start", "capsule.stop", "capsule.restart", "capsule.release.reconcile"],
     );
     const startRequest = JSON.parse(calls[0].stdin);
     assert.equal(startRequest.lifecycle.currentLink, "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current");
@@ -14767,6 +14774,89 @@ fs.promises.rm = async function(file, ...args) {
     assert.equal(await readFile(preservedDeployFilePath(path.join(fixture.capsuleDir, "preserved-files"), "new.json"), "utf8"), "retained candidate");
     await stat(fixture.release.directories.release);
     await stat(path.join(fixture.capsuleDir, "deploy-file-attempt.jsonl"));
+  });
+});
+
+test("Hosted deploy.files reconcile discards an unrecorded attempt and clears a recorded one", async () => {
+  await withTempDir(async (dir) => {
+    // Each install claims and consumes the incoming archive, so regenerate the
+    // fixture before every attempt; the registry record is rewritten identically.
+    const refresh = async () => {
+      const fixture = await writeHostedCapsuleInstallFixture(dir, { rootName: "reconcile-files", previousReleaseId: null,
+        deployFiles: [{ path: "new.json", update: "preserve" }], fileContents: "retained candidate" });
+      fixture.release.restart = false;
+      const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+      record.status = "registered";
+      await writeFile(fixture.registryRecordPath, JSON.stringify(record));
+      return fixture;
+    };
+    let fixture = await refresh();
+    const registry = await readFile(fixture.registryRecordPath);
+    const request = { host: { alias: "personal", domain: fixture.domain, remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname } };
+    const preload = path.join(dir, "fail-pointer.mjs");
+    await writeFile(preload, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const original = fs.promises.rm;
+fs.promises.rm = async function(file, ...args) {
+  if (String(file).endsWith('/current')) throw Object.assign(new Error('injected pointer restoration denial'), { code: 'EACCES' });
+  return original.call(this, file, ...args);
+}; syncBuiltinESMExports();`);
+    const failed = await runHostHelper({ ...request, action: "capsule.release.install", release: fixture.release },
+      { cwd: dir, env: { NODE_OPTIONS: `--import=${preload}`, SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE: "1", SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1" } });
+    assert.equal(JSON.parse(failed.stdout).ok, false, failed.stdout);
+    const journal = path.join(fixture.capsuleDir, "deploy-file-attempt.jsonl");
+    const seed = preservedDeployFilePath(path.join(fixture.capsuleDir, "preserved-files"), "new.json");
+    await stat(journal);
+
+    const blocked = await runHostHelper({ ...request, action: "capsule.start" }, { cwd: dir, env: { SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1" } });
+    assert.match(JSON.parse(blocked.stdout).error.hint, /sporades host reconcile/);
+
+    // Unrecorded attempt: unchanged seed, candidate pointer and directory are discarded.
+    const reconciled = await runHostHelper({ ...request, action: "capsule.release.reconcile" }, { cwd: dir, env: { SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1" } });
+    const outcome = JSON.parse(reconciled.stdout);
+    assert.equal(outcome.ok, true, reconciled.stdout);
+    assert.equal(outcome.data.reconciled, true);
+    assert.equal(outcome.data.committed, false);
+    assert.equal(outcome.data.release, fixture.release.id);
+    assert.deepEqual(outcome.data.actions, ["seeds-rolled-back", "current-pointer-restored", "candidate-release-removed", "journal-removed"]);
+    await assert.rejects(lstat(seed), { code: "ENOENT" });
+    assert((await readdir(path.join(fixture.capsuleDir, "preserved-files"))).some((entry) => entry.startsWith(".rollback-")), "seed retained as a recovery copy");
+    // The registry still records the fixture's previous release, so the pointer returns to it.
+    assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), path.join(fixture.capsuleDir, "releases", "20260629T120000Z-deadbeef"));
+    await assert.rejects(lstat(fixture.release.directories.release), { code: "ENOENT" });
+    await assert.rejects(lstat(journal), { code: "ENOENT" });
+    assert.deepEqual(await readFile(fixture.registryRecordPath), registry);
+    const clean = await runHostHelper({ ...request, action: "capsule.release.reconcile" }, { cwd: dir, env: { SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1" } });
+    assert.equal(JSON.parse(clean.stdout).data.reconciled, false, clean.stdout);
+
+    // An edited seed survives reconciliation even when the attempt is discarded.
+    fixture = await refresh();
+    const edited = await runHostHelper({ ...request, action: "capsule.release.install", release: fixture.release },
+      { cwd: dir, env: { NODE_OPTIONS: `--import=${preload}`, SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE: "1", SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1" } });
+    assert.equal(JSON.parse(edited.stdout).ok, false, edited.stdout);
+    await writeFile(seed, "operator edit");
+    const kept = await runHostHelper({ ...request, action: "capsule.release.reconcile" }, { cwd: dir, env: { SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1" } });
+    assert.equal(JSON.parse(kept.stdout).ok, true, kept.stdout);
+    assert.equal(await readFile(seed, "utf8"), "operator edit");
+    await rm(seed, { force: true });
+
+    // Recorded attempt: the release stays installed and only the journal clears.
+    fixture = await refresh();
+    const docker = await installFakeDocker(path.join(dir, "reconcile-docker"));
+    const installed = await runHostHelper({ ...request, action: "capsule.release.install", release: fixture.release }, { cwd: dir, env: docker.env });
+    assert.equal(JSON.parse(installed.stdout).ok, true, installed.stdout);
+    await writeFile(journal, `${JSON.stringify({ release: fixture.release.id, preservedRoot: path.join(fixture.capsuleDir, "preserved-files") })}\n${JSON.stringify({ temporary: ".seed-0123abcd-0123-0123-0123-0123456789ab" })}\n`);
+    await writeFile(path.join(fixture.capsuleDir, "preserved-files", ".seed-0123abcd-0123-0123-0123-0123456789ab"), "stale temporary");
+    const committed = await runHostHelper({ ...request, action: "capsule.release.reconcile" }, { cwd: dir, env: docker.env });
+    const committedOutcome = JSON.parse(committed.stdout);
+    assert.equal(committedOutcome.ok, true, committed.stdout);
+    assert.deepEqual(committedOutcome.data.actions, ["journal-removed"]);
+    assert.equal(committedOutcome.data.committed, true);
+    await assert.rejects(lstat(journal), { code: "ENOENT" });
+    await assert.rejects(lstat(path.join(fixture.capsuleDir, "preserved-files", ".seed-0123abcd-0123-0123-0123-0123456789ab")), { code: "ENOENT" });
+    assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), fixture.release.directories.release);
+    assert.equal(await readFile(seed, "utf8"), "retained candidate");
+    const restarted = await runHostHelper({ ...request, action: "capsule.restart" }, { cwd: dir, env: docker.env });
+    assert.equal(JSON.parse(restarted.stdout).ok, true, restarted.stdout);
   });
 });
 

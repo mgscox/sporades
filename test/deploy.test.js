@@ -5339,6 +5339,34 @@ cp.spawnSync = function(command, args, ...rest) {
     assert.equal(await readFile(bindingPath, "utf8"), beforeBinding);
     assert.equal(await readFile(journal, "utf8"), beforeJournal);
     assert.equal(await readFile(snapshot, "utf8"), "snapshot");
+
+    // Reconciliation settles the journal without touching the bound Container:
+    // the candidate is removed by its transaction label and its snapshot dropped.
+    const records = beforeJournal.trim().split("\n").map(JSON.parse);
+    const candidate = records.find((record) => record.candidate).candidate;
+    assert.match(candidate.transaction, /^[a-f0-9]{32}$/);
+    const reconciled = await runCli(["deploy", "reconcile", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(reconciled.code, 0, reconciled.stdout + reconciled.stderr);
+    const outcome = JSON.parse(reconciled.stdout).data;
+    assert.equal(outcome.status, "reconciled");
+    assert.equal(outcome.committed, false);
+    assert.deepEqual(outcome.actions, ["candidate-container-removed", "candidate-snapshot-removed", "bound-file-access-restored", "journal-removed"]);
+    const reconcileCalls = (await docker.calls()).slice(calls);
+    // The fake Docker reuses one container ID, so the bound Container is inspected
+    // for its staged name; no rename, stop, or start is issued.
+    assert.deepEqual(reconcileCalls.map((call) => call.args[0]), ["ps", "rm", "inspect"]);
+    assert.deepEqual(reconcileCalls[0].args.slice(0, 3), ["ps", "--all", "--quiet"]);
+    assert(reconcileCalls[0].args.includes(`label=com.sporades.container-transaction=${candidate.transaction}`));
+    assert.equal(reconcileCalls[1].args[1], "-f");
+    await assert.rejects(readFile(journal), { code: "ENOENT" });
+    assert.notEqual(records[0].release, JSON.parse(beforeBinding).deployFilesRoot);
+    await assert.rejects(stat(records[0].release), { code: "ENOENT" });
+    assert.equal(await readFile(bindingPath, "utf8"), beforeBinding);
+    assert.equal(await readFile(snapshot, "utf8"), "snapshot");
+    const clean = await runCli(["deploy", "reconcile", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(JSON.parse(clean.stdout).data.status, "clean");
+    const stopped = await runCli(["deploy", "stop", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(stopped.code, 0, stopped.stdout + stopped.stderr);
   });
 });
 

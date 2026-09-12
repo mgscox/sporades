@@ -640,23 +640,36 @@ permissions before restarting the old Container. Removing a local Container also
 replacement snapshot and revokes runtime group access, while preserving stored edits.
 
 Local snapshot attempts and Hosted seed attempts are recorded before publication in `deploy-file-attempt.jsonl`
-under the local `.sporades/` directory or the Hosted Capsule directory. Successful
-installation or completed rollback removes the journal. If the deployment process
-exits unexpectedly or recovery is incomplete, a subsequent deployment stops with
-the journal path instead of silently adopting uncommitted seed bytes. Recovery is
-explicit: stop any retained candidate runtime, back up the journal and its listed
-files, and reconcile the release/binding with the journal's release and per-file
-inode/hash records. Temporary `.seed-*` paths are journaled before creation;
-remove those recorded temporary files during reconciliation before clearing the
-journal. For replacement-only attempts, the journal records the candidate
-snapshot root; remove that snapshot only after proving no retained Container uses
-it. Keep edits; remove an unchanged seed only if its attempt did
-not commit. Remove the journal after that reconciliation, then retry deployment.
-Do not remove a journal while its candidate may still be running.
+under the local `.sporades/` directory or the Hosted Capsule directory. The
+journal names the attempted release, the candidate and previous Containers, every
+temporary `.seed-*` path before it is created, and each seeded file's inode and
+content hash. Successful installation or completed rollback removes the journal.
+If the deployment process exits unexpectedly or recovery is incomplete, later
+commands stop with the journal path instead of silently adopting uncommitted seed
+bytes: locally `sporades deploy`, `deploy stop`, `deploy restart` and
+`deploy remove`; on a Host, start, restart, rollback and verification fallback.
+The install currently creating the journal may complete its own runtime start; a
+later command cannot claim that exception.
 
-Hosted start, restart, rollback and verification fallback also reject a surviving
-attempt journal until reconciliation. The install currently creating the journal
-may complete its own runtime start; a later command cannot claim that exception.
+Recovery is one explicit command rather than a manual procedure:
+
+```sh
+sporades deploy reconcile --json
+sporades host reconcile <subname> --host <alias> --json
+```
+
+Reconciliation reads the journal and settles exactly what it recorded. When the
+attempt never committed (the local binding does not name the journaled snapshot,
+or the Host registry never recorded the release), it removes the untracked
+candidate Container by its transaction label, restores the previous Container's
+name, rolls back only seeds whose inode and bytes are unchanged (moving them to
+`.rollback-<id>` recovery files), drops the candidate snapshot or release
+directory and its private key, restores the Host `current` pointer to the
+recorded release, and restores the bound runtime's file access. When the attempt
+did commit, everything stays installed and only the journal and its recorded
+temporary files are cleared. Edited seeds are always retained. The command
+reports the actions it took and is safe to repeat; with no journal it reports a
+clean state. Retry the deployment after it succeeds.
 
 Local Container snapshots and Hosted archives have different size contracts.
 The shared build checks paths, file types and source availability, but does not
@@ -691,7 +704,7 @@ inode with an editor's atomic-save operation requires restarting the container
 to refresh the bind mount. Locally, use `sporades deploy stop` followed by
 `sporades deploy restart`; Hosted Capsules use `sporades host restart`. These
 paths validate preserved files and restore the bound runtime's file access before
-starting it. A surviving local attempt journal also blocks stop, restart, and removal until the candidate is reconciled. Failed replacement restores access for the prior binding even when an editor has replaced the file inode; if that repair fails, the old runtime stays stopped and recovery is reported as incomplete.
+starting it. A surviving local attempt journal also blocks stop, restart, and removal until `sporades deploy reconcile` settles the candidate. Failed replacement restores access for the prior binding even when an editor has replaced the file inode; if that repair fails, the old runtime stays stopped and recovery is reported as incomplete.
 
 Paths are normalized using Node path resolution. They must stay under the
 project root and cannot collide with `.sporades/`, `public/`, `data/`, the server
@@ -705,5 +718,7 @@ build time, including preserved seeds; failure names the file before upload.
 Omitting `deploy.files` keeps the existing payload unchanged.
 
 These files are server-side resources, not public assets. A Dev session reads
-the original project files. Application code owns reading and reloading them;
+the original project files directly: `sporades dev` never snapshots, validates,
+or mounts `deploy.files`, so a missing or symlinked declaration only fails
+`sporades deploy` and `sporades host push`. Application code owns reading and reloading them;
 Sporades does not watch or reload configuration for the application.

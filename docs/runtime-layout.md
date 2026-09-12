@@ -116,7 +116,11 @@ moved off their active paths into `.rollback-<id>` recovery files in the same
 preserved storage, so concurrent editor writes remain recoverable.
 
 Local Container sessions keep replacement snapshots in `.sporades/deploy-files/`
-and preserved copies in `.sporades/preserved-files/`. Hosted Capsules keep
+and preserved copies in `.sporades/preserved-files/`. An in-flight attempt is
+journaled in `deploy-file-attempt.jsonl` beside `preserved-files/` (locally under
+`.sporades/`, on a Host in the Capsule directory); a surviving journal blocks
+lifecycle commands until `sporades deploy reconcile` or `sporades host reconcile`
+settles it. Hosted Capsules keep
 preserved copies beside `data/`, outside immutable releases. These directories
 are created only when needed. See [Additional deployment files](./reference/projects-and-configuration.md#additional-deployment-files)
 for configuration and validation rules.
@@ -127,7 +131,9 @@ for configuration and validation rules.
 read-only and persistent data mounted read-write.
 
 The local Container binding at `.sporades/binding.json` records the Docker
-container ID and name for lifecycle commands. `sporades deploy stop` stops the
+container ID and name for lifecycle commands, plus the release's `deployFiles`
+policy, its `deployFilesRoot` replacement snapshot, and `pendingDeployFileCleanup`
+snapshot paths that a later deployment or removal still has to delete. `sporades deploy stop` stops the
 bound container and keeps the binding, `sporades deploy restart` starts that
 same stopped container without rebuilding, and `sporades deploy remove`
 force-removes the bound container and deletes the binding. Persistent Capsule
