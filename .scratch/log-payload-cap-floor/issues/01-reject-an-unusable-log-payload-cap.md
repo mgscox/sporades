@@ -51,5 +51,6 @@ Implemented in `bfb6bce1` on `codex/log-payload-cap-floor`.
   shipped `bin/`, `dist/`, and generated-source manifest rebuilt.
 
 Published with explicit user authorization as https://github.com/mgscox/sporades/pull/41.
-PR #30 remains unchanged; this implementation supersedes its unratified
-global-floor proposal without modifying the Dev reload tracker.
+Merged in `b603028f`; this implementation supersedes PR #30's unratified
+global-floor proposal. PR #30 now preserves this completed contract alongside
+the Dev reload completion evidence.
