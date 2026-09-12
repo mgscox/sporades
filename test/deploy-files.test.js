@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { mkdtemp, mkdir, readFile, writeFile, rm, symlink, link, stat, open, readdir, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { beginPreservedFileAttempt, finishPreservedFileAttempt, buildDeployFiles, resolveDeployFiles, preparePreservedFiles, deployFileMounts, assertPreservedDeployFile, rollbackPreservedFiles, localPreservedFileAccessArgs, rethrowAfterDeployCleanup } from "../dist/deploy-files.js";
+import { preservedDeployFilePath, beginPreservedFileAttempt, finishPreservedFileAttempt, buildDeployFiles, resolveDeployFiles, preparePreservedFiles, deployFileMounts, assertPreservedDeployFile, rollbackPreservedFiles, localPreservedFileAccessArgs, rethrowAfterDeployCleanup } from "../dist/deploy-files.js";
 import { createBundle } from "../dist/bundle-pipeline.js";
 
 async function temporary(fn) {
@@ -46,17 +46,17 @@ test("preserved files seed once, survive removal and policy switches, and reject
   await writeFile(path.join(source, "config/settings.json"), "seed");
   const preserve = resolveDeployFiles([{ path: "config/settings.json", update: "preserve" }]);
   await preparePreservedFiles(preserve, source, stored);
-  await writeFile(path.join(stored, "config/settings.json"), "server edit");
+  await writeFile(preservedDeployFilePath(stored, "config/settings.json"), "server edit");
   await writeFile(path.join(source, "config/settings.json"), "new seed");
   await preparePreservedFiles(preserve, source, stored);
   await preparePreservedFiles([], source, stored);
   const replace = resolveDeployFiles([{ path: "config/settings.json" }]);
   await preparePreservedFiles(replace, source, stored);
-  assert.equal(await readFile(path.join(stored, "config/settings.json"), "utf8"), "server edit");
+  assert.equal(await readFile(preservedDeployFilePath(stored, "config/settings.json"), "utf8"), "server edit");
   assert.equal(deployFileMounts(replace, source, stored)[0].host, path.join(source, "config/settings.json"));
   assert.equal(deployFileMounts(preserve, source, stored)[0].mode, "rw");
-  await rm(path.join(stored, "config/settings.json"));
-  await symlink(path.join(source, "config/settings.json"), path.join(stored, "config/settings.json"));
+  await rm(preservedDeployFilePath(stored, "config/settings.json"));
+  await symlink(path.join(source, "config/settings.json"), preservedDeployFilePath(stored, "config/settings.json"));
   await assert.rejects(preparePreservedFiles(preserve, source, stored), /without symlinks/);
 }));
 
@@ -68,7 +68,7 @@ test("preserved deploy.files recovers a seed publication interrupted before temp
   await writeFile(path.join(source, "settings.json"), "new seed");
   const seed = path.join(stored, ".seed-00000000-0000-4000-8000-000000000000");
   await writeFile(seed, "published before crash");
-  const destination = path.join(stored, "settings.json");
+  const destination = preservedDeployFilePath(stored, "settings.json");
   await link(seed, destination);
   assert.equal((await stat(destination)).nlink, 2);
   // Restart validates stored files without rerunning deployment.
@@ -77,7 +77,7 @@ test("preserved deploy.files recovers a seed publication interrupted before temp
   await preparePreservedFiles([{ path: "settings.json", update: "preserve" }], source, stored);
   assert.equal(await readFile(destination, "utf8"), "published before crash");
   await assert.rejects(stat(seed), { code: "ENOENT" });
-  await link(destination, path.join(stored, "unrelated.json"));
+  await link(destination, preservedDeployFilePath(stored, "unrelated.json"));
   await assert.rejects(assertPreservedDeployFile(stored, "settings.json"), /regular files/);
 }));
 
@@ -89,14 +89,14 @@ test("failed seed transactions remove only newly published unchanged files", asy
   await preparePreservedFiles([{ path: "existing.json", update: "preserve" }], source, stored);
   const created = [];
   await preparePreservedFiles(["new.json", "edited.json", "replaced.json", "existing.json"].map((file) => ({ path: file, update: "preserve" })), source, stored, undefined, created);
-  await writeFile(path.join(stored, "edited.json"), "operator edit");
-  await rm(path.join(stored, "replaced.json"));
-  await writeFile(path.join(stored, "replaced.json"), "replacement");
+  await writeFile(preservedDeployFilePath(stored, "edited.json"), "operator edit");
+  await rm(preservedDeployFilePath(stored, "replaced.json"));
+  await writeFile(preservedDeployFilePath(stored, "replaced.json"), "replacement");
   await rollbackPreservedFiles(created);
-  await assert.rejects(stat(path.join(stored, "new.json")), { code: "ENOENT" });
-  assert.equal(await readFile(path.join(stored, "existing.json"), "utf8"), "seed");
-  assert.equal(await readFile(path.join(stored, "edited.json"), "utf8"), "operator edit");
-  assert.equal(await readFile(path.join(stored, "replaced.json"), "utf8"), "replacement");
+  await assert.rejects(stat(preservedDeployFilePath(stored, "new.json")), { code: "ENOENT" });
+  assert.equal(await readFile(preservedDeployFilePath(stored, "existing.json"), "utf8"), "seed");
+  assert.equal(await readFile(preservedDeployFilePath(stored, "edited.json"), "utf8"), "operator edit");
+  assert.equal(await readFile(preservedDeployFilePath(stored, "replaced.json"), "utf8"), "replacement");
 }));
 
 test("local preserved-file access keeps the CLI owner and grants the SSH runtime group on one mount", () => {
@@ -122,8 +122,8 @@ test("seed rollback retains atomic-save replacements made at the claim boundary"
   await rollbackPreservedFiles(created, { beforeClaim: async (target) => {
     await rm(target); await writeFile(target, "atomic save");
   } });
-  assert.equal(await readFile(path.join(stored, "settings.json"), "utf8"), "atomic save");
-  assert.equal((await stat(path.join(stored, "settings.json"))).nlink, 1);
+  assert.equal(await readFile(preservedDeployFilePath(stored, "settings.json"), "utf8"), "atomic save");
+  assert.equal((await stat(preservedDeployFilePath(stored, "settings.json"))).nlink, 1);
 }));
 
 test("seed rollback retains edits through an open descriptor after the seed is claimed", async () => temporary(async (root) => {
@@ -131,12 +131,12 @@ test("seed rollback retains edits through an open descriptor after the seed is c
   await mkdir(source); await writeFile(path.join(source, "settings.json"), "seed");
   const created = [];
   await preparePreservedFiles([{ path: "settings.json", update: "preserve" }], source, stored, undefined, created);
-  const writer = await open(path.join(stored, "settings.json"), "r+");
+  const writer = await open(preservedDeployFilePath(stored, "settings.json"), "r+");
   try {
     await rollbackPreservedFiles(created);
     await writer.write("late edit", 0, "utf8");
   } finally { await writer.close(); }
-  await assert.rejects(stat(path.join(stored, "settings.json")), { code: "ENOENT" });
+  await assert.rejects(stat(preservedDeployFilePath(stored, "settings.json")), { code: "ENOENT" });
   const recovery = (await readdir(stored)).find((entry) => entry.startsWith(".rollback-"));
   assert.equal(await readFile(path.join(stored, recovery), "utf8"), "late edit");
 }));
@@ -172,13 +172,13 @@ test("deploy.files journals seed ownership before publication and blocks interru
     const journal = path.join(root, "deploy-file-attempt.jsonl");
     const records = (await readFile(journal, "utf8")).trim().split("\n").map(JSON.parse);
     assert.equal(records[0].release, "attempt-one");
-    assert.equal(records.find((record) => record.sha256).ino, (await stat(path.join(preserved, "settings.json"))).ino);
+    assert.equal(records.find((record) => record.sha256).ino, (await stat(preservedDeployFilePath(preserved, "settings.json"))).ino);
     await assert.rejects(beginPreservedFileAttempt(preserved, "attempt-two", true), /requires recovery/);
     await assert.rejects(beginPreservedFileAttempt(preserved, "attempt-two", false), /requires recovery/);
     // Simulate explicit recovery after the interrupted runtime has been stopped.
     await rollbackPreservedFiles(records.filter((record) => record.sha256));
     await finishPreservedFileAttempt(journal);
-    await assert.rejects(stat(path.join(preserved, "settings.json")), { code: "ENOENT" });
+    await assert.rejects(stat(preservedDeployFilePath(preserved, "settings.json")), { code: "ENOENT" });
     const retry = await beginPreservedFileAttempt(preserved, "attempt-two", true);
     await finishPreservedFileAttempt(retry);
   });
@@ -298,4 +298,27 @@ test("deploy.files retains journals when temporary cleanup is unsafe", async () 
   await writeFile(journal, JSON.stringify({ temporary: name }) + "\n");
   await assert.rejects(finishPreservedFileAttempt(journal), /regular files/);
   await stat(journal);
+}));
+
+test("preserved path shapes coexist across manifests and recover their original bytes", async () => temporary(async (root) => {
+  const source = path.join(root, "release"); const stored = path.join(root, "preserved-files");
+  await mkdir(source);
+  await writeFile(path.join(source, "config"), "ancestor seed");
+  await preparePreservedFiles([{ path: "config", update: "preserve" }], source, stored);
+  const ancestor = preservedDeployFilePath(stored, "config");
+  await writeFile(ancestor, "ancestor edit");
+  await rm(path.join(source, "config"));
+  await mkdir(path.join(source, "config"));
+  await writeFile(path.join(source, "config/settings.json"), "descendant seed");
+  await preparePreservedFiles([{ path: "config/settings.json", update: "preserve" }], source, stored);
+  const descendant = preservedDeployFilePath(stored, "config/settings.json");
+  assert.notEqual(ancestor, descendant);
+  assert.equal(await readFile(ancestor, "utf8"), "ancestor edit");
+  assert.equal(await readFile(descendant, "utf8"), "descendant seed");
+  await rm(path.join(source, "config"), { recursive: true });
+  await writeFile(path.join(source, "config"), "new ancestor seed");
+  await preparePreservedFiles([{ path: "config", update: "preserve" }], source, stored);
+  assert.equal(await readFile(ancestor, "utf8"), "ancestor edit");
+  assert.equal(await readFile(descendant, "utf8"), "descendant seed");
+  assert.deepEqual(deployFileMounts([{ path: "config", update: "preserve" }], source, stored), [{ host: ancestor, container: "/app/config", mode: "rw" }]);
 }));

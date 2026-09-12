@@ -1,3 +1,4 @@
+import { preservedDeployFilePath } from "../dist/deploy-files.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { Buffer } from "node:buffer";
@@ -5005,7 +5006,7 @@ test("local Container deploy.files snapshots replacements and retains editable f
     const replacement = run.args.find((arg) => arg.endsWith(":/app/defaults.json:ro")).slice(0, -":/app/defaults.json:ro".length);
     await writeFile(path.join(projectDir, "defaults.json"), "new local bytes");
     assert.equal(await readFile(replacement, "utf8"), "original");
-    const preserved = path.join(projectDir, ".sporades/preserved-files/settings.json");
+    const preserved = preservedDeployFilePath(path.join(projectDir, ".sporades/preserved-files"), "settings.json");
     assert(run.args.includes(`${preserved}:/app/settings.json:rw`));
     await writeFile(preserved, "server edit");
     const preload = path.join(dir, "fail-snapshot.mjs");
@@ -5049,7 +5050,7 @@ fs.promises.writeFile = async function(file, ...args) {
 const original = fs.promises.lstat;
 fs.promises.lstat = async function(file, ...args) {
   const result = await original.call(this, file, ...args);
-  if (String(file).endsWith('/.sporades/preserved-files/settings.json')) { result.gid = 10001; result.mode = (result.mode & ~0o777) | 0o660; }
+  if (String(file) === ${JSON.stringify(preserved)}) { result.gid = 10001; result.mode = (result.mode & ~0o777) | 0o660; }
   return result;
 }; syncBuiltinESMExports();`);
     const ordinaryDeploy = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...docker.env, NODE_OPTIONS: `--import=${staleGrant}` } });
@@ -5136,7 +5137,7 @@ fs.promises.rm = async function(file, ...args) {
     assert.notEqual(failed.code, 0, failed.stdout);
     const details = JSON.parse(failed.stdout).error.diagnostics;
     assert(details?.failures.includes(retained ? "candidate-container" : "candidate-public-tree"), failed.stdout);
-    const stored = path.join(projectDir, ".sporades/preserved-files/settings.json");
+    const stored = preservedDeployFilePath(path.join(projectDir, ".sporades/preserved-files"), "settings.json");
     const snapshots = path.join(projectDir, ".sporades/deploy-files");
     if (retained) {
       assert.equal(await readFile(stored, "utf8"), "failed seed");
@@ -5188,5 +5189,33 @@ fs.promises.rm = async function(file, ...args) {
     assert.notEqual(retry.code, 0);
     assert.match(retry.stdout + retry.stderr, /requires recovery/);
     assert.deepEqual(await readdir(path.join(projectDir, ".sporades/deploy-files")), before);
+  });
+});
+
+test("local deploy.files switches historical ancestor and descendant paths without losing edits", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "shape-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "shape-island"));
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    const docker = await installFakeDocker(dir, "shape-candidate");
+    const root = path.join(projectDir, ".sporades/preserved-files");
+    for (const [index, relative] of ["config", "config/settings.json", "config"].entries()) {
+      await rm(path.join(projectDir, "config"), { force: true, recursive: true });
+      await mkdir(path.dirname(path.join(projectDir, relative)), { recursive: true });
+      await writeFile(path.join(projectDir, relative), `seed-${index}`);
+      config.deploy.files = [{ path: relative, update: "preserve" }];
+      await writeFile(configPath, JSON.stringify(config));
+      const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+      assert.equal(deployed.code, 0, deployed.stdout + deployed.stderr);
+      const stored = preservedDeployFilePath(root, relative);
+      const run = (await docker.calls()).filter((call) => call.args[0] === "run" && call.args.includes("--detach")).at(-1);
+      assert(run.args.includes(`${stored}:/app/${relative}:rw`));
+      if (index < 2) await writeFile(stored, `edit-${index}`);
+    }
+    assert.equal(await readFile(preservedDeployFilePath(root, "config"), "utf8"), "edit-0");
+    assert.equal(await readFile(preservedDeployFilePath(root, "config/settings.json"), "utf8"), "edit-1");
   });
 });

@@ -58572,8 +58572,12 @@ async function assertDeployFile(root, relative, recoverSeed = false) {
   }
   return current2;
 }
+function preservedDeployFilePath(root, relative) {
+  const key = createHash("sha256").update(relative.normalize("NFC")).digest("hex");
+  return path.join(root, `${key}.file`);
+}
 async function assertPreservedDeployFile(root, relative) {
-  return assertDeployFile(root, relative, true);
+  return assertDeployFile(root, path.basename(preservedDeployFilePath(root, relative)), true);
 }
 async function readDeployFile(root, relative) {
   root = path.resolve(root);
@@ -58627,7 +58631,7 @@ async function buildDeployFiles(projectDir, value) {
 }
 function deployFileMounts(files, releaseRoot, preservedRoot) {
   return files.map((file) => ({
-    host: path.join(file.update === "preserve" ? preservedRoot : releaseRoot, file.path),
+    host: file.update === "preserve" ? preservedDeployFilePath(preservedRoot, file.path) : path.join(releaseRoot, file.path),
     container: `/app/${file.path}`,
     mode: file.update === "preserve" ? "rw" : "ro"
   }));
@@ -58700,17 +58704,12 @@ async function finishPreservedFileAttempt(journal) {
 }
 async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, created = [], journal) {
   for (const file of files.filter((entry) => entry.update === "preserve")) {
-    let directory = preservedRoot;
-    for (const part of ["", ...file.path.split("/").slice(0, -1)]) {
-      directory = path.join(directory, part);
-      await mkdir(directory, { mode: 493 }).catch((error) => {
-        if (error.code !== "EEXIST") throw error;
-      });
-      if (!(await lstat(directory)).isDirectory() || (await lstat(directory)).isSymbolicLink()) {
-        throw new Error(`Unsafe preserved deploy.files directory: ${file.path}`);
-      }
-    }
-    const destination = path.join(preservedRoot, file.path);
+    await mkdir(preservedRoot, { mode: 493 }).catch((error) => {
+      if (error.code !== "EEXIST") throw error;
+    });
+    const directory = await lstat(preservedRoot);
+    if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error(`Unsafe preserved deploy.files directory: ${file.path}`);
+    const destination = preservedDeployFilePath(preservedRoot, file.path);
     try {
       await assertPreservedDeployFile(preservedRoot, file.path);
       continue;
@@ -58726,7 +58725,7 @@ async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, c
       await handle.writeFile(contents);
       if (owner) await owner(handle, destination, await handle.stat());
       const identity = await handle.stat();
-      const seed = { root: preservedRoot, path: file.path, dev: identity.dev, ino: identity.ino, sha256: createHash("sha256").update(contents).digest("hex") };
+      const seed = { root: preservedRoot, path: file.path, storagePath: destination, dev: identity.dev, ino: identity.ino, sha256: createHash("sha256").update(contents).digest("hex") };
       await recordPreservedFileAttempt(journal, seed);
       await link(temporary, destination);
       created.push(seed);

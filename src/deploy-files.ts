@@ -5,7 +5,7 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, readdir, link, rename, rm, realpath } from "node:fs/promises";
 
 export type DeployFile = { path: string; update: "replace" | "preserve" };
-export type PreservedSeed = { root: string; path: string; dev: number; ino: number; sha256: string };
+export type PreservedSeed = { root: string; path: string; storagePath?: string; dev: number; ino: number; sha256: string };
 export type BuiltDeployFile = DeployFile & { contents: Buffer };
 
 // Paths owned by the runtime, including legacy release paths and writable data.
@@ -79,8 +79,13 @@ async function assertDeployFile(root: string, relative: string, recoverSeed = fa
   return current;
 }
 
+export function preservedDeployFilePath(root: string, relative: string) {
+  const key = createHash("sha256").update(relative.normalize("NFC")).digest("hex");
+  return path.join(root, `${key}.file`);
+}
+
 export async function assertPreservedDeployFile(root: string, relative: string) {
-  return assertDeployFile(root, relative, true);
+  return assertDeployFile(root, path.basename(preservedDeployFilePath(root, relative)), true);
 }
 
 // Node does not expose openat. Linux's descriptor paths let each directory
@@ -140,7 +145,7 @@ export async function buildDeployFiles(projectDir: string, value: unknown): Prom
 
 export function deployFileMounts(files: DeployFile[], releaseRoot: string, preservedRoot: string) {
   return files.map((file) => ({
-    host: path.join(file.update === "preserve" ? preservedRoot : releaseRoot, file.path),
+    host: file.update === "preserve" ? preservedDeployFilePath(preservedRoot, file.path) : path.join(releaseRoot, file.path),
     container: `/app/${file.path}`,
     mode: file.update === "preserve" ? "rw" : "ro",
   }));
@@ -199,15 +204,10 @@ export async function finishPreservedFileAttempt(journal?: string) {
 // Parent directories stay host-owned; only explicitly declared files are writable.
 export async function preparePreservedFiles(files: DeployFile[], releaseRoot: string, preservedRoot: string, owner?: (handle: FileHandle, target: string, stats: Awaited<ReturnType<FileHandle["stat"]>>) => Promise<void>, created: PreservedSeed[] = [], journal?: string) {
   for (const file of files.filter((entry) => entry.update === "preserve")) {
-    let directory = preservedRoot;
-    for (const part of ["", ...file.path.split("/").slice(0, -1)]) {
-      directory = path.join(directory, part);
-      await mkdir(directory, { mode: 0o755 }).catch((error) => { if (error.code !== "EEXIST") throw error; });
-      if (!(await lstat(directory)).isDirectory() || (await lstat(directory)).isSymbolicLink()) {
-        throw new Error(`Unsafe preserved deploy.files directory: ${file.path}`);
-      }
-    }
-    const destination = path.join(preservedRoot, file.path);
+    await mkdir(preservedRoot, { mode: 0o755 }).catch((error) => { if (error.code !== "EEXIST") throw error; });
+    const directory = await lstat(preservedRoot);
+    if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error(`Unsafe preserved deploy.files directory: ${file.path}`);
+    const destination = preservedDeployFilePath(preservedRoot, file.path);
     try {
       await assertPreservedDeployFile(preservedRoot, file.path);
       continue;
@@ -221,7 +221,7 @@ export async function preparePreservedFiles(files: DeployFile[], releaseRoot: st
       await handle.writeFile(contents);
       if (owner) await owner(handle, destination, await handle.stat());
       const identity = await handle.stat();
-      const seed = { root: preservedRoot, path: file.path, dev: identity.dev, ino: identity.ino, sha256: createHash("sha256").update(contents).digest("hex") };
+      const seed = { root: preservedRoot, path: file.path, storagePath: destination, dev: identity.dev, ino: identity.ino, sha256: createHash("sha256").update(contents).digest("hex") };
       await recordPreservedFileAttempt(journal, seed);
       await link(temporary, destination);
       created.push(seed);

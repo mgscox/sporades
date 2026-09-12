@@ -626,6 +626,11 @@ Removing a preserved entry stops mounting it without deleting its stored copy.
 Switching to `replace` also retains the inactive copy; switching back to
 `preserve` reuses it. On a Host server these copies live under the Capsule's
 `preserved-files/` directory; locally they live in `.sporades/preserved-files/`.
+Each stored file uses `<SHA-256 of the NFC-normalized relative path>.file`, while
+its Container mount remains `/app/<relative-path>`. This flat storage lets an
+inactive `config` file coexist with a later `config/settings.json` declaration,
+and switching back reuses the original stored bytes. The seed journal records
+both the logical path and physical `storagePath`.
 Local SSH deployments keep the invoking user as file owner and grant the
 container runtime group read/write access through a Docker helper mounted to
 one declared file at a time. Disabling SSH restores the invoking user’s group

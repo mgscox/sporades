@@ -6,6 +6,7 @@ export type DeployFile = {
 export type PreservedSeed = {
     root: string;
     path: string;
+    storagePath?: string;
     dev: number;
     ino: number;
     sha256: string;
@@ -14,6 +15,7 @@ export type BuiltDeployFile = DeployFile & {
     contents: Buffer;
 };
 export declare function resolveDeployFiles(value: unknown): DeployFile[];
+export declare function preservedDeployFilePath(root: string, relative: string): string;
 export declare function assertPreservedDeployFile(root: string, relative: string): Promise<string>;
 export declare function buildDeployFiles(projectDir: string, value: unknown): Promise<BuiltDeployFile[]>;
 export declare function deployFileMounts(files: DeployFile[], releaseRoot: string, preservedRoot: string): {
