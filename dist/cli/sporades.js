@@ -3866,9 +3866,11 @@ async function startContainerSession(options) {
     }
     catch (error) {
         const rollbackFailures = [];
+        let candidateRetained = Boolean(containerId);
         if (containerId && candidateOwnershipProven) {
             try {
                 runDockerCleanup(["rm", "-f", containerId], options.projectDir, "", "", true);
+                candidateRetained = false;
             }
             catch {
                 rollbackFailures.push("candidate-container");
@@ -3921,13 +3923,24 @@ async function startContainerSession(options) {
         catch {
             rollbackFailures.push("candidate-public-tree");
         }
+        if (!candidateRetained) {
+            try {
+                await rollbackPreservedFiles(createdSeeds);
+            }
+            catch {
+                rollbackFailures.push("preserved-seeds");
+            }
+            try {
+                await rm(deployReleaseRoot, { recursive: true, force: true });
+            }
+            catch {
+                rollbackFailures.push("candidate-deploy-files");
+            }
+        }
         if (rollbackFailures.length > 0) {
             throw commandError("Container replacement recovery is incomplete.", "Inspect the retained Container, binding, and public-tree state before retrying deployment.", { failures: rollbackFailures, cause: errorDetails(error).message });
         }
-        await rethrowAfterDeployCleanup(error, [
-            () => rollbackPreservedFiles(createdSeeds),
-            () => rm(deployReleaseRoot, { recursive: true, force: true }),
-        ]);
+        throw error;
     }
     if (!containerId || !binding)
         throw commandError("Container replacement did not commit.", "Retry deployment.");

@@ -44686,6 +44686,7 @@ async function installClaimedRelease(request, previousRecord, paths, claimedArch
   let restartResult = null;
   let restartError = null;
   let installRolledBack = false;
+  let seedCleanupError = null;
   const priorRuntime = release.restart ? captureCapsuleRuntimeSettlement(request, previousRecord) : null;
   if (release.restart) {
     try {
@@ -44708,8 +44709,12 @@ async function installClaimedRelease(request, previousRecord, paths, claimedArch
           priorRuntime,
           release
         );
-        await rollbackPreservedFiles(createdSeeds);
         installRolledBack = true;
+        try {
+          await rollbackPreservedFiles(createdSeeds);
+        } catch (error) {
+          seedCleanupError = error;
+        }
       } catch (error) {
         restartError = error;
       }
@@ -44735,6 +44740,9 @@ async function installClaimedRelease(request, previousRecord, paths, claimedArch
   };
   if (restartResult) {
     data2.lifecycle = restartResult;
+  }
+  if (seedCleanupError) {
+    data2.cleanup = { complete: false, reason: "preserved-seed-cleanup-failed", message: errorDetails(seedCleanupError).message };
   }
   if (installRolledBack) {
     data2.rollback = { applied: true, previousCurrentRelease };

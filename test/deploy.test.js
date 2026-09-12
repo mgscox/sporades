@@ -5043,3 +5043,46 @@ fs.promises.writeFile = async function(file, ...args) {
     assert.equal(await readFile(preserved, "utf8"), "server edit");
   });
 });
+
+
+test("local deploy.files cleans failed seeds despite unrelated rollback errors and retains live candidate files", async () => {
+  for (const retained of [false, true]) await withTempDir(async (dir) => {
+    const created = await runCli(["create", "seed-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "seed-island"));
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.deploy.files = [{ path: "settings.json", update: "preserve" }];
+    await writeFile(configPath, JSON.stringify(config));
+    await writeFile(path.join(projectDir, "settings.json"), "failed seed");
+    const docker = await installFakeDocker(dir, "seed-candidate", retained ? { failOnceActions: ["rm"] } : {});
+    const preload = path.join(dir, "fail-public-cleanup.mjs");
+    await writeFile(preload, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const original = fs.promises.rm;
+fs.promises.rm = async function(file, ...args) {
+  if (String(file).includes('/.public-trees/') && /\\/[0-9]+-[0-9]+-[a-f0-9]+$/.test(String(file))) throw Object.assign(new Error('injected public cleanup denial'), { code: 'EACCES' });
+  return original.call(this, file, ...args);
+}; syncBuiltinESMExports();`);
+    const failed = await runCli(["deploy", "--json"], { cwd: projectDir, env: {
+      ...docker.env, SPORADES_TEST_CONTAINER_REPLACEMENT_FAULT: "consumer",
+      ...(retained ? {} : { NODE_OPTIONS: `--import=${preload}` }),
+    } });
+    assert.notEqual(failed.code, 0, failed.stdout);
+    const details = JSON.parse(failed.stdout).error.diagnostics;
+    assert(details?.failures.includes(retained ? "candidate-container" : "candidate-public-tree"), failed.stdout);
+    const stored = path.join(projectDir, ".sporades/preserved-files/settings.json");
+    const snapshots = path.join(projectDir, ".sporades/deploy-files");
+    if (retained) {
+      assert.equal(await readFile(stored, "utf8"), "failed seed");
+      assert.equal((await readdir(snapshots)).length, 1);
+    } else {
+      await assert.rejects(stat(stored), { code: "ENOENT" });
+      assert.deepEqual(await readdir(snapshots), []);
+      await writeFile(path.join(projectDir, "settings.json"), "successful seed");
+      const retry = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+      assert.equal(retry.code, 0, retry.stdout + retry.stderr);
+      assert.equal(await readFile(stored, "utf8"), "successful seed");
+    }
+  });
+});

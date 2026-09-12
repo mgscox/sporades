@@ -14678,10 +14678,14 @@ test("Hosted deploy.files rolls back new seeds on registry and startup failure",
 
 
 test("Hosted deploy.files restores the pointer and release when seed cleanup fails", async () => {
-  await withTempDir(async (dir) => {
+  for (const failure of ["registry", "startup", "verified-startup"]) await withTempDir(async (dir) => {
     const fixture = await writeHostedCapsuleInstallFixture(dir, { rootName: "cleanup-failure", previousReleaseId: null,
       deployFiles: [{ path: "new.json", update: "preserve" }] });
-    fixture.release.restart = false;
+    fixture.release.restart = failure !== "registry";
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    record.status = "registered";
+    await writeFile(fixture.registryRecordPath, JSON.stringify(record));
+    const docker = await installFakeDocker(path.join(dir, "cleanup-docker"), { env: { FAKE_DOCKER_RUNNING: "false" } });
     const preload = path.join(dir, "fail-cleanup.mjs");
     await writeFile(preload, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
 let settlement = false; const write = fs.promises.writeFile; const stat = fs.promises.lstat;
@@ -14695,10 +14699,18 @@ fs.promises.lstat = async function(file, ...args) {
   return stat.call(this, file, ...args);
 }; syncBuiltinESMExports();`);
     const registry = await readFile(fixture.registryRecordPath);
-    const result = await runHostHelper({ action: "capsule.release.install", host: { alias: "personal", domain: fixture.domain, remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname }, release: fixture.release },
-      { cwd: dir, env: { NODE_OPTIONS: `--import=${preload}`, SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE: "1", SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1" } });
+    const result = await runHostHelper({ action: "capsule.release.install", host: { alias: "personal", domain: fixture.domain, remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname }, release: fixture.release, ...(failure === "verified-startup" ? { verification: { enabled: true } } : {}) },
+      { cwd: dir, env: { ...docker.env, NODE_OPTIONS: `--import=${preload}`, ...(failure === "registry" ? { SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE: "1" } : {}) } });
     assert.equal(JSON.parse(result.stdout).ok, false, result.stdout);
-    assert.match(JSON.parse(result.stdout).error.message, /cleanup is incomplete/);
+    const output = JSON.parse(result.stdout);
+    if (failure === "registry") assert.match(output.error.message, /cleanup is incomplete/);
+    else {
+      assert.equal(output.data.installed, false, result.stdout);
+      assert.equal(output.data.rollback.applied, true);
+      assert.equal(output.data.cleanup.complete, false);
+      assert.equal(output.data.cleanup.reason, "preserved-seed-cleanup-failed");
+      if (failure === "verified-startup") assert.equal(output.data.fallback.reason, "install-rolled-back");
+    }
     await assert.rejects(lstat(path.join(fixture.capsuleDir, "current")), { code: "ENOENT" });
     await assert.rejects(lstat(fixture.release.directories.release), { code: "ENOENT" });
     assert.deepEqual(await readFile(fixture.registryRecordPath), registry);

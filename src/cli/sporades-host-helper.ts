@@ -1395,6 +1395,7 @@ async function installClaimedRelease(request: HostHelperRequest, previousRecord:
   let restartResult = null;
   let restartError = null;
   let installRolledBack = false;
+  let seedCleanupError: unknown = null;
   const priorRuntime = release.restart ? captureCapsuleRuntimeSettlement(request, previousRecord) : null;
   if (release.restart) {
     try {
@@ -1417,8 +1418,8 @@ async function installClaimedRelease(request: HostHelperRequest, previousRecord:
           priorRuntime,
           release,
         );
-        await rollbackPreservedFiles(createdSeeds);
         installRolledBack = true;
+        try { await rollbackPreservedFiles(createdSeeds); } catch (error) { seedCleanupError = error; }
       } catch (error) {
         restartError = error;
       }
@@ -1445,6 +1446,9 @@ async function installClaimedRelease(request: HostHelperRequest, previousRecord:
   };
   if (restartResult) {
     data.lifecycle = restartResult;
+  }
+  if (seedCleanupError) {
+    data.cleanup = { complete: false, reason: "preserved-seed-cleanup-failed", message: errorDetails(seedCleanupError).message };
   }
   if (installRolledBack) {
     data.rollback = { applied: true, previousCurrentRelease };
