@@ -1,8 +1,9 @@
+import { resolveDeployFiles } from "../deploy-files.js";
 export function expectedReleaseFiles(release) {
     const publicFiles = Array.isArray(release.files)
         ? release.files.filter((file) => typeof file === "string" && file.startsWith("public/"))
         : [];
-    const files = ["server.mjs", "sporades.json", ...publicFiles];
+    const files = ["server.mjs", "sporades.json", ...publicFiles, ...resolveDeployFiles(release.deployFiles).map((file) => file.path)];
     if (release.serverEnvIncluded) {
         files.push(".env.sporades.server");
     }
@@ -14,8 +15,8 @@ export function expectedReleaseFiles(release) {
     }
     return files;
 }
-export function isExpectedClaimedReleaseFile(file) {
-    return typeof file === "string" && (file.startsWith("public/") || [
+export function isExpectedClaimedReleaseFile(file, deployFiles = []) {
+    return typeof file === "string" && (file.startsWith("public/") || deployFiles.includes(file) || [
         "server.mjs",
         "sporades.json",
         ".env.sporades.server",

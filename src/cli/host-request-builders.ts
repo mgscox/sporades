@@ -1,4 +1,5 @@
 import { baseImageLabels, baseImageMetadata, baseImageRuntimeUser } from "../base-image.js";
+import type { DeployFile } from "../deploy-files.js";
 import type { HostHelperRelease, HostLifecycleOptions } from "./host-helper-contract.js";
 import type { LooseRecord } from "./cli-support.js";
 
@@ -9,7 +10,7 @@ const CAPSULE_RUNTIME_HEALTH_PATH = "/__sporades/health/runtime";
 export function createHostReleaseRequest(options: LooseRecord): HostHelperRelease {
   const registration = createHostRegistrationRequest(options.alias, options.profile, options.subname);
   const releaseDirectory = posixJoin(registration.directories.releases, options.releaseId);
-  const files = ["server.mjs", "sporades.json", ...options.publicFiles];
+  const files = ["server.mjs", "sporades.json", ...options.publicFiles, ...(options.bundle.deployFiles ?? []).map((file: { path: string }) => file.path)];
   if (options.bundle.containerMounts.serverEnv) {
     files.push(".env.sporades.server");
   }
@@ -48,6 +49,7 @@ export function createHostReleaseRequest(options: LooseRecord): HostHelperReleas
       ? { requiredInspectors: [...options.requiredInspectors] }
       : null,
     files,
+    deployFiles: (options.bundle.deployFiles ?? []).map(({ path, update }: DeployFile) => ({ path, update })),
     directories: {
       capsule: registration.directories.capsule,
       releases: registration.directories.releases,

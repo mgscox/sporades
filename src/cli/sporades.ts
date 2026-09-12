@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { assertNoPreservedFileAttempt, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, recordPreservedFileAttempt, resolveDeployFiles, deployFileMounts, preparePreservedFiles, preparePreservedFileStorage, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, removeDeployFileSnapshot } from "../deploy-files.js";
 import { validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual } from "node:crypto";
@@ -501,7 +502,7 @@ function parseDevArgs(args: string[]): LooseRecord {
 }
 
 function parseDeployArgs(args: string[]): LooseRecord {
-  const lifecycleCommands = new Set(["status", "stop", "restart", "remove", "reset", "ssh", "jobs", "schedules"]);
+  const lifecycleCommands = new Set(["status", "stop", "restart", "remove", "reconcile", "reset", "ssh", "jobs", "schedules"]);
   const subcommand = lifecycleCommands.has(args[0]) ? args[0] : "start";
   const rest = subcommand === "start" ? args : args.slice(1);
   let port = null;
@@ -514,7 +515,7 @@ function parseDeployArgs(args: string[]): LooseRecord {
     switch (arg) {
       case "--port":
         if (subcommand !== "start") {
-          throw commandError(`Unknown flag: ${arg}`, "Use `sporades deploy [status|stop|restart|remove|reset] --json`.");
+          throw commandError(`Unknown flag: ${arg}`, "Use `sporades deploy [status|stop|restart|remove|reconcile|reset] --json`.");
         }
         port = readPort(readFlagValue(rest, ++index, "--port"));
         break;
@@ -525,13 +526,13 @@ function parseDeployArgs(args: string[]): LooseRecord {
 
       case "--force":
         if (subcommand !== "start") {
-          throw commandError(`Unknown flag: ${arg}`, "Use `sporades deploy [status|stop|restart|remove|reset] --json`.");
+          throw commandError(`Unknown flag: ${arg}`, "Use `sporades deploy [status|stop|restart|remove|reconcile|reset] --json`.");
         }
         force = true;
         break;
 
       default:
-        throw commandError(`Unknown flag: ${arg}`, "Use `sporades deploy [status|stop|restart|remove|reset] --json`.");
+        throw commandError(`Unknown flag: ${arg}`, "Use `sporades deploy [status|stop|restart|remove|reconcile|reset] --json`.");
     }
   }
 
@@ -1162,7 +1163,7 @@ function parseHostArgs(args: string[]): LooseRecord {
         if (arg.startsWith("--")) {
           throw commandError(
             `Unknown flag: ${arg}`,
-            "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host rotate-key`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host upgrade`, `sporades host list`, `sporades host releases`, `sporades host rollback`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
+            "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host rotate-key`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host upgrade`, `sporades host list`, `sporades host releases`, `sporades host rollback`, `sporades host reconcile`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
           );
         }
         positional.push(arg);
@@ -1348,6 +1349,7 @@ function parseHostArgs(args: string[]): LooseRecord {
     case "start":
     case "stop":
     case "restart":
+    case "reconcile":
     case "unregister":
     case "delete": {
       const [positionalSubname, ...extra] = positional;
@@ -1479,7 +1481,7 @@ function parseHostArgs(args: string[]): LooseRecord {
     default:
       throw commandError(
         `Unknown host command: ${subcommand ?? ""}`.trim(),
-        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host rotate-key`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host upgrade`, `sporades host list`, `sporades host releases`, `sporades host rollback`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
+        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host rotate-key`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host upgrade`, `sporades host list`, `sporades host releases`, `sporades host rollback`, `sporades host reconcile`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
       );
   }
 }
@@ -1942,6 +1944,21 @@ async function manageLocalLifecycleUnlocked(surface: string, options: LooseRecor
       await removeLocalContainerSession(options);
       return;
 
+    case "reconcile": {
+      if (surface !== "deploy") {
+        throw commandError("Unsupported lifecycle command: reconcile", "Use `sporades deploy reconcile`.");
+      }
+      const reconciled = await reconcileLocalContainerSession(options);
+      if (options.json) {
+        writeResult({ ok: true, data: reconciled, error: null });
+      } else {
+        process.stdout.write(reconciled.status === "clean"
+          ? "No interrupted deploy.files attempt to reconcile.\n"
+          : `Interrupted deploy.files attempt reconciled (${reconciled.actions.join(", ")}).\n`);
+      }
+      return;
+    }
+
     case "reset": {
       let container = null;
       if (surface === "deploy") {
@@ -2136,7 +2153,7 @@ async function startDevSession(options: LooseRecord) {
   let security = resolveEffectiveSecurityPolicy(config, session);
   const restartPolicy = restartPolicyForMode("dev");
   const port = options.port ?? config.dev?.port ?? config.deploy?.port ?? 4000;
-  let bundle = await createBundle(options.projectDir, config, { devClientRefresh: true });
+  let bundle = await createBundle(options.projectDir, config, { devClientRefresh: true, deployFiles: false });
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config, { publishPorts: true });
   const capsuleServiceEnv = await startCapsuleServices(capsuleServices, options.projectDir, {
     wait: true,
@@ -2487,7 +2504,7 @@ async function startDevSession(options: LooseRecord) {
       const nextConfig = await readProjectConfig(options.projectDir);
       const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
       const nextCapsuleServices = await writeCapsuleServicesCompose(options.projectDir, nextConfig, { publishPorts: true });
-      rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false, devClientRefresh: true });
+      rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false, devClientRefresh: true, deployFiles: false });
       const nextCapsuleServiceEnv = await startCapsuleServices(nextCapsuleServices, options.projectDir, {
         wait: true,
         emit: (data, error) => emitDevEvent(options, data, error),
@@ -3805,6 +3822,33 @@ async function manageHost(options: LooseRecord) {
       return;
     }
 
+    case "reconcile": {
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.hostAlias);
+      const lifecycle = createHostLifecycleRequest(resolved.alias, resolved.profile, options.subname);
+      const result = invokeRemoteHostHelper({
+        alias: resolved.alias,
+        profile: resolved.profile,
+        action: "capsule.release.reconcile",
+        subname: options.subname,
+        lifecycle,
+        projectDir: options.projectDir,
+      });
+
+      if (options.json) {
+        writeResult(result, !result.ok);
+        return;
+      }
+
+      if (!result.ok) {
+        throw commandError(result.error.message, result.error.hint);
+      }
+      process.stdout.write(result.data?.reconciled
+        ? `Hosted Capsule interrupted release attempt reconciled: ${lifecycle.hostedUrl}\n`
+        : `No interrupted Hosted release attempt to reconcile: ${lifecycle.hostedUrl}\n`);
+      return;
+    }
+
     case "unregister": {
       const config = await readHostConfig();
       const resolved = resolveHostProfile(config, options.hostAlias);
@@ -4261,7 +4305,33 @@ async function startContainerSession(options: LooseRecord) {
       "127.0.0.1::22",
     ]
     : [];
-  const bundleMountArgs = bundle.containerMounts.files.flatMap((mount) => ["--volume", formatMount(mount)]);
+  if (bundle.deployFiles.length) {
+    await mkdir(path.join(runtimeDir, "deploy-files"), { recursive: true, mode: 0o700 });
+    await chmod(path.join(runtimeDir, "deploy-files"), 0o700);
+  }
+  const deployReleaseRoot = path.join(runtimeDir, "deploy-files", randomBytes(16).toString("hex"));
+  const preservedRoot = path.join(runtimeDir, "preserved-files");
+  const createdSeeds: PreservedSeed[] = [];
+  const seedJournal = await beginPreservedFileAttempt(preservedRoot, deployReleaseRoot, bundle.deployFiles.length > 0);
+  try {
+    for (const file of bundle.deployFiles) {
+      const destination = path.join(deployReleaseRoot, file.path);
+      await mkdir(path.dirname(destination), { recursive: true });
+      await writeFile(destination, file.contents, { mode: 0o644 });
+    }
+    await preparePreservedFiles(bundle.deployFiles, deployReleaseRoot, preservedRoot, undefined, createdSeeds, seedJournal);
+  } catch (error) {
+    let seedsRemoved = false;
+    let snapshotRemoved = false;
+    await rethrowAfterDeployCleanup(error, [
+      async () => { await rollbackPreservedFiles(createdSeeds); seedsRemoved = true; },
+      async () => { await rm(deployReleaseRoot, { recursive: true, force: true }); snapshotRemoved = true; },
+      async () => { if (seedsRemoved && snapshotRemoved) await finishPreservedFileAttempt(seedJournal); },
+      () => discardPublicTree(bundle.staticFiles.publicTree),
+    ]);
+  }
+  const additionalMounts = deployFileMounts(bundle.deployFiles, deployReleaseRoot, preservedRoot);
+  const bundleMountArgs = [...bundle.containerMounts.files, ...additionalMounts].flatMap((mount) => ["--volume", formatMount(mount)]);
   const containerTransactionToken = randomBytes(16).toString("hex");
   const runtimeProbeToken = randomBytes(32).toString("hex");
   const capsuleServicesNetworkArgs = capsuleServices ? ["--network", capsuleServices.networks.services] : [];
@@ -4321,6 +4391,12 @@ async function startContainerSession(options: LooseRecord) {
   let committedConsumer: Awaited<ReturnType<typeof writePublicTreeConsumer>> | null = null;
   let binding: LooseRecord | null = null;
   try {
+    // Journal both runtimes before touching Docker so `sporades deploy reconcile`
+    // can settle an interrupted attempt from the journal alone.
+    await recordPreservedFileAttempt(seedJournal, {
+      candidate: { name: containerName, transaction: containerTransactionToken },
+      ...(existingContainer ? { previous: { containerId: existingBinding.containerId, name: oldName, rollbackName, wasRunning: oldWasRunning } } : {}),
+    });
     if (existingContainer) {
       runDocker(["rename", existingBinding.containerId, rollbackName], options.projectDir, "Failed to stage the existing Container for replacement.", "Retry after Docker can rename the bound Container.");
       oldRenamed = true;
@@ -4328,6 +4404,8 @@ async function startContainerSession(options: LooseRecord) {
         runDocker(["stop", rollbackName], options.projectDir, "Failed to stop the staged Container replacement.", "Retry after Docker can stop the bound Container.");
       }
     }
+
+    await prepareLocalPreservedFiles(options, { deployFiles: bundle.deployFiles }, "Check the declared preserved file is a regular owner-writable file, then retry `sporades deploy`.");
 
     containerReplacementFault("publication");
     rollbackBundlePublication = await bundle.publishLegacy();
@@ -4366,6 +4444,8 @@ async function startContainerSession(options: LooseRecord) {
       containerId,
       containerName,
       clientRelease,
+      pendingDeployFileCleanup: [...(existingBinding?.pendingDeployFileCleanup ?? []), ...(existingBinding?.deployFilesRoot ? [existingBinding.deployFilesRoot] : [])],
+      ...(bundle.deployFiles.length ? { deployFilesRoot: deployReleaseRoot, deployFiles: bundle.deployFiles.map(({ path, update }) => ({ path, update })) } : {}),
       ...(sshAccess.enabled ? {
         ssh: {
           enabled: true,
@@ -4386,8 +4466,12 @@ async function startContainerSession(options: LooseRecord) {
     }
   } catch (error) {
     const rollbackFailures: string[] = [];
+    let candidateRetained = Boolean(containerId);
     if (containerId && candidateOwnershipProven) {
-      try { runDockerCleanup(["rm", "-f", containerId], options.projectDir, "", "", true); } catch { rollbackFailures.push("candidate-container"); }
+      try {
+        runDockerCleanup(["rm", "-f", containerId], options.projectDir, "", "", true);
+        candidateRetained = false;
+      } catch { rollbackFailures.push("candidate-container"); }
     }
     if (rollbackBundlePublication) {
       try { await rollbackBundlePublication(); } catch { rollbackFailures.push("bundle-publication"); }
@@ -4406,13 +4490,26 @@ async function startContainerSession(options: LooseRecord) {
       if (existingBinding) await replaceContainerBinding(bindingPath, existingBinding);
       else await rm(bindingPath, { force: true });
     } catch { rollbackFailures.push("binding"); }
+    if (!candidateRetained && existingBinding) {
+      // The previous runtime restarts only with its own preserved files proven
+      // regular and owner-only, even after a concurrent atomic-save replacement.
+      try { await prepareLocalPreservedFiles(options, existingBinding); }
+      catch { rollbackFailures.push("preserved-files"); }
+    }
     if (oldRenamed) {
       try { runDocker(["rename", rollbackName, oldName], options.projectDir, "", ""); } catch { rollbackFailures.push("container-name"); }
-      if (oldWasRunning) {
+      if (oldWasRunning && !rollbackFailures.includes("preserved-files")) {
         try { runDocker(["start", oldName], options.projectDir, "", ""); } catch { rollbackFailures.push("container-start"); }
       }
     }
     try { await discardPublicTree(bundle.staticFiles.publicTree); } catch { rollbackFailures.push("candidate-public-tree"); }
+    if (!candidateRetained) {
+      try { await rollbackPreservedFiles(createdSeeds); } catch { rollbackFailures.push("preserved-seeds"); }
+      try { await rm(deployReleaseRoot, { recursive: true, force: true }); } catch { rollbackFailures.push("candidate-deploy-files"); }
+      if (!rollbackFailures.includes("preserved-seeds") && !rollbackFailures.includes("candidate-deploy-files")) {
+        try { await finishPreservedFileAttempt(seedJournal); } catch { rollbackFailures.push("deploy-file-journal"); }
+      }
+    }
     if (rollbackFailures.length > 0) {
       throw commandError(
         "Container replacement recovery is incomplete.",
@@ -4424,6 +4521,11 @@ async function startContainerSession(options: LooseRecord) {
   }
 
   if (!containerId || !binding) throw commandError("Container replacement did not commit.", "Retry deployment.");
+  await finishPreservedFileAttempt(seedJournal);
+  for (const snapshot of binding.pendingDeployFileCleanup) await removeDeployFileSnapshot(runtimeDir, snapshot);
+  binding.pendingDeployFileCleanup = [];
+  await replaceContainerBinding(bindingPath, binding);
+
   if (sshAccess.enabled || explicitSshConfigured(config)) {
     await emitCliSshAuditEvent(config, options.projectDir, {
       event: sshAccess.enabled ? "ssh.access.enabled" : "ssh.access.disabled",
@@ -5435,7 +5537,8 @@ async function readHostedCapsuleSealedEnvPublicKey(alias: any, profile: LooseRec
 async function createHostReleaseArchive(options: LooseRecord) {
   const releaseId = createHostReleaseId();
   const hostPushDir = path.join(options.projectDir, ".sporades", "host-push");
-  await mkdir(hostPushDir, { recursive: true });
+  await mkdir(hostPushDir, { recursive: true, mode: 0o700 });
+  await chmod(hostPushDir, 0o700);
   const localArchive = path.join(hostPushDir, `${releaseId}.tar.gz`);
   const packageDir = path.join(hostPushDir, `${releaseId}-files`);
   const remoteArchive = posixJoin(options.profile.remoteRoot, "incoming", `${releaseId}.tar.gz`);
@@ -5461,9 +5564,15 @@ async function createHostReleaseArchive(options: LooseRecord) {
     requiredInspectors,
   });
   await rm(packageDir, { recursive: true, force: true });
-  await mkdir(path.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true });
-  await mkdir(path.join(packageDir, ".sporades", "ssh"), { recursive: true });
+  await mkdir(packageDir, { mode: 0o700 });
+  await mkdir(path.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true, mode: 0o700 });
+  await mkdir(path.join(packageDir, ".sporades", "ssh"), { recursive: true, mode: 0o700 });
   await cp(options.bundle.staticFiles.publicDir, path.join(packageDir, "public"), { recursive: true, errorOnExist: true });
+  for (const file of options.bundle.deployFiles) {
+    const destination = path.join(packageDir, file.path);
+    await mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
+    await writeFile(destination, file.contents, { mode: 0o600 });
+  }
   const releaseConfig = sanitizeHostedReleaseConfig(options.projectConfig, options.sshAccess);
   await Promise.all([
     writeFile(path.join(packageDir, "server.mjs"), await readFile(path.join(options.bundle.buildDir, "server.mjs"), "utf8")),
@@ -5489,6 +5598,7 @@ async function createHostReleaseArchive(options: LooseRecord) {
     "server.mjs",
     "sporades.json",
     ...publicFiles,
+    ...options.bundle.deployFiles.map((file: { path: string }) => file.path),
   ];
   if (options.bundle.containerMounts.serverEnv) {
     tarArgs.push(".env.sporades.server");
@@ -5510,6 +5620,7 @@ async function createHostReleaseArchive(options: LooseRecord) {
       "Check that tar is available and the Capsule runtime files are readable, then retry `sporades host push`.",
     );
   }
+  await chmod(localArchive, 0o600);
   return {
     id: releaseId,
     localArchive,
@@ -6243,6 +6354,7 @@ function containerLifecycleSummary(status: string, binding: LooseRecord) {
 }
 
 async function stopLocalContainerSession(options: LooseRecord) {
+  await assertNoLocalDeployFileAttempt(options, "stop");
   const { binding } = await requireLocalContainerBinding(options, "stop");
   runDocker(
     ["stop", binding.containerId],
@@ -6253,8 +6365,98 @@ async function stopLocalContainerSession(options: LooseRecord) {
   return containerLifecycleSummary("stopped", binding);
 }
 
+// Preserved files stay owned by the invoking user with mode 0600, exactly like
+// `.sporades/data`; no ownership change or privileged helper is involved, and
+// SSH-enabled sessions reach them the same way they reach `/app/data`.
+async function prepareLocalPreservedFiles(options: LooseRecord, binding: LooseRecord, hint = "Restore a regular owner-writable preserved file before restarting the bound Container.") {
+  const preservedRoot = localPreservedFilesRoot(options);
+  for (const relative of new Set(resolveDeployFiles(binding.deployFiles).filter((file) => file.update === "preserve").map((file) => file.path.normalize("NFC")))) {
+    try {
+      await preparePreservedFileStorage(preservedRoot, relative);
+    } catch (error) {
+      throw commandError("Preserved deploy.files storage is not usable.", hint, { path: relative, cause: errorDetails(error).message });
+    }
+  }
+}
+
+function localPreservedFilesRoot(options: LooseRecord) {
+  return path.join(options.projectDir, ".sporades", "preserved-files");
+}
+
+async function assertNoLocalDeployFileAttempt(options: LooseRecord, action: string) {
+  try {
+    await assertNoPreservedFileAttempt(localPreservedFilesRoot(options));
+  } catch (error) {
+    throw commandError(
+      `Interrupted deploy.files attempt requires recovery before \`sporades deploy ${action}\`.`,
+      "Run `sporades deploy reconcile` to settle the interrupted deployment, then retry.",
+      { journal: attemptJournalPath(localPreservedFilesRoot(options)), cause: errorDetails(error).message },
+    );
+  }
+}
+
+// Settle an interrupted local deployment from its journal: remove the
+// untracked candidate, restore the previous Container name, roll back only
+// unchanged seeds, drop the candidate snapshot, and restore bound file access.
+async function reconcileLocalContainerSession(options: LooseRecord) {
+  const runtimeDir = path.join(options.projectDir, ".sporades");
+  const preservedRoot = localPreservedFilesRoot(options);
+  const journal = attemptJournalPath(preservedRoot);
+  const attempt = await readPreservedFileAttempt(journal);
+  if (!attempt) {
+    return { status: "clean", journal, committed: null, actions: [] as string[] };
+  }
+  const bindingPath = path.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const binding = await readContainerBinding(bindingPath);
+  const committed = Boolean(attempt.release && binding?.deployFilesRoot === attempt.release);
+  const candidate = attempt.records.find((record) => record.candidate)?.candidate as { name?: string; transaction?: string } | undefined;
+  const previous = attempt.records.find((record) => record.previous)?.previous as { containerId?: string; name?: string; rollbackName?: string; wasRunning?: boolean } | undefined;
+  const actions: string[] = [];
+  if (committed) {
+    // The binding committed; only the staged previous Container may remain.
+    if (previous?.rollbackName && binding?.containerId !== previous.containerId) {
+      runDockerCleanup(["rm", "-f", previous.rollbackName], options.projectDir,
+        "Failed to remove the staged previous Container.", "Retry `sporades deploy reconcile` after Docker can remove the retained rollback Container.", true);
+      actions.push("previous-container-removed");
+    }
+  } else {
+    if (typeof candidate?.transaction === "string" && /^[a-f0-9]{32}$/.test(candidate.transaction)) {
+      const listed = runDockerCleanup(["ps", "--all", "--quiet", "--filter", `label=com.sporades.container-transaction=${candidate.transaction}`], options.projectDir,
+        "Failed to locate the interrupted candidate Container.", "Check Docker is running, then retry `sporades deploy reconcile`.");
+      for (const containerId of listed.split(/\s+/).filter(Boolean)) {
+        runDockerCleanup(["rm", "-f", containerId], options.projectDir,
+          "Failed to remove the interrupted candidate Container.", "Retry `sporades deploy reconcile` after Docker can remove the candidate Container.", true);
+        actions.push("candidate-container-removed");
+      }
+    }
+    if (previous?.rollbackName && previous.name && typeof previous.containerId === "string" && binding?.containerId === previous.containerId) {
+      const staged = inspectDockerContainerOptional(options.projectDir, previous.containerId);
+      if (staged && String(staged.Name ?? "").replace(/^\//, "") === previous.rollbackName) {
+        runDocker(["rename", previous.rollbackName, previous.name], options.projectDir,
+          "Failed to restore the previous Container name.", "Retry `sporades deploy reconcile` after Docker can rename the bound Container.");
+        actions.push("previous-container-renamed");
+      }
+    }
+    await rollbackPreservedFiles(attempt.seeds);
+    if (attempt.seeds.length) actions.push("seeds-rolled-back");
+    if (attempt.release && attempt.release !== binding?.deployFilesRoot) {
+      await removeDeployFileSnapshot(runtimeDir, attempt.release);
+      actions.push("candidate-snapshot-removed");
+    }
+    if (binding) {
+      await prepareLocalPreservedFiles(options, binding);
+      actions.push("bound-files-prepared");
+    }
+  }
+  await finishPreservedFileAttempt(journal);
+  actions.push("journal-removed");
+  return { status: "reconciled", journal, committed, actions };
+}
+
 async function restartLocalContainerSession(options: LooseRecord) {
   const { binding } = await requireLocalContainerBinding(options, "restart");
+  await assertNoLocalDeployFileAttempt(options, "restart");
+  await prepareLocalPreservedFiles(options, binding);
   const config = await readProjectConfig(options.projectDir);
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
   const serviceState = await startCapsuleServices(capsuleServices, options.projectDir, {
@@ -6284,6 +6486,7 @@ async function restartLocalContainerSession(options: LooseRecord) {
 }
 
 async function removeLocalContainerSession(options: LooseRecord) {
+  await assertNoLocalDeployFileAttempt(options, "remove");
   const bindingPath = path.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
@@ -6321,6 +6524,9 @@ async function removeLocalContainerSession(options: LooseRecord) {
       "Check Docker is running, then retry `sporades deploy remove`.",
       true,
     );
+    for (const snapshot of [...(binding.pendingDeployFileCleanup ?? []), binding.deployFilesRoot]) {
+      await removeDeployFileSnapshot(path.join(options.projectDir, ".sporades"), snapshot);
+    }
   } catch (error) {
     if (claimedConsumer && currentConsumer) {
       await restorePublicTreeConsumer(

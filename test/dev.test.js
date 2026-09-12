@@ -1697,6 +1697,34 @@ test("sporades dev bundles and serves a scaffolded React todo capsule", async ()
   });
 });
 
+test("sporades dev uses project files directly and ignores deploy.files declarations", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "dev-files", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "dev-files");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    // A missing declaration fails `sporades deploy`; Dev must neither read nor validate it.
+    config.deploy = { ...(config.deploy ?? {}), files: [{ path: "missing/settings.json", update: "preserve" }] };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      assert.equal(started.data.event, "started");
+      await assert.rejects(access(path.join(projectDir, ".sporades", "deploy-files")), { code: "ENOENT" });
+      await assert.rejects(access(path.join(projectDir, ".sporades", "preserved-files")), { code: "ENOENT" });
+      await assert.rejects(access(path.join(projectDir, ".sporades", "deploy-file-attempt.jsonl")), { code: "ENOENT" });
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("sporades dev generates owned Compose for declared database Capsule services", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {

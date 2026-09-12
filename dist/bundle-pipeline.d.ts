@@ -44,6 +44,7 @@ export type FrameworkBundleConfig = {
 export declare function createBundle(projectDir: string, config: ProjectConfig, options?: {
     publishLegacy?: boolean;
     devClientRefresh?: boolean;
+    deployFiles?: boolean;
     activeReferenceFault?: (event: "before-active-write" | "after-active-write" | "before-active-restore" | "after-active-restore") => void;
 }): Promise<{
     paths: {
@@ -55,6 +56,7 @@ export declare function createBundle(projectDir: string, config: ProjectConfig, 
         serverBundle: string;
         clientBundle: string;
     };
+    deployFiles: import("./deploy-files.js").BuiltDeployFile[];
     buildDir: string;
     publishLegacy: () => Promise<() => Promise<void>>;
     releasePublicTreeLease: () => Promise<void>;

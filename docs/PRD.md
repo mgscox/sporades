@@ -1310,3 +1310,20 @@ actual configured Capsule identity and release; the protected event shape and
 compatibility behavior are specified in
 [the configuration guide](guide/configuration.md#structured-log-payload-cap).
 The writer retains its existing redaction and oversize-event truncation behavior.
+
+
+### Additional deployment files
+
+`sporades.json` may declare `deploy.files` as exact relative file paths with
+`update: "replace" | "preserve"` (default `replace`). The shared local build
+validates containment, reserved runtime paths, regular non-symlink sources and
+conflicting entries, and fails on missing files before upload. Container sessions
+and Hosted Capsules mount files at matching paths under `/app`. Replacement
+bytes are release-owned; preserved bytes are seeded once in persistent storage,
+remain writable, and survive release changes and rollback. Removing a declaration
+or switching to replacement retains the inactive preserved copy. Apps own loading
+and reloading; Sporades supplies no configuration reload mechanism. Dev sessions
+use project files directly and never snapshot them. Seed publication is journaled
+before it happens; an interrupted attempt blocks further lifecycle commands until
+`sporades deploy reconcile` or `sporades host reconcile` settles it, rolling back
+only unchanged seeds and always retaining edits.

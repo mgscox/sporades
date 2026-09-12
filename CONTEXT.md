@@ -547,3 +547,22 @@ _Avoid_: boilerplate, starter (it's a complete project, not a placeholder)
 **Scaffold install**:
 `sporades create` runs `npm install` for the chosen framework after scaffolding. The user (or agent) does not run `npm install` separately. The project's `package.json` includes the framework dependency and the Sporades CLI as dev dependencies.
 _Avoid_: dependency install, setup step
+
+
+## Additional deployment files
+
+**Deployment file**:
+An exact project-relative server resource declared in `sporades.json` under `deploy.files`. The shared `deploy-files.ts` boundary resolves paths, rejects managed-path collisions and symlinks, and snapshots source bytes during the local build. Each file is mounted at the same relative path under `/app`. Dev sessions read the project files directly and never snapshot them. Apps own reading and reloading.
+_Avoid_: config mount, extra asset (these are server-side, not public)
+
+**Replacement file**:
+A Deployment file with the default `update: "replace"` policy. Its bytes belong to the release, are mounted read-only, and roll back with the release.
+_Avoid_: static file, release asset
+
+**Preserved file**:
+A Deployment file with `update: "preserve"`. It is seeded once into persistent storage keyed by the SHA-256 of its NFC-normalized logical path, mounted writable, and retains server edits across deployments, restarts, and rollbacks. Removing the declaration or switching policy keeps the inactive copy; declaring it again reuses it. Hosted release history owns each release's manifest, so restart and rollback select the matching mounts.
+_Avoid_: persistent config, writable mount
+
+**Attempt journal**:
+`deploy-file-attempt.jsonl`, written beside `preserved-files/` before a deployment publishes any seed. It records the attempted release, both Containers, temporary seed paths, and each seed's inode and hash. A surviving journal blocks deploy, stop, restart, remove, and Hosted start, restart, and rollback until `sporades deploy reconcile` or `sporades host reconcile` settles it from the journal alone.
+_Avoid_: lock file, deploy log
