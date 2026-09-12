@@ -1266,7 +1266,7 @@ async function installClaimedRelease(request, previousRecord, paths, claimedArch
     const createdSeeds = [];
     let seedJournal;
     try {
-        seedJournal = await beginPreservedFileAttempt(hostedPreservedFilesRoot(paths), release.id, resolveDeployFiles(release.deployFiles).some((file) => file.update === "preserve"));
+        seedJournal = await beginPreservedFileAttempt(hostedPreservedFilesRoot(paths), release.id, resolveDeployFiles(release.deployFiles).length > 0);
         if (seedJournal)
             activePreservedAttempts.add(seedJournal);
     }
@@ -5717,11 +5717,18 @@ async function prepareHostedRuntimeFileAccess(target, mode, failure) {
     }
 }
 async function preparePreservedReleaseFiles(request, recordedRelease) {
-    if (!recordedRelease)
-        throw helperError("Current Hosted release is not recorded.", "Run `sporades host reconcile <subname>` to settle the interrupted release install before starting the Capsule.");
     const paths = canonicalReleasePaths(request);
     const journal = attemptJournalPath(hostedPreservedFilesRoot(paths));
-    if (!activePreservedAttempts.has(journal) && await pathExists(journal)) {
+    const interrupted = !activePreservedAttempts.has(journal) && await pathExists(journal);
+    if (!recordedRelease) {
+        // Registrations that predate release history have no recorded release and
+        // no deploy.files. Only a surviving attempt journal proves that the
+        // unrecorded current release is an interrupted install rather than legacy.
+        if (interrupted)
+            throw helperError("Current Hosted release is not recorded.", "Run `sporades host reconcile <subname>` to settle the interrupted release install before starting the Capsule.");
+        return;
+    }
+    if (interrupted) {
         throw helperError("Interrupted deploy.files attempt requires recovery.", "Run `sporades host reconcile <subname>` to settle the interrupted release install before starting, restarting or selecting a release.");
     }
     for (const file of resolveDeployFiles(recordedRelease.source?.deployFiles)) {
