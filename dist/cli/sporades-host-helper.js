@@ -1781,12 +1781,7 @@ async function startCapsule(request, options = {}) {
     const releaseId = await currentReleaseId(paths.currentLink, request);
     const lifecycle = normaliseLifecycle(request, registryRecord, { ...(options.trustedRegistryLifecycle === true ? { ignoreProvidedLifecycle: true } : {}), releaseId });
     const recordedRelease = normaliseReleaseHistory(registryRecord).find((entry) => entry.id === releaseId);
-    if (!recordedRelease)
-        throw helperError("Current Hosted release is not recorded.", "Reconcile the interrupted release install and its deploy-file-attempt.jsonl journal before starting the Capsule.");
-    for (const file of resolveDeployFiles(recordedRelease.source?.deployFiles)) {
-        if (file.update === "preserve")
-            await assertPreservedDeployFile(path.join(paths.capsule, "preserved-files"), file.path);
-    }
+    await assertPreservedReleaseFiles(request, recordedRelease);
     if (options.containerQuiesced !== true)
         stopAndRemoveContainer(lifecycle.container.name);
     if (options.dataPrepared !== true)
@@ -5683,7 +5678,17 @@ function capsuleHttpLogTrustManifest(request, validatedRemoteRoot) {
 function invalidCapsuleHttpLogPathError() {
     return helperError("Invalid Hosted Capsule HTTP log path.", "Use the canonical Capsule-scoped Host HTTP log path and retry the lifecycle command.");
 }
+async function assertPreservedReleaseFiles(request, recordedRelease) {
+    if (!recordedRelease)
+        throw helperError("Current Hosted release is not recorded.", "Reconcile the interrupted release install and its deploy-file-attempt.jsonl journal before starting the Capsule.");
+    const paths = canonicalReleasePaths(request);
+    for (const file of resolveDeployFiles(recordedRelease.source?.deployFiles)) {
+        if (file.update === "preserve")
+            await assertPreservedDeployFile(path.join(paths.capsule, "preserved-files"), file.path);
+    }
+}
 async function assertRollbackReleaseFiles(request, releaseDirectory, recordedRelease = null) {
+    await assertPreservedReleaseFiles(request, recordedRelease);
     try {
         const expected = await recordedReleaseFileClaims(releaseDirectory, recordedRelease);
         const actual = await validateExtractedReleaseTree(releaseDirectory, expected);

@@ -4274,9 +4274,12 @@ async function startContainerSession(options: LooseRecord) {
     }
     await preparePreservedFiles(bundle.deployFiles, deployReleaseRoot, preservedRoot, undefined, createdSeeds, seedJournal);
   } catch (error) {
+    let seedsRemoved = false;
+    let snapshotRemoved = false;
     await rethrowAfterDeployCleanup(error, [
-      async () => { await rollbackPreservedFiles(createdSeeds); await finishPreservedFileAttempt(seedJournal); },
-      () => rm(deployReleaseRoot, { recursive: true, force: true }),
+      async () => { await rollbackPreservedFiles(createdSeeds); seedsRemoved = true; },
+      async () => { await rm(deployReleaseRoot, { recursive: true, force: true }); snapshotRemoved = true; },
+      async () => { if (seedsRemoved && snapshotRemoved) await finishPreservedFileAttempt(seedJournal); },
       () => discardPublicTree(bundle.staticFiles.publicTree),
     ]);
   }
@@ -4476,8 +4479,11 @@ async function startContainerSession(options: LooseRecord) {
     }
     try { await discardPublicTree(bundle.staticFiles.publicTree); } catch { rollbackFailures.push("candidate-public-tree"); }
     if (!candidateRetained) {
-      try { await rollbackPreservedFiles(createdSeeds); await finishPreservedFileAttempt(seedJournal); } catch { rollbackFailures.push("preserved-seeds"); }
+      try { await rollbackPreservedFiles(createdSeeds); } catch { rollbackFailures.push("preserved-seeds"); }
       try { await rm(deployReleaseRoot, { recursive: true, force: true }); } catch { rollbackFailures.push("candidate-deploy-files"); }
+      if (!rollbackFailures.includes("preserved-seeds") && !rollbackFailures.includes("candidate-deploy-files")) {
+        try { await finishPreservedFileAttempt(seedJournal); } catch { rollbackFailures.push("deploy-file-journal"); }
+      }
     }
     if (rollbackFailures.length > 0) {
       throw commandError(

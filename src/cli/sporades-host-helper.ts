@@ -1948,10 +1948,7 @@ async function startCapsule(request: HostHelperRequest, options: LooseRecord = {
     { ...(options.trustedRegistryLifecycle === true ? { ignoreProvidedLifecycle: true } : {}), releaseId },
   );
   const recordedRelease = normaliseReleaseHistory(registryRecord).find((entry: any) => entry.id === releaseId);
-  if (!recordedRelease) throw helperError("Current Hosted release is not recorded.", "Reconcile the interrupted release install and its deploy-file-attempt.jsonl journal before starting the Capsule.");
-  for (const file of resolveDeployFiles(recordedRelease.source?.deployFiles)) {
-    if (file.update === "preserve") await assertPreservedDeployFile(path.join(paths.capsule, "preserved-files"), file.path);
-  }
+  await assertPreservedReleaseFiles(request, recordedRelease);
   if (options.containerQuiesced !== true) stopAndRemoveContainer(lifecycle.container.name);
   if (options.dataPrepared !== true) await prepareWritableDataPath(paths.data);
   await recordReleaseStartAttempt(request, releaseId);
@@ -6352,7 +6349,16 @@ function invalidCapsuleHttpLogPathError() {
   );
 }
 
+async function assertPreservedReleaseFiles(request: HostHelperRequest, recordedRelease: any) {
+  if (!recordedRelease) throw helperError("Current Hosted release is not recorded.", "Reconcile the interrupted release install and its deploy-file-attempt.jsonl journal before starting the Capsule.");
+  const paths = canonicalReleasePaths(request);
+  for (const file of resolveDeployFiles(recordedRelease.source?.deployFiles)) {
+    if (file.update === "preserve") await assertPreservedDeployFile(path.join(paths.capsule, "preserved-files"), file.path);
+  }
+}
+
 async function assertRollbackReleaseFiles(request: HostHelperRequest, releaseDirectory: string, recordedRelease: any = null) {
+  await assertPreservedReleaseFiles(request, recordedRelease);
   try {
     const expected = await recordedReleaseFileClaims(releaseDirectory, recordedRelease);
     const actual = await validateExtractedReleaseTree(releaseDirectory, expected);

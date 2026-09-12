@@ -14792,3 +14792,36 @@ test("Hosted deploy.files preflights recorded releases and preserved files befor
     }
   });
 });
+
+test("Hosted deploy.files rollback preflights retained storage before changing pointers", async () => {
+  await withTempDir(async (dir) => {
+    const docker = await installFakeDocker(path.join(dir, "rollback-preflight-docker"));
+    const first = await writeHostedCapsuleInstallFixture(dir, { rootName: "rollback-preflight", previousReleaseId: null,
+      releaseId: "20260912T150000Z-feedface", deployFiles: [{ path: "settings.json", update: "preserve" }] });
+    const request = { host: { alias: "personal", domain: first.domain, remoteRoot: first.remoteRoot }, capsule: { subname: first.subname } };
+    const installed = await runHostHelper({ ...request, action: "capsule.release.install", release: first.release }, { cwd: dir, env: docker.env });
+    assert.equal(installed.code, 0, installed.stdout + installed.stderr);
+    const firstRecord = await readFile(first.registryRecordPath);
+    const second = await writeHostedCapsuleInstallFixture(dir, { rootName: "rollback-preflight", previousReleaseId: null,
+      releaseId: "20260912T150100Z-feedface", deployFiles: [{ path: "settings.json" }] });
+    await writeFile(first.registryRecordPath, firstRecord);
+    const replaced = await runHostHelper({ ...request, action: "capsule.release.install", release: second.release }, { cwd: dir, env: docker.env });
+    assert.equal(replaced.code, 0, replaced.stdout + replaced.stderr);
+    const stored = path.join(first.capsuleDir, "preserved-files/settings.json");
+    const route = path.join(first.remoteRoot, "caddy/hosts", first.domain, `${first.subname}.caddy`);
+    const registryBefore = await readFile(first.registryRecordPath);
+    const routeBefore = await readFile(route);
+    const pointerBefore = await readlink(path.join(first.capsuleDir, "current"));
+    for (const unsafe of [false, true]) {
+      await rm(stored, { force: true });
+      if (unsafe) await symlink(path.join(first.release.directories.release, "settings.json"), stored);
+      const before = (await docker.calls()).length;
+      const failed = await runHostHelper({ ...request, action: "capsule.release.rollback", rollback: { releaseId: first.release.id } }, { cwd: dir, env: docker.env });
+      assert.equal(JSON.parse(failed.stdout).ok, false, failed.stdout);
+      assert.deepEqual(await readFile(first.registryRecordPath), registryBefore);
+      assert.deepEqual(await readFile(route), routeBefore);
+      assert.equal(await readlink(path.join(first.capsuleDir, "current")), pointerBefore);
+      assert.equal((await docker.calls()).slice(before).filter((call) => ["stop", "rm", "run"].includes(call.args[0])).length, 0);
+    }
+  });
+});

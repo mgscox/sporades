@@ -5152,8 +5152,8 @@ fs.promises.rm = async function(file, ...args) {
   });
 });
 
-test("local deploy.files journals replacement-only snapshots before process exit", async () => {
-  await withTempDir(async (dir) => {
+test("local deploy.files journals replacement-only snapshots across process exit and cleanup failure", async () => {
+  for (const failure of ["exit", "cleanup"]) await withTempDir(async (dir) => {
     const created = await runCli(["create", "snapshot-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
     assert.equal(created.code, 0, created.stderr);
     const projectDir = await realpath(path.join(dir, "snapshot-island"));
@@ -5169,11 +5169,17 @@ test("local deploy.files journals replacement-only snapshots before process exit
 const original = fs.promises.writeFile;
 fs.promises.writeFile = async function(file, ...args) {
   const result = await original.call(this, file, ...args);
-  if (String(file).includes('/.sporades/deploy-files/')) process.exit(17);
+  if (String(file).includes('/.sporades/deploy-files/')) ${failure === "exit" ? "process.exit(17)" : "throw Object.assign(new Error('injected snapshot write failure'), { code: 'ENOSPC' })"};
   return result;
+};
+const remove = fs.promises.rm;
+fs.promises.rm = async function(file, ...args) {
+  if (${failure === "cleanup"} && String(file).includes('/.sporades/deploy-files/')) throw Object.assign(new Error('injected snapshot cleanup failure'), { code: 'EACCES' });
+  return remove.call(this, file, ...args);
 }; syncBuiltinESMExports();`);
     const failed = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...docker.env, NODE_OPTIONS: `--import=${preload}` } });
-    assert.equal(failed.code, 17);
+    if (failure === "exit") assert.equal(failed.code, 17);
+    else assert.notEqual(failed.code, 0);
     const journal = path.join(projectDir, ".sporades/deploy-file-attempt.jsonl");
     const record = JSON.parse((await readFile(journal, "utf8")).trim());
     assert.equal(await readFile(path.join(record.release, "settings.json"), "utf8"), "snapshot bytes");
