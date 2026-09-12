@@ -45,6 +45,7 @@ export type HostHelperRelease = JsonObject & {
   id: string;
   remoteArchive: string;
   files: string[];
+  deployFiles?: Array<{ path: string; update: "replace" | "preserve" }>;
   hostedUrl?: string;
   currentLink?: string;
   directories?: {

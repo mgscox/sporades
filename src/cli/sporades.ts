@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { deployFileMounts, preparePreservedFiles } from "../deploy-files.js";
 import { validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual } from "node:crypto";
@@ -4261,7 +4262,16 @@ async function startContainerSession(options: LooseRecord) {
       "127.0.0.1::22",
     ]
     : [];
-  const bundleMountArgs = bundle.containerMounts.files.flatMap((mount) => ["--volume", formatMount(mount)]);
+  const deployReleaseRoot = path.join(runtimeDir, "deploy-files", randomBytes(16).toString("hex"));
+  for (const file of bundle.deployFiles) {
+    const destination = path.join(deployReleaseRoot, file.path);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await writeFile(destination, file.contents, { mode: 0o644 });
+  }
+  const preservedRoot = path.join(runtimeDir, "preserved-files");
+  await preparePreservedFiles(bundle.deployFiles, deployReleaseRoot, preservedRoot, runtimeUser);
+  const additionalMounts = deployFileMounts(bundle.deployFiles, deployReleaseRoot, preservedRoot);
+  const bundleMountArgs = [...bundle.containerMounts.files, ...additionalMounts].flatMap((mount) => ["--volume", formatMount(mount)]);
   const containerTransactionToken = randomBytes(16).toString("hex");
   const runtimeProbeToken = randomBytes(32).toString("hex");
   const capsuleServicesNetworkArgs = capsuleServices ? ["--network", capsuleServices.networks.services] : [];
@@ -4366,6 +4376,7 @@ async function startContainerSession(options: LooseRecord) {
       containerId,
       containerName,
       clientRelease,
+      ...(bundle.deployFiles.length ? { deployFilesRoot: deployReleaseRoot } : {}),
       ...(sshAccess.enabled ? {
         ssh: {
           enabled: true,
@@ -4420,10 +4431,18 @@ async function startContainerSession(options: LooseRecord) {
         { failures: rollbackFailures, cause: errorDetails(error).message },
       );
     }
+    await rm(deployReleaseRoot, { recursive: true, force: true });
     throw error;
   }
 
   if (!containerId || !binding) throw commandError("Container replacement did not commit.", "Retry deployment.");
+  const previousDeployRoot = existingBinding?.deployFilesRoot;
+  if (typeof previousDeployRoot === "string"
+    && path.dirname(previousDeployRoot) === path.join(runtimeDir, "deploy-files")
+    && /^[a-f0-9]{32}$/.test(path.basename(previousDeployRoot))) {
+    await rm(previousDeployRoot, { recursive: true, force: true });
+  }
+
   if (sshAccess.enabled || explicitSshConfigured(config)) {
     await emitCliSshAuditEvent(config, options.projectDir, {
       event: sshAccess.enabled ? "ssh.access.enabled" : "ssh.access.disabled",
@@ -5464,6 +5483,11 @@ async function createHostReleaseArchive(options: LooseRecord) {
   await mkdir(path.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true });
   await mkdir(path.join(packageDir, ".sporades", "ssh"), { recursive: true });
   await cp(options.bundle.staticFiles.publicDir, path.join(packageDir, "public"), { recursive: true, errorOnExist: true });
+  for (const file of options.bundle.deployFiles) {
+    const destination = path.join(packageDir, file.path);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await writeFile(destination, file.contents, { mode: 0o644 });
+  }
   const releaseConfig = sanitizeHostedReleaseConfig(options.projectConfig, options.sshAccess);
   await Promise.all([
     writeFile(path.join(packageDir, "server.mjs"), await readFile(path.join(options.bundle.buildDir, "server.mjs"), "utf8")),
@@ -5489,6 +5513,7 @@ async function createHostReleaseArchive(options: LooseRecord) {
     "server.mjs",
     "sporades.json",
     ...publicFiles,
+    ...options.bundle.deployFiles.map((file: { path: string }) => file.path),
   ];
   if (options.bundle.containerMounts.serverEnv) {
     tarArgs.push(".env.sporades.server");

@@ -1272,7 +1272,13 @@ async function writeHostedCapsuleInstallFixture(dir, options = {}) {
     "public/assets/images/logo-a1b2.png",
     "public/assets/fonts/app-a1b2.woff2",
   ];
-  await createTarGz(archivePath, runtimeDir, ["server.mjs", "sporades.json", ...publicFiles]);
+  const deployFiles = options.deployFiles ?? [];
+  for (const file of deployFiles) {
+    const target = path.join(runtimeDir, file.path);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, options.fileContents ?? "seed");
+  }
+  await createTarGz(archivePath, runtimeDir, ["server.mjs", "sporades.json", ...publicFiles, ...deployFiles.map((file) => file.path)]);
   await writeFile(
     registryRecordPath,
     `${JSON.stringify({
@@ -1313,7 +1319,8 @@ async function writeHostedCapsuleInstallFixture(dir, options = {}) {
       remoteArchive: archivePath,
       restart: true,
       serverEnvIncluded: false,
-      files: ["server.mjs", "sporades.json", ...publicFiles],
+      files: ["server.mjs", "sporades.json", ...publicFiles, ...deployFiles.map((file) => file.path)],
+      deployFiles,
       directories: {
         capsule: capsuleDir,
         releases: path.join(capsuleDir, "releases"),
@@ -4254,7 +4261,7 @@ process.exit(0);
   });
 });
 
-test("sporades host push uploads a runtime-only release archive and installs it without restart by default", async () => {
+test("sporades host push uploads a release archive with declared deploy.files and installs it without restart by default", async () => {
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
@@ -4301,6 +4308,14 @@ process.exit(0);
     await installFakeReact(projectDir);
     await rm(path.join(projectDir, ".env.sporades.server"), { force: true });
 
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.deploy.files = [{ path: "config/settings.json", update: "preserve" }, { path: "defaults.json" }];
+    await writeFile(configPath, JSON.stringify(config));
+    await mkdir(path.join(projectDir, "config"));
+    await writeFile(path.join(projectDir, "config/settings.json"), "settings seed");
+    await writeFile(path.join(projectDir, "defaults.json"), "defaults seed");
+
     const env = {
       ...hostEnv(configDir),
       ...fakeSsh.env,
@@ -4333,6 +4348,8 @@ process.exit(0);
       "public/client.js",
       "public/client.js.map",
       "public/index.html",
+      "config/settings.json",
+      "defaults.json",
     ]);
 
     const [scpCall] = await readJsonl(fakeScp.logPath);
@@ -4341,7 +4358,10 @@ process.exit(0);
     const uploadedArchives = await readdir(fakeScp.uploadDir);
     assert.deepEqual(uploadedArchives, [`${output.data.release.id}.tar.gz`]);
     const entries = await listArchiveEntries(path.join(fakeScp.uploadDir, uploadedArchives[0]), projectDir);
+    assert.equal(await extractArchiveFile(path.join(fakeScp.uploadDir, uploadedArchives[0]), "config/settings.json", projectDir), "settings seed");
     assert.deepEqual(entries, [
+      "config/settings.json",
+      "defaults.json",
       "public/client.js",
       "public/client.js.map",
       "public/index.html",
@@ -4352,6 +4372,7 @@ process.exit(0);
     const [sshCall] = await readJsonl(fakeSsh.logPath);
     assert.deepEqual(sshCall.args, ["root@example.test", "/opt/sporades/bin/sporades-host-helper"]);
     const request = JSON.parse(sshCall.stdin);
+    assert.deepEqual(request.release.deployFiles, [{ path: "config/settings.json", update: "preserve" }, { path: "defaults.json", update: "replace" }]);
     assert.equal(request.action, "capsule.release.install");
     assert.equal(request.capsule.subname, "team-notes");
     assert.equal(request.release.restart, false);
@@ -14568,4 +14589,59 @@ syncBuiltinESMExports();
       assert.equal(JSON.parse((await invoke({ ...request, capsule: { subname: "new-owner" } })).stdout).ok, true);
     });
   }
+});
+
+
+test("Hosted deploy.files install preserves edits and uses recorded mounts across restart and policy changes", async () => {
+  await withTempDir(async (dir) => {
+    const docker = await installFakeDocker(path.join(dir, "deploy-files-docker"));
+    let savedRecord = null;
+    let fixture;
+    const policies = ["preserve", "preserve", "replace", null, "preserve"];
+    for (let index = 0; index < policies.length; index++) {
+      const policy = policies[index];
+      fixture = await writeHostedCapsuleInstallFixture(dir, {
+        rootName: "deploy-files", previousReleaseId: null,
+        releaseId: `20260912T12000${index}Z-feedface`,
+        deployFiles: policy ? [{ path: "config/settings.json", update: policy }] : [],
+        fileContents: `local-${index}`,
+      });
+      if (savedRecord) await writeFile(fixture.registryRecordPath, savedRecord);
+      const request = {
+        action: "capsule.release.install",
+        host: { alias: "personal", domain: fixture.domain, remoteRoot: fixture.remoteRoot },
+        capsule: { subname: fixture.subname }, release: fixture.release, lifecycle: fixture.lifecycle,
+      };
+      const install = await runHostHelper(request, { cwd: dir, env: docker.env });
+      assert.equal(install.code, 0, install.stdout + install.stderr);
+      assert.equal(JSON.parse(install.stdout).ok, true, install.stdout);
+      const preserved = path.join(fixture.capsuleDir, "preserved-files/config/settings.json");
+      if (index === 0) await writeFile(preserved, "server edit");
+      assert.equal(await readFile(preserved, "utf8"), "server edit");
+      const run = (await docker.calls()).filter((call) => call.args[0] === "run").at(-1);
+      const fileMounts = run.args.filter((arg) => arg.includes(":/app/config/settings.json:"));
+      assert.deepEqual(fileMounts, policy ? [policy === "preserve" ? `${preserved}:/app/config/settings.json:rw` : `${path.join(fixture.capsuleDir, "current/config/settings.json")}:/app/config/settings.json:ro`] : []);
+      savedRecord = await readFile(fixture.registryRecordPath, "utf8");
+      if (policy) assert.equal(await readFile(path.join(fixture.release.directories.release, "config/settings.json"), "utf8"), `local-${index}`);
+    }
+    const restart = await runHostHelper({
+      action: "capsule.restart", host: { alias: "personal", domain: fixture.domain, remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+    }, { cwd: dir, env: docker.env });
+    assert.equal(restart.code, 0, restart.stdout + restart.stderr);
+    const run = (await docker.calls()).filter((call) => call.args[0] === "run").at(-1);
+    assert(run.args.includes(`${path.join(fixture.capsuleDir, "preserved-files/config/settings.json")}:/app/config/settings.json:rw`));
+    for (const [releaseId, update] of [["20260912T120002Z-feedface", "replace"], ["20260912T120000Z-feedface", "preserve"]]) {
+      const rollback = await runHostHelper({
+        action: "capsule.release.rollback", host: { alias: "personal", domain: fixture.domain, remoteRoot: fixture.remoteRoot },
+        capsule: { subname: fixture.subname }, rollback: { releaseId },
+      }, { cwd: dir, env: docker.env });
+      assert.equal(rollback.code, 0, rollback.stdout + rollback.stderr);
+      const latest = (await docker.calls()).filter((call) => call.args[0] === "run").at(-1);
+      const hostPath = path.join(fixture.capsuleDir, update === "preserve" ? "preserved-files" : "current", "config/settings.json");
+      assert(latest.args.includes(`${hostPath}:/app/config/settings.json:${update === "preserve" ? "rw" : "ro"}`));
+      assert.equal(await readFile(path.join(fixture.capsuleDir, "preserved-files/config/settings.json"), "utf8"), "server edit");
+    }
+
+  });
 });

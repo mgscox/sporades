@@ -547,3 +547,14 @@ _Avoid_: boilerplate, starter (it's a complete project, not a placeholder)
 **Scaffold install**:
 `sporades create` runs `npm install` for the chosen framework after scaffolding. The user (or agent) does not run `npm install` separately. The project's `package.json` includes the framework dependency and the Sporades CLI as dev dependencies.
 _Avoid_: dependency install, setup step
+
+
+## Additional deployment files
+
+`deploy.files` declares exact project-relative server resources. The shared
+`deploy-files.ts` boundary resolves paths, rejects managed-path collisions and
+symlinks, and snapshots source bytes during the local build. `replace` (default)
+uses release-owned read-only files. `preserve` mounts seeded persistent files
+writable at the same `/app` relative path. Removing entries or switching policy
+retains inactive preserved bytes. Hosted release history owns each release's
+manifest, so restart and rollback select the matching mounts. Apps own reloading.

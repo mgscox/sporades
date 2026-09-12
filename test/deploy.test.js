@@ -4977,3 +4977,37 @@ function waitForSocketMessage(socket, predicate) {
     socket.addEventListener("error", onError);
   });
 }
+
+
+test("local Container deploy.files snapshots replacements and retains editable files", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "file-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "file-island"));
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.deploy.files = [{ path: "settings.json", update: "preserve" }, { path: "defaults.json" }];
+    await writeFile(configPath, JSON.stringify(config));
+    await writeFile(path.join(projectDir, "settings.json"), "seed");
+    await writeFile(path.join(projectDir, "defaults.json"), "original");
+    const docker = await installFakeDocker(dir, "container-files");
+    const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(deployed.code, 0, deployed.stdout + deployed.stderr);
+    const calls = await docker.calls();
+    const run = calls.find((call) => call.args[0] === "run");
+    const replacement = run.args.find((arg) => arg.endsWith(":/app/defaults.json:ro")).slice(0, -":/app/defaults.json:ro".length);
+    await writeFile(path.join(projectDir, "defaults.json"), "new local bytes");
+    assert.equal(await readFile(replacement, "utf8"), "original");
+    const preserved = path.join(projectDir, ".sporades/preserved-files/settings.json");
+    assert(run.args.includes(`${preserved}:/app/settings.json:rw`));
+    await writeFile(preserved, "server edit");
+    await rm(path.join(projectDir, "settings.json"));
+    const countBefore = (await docker.calls()).filter((call) => ["stop", "rm", "run"].includes(call.args[0])).length;
+    const failed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.notEqual(failed.code, 0);
+    assert.match(failed.stdout + failed.stderr, /settings.json/);
+    assert.equal((await docker.calls()).filter((call) => ["stop", "rm", "run"].includes(call.args[0])).length, countBefore);
+    assert.equal(await readFile(preserved, "utf8"), "server edit");
+  });
+});

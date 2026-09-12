@@ -9,7 +9,7 @@ const CAPSULE_RUNTIME_HEALTH_PATH = "/__sporades/health/runtime";
 export function createHostReleaseRequest(options: LooseRecord): HostHelperRelease {
   const registration = createHostRegistrationRequest(options.alias, options.profile, options.subname);
   const releaseDirectory = posixJoin(registration.directories.releases, options.releaseId);
-  const files = ["server.mjs", "sporades.json", ...options.publicFiles];
+  const files = ["server.mjs", "sporades.json", ...options.publicFiles, ...(options.bundle.deployFiles ?? []).map((file: { path: string }) => file.path)];
   if (options.bundle.containerMounts.serverEnv) {
     files.push(".env.sporades.server");
   }
@@ -48,6 +48,7 @@ export function createHostReleaseRequest(options: LooseRecord): HostHelperReleas
       ? { requiredInspectors: [...options.requiredInspectors] }
       : null,
     files,
+    deployFiles: (options.bundle.deployFiles ?? []).map(({ path, update }: { path: string; update: "replace" | "preserve" }) => ({ path, update })),
     directories: {
       capsule: registration.directories.capsule,
       releases: registration.directories.releases,

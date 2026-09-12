@@ -1,3 +1,4 @@
+import { buildDeployFiles } from "./deploy-files.js";
 import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { PathLike } from "node:fs";
@@ -62,6 +63,7 @@ export async function createBundle(
     activeReferenceFault?: (event: "before-active-write" | "after-active-write" | "before-active-restore" | "after-active-restore") => void;
   } = {},
 ) {
+  const deployFiles = await buildDeployFiles(projectDir, (config.deploy as { files?: unknown } | undefined)?.files);
   const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
   const toolchain = readClientToolchain(config.client?.toolchain ?? defaultClientToolchain(frameworkBundleConfig.framework), frameworkBundleConfig.framework);
   const buildDir = path.join(projectDir, ".sporades", "build");
@@ -219,6 +221,7 @@ export async function createBundle(
 
   return {
     paths,
+    deployFiles,
     buildDir,
     publishLegacy,
     releasePublicTreeLease: () => releasePublicTreeLease(publicTree),

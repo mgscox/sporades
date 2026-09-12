@@ -1,3 +1,4 @@
+import { buildDeployFiles } from "./deploy-files.js";
 import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { buildClientToolchain, validateClientToolchainInput } from "./client-toolchain.js";
@@ -12,6 +13,7 @@ const AUTH_PROVIDER_ORDER = ["anonymous", "email", "google", "microsoft", "apple
 const SUPPORTED_AUTH_PROVIDERS = new Set(AUTH_PROVIDER_ORDER);
 const RUNTIME_AUTH_PROVIDERS = new Set(["anonymous", "email", "google", "microsoft", "apple", "facebook"]);
 export async function createBundle(projectDir, config, options = {}) {
+    const deployFiles = await buildDeployFiles(projectDir, config.deploy?.files);
     const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
     const toolchain = readClientToolchain(config.client?.toolchain ?? defaultClientToolchain(frameworkBundleConfig.framework), frameworkBundleConfig.framework);
     const buildDir = path.join(projectDir, ".sporades", "build");
@@ -175,6 +177,7 @@ export async function createBundle(projectDir, config, options = {}) {
     }
     return {
         paths,
+        deployFiles,
         buildDir,
         publishLegacy,
         releasePublicTreeLease: () => releasePublicTreeLease(publicTree),

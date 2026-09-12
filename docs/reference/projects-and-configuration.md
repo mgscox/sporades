@@ -590,3 +590,47 @@ See the [structured log payload cap contract](../guide/configuration.md#structur
 for `logs.payloadMaxBytes`, its `logging` alias, the identity-aware minimum,
 and the `INVALID_LOG_CONFIG` error. The default is 4096 bytes; validation
 never silently increases a configured cap.
+
+
+## Additional deployment files
+
+Use `deploy.files` to ship exact files from the project root to the same relative
+location under `/app` in local Container sessions and Hosted Capsules:
+
+```json
+{
+  "deploy": {
+    "files": [
+      { "path": "config/settings.json", "update": "preserve" },
+      { "path": "resources/defaults.json" }
+    ]
+  }
+}
+```
+
+`update` defaults to `"replace"`: the build snapshots the local bytes, and each
+release supplies a read-only file. `"preserve"` seeds the file only if no stored
+copy exists and mounts that copy writable. Server edits survive redeployment,
+restart, and rollback. Replaced files roll back with their release; preserved
+files do not roll back their contents.
+
+Removing a preserved entry stops mounting it without deleting its stored copy.
+Switching to `replace` also retains the inactive copy; switching back to
+`preserve` reuses it. On a Host server these copies live under the Capsule's
+`preserved-files/` directory; locally they live in `.sporades/preserved-files/`.
+Edit the file contents in place when editing a bind-mounted file. Replacing its
+inode with an editor's atomic-save operation requires restarting the container
+to refresh the bind mount.
+
+Paths are normalized using Node path resolution. They must stay under the
+project root and cannot collide with `.sporades/`, `public/`, `data/`, the server
+or legacy client bundles, `index.html`, `sporades.json`, or Server env. Only
+regular files are accepted: directories, symlinks (including parent symlinks),
+hard links, conflicting paths, and paths incompatible with the archive or
+container mount format are rejected. Every declared source must exist at local
+build time, including preserved seeds; failure names the file before upload.
+Omitting `deploy.files` keeps the existing payload unchanged.
+
+These files are server-side resources, not public assets. A Dev session reads
+the original project files. Application code owns reading and reloading them;
+Sporades does not watch or reload configuration for the application.

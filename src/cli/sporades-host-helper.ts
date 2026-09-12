@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { assertDeployFile, deployFileMounts, preparePreservedFiles, resolveDeployFiles } from "../deploy-files.js";
 import { assertHostnamesAvailable, validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
 import { constants as fsConstants, createReadStream, statSync } from "node:fs";
@@ -1376,6 +1377,7 @@ async function installClaimedRelease(request: HostHelperRequest, previousRecord:
   }
 
   try {
+    await preparePreservedFiles(resolveDeployFiles(release.deployFiles), paths.release, path.join(paths.capsule, "preserved-files"), prepareRuntimeDataOwnershipHandle);
     await symlink(paths.release, tempCurrentLink);
     await rename(tempCurrentLink, paths.currentLink);
     await recordReleaseUploaded(request, release, installedInventory);
@@ -1926,6 +1928,10 @@ async function startCapsule(request: HostHelperRequest, options: LooseRecord = {
     registryRecord,
     options.trustedRegistryLifecycle === true ? { ignoreProvidedLifecycle: true } : {},
   );
+  const recordedRelease = normaliseReleaseHistory(registryRecord).find((entry: any) => entry.id === releaseId);
+  for (const file of resolveDeployFiles(recordedRelease?.source?.deployFiles)) {
+    if (file.update === "preserve") await assertDeployFile(path.join(paths.capsule, "preserved-files"), file.path);
+  }
   if (options.containerQuiesced !== true) stopAndRemoveContainer(lifecycle.container.name);
   if (options.dataPrepared !== true) await prepareWritableDataPath(paths.data);
   await recordReleaseStartAttempt(request, releaseId);
@@ -3005,6 +3011,8 @@ function normaliseLifecycle(request: HostHelperRequest, registryRecord: any = nu
     ],
     data: { host: paths.data, container: "/app/data", mode: "rw" },
   };
+  const deployRelease = normaliseReleaseHistory(registryRecord).find((entry: any) => entry.id === registryRecord?.currentRelease?.id);
+  const additionalMounts = deployFileMounts(resolveDeployFiles(deployRelease?.source?.deployFiles), currentLink, path.join(paths.capsule, "preserved-files"));
   const fileMounts = authoritativeSshAuthorizedKeysMount(
     authoritativeSealedServerEnvPrivateKeyMount(
       provided.mounts?.files ?? defaultMounts.files,
@@ -3090,7 +3098,7 @@ function normaliseLifecycle(request: HostHelperRequest, registryRecord: any = nu
     },
     remoteRoot: request.host.remoteRoot,
     mounts: {
-      files: fileMounts,
+      files: [...fileMounts, ...additionalMounts],
       data: defaultMounts.data,
     },
     container: canonicalContainer,
@@ -5607,6 +5615,7 @@ async function recordReleaseUploaded(request: HostHelperRequest, release: HostHe
         hostedUrl: release.hostedUrl ?? entry.source?.hostedUrl ?? null,
         remoteCapsuleId: release.remoteCapsuleId ?? entry.source?.remoteCapsuleId ?? null,
         files: Array.isArray(release.files) ? [...release.files] : [],
+        deployFiles: resolveDeployFiles(release.deployFiles),
         fileInventory: fileInventory.map((file) => ({ ...file })),
         serverEnvIncluded: Boolean(release.serverEnvIncluded),
         inspection: Array.isArray(release.inspection?.requiredInspectors)

@@ -1,3 +1,4 @@
+import { resolveDeployFiles } from "../deploy-files.js";
 import path from "node:path";
 import { validateAliasDomains } from "./host-domain-aliases.js";
 import { validatePublicTreeFileSet } from "../public-tree-contract.js";
@@ -244,7 +245,10 @@ export function validateInstallRequest(request) {
     if (!/^\d{8}T\d{6}Z-[a-f0-9]{8}$/.test(release.id)) {
         throw helperError("Invalid Hosted Capsule release ID.", "Push again to generate a fresh UTC-sortable release ID.");
     }
-    if (!Array.isArray(release.files) || release.files.some((file) => !isExpectedClaimedReleaseFile(file))) {
+    const deployFiles = resolveDeployFiles(release.deployFiles);
+    if (JSON.stringify(release.deployFiles ?? []) !== JSON.stringify(deployFiles))
+        throw helperError("Invalid release deploy.files manifest.", "Rebuild with canonical relative paths and retry.");
+    if (!Array.isArray(release.files) || release.files.some((file) => !isExpectedClaimedReleaseFile(file, deployFiles.map((entry) => entry.path)))) {
         throw helperError("Invalid Hosted Capsule release file list.", "Update the Sporades CLI and retry `sporades host push`.");
     }
     validateClaimedReleaseFiles(release.files);
