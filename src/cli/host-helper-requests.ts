@@ -87,6 +87,7 @@ export type HostHelperRequestBase = JsonObject & {
 };
 
 export type HostRegistrationOptions = JsonObject & {
+  aliasDomains?: string[];
   subname?: string;
   domain?: string;
   remoteCapsuleId?: string;

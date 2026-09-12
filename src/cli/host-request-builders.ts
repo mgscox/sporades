@@ -191,11 +191,12 @@ export function createHostBootstrapRequest(profile: LooseRecord) {
   };
 }
 
-export function createHostRegistrationRequest(alias: string, profile: LooseRecord, subname: string) {
+export function createHostRegistrationRequest(alias: string, profile: LooseRecord, subname: string, aliasDomains: string[] = []) {
   const bootstrap = createHostBootstrapRequest(profile);
   const capsuleDirectory = posixJoin(bootstrap.directories.capsules, subname);
   const capsuleLog = posixJoin(capsuleDirectory, "logs", "http.log");
   return {
+    ...(aliasDomains.length ? { aliasDomains } : {}),
     subname,
     domain: profile.domain,
     hostedUrl: `${profile.scheme}://${subname}.${profile.domain}`,

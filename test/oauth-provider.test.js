@@ -2872,3 +2872,16 @@ test("Apple form-post links the anonymous user, sanitizes first-login name, and 
     }
   });
 });
+
+test("OAuth custom domains require a registered alias and agreement of origin and proxy headers", () => {
+  const policy = { cors: { publicOrigin: "https://capsule.example.test", publicAliases: ["https://fourteen.example"] } };
+  const headers = { host: "fourteen.example", origin: "https://fourteen.example", "x-forwarded-host": "fourteen.example", "x-forwarded-proto": "https" };
+  assert.equal(resolveOAuthRequestOrigin(policy, { headers }), "https://fourteen.example");
+  const { origin, ...callbackHeaders } = headers;
+  assert.equal(resolveOAuthRequestOrigin(policy, { headers: callbackHeaders }), "https://fourteen.example");
+  for (const altered of [
+    { origin: "https://evil.example" }, { host: "evil.example" },
+    { "x-forwarded-host": "evil.example" }, { "x-forwarded-proto": "http" },
+    { host: "evil.example", origin: "https://evil.example", "x-forwarded-host": "evil.example" },
+  ]) assert.equal(resolveOAuthRequestOrigin(policy, { headers: { ...headers, ...altered } }), null);
+});

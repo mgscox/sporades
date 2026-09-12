@@ -139,6 +139,7 @@ export type RuntimeSecurityPolicy = {
     allowedOriginPatterns: string[];
     requireExplicitCrossOrigin: boolean;
     publicOrigin: string | null;
+    publicAliases: string[];
   };
   csp: {
     mode: string;
@@ -315,6 +316,9 @@ export function resolveRuntimeSecurityPolicy(config: RuntimeConfig = {}): Runtim
       allowedOriginPatterns: dev && !publicDev ? ["http://localhost:*", "http://127.0.0.1:*"] : [],
       requireExplicitCrossOrigin: !dev && configuredOrigins.length === 0,
       publicOrigin,
+      publicAliases: session === "hosted" && publicOrigin && Array.isArray(config.__sporadesPublicAliases)
+        ? config.__sporadesPublicAliases.filter((origin: unknown) => typeof origin === "string" && origin.startsWith("https://") && normalizeOrigin(origin) === origin)
+        : [],
     },
     csp: {
       mode,
@@ -361,6 +365,9 @@ function requestOriginAllowed(policy: RuntimeSecurityPolicy, request: RuntimeReq
     return true;
   }
   if (policy.cors.publicOrigin && normalizeOrigin(origin) === policy.cors.publicOrigin) {
+    return true;
+  }
+  if (policy.cors.publicAliases?.includes(String(origin)) && isSameOriginRequest(request, String(origin))) {
     return true;
   }
   if (policy.cors.allowedOrigins.includes("*") || policy.cors.allowedOrigins.includes(origin)) {
@@ -413,12 +420,18 @@ export function resolveOAuthRequestOrigin(policy: LooseRecord, request: RuntimeR
   ) return null;
 
   if (configuredOrigin) {
-    const configured = new URL(configuredOrigin);
-    if (originHeader && originHeader !== configuredOrigin) return null;
+    const candidateOrigins = [configuredOrigin, ...(policy.cors.publicAliases ?? [])];
+    const selectedOrigin = candidateOrigins.find((candidate: string) => {
+      const parsed = new URL(candidate);
+      return validatedRequestHost(hostHeader, parsed.protocol) === parsed.host;
+    });
+    if (!selectedOrigin) return null;
+    const configured = new URL(selectedOrigin);
+    if (originHeader && originHeader !== selectedOrigin) return null;
     if (validatedRequestHost(hostHeader, configured.protocol) !== configured.host) return null;
     if (forwardedHost && validatedRequestHost(forwardedHost, configured.protocol) !== configured.host) return null;
     if (forwardedProto && `${forwardedProto}:` !== configured.protocol) return null;
-    return configuredOrigin;
+    return selectedOrigin;
   }
 
   if (forwardedHost || forwardedProto) return null;

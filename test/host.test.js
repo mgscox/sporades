@@ -4040,7 +4040,8 @@ process.stdout.write(JSON.stringify({
       subname: request.capsule.subname,
       domain: request.host.domain,
       hostedUrl: request.registration.hostedUrl,
-      remoteCapsuleId: request.registration.remoteCapsuleId
+      remoteCapsuleId: request.registration.remoteCapsuleId,
+      aliasDomains: request.registration.aliasDomains
     },
     registryRecord: request.registration.registryRecord,
     directories: request.registration.directories,
@@ -4064,7 +4065,7 @@ process.exit(0);
     );
     assert.equal(addHost.code, 0, addHost.stderr);
 
-    const register = await runCli(["host", "register", "team-notes", "--host", "personal", "--json"], {
+    const register = await runCli(["host", "register", "team-notes", "--host", "personal", "--alias-domain", "fourteen.example", "--alias-domain", "app.fourteen.example", "--json"], {
       cwd: projectDir,
       env: { ...hostEnv(configDir), ...fakeSsh.env },
     });
@@ -4083,6 +4084,7 @@ process.exit(0);
     assert.equal(output.ok, true);
     assert.equal(output.error, null);
     assert.equal(output.data.registered, true);
+    assert.deepEqual(output.data.capsule.aliasDomains, ["fourteen.example", "app.fourteen.example"]);
     assert.equal(output.data.authoritative, true);
     assert.equal(output.data.localBinding, true);
     assert.match(output.data.bindingPath, /\.sporades\/remote-binding\.json$/);
@@ -4119,6 +4121,7 @@ process.exit(0);
         subname: "team-notes",
       },
       registration: {
+        aliasDomains: ["fourteen.example", "app.fourteen.example"],
         subname: "team-notes",
         domain: "capsules.example.dev",
         hostedUrl: "https://team-notes.capsules.example.dev",
@@ -14262,4 +14265,132 @@ test("sporades host validation returns standard JSON errors", async () => {
 test("host profile implementation does not hard-code the first Hosted domain", async () => {
   const source = await readFile(cliPath, "utf8");
   assert.doesNotMatch(source, /mattgscox\.co\.uk/);
+});
+
+async function customDomainFixture(dir, domains = ["capsules.example.dev"]) {
+  const remoteRoot = path.join(dir, "remote-root");
+  const docker = await installFakeDocker(dir);
+  await mkdir(path.join(remoteRoot, "caddy", "hosts"), { recursive: true });
+  await writeFile(path.join(remoteRoot, "caddy", "Caddyfile"), "import ./sporades-hosted-domains.caddy\n");
+  for (const domain of domains) {
+    await writeFile(path.join(remoteRoot, "caddy", "hosts", `${domain}.caddy`), `import ./${domain}/*.caddy\n`);
+  }
+  const request = {
+    action: "capsule.register",
+    host: { alias: "personal", domain: domains[0], scheme: "https", remoteRoot },
+    capsule: { subname: "team-notes" },
+    registration: { aliasDomains: ["fourteen.example", "app.fourteen.example"] },
+  };
+  const invoke = (input = request, env = {}) => runHostHelper(input, { cwd: dir, env: { ...docker.env, ...env } });
+  return { remoteRoot, docker, request, invoke };
+}
+
+test("custom domains register apex and app aliases, survive lifecycle and release on unregister", async () => {
+  await withTempDir(async (dir) => {
+    const { request, invoke, docker } = await customDomainFixture(dir);
+    const registered = await invoke();
+    assert.equal(JSON.parse(registered.stdout).ok, true, registered.stdout + registered.stderr);
+    const data = JSON.parse(registered.stdout).data;
+    assert.deepEqual(data.capsule.aliasDomains, ["fourteen.example", "app.fourteen.example"]);
+    assert.deepEqual(data.capsule.aliasUrls, ["https://fourteen.example", "https://app.fourteen.example"]);
+    assert.equal(data.capsule.remoteCapsuleId, "capsules.example.dev/team-notes");
+    const routeFile = data.route.routeFile;
+    const unavailable = await readFile(routeFile, "utf8");
+    for (const hostname of ["team-notes.capsules.example.dev", "fourteen.example", "app.fourteen.example"]) {
+      assert.ok(unavailable.includes(`${hostname} {\n`), unavailable);
+    }
+    assert.equal((unavailable.match(/Hosted Capsule unavailable/g) ?? []).length, 3);
+    const list = await invoke({ ...request, action: "capsule.list", registration: undefined });
+    assert.equal(JSON.parse(list.stdout).ok, true, list.stdout + list.stderr);
+    assert.deepEqual(JSON.parse(list.stdout).data.capsules[0].aliasDomains, request.registration.aliasDomains);
+    const stopped = await invoke({ ...request, action: "capsule.stop", registration: undefined });
+    assert.equal(JSON.parse(stopped.stdout).ok, true, stopped.stdout + stopped.stderr);
+    assert.equal(await readFile(routeFile, "utf8"), unavailable);
+
+    // Give this registered Capsule two immutable releases using the existing lifecycle fixture.
+    const originalRecord = JSON.parse(await readFile(data.registryRecord, "utf8"));
+    const fixture = await writeHostedCapsuleRollbackFixture(dir);
+    const releaseRecord = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    await writeFile(data.registryRecord, JSON.stringify({ ...releaseRecord, aliasDomains: originalRecord.aliasDomains }));
+    for (const action of ["capsule.start", "capsule.restart", "capsule.release.rollback"]) {
+      const result = await invoke({ ...request, action, registration: undefined,
+        ...(action === "capsule.release.rollback" ? { rollback: { releaseId: fixture.rollbackReleaseId } } : {}),
+      });
+      assert.equal(JSON.parse(result.stdout).ok, true, result.stdout + result.stderr);
+      const contents = await readFile(routeFile, "utf8");
+      assert.equal((contents.match(/reverse_proxy 127\.0\.0\.1:/g) ?? []).length >= 3, true, contents);
+      assert.ok(contents.includes("fourteen.example {\n"), contents);
+      assert.ok(contents.includes("app.fourteen.example {\n"), contents);
+    }
+    const calls = await docker.calls();
+    assert.ok(calls.some(({ args }) => args.includes('SPORADES_PUBLIC_ALIASES=["https://fourteen.example","https://app.fourteen.example"]')));
+    const removed = await invoke({ ...request, action: "capsule.unregister", registration: undefined });
+    assert.equal(JSON.parse(removed.stdout).ok, true, removed.stdout + removed.stderr);
+    await assert.rejects(readFile(routeFile), { code: "ENOENT" });
+    const reactivated = await invoke({ ...request, registration: undefined });
+    assert.equal(JSON.parse(reactivated.stdout).ok, true, reactivated.stdout + reactivated.stderr);
+    assert.deepEqual(JSON.parse(reactivated.stdout).data.capsule.aliasDomains, request.registration.aliasDomains);
+  });
+});
+
+test("custom domains reject invalid input, cross-domain collisions and concurrent claims", async () => {
+  await withTempDir(async (dir) => {
+    const { request, invoke } = await customDomainFixture(dir, ["capsules.example.dev", "other.example.dev"]);
+    for (const aliasDomains of [["*.example.com"], ["https://example.com"], ["x.example\nrespond 200"], ["127.0.0.1"], ["app.example:443"], ["Upper.example"], ["x.example", "x.example"], ["team-notes.capsules.example.dev"], ["host.other.example.dev"], "fourteen.example", null]) {
+      const invalid = await invoke({ ...request, registration: { aliasDomains } });
+      assert.equal(JSON.parse(invalid.stdout).ok, false, JSON.stringify(aliasDomains) + invalid.stdout);
+    }
+    const competitor = { ...request, host: { ...request.host, domain: "other.example.dev" }, capsule: { subname: "second" } };
+    const results = await Promise.all([invoke(), invoke(competitor)]);
+    assert.deepEqual(results.map((result) => JSON.parse(result.stdout).ok).sort(), [false, true], JSON.stringify(results));
+    const winner = JSON.parse(results[0].stdout).ok ? request : competitor;
+    const loser = JSON.parse(results[0].stdout).ok ? competitor : request;
+    const canonicalConflict = await invoke({ ...loser, registration: { aliasDomains: [`${winner.capsule.subname}.${winner.host.domain}`] } });
+    assert.equal(JSON.parse(canonicalConflict.stdout).ok, false, canonicalConflict.stdout);
+    // An alias that is a future Capsule's canonical hostname must block that registration too.
+    const aliasOwner = await invoke({ ...loser, capsule: { subname: "owner" }, registration: { aliasDomains: [`future.${loser.host.domain}`] } });
+    assert.equal(JSON.parse(aliasOwner.stdout).ok, true, aliasOwner.stdout + aliasOwner.stderr);
+    const future = await invoke({ ...loser, capsule: { subname: "future" }, registration: undefined });
+    assert.equal(JSON.parse(future.stdout).ok, false, future.stdout);
+    const removed = await invoke({ ...winner, action: "capsule.unregister", registration: undefined });
+    assert.equal(JSON.parse(removed.stdout).ok, true, removed.stdout + removed.stderr);
+    const reassigned = await invoke(loser);
+    assert.equal(JSON.parse(reassigned.stdout).ok, true, reassigned.stdout + reassigned.stderr);
+    const reactivation = await invoke(winner);
+    assert.equal(JSON.parse(reactivation.stdout).ok, false, reactivation.stdout);
+  });
+});
+
+test("custom domains roll back failed registration and keep automatic TLS separate from origin certificates", async () => {
+  await withTempDir(async (dir) => {
+    const { remoteRoot, request, invoke } = await customDomainFixture(dir);
+    const failed = await invoke(request, { SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE: "1" });
+    assert.equal(JSON.parse(failed.stdout).ok, false, failed.stdout);
+    const routeFile = path.join(remoteRoot, "caddy", "hosts", request.host.domain, "team-notes.caddy");
+    await assert.rejects(readFile(routeFile), { code: "ENOENT" });
+    const registered = await invoke({ ...request, registration: { ...request.registration, bootstrap: { tls: { mode: "cloudflare-origin" } } } });
+    assert.equal(JSON.parse(registered.stdout).ok, true, registered.stdout + registered.stderr);
+    const contents = await readFile(routeFile, "utf8");
+    assert.equal((contents.match(/tls .*origin.crt/g) ?? []).length, 1, contents);
+    assert.ok(contents.includes("fourteen.example {\n"));
+    assert.doesNotMatch(contents.slice(contents.indexOf("\nfourteen.example {")), /origin.crt/);
+  });
+});
+
+test("custom domains allow same-origin HTTP and WebSockets while rejecting unregistered origins", async () => {
+  await withTempDir(async (dir) => {
+    await withHostedRuntimeTransportServer(dir, { __sporadesPublicAliases: ["https://fourteen.example"] }, async (baseUrl, token) => {
+      const headers = { origin: "https://fourteen.example", "x-forwarded-host": "fourteen.example", "x-forwarded-proto": "https" };
+      const response = await fetch(baseUrl, { headers });
+      assert.equal(response.headers.get("access-control-allow-origin"), "https://fourteen.example");
+      assert.match(await openRawWebSocketHandshake(baseUrl, headers, token()), /^HTTP\/1\.1 101/m);
+      for (const rejected of [
+        { ...headers, origin: "https://evil.example", "x-forwarded-host": "evil.example" },
+        { ...headers, "x-forwarded-host": "unrelated.example" },
+      ]) {
+        assert.equal((await fetch(baseUrl, { headers: rejected })).headers.get("access-control-allow-origin"), null);
+        assert.doesNotMatch(await openRawWebSocketHandshake(baseUrl, rejected, token()), /^HTTP\/1\.1 101/m);
+      }
+    });
+  });
 });

@@ -9,6 +9,7 @@ export type RuntimeSecurityPolicy = {
         allowedOriginPatterns: string[];
         requireExplicitCrossOrigin: boolean;
         publicOrigin: string | null;
+        publicAliases: string[];
     };
     csp: {
         mode: string;
@@ -34,7 +35,7 @@ export declare function resolveRuntimeSecurityPolicy(config?: RuntimeConfig): Ru
 export declare function injectPageConnectionToken(html: string, token: string): string;
 export declare function websocketOriginAllowed(policy: RuntimeSecurityPolicy, request: RuntimeRequestLike): boolean;
 export declare function normalizeOrigin(value: any): string | null;
-export declare function resolveOAuthRequestOrigin(policy: LooseRecord, request: RuntimeRequestLike): string | null;
+export declare function resolveOAuthRequestOrigin(policy: LooseRecord, request: RuntimeRequestLike): any;
 export declare function singleHttpHeader(value: any): string | null;
 export declare function handleFileHttpRoute(database: LooseRecord, request: IncomingMessage, response: ServerResponse<IncomingMessage> & {
     req: IncomingMessage;

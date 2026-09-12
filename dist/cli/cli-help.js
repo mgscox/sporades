@@ -189,6 +189,8 @@ Options:
   --host <alias>      Host profile alias
   --server <target>   SSH target for host add
   --domain <domain>   Hosted domain for host add
+  --alias-domain <hostname>
+                      Custom HTTPS domain for register (repeatable)
   --remote-root <path>
                       Remote root path for host add
   --tls <mode>        TLS mode: automatic or cloudflare-origin

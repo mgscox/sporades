@@ -4,6 +4,12 @@
 
 Changes since v0.9.20.
 
+### 🚀 Features
+
+- Support apex/custom Hosted Capsule domains through repeatable registration
+  aliases, with automatic TLS, Host-wide ownership checks, lifecycle persistence,
+  and registered browser/OAuth origins (#40).
+
 ### 📝 Documentation
 
 - Close incomplete multipart connections after sending responses (b9e4049c).

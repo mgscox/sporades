@@ -352,6 +352,12 @@ sporades host push --host personal --subname team-notes --json
 sporades host start team-notes --host personal --json
 ```
 
+For apex/custom domains, add repeatable `--alias-domain <hostname>` options to
+`host register`. The original subdomain remains available. See
+[custom domain setup and lifecycle](../guide/hosting.md) for DNS, automatic TLS,
+re-registration, and runtime origin requirements. `host list --json` returns
+each Capsule's authoritative `aliasDomains` list.
+
 If the Capsule uses Sealed Server env, `host push` re-encrypts local sealed
 values to the Hosted Capsule's current Host public key. The push packages only
 the Host-encrypted sealed envelope with the release. Host private keys stay in

@@ -262,6 +262,9 @@ export function resolveRuntimeSecurityPolicy(config = {}) {
             allowedOriginPatterns: dev && !publicDev ? ["http://localhost:*", "http://127.0.0.1:*"] : [],
             requireExplicitCrossOrigin: !dev && configuredOrigins.length === 0,
             publicOrigin,
+            publicAliases: session === "hosted" && publicOrigin && Array.isArray(config.__sporadesPublicAliases)
+                ? config.__sporadesPublicAliases.filter((origin) => typeof origin === "string" && origin.startsWith("https://") && normalizeOrigin(origin) === origin)
+                : [],
         },
         csp: {
             mode,
@@ -304,6 +307,9 @@ function requestOriginAllowed(policy, request) {
         return true;
     }
     if (policy.cors.publicOrigin && normalizeOrigin(origin) === policy.cors.publicOrigin) {
+        return true;
+    }
+    if (policy.cors.publicAliases?.includes(String(origin)) && isSameOriginRequest(request, String(origin))) {
         return true;
     }
     if (policy.cors.allowedOrigins.includes("*") || policy.cors.allowedOrigins.includes(origin)) {
@@ -351,8 +357,15 @@ export function resolveOAuthRequestOrigin(policy, request) {
         (request.headers["x-forwarded-proto"] !== undefined && !forwardedProto))
         return null;
     if (configuredOrigin) {
-        const configured = new URL(configuredOrigin);
-        if (originHeader && originHeader !== configuredOrigin)
+        const candidateOrigins = [configuredOrigin, ...(policy.cors.publicAliases ?? [])];
+        const selectedOrigin = candidateOrigins.find((candidate) => {
+            const parsed = new URL(candidate);
+            return validatedRequestHost(hostHeader, parsed.protocol) === parsed.host;
+        });
+        if (!selectedOrigin)
+            return null;
+        const configured = new URL(selectedOrigin);
+        if (originHeader && originHeader !== selectedOrigin)
             return null;
         if (validatedRequestHost(hostHeader, configured.protocol) !== configured.host)
             return null;
@@ -360,7 +373,7 @@ export function resolveOAuthRequestOrigin(policy, request) {
             return null;
         if (forwardedProto && `${forwardedProto}:` !== configured.protocol)
             return null;
-        return configuredOrigin;
+        return selectedOrigin;
     }
     if (forwardedHost || forwardedProto)
         return null;
