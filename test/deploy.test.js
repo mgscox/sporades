@@ -122,6 +122,12 @@ if (call.args[0] === "inspect" && missingInspectIds.has(call.args.at(-1))) {
   process.stderr.write("Error response from daemon: No such " + subject + ": " + call.args.at(-1) + "\\n");
   process.exit(1);
 }
+if (call.args[0] === "run" && call.args.some((arg) => arg.endsWith(":/file:rw"))) {
+  const target = call.args.find((arg) => arg.endsWith(":/file:rw")).slice(0, -":/file:rw".length);
+  const info = require("node:fs").statSync(target);
+  process.stdout.write(JSON.stringify({ dev: info.dev, ino: info.ino, uid: info.uid, gid: info.gid, mode: info.mode & 0o777 }));
+  process.exit(0);
+}
 if (call.args[0] === "ps") {
   process.stdout.write(process.env.FAKE_DOCKER_CONTAINER_ID + "\\n");
   process.exit(0);

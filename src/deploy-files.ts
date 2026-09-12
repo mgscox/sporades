@@ -72,7 +72,7 @@ async function assertDeployFile(root: string, relative: string, recoverSeed = fa
         }
       }
     }
-    if (info.isSymbolicLink() || (index < parts.length - 1 ? !info.isDirectory() : !info.isFile() || info.nlink !== 1)) {
+    if (info.isSymbolicLink() || (index < parts.length - 1 ? !info.isDirectory() : !info.isFile() || (recoverSeed && info.nlink !== 1))) {
       throw new Error(`deploy.files requires regular files without symlinks: ${relative}`);
     }
   }
@@ -211,12 +211,13 @@ export async function rethrowAfterDeployCleanup(error: unknown, cleanups: Array<
   throw error;
 }
 
-export function localPreservedFileAccessArgs(file: string, localUser: string, runtimeUser: string, image: string, mode = localUser === runtimeUser ? 0o600 : 0o660) {
+export function localPreservedFileAccessArgs(file: string, localUser: string, runtimeUser: string, image: string, mode = localUser === runtimeUser ? 0o600 : 0o660, expected?: { dev: number; ino: number }) {
   const uid = Number(localUser.split(":")[0]);
   const gid = Number(runtimeUser.split(":")[1]);
   // Docker provides the ownership operation; the unprivileged CLI keeps ownership.
   // Owner access supports ordinary local sessions, group access supports SSH's UID.
-  const script = `const fs = require("node:fs"); const fd = fs.openSync("/file", fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); const s = fs.fstatSync(fd); if (!s.isFile() || s.nlink !== 1) throw new Error("Unsafe preserved file"); fs.fchownSync(fd, ${uid}, ${gid}); fs.fchmodSync(fd, ${mode}); fs.closeSync(fd);`;
+  const identityCheck = expected ? `if (s.dev !== ${expected.dev} || s.ino !== ${expected.ino}) process.exit(0);` : "";
+  const script = `const fs = require("node:fs"); const fd = fs.openSync("/file", fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); const s = fs.fstatSync(fd); if (!s.isFile() || s.nlink !== 1) throw new Error("Unsafe preserved file"); ${identityCheck} fs.writeSync(1, JSON.stringify({ dev: s.dev, ino: s.ino, uid: s.uid, gid: s.gid, mode: s.mode & 0o777 })); fs.fchownSync(fd, ${uid}, ${gid}); fs.fchmodSync(fd, ${mode}); fs.closeSync(fd);`;
   return ["run", "--rm", "--network", "none", "--read-only", "--security-opt", "no-new-privileges", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--cap-add", "DAC_OVERRIDE", "--user", "0:0", "--volume", `${file}:/file:rw`, image, "node", "-e", script];
 }
 

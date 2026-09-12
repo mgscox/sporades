@@ -4365,9 +4365,12 @@ async function startContainerSession(options: LooseRecord) {
       if (!target) continue;
       const info = await lstat(target);
       if (info.uid !== desiredUid || info.gid !== desiredGid || (info.mode & 0o777) !== desiredMode) {
-        previousFileAccess.push({ host: target, uid: info.uid, gid: info.gid, mode: info.mode & 0o777, dev: info.dev, ino: info.ino });
-        runDocker(localPreservedFileAccessArgs(target, localUser, fileUser, SPORADES_BASE_IMAGE.image), options.projectDir,
-          "Failed to prepare preserved file access.", "Check Docker can adjust the declared preserved file for the local and SSH runtime users.");
+        const access = spawnSync("docker", localPreservedFileAccessArgs(target, localUser, fileUser, SPORADES_BASE_IMAGE.image), { cwd: options.projectDir, encoding: "utf8" });
+        // The helper reports the inode it actually opened before mutation, even
+        // on a later chmod/chown failure. Docker's inode namespace may differ
+        // from the CLI host, so use that same namespace during rollback.
+        if (access.stdout?.trim()) previousFileAccess.push({ host: target, ...JSON.parse(access.stdout) });
+        if (access.status !== 0) throw commandError("Failed to prepare preserved file access.", "Check Docker can adjust the declared preserved file for the local and SSH runtime users.");
       }
     }
 
@@ -4458,9 +4461,9 @@ async function startContainerSession(options: LooseRecord) {
       for (const previous of previousFileAccess.reverse()) {
         try {
           const current = await lstat(previous.host).catch((error) => { if (error.code !== "ENOENT") throw error; return null; });
-          if (!current || current.dev !== previous.dev || current.ino !== previous.ino) continue;
+          if (!current) continue;
           const owner = `${previous.uid}:${previous.gid}`;
-          runDocker(localPreservedFileAccessArgs(previous.host, owner, owner, SPORADES_BASE_IMAGE.image, previous.mode), options.projectDir,
+          runDocker(localPreservedFileAccessArgs(previous.host, owner, owner, SPORADES_BASE_IMAGE.image, previous.mode, previous), options.projectDir,
             "Failed to restore preserved file access.", "Repair the previous runtime's preserved-file permissions before restarting it.");
         } catch { rollbackFailures.push("preserved-file-access"); }
       }

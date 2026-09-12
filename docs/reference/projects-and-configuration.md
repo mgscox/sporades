@@ -648,6 +648,9 @@ Do not remove a journal while its candidate may still be running.
 Local bindings retain pending snapshot cleanup paths until deletion succeeds.
 A later deployment or Container removal retries that cleanup.
 
+Preserved storage must have a single link so ownership and rollback operations
+cannot affect an unrelated pathname.
+
 Edit the file contents in place when editing a bind-mounted file. Replacing its
 inode with an editor's atomic-save operation requires restarting the container
 to refresh the bind mount.
@@ -655,8 +658,8 @@ to refresh the bind mount.
 Paths are normalized using Node path resolution. They must stay under the
 project root and cannot collide with `.sporades/`, `public/`, `data/`, the server
 or legacy client bundles, `index.html`, `sporades.json`, or Server env. Only
-regular files are accepted: directories, symlinks (including parent symlinks),
-hard links, conflicting paths, and paths incompatible with the archive or
+regular source files (including hard links) are accepted: directories, symlinks (including parent symlinks),
+conflicting paths, and paths incompatible with the archive or
 container mount format are rejected. Every declared source must exist at local
 build time, including preserved seeds; failure names the file before upload.
 Omitting `deploy.files` keeps the existing payload unchanged.

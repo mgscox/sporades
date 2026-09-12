@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, mkdir, readFile, writeFile, rm, symlink, link, stat, open, readdir } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm, symlink, link, stat, open, readdir, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { beginPreservedFileAttempt, finishPreservedFileAttempt, buildDeployFiles, resolveDeployFiles, preparePreservedFiles, deployFileMounts, assertPreservedDeployFile, rollbackPreservedFiles, localPreservedFileAccessArgs, rethrowAfterDeployCleanup } from "../dist/deploy-files.js";
@@ -183,3 +183,34 @@ test("deploy.files journals seed ownership before publication and blocks interru
     await finishPreservedFileAttempt(retry);
   });
 });
+
+
+test("deploy.files snapshots regular hard-linked source files", async () => temporary(async (root) => {
+  await writeFile(path.join(root, "settings.json"), "linked source");
+  await link(path.join(root, "settings.json"), path.join(root, "alias.json"));
+  const files = await buildDeployFiles(root, [{ path: "settings.json" }]);
+  assert.equal(files[0].contents.toString(), "linked source");
+}));
+
+test("permission rollback uses the helper's actual inode and skips later replacements", async () => temporary(async (root) => {
+  const target = path.join(root, "settings.json");
+  await writeFile(target, "old inode", { mode: 0o600 });
+  const old = await stat(target);
+  await writeFile(path.join(root, "replacement"), "atomic save", { mode: 0o640 });
+  await rename(path.join(root, "replacement"), target);
+  const owner = `${process.getuid()}:${process.getgid()}`;
+  const run = (args) => spawnSync(process.execPath, ["-e", args.at(-1).replace('"/file"', JSON.stringify(target))], { encoding: "utf8" });
+  const grant = run(localPreservedFileAccessArgs(target, owner, owner, "test", 0o660));
+  assert.equal(grant.status, 0, grant.stderr);
+  const actual = JSON.parse(grant.stdout);
+  assert.notEqual(actual.ino, old.ino);
+  assert.equal(actual.ino, (await stat(target)).ino);
+  assert.equal(actual.mode, 0o640);
+  const restoreArgs = localPreservedFileAccessArgs(target, owner, owner, "test", actual.mode, actual);
+  assert.equal(run(restoreArgs).status, 0);
+  assert.equal((await stat(target)).mode & 0o777, 0o640);
+  await writeFile(path.join(root, "newer"), "another save", { mode: 0o600 });
+  await rename(path.join(root, "newer"), target);
+  assert.equal(run(restoreArgs).status, 0);
+  assert.equal((await stat(target)).mode & 0o777, 0o600);
+}));

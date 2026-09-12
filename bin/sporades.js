@@ -58566,7 +58566,7 @@ async function assertDeployFile(root, relative, recoverSeed = false) {
         }
       }
     }
-    if (info2.isSymbolicLink() || (index < parts.length - 1 ? !info2.isDirectory() : !info2.isFile() || info2.nlink !== 1)) {
+    if (info2.isSymbolicLink() || (index < parts.length - 1 ? !info2.isDirectory() : !info2.isFile() || recoverSeed && info2.nlink !== 1)) {
       throw new Error(`deploy.files requires regular files without symlinks: ${relative}`);
     }
   }
@@ -58711,10 +58711,11 @@ async function rethrowAfterDeployCleanup(error, cleanups) {
   if (failures.length) throw new AggregateError([error, ...failures], "Deployment failed and cleanup is incomplete.");
   throw error;
 }
-function localPreservedFileAccessArgs(file, localUser, runtimeUser, image, mode = localUser === runtimeUser ? 384 : 432) {
+function localPreservedFileAccessArgs(file, localUser, runtimeUser, image, mode = localUser === runtimeUser ? 384 : 432, expected) {
   const uid = Number(localUser.split(":")[0]);
   const gid = Number(runtimeUser.split(":")[1]);
-  const script = `const fs = require("node:fs"); const fd = fs.openSync("/file", fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); const s = fs.fstatSync(fd); if (!s.isFile() || s.nlink !== 1) throw new Error("Unsafe preserved file"); fs.fchownSync(fd, ${uid}, ${gid}); fs.fchmodSync(fd, ${mode}); fs.closeSync(fd);`;
+  const identityCheck = expected ? `if (s.dev !== ${expected.dev} || s.ino !== ${expected.ino}) process.exit(0);` : "";
+  const script = `const fs = require("node:fs"); const fd = fs.openSync("/file", fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); const s = fs.fstatSync(fd); if (!s.isFile() || s.nlink !== 1) throw new Error("Unsafe preserved file"); ${identityCheck} fs.writeSync(1, JSON.stringify({ dev: s.dev, ino: s.ino, uid: s.uid, gid: s.gid, mode: s.mode & 0o777 })); fs.fchownSync(fd, ${uid}, ${gid}); fs.fchmodSync(fd, ${mode}); fs.closeSync(fd);`;
   return ["run", "--rm", "--network", "none", "--read-only", "--security-opt", "no-new-privileges", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--cap-add", "DAC_OVERRIDE", "--user", "0:0", "--volume", `${file}:/file:rw`, image, "node", "-e", script];
 }
 async function removeDeployFileSnapshot(runtimeDir, snapshot) {
@@ -114898,13 +114899,9 @@ async function startContainerSession(options) {
       if (!target) continue;
       const info2 = await lstat8(target);
       if (info2.uid !== desiredUid || info2.gid !== desiredGid || (info2.mode & 511) !== desiredMode) {
-        previousFileAccess.push({ host: target, uid: info2.uid, gid: info2.gid, mode: info2.mode & 511, dev: info2.dev, ino: info2.ino });
-        runDocker(
-          localPreservedFileAccessArgs(target, localUser, fileUser, SPORADES_BASE_IMAGE.image),
-          options.projectDir,
-          "Failed to prepare preserved file access.",
-          "Check Docker can adjust the declared preserved file for the local and SSH runtime users."
-        );
+        const access = spawnSync2("docker", localPreservedFileAccessArgs(target, localUser, fileUser, SPORADES_BASE_IMAGE.image), { cwd: options.projectDir, encoding: "utf8" });
+        if (access.stdout?.trim()) previousFileAccess.push({ host: target, ...JSON.parse(access.stdout) });
+        if (access.status !== 0) throw commandError("Failed to prepare preserved file access.", "Check Docker can adjust the declared preserved file for the local and SSH runtime users.");
       }
     }
     containerReplacementFault("publication");
@@ -115006,10 +115003,10 @@ async function startContainerSession(options) {
             if (error2.code !== "ENOENT") throw error2;
             return null;
           });
-          if (!current2 || current2.dev !== previous.dev || current2.ino !== previous.ino) continue;
+          if (!current2) continue;
           const owner = `${previous.uid}:${previous.gid}`;
           runDocker(
-            localPreservedFileAccessArgs(previous.host, owner, owner, SPORADES_BASE_IMAGE.image, previous.mode),
+            localPreservedFileAccessArgs(previous.host, owner, owner, SPORADES_BASE_IMAGE.image, previous.mode, previous),
             options.projectDir,
             "Failed to restore preserved file access.",
             "Repair the previous runtime's preserved-file permissions before restarting it."

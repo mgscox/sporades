@@ -26327,7 +26327,7 @@ async function assertDeployFile(root, relative, recoverSeed = false) {
         }
       }
     }
-    if (info.isSymbolicLink() || (index < parts.length - 1 ? !info.isDirectory() : !info.isFile() || info.nlink !== 1)) {
+    if (info.isSymbolicLink() || (index < parts.length - 1 ? !info.isDirectory() : !info.isFile() || recoverSeed && info.nlink !== 1)) {
       throw new Error(`deploy.files requires regular files without symlinks: ${relative}`);
     }
   }
