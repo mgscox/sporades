@@ -44158,6 +44158,8 @@ async function registerCapsule(request) {
   let sealedServerEnv = null;
   let priorRuntime = null;
   let admissionError = null;
+  let registrationCommitted = false;
+  const recoveryErrors = [];
   let priorRoute = null;
   let routeAttempted = false;
   let claimWritten = Boolean(pendingClaim);
@@ -44191,6 +44193,7 @@ async function registerCapsule(request) {
           await writeUnavailableRoute(registration.lifecycle);
           sealedServerEnv = await ensureHostSealedEnvKeyPair(registration, existing);
           await writeRegistryRecordAtomic(registration.registryRecord, { ...reactivateRegistrationRecord(existing, sealedServerEnv), aliasDomains: registration.aliasDomains, route: { tls: registration.route.tls } });
+          registrationCommitted = true;
           reactivated = true;
           return;
         }
@@ -44209,11 +44212,15 @@ async function registerCapsule(request) {
       await writeUnavailableRoute(registration.lifecycle);
       sealedServerEnv = await ensureHostSealedEnvKeyPair(registration);
       await writeRegistryRecordAtomic(registration.registryRecord, createRegistrationRecord(registration, sealedServerEnv));
+      registrationCommitted = true;
     });
   } catch (error) {
-    admissionError = error;
+    if (registrationCommitted) {
+      recoveryErrors.push(`Registry lock cleanup: ${errorDetails(error).message}`);
+    } else {
+      admissionError = error;
+    }
   }
-  const recoveryErrors = [];
   if (admissionError && routeAttempted && priorRoute) {
     try {
       await restoreReleaseInstallRoute(priorRoute, true);

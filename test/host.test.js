@@ -14512,3 +14512,45 @@ test("custom domains always settle a quiesced runtime after registration rollbac
     await assert.rejects(readFile(claimPath), { code: "ENOENT" });
   });
 });
+
+
+test("custom domains preserve committed registration when registry lock cleanup fails", async () => {
+  for (const reactivate of [false, true]) {
+    await withTempDir(async (dir) => {
+      const { remoteRoot, request, invoke: invokeHelper } = await customDomainFixture(dir);
+      const invoke = (input = request, env = {}) => invokeHelper(input, { FAKE_DOCKER_RUNNING: "false", ...env });
+      if (reactivate) {
+        assert.equal(JSON.parse((await invoke()).stdout).ok, true);
+        assert.equal(JSON.parse((await invoke({ ...request, action: "capsule.unregister" })).stdout).ok, true);
+      }
+      const hook = path.join(dir, "fail-lock-cleanup.mjs");
+      await writeFile(hook, `
+import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+const original = fs.rm;
+fs.rm = async (target, ...args) => {
+  if (String(target).endsWith("/registry/.lock")) throw new Error("Injected registry lock cleanup failure");
+  return original(target, ...args);
+};
+syncBuiltinESMExports();
+`);
+      const failed = JSON.parse((await invoke(request, { NODE_OPTIONS: "--import=" + hook })).stdout);
+      assert.equal(failed.ok, false);
+      assert.match(failed.error.hint, /Registration committed.*Registry lock cleanup: Injected registry lock cleanup failure/);
+      const registry = path.join(remoteRoot, "hosts", request.host.domain, "registry");
+      const record = JSON.parse(await readFile(path.join(registry, "capsules", "team-notes.json"), "utf8"));
+      assert.notEqual(record.status, "unregistered");
+      assert.deepEqual(record.aliasDomains, request.registration.aliasDomains);
+      const route = path.join(remoteRoot, "caddy", "hosts", request.host.domain, "team-notes.caddy");
+      assert.match(await readFile(route, "utf8"), /fourteen\.example/);
+      const claim = path.join(registry, "registration-claims", "team-notes.json");
+      assert.deepEqual(JSON.parse(await readFile(claim, "utf8")).aliasDomains, request.registration.aliasDomains);
+      // Simulate operator repair of the failed lock cleanup before retrying.
+      await rm(path.join(registry, ".lock"), { recursive: true });
+      const repaired = JSON.parse((await invoke()).stdout);
+      assert.equal(repaired.ok, true, JSON.stringify(repaired));
+      await assert.rejects(readFile(claim), { code: "ENOENT" });
+      assert.match(await readFile(route, "utf8"), /fourteen\.example/);
+    });
+  }
+});

@@ -65,3 +65,6 @@ storage problem, then retry the original registration. Omitted alias flags
 reuse the pending registration's alias list; changing that list is rejected
 until recovery completes. Successful retry commits the registry and removes
 the pending reservation. Other Capsules cannot claim those names meanwhile.
+A registry lock cleanup failure after commit preserves the committed route and
+reservation. Repair the reported lock cleanup problem, then retry registration
+to complete recovery.
