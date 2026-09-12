@@ -20,9 +20,11 @@ export function resolveDeployFiles(value) {
         if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
             throw new Error(`deploy.files path escapes the app root: ${entry.path}`);
         }
+        // Reserve case aliases on every platform so macOS sources cannot expose managed trees.
+        const reservedCandidate = resolved.toLowerCase();
         for (const reserved of RESERVED) {
             const target = path.resolve(root, reserved);
-            if (resolved === target || resolved.startsWith(`${target}${path.sep}`) || target.startsWith(`${resolved}${path.sep}`)) {
+            if (reservedCandidate === target || reservedCandidate.startsWith(`${target}${path.sep}`) || target.startsWith(`${reservedCandidate}${path.sep}`)) {
                 throw new Error(`deploy.files path collides with Sporades-managed files: ${entry.path}`);
             }
         }

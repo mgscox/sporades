@@ -25,6 +25,16 @@ test("deploy.files resolves contained paths and defaults to replace", () => {
   }
 });
 
+test("deploy.files rejects case aliases of managed paths before reading source files", async () => temporary(async (root) => {
+  for (const file of [".SPORADES/data.db", "Public/index.html", "DATA/settings.json", "Server.MJS", "CLIENT.JS", "INDEX.HTML", "Sporades.JSON", ".ENV.SPORADES.SERVER", "config/../PUBLIC/asset"]) {
+    assert.throws(() => resolveDeployFiles([{ path: file }]), /collides with Sporades-managed files/);
+    await assert.rejects(buildDeployFiles(root, [{ path: file }]), /collides with Sporades-managed files/);
+  }
+  assert.deepEqual(resolveDeployFiles([{ path: "Publications/config.json" }, { path: "nested/Public/settings.json" }]), [
+    { path: "Publications/config.json", update: "replace" }, { path: "nested/Public/settings.json", update: "replace" },
+  ]);
+}));
+
 test("missing deploy.files fails the local bundle before compilation; symlink files and parents fail", async () => temporary(async (root) => {
   await assert.rejects(createBundle(root, { deploy: { files: [{ path: "missing.json" }] } }), /Cannot build deploy.files entry missing.json/);
   await mkdir(path.join(root, "config"));

@@ -695,7 +695,9 @@ starting it. A surviving local attempt journal also blocks stop, restart, and re
 
 Paths are normalized using Node path resolution. They must stay under the
 project root and cannot collide with `.sporades/`, `public/`, `data/`, the server
-or legacy client bundles, `index.html`, `sporades.json`, or Server env. Only
+or legacy client bundles, `index.html`, `sporades.json`, or Server env. These
+reserved names are matched without case sensitivity on every platform, so
+`.SPORADES/` and `Public/` are also excluded. Only
 regular source files (including hard links) are accepted: directories, symlinks (including parent symlinks),
 conflicting paths, and paths incompatible with the archive or
 container mount format are rejected. Every declared source must exist at local
