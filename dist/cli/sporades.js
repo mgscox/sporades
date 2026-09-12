@@ -3729,7 +3729,7 @@ async function startContainerSession(options) {
     const deployReleaseRoot = path.join(runtimeDir, "deploy-files", randomBytes(16).toString("hex"));
     const preservedRoot = path.join(runtimeDir, "preserved-files");
     const createdSeeds = [];
-    const seedJournal = await beginPreservedFileAttempt(preservedRoot, deployReleaseRoot, bundle.deployFiles.some((file) => file.update === "preserve"));
+    const seedJournal = await beginPreservedFileAttempt(preservedRoot, deployReleaseRoot, bundle.deployFiles.length > 0);
     try {
         for (const file of bundle.deployFiles) {
             const destination = path.join(deployReleaseRoot, file.path);

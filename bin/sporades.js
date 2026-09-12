@@ -114797,7 +114797,7 @@ async function startContainerSession(options) {
   const deployReleaseRoot = path13.join(runtimeDir, "deploy-files", randomBytes8(16).toString("hex"));
   const preservedRoot = path13.join(runtimeDir, "preserved-files");
   const createdSeeds = [];
-  const seedJournal = await beginPreservedFileAttempt(preservedRoot, deployReleaseRoot, bundle.deployFiles.some((file) => file.update === "preserve"));
+  const seedJournal = await beginPreservedFileAttempt(preservedRoot, deployReleaseRoot, bundle.deployFiles.length > 0);
   try {
     for (const file of bundle.deployFiles) {
       const destination = path13.join(deployReleaseRoot, file.path);

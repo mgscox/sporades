@@ -5151,3 +5151,36 @@ fs.promises.rm = async function(file, ...args) {
     }
   });
 });
+
+test("local deploy.files journals replacement-only snapshots before process exit", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "snapshot-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "snapshot-island"));
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.deploy.files = [{ path: "settings.json" }];
+    await writeFile(configPath, JSON.stringify(config));
+    await writeFile(path.join(projectDir, "settings.json"), "snapshot bytes");
+    const docker = await installFakeDocker(dir, "snapshot-candidate");
+    const preload = path.join(dir, "exit-snapshot.mjs");
+    await writeFile(preload, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const original = fs.promises.writeFile;
+fs.promises.writeFile = async function(file, ...args) {
+  const result = await original.call(this, file, ...args);
+  if (String(file).includes('/.sporades/deploy-files/')) process.exit(17);
+  return result;
+}; syncBuiltinESMExports();`);
+    const failed = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...docker.env, NODE_OPTIONS: `--import=${preload}` } });
+    assert.equal(failed.code, 17);
+    const journal = path.join(projectDir, ".sporades/deploy-file-attempt.jsonl");
+    const record = JSON.parse((await readFile(journal, "utf8")).trim());
+    assert.equal(await readFile(path.join(record.release, "settings.json"), "utf8"), "snapshot bytes");
+    const before = await readdir(path.join(projectDir, ".sporades/deploy-files"));
+    const retry = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.notEqual(retry.code, 0);
+    assert.match(retry.stdout + retry.stderr, /requires recovery/);
+    assert.deepEqual(await readdir(path.join(projectDir, ".sporades/deploy-files")), before);
+  });
+});

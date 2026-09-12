@@ -634,14 +634,16 @@ to `replace` also revokes the inactive copy’s runtime group access. Failed rep
 permissions before restarting the old Container. Removing a local Container also removes its
 replacement snapshot and revokes runtime group access, while preserving stored edits.
 
-Seed attempts are recorded before publication in `deploy-file-attempt.jsonl`
+Local snapshot attempts and Hosted seed attempts are recorded before publication in `deploy-file-attempt.jsonl`
 under the local `.sporades/` directory or the Hosted Capsule directory. Successful
 installation or completed rollback removes the journal. If the deployment process
 exits unexpectedly or recovery is incomplete, a subsequent deployment stops with
 the journal path instead of silently adopting uncommitted seed bytes. Recovery is
 explicit: stop any retained candidate runtime, back up the journal and its listed
 files, and reconcile the release/binding with the journal's release and per-file
-inode/hash records. Keep edits; remove an unchanged seed only if its attempt did
+inode/hash records. For replacement-only attempts, the journal records the candidate
+snapshot root; remove that snapshot only after proving no retained Container uses
+it. Keep edits; remove an unchanged seed only if its attempt did
 not commit. Remove the journal after that reconciliation, then retry deployment.
 Do not remove a journal while its candidate may still be running.
 

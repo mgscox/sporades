@@ -9705,6 +9705,7 @@ test("sporades host helper reports no release and failed starts with unavailable
     const releaseDir = path.join(capsuleDir, "releases", "20260630T221500Z-feedface");
     await mkdir(releaseDir, { recursive: true });
     await symlink(releaseDir, path.join(capsuleDir, "current"));
+    await writeFile(registryRecordPath, JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev", currentRelease: { id: path.basename(releaseDir) } }));
     const failedStart = await runHostHelper(request, { cwd: dir, env: docker.env });
     assert.equal(JSON.parse(failedStart.stdout).ok, false);
     assert.equal(JSON.parse(failedStart.stdout).error.message, "Hosted Capsule container did not stay running.");
@@ -9989,6 +9990,7 @@ test("sporades host helper fails start with guidance when the base image cannot 
     await mkdir(path.dirname(registryRecordPath), { recursive: true });
     await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
     await symlink(releaseDir, path.join(capsuleDir, "current"));
+    await writeFile(registryRecordPath, JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev", currentRelease: { id: path.basename(releaseDir) } }));
     const docker = await installFakeDocker(dir, {
       env: {
         FAKE_DOCKER_IMAGE_INSPECT_STATUS: "1",
@@ -10046,6 +10048,7 @@ test("sporades host helper fails start when Docker does not report a usable loop
     await mkdir(path.dirname(registryRecordPath), { recursive: true });
     await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
     await symlink(releaseDir, path.join(capsuleDir, "current"));
+    await writeFile(registryRecordPath, JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev", currentRelease: { id: path.basename(releaseDir) } }));
     const docker = await installFakeDocker(dir, { env: { FAKE_DOCKER_PUBLISHED_PORT: "0.0.0.0:49153" } });
 
     const start = await runHostHelper(
@@ -14750,5 +14753,42 @@ fs.promises.rm = async function(file, ...args) {
     assert.equal(await readFile(path.join(fixture.capsuleDir, "preserved-files/new.json"), "utf8"), "retained candidate");
     await stat(fixture.release.directories.release);
     await stat(path.join(fixture.capsuleDir, "deploy-file-attempt.jsonl"));
+  });
+});
+
+test("Hosted deploy.files preflights recorded releases and preserved files before start or restart", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleInstallFixture(dir, { rootName: "preflight-files", previousReleaseId: null,
+      deployFiles: [{ path: "settings.json", update: "preserve" }] });
+    const docker = await installFakeDocker(path.join(dir, "preflight-docker"));
+    const request = { host: { alias: "personal", domain: fixture.domain, remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname } };
+    const installed = await runHostHelper({ ...request, action: "capsule.release.install", release: fixture.release }, { cwd: dir, env: docker.env });
+    assert.equal(installed.code, 0, installed.stdout + installed.stderr);
+    const stored = path.join(fixture.capsuleDir, "preserved-files/settings.json");
+    const original = await readFile(fixture.registryRecordPath);
+    const route = path.join(fixture.remoteRoot, "caddy/hosts", fixture.domain, `${fixture.subname}.caddy`);
+    const routeBefore = await readFile(route);
+    for (const failure of ["missing", "unsafe", "unrecorded"]) {
+      await rm(stored, { force: true });
+      await writeFile(fixture.registryRecordPath, original);
+      if (failure === "unsafe") await symlink(path.join(fixture.release.directories.release, "settings.json"), stored);
+      if (failure === "unrecorded") {
+        await writeFile(stored, "retained seed");
+        const record = JSON.parse(original);
+        record.currentRelease = null; record.releases = [];
+        await writeFile(fixture.registryRecordPath, JSON.stringify(record));
+        await writeFile(path.join(fixture.capsuleDir, "deploy-file-attempt.jsonl"), JSON.stringify({ release: fixture.release.id }));
+      }
+      const registryBefore = await readFile(fixture.registryRecordPath);
+      const before = (await docker.calls()).length;
+      for (const action of ["capsule.start", "capsule.restart"]) {
+        const failed = await runHostHelper({ ...request, action }, { cwd: dir, env: docker.env });
+        assert.equal(JSON.parse(failed.stdout).ok, false, failed.stdout);
+        if (failure === "unrecorded") assert.match(failed.stdout, /not recorded/);
+        assert.deepEqual(await readFile(fixture.registryRecordPath), registryBefore);
+        assert.deepEqual(await readFile(route), routeBefore);
+      }
+      assert.equal((await docker.calls()).slice(before).filter((call) => ["stop", "rm", "run"].includes(call.args[0])).length, 0);
+    }
   });
 });

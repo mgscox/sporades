@@ -45243,7 +45243,8 @@ async function startCapsule(request, options = {}) {
     { ...options.trustedRegistryLifecycle === true ? { ignoreProvidedLifecycle: true } : {}, releaseId }
   );
   const recordedRelease = normaliseReleaseHistory(registryRecord).find((entry) => entry.id === releaseId);
-  for (const file of resolveDeployFiles(recordedRelease?.source?.deployFiles)) {
+  if (!recordedRelease) throw helperError("Current Hosted release is not recorded.", "Reconcile the interrupted release install and its deploy-file-attempt.jsonl journal before starting the Capsule.");
+  for (const file of resolveDeployFiles(recordedRelease.source?.deployFiles)) {
     if (file.update === "preserve") await assertPreservedDeployFile(path5.join(paths.capsule, "preserved-files"), file.path);
   }
   if (options.containerQuiesced !== true) stopAndRemoveContainer(lifecycle.container.name);
@@ -45761,10 +45762,9 @@ async function restartCapsule(request, options = {}) {
     registryRecord,
     options.trustedRegistryLifecycle === true ? { ignoreProvidedLifecycle: true } : {}
   );
-  if (options.containerQuiesced !== true) stopAndRemoveContainer(lifecycle.container.name);
   const startResult = await startCapsule(request, {
     write: false,
-    containerQuiesced: true,
+    containerQuiesced: options.containerQuiesced === true,
     dataPrepared: options.dataPrepared === true,
     trustedRegistryLifecycle: true
   });
