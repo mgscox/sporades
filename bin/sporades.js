@@ -58609,7 +58609,14 @@ async function readDeployFile(root, relative) {
       }
       file = await open(`/proc/self/fd/${directory.fd}/${parts.at(-1)}`, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
     } else {
-      throw new Error("Secure deploy.files reads require macOS or Linux.");
+      const target = path.join(root, relative);
+      file = await open(target, constants.O_RDONLY | constants.O_NONBLOCK);
+      handles.push(file);
+      const opened = await file.stat();
+      await assertDeployFile(root, relative);
+      const named = await lstat(target);
+      if (!opened.isFile() || named.dev !== opened.dev || named.ino !== opened.ino) throw new Error(`deploy.files source changed during the build: ${relative}`);
+      return await file.readFile();
     }
     handles.push(file);
     await checkRoot?.();
@@ -58806,21 +58813,17 @@ async function rethrowAfterDeployCleanup(error, cleanups) {
   if (failures.length) throw new AggregateError([error, ...failures], "Deployment failed and cleanup is incomplete.");
   throw error;
 }
-function parseUserIdentity(user) {
-  const [uid, gid] = user.split(":").map(Number);
-  return { uid, gid };
-}
-function localPreservedFileAccess(localUser, fileUser) {
-  return { uid: parseUserIdentity(localUser).uid, gid: parseUserIdentity(fileUser).gid, mode: localUser === fileUser ? 384 : 432 };
-}
-function preservedFileAccessMatches(info2, desired) {
-  return info2.uid === desired.uid && info2.gid === desired.gid && (info2.mode & 511) === desired.mode;
-}
-function localPreservedFileAccessArgs(file, localUser, runtimeUser, image, mode = localPreservedFileAccess(localUser, runtimeUser).mode, expected) {
-  const { uid, gid } = localPreservedFileAccess(localUser, runtimeUser);
-  const identityCheck = expected ? `if (s.dev !== ${expected.dev} || s.ino !== ${expected.ino}) process.exit(0);` : "";
-  const script = `const fs = require("node:fs"); const fd = fs.openSync("/file", fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); const s = fs.fstatSync(fd); if (!s.isFile() || s.nlink !== 1) throw new Error("Unsafe preserved file"); ${identityCheck} fs.writeSync(1, JSON.stringify({ dev: s.dev, ino: s.ino, uid: s.uid, gid: s.gid, mode: s.mode & 0o777 })); fs.fchownSync(fd, ${uid}, ${gid}); fs.fchmodSync(fd, ${mode}); fs.closeSync(fd);`;
-  return ["run", "--rm", "--network", "none", "--read-only", "--security-opt", "no-new-privileges", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--cap-add", "DAC_OVERRIDE", "--user", "0:0", "--volume", `${file}:/file:rw`, image, "node", "-e", script];
+async function preparePreservedFileStorage(preservedRoot, relative) {
+  const target = await assertPreservedDeployFile(preservedRoot, relative);
+  const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const identity = await handle.stat();
+    if (!identity.isFile() || identity.nlink !== 1) throw new Error(`Unsafe preserved deploy.files storage: ${relative}`);
+    if ((identity.mode & 511) !== 384) await handle.chmod(384);
+  } finally {
+    await handle.close();
+  }
+  return target;
 }
 async function removeDeployFileSnapshot(runtimeDir, snapshot) {
   if (typeof snapshot === "string" && path.dirname(snapshot) === path.join(runtimeDir, "deploy-files") && /^[a-f0-9]{32}$/.test(path.basename(snapshot))) {
@@ -115029,7 +115032,6 @@ async function startContainerSession(options) {
   let candidateOwnershipProven = false;
   let committedConsumer = null;
   let binding = null;
-  const previousFileAccess = [];
   try {
     await recordPreservedFileAttempt(seedJournal, {
       candidate: { name: containerName, transaction: containerTransactionToken },
@@ -115042,20 +115044,7 @@ async function startContainerSession(options) {
         runDocker(["stop", rollbackName], options.projectDir, "Failed to stop the staged Container replacement.", "Retry after Docker can stop the bound Container.");
       }
     }
-    const localUser = localContainerRuntimeUser();
-    const activePreserved = new Set(bundle.deployFiles.filter((entry) => entry.update === "preserve").map((entry) => entry.path.normalize("NFC")));
-    const previouslyPreserved = resolveDeployFiles(existingBinding?.deployFiles).filter((entry) => entry.update === "preserve").map((entry) => entry.path.normalize("NFC"));
-    for (const relative of /* @__PURE__ */ new Set([...activePreserved, ...previouslyPreserved])) {
-      const target = await assertPreservedDeployFile(preservedRoot, relative).catch((error) => {
-        if (error.code === "ENOENT" && !activePreserved.has(relative)) return null;
-        throw error;
-      });
-      if (!target) continue;
-      await ensureLocalPreservedFileAccess(options.projectDir, target, localUser, activePreserved.has(relative) ? runtimeUser : localUser, {
-        message: "Failed to prepare preserved file access.",
-        hint: "Check Docker can adjust the declared preserved file for the local and SSH runtime users."
-      }, previousFileAccess);
-    }
+    await prepareLocalPreservedFiles(options, { deployFiles: bundle.deployFiles }, "Check the declared preserved file is a regular owner-writable file, then retry `sporades deploy`.");
     containerReplacementFault("publication");
     rollbackBundlePublication = await bundle.publishLegacy();
     containerId = runDocker(
@@ -115148,31 +115137,11 @@ async function startContainerSession(options) {
     } catch {
       rollbackFailures.push("binding");
     }
-    if (!candidateRetained) {
-      for (const previous of previousFileAccess.reverse()) {
-        try {
-          const current2 = await lstat8(previous.host).catch((error2) => {
-            if (error2.code !== "ENOENT") throw error2;
-            return null;
-          });
-          if (!current2) continue;
-          const owner = `${previous.uid}:${previous.gid}`;
-          runDocker(
-            localPreservedFileAccessArgs(previous.host, owner, owner, SPORADES_BASE_IMAGE.image, previous.mode, previous),
-            options.projectDir,
-            "Failed to restore preserved file access.",
-            "Repair the previous runtime's preserved-file permissions before restarting it."
-          );
-        } catch {
-          rollbackFailures.push("preserved-file-access");
-        }
-      }
-    }
     if (!candidateRetained && existingBinding) {
       try {
-        await prepareLocalPreservedFileAccess(options, existingBinding);
+        await prepareLocalPreservedFiles(options, existingBinding);
       } catch {
-        rollbackFailures.push("preserved-file-access");
+        rollbackFailures.push("preserved-files");
       }
     }
     if (oldRenamed) {
@@ -115181,7 +115150,7 @@ async function startContainerSession(options) {
       } catch {
         rollbackFailures.push("container-name");
       }
-      if (oldWasRunning && !rollbackFailures.includes("preserved-file-access")) {
+      if (oldWasRunning && !rollbackFailures.includes("preserved-files")) {
         try {
           runDocker(["start", oldName], options.projectDir, "", "");
         } catch {
@@ -116864,24 +116833,15 @@ async function stopLocalContainerSession(options) {
   );
   return containerLifecycleSummary("stopped", binding);
 }
-async function prepareLocalPreservedFileAccess(options, binding) {
-  const preservedRoot = path13.join(options.projectDir, ".sporades", "preserved-files");
-  const localUser = localContainerRuntimeUser();
-  const runtimeUser = binding.ssh?.enabled ? baseImageRuntimeUser() : localUser;
+async function prepareLocalPreservedFiles(options, binding, hint = "Restore a regular owner-writable preserved file before restarting the bound Container.") {
+  const preservedRoot = localPreservedFilesRoot(options);
   for (const relative of new Set(resolveDeployFiles(binding.deployFiles).filter((file) => file.update === "preserve").map((file) => file.path.normalize("NFC")))) {
-    const target = await assertPreservedDeployFile(preservedRoot, relative);
-    await ensureLocalPreservedFileAccess(options.projectDir, target, localUser, runtimeUser, {
-      message: "Failed to restore preserved file access.",
-      hint: "Check Docker can repair file access for the bound Container runtime before restarting."
-    });
+    try {
+      await preparePreservedFileStorage(preservedRoot, relative);
+    } catch (error) {
+      throw commandError("Preserved deploy.files storage is not usable.", hint, { path: relative, cause: errorDetails(error).message });
+    }
   }
-}
-async function ensureLocalPreservedFileAccess(projectDir, target, localUser, fileUser, failure, record) {
-  const info2 = await lstat8(target);
-  if (preservedFileAccessMatches(info2, localPreservedFileAccess(localUser, fileUser))) return;
-  const access = spawnSync2("docker", localPreservedFileAccessArgs(target, localUser, fileUser, SPORADES_BASE_IMAGE.image), { cwd: projectDir, encoding: "utf8" });
-  if (access.stdout?.trim()) record?.push({ host: target, ...JSON.parse(access.stdout) });
-  if (access.status !== 0) throw commandError(failure.message, failure.hint);
 }
 function localPreservedFilesRoot(options) {
   return path13.join(options.projectDir, ".sporades", "preserved-files");
@@ -116960,8 +116920,8 @@ async function reconcileLocalContainerSession(options) {
       actions.push("candidate-snapshot-removed");
     }
     if (binding) {
-      await prepareLocalPreservedFileAccess(options, binding);
-      actions.push("bound-file-access-restored");
+      await prepareLocalPreservedFiles(options, binding);
+      actions.push("bound-files-prepared");
     }
   }
   await finishPreservedFileAttempt(journal);
@@ -116971,7 +116931,7 @@ async function reconcileLocalContainerSession(options) {
 async function restartLocalContainerSession(options) {
   const { binding } = await requireLocalContainerBinding(options, "restart");
   await assertNoLocalDeployFileAttempt(options, "restart");
-  await prepareLocalPreservedFileAccess(options, binding);
+  await prepareLocalPreservedFiles(options, binding);
   const config = await readProjectConfig(options.projectDir);
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
   const serviceState = await startCapsuleServices(capsuleServices, options.projectDir, {
@@ -117034,18 +116994,6 @@ async function removeLocalContainerSession(options) {
       "Check Docker is running, then retry `sporades deploy remove`.",
       true
     );
-    const localUser = localContainerRuntimeUser();
-    for (const file of resolveDeployFiles(binding.deployFiles).filter((entry) => entry.update === "preserve")) {
-      const target = await assertPreservedDeployFile(localPreservedFilesRoot(options), file.path).catch((error) => {
-        if (error.code !== "ENOENT") throw error;
-        return null;
-      });
-      if (!target) continue;
-      await ensureLocalPreservedFileAccess(options.projectDir, target, localUser, localUser, {
-        message: "Failed to revoke preserved file runtime access.",
-        hint: "Retry Container removal after Docker can restore local file access."
-      });
-    }
     for (const snapshot of [...binding.pendingDeployFileCleanup ?? [], binding.deployFilesRoot]) {
       await removeDeployFileSnapshot(path13.join(options.projectDir, ".sporades"), snapshot);
     }

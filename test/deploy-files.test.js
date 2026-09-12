@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { mkdtemp, mkdir, readFile, writeFile, rm, symlink, link, stat, open, readdir, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { preservedDeployFilePath, attemptJournalPath, assertNoPreservedFileAttempt, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, recordPreservedFileAttempt, localPreservedFileAccess, parseUserIdentity, preservedFileAccessMatches, buildDeployFiles, resolveDeployFiles, preparePreservedFiles, deployFileMounts, assertPreservedDeployFile, rollbackPreservedFiles, localPreservedFileAccessArgs, rethrowAfterDeployCleanup } from "../dist/deploy-files.js";
+import { preservedDeployFilePath, attemptJournalPath, assertNoPreservedFileAttempt, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, recordPreservedFileAttempt, preparePreservedFileStorage, buildDeployFiles, resolveDeployFiles, preparePreservedFiles, deployFileMounts, assertPreservedDeployFile, rollbackPreservedFiles, rethrowAfterDeployCleanup } from "../dist/deploy-files.js";
 import { createBundle } from "../dist/bundle-pipeline.js";
 
 async function temporary(fn) {
@@ -111,21 +111,6 @@ test("failed seed transactions remove only newly published unchanged files", asy
   assert.equal(await readFile(preservedDeployFilePath(stored, "replaced.json"), "utf8"), "replacement");
 }));
 
-test("local preserved-file access keeps the CLI owner and grants the SSH runtime group on one mount", () => {
-  const args = localPreservedFileAccessArgs("/project/.sporades/preserved-files/settings.json", "501:20", "10001:10001", "image");
-  assert.equal(args[args.indexOf("--user") + 1], "0:0");
-  assert.equal(args[args.indexOf("--network") + 1], "none");
-  assert.equal(args.filter((arg) => arg === "--volume").length, 1);
-  assert(args.includes("/project/.sporades/preserved-files/settings.json:/file:rw"));
-  assert.match(args.at(-1), /fchownSync\(fd, 501, 10001\)/);
-  assert.match(args.at(-1), /fchmodSync\(fd, 432\)/);
-  const privateArgs = localPreservedFileAccessArgs("/settings.json", "501:20", "501:20", "image");
-  assert.match(privateArgs.at(-1), /fchownSync\(fd, 501, 20\)/);
-  assert.match(privateArgs.at(-1), /fchmodSync\(fd, 384\)/);
-
-});
-
-
 test("seed rollback retains atomic-save replacements made at the claim boundary", async () => temporary(async (root) => {
   const source = path.join(root, "release"); const stored = path.join(root, "stored");
   await mkdir(source); await writeFile(path.join(source, "settings.json"), "seed");
@@ -202,29 +187,6 @@ test("deploy.files snapshots regular hard-linked source files", async () => temp
   await link(path.join(root, "settings.json"), path.join(root, "alias.json"));
   const files = await buildDeployFiles(root, [{ path: "settings.json" }]);
   assert.equal(files[0].contents.toString(), "linked source");
-}));
-
-test("permission rollback uses the helper's actual inode and skips later replacements", async () => temporary(async (root) => {
-  const target = path.join(root, "settings.json");
-  await writeFile(target, "old inode", { mode: 0o600 });
-  const old = await stat(target);
-  await writeFile(path.join(root, "replacement"), "atomic save", { mode: 0o640 });
-  await rename(path.join(root, "replacement"), target);
-  const owner = `${process.getuid()}:${process.getgid()}`;
-  const run = (args) => spawnSync(process.execPath, ["-e", args.at(-1).replace('"/file"', JSON.stringify(target))], { encoding: "utf8" });
-  const grant = run(localPreservedFileAccessArgs(target, owner, owner, "test", 0o660));
-  assert.equal(grant.status, 0, grant.stderr);
-  const actual = JSON.parse(grant.stdout);
-  assert.notEqual(actual.ino, old.ino);
-  assert.equal(actual.ino, (await stat(target)).ino);
-  assert.equal(actual.mode, 0o640);
-  const restoreArgs = localPreservedFileAccessArgs(target, owner, owner, "test", actual.mode, actual);
-  assert.equal(run(restoreArgs).status, 0);
-  assert.equal((await stat(target)).mode & 0o777, 0o640);
-  await writeFile(path.join(root, "newer"), "another save", { mode: 0o600 });
-  await rename(path.join(root, "newer"), target);
-  assert.equal(run(restoreArgs).status, 0);
-  assert.equal((await stat(target)).mode & 0o777, 0o600);
 }));
 
 test("deploy.files never follows source, parent or project-root symlink substitutions", async () => {
@@ -362,11 +324,40 @@ test("attempt journals are readable for reconciliation and block lifecycle actio
   await assertNoPreservedFileAttempt(preservedRoot);
 }));
 
-test("preserved file access policy derives owner, runtime group, and mode from user identities", () => {
-  assert.deepEqual(parseUserIdentity("501:20"), { uid: 501, gid: 20 });
-  assert.deepEqual(localPreservedFileAccess("501:20", "501:20"), { uid: 501, gid: 20, mode: 0o600 });
-  assert.deepEqual(localPreservedFileAccess("501:20", "10001:10001"), { uid: 501, gid: 10001, mode: 0o660 });
-  assert.equal(preservedFileAccessMatches({ uid: 501, gid: 10001, mode: 0o100660 }, localPreservedFileAccess("501:20", "10001:10001")), true);
-  assert.equal(preservedFileAccessMatches({ uid: 501, gid: 20, mode: 0o100660 }, localPreservedFileAccess("501:20", "10001:10001")), false);
-  assert.equal(preservedFileAccessMatches({ uid: 501, gid: 10001, mode: 0o100600 }, localPreservedFileAccess("501:20", "10001:10001")), false);
-});
+test("preserved storage is restored to owner-only mode without ownership changes and rejects unsafe files", async () => temporary(async (root) => {
+  const stored = path.join(root, "preserved");
+  await mkdir(stored, { mode: 0o700 });
+  const target = preservedDeployFilePath(stored, "settings.json");
+  await writeFile(target, "server edit", { mode: 0o664 });
+  assert.equal(await preparePreservedFileStorage(stored, "settings.json"), target);
+  const prepared = await stat(target);
+  assert.equal(prepared.mode & 0o777, 0o600);
+  assert.equal(prepared.uid, process.getuid());
+  assert.equal(await readFile(target, "utf8"), "server edit");
+  await rm(target);
+  await assert.rejects(preparePreservedFileStorage(stored, "settings.json"), { code: "ENOENT" });
+  await symlink(path.join(root, "elsewhere"), target);
+  await assert.rejects(preparePreservedFileStorage(stored, "settings.json"), /regular files without symlinks/);
+  await rm(target);
+  await writeFile(target, "linked", { mode: 0o600 });
+  await link(target, path.join(root, "alias"));
+  await assert.rejects(preparePreservedFileStorage(stored, "settings.json"), /regular files without symlinks|Unsafe preserved/);
+}));
+
+test("deploy.files reads sources on platforms without a no-follow open by proving the opened inode", async () => temporary(async (root) => {
+  await mkdir(path.join(root, "config"));
+  await writeFile(path.join(root, "config", "settings.json"), "portable");
+  await symlink(path.join(root, "config", "settings.json"), path.join(root, "link.json"));
+  await symlink(path.join(root, "config"), path.join(root, "linked"));
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+  try {
+    const files = await buildDeployFiles(root, [{ path: "config/settings.json" }]);
+    assert.equal(files[0].contents.toString(), "portable");
+    for (const file of ["link.json", "linked/settings.json", "missing.json"]) {
+      await assert.rejects(buildDeployFiles(root, [{ path: file }]), /deploy.files/);
+    }
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+  }
+}));

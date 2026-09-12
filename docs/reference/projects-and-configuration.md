@@ -631,13 +631,14 @@ its Container mount remains `/app/<relative-path>`. This flat storage lets an
 inactive `config` file coexist with a later `config/settings.json` declaration,
 and switching back reuses the original stored bytes. The seed journal records
 both the logical path and physical `storagePath`.
-Local SSH deployments keep the invoking user as file owner and grant the
-container runtime group read/write access through a Docker helper mounted to
-one declared file at a time. Disabling SSH restores the invoking user’s group
-and owner-only permissions. Removing a preserved declaration or switching it
-to `replace` also revokes the inactive copy’s runtime group access. Failed replacements restore the previous file
-permissions before restarting the old Container. Removing a local Container also removes its
-replacement snapshot and revokes runtime group access, while preserving stored edits.
+Local preserved copies stay owned by the invoking user with mode `0600`,
+exactly like `.sporades/data`. Sporades never changes their ownership and runs
+no privileged helper; SSH-enabled Container sessions reach them the same way
+they reach `/app/data`. Before a Container starts, restarts, or is restored
+after a failed replacement, each active preserved file is proven to be a
+regular single-link file and tightened back to owner-only if an editor
+loosened it. Removing a local Container removes its replacement snapshot while
+preserving stored edits.
 
 Local snapshot attempts and Hosted seed attempts are recorded before publication in `deploy-file-attempt.jsonl`
 under the local `.sporades/` directory or the Hosted Capsule directory. The
@@ -696,8 +697,10 @@ A later deployment or Container removal retries that cleanup.
 Preserved storage must have a single link so ownership and rollback operations
 cannot affect an unrelated pathname.
 
-Source snapshots use descriptor-based reads on Linux and macOS to reject symlink
-substitution during a build. Other platforms do not support `deploy.files`.
+Source snapshots reject symlink substitution during a build on every platform.
+Linux and macOS read through descriptors that never follow symlinks; other
+platforms open the validated path and then prove the opened inode is still the
+one a symlink-free walk names before reading it.
 
 Edit the file contents in place when editing a bind-mounted file. Replacing its
 inode with an editor's atomic-save operation requires restarting the container

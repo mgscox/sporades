@@ -5034,32 +5034,30 @@ fs.promises.writeFile = async function(file, ...args) {
     await writeFile(path.join(projectDir, "settings.json"), "new seed");
     config.ssh = { authorizedKeys: [{ key: TEST_PUBLIC_KEY }] };
     await writeFile(configPath, JSON.stringify(config));
+    // Preserved copies stay owner-only like `.sporades/data`: SSH toggles never
+    // change ownership, never spawn a privileged Docker helper, and a loosened
+    // mode is tightened back to 0600 before the Container starts.
+    const ownerOnly = async () => {
+      const info = await stat(preserved);
+      assert.equal(info.mode & 0o777, 0o600);
+      assert.equal(info.uid, process.getuid());
+      assert.equal((await docker.calls()).filter((call) => call.args[0] === "run" && call.args.some((arg) => arg.endsWith(":/file:rw"))).length, 0, "no privileged file helper may run");
+    };
+    await chmod(preserved, 0o664);
     const deniedDeploy = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...docker.env, SPORADES_TEST_CONTAINER_REPLACEMENT_FAULT: "consumer" } });
     assert.notEqual(deniedDeploy.code, 0);
-    const restoredAccess = (await docker.calls()).filter((call) => call.args.includes(`${preserved}:/file:rw`)).at(-1);
-    assert.match(restoredAccess.args.at(-1), /fchmodSync\(fd, 384\)/);
-    assert.match(restoredAccess.args.at(-1), new RegExp(`fchownSync\\(fd, ${process.getuid()}, ${process.getgid()}\\)`));
+    await ownerOnly();
     const sshDeploy = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
     assert.equal(sshDeploy.code, 0, sshDeploy.stdout + sshDeploy.stderr);
-    const helper = (await docker.calls()).find((call) => call.args.includes(`${preserved}:/file:rw`));
-    assert(helper, "SSH file access must be prepared through Docker rather than local chown");
-    assert.equal(helper.args[helper.args.indexOf("--user") + 1], "0:0");
+    assert((await docker.calls()).filter((call) => call.args[0] === "run").at(-1).args.includes("10001:10001"), "SSH Container runs as the base image user");
+    await ownerOnly();
     assert.equal(await readFile(preserved, "utf8"), "server edit");
     delete config.ssh;
     await writeFile(configPath, JSON.stringify(config));
-    const staleGrant = path.join(dir, "stale-grant.mjs");
-    await writeFile(staleGrant, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
-const original = fs.promises.lstat;
-fs.promises.lstat = async function(file, ...args) {
-  const result = await original.call(this, file, ...args);
-  if (String(file) === ${JSON.stringify(preserved)}) { result.gid = 10001; result.mode = (result.mode & ~0o777) | 0o660; }
-  return result;
-}; syncBuiltinESMExports();`);
-    const ordinaryDeploy = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...docker.env, NODE_OPTIONS: `--import=${staleGrant}` } });
-    const revokedAccess = (await docker.calls()).filter((call) => call.args.includes(`${preserved}:/file:rw`)).at(-1);
-    assert.match(revokedAccess.args.at(-1), /fchmodSync\(fd, 384\)/);
-    assert.match(revokedAccess.args.at(-1), new RegExp(`fchownSync\\(fd, ${process.getuid()}, ${process.getgid()}\\)`));
+    await chmod(preserved, 0o660);
+    const ordinaryDeploy = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
     assert.equal(ordinaryDeploy.code, 0, ordinaryDeploy.stdout + ordinaryDeploy.stderr);
+    await ownerOnly();
     for (const policy of ["replace", "remove"]) {
       config.ssh = { authorizedKeys: [{ key: TEST_PUBLIC_KEY }] };
       config.deploy.files = [{ path: "settings.json", update: "preserve" }, { path: "defaults.json" }];
@@ -5069,11 +5067,9 @@ fs.promises.lstat = async function(file, ...args) {
       config.deploy.files = policy === "replace" ? [{ path: "settings.json" }, { path: "defaults.json" }] : [{ path: "defaults.json" }];
       if (policy === "remove") delete config.ssh;
       await writeFile(configPath, JSON.stringify(config));
-      const inactive = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...docker.env, NODE_OPTIONS: `--import=${staleGrant}` } });
+      const inactive = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
       assert.equal(inactive.code, 0, inactive.stdout + inactive.stderr);
-      const revoked = (await docker.calls()).filter((call) => call.args.includes(`${preserved}:/file:rw`)).at(-1);
-      assert.match(revoked.args.at(-1), /fchmodSync\(fd, 384\)/);
-      assert.match(revoked.args.at(-1), new RegExp(`fchownSync\\(fd, ${process.getuid()}, ${process.getgid()}\\)`));
+      await ownerOnly();
       assert.equal(await readFile(preserved, "utf8"), "server edit");
     }
     let binding = JSON.parse(await readFile(path.join(projectDir, ".sporades/binding.json"), "utf8"));
@@ -5101,11 +5097,9 @@ fs.promises.rm = async function(file, ...args) {
     const removalFailure = await runCli(["deploy", "remove", "--json"], { cwd: projectDir, env: { ...docker.env, NODE_OPTIONS: `--import=${failRemoval}` } });
     assert.notEqual(removalFailure.code, 0);
     assert.match(removalFailure.stdout + removalFailure.stderr, /injected snapshot removal denial/);
-    const removed = await runCli(["deploy", "remove", "--json"], { cwd: projectDir, env: { ...docker.env, NODE_OPTIONS: `--import=${staleGrant}` } });
+    const removed = await runCli(["deploy", "remove", "--json"], { cwd: projectDir, env: docker.env });
     assert.equal(removed.code, 0, removed.stdout + removed.stderr);
-    const removalAccess = (await docker.calls()).filter((call) => call.args.includes(`${preserved}:/file:rw`)).at(-1);
-    assert.match(removalAccess.args.at(-1), /fchmodSync\(fd, 384\)/);
-    assert.match(removalAccess.args.at(-1), new RegExp(`fchownSync\\(fd, ${process.getuid()}, ${process.getgid()}\\)`));
+    await ownerOnly();
     await assert.rejects(stat(binding.deployFilesRoot), { code: "ENOENT" });
     await assert.rejects(stat(priorSnapshot), { code: "ENOENT" });
     assert.equal(await readFile(preserved, "utf8"), "server edit");
@@ -5232,26 +5226,20 @@ test("local deploy.files reconciles Unicode-equivalent preserved identities once
     const config = JSON.parse(await readFile(configPath, "utf8"));
     config.ssh = { authorizedKeys: [{ key: TEST_PUBLIC_KEY }] };
     const docker = await installFakeDocker(dir, "unicode-candidate");
-    const stored = preservedDeployFilePath(path.join(projectDir, ".sporades/preserved-files"), "\u00e9.json");
-    const preload = path.join(dir, "existing-unicode-grant.mjs");
-    await writeFile(preload, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
-const original = fs.promises.lstat;
-fs.promises.lstat = async function(file, ...args) {
-  const result = await original.call(this, file, ...args);
-  if (String(file) === ${JSON.stringify(stored)}) { result.gid = 10001; result.mode = (result.mode & ~0o777) | 0o660; }
-  return result;
-}; syncBuiltinESMExports();`);
+    const preservedRoot = path.join(projectDir, ".sporades/preserved-files");
+    const stored = preservedDeployFilePath(preservedRoot, "\u00e9.json");
     for (const [index, relative] of ["e\u0301.json", "\u00e9.json"].entries()) {
       await writeFile(path.join(projectDir, relative), `seed-${index}`);
       config.deploy.files = [{ path: relative, update: "preserve" }];
       await writeFile(configPath, JSON.stringify(config));
-      const before = (await docker.calls()).length;
-      const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...docker.env, ...(index ? { NODE_OPTIONS: `--import=${preload}` } : {}) } });
+      const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
       assert.equal(deployed.code, 0, deployed.stdout + deployed.stderr);
+      const run = (await docker.calls()).filter((call) => call.args[0] === "run").at(-1);
+      assert(run.args.includes(`${stored}:/app/${relative}:rw`), "both spellings mount the one stored copy");
       if (index === 0) await writeFile(stored, "server edit");
-      else assert.equal((await docker.calls()).slice(before).filter((call) => call.args.includes(`${stored}:/file:rw`)).length, 0, "the equivalent previous spelling must not revoke the active grant");
     }
     assert.equal(await readFile(stored, "utf8"), "server edit");
+    assert.deepEqual((await readdir(preservedRoot)).filter((entry) => entry.endsWith(".file")), [path.basename(stored)], "equivalent spellings share one stored file");
   });
 });
 
@@ -5273,16 +5261,15 @@ test("local deploy.files restart repairs atomic-save access and rejects unsafe o
     const stopped = await runCli(["deploy", "stop", "--json"], { cwd: projectDir, env: docker.env });
     assert.equal(stopped.code, 0, stopped.stdout + stopped.stderr);
     const stored = preservedDeployFilePath(path.join(projectDir, ".sporades/preserved-files"), "settings.json");
-    await writeFile(path.join(projectDir, "replacement"), "atomic edit", { mode: 0o600 });
+    await writeFile(path.join(projectDir, "replacement"), "atomic edit", { mode: 0o664 });
     await rename(path.join(projectDir, "replacement"), stored);
     const before = (await docker.calls()).length;
     const restarted = await runCli(["deploy", "restart", "--json"], { cwd: projectDir, env: docker.env });
     assert.equal(restarted.code, 0, restarted.stdout + restarted.stderr);
     const calls = (await docker.calls()).slice(before);
-    const repair = calls.findIndex((call) => call.args.includes(`${stored}:/file:rw`));
-    assert(repair >= 0 && repair < calls.findIndex((call) => call.args[0] === "start"));
-    assert.match(calls[repair].args.at(-1), /fchownSync\(fd, \d+, 10001\)/);
-    assert.match(calls[repair].args.at(-1), /fchmodSync\(fd, 432\)/);
+    assert.deepEqual(calls.map((call) => call.args[0]).filter((action) => action === "run"), [], "restart never spawns a file access helper");
+    assert((await stat(stored)).mode & 0o777, 0o600);
+    assert.equal((await stat(stored)).uid, process.getuid());
     assert.equal(await readFile(stored, "utf8"), "atomic edit");
     await runCli(["deploy", "stop", "--json"], { cwd: projectDir, env: docker.env });
     for (const failure of ["missing", "symlink", "journal"]) {
@@ -5350,7 +5337,7 @@ cp.spawnSync = function(command, args, ...rest) {
     const outcome = JSON.parse(reconciled.stdout).data;
     assert.equal(outcome.status, "reconciled");
     assert.equal(outcome.committed, false);
-    assert.deepEqual(outcome.actions, ["candidate-container-removed", "candidate-snapshot-removed", "bound-file-access-restored", "journal-removed"]);
+    assert.deepEqual(outcome.actions, ["candidate-container-removed", "candidate-snapshot-removed", "bound-files-prepared", "journal-removed"]);
     const reconcileCalls = (await docker.calls()).slice(calls);
     // The fake Docker reuses one container ID, so the bound Container is inspected
     // for its staged name; no rename, stop, or start is issued.
@@ -5370,7 +5357,7 @@ cp.spawnSync = function(command, args, ...rest) {
   });
 });
 
-test("local deploy.files rollback repairs raced replacement access before restoring SSH runtime", async () => {
+test("local deploy.files rollback prepares raced replacement storage before restoring the previous runtime", async () => {
   for (const repairFails of [false, true]) await withTempDir(async (dir) => {
     const created = await runCli(["create", "rollback-save", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
     assert.equal(created.code, 0, created.stderr);
@@ -5391,34 +5378,37 @@ test("local deploy.files rollback repairs raced replacement access before restor
     const preload = path.join(dir, "save-during-candidate.mjs");
     await writeFile(preload, `import fs from 'node:fs'; import cp from 'node:child_process'; import { syncBuiltinESMExports } from 'node:module';
 const target = ${JSON.stringify(stored)}; let replaced = false;
-const lstat = fs.promises.lstat;
-fs.promises.lstat = async function(file, ...rest) {
-  const info = await lstat.call(this, file, ...rest);
-  if (String(file) === target && !replaced) { info.gid = 10001; info.mode = (info.mode & ~0o777) | 0o660; }
-  return info;
-};
 const spawn = cp.spawnSync;
 cp.spawnSync = function(command, args, ...rest) {
   const result = spawn.call(this, command, args, ...rest);
   if (command === 'docker' && args[0] === 'run' && args.includes('--detach') && result.status === 0) {
-    fs.writeFileSync(target + '.edit', 'concurrent save', { mode: 0o600 }); fs.renameSync(target + '.edit', target); replaced = true;
+    fs.writeFileSync(target + '.edit', 'concurrent save', { mode: 0o664 }); fs.renameSync(target + '.edit', target); replaced = true;
   }
-  if (${repairFails} && replaced && args.includes(target + ':/file:rw') && args.at(-1).includes('10001')) return { ...result, status: 1, stderr: 'injected repair failure' };
   return result;
+};
+const open = fs.promises.open;
+fs.promises.open = async function(file, ...rest) {
+  const handle = await open.call(this, file, ...rest);
+  if (${repairFails} && replaced && String(file) === target) {
+    handle.chmod = async () => { throw Object.assign(new Error('injected repair failure'), { code: 'EACCES' }); };
+  }
+  return handle;
 }; syncBuiltinESMExports();`);
     const before = (await docker.calls()).length;
     const failed = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...docker.env, NODE_OPTIONS: `--import=${preload}`, SPORADES_TEST_CONTAINER_REPLACEMENT_FAULT: "consumer" } });
     assert.notEqual(failed.code, 0);
     const calls = (await docker.calls()).slice(before);
-    const repair = calls.findLastIndex((call) => call.args.includes(`${stored}:/file:rw`));
-    assert(repair >= 0);
-    assert.match(calls[repair].args.at(-1), /fchownSync\(fd, \d+, 10001\)/);
-    assert.match(calls[repair].args.at(-1), /fchmodSync\(fd, 432\)/);
     const start = calls.findIndex((call) => call.args[0] === "start");
+    const info = await stat(stored);
     if (repairFails) {
-      assert.equal(start, -1);
-      assert.match(failed.stdout, /preserved-file-access/);
-    } else assert(start > repair, JSON.stringify(calls));
+      assert.equal(start, -1, "the previous runtime must not start with unprepared preserved storage");
+      assert.match(failed.stdout, /preserved-files/);
+      assert.notEqual(info.mode & 0o777, 0o600, "the failed repair leaves the editor's mode untouched");
+    } else {
+      assert(start >= 0, JSON.stringify(calls));
+      assert.equal(info.mode & 0o777, 0o600, "the raced replacement is owner-only before the previous runtime restarts");
+    }
+    assert.equal(info.uid, process.getuid());
     assert.equal(await readFile(stored, "utf8"), "concurrent save");
   });
 });

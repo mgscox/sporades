@@ -42,27 +42,6 @@ export declare function rollbackPreservedFiles(created: PreservedSeed[], hooks?:
     beforeClaim?: (target: string) => Promise<void>;
 }): Promise<void>;
 export declare function rethrowAfterDeployCleanup(error: unknown, cleanups: Array<() => Promise<unknown>>): Promise<never>;
-export declare function parseUserIdentity(user: string): {
-    uid: number;
-    gid: number;
-};
-export declare function localPreservedFileAccess(localUser: string, fileUser: string): {
-    uid: number;
-    gid: number;
-    mode: number;
-};
-export declare function preservedFileAccessMatches(info: {
-    uid: number;
-    gid: number;
-    mode: number;
-}, desired: {
-    uid: number;
-    gid: number;
-    mode: number;
-}): boolean;
-export declare function localPreservedFileAccessArgs(file: string, localUser: string, runtimeUser: string, image: string, mode?: number, expected?: {
-    dev: number;
-    ino: number;
-}): string[];
+export declare function preparePreservedFileStorage(preservedRoot: string, relative: string): Promise<string>;
 export declare function removeDeployFileSnapshot(runtimeDir: string, snapshot: unknown): Promise<void>;
 //# sourceMappingURL=deploy-files.d.ts.map

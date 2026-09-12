@@ -26370,7 +26370,14 @@ async function readDeployFile(root, relative) {
       }
       file = await open(`/proc/self/fd/${directory.fd}/${parts.at(-1)}`, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
     } else {
-      throw new Error("Secure deploy.files reads require macOS or Linux.");
+      const target = path.join(root, relative);
+      file = await open(target, constants.O_RDONLY | constants.O_NONBLOCK);
+      handles.push(file);
+      const opened = await file.stat();
+      await assertDeployFile(root, relative);
+      const named = await lstat(target);
+      if (!opened.isFile() || named.dev !== opened.dev || named.ino !== opened.ino) throw new Error(`deploy.files source changed during the build: ${relative}`);
+      return await file.readFile();
     }
     handles.push(file);
     await checkRoot?.();

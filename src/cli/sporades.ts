@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { assertNoPreservedFileAttempt, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, recordPreservedFileAttempt, resolveDeployFiles, assertPreservedDeployFile, deployFileMounts, preparePreservedFiles, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, localPreservedFileAccess, localPreservedFileAccessArgs, preservedFileAccessMatches, removeDeployFileSnapshot } from "../deploy-files.js";
+import { assertNoPreservedFileAttempt, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, recordPreservedFileAttempt, resolveDeployFiles, deployFileMounts, preparePreservedFiles, preparePreservedFileStorage, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, removeDeployFileSnapshot } from "../deploy-files.js";
 import { validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual } from "node:crypto";
@@ -4390,7 +4390,6 @@ async function startContainerSession(options: LooseRecord) {
   let candidateOwnershipProven = false;
   let committedConsumer: Awaited<ReturnType<typeof writePublicTreeConsumer>> | null = null;
   let binding: LooseRecord | null = null;
-  const previousFileAccess: Array<{ host: string; uid: number; gid: number; mode: number; dev: number; ino: number }> = [];
   try {
     // Journal both runtimes before touching Docker so `sporades deploy reconcile`
     // can settle an interrupted attempt from the journal alone.
@@ -4406,20 +4405,7 @@ async function startContainerSession(options: LooseRecord) {
       }
     }
 
-    const localUser = localContainerRuntimeUser();
-    const activePreserved = new Set(bundle.deployFiles.filter((entry) => entry.update === "preserve").map((entry) => entry.path.normalize("NFC")));
-    const previouslyPreserved = resolveDeployFiles(existingBinding?.deployFiles).filter((entry) => entry.update === "preserve").map((entry) => entry.path.normalize("NFC"));
-    for (const relative of new Set([...activePreserved, ...previouslyPreserved])) {
-      const target = await assertPreservedDeployFile(preservedRoot, relative).catch((error) => {
-        if (error.code === "ENOENT" && !activePreserved.has(relative)) return null;
-        throw error;
-      });
-      if (!target) continue;
-      await ensureLocalPreservedFileAccess(options.projectDir, target, localUser, activePreserved.has(relative) ? runtimeUser : localUser, {
-        message: "Failed to prepare preserved file access.",
-        hint: "Check Docker can adjust the declared preserved file for the local and SSH runtime users.",
-      }, previousFileAccess);
-    }
+    await prepareLocalPreservedFiles(options, { deployFiles: bundle.deployFiles }, "Check the declared preserved file is a regular owner-writable file, then retry `sporades deploy`.");
 
     containerReplacementFault("publication");
     rollbackBundlePublication = await bundle.publishLegacy();
@@ -4504,24 +4490,15 @@ async function startContainerSession(options: LooseRecord) {
       if (existingBinding) await replaceContainerBinding(bindingPath, existingBinding);
       else await rm(bindingPath, { force: true });
     } catch { rollbackFailures.push("binding"); }
-    if (!candidateRetained) {
-      for (const previous of previousFileAccess.reverse()) {
-        try {
-          const current = await lstat(previous.host).catch((error) => { if (error.code !== "ENOENT") throw error; return null; });
-          if (!current) continue;
-          const owner = `${previous.uid}:${previous.gid}`;
-          runDocker(localPreservedFileAccessArgs(previous.host, owner, owner, SPORADES_BASE_IMAGE.image, previous.mode, previous), options.projectDir,
-            "Failed to restore preserved file access.", "Repair the previous runtime's preserved-file permissions before restarting it.");
-        } catch { rollbackFailures.push("preserved-file-access"); }
-      }
-    }
     if (!candidateRetained && existingBinding) {
-      try { await prepareLocalPreservedFileAccess(options, existingBinding); }
-      catch { rollbackFailures.push("preserved-file-access"); }
+      // The previous runtime restarts only with its own preserved files proven
+      // regular and owner-only, even after a concurrent atomic-save replacement.
+      try { await prepareLocalPreservedFiles(options, existingBinding); }
+      catch { rollbackFailures.push("preserved-files"); }
     }
     if (oldRenamed) {
       try { runDocker(["rename", rollbackName, oldName], options.projectDir, "", ""); } catch { rollbackFailures.push("container-name"); }
-      if (oldWasRunning && !rollbackFailures.includes("preserved-file-access")) {
+      if (oldWasRunning && !rollbackFailures.includes("preserved-files")) {
         try { runDocker(["start", oldName], options.projectDir, "", ""); } catch { rollbackFailures.push("container-start"); }
       }
     }
@@ -6388,37 +6365,18 @@ async function stopLocalContainerSession(options: LooseRecord) {
   return containerLifecycleSummary("stopped", binding);
 }
 
-async function prepareLocalPreservedFileAccess(options: LooseRecord, binding: LooseRecord) {
-  const preservedRoot = path.join(options.projectDir, ".sporades", "preserved-files");
-  const localUser = localContainerRuntimeUser();
-  const runtimeUser = binding.ssh?.enabled ? baseImageRuntimeUser() : localUser;
+// Preserved files stay owned by the invoking user with mode 0600, exactly like
+// `.sporades/data`; no ownership change or privileged helper is involved, and
+// SSH-enabled sessions reach them the same way they reach `/app/data`.
+async function prepareLocalPreservedFiles(options: LooseRecord, binding: LooseRecord, hint = "Restore a regular owner-writable preserved file before restarting the bound Container.") {
+  const preservedRoot = localPreservedFilesRoot(options);
   for (const relative of new Set(resolveDeployFiles(binding.deployFiles).filter((file) => file.update === "preserve").map((file) => file.path.normalize("NFC")))) {
-    const target = await assertPreservedDeployFile(preservedRoot, relative);
-    await ensureLocalPreservedFileAccess(options.projectDir, target, localUser, runtimeUser, {
-      message: "Failed to restore preserved file access.",
-      hint: "Check Docker can repair file access for the bound Container runtime before restarting.",
-    });
+    try {
+      await preparePreservedFileStorage(preservedRoot, relative);
+    } catch (error) {
+      throw commandError("Preserved deploy.files storage is not usable.", hint, { path: relative, cause: errorDetails(error).message });
+    }
   }
-}
-
-// Repair one preserved file's owner, runtime group, and mode through the Docker
-// helper only when the current inode differs from the bound runtime's policy.
-// The helper reports the inode it actually opened before mutation, even on a
-// later chmod/chown failure. Docker's inode namespace may differ from the CLI
-// host, so rollback reuses that same namespace via the recorded identity.
-async function ensureLocalPreservedFileAccess(
-  projectDir: string,
-  target: string,
-  localUser: string,
-  fileUser: string,
-  failure: { message: string; hint: string },
-  record?: Array<{ host: string; uid: number; gid: number; mode: number; dev: number; ino: number }>,
-) {
-  const info = await lstat(target);
-  if (preservedFileAccessMatches(info, localPreservedFileAccess(localUser, fileUser))) return;
-  const access = spawnSync("docker", localPreservedFileAccessArgs(target, localUser, fileUser, SPORADES_BASE_IMAGE.image), { cwd: projectDir, encoding: "utf8" });
-  if (access.stdout?.trim()) record?.push({ host: target, ...JSON.parse(access.stdout) });
-  if (access.status !== 0) throw commandError(failure.message, failure.hint);
 }
 
 function localPreservedFilesRoot(options: LooseRecord) {
@@ -6486,8 +6444,8 @@ async function reconcileLocalContainerSession(options: LooseRecord) {
       actions.push("candidate-snapshot-removed");
     }
     if (binding) {
-      await prepareLocalPreservedFileAccess(options, binding);
-      actions.push("bound-file-access-restored");
+      await prepareLocalPreservedFiles(options, binding);
+      actions.push("bound-files-prepared");
     }
   }
   await finishPreservedFileAttempt(journal);
@@ -6498,7 +6456,7 @@ async function reconcileLocalContainerSession(options: LooseRecord) {
 async function restartLocalContainerSession(options: LooseRecord) {
   const { binding } = await requireLocalContainerBinding(options, "restart");
   await assertNoLocalDeployFileAttempt(options, "restart");
-  await prepareLocalPreservedFileAccess(options, binding);
+  await prepareLocalPreservedFiles(options, binding);
   const config = await readProjectConfig(options.projectDir);
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
   const serviceState = await startCapsuleServices(capsuleServices, options.projectDir, {
@@ -6566,16 +6524,6 @@ async function removeLocalContainerSession(options: LooseRecord) {
       "Check Docker is running, then retry `sporades deploy remove`.",
       true,
     );
-    const localUser = localContainerRuntimeUser();
-    for (const file of resolveDeployFiles(binding.deployFiles).filter((entry) => entry.update === "preserve")) {
-      const target = await assertPreservedDeployFile(localPreservedFilesRoot(options), file.path)
-        .catch((error) => { if (error.code !== "ENOENT") throw error; return null; });
-      if (!target) continue;
-      await ensureLocalPreservedFileAccess(options.projectDir, target, localUser, localUser, {
-        message: "Failed to revoke preserved file runtime access.",
-        hint: "Retry Container removal after Docker can restore local file access.",
-      });
-    }
     for (const snapshot of [...(binding.pendingDeployFileCleanup ?? []), binding.deployFilesRoot]) {
       await removeDeployFileSnapshot(path.join(options.projectDir, ".sporades"), snapshot);
     }

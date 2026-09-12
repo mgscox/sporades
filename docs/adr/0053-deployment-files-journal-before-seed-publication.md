@@ -31,13 +31,16 @@ Edited seeds are never removed, and the command is idempotent.
 
 Preserved storage is flat: each file is stored as the SHA-256 of its
 NFC-normalized logical path so historical ancestor and descendant declarations
-can coexist while their `/app` mounts keep the declared paths. Local SSH access
-grants the runtime group access through a single-file Docker helper that keeps
-the invoking user as owner; that grant is revoked when SSH is disabled, the
-declaration becomes inactive, or the Container is removed.
+can coexist while their `/app` mounts keep the declared paths. Preserved copies
+stay owned by the invoking user with mode 0600, exactly like `.sporades/data`:
+no ownership change and no privileged helper, so the CLI never widens its own
+authority. Each lifecycle action proves every active preserved file is a
+regular single-link inode and tightens it back to owner-only before a runtime
+starts.
 
-The trade-off is a stricter operator contract. Interrupted deployments require
-one extra command before the next lifecycle action, and `deploy.files` is
-limited to macOS and Linux, where descriptor-based reads can reject symlink
-substitution during a build. Dev sessions are unaffected: they read project
-files directly and never snapshot, validate, or mount `deploy.files`.
+The trade-off is a stricter operator contract: interrupted deployments require
+one extra command before the next lifecycle action. Source reads reject symlink
+substitution everywhere; Linux and macOS use no-follow descriptors, other
+platforms prove the opened inode still matches a symlink-free walk. Dev
+sessions are unaffected: they read project files directly and never snapshot,
+validate, or mount `deploy.files`.

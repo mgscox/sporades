@@ -121,7 +121,18 @@ async function readDeployFile(root, relative) {
             file = await open(`/proc/self/fd/${directory.fd}/${parts.at(-1)}`, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
         }
         else {
-            throw new Error("Secure deploy.files reads require macOS or Linux.");
+            // Other platforms lack a no-follow open. Open the validated path, then
+            // prove the descriptor is the same regular inode the path still names
+            // after a second symlink-free walk, so a substitution cannot be read.
+            const target = path.join(root, relative);
+            file = await open(target, constants.O_RDONLY | constants.O_NONBLOCK);
+            handles.push(file);
+            const opened = await file.stat();
+            await assertDeployFile(root, relative);
+            const named = await lstat(target);
+            if (!opened.isFile() || named.dev !== opened.dev || named.ino !== opened.ino)
+                throw new Error(`deploy.files source changed during the build: ${relative}`);
+            return await file.readFile();
         }
         handles.push(file);
         await checkRoot?.();
@@ -360,25 +371,23 @@ export async function rethrowAfterDeployCleanup(error, cleanups) {
         throw new AggregateError([error, ...failures], "Deployment failed and cleanup is incomplete.");
     throw error;
 }
-export function parseUserIdentity(user) {
-    const [uid, gid] = user.split(":").map(Number);
-    return { uid, gid };
-}
-// The invoking user keeps ownership; the runtime group receives access only
-// while a separate SSH runtime UID needs it.
-export function localPreservedFileAccess(localUser, fileUser) {
-    return { uid: parseUserIdentity(localUser).uid, gid: parseUserIdentity(fileUser).gid, mode: localUser === fileUser ? 0o600 : 0o660 };
-}
-export function preservedFileAccessMatches(info, desired) {
-    return info.uid === desired.uid && info.gid === desired.gid && (info.mode & 0o777) === desired.mode;
-}
-export function localPreservedFileAccessArgs(file, localUser, runtimeUser, image, mode = localPreservedFileAccess(localUser, runtimeUser).mode, expected) {
-    const { uid, gid } = localPreservedFileAccess(localUser, runtimeUser);
-    // Docker provides the ownership operation; the unprivileged CLI keeps ownership.
-    // Owner access supports ordinary local sessions, group access supports SSH's UID.
-    const identityCheck = expected ? `if (s.dev !== ${expected.dev} || s.ino !== ${expected.ino}) process.exit(0);` : "";
-    const script = `const fs = require("node:fs"); const fd = fs.openSync("/file", fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); const s = fs.fstatSync(fd); if (!s.isFile() || s.nlink !== 1) throw new Error("Unsafe preserved file"); ${identityCheck} fs.writeSync(1, JSON.stringify({ dev: s.dev, ino: s.ino, uid: s.uid, gid: s.gid, mode: s.mode & 0o777 })); fs.fchownSync(fd, ${uid}, ${gid}); fs.fchmodSync(fd, ${mode}); fs.closeSync(fd);`;
-    return ["run", "--rm", "--network", "none", "--read-only", "--security-opt", "no-new-privileges", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--cap-add", "DAC_OVERRIDE", "--user", "0:0", "--volume", `${file}:/file:rw`, image, "node", "-e", script];
+// Preserved copies stay owner-only like Capsule data: the invoking user keeps
+// ownership and no privilege is needed. Validates a regular single-link file
+// and restores mode 0600 through a descriptor that never follows symlinks.
+export async function preparePreservedFileStorage(preservedRoot, relative) {
+    const target = await assertPreservedDeployFile(preservedRoot, relative);
+    const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+        const identity = await handle.stat();
+        if (!identity.isFile() || identity.nlink !== 1)
+            throw new Error(`Unsafe preserved deploy.files storage: ${relative}`);
+        if ((identity.mode & 0o777) !== 0o600)
+            await handle.chmod(0o600);
+    }
+    finally {
+        await handle.close();
+    }
+    return target;
 }
 export async function removeDeployFileSnapshot(runtimeDir, snapshot) {
     if (typeof snapshot === "string"
