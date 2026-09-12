@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { assertPreservedDeployFile, rollbackPreservedFiles, type PreservedSeed, deployFileMounts, preparePreservedFiles, resolveDeployFiles } from "../deploy-files.js";
+import { assertPreservedDeployFile, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, deployFileMounts, preparePreservedFiles, resolveDeployFiles } from "../deploy-files.js";
 import { assertHostnamesAvailable, validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
 import { constants as fsConstants, createReadStream, statSync } from "node:fs";
@@ -1383,11 +1383,13 @@ async function installClaimedRelease(request: HostHelperRequest, previousRecord:
     await rename(tempCurrentLink, paths.currentLink);
     await recordReleaseUploaded(request, release, installedInventory);
   } catch (error) {
-    await rollbackPreservedFiles(createdSeeds);
-    await restoreCurrentReleasePointerTarget(paths.currentLink, previousCurrentTarget);
-    await removeInstalledReleasePrivateKey(release, paths);
-    await rm(paths.release, { recursive: true, force: true });
-    throw error;
+    let pointerRestored = false;
+    await rethrowAfterDeployCleanup(error, [
+      async () => { await restoreCurrentReleasePointerTarget(paths.currentLink, previousCurrentTarget); pointerRestored = true; },
+      async () => { if (pointerRestored) await removeInstalledReleasePrivateKey(release, paths); },
+      async () => { if (pointerRestored) await rm(paths.release, { recursive: true, force: true }); },
+      () => rollbackPreservedFiles(createdSeeds),
+    ]);
   }
 
   let restartResult = null;

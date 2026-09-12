@@ -1,7 +1,7 @@
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile, readdir, link, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, link, rename, rm } from "node:fs/promises";
 // Paths owned by the runtime, including legacy release paths and writable data.
 const RESERVED = [".sporades", "public", "data", "server.mjs", "client.js", "index.html", "sporades.json", ".env.sporades.server"];
 export function resolveDeployFiles(value) {
@@ -58,7 +58,7 @@ async function assertDeployFile(root, relative, recoverSeed = false) {
         // Recover only a matching, privately named seed inode in the same directory.
         if (recoverSeed && index === parts.length - 1 && info.isFile() && info.nlink === 2) {
             for (const entry of await readdir(path.dirname(current))) {
-                if (!/^\.seed-[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(entry))
+                if (!/^\.(?:seed|rollback)-[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(entry))
                     continue;
                 const seed = path.join(path.dirname(current), entry);
                 const candidate = await lstat(seed).catch((error) => { if (error.code !== "ENOENT")
@@ -142,8 +142,9 @@ export async function preparePreservedFiles(files, releaseRoot, preservedRoot, o
         await assertPreservedDeployFile(preservedRoot, file.path);
     }
 }
-// Roll back only this attempt's unchanged seeds. Retain any operator/runtime edits.
-export async function rollbackPreservedFiles(created) {
+// Move an attempted seed off its live pathname before inspecting the claimed inode.
+// Retain claimed seeds for recovery: an editor may still hold an open descriptor.
+export async function rollbackPreservedFiles(created, hooks = {}) {
     for (const seed of [...created].reverse()) {
         let handle;
         try {
@@ -154,9 +155,24 @@ export async function rollbackPreservedFiles(created) {
                 continue;
             if (createHash("sha256").update(await handle.readFile()).digest("hex") !== seed.sha256)
                 continue;
-            const current = await lstat(target);
-            if (current.dev === info.dev && current.ino === info.ino && current.mtimeMs === info.mtimeMs && current.ctimeMs === info.ctimeMs)
-                await rm(target);
+            await hooks.beforeClaim?.(target);
+            const claimed = path.join(seed.root, `.rollback-${randomUUID()}`);
+            await rename(target, claimed);
+            const captured = await lstat(claimed);
+            const sameSeed = captured.isFile() && captured.dev === info.dev && captured.ino === info.ino
+                && createHash("sha256").update(await readFile(claimed)).digest("hex") === seed.sha256;
+            if (!sameSeed) {
+                // A concurrent replacement was captured. Restore without overwriting a
+                // newer save; if the name is occupied, retain the captured recovery copy.
+                try {
+                    await link(claimed, target);
+                    await rm(claimed);
+                }
+                catch (error) {
+                    if (error.code !== "EEXIST")
+                        throw error;
+                }
+            }
         }
         catch (error) {
             if (error.code !== "ENOENT")
@@ -166,6 +182,20 @@ export async function rollbackPreservedFiles(created) {
             await handle?.close();
         }
     }
+}
+export async function rethrowAfterDeployCleanup(error, cleanups) {
+    const failures = [];
+    for (const cleanup of cleanups) {
+        try {
+            await cleanup();
+        }
+        catch (failure) {
+            failures.push(failure);
+        }
+    }
+    if (failures.length)
+        throw new AggregateError([error, ...failures], "Deployment failed and cleanup is incomplete.");
+    throw error;
 }
 export function localPreservedFileAccessArgs(file, localUser, runtimeUser, image) {
     const uid = Number(localUser.split(":")[0]);

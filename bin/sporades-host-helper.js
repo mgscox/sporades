@@ -26265,7 +26265,7 @@ var require_png2 = __commonJS({
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile, readdir, link, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, link, rename, rm } from "node:fs/promises";
 var RESERVED = [".sporades", "public", "data", "server.mjs", "client.js", "index.html", "sporades.json", ".env.sporades.server"];
 function resolveDeployFiles(value) {
   if (value === void 0) return [];
@@ -26314,7 +26314,7 @@ async function assertDeployFile(root, relative, recoverSeed = false) {
     let info = await lstat(current2);
     if (recoverSeed && index === parts.length - 1 && info.isFile() && info.nlink === 2) {
       for (const entry of await readdir(path.dirname(current2))) {
-        if (!/^\.seed-[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(entry)) continue;
+        if (!/^\.(?:seed|rollback)-[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(entry)) continue;
         const seed = path.join(path.dirname(current2), entry);
         const candidate = await lstat(seed).catch((error) => {
           if (error.code !== "ENOENT") throw error;
@@ -26381,7 +26381,7 @@ async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, c
     await assertPreservedDeployFile(preservedRoot, file.path);
   }
 }
-async function rollbackPreservedFiles(created) {
+async function rollbackPreservedFiles(created, hooks = {}) {
   for (const seed of [...created].reverse()) {
     let handle;
     try {
@@ -26390,14 +26390,37 @@ async function rollbackPreservedFiles(created) {
       const info = await handle.stat();
       if (info.dev !== seed.dev || info.ino !== seed.ino || info.nlink !== 1) continue;
       if (createHash("sha256").update(await handle.readFile()).digest("hex") !== seed.sha256) continue;
-      const current2 = await lstat(target);
-      if (current2.dev === info.dev && current2.ino === info.ino && current2.mtimeMs === info.mtimeMs && current2.ctimeMs === info.ctimeMs) await rm(target);
+      await hooks.beforeClaim?.(target);
+      const claimed = path.join(seed.root, `.rollback-${randomUUID()}`);
+      await rename(target, claimed);
+      const captured = await lstat(claimed);
+      const sameSeed = captured.isFile() && captured.dev === info.dev && captured.ino === info.ino && createHash("sha256").update(await readFile(claimed)).digest("hex") === seed.sha256;
+      if (!sameSeed) {
+        try {
+          await link(claimed, target);
+          await rm(claimed);
+        } catch (error) {
+          if (error.code !== "EEXIST") throw error;
+        }
+      }
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     } finally {
       await handle?.close();
     }
   }
+}
+async function rethrowAfterDeployCleanup(error, cleanups) {
+  const failures = [];
+  for (const cleanup of cleanups) {
+    try {
+      await cleanup();
+    } catch (failure) {
+      failures.push(failure);
+    }
+  }
+  if (failures.length) throw new AggregateError([error, ...failures], "Deployment failed and cleanup is incomplete.");
+  throw error;
 }
 
 // src/cli/host-domain-aliases.ts
@@ -26508,7 +26531,7 @@ async function assertHostnamesAvailable(remoteRoot, hostnames, owner) {
 // src/cli/sporades-host-helper.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
 import { constants as fsConstants, createReadStream, statSync } from "node:fs";
-import { access, chmod, lstat as lstat2, mkdir as mkdir2, open as open2, opendir, readdir as readdir3, readFile as readFile4, readlink, rename, rm as rm2, stat, statfs, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, lstat as lstat2, mkdir as mkdir2, open as open2, opendir, readdir as readdir3, readFile as readFile4, readlink, rename as rename2, rm as rm2, stat, statfs, symlink, writeFile } from "node:fs/promises";
 import { createHash as createHash2, generateKeyPairSync, randomBytes } from "node:crypto";
 import { freemem, loadavg, totalmem } from "node:os";
 import path5 from "node:path";
@@ -43676,7 +43699,7 @@ async function publishHostHelperBytes(contents, target, mode) {
   try {
     await writeFile(temporary, contents, { flag: "wx", mode });
     await chmod(temporary, mode);
-    await rename(temporary, target);
+    await rename2(temporary, target);
   } finally {
     await rm2(temporary, { force: true });
   }
@@ -44618,7 +44641,7 @@ async function installClaimedRelease(request, previousRecord, paths, claimedArch
     throw error;
   }
   try {
-    await rename(tempReleaseDirectory, paths.release);
+    await rename2(tempReleaseDirectory, paths.release);
   } catch (error) {
     await rm2(tempReleaseDirectory, { recursive: true, force: true });
     const details = errorDetails(error);
@@ -44642,14 +44665,23 @@ async function installClaimedRelease(request, previousRecord, paths, claimedArch
   try {
     await preparePreservedFiles(resolveDeployFiles(release.deployFiles), paths.release, path5.join(paths.capsule, "preserved-files"), prepareRuntimeDataOwnershipHandle, createdSeeds);
     await symlink(paths.release, tempCurrentLink);
-    await rename(tempCurrentLink, paths.currentLink);
+    await rename2(tempCurrentLink, paths.currentLink);
     await recordReleaseUploaded(request, release, installedInventory);
   } catch (error) {
-    await rollbackPreservedFiles(createdSeeds);
-    await restoreCurrentReleasePointerTarget(paths.currentLink, previousCurrentTarget);
-    await removeInstalledReleasePrivateKey(release, paths);
-    await rm2(paths.release, { recursive: true, force: true });
-    throw error;
+    let pointerRestored = false;
+    await rethrowAfterDeployCleanup(error, [
+      async () => {
+        await restoreCurrentReleasePointerTarget(paths.currentLink, previousCurrentTarget);
+        pointerRestored = true;
+      },
+      async () => {
+        if (pointerRestored) await removeInstalledReleasePrivateKey(release, paths);
+      },
+      async () => {
+        if (pointerRestored) await rm2(paths.release, { recursive: true, force: true });
+      },
+      () => rollbackPreservedFiles(createdSeeds)
+    ]);
   }
   let restartResult = null;
   let restartError = null;
@@ -44762,7 +44794,7 @@ async function claimReleaseArchive(request) {
   }
   await chmod(claimsDirectory, 448);
   const claimedPath = path5.join(claimsDirectory, `${request.release.id}-${process.pid}-${randomBytes(16).toString("hex")}.tar.gz`);
-  await rename(request.release.remoteArchive, claimedPath);
+  await rename2(request.release.remoteArchive, claimedPath);
   try {
     const stats = await lstat2(claimedPath);
     if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1 || stats.size > HOST_RELEASE_ARCHIVE_LIMITS.compressedBytes) {
@@ -44787,7 +44819,7 @@ async function releaseArchiveSha256(archivePath) {
 async function maybeSwapUnclaimedArchiveForTest(release) {
   const replacement = process.env.SPORADES_TEST_HOST_ARCHIVE_SWAP_PATH;
   if (!replacement) return;
-  await rename(replacement, release.remoteArchive);
+  await rename2(replacement, release.remoteArchive);
 }
 async function validateExtractedReleaseTree(root, expectedFiles) {
   const expected = new Map(expectedFiles.map((file) => [file.path, file]));
@@ -45029,7 +45061,7 @@ async function switchCurrentReleaseLink(currentLink, releaseDirectory) {
   const tempCurrentLink = `${currentLink}.tmp-${process.pid}`;
   await rm2(tempCurrentLink, { force: true });
   await symlink(releaseDirectory, tempCurrentLink);
-  await rename(tempCurrentLink, currentLink);
+  await rename2(tempCurrentLink, currentLink);
 }
 async function restoreFailedReleaseAfterFallbackRestartFailure(request, failedReleaseId, fallbackReleaseId, reason, restartError) {
   const failedPaths = canonicalRollbackPaths(request, failedReleaseId);
@@ -45358,7 +45390,7 @@ async function restoreCurrentReleasePointerTarget(currentLink, previousTarget) {
     return;
   }
   await symlink(previousTarget, temporary);
-  await rename(temporary, currentLink);
+  await rename2(temporary, currentLink);
 }
 async function restoreReleaseInstallRoute(snapshot, reloadWhenAbsent = false) {
   if (snapshot.contents !== null) {
@@ -45862,7 +45894,7 @@ async function rollbackRelease(request) {
   const tempCurrentLink = `${paths.currentLink}.tmp-${process.pid}`;
   await rm2(tempCurrentLink, { force: true });
   await symlink(paths.release, tempCurrentLink);
-  await rename(tempCurrentLink, paths.currentLink);
+  await rename2(tempCurrentLink, paths.currentLink);
   await recordReleaseRollbackSelected(request, releaseId);
   let lifecycle = null;
   let restartError = null;
@@ -46968,7 +47000,7 @@ async function publishRuntimeFile(parentHandle, targetPath, contents, mode, boun
     } catch (error) {
       if (errorDetails(error).code !== "ENOENT") throw error;
     }
-    await rename(temporaryDescriptor, targetDescriptor).catch(() => {
+    await rename2(temporaryDescriptor, targetDescriptor).catch(() => {
       throw runtimeDataTrustError(targetPath);
     });
     const installed = await open2(targetDescriptor, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).catch(() => {
@@ -47575,7 +47607,7 @@ async function atomicPublishBootstrapFile(target, contents, boundary) {
   await writeFile(temporary, contents, { flag: "wx", mode: 420 });
   try {
     await assertBootstrapMutationBoundary(`${boundary}-publish`, [target, temporary]);
-    await rename(temporary, target);
+    await rename2(temporary, target);
     await refreshTrustedBootstrapFinalFileIdentity(target);
   } catch (error) {
     await assertBootstrapMutationBoundary(`${boundary}-cleanup`, [target, temporary]);
@@ -48067,11 +48099,11 @@ async function applyManagedRouteLocked(lifecycle, routeFile, contents) {
   try {
     if (hadPreviousRoute) {
       await assertManagedRouteMutationBoundary(routeFile, "apply-move-current", [previousRouteFile]);
-      await rename(routeFile, previousRouteFile);
+      await rename2(routeFile, previousRouteFile);
       previousRouteMoved = true;
     }
     await assertManagedRouteMutationBoundary(routeFile, "apply-publish-temp", [tempRouteFile, previousRouteFile]);
-    await rename(tempRouteFile, routeFile);
+    await rename2(tempRouteFile, routeFile);
     reloadCaddy(lifecycle);
   } catch (error) {
     await assertManagedRouteMutationBoundary(routeFile, "apply-rollback-remove-temp", [tempRouteFile, previousRouteFile]);
@@ -48080,7 +48112,7 @@ async function applyManagedRouteLocked(lifecycle, routeFile, contents) {
     await rm2(routeFile, { force: true });
     if (previousRouteMoved) {
       await assertManagedRouteMutationBoundary(routeFile, "apply-rollback-restore", [previousRouteFile]);
-      await rename(previousRouteFile, routeFile);
+      await rename2(previousRouteFile, routeFile);
     }
     if (previousRouteMoved) {
       try {
@@ -48106,12 +48138,12 @@ async function removeManagedRouteLocked(lifecycle, routeFile) {
     return { routeFile, removed: false };
   }
   await assertManagedRouteMutationBoundary(routeFile, "remove-move-current", [previousRouteFile]);
-  await rename(routeFile, previousRouteFile);
+  await rename2(routeFile, previousRouteFile);
   try {
     reloadCaddy(lifecycle);
   } catch (error) {
     await assertManagedRouteMutationBoundary(routeFile, "remove-rollback-restore", [previousRouteFile]);
-    await rename(previousRouteFile, routeFile);
+    await rename2(previousRouteFile, routeFile);
     try {
       reloadCaddy(lifecycle);
     } catch {
@@ -48140,7 +48172,7 @@ async function restoreRemovedRouteLocked(lifecycle, route) {
   await assertManagedRouteMutationBoundary(route.routeFile, "restore-remove-current", [route.previousRouteFile]);
   await rm2(route.routeFile, { force: true });
   await assertManagedRouteMutationBoundary(route.routeFile, "restore-publish-previous", [route.previousRouteFile]);
-  await rename(route.previousRouteFile, route.routeFile);
+  await rename2(route.previousRouteFile, route.routeFile);
   reloadCaddy(lifecycle);
 }
 async function assertManagedRouteMutationBoundary(routeFile, boundary, relatedFiles = []) {
@@ -48976,7 +49008,7 @@ async function writeRegistryContentsAtomic(registryRecordPath, contents) {
         "Check Host server disk permissions and free space, then retry the command."
       );
     }
-    await rename(tempPath, registryRecordPath);
+    await rename2(tempPath, registryRecordPath);
   } catch (error) {
     await rm2(tempPath, { force: true });
     throw error;

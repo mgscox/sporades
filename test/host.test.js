@@ -14675,3 +14675,32 @@ test("Hosted deploy.files rolls back new seeds on registry and startup failure",
     assert.equal(await readFile(path.join(preserved, "existing.json"), "utf8"), "existing edit");
   });
 });
+
+
+test("Hosted deploy.files restores the pointer and release when seed cleanup fails", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleInstallFixture(dir, { rootName: "cleanup-failure", previousReleaseId: null,
+      deployFiles: [{ path: "new.json", update: "preserve" }] });
+    fixture.release.restart = false;
+    const preload = path.join(dir, "fail-cleanup.mjs");
+    await writeFile(preload, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+let settlement = false; const write = fs.promises.writeFile; const stat = fs.promises.lstat;
+fs.promises.writeFile = async function(file, ...args) {
+  const result = await write.call(this, file, ...args);
+  if (String(file).includes('/registry/capsules/') && String(file).includes('.tmp-')) settlement = true;
+  return result;
+};
+fs.promises.lstat = async function(file, ...args) {
+  if (settlement && String(file).endsWith('/preserved-files/new.json')) throw Object.assign(new Error('injected cleanup denial'), { code: 'EACCES' });
+  return stat.call(this, file, ...args);
+}; syncBuiltinESMExports();`);
+    const registry = await readFile(fixture.registryRecordPath);
+    const result = await runHostHelper({ action: "capsule.release.install", host: { alias: "personal", domain: fixture.domain, remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname }, release: fixture.release },
+      { cwd: dir, env: { NODE_OPTIONS: `--import=${preload}`, SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE: "1", SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1" } });
+    assert.equal(JSON.parse(result.stdout).ok, false, result.stdout);
+    assert.match(JSON.parse(result.stdout).error.message, /cleanup is incomplete/);
+    await assert.rejects(lstat(path.join(fixture.capsuleDir, "current")), { code: "ENOENT" });
+    await assert.rejects(lstat(fixture.release.directories.release), { code: "ENOENT" });
+    assert.deepEqual(await readFile(fixture.registryRecordPath), registry);
+  });
+});

@@ -613,8 +613,14 @@ release supplies a read-only file. `"preserve"` seeds the file only if no stored
 copy exists and mounts that copy writable. Server edits survive redeployment,
 restart, and rollback. Replaced files roll back with their release; preserved
 files do not roll back their contents. Failed installation attempts remove
-only newly seeded files whose identity and contents are unchanged; existing
-preserved files and intervening edits are retained.
+only newly seeded files whose identity and contents are unchanged from their
+active paths; existing preserved files and intervening edits are retained.
+Rollback atomically moves seeds to `.rollback-<id>` recovery files under
+`preserved-files/`, retaining those bytes because an editor may still have an
+open file handle. If an atomic save races with rollback, Sporades restores the
+captured replacement without overwriting a newer save, or retains it in recovery
+storage. Recovery files can be removed manually after confirming they are no
+longer needed.
 
 Removing a preserved entry stops mounting it without deleting its stored copy.
 Switching to `replace` also retains the inactive copy; switching back to

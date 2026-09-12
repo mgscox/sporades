@@ -58504,7 +58504,7 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile, readdir, link, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, link, rename, rm } from "node:fs/promises";
 var RESERVED = [".sporades", "public", "data", "server.mjs", "client.js", "index.html", "sporades.json", ".env.sporades.server"];
 function resolveDeployFiles(value) {
   if (value === void 0) return [];
@@ -58553,7 +58553,7 @@ async function assertDeployFile(root, relative, recoverSeed = false) {
     let info2 = await lstat(current2);
     if (recoverSeed && index === parts.length - 1 && info2.isFile() && info2.nlink === 2) {
       for (const entry of await readdir(path.dirname(current2))) {
-        if (!/^\.seed-[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(entry)) continue;
+        if (!/^\.(?:seed|rollback)-[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(entry)) continue;
         const seed = path.join(path.dirname(current2), entry);
         const candidate = await lstat(seed).catch((error) => {
           if (error.code !== "ENOENT") throw error;
@@ -58631,7 +58631,7 @@ async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, c
     await assertPreservedDeployFile(preservedRoot, file.path);
   }
 }
-async function rollbackPreservedFiles(created) {
+async function rollbackPreservedFiles(created, hooks = {}) {
   for (const seed of [...created].reverse()) {
     let handle;
     try {
@@ -58640,14 +58640,37 @@ async function rollbackPreservedFiles(created) {
       const info2 = await handle.stat();
       if (info2.dev !== seed.dev || info2.ino !== seed.ino || info2.nlink !== 1) continue;
       if (createHash("sha256").update(await handle.readFile()).digest("hex") !== seed.sha256) continue;
-      const current2 = await lstat(target);
-      if (current2.dev === info2.dev && current2.ino === info2.ino && current2.mtimeMs === info2.mtimeMs && current2.ctimeMs === info2.ctimeMs) await rm(target);
+      await hooks.beforeClaim?.(target);
+      const claimed = path.join(seed.root, `.rollback-${randomUUID()}`);
+      await rename(target, claimed);
+      const captured = await lstat(claimed);
+      const sameSeed = captured.isFile() && captured.dev === info2.dev && captured.ino === info2.ino && createHash("sha256").update(await readFile(claimed)).digest("hex") === seed.sha256;
+      if (!sameSeed) {
+        try {
+          await link(claimed, target);
+          await rm(claimed);
+        } catch (error) {
+          if (error.code !== "EEXIST") throw error;
+        }
+      }
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     } finally {
       await handle?.close();
     }
   }
+}
+async function rethrowAfterDeployCleanup(error, cleanups) {
+  const failures = [];
+  for (const cleanup of cleanups) {
+    try {
+      await cleanup();
+    } catch (failure) {
+      failures.push(failure);
+    }
+  }
+  if (failures.length) throw new AggregateError([error, ...failures], "Deployment failed and cleanup is incomplete.");
+  throw error;
 }
 function localPreservedFileAccessArgs(file, localUser, runtimeUser, image) {
   const uid = Number(localUser.split(":")[0]);
@@ -58723,12 +58746,12 @@ import { spawnSync as spawnSync2 } from "node:child_process";
 import { createHash as createHash12, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes8, timingSafeEqual as timingSafeEqual4 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer as createServer2 } from "node:http";
-import { appendFile, chmod as chmod2, cp, lstat as lstat8, mkdir as mkdir8, readdir as readdir3, readFile as readFile10, rename as rename5, rm as rm8, writeFile as writeFile7 } from "node:fs/promises";
+import { appendFile, chmod as chmod2, cp, lstat as lstat8, mkdir as mkdir8, readdir as readdir3, readFile as readFile10, rename as rename6, rm as rm8, writeFile as writeFile7 } from "node:fs/promises";
 import path13 from "node:path";
 import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL2 } from "node:url";
 
 // src/bundle-pipeline.ts
-import { lstat as lstat5, mkdir as mkdir4, readFile as readFile6, rename as rename3, rm as rm4, writeFile as writeFile3 } from "node:fs/promises";
+import { lstat as lstat5, mkdir as mkdir4, readFile as readFile6, rename as rename4, rm as rm4, writeFile as writeFile3 } from "node:fs/promises";
 import path7 from "node:path";
 
 // src/client-toolchain.ts
@@ -60735,7 +60758,7 @@ function hasHint(error) {
 
 // src/sealed-server-env.ts
 import { createCipheriv, createDecipheriv, createHash as createHash2, createPublicKey, generateKeyPairSync, privateDecrypt, publicEncrypt, randomBytes } from "node:crypto";
-import { lstat as lstat3, mkdir as mkdir2, readFile as readFile3, rename, rm as rm2, writeFile } from "node:fs/promises";
+import { lstat as lstat3, mkdir as mkdir2, readFile as readFile3, rename as rename2, rm as rm2, writeFile } from "node:fs/promises";
 import path3 from "node:path";
 var ENVELOPE_VERSION = 1;
 var KEY_ALGORITHM = "rsa";
@@ -60847,7 +60870,7 @@ async function writeSealedServerEnv(paths, envelope) {
   try {
     await writeFile(temporaryPath, `${JSON.stringify(envelope, null, 2)}
 `, { flag: "wx", mode: 384 });
-    await rename(temporaryPath, targetPath);
+    await rename2(temporaryPath, targetPath);
   } finally {
     await rm2(temporaryPath, { force: true });
   }
@@ -60903,7 +60926,7 @@ async function claimAndQuarantineStaleLock(lockDir, ownerPath, observedOwner, to
   }
   const quarantinePath = `${lockDir}.stale-${process.pid}-${token}`;
   try {
-    await rename(lockDir, quarantinePath);
+    await rename2(lockDir, quarantinePath);
   } catch (error) {
     if (errorCode(error) === "ENOENT") return true;
     throw error;
@@ -61631,7 +61654,7 @@ ${options.epilogue}
 }
 
 // src/public-tree.ts
-import { lstat as lstat4, mkdir as mkdir3, readdir as readdir2, readFile as readFile5, rename as rename2, rm as rm3, writeFile as writeFile2 } from "node:fs/promises";
+import { lstat as lstat4, mkdir as mkdir3, readdir as readdir2, readFile as readFile5, rename as rename3, rm as rm3, writeFile as writeFile2 } from "node:fs/promises";
 import { randomBytes as randomBytes2 } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -61723,7 +61746,7 @@ async function createPublicTree(buildDir, files, options = {}) {
     }
     await validatePublicTree(stagingDir);
     lease = await createPublicTreeLease(treesDir, nonce);
-    await rename2(stagingDir, publicDir);
+    await rename3(stagingDir, publicDir);
     published = true;
     await cleanupPublicTreesUnlocked(buildDir, { keepRoots: [publicDir], maxCompleted: 1, fault: options.cleanupFault });
     return {
@@ -62263,7 +62286,7 @@ async function publishOwnerHeartbeat(recordPath, token, heartbeatAt, options = {
     if (!validOwnerRecord(currentOwner) || currentOwner.token !== token) {
       throw publicTreeError("Public tree ownership changed.", "Discard the obsolete heartbeat without replacing its successor.");
     }
-    await rename2(temporaryPath, heartbeatPath);
+    await rename3(temporaryPath, heartbeatPath);
   } finally {
     await rm3(temporaryPath, { force: true });
   }
@@ -62348,7 +62371,7 @@ async function replaceStateFile(target, contents) {
   const temporary = `${target}.${process.pid}-${randomBytes2(8).toString("hex")}.tmp`;
   try {
     await writeFile2(temporary, contents, { flag: "wx" });
-    await rename2(temporary, target);
+    await rename3(temporary, target);
   } finally {
     await rm3(temporary, { force: true });
   }
@@ -62747,7 +62770,7 @@ async function replaceBundleStateFile(filePath, contents) {
   const temporaryPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   try {
     await writeFile3(temporaryPath, contents);
-    await rename3(temporaryPath, filePath);
+    await rename4(temporaryPath, filePath);
   } finally {
     await rm4(temporaryPath, { force: true });
   }
@@ -62774,7 +62797,7 @@ async function publishLegacyBundles(buildDir, files, options = {}) {
     try {
       for (const state of states) {
         try {
-          await rename3(state.target, state.backup);
+          await rename4(state.target, state.backup);
           state.moved = true;
         } catch (error) {
           if (errorDetails3(error).code !== "ENOENT") throw error;
@@ -62782,7 +62805,7 @@ async function publishLegacyBundles(buildDir, files, options = {}) {
       }
       for (const [index, state] of states.entries()) {
         options.fault?.("before-publish", index);
-        await rename3(state.candidate, state.target);
+        await rename4(state.candidate, state.target);
         state.published = true;
       }
     } catch (error) {
@@ -62790,7 +62813,7 @@ async function publishLegacyBundles(buildDir, files, options = {}) {
       for (const [index, state] of [...states.entries()].reverse()) {
         try {
           options.fault?.("before-restore", index);
-          if (state.moved) await rename3(state.backup, state.target);
+          if (state.moved) await rename4(state.backup, state.target);
           else if (state.published) await rm4(state.target, { force: true });
         } catch {
           recoveryFailures.push(index);
@@ -63159,7 +63182,7 @@ function tagBuildError(error, phase, framework, toolchain) {
 
 // src/file-transaction.ts
 import { randomBytes as randomBytes3 } from "node:crypto";
-import { lstat as lstat6, rename as rename4, rm as rm5, writeFile as writeFile4 } from "node:fs/promises";
+import { lstat as lstat6, rename as rename5, rm as rm5, writeFile as writeFile4 } from "node:fs/promises";
 import path8 from "node:path";
 var defaultExecutor = async (_operation, action) => action();
 async function replaceFilesAtomically(replacements, options = {}) {
@@ -63201,7 +63224,7 @@ async function replaceFilesAtomically(replacements, options = {}) {
           label: entry.label,
           targetPath: entry.path,
           artifactPath: entry.backupPath
-        }, () => rename4(entry.path, entry.backupPath));
+        }, () => rename5(entry.path, entry.backupPath));
         entry.originalMoved = true;
       }
       entry.replacementMayExist = true;
@@ -63211,7 +63234,7 @@ async function replaceFilesAtomically(replacements, options = {}) {
         label: entry.label,
         targetPath: entry.path,
         artifactPath: entry.temporaryPath
-      }, () => rename4(entry.temporaryPath, entry.path));
+      }, () => rename5(entry.temporaryPath, entry.path));
     }
   } catch (failure) {
     const original = asOperationFailure(failure);
@@ -63261,7 +63284,7 @@ async function recoverEntries(entries, execute) {
             label: entry.label,
             targetPath: entry.path,
             artifactPath: entry.backupPath
-          }, () => rename4(entry.backupPath, entry.path));
+          }, () => rename5(entry.backupPath, entry.path));
           entry.originalMoved = false;
         } catch (failure) {
           const backupRemains = await artifactExists(entry.backupPath);
@@ -112694,7 +112717,7 @@ async function replaceFileAtomically(filePath, contents) {
   const temporaryPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   try {
     await writeFile7(temporaryPath, contents, { mode: 384 });
-    await rename5(temporaryPath, filePath);
+    await rename6(temporaryPath, filePath);
   } finally {
     await rm8(temporaryPath, { force: true });
   }
@@ -114732,14 +114755,14 @@ async function startContainerSession(options) {
     "127.0.0.1::22"
   ] : [];
   const deployReleaseRoot = path13.join(runtimeDir, "deploy-files", randomBytes8(16).toString("hex"));
-  for (const file of bundle.deployFiles) {
-    const destination = path13.join(deployReleaseRoot, file.path);
-    await mkdir8(path13.dirname(destination), { recursive: true });
-    await writeFile7(destination, file.contents, { mode: 420 });
-  }
   const preservedRoot = path13.join(runtimeDir, "preserved-files");
   const createdSeeds = [];
   try {
+    for (const file of bundle.deployFiles) {
+      const destination = path13.join(deployReleaseRoot, file.path);
+      await mkdir8(path13.dirname(destination), { recursive: true });
+      await writeFile7(destination, file.contents, { mode: 420 });
+    }
     await preparePreservedFiles(bundle.deployFiles, deployReleaseRoot, preservedRoot, void 0, createdSeeds);
     const localUser = localContainerRuntimeUser();
     for (const file of bundle.deployFiles.filter((entry) => entry.update === "preserve")) {
@@ -114755,10 +114778,11 @@ async function startContainerSession(options) {
       }
     }
   } catch (error) {
-    await rollbackPreservedFiles(createdSeeds);
-    await rm8(deployReleaseRoot, { recursive: true, force: true });
-    await discardPublicTree(bundle.staticFiles.publicTree);
-    throw error;
+    await rethrowAfterDeployCleanup(error, [
+      () => rollbackPreservedFiles(createdSeeds),
+      () => rm8(deployReleaseRoot, { recursive: true, force: true }),
+      () => discardPublicTree(bundle.staticFiles.publicTree)
+    ]);
   }
   const additionalMounts = deployFileMounts(bundle.deployFiles, deployReleaseRoot, preservedRoot);
   const bundleMountArgs = [...bundle.containerMounts.files, ...additionalMounts].flatMap((mount) => ["--volume", formatMount(mount)]);
@@ -114943,9 +114967,10 @@ async function startContainerSession(options) {
         { failures: rollbackFailures, cause: errorDetails(error).message }
       );
     }
-    await rollbackPreservedFiles(createdSeeds);
-    await rm8(deployReleaseRoot, { recursive: true, force: true });
-    throw error;
+    await rethrowAfterDeployCleanup(error, [
+      () => rollbackPreservedFiles(createdSeeds),
+      () => rm8(deployReleaseRoot, { recursive: true, force: true })
+    ]);
   }
   if (!containerId || !binding) throw commandError("Container replacement did not commit.", "Retry deployment.");
   await removeDeployFileSnapshot(runtimeDir, existingBinding?.deployFilesRoot);
@@ -117226,7 +117251,7 @@ async function replaceContainerBinding(bindingPath, binding) {
   try {
     await writeFile7(temporaryPath, `${JSON.stringify(binding, null, 2)}
 `, { flag: "wx" });
-    await rename5(temporaryPath, bindingPath);
+    await rename6(temporaryPath, bindingPath);
   } finally {
     await rm8(temporaryPath, { force: true });
   }

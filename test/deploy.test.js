@@ -5002,6 +5002,19 @@ test("local Container deploy.files snapshots replacements and retains editable f
     const preserved = path.join(projectDir, ".sporades/preserved-files/settings.json");
     assert(run.args.includes(`${preserved}:/app/settings.json:rw`));
     await writeFile(preserved, "server edit");
+    const preload = path.join(dir, "fail-snapshot.mjs");
+    await writeFile(preload, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const original = fs.promises.writeFile; let writes = 0;
+fs.promises.writeFile = async function(file, ...args) {
+  if (String(file).includes('/.sporades/deploy-files/') && ++writes === 2) throw Object.assign(new Error('injected snapshot quota failure'), { code: 'ENOSPC' });
+  return original.call(this, file, ...args);
+}; syncBuiltinESMExports();`);
+    const snapshots = path.join(projectDir, ".sporades/deploy-files");
+    const before = (await readdir(snapshots)).sort();
+    const snapshotFailure = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...docker.env, NODE_OPTIONS: `--import=${preload}` } });
+    assert.notEqual(snapshotFailure.code, 0, snapshotFailure.stdout);
+    assert.match(snapshotFailure.stdout + snapshotFailure.stderr, /injected snapshot quota failure/);
+    assert.deepEqual((await readdir(snapshots)).sort(), before);
     await rm(path.join(projectDir, "settings.json"));
     const countBefore = (await docker.calls()).filter((call) => ["stop", "rm", "run"].includes(call.args[0])).length;
     const failed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });

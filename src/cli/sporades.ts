@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { deployFileMounts, preparePreservedFiles, rollbackPreservedFiles, type PreservedSeed, localPreservedFileAccessArgs, removeDeployFileSnapshot } from "../deploy-files.js";
+import { deployFileMounts, preparePreservedFiles, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, localPreservedFileAccessArgs, removeDeployFileSnapshot } from "../deploy-files.js";
 import { validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual } from "node:crypto";
@@ -4263,14 +4263,14 @@ async function startContainerSession(options: LooseRecord) {
     ]
     : [];
   const deployReleaseRoot = path.join(runtimeDir, "deploy-files", randomBytes(16).toString("hex"));
-  for (const file of bundle.deployFiles) {
-    const destination = path.join(deployReleaseRoot, file.path);
-    await mkdir(path.dirname(destination), { recursive: true });
-    await writeFile(destination, file.contents, { mode: 0o644 });
-  }
   const preservedRoot = path.join(runtimeDir, "preserved-files");
   const createdSeeds: PreservedSeed[] = [];
   try {
+    for (const file of bundle.deployFiles) {
+      const destination = path.join(deployReleaseRoot, file.path);
+      await mkdir(path.dirname(destination), { recursive: true });
+      await writeFile(destination, file.contents, { mode: 0o644 });
+    }
     await preparePreservedFiles(bundle.deployFiles, deployReleaseRoot, preservedRoot, undefined, createdSeeds);
     const localUser = localContainerRuntimeUser();
     for (const file of bundle.deployFiles.filter((entry) => entry.update === "preserve")) {
@@ -4282,10 +4282,11 @@ async function startContainerSession(options: LooseRecord) {
       }
     }
   } catch (error) {
-    await rollbackPreservedFiles(createdSeeds);
-    await rm(deployReleaseRoot, { recursive: true, force: true });
-    await discardPublicTree(bundle.staticFiles.publicTree);
-    throw error;
+    await rethrowAfterDeployCleanup(error, [
+      () => rollbackPreservedFiles(createdSeeds),
+      () => rm(deployReleaseRoot, { recursive: true, force: true }),
+      () => discardPublicTree(bundle.staticFiles.publicTree),
+    ]);
   }
   const additionalMounts = deployFileMounts(bundle.deployFiles, deployReleaseRoot, preservedRoot);
   const bundleMountArgs = [...bundle.containerMounts.files, ...additionalMounts].flatMap((mount) => ["--volume", formatMount(mount)]);
@@ -4448,9 +4449,10 @@ async function startContainerSession(options: LooseRecord) {
         { failures: rollbackFailures, cause: errorDetails(error).message },
       );
     }
-    await rollbackPreservedFiles(createdSeeds);
-    await rm(deployReleaseRoot, { recursive: true, force: true });
-    throw error;
+    await rethrowAfterDeployCleanup(error, [
+      () => rollbackPreservedFiles(createdSeeds),
+      () => rm(deployReleaseRoot, { recursive: true, force: true }),
+    ]);
   }
 
   if (!containerId || !binding) throw commandError("Container replacement did not commit.", "Retry deployment.");

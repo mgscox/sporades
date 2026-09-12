@@ -110,7 +110,9 @@ They appear at matching paths under `/app`, outside Sporades-managed paths.
 `replace` (the default) uses read-only release bytes. `preserve` seeds a writable
 file under the Capsule's `preserved-files/` directory and mounts that file at
 its declared `/app` path. Stored edits survive release changes and rollback;
-removing the declaration retains the inactive copy.
+removing the declaration retains the inactive copy. Failed-install seeds are
+moved off their active paths into `.rollback-<id>` recovery files in the same
+preserved storage, so concurrent editor writes remain recoverable.
 
 Local Container sessions keep replacement snapshots in `.sporades/deploy-files/`
 and preserved copies in `.sporades/preserved-files/`. Hosted Capsules keep

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, mkdir, readFile, writeFile, rm, symlink, link, stat } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm, symlink, link, stat, open, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { buildDeployFiles, resolveDeployFiles, preparePreservedFiles, deployFileMounts, assertPreservedDeployFile, rollbackPreservedFiles, localPreservedFileAccessArgs } from "../dist/deploy-files.js";
+import { buildDeployFiles, resolveDeployFiles, preparePreservedFiles, deployFileMounts, assertPreservedDeployFile, rollbackPreservedFiles, localPreservedFileAccessArgs, rethrowAfterDeployCleanup } from "../dist/deploy-files.js";
 import { createBundle } from "../dist/bundle-pipeline.js";
 
 async function temporary(fn) {
@@ -106,4 +106,43 @@ test("local preserved-file access keeps the CLI owner and grants the SSH runtime
   assert(args.includes("/project/.sporades/preserved-files/settings.json:/file:rw"));
   assert.match(args.at(-1), /fchownSync\(fd, 501, 10001\)/);
   assert.match(args.at(-1), /fchmodSync\(fd, 0o660\)/);
+});
+
+
+test("seed rollback retains atomic-save replacements made at the claim boundary", async () => temporary(async (root) => {
+  const source = path.join(root, "release"); const stored = path.join(root, "stored");
+  await mkdir(source); await writeFile(path.join(source, "settings.json"), "seed");
+  const created = [];
+  await preparePreservedFiles([{ path: "settings.json", update: "preserve" }], source, stored, undefined, created);
+  await rollbackPreservedFiles(created, { beforeClaim: async (target) => {
+    await rm(target); await writeFile(target, "atomic save");
+  } });
+  assert.equal(await readFile(path.join(stored, "settings.json"), "utf8"), "atomic save");
+  assert.equal((await stat(path.join(stored, "settings.json"))).nlink, 1);
+}));
+
+test("seed rollback retains edits through an open descriptor after the seed is claimed", async () => temporary(async (root) => {
+  const source = path.join(root, "release"); const stored = path.join(root, "stored");
+  await mkdir(source); await writeFile(path.join(source, "settings.json"), "seed");
+  const created = [];
+  await preparePreservedFiles([{ path: "settings.json", update: "preserve" }], source, stored, undefined, created);
+  const writer = await open(path.join(stored, "settings.json"), "r+");
+  try {
+    await rollbackPreservedFiles(created);
+    await writer.write("late edit", 0, "utf8");
+  } finally { await writer.close(); }
+  await assert.rejects(stat(path.join(stored, "settings.json")), { code: "ENOENT" });
+  const recovery = (await readdir(stored)).find((entry) => entry.startsWith(".rollback-"));
+  assert.equal(await readFile(path.join(stored, recovery), "utf8"), "late edit");
+}));
+
+test("deployment cleanup attempts core restoration even when another cleanup fails", async () => {
+  const attempted = [];
+  const original = new Error("install failed");
+  await assert.rejects(rethrowAfterDeployCleanup(original, [
+    async () => { attempted.push("seed"); throw new Error("cleanup denied"); },
+    async () => { attempted.push("pointer"); },
+    async () => { attempted.push("release"); },
+  ]), (error) => error instanceof AggregateError && error.errors[0] === original);
+  assert.deepEqual(attempted, ["seed", "pointer", "release"]);
 });
