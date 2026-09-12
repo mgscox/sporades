@@ -7010,12 +7010,13 @@ test("sporades host helper serializes two stale health route repairs across help
       await writeFile(path.join(remoteRoot, "caddy", "Caddyfile"), "import ./hosts/*.caddy\n");
       await writeFile(
         routeFile,
-        `team-notes.${domain} {\n  reverse_proxy 127.0.0.1:49153 {\n  }\n}\n`,
+        `team-notes.${domain} {\n  reverse_proxy 127.0.0.1:49153 {\n  }\n}\nfourteen.example {\n  reverse_proxy 127.0.0.1:49153 {\n  }\n}\n`,
       );
       await writeFile(
         registryRecordPath,
         `${JSON.stringify({
           subname: "team-notes",
+          aliasDomains: ["fourteen.example"],
           domain,
           remoteCapsuleId: `${domain}/team-notes`,
           hostedUrl,
@@ -7059,7 +7060,8 @@ test("sporades host helper serializes two stale health route repairs across help
         assert.equal(JSON.parse(result.stdout).ok, true, result.stdout);
       }
       const route = await readFile(routeFile, "utf8");
-      assert.equal((route.match(/reverse_proxy 127\.0\.0\.1:49154/g) ?? []).length, 1);
+      assert.equal((route.match(/reverse_proxy 127\.0\.0\.1:49154/g) ?? []).length, 2);
+      assert.ok(route.includes("fourteen.example {\n"));
       assert.doesNotMatch(route, /127\.0\.0\.1:49153/);
       assert.deepEqual(
         (await docker.caddyCalls()).map((call) => call.args),
@@ -10983,7 +10985,7 @@ test("sporades host helper restarts the current release after install when reque
     await createTarGz(archivePath, runtimeDir, ["server.mjs", "public/client.js", "public/index.html", "sporades.json"]);
     const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
     await mkdir(path.dirname(registryRecordPath), { recursive: true });
-    await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
+    await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev", aliasDomains: ["fourteen.example"] })}\n`);
     const docker = await installFakeDocker(dir);
 
     const install = await runHostHelper(
@@ -11039,6 +11041,8 @@ test("sporades host helper restarts the current release after install when reque
     assert.equal(runCall.args[runCall.args.indexOf("--publish") + 1], "127.0.0.1::4000");
     assert.equal(output.data.lifecycle.container.publishedPort.hostPort, 49153);
     assert.equal(output.data.lifecycle.route.upstream, "127.0.0.1:49153");
+    assert.ok((await readFile(output.data.lifecycle.route.routeFile, "utf8")).includes("fourteen.example {\n"));
+    assert.ok(runCall.args.includes('SPORADES_PUBLIC_ALIASES=["https://fourteen.example"]'));
   });
 });
 
@@ -11332,6 +11336,8 @@ test("sporades host helper marks verified push failed when the Capsule route doe
       domain: `localhost:${port}`,
       scheme: "http",
     });
+    const registered = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    await writeFile(fixture.registryRecordPath, JSON.stringify({ ...registered, aliasDomains: ["fourteen.example"] }));
     const docker = await installFakeDocker(path.join(dir, "verify-route-failure-docker"));
 
     const install = await runHostHelper(
@@ -11364,7 +11370,9 @@ test("sporades host helper marks verified push failed when the Capsule route doe
     assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), path.join(fixture.capsuleDir, "releases", fixture.releaseId));
     assert.match(await readFile(fixture.lifecycle.routes.unavailable.routeFile, "utf8"), /respond "Hosted Capsule unavailable" 503/);
 
+    assert.ok((await readFile(fixture.lifecycle.routes.unavailable.routeFile, "utf8")).includes("fourteen.example {\n"));
     const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    assert.deepEqual(record.aliasDomains, ["fourteen.example"]);
     const release = record.releases.find((entry) => entry.id === fixture.releaseId);
     assert.equal(record.currentRelease.id, fixture.releaseId);
     assert.equal(record.status, "failed");
@@ -14303,6 +14311,11 @@ test("custom domains register apex and app aliases, survive lifecycle and releas
     const list = await invoke({ ...request, action: "capsule.list", registration: undefined });
     assert.equal(JSON.parse(list.stdout).ok, true, list.stdout + list.stderr);
     assert.deepEqual(JSON.parse(list.stdout).data.capsules[0].aliasDomains, request.registration.aliasDomains);
+    const forged = await invoke({ ...request, action: "capsule.stop", registration: undefined,
+      lifecycle: { routes: { unavailable: { aliasDomains: ["evil.example"] } } },
+    });
+    assert.equal(JSON.parse(forged.stdout).ok, false, forged.stdout);
+    assert.equal(await readFile(routeFile, "utf8"), unavailable);
     const stopped = await invoke({ ...request, action: "capsule.stop", registration: undefined });
     assert.equal(JSON.parse(stopped.stdout).ok, true, stopped.stdout + stopped.stderr);
     assert.equal(await readFile(routeFile, "utf8"), unavailable);
@@ -14330,6 +14343,11 @@ test("custom domains register apex and app aliases, survive lifecycle and releas
     const reactivated = await invoke({ ...request, registration: undefined });
     assert.equal(JSON.parse(reactivated.stdout).ok, true, reactivated.stdout + reactivated.stderr);
     assert.deepEqual(JSON.parse(reactivated.stdout).data.capsule.aliasDomains, request.registration.aliasDomains);
+    assert.equal(JSON.parse((await invoke({ ...request, action: "capsule.unregister", registration: undefined })).stdout).ok, true);
+    const cleared = await invoke({ ...request, registration: { aliasDomains: [] } });
+    assert.equal(JSON.parse(cleared.stdout).ok, true, cleared.stdout);
+    assert.deepEqual(JSON.parse(cleared.stdout).data.capsule.aliasDomains, []);
+    assert.doesNotMatch(await readFile(routeFile, "utf8"), /fourteen.example/);
   });
 });
 
@@ -14348,8 +14366,11 @@ test("custom domains reject invalid input, cross-domain collisions and concurren
     const canonicalConflict = await invoke({ ...loser, registration: { aliasDomains: [`${winner.capsule.subname}.${winner.host.domain}`] } });
     assert.equal(JSON.parse(canonicalConflict.stdout).ok, false, canonicalConflict.stdout);
     // An alias that is a future Capsule's canonical hostname must block that registration too.
-    const aliasOwner = await invoke({ ...loser, capsule: { subname: "owner" }, registration: { aliasDomains: [`future.${loser.host.domain}`] } });
+    const aliasOwner = await invoke({ ...loser, capsule: { subname: "owner" }, registration: { aliasDomains: [`future.${loser.host.domain}`, "host.future.example"] } });
     assert.equal(JSON.parse(aliasOwner.stdout).ok, true, aliasOwner.stdout + aliasOwner.stderr);
+    const healthConflict = await invoke({ action: "host.bootstrap", host: { ...request.host, domain: "future.example" } });
+    assert.equal(JSON.parse(healthConflict.stdout).ok, false, healthConflict.stdout);
+    assert.equal(JSON.parse(healthConflict.stdout).error.message, "Hosted Capsule hostname is already reserved.");
     const future = await invoke({ ...loser, capsule: { subname: "future" }, registration: undefined });
     assert.equal(JSON.parse(future.stdout).ok, false, future.stdout);
     const removed = await invoke({ ...winner, action: "capsule.unregister", registration: undefined });
