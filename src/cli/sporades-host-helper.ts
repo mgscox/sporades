@@ -1935,7 +1935,7 @@ async function startCapsule(request: HostHelperRequest, options: LooseRecord = {
   const lifecycle = normaliseLifecycle(
     request,
     registryRecord,
-    options.trustedRegistryLifecycle === true ? { ignoreProvidedLifecycle: true } : {},
+    { ...(options.trustedRegistryLifecycle === true ? { ignoreProvidedLifecycle: true } : {}), releaseId },
   );
   const recordedRelease = normaliseReleaseHistory(registryRecord).find((entry: any) => entry.id === releaseId);
   for (const file of resolveDeployFiles(recordedRelease?.source?.deployFiles)) {
@@ -3020,7 +3020,7 @@ function normaliseLifecycle(request: HostHelperRequest, registryRecord: any = nu
     ],
     data: { host: paths.data, container: "/app/data", mode: "rw" },
   };
-  const deployRelease = normaliseReleaseHistory(registryRecord).find((entry: any) => entry.id === registryRecord?.currentRelease?.id);
+  const deployRelease = normaliseReleaseHistory(registryRecord).find((entry: any) => entry.id === (options.releaseId ?? registryRecord?.currentRelease?.id));
   const additionalMounts = deployFileMounts(resolveDeployFiles(deployRelease?.source?.deployFiles), currentLink, path.join(paths.capsule, "preserved-files"));
   const fileMounts = authoritativeSshAuthorizedKeysMount(
     authoritativeSealedServerEnvPrivateKeyMount(

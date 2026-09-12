@@ -58672,10 +58672,10 @@ async function rethrowAfterDeployCleanup(error, cleanups) {
   if (failures.length) throw new AggregateError([error, ...failures], "Deployment failed and cleanup is incomplete.");
   throw error;
 }
-function localPreservedFileAccessArgs(file, localUser, runtimeUser, image) {
+function localPreservedFileAccessArgs(file, localUser, runtimeUser, image, mode = localUser === runtimeUser ? 384 : 432) {
   const uid = Number(localUser.split(":")[0]);
   const gid = Number(runtimeUser.split(":")[1]);
-  const script = `const fs = require("node:fs"); const fd = fs.openSync("/file", fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); const s = fs.fstatSync(fd); if (!s.isFile() || s.nlink !== 1) throw new Error("Unsafe preserved file"); fs.fchownSync(fd, ${uid}, ${gid}); fs.fchmodSync(fd, 0o660); fs.closeSync(fd);`;
+  const script = `const fs = require("node:fs"); const fd = fs.openSync("/file", fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); const s = fs.fstatSync(fd); if (!s.isFile() || s.nlink !== 1) throw new Error("Unsafe preserved file"); fs.fchownSync(fd, ${uid}, ${gid}); fs.fchmodSync(fd, ${mode}); fs.closeSync(fd);`;
   return ["run", "--rm", "--network", "none", "--read-only", "--security-opt", "no-new-privileges", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--cap-add", "DAC_OVERRIDE", "--user", "0:0", "--volume", `${file}:/file:rw`, image, "node", "-e", script];
 }
 async function removeDeployFileSnapshot(runtimeDir, snapshot) {
@@ -114764,19 +114764,6 @@ async function startContainerSession(options) {
       await writeFile7(destination, file.contents, { mode: 420 });
     }
     await preparePreservedFiles(bundle.deployFiles, deployReleaseRoot, preservedRoot, void 0, createdSeeds);
-    const localUser = localContainerRuntimeUser();
-    for (const file of bundle.deployFiles.filter((entry) => entry.update === "preserve")) {
-      const target = path13.join(preservedRoot, file.path);
-      const info2 = await lstat8(target);
-      if (runtimeUser !== localUser || info2.uid !== Number(localUser.split(":")[0])) {
-        runDocker(
-          localPreservedFileAccessArgs(target, localUser, runtimeUser, SPORADES_BASE_IMAGE.image),
-          options.projectDir,
-          "Failed to prepare preserved file access.",
-          "Check Docker can adjust the declared preserved file for the local and SSH runtime users."
-        );
-      }
-    }
   } catch (error) {
     await rethrowAfterDeployCleanup(error, [
       () => rollbackPreservedFiles(createdSeeds),
@@ -114844,12 +114831,30 @@ async function startContainerSession(options) {
   let candidateOwnershipProven = false;
   let committedConsumer = null;
   let binding = null;
+  const previousFileAccess = [];
   try {
     if (existingContainer) {
       runDocker(["rename", existingBinding.containerId, rollbackName], options.projectDir, "Failed to stage the existing Container for replacement.", "Retry after Docker can rename the bound Container.");
       oldRenamed = true;
       if (oldWasRunning) {
         runDocker(["stop", rollbackName], options.projectDir, "Failed to stop the staged Container replacement.", "Retry after Docker can stop the bound Container.");
+      }
+    }
+    const localUser = localContainerRuntimeUser();
+    const desiredUid = Number(localUser.split(":")[0]);
+    const desiredGid = Number(runtimeUser.split(":")[1]);
+    const desiredMode = runtimeUser === localUser ? 384 : 432;
+    for (const file of bundle.deployFiles.filter((entry) => entry.update === "preserve")) {
+      const target = await assertPreservedDeployFile(preservedRoot, file.path);
+      const info2 = await lstat8(target);
+      if (info2.uid !== desiredUid || info2.gid !== desiredGid || (info2.mode & 511) !== desiredMode) {
+        previousFileAccess.push({ host: target, uid: info2.uid, gid: info2.gid, mode: info2.mode & 511, dev: info2.dev, ino: info2.ino });
+        runDocker(
+          localPreservedFileAccessArgs(target, localUser, runtimeUser, SPORADES_BASE_IMAGE.image),
+          options.projectDir,
+          "Failed to prepare preserved file access.",
+          "Check Docker can adjust the declared preserved file for the local and SSH runtime users."
+        );
       }
     }
     containerReplacementFault("publication");
@@ -114942,6 +114947,26 @@ async function startContainerSession(options) {
       else await rm8(bindingPath, { force: true });
     } catch {
       rollbackFailures.push("binding");
+    }
+    if (!candidateRetained) {
+      for (const previous of previousFileAccess.reverse()) {
+        try {
+          const current2 = await lstat8(previous.host).catch((error2) => {
+            if (error2.code !== "ENOENT") throw error2;
+            return null;
+          });
+          if (!current2 || current2.dev !== previous.dev || current2.ino !== previous.ino) continue;
+          const owner = `${previous.uid}:${previous.gid}`;
+          runDocker(
+            localPreservedFileAccessArgs(previous.host, owner, owner, SPORADES_BASE_IMAGE.image, previous.mode),
+            options.projectDir,
+            "Failed to restore preserved file access.",
+            "Repair the previous runtime's preserved-file permissions before restarting it."
+          );
+        } catch {
+          rollbackFailures.push("preserved-file-access");
+        }
+      }
     }
     if (oldRenamed) {
       try {

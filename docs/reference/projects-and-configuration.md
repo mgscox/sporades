@@ -628,7 +628,9 @@ Switching to `replace` also retains the inactive copy; switching back to
 `preserved-files/` directory; locally they live in `.sporades/preserved-files/`.
 Local SSH deployments keep the invoking user as file owner and grant the
 container runtime group read/write access through a Docker helper mounted to
-one declared file at a time. Removing a local Container also removes its
+one declared file at a time. Disabling SSH restores the invoking user’s group
+and owner-only permissions. Failed replacements restore the previous file
+permissions before restarting the old Container. Removing a local Container also removes its
 replacement snapshot, while preserving stored edits.
 
 Edit the file contents in place when editing a bind-mounted file. Replacing its

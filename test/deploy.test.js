@@ -5025,6 +5025,11 @@ fs.promises.writeFile = async function(file, ...args) {
     await writeFile(path.join(projectDir, "settings.json"), "new seed");
     config.ssh = { authorizedKeys: [{ key: TEST_PUBLIC_KEY }] };
     await writeFile(configPath, JSON.stringify(config));
+    const deniedDeploy = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...docker.env, SPORADES_TEST_CONTAINER_REPLACEMENT_FAULT: "consumer" } });
+    assert.notEqual(deniedDeploy.code, 0);
+    const restoredAccess = (await docker.calls()).filter((call) => call.args.includes(`${preserved}:/file:rw`)).at(-1);
+    assert.match(restoredAccess.args.at(-1), /fchmodSync\(fd, 384\)/);
+    assert.match(restoredAccess.args.at(-1), new RegExp(`fchownSync\\(fd, ${process.getuid()}, ${process.getgid()}\\)`));
     const sshDeploy = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
     assert.equal(sshDeploy.code, 0, sshDeploy.stdout + sshDeploy.stderr);
     const helper = (await docker.calls()).find((call) => call.args.includes(`${preserved}:/file:rw`));
@@ -5033,7 +5038,18 @@ fs.promises.writeFile = async function(file, ...args) {
     assert.equal(await readFile(preserved, "utf8"), "server edit");
     delete config.ssh;
     await writeFile(configPath, JSON.stringify(config));
-    const ordinaryDeploy = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    const staleGrant = path.join(dir, "stale-grant.mjs");
+    await writeFile(staleGrant, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const original = fs.promises.lstat;
+fs.promises.lstat = async function(file, ...args) {
+  const result = await original.call(this, file, ...args);
+  if (String(file).endsWith('/.sporades/preserved-files/settings.json')) { result.gid = 10001; result.mode = (result.mode & ~0o777) | 0o660; }
+  return result;
+}; syncBuiltinESMExports();`);
+    const ordinaryDeploy = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...docker.env, NODE_OPTIONS: `--import=${staleGrant}` } });
+    const revokedAccess = (await docker.calls()).filter((call) => call.args.includes(`${preserved}:/file:rw`)).at(-1);
+    assert.match(revokedAccess.args.at(-1), /fchmodSync\(fd, 384\)/);
+    assert.match(revokedAccess.args.at(-1), new RegExp(`fchownSync\\(fd, ${process.getuid()}, ${process.getgid()}\\)`));
     assert.equal(ordinaryDeploy.code, 0, ordinaryDeploy.stdout + ordinaryDeploy.stderr);
     const binding = JSON.parse(await readFile(path.join(projectDir, ".sporades/binding.json"), "utf8"));
     assert.equal(await readFile(path.join(binding.deployFilesRoot, "defaults.json"), "utf8"), "new local bytes");

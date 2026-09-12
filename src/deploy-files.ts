@@ -182,12 +182,12 @@ export async function rethrowAfterDeployCleanup(error: unknown, cleanups: Array<
   throw error;
 }
 
-export function localPreservedFileAccessArgs(file: string, localUser: string, runtimeUser: string, image: string) {
+export function localPreservedFileAccessArgs(file: string, localUser: string, runtimeUser: string, image: string, mode = localUser === runtimeUser ? 0o600 : 0o660) {
   const uid = Number(localUser.split(":")[0]);
   const gid = Number(runtimeUser.split(":")[1]);
   // Docker provides the ownership operation; the unprivileged CLI keeps ownership.
   // Owner access supports ordinary local sessions, group access supports SSH's UID.
-  const script = `const fs = require("node:fs"); const fd = fs.openSync("/file", fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); const s = fs.fstatSync(fd); if (!s.isFile() || s.nlink !== 1) throw new Error("Unsafe preserved file"); fs.fchownSync(fd, ${uid}, ${gid}); fs.fchmodSync(fd, 0o660); fs.closeSync(fd);`;
+  const script = `const fs = require("node:fs"); const fd = fs.openSync("/file", fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); const s = fs.fstatSync(fd); if (!s.isFile() || s.nlink !== 1) throw new Error("Unsafe preserved file"); fs.fchownSync(fd, ${uid}, ${gid}); fs.fchmodSync(fd, ${mode}); fs.closeSync(fd);`;
   return ["run", "--rm", "--network", "none", "--read-only", "--security-opt", "no-new-privileges", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--cap-add", "DAC_OVERRIDE", "--user", "0:0", "--volume", `${file}:/file:rw`, image, "node", "-e", script];
 }
 

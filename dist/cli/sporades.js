@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { deployFileMounts, preparePreservedFiles, rollbackPreservedFiles, rethrowAfterDeployCleanup, localPreservedFileAccessArgs, removeDeployFileSnapshot } from "../deploy-files.js";
+import { assertPreservedDeployFile, deployFileMounts, preparePreservedFiles, rollbackPreservedFiles, rethrowAfterDeployCleanup, localPreservedFileAccessArgs, removeDeployFileSnapshot } from "../deploy-files.js";
 import { validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual } from "node:crypto";
@@ -3736,14 +3736,6 @@ async function startContainerSession(options) {
             await writeFile(destination, file.contents, { mode: 0o644 });
         }
         await preparePreservedFiles(bundle.deployFiles, deployReleaseRoot, preservedRoot, undefined, createdSeeds);
-        const localUser = localContainerRuntimeUser();
-        for (const file of bundle.deployFiles.filter((entry) => entry.update === "preserve")) {
-            const target = path.join(preservedRoot, file.path);
-            const info = await lstat(target);
-            if (runtimeUser !== localUser || info.uid !== Number(localUser.split(":")[0])) {
-                runDocker(localPreservedFileAccessArgs(target, localUser, runtimeUser, SPORADES_BASE_IMAGE.image), options.projectDir, "Failed to prepare preserved file access.", "Check Docker can adjust the declared preserved file for the local and SSH runtime users.");
-            }
-        }
     }
     catch (error) {
         await rethrowAfterDeployCleanup(error, [
@@ -3812,12 +3804,25 @@ async function startContainerSession(options) {
     let candidateOwnershipProven = false;
     let committedConsumer = null;
     let binding = null;
+    const previousFileAccess = [];
     try {
         if (existingContainer) {
             runDocker(["rename", existingBinding.containerId, rollbackName], options.projectDir, "Failed to stage the existing Container for replacement.", "Retry after Docker can rename the bound Container.");
             oldRenamed = true;
             if (oldWasRunning) {
                 runDocker(["stop", rollbackName], options.projectDir, "Failed to stop the staged Container replacement.", "Retry after Docker can stop the bound Container.");
+            }
+        }
+        const localUser = localContainerRuntimeUser();
+        const desiredUid = Number(localUser.split(":")[0]);
+        const desiredGid = Number(runtimeUser.split(":")[1]);
+        const desiredMode = runtimeUser === localUser ? 0o600 : 0o660;
+        for (const file of bundle.deployFiles.filter((entry) => entry.update === "preserve")) {
+            const target = await assertPreservedDeployFile(preservedRoot, file.path);
+            const info = await lstat(target);
+            if (info.uid !== desiredUid || info.gid !== desiredGid || (info.mode & 0o777) !== desiredMode) {
+                previousFileAccess.push({ host: target, uid: info.uid, gid: info.gid, mode: info.mode & 0o777, dev: info.dev, ino: info.ino });
+                runDocker(localPreservedFileAccessArgs(target, localUser, runtimeUser, SPORADES_BASE_IMAGE.image), options.projectDir, "Failed to prepare preserved file access.", "Check Docker can adjust the declared preserved file for the local and SSH runtime users.");
             }
         }
         containerReplacementFault("publication");
@@ -3900,6 +3905,21 @@ async function startContainerSession(options) {
         }
         catch {
             rollbackFailures.push("binding");
+        }
+        if (!candidateRetained) {
+            for (const previous of previousFileAccess.reverse()) {
+                try {
+                    const current = await lstat(previous.host).catch((error) => { if (error.code !== "ENOENT")
+                        throw error; return null; });
+                    if (!current || current.dev !== previous.dev || current.ino !== previous.ino)
+                        continue;
+                    const owner = `${previous.uid}:${previous.gid}`;
+                    runDocker(localPreservedFileAccessArgs(previous.host, owner, owner, SPORADES_BASE_IMAGE.image, previous.mode), options.projectDir, "Failed to restore preserved file access.", "Repair the previous runtime's preserved-file permissions before restarting it.");
+                }
+                catch {
+                    rollbackFailures.push("preserved-file-access");
+                }
+            }
         }
         if (oldRenamed) {
             try {

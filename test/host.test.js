@@ -11418,6 +11418,7 @@ test("sporades host helper applies verification fallback with the selected relea
       rootName: "verify-fallback-success",
       domain: `localhost:${port}`,
       scheme: "http",
+      deployFiles: [{ path: "settings.json", update: "replace" }],
     });
     const previousReleaseDir = path.join(fixture.capsuleDir, "releases", fixture.previousReleaseId);
     await mkdir(path.join(previousReleaseDir, "public", "assets"), { recursive: true });
@@ -11425,8 +11426,12 @@ test("sporades host helper applies verification fallback with the selected relea
     await writeFile(path.join(previousReleaseDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
     await writeFile(path.join(previousReleaseDir, "public", "index.html"), '<script type="module" src="/assets/previous-deadbeef.js"></script>\n');
     await writeFile(path.join(previousReleaseDir, "public", "assets", "previous-deadbeef.js"), "console.log('previous complete release');\n");
+    await writeFile(path.join(previousReleaseDir, "settings.json"), "previous seed");
+    const preservedRoot = path.join(fixture.capsuleDir, "preserved-files");
+    await mkdir(preservedRoot, { recursive: true });
+    await writeFile(path.join(preservedRoot, "settings.json"), "server edit");
     const before = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
-    before.releases[0].source = { inspection: { requiredInspectors: ["clamav"] } };
+    before.releases[0].source = { inspection: { requiredInspectors: ["clamav"] }, deployFiles: [{ path: "settings.json", update: "preserve" }] };
     await writeFile(fixture.registryRecordPath, `${JSON.stringify(before, null, 2)}\n`);
     fixture.release.inspection = null;
     const clock = path.join(dir, "fallback-stepping-clock.mjs");
@@ -11454,6 +11459,11 @@ test("sporades host helper applies verification fallback with the selected relea
     assert.equal(output.data.fallback.applied, true);
     assert.equal(output.data.fallback.release.id, fixture.previousReleaseId);
     assert.equal(output.data.fallback.lifecycle.release.id, fixture.previousReleaseId);
+    const runs = (await docker.calls()).filter((call) => call.args[0] === "run");
+    assert(runs[0].args.includes(`${path.join(fixture.capsuleDir, "current/settings.json")}:/app/settings.json:ro`));
+    assert(runs.at(-1).args.includes(`${path.join(preservedRoot, "settings.json")}:/app/settings.json:rw`));
+    assert(!runs.at(-1).args.includes(`${path.join(fixture.capsuleDir, "current/settings.json")}:/app/settings.json:ro`));
+
     assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), previousReleaseDir);
     assert.match(await readFile(path.join(fixture.capsuleDir, "current", "public", "index.html"), "utf8"), /previous-deadbeef\.js/);
     assert.match(await readFile(path.join(fixture.capsuleDir, "current", "public", "assets", "previous-deadbeef.js"), "utf8"), /previous complete release/);

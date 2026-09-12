@@ -1764,7 +1764,7 @@ async function startCapsule(request, options = {}) {
     const registryRecord = await verifyRegisteredCapsule(request, "lifecycle");
     const paths = canonicalReleasePaths(request);
     const releaseId = await currentReleaseId(paths.currentLink, request);
-    const lifecycle = normaliseLifecycle(request, registryRecord, options.trustedRegistryLifecycle === true ? { ignoreProvidedLifecycle: true } : {});
+    const lifecycle = normaliseLifecycle(request, registryRecord, { ...(options.trustedRegistryLifecycle === true ? { ignoreProvidedLifecycle: true } : {}), releaseId });
     const recordedRelease = normaliseReleaseHistory(registryRecord).find((entry) => entry.id === releaseId);
     for (const file of resolveDeployFiles(recordedRelease?.source?.deployFiles)) {
         if (file.update === "preserve")
@@ -2664,7 +2664,7 @@ function normaliseLifecycle(request, registryRecord = null, options = {}) {
         ],
         data: { host: paths.data, container: "/app/data", mode: "rw" },
     };
-    const deployRelease = normaliseReleaseHistory(registryRecord).find((entry) => entry.id === registryRecord?.currentRelease?.id);
+    const deployRelease = normaliseReleaseHistory(registryRecord).find((entry) => entry.id === (options.releaseId ?? registryRecord?.currentRelease?.id));
     const additionalMounts = deployFileMounts(resolveDeployFiles(deployRelease?.source?.deployFiles), currentLink, path.join(paths.capsule, "preserved-files"));
     const fileMounts = authoritativeSshAuthorizedKeysMount(authoritativeSealedServerEnvPrivateKeyMount(provided.mounts?.files ?? defaultMounts.files, sealedServerEnvPrivateKey), sshAuthorizedKeysMount);
     const canonicalContainer = {

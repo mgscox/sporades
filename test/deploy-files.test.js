@@ -105,7 +105,11 @@ test("local preserved-file access keeps the CLI owner and grants the SSH runtime
   assert.equal(args.filter((arg) => arg === "--volume").length, 1);
   assert(args.includes("/project/.sporades/preserved-files/settings.json:/file:rw"));
   assert.match(args.at(-1), /fchownSync\(fd, 501, 10001\)/);
-  assert.match(args.at(-1), /fchmodSync\(fd, 0o660\)/);
+  assert.match(args.at(-1), /fchmodSync\(fd, 432\)/);
+  const privateArgs = localPreservedFileAccessArgs("/settings.json", "501:20", "501:20", "image");
+  assert.match(privateArgs.at(-1), /fchownSync\(fd, 501, 20\)/);
+  assert.match(privateArgs.at(-1), /fchmodSync\(fd, 384\)/);
+
 });
 
 
