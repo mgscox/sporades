@@ -44328,8 +44328,22 @@ async function rotateCapsuleSealedEnvKey(request) {
   if (rotationError) throw rotationError;
   writeEnvelope({ ok: true, data: data2, error: null });
 }
+async function assertRegistrationRecoveryComplete(request) {
+  const claimPath = path4.join(request.host.remoteRoot, "hosts", request.host.domain, "registry", "registration-claims", `${request.capsule.subname}.json`);
+  const pending = await lstat(claimPath).catch((error) => {
+    if (errorDetails(error).code === "ENOENT") return null;
+    throw error;
+  });
+  if (pending) {
+    throw helperError(
+      "Hosted Capsule registration recovery is required before teardown.",
+      "Repair the reported Host services or storage problem and retry the original registration with the same alias domains before unregistering or deleting this Capsule."
+    );
+  }
+}
 async function unregisterCapsule(request) {
   validateUnregisterRequest(request);
+  await assertRegistrationRecoveryComplete(request);
   const unregister = normaliseUnregister(request);
   await mkdir(path4.dirname(registryLockPath(request)), { recursive: true });
   let data2;
@@ -44367,6 +44381,7 @@ async function unregisterCapsule(request) {
 }
 async function deleteCapsule(request) {
   validateDeleteRequest(request);
+  await assertRegistrationRecoveryComplete(request);
   const deletion = normaliseDeletion(request);
   await mkdir(path4.dirname(registryLockPath(request)), { recursive: true });
   let data2;

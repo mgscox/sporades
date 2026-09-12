@@ -67,4 +67,5 @@ until recovery completes. Successful retry commits the registry and removes
 the pending reservation. Other Capsules cannot claim those names meanwhile.
 A registry lock cleanup failure after commit preserves the committed route and
 reservation. Repair the reported lock cleanup problem, then retry registration
-to complete recovery.
+to complete recovery. Unregister and delete reject Capsules with pending
+registration recovery; complete that recovery first, then tear down normally.

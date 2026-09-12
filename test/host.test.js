@@ -14469,6 +14469,11 @@ test("custom domains retain ownership when registration and route rollback both 
     await assert.rejects(readFile(path.join(registry, "capsules", "team-notes.json")), { code: "ENOENT" });
     const claimPath = path.join(registry, "registration-claims", "team-notes.json");
     assert.deepEqual(JSON.parse(await readFile(claimPath, "utf8")).aliasDomains, request.registration.aliasDomains);
+    for (const action of ["capsule.unregister", "capsule.delete"]) {
+      const denied = JSON.parse((await invoke({ ...request, action })).stdout);
+      assert.match(denied.error.message, /registration recovery is required before teardown/);
+      assert.deepEqual(JSON.parse(await readFile(claimPath, "utf8")).aliasDomains, request.registration.aliasDomains);
+    }
     // A separate helper process sees the durable reservation even without a Capsule record.
     const competitor = { ...request, host: { ...request.host, domain: "other.example.dev" }, capsule: { subname: "competitor" } };
     assert.equal(JSON.parse((await invoke(competitor)).stdout).error.message, "Hosted Capsule hostname is already reserved.");
@@ -14547,10 +14552,20 @@ syncBuiltinESMExports();
       assert.deepEqual(JSON.parse(await readFile(claim, "utf8")).aliasDomains, request.registration.aliasDomains);
       // Simulate operator repair of the failed lock cleanup before retrying.
       await rm(path.join(registry, ".lock"), { recursive: true });
+      for (const action of ["capsule.unregister", "capsule.delete"]) {
+        const denied = JSON.parse((await invoke({ ...request, action })).stdout);
+        assert.equal(denied.ok, false);
+        assert.match(denied.error.message, /registration recovery is required before teardown/);
+        assert.deepEqual(JSON.parse(await readFile(claim, "utf8")).aliasDomains, request.registration.aliasDomains);
+        assert.match(await readFile(route, "utf8"), /fourteen\.example/);
+      }
       const repaired = JSON.parse((await invoke()).stdout);
       assert.equal(repaired.ok, true, JSON.stringify(repaired));
       await assert.rejects(readFile(claim), { code: "ENOENT" });
       assert.match(await readFile(route, "utf8"), /fourteen\.example/);
+      assert.equal(JSON.parse((await invoke({ ...request, action: "capsule.unregister" })).stdout).ok, true);
+      assert.equal(JSON.parse((await invoke({ ...request, action: "capsule.delete" })).stdout).ok, true);
+      assert.equal(JSON.parse((await invoke({ ...request, capsule: { subname: "new-owner" } })).stdout).ok, true);
     });
   }
 });
