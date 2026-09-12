@@ -58504,7 +58504,7 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile, link, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, link, rm } from "node:fs/promises";
 var RESERVED = [".sporades", "public", "data", "server.mjs", "client.js", "index.html", "sporades.json", ".env.sporades.server"];
 function resolveDeployFiles(value) {
   if (value === void 0) return [];
@@ -58543,19 +58543,37 @@ function resolveDeployFiles(value) {
   }
   return files;
 }
-async function assertDeployFile(root, relative) {
+async function assertDeployFile(root, relative, recoverSeed = false) {
   const rootInfo = await lstat(root);
   if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new Error(`Unsafe deploy.files root: ${root}`);
   let current2 = root;
   const parts = relative.split("/");
   for (let index = 0; index < parts.length; index++) {
     current2 = path.join(current2, parts[index]);
-    const info2 = await lstat(current2);
+    let info2 = await lstat(current2);
+    if (recoverSeed && index === parts.length - 1 && info2.isFile() && info2.nlink === 2) {
+      for (const entry of await readdir(path.dirname(current2))) {
+        if (!/^\.seed-[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(entry)) continue;
+        const seed = path.join(path.dirname(current2), entry);
+        const candidate = await lstat(seed).catch((error) => {
+          if (error.code !== "ENOENT") throw error;
+          return null;
+        });
+        if (candidate?.isFile() && candidate.dev === info2.dev && candidate.ino === info2.ino) {
+          await rm(seed, { force: true });
+          info2 = await lstat(current2);
+          break;
+        }
+      }
+    }
     if (info2.isSymbolicLink() || (index < parts.length - 1 ? !info2.isDirectory() : !info2.isFile() || info2.nlink !== 1)) {
       throw new Error(`deploy.files requires regular files without symlinks: ${relative}`);
     }
   }
   return current2;
+}
+async function assertPreservedDeployFile(root, relative) {
+  return assertDeployFile(root, relative, true);
 }
 async function buildDeployFiles(projectDir, value) {
   const result = [];
@@ -58589,7 +58607,7 @@ async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner) {
     }
     const destination = path.join(preservedRoot, file.path);
     try {
-      await assertDeployFile(preservedRoot, file.path);
+      await assertPreservedDeployFile(preservedRoot, file.path);
       continue;
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
@@ -58613,7 +58631,7 @@ async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner) {
       await handle?.close();
       await rm(temporary, { force: true });
     }
-    await assertDeployFile(preservedRoot, file.path);
+    await assertPreservedDeployFile(preservedRoot, file.path);
   }
 }
 
@@ -58679,7 +58697,7 @@ import { spawnSync as spawnSync2 } from "node:child_process";
 import { createHash as createHash11, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes8, timingSafeEqual as timingSafeEqual4 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer as createServer2 } from "node:http";
-import { appendFile, chmod as chmod2, cp, lstat as lstat8, mkdir as mkdir8, readdir as readdir2, readFile as readFile10, rename as rename5, rm as rm8, writeFile as writeFile7 } from "node:fs/promises";
+import { appendFile, chmod as chmod2, cp, lstat as lstat8, mkdir as mkdir8, readdir as readdir3, readFile as readFile10, rename as rename5, rm as rm8, writeFile as writeFile7 } from "node:fs/promises";
 import path13 from "node:path";
 import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL2 } from "node:url";
 
@@ -61587,7 +61605,7 @@ ${options.epilogue}
 }
 
 // src/public-tree.ts
-import { lstat as lstat4, mkdir as mkdir3, readdir, readFile as readFile5, rename as rename2, rm as rm3, writeFile as writeFile2 } from "node:fs/promises";
+import { lstat as lstat4, mkdir as mkdir3, readdir as readdir2, readFile as readFile5, rename as rename2, rm as rm3, writeFile as writeFile2 } from "node:fs/promises";
 import { randomBytes as randomBytes2 } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -61826,7 +61844,7 @@ async function validatePublicTree(root) {
   let fileCount = 0;
   let totalBytes = 0;
   async function visit(directory, prefix = "") {
-    const entries = await readdir(directory, { withFileTypes: true });
+    const entries = await readdir2(directory, { withFileTypes: true });
     for (const entry of entries) {
       const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
       validateRelativePublicPath(relativePath);
@@ -61903,7 +61921,7 @@ async function validateActivePublicTreeReference(treesDir, raw) {
 }
 async function cleanupPublicTreesUnlocked(buildDir, options = {}) {
   const treesDir = path6.join(buildDir, ".public-trees");
-  const entries = await readdir(treesDir, { withFileTypes: true }).catch((error) => {
+  const entries = await readdir2(treesDir, { withFileTypes: true }).catch((error) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
     throw error;
   });
@@ -62054,7 +62072,7 @@ async function removePublicTreeLease(lease) {
 }
 async function publicTreeLeaseStates(treesDir, now2) {
   const leasesDir = path6.join(treesDir, ".leases");
-  const entries = await readdir(leasesDir).catch((error) => {
+  const entries = await readdir2(leasesDir).catch((error) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
     throw error;
   });
@@ -62075,7 +62093,7 @@ async function publicTreeLeaseStates(treesDir, now2) {
 }
 async function removeStalePublicTreeLeases(treesDir, completedNames, now2) {
   const leasesDir = path6.join(treesDir, ".leases");
-  const entries = await readdir(leasesDir).catch((error) => {
+  const entries = await readdir2(leasesDir).catch((error) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
     throw error;
   });
@@ -62246,7 +62264,7 @@ async function stopOwnerHeartbeat(token) {
 }
 async function removeOrphanedOwnerHeartbeats(treesDir) {
   const retained = /* @__PURE__ */ new Set();
-  const leaseFiles = await readdir(path6.join(treesDir, ".leases")).catch(() => []);
+  const leaseFiles = await readdir2(path6.join(treesDir, ".leases")).catch(() => []);
   for (const entry of leaseFiles) {
     const lease = await readFile5(path6.join(treesDir, ".leases", entry), "utf8").then(JSON.parse).catch(() => null);
     if (validLeaseRecord(lease)) retained.add(lease.token);
@@ -62254,7 +62272,7 @@ async function removeOrphanedOwnerHeartbeats(treesDir) {
   const lock = await readFile5(path6.join(treesDir, ".lifecycle-lock", "owner.json"), "utf8").then(JSON.parse).catch(() => null);
   if (validOwnerRecord(lock)) retained.add(lock.token);
   const heartbeatDir = path6.join(treesDir, ".owner-heartbeats");
-  const heartbeatFiles = await readdir(heartbeatDir).catch(() => []);
+  const heartbeatFiles = await readdir2(heartbeatDir).catch(() => []);
   for (const entry of heartbeatFiles) {
     const entryPath = path6.join(heartbeatDir, entry);
     if (entry.endsWith(".tmp")) {
@@ -62270,7 +62288,7 @@ async function removeOrphanedOwnerHeartbeats(treesDir) {
 }
 async function publicTreeConsumerNames(treesDir) {
   const consumersDir = path6.join(treesDir, ".consumers");
-  const entries = await readdir(consumersDir).catch(() => []);
+  const entries = await readdir2(consumersDir).catch(() => []);
   const trees = /* @__PURE__ */ new Set();
   for (const entry of entries) {
     const recordPath = path6.join(consumersDir, entry);
@@ -115889,7 +115907,7 @@ async function createHostReleaseArchive(options) {
 }
 async function listHostedPublicFiles(root, directory = root) {
   const files = [];
-  for (const entry of await readdir2(directory, { withFileTypes: true })) {
+  for (const entry of await readdir3(directory, { withFileTypes: true })) {
     const entryPath = path13.join(directory, entry.name);
     if (entry.isDirectory()) files.push(...await listHostedPublicFiles(root, entryPath));
     else if (entry.isFile()) files.push(`public/${path13.relative(root, entryPath).split(path13.sep).join("/")}`);
@@ -117251,7 +117269,7 @@ async function prepareRuntimeDataPath(targetPath) {
   }
   if (stats.isDirectory()) {
     await chmod2(targetPath, 448);
-    const entries = await readdir2(targetPath, { withFileTypes: true });
+    const entries = await readdir3(targetPath, { withFileTypes: true });
     for (const entry of entries) {
       await prepareRuntimeDataPath(path13.join(targetPath, entry.name));
     }

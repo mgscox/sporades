@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { assertDeployFile, deployFileMounts, preparePreservedFiles, resolveDeployFiles } from "../deploy-files.js";
+import { assertPreservedDeployFile, deployFileMounts, preparePreservedFiles, resolveDeployFiles } from "../deploy-files.js";
 import { assertHostnamesAvailable, validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
 import { constants as fsConstants, createReadStream, statSync } from "node:fs";
@@ -1752,7 +1752,7 @@ async function startCapsule(request, options = {}) {
     const recordedRelease = normaliseReleaseHistory(registryRecord).find((entry) => entry.id === releaseId);
     for (const file of resolveDeployFiles(recordedRelease?.source?.deployFiles)) {
         if (file.update === "preserve")
-            await assertDeployFile(path.join(paths.capsule, "preserved-files"), file.path);
+            await assertPreservedDeployFile(path.join(paths.capsule, "preserved-files"), file.path);
     }
     if (options.containerQuiesced !== true)
         stopAndRemoveContainer(lifecycle.container.name);

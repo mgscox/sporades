@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, mkdir, readFile, writeFile, rm, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm, symlink, link, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { buildDeployFiles, resolveDeployFiles, preparePreservedFiles, deployFileMounts } from "../dist/deploy-files.js";
+import { buildDeployFiles, resolveDeployFiles, preparePreservedFiles, deployFileMounts, assertPreservedDeployFile } from "../dist/deploy-files.js";
 import { createBundle } from "../dist/bundle-pipeline.js";
 
 async function temporary(fn) {
@@ -57,4 +57,25 @@ test("preserved files seed once, survive removal and policy switches, and reject
   await rm(path.join(stored, "config/settings.json"));
   await symlink(path.join(source, "config/settings.json"), path.join(stored, "config/settings.json"));
   await assert.rejects(preparePreservedFiles(preserve, source, stored), /without symlinks/);
+}));
+
+
+test("preserved deploy.files recovers a seed publication interrupted before temporary-link cleanup", async () => temporary(async (root) => {
+  const source = path.join(root, "release");
+  const stored = path.join(root, "stored");
+  await mkdir(source); await mkdir(stored);
+  await writeFile(path.join(source, "settings.json"), "new seed");
+  const seed = path.join(stored, ".seed-00000000-0000-4000-8000-000000000000");
+  await writeFile(seed, "published before crash");
+  const destination = path.join(stored, "settings.json");
+  await link(seed, destination);
+  assert.equal((await stat(destination)).nlink, 2);
+  // Restart validates stored files without rerunning deployment.
+  await assertPreservedDeployFile(stored, "settings.json");
+  assert.equal((await stat(destination)).nlink, 1);
+  await preparePreservedFiles([{ path: "settings.json", update: "preserve" }], source, stored);
+  assert.equal(await readFile(destination, "utf8"), "published before crash");
+  await assert.rejects(stat(seed), { code: "ENOENT" });
+  await link(destination, path.join(stored, "unrelated.json"));
+  await assert.rejects(assertPreservedDeployFile(stored, "settings.json"), /regular files/);
 }));

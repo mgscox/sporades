@@ -26265,7 +26265,7 @@ var require_png2 = __commonJS({
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile, link, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, link, rm } from "node:fs/promises";
 var RESERVED = [".sporades", "public", "data", "server.mjs", "client.js", "index.html", "sporades.json", ".env.sporades.server"];
 function resolveDeployFiles(value) {
   if (value === void 0) return [];
@@ -26304,19 +26304,37 @@ function resolveDeployFiles(value) {
   }
   return files;
 }
-async function assertDeployFile(root, relative) {
+async function assertDeployFile(root, relative, recoverSeed = false) {
   const rootInfo = await lstat(root);
   if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new Error(`Unsafe deploy.files root: ${root}`);
   let current2 = root;
   const parts = relative.split("/");
   for (let index = 0; index < parts.length; index++) {
     current2 = path.join(current2, parts[index]);
-    const info = await lstat(current2);
+    let info = await lstat(current2);
+    if (recoverSeed && index === parts.length - 1 && info.isFile() && info.nlink === 2) {
+      for (const entry of await readdir(path.dirname(current2))) {
+        if (!/^\.seed-[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(entry)) continue;
+        const seed = path.join(path.dirname(current2), entry);
+        const candidate = await lstat(seed).catch((error) => {
+          if (error.code !== "ENOENT") throw error;
+          return null;
+        });
+        if (candidate?.isFile() && candidate.dev === info.dev && candidate.ino === info.ino) {
+          await rm(seed, { force: true });
+          info = await lstat(current2);
+          break;
+        }
+      }
+    }
     if (info.isSymbolicLink() || (index < parts.length - 1 ? !info.isDirectory() : !info.isFile() || info.nlink !== 1)) {
       throw new Error(`deploy.files requires regular files without symlinks: ${relative}`);
     }
   }
   return current2;
+}
+async function assertPreservedDeployFile(root, relative) {
+  return assertDeployFile(root, relative, true);
 }
 function deployFileMounts(files, releaseRoot, preservedRoot) {
   return files.map((file) => ({
@@ -26339,7 +26357,7 @@ async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner) {
     }
     const destination = path.join(preservedRoot, file.path);
     try {
-      await assertDeployFile(preservedRoot, file.path);
+      await assertPreservedDeployFile(preservedRoot, file.path);
       continue;
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
@@ -26363,12 +26381,12 @@ async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner) {
       await handle?.close();
       await rm(temporary, { force: true });
     }
-    await assertDeployFile(preservedRoot, file.path);
+    await assertPreservedDeployFile(preservedRoot, file.path);
   }
 }
 
 // src/cli/host-domain-aliases.ts
-import { readdir, readFile as readFile2 } from "node:fs/promises";
+import { readdir as readdir2, readFile as readFile2 } from "node:fs/promises";
 import path2 from "node:path";
 
 // src/cli/cli-support.ts
@@ -26438,7 +26456,7 @@ async function assertHostnamesAvailable(remoteRoot, hostnames, owner) {
       );
     }
   };
-  const entries = async (directory) => readdir(directory, { withFileTypes: true }).catch((error) => {
+  const entries = async (directory) => readdir2(directory, { withFileTypes: true }).catch((error) => {
     if (error.code === "ENOENT") return [];
     throw error;
   });
@@ -26475,7 +26493,7 @@ async function assertHostnamesAvailable(remoteRoot, hostnames, owner) {
 // src/cli/sporades-host-helper.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
 import { constants as fsConstants, createReadStream, statSync } from "node:fs";
-import { access, chmod, lstat as lstat2, mkdir as mkdir2, open as open2, opendir, readdir as readdir2, readFile as readFile4, readlink, rename, rm as rm2, stat, statfs, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, lstat as lstat2, mkdir as mkdir2, open as open2, opendir, readdir as readdir3, readFile as readFile4, readlink, rename, rm as rm2, stat, statfs, symlink, writeFile } from "node:fs/promises";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { freemem, loadavg, totalmem } from "node:os";
 import path5 from "node:path";
@@ -44760,7 +44778,7 @@ async function validateExtractedReleaseTree(root, expectedFiles) {
   let totalBytes = 0;
   const publicClaims = [];
   async function visit(directory, prefix = "") {
-    for (const entry of await readdir2(directory, { withFileTypes: true })) {
+    for (const entry of await readdir3(directory, { withFileTypes: true })) {
       const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
       const normalized = relative.normalize("NFC");
       const safe = relative.length > 0 && !relative.startsWith("/") && !relative.includes("\\") && !relative.includes("\0") && path5.posix.normalize(relative) === relative && Buffer.byteLength(relative, "utf8") <= HOST_RELEASE_ARCHIVE_LIMITS.pathBytes && relative.split("/").every((segment) => segment && segment !== "." && segment !== "..");
@@ -45114,7 +45132,7 @@ async function startCapsule(request, options = {}) {
   );
   const recordedRelease = normaliseReleaseHistory(registryRecord).find((entry) => entry.id === releaseId);
   for (const file of resolveDeployFiles(recordedRelease?.source?.deployFiles)) {
-    if (file.update === "preserve") await assertDeployFile(path5.join(paths.capsule, "preserved-files"), file.path);
+    if (file.update === "preserve") await assertPreservedDeployFile(path5.join(paths.capsule, "preserved-files"), file.path);
   }
   if (options.containerQuiesced !== true) stopAndRemoveContainer(lifecycle.container.name);
   if (options.dataPrepared !== true) await prepareWritableDataPath(paths.data);
@@ -46535,7 +46553,7 @@ async function readCapsuleRegistryRecords(request) {
   const registryDirectory = path5.join(request.host.remoteRoot, "hosts", request.host.domain, "registry", "capsules");
   let entries;
   try {
-    entries = await readdir2(registryDirectory, { withFileTypes: true });
+    entries = await readdir3(registryDirectory, { withFileTypes: true });
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       return [];
@@ -46968,7 +46986,7 @@ async function cleanupUnreferencedHostSealedEnvKeys(dataDirectory, referencedFin
       try {
         const keysIdentity = await keysHandle.stat();
         const descriptorDirectory = process.platform === "linux" ? `/proc/self/fd/${keysHandle.fd}` : paths.keys;
-        const entries = await readdir2(descriptorDirectory);
+        const entries = await readdir3(descriptorDirectory);
         for (const entry of entries) {
           const match = /^([a-f0-9]{16})\.(private|public)\.pem$/.exec(entry);
           if (!match || referencedFingerprints.has(match[1])) continue;
@@ -48150,7 +48168,7 @@ async function processRetainsOsFlock(lockFile) {
   for (const descriptorRoot of ["/proc/self/fd", "/dev/fd"]) {
     let entries;
     try {
-      entries = await readdir2(descriptorRoot);
+      entries = await readdir3(descriptorRoot);
     } catch {
       continue;
     }
@@ -48269,7 +48287,7 @@ async function cleanupManagedRouteProtocolArtifacts(lockFile) {
   const directory = path5.dirname(lockFile);
   const base = path5.basename(lockFile);
   const artifact = new RegExp(`^${escapeRegExp(base)}\\.(?:claim|stale|reclaim)-[a-f0-9]{32}$`);
-  const entries = (await readdir2(directory)).filter((entry) => artifact.test(entry)).sort().slice(0, 100);
+  const entries = (await readdir3(directory)).filter((entry) => artifact.test(entry)).sort().slice(0, 100);
   for (const entry of entries) {
     const artifactPath = path5.join(directory, entry);
     const owner = await readManagedRouteProtocolOwner(artifactPath);
@@ -48363,7 +48381,7 @@ async function prepareWritableDataHandle(handle, targetPath, directory) {
   await assertRuntimeDataPathIdentity(targetPath, identity, directory);
   if (!directory) return;
   const descriptorDirectory = process.platform === "linux" ? `/proc/self/fd/${handle.fd}` : targetPath;
-  const entries = await readdir2(descriptorDirectory, { withFileTypes: true }).catch(() => {
+  const entries = await readdir3(descriptorDirectory, { withFileTypes: true }).catch(() => {
     throw runtimeDataTrustError(targetPath);
   });
   for (const entry of entries) {
@@ -49195,7 +49213,7 @@ async function recordedReleaseFileClaims(releaseDirectory, recordedRelease) {
 async function deriveReleaseFileClaims(root) {
   const claims = [];
   async function visit(directory, prefix = "") {
-    for (const entry of await readdir2(directory, { withFileTypes: true })) {
+    for (const entry of await readdir3(directory, { withFileTypes: true })) {
       const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (!safeRecordedReleasePath(relative)) {
         throw helperError("Hosted Capsule release inventory is invalid.", "Choose another recorded release or push a replacement.");

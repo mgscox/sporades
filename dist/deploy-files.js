@@ -1,7 +1,7 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile, link, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, link, rm } from "node:fs/promises";
 // Paths owned by the runtime, including legacy release paths and writable data.
 const RESERVED = [".sporades", "public", "data", "server.mjs", "client.js", "index.html", "sporades.json", ".env.sporades.server"];
 export function resolveDeployFiles(value) {
@@ -45,7 +45,7 @@ export function resolveDeployFiles(value) {
     }
     return files;
 }
-export async function assertDeployFile(root, relative) {
+async function assertDeployFile(root, relative, recoverSeed = false) {
     const rootInfo = await lstat(root);
     if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink())
         throw new Error(`Unsafe deploy.files root: ${root}`);
@@ -53,12 +53,31 @@ export async function assertDeployFile(root, relative) {
     const parts = relative.split("/");
     for (let index = 0; index < parts.length; index++) {
         current = path.join(current, parts[index]);
-        const info = await lstat(current);
+        let info = await lstat(current);
+        // A crash after no-clobber publication can leave our temporary hard link.
+        // Recover only a matching, privately named seed inode in the same directory.
+        if (recoverSeed && index === parts.length - 1 && info.isFile() && info.nlink === 2) {
+            for (const entry of await readdir(path.dirname(current))) {
+                if (!/^\.seed-[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(entry))
+                    continue;
+                const seed = path.join(path.dirname(current), entry);
+                const candidate = await lstat(seed).catch((error) => { if (error.code !== "ENOENT")
+                    throw error; return null; });
+                if (candidate?.isFile() && candidate.dev === info.dev && candidate.ino === info.ino) {
+                    await rm(seed, { force: true });
+                    info = await lstat(current);
+                    break;
+                }
+            }
+        }
         if (info.isSymbolicLink() || (index < parts.length - 1 ? !info.isDirectory() : !info.isFile() || info.nlink !== 1)) {
             throw new Error(`deploy.files requires regular files without symlinks: ${relative}`);
         }
     }
     return current;
+}
+export async function assertPreservedDeployFile(root, relative) {
+    return assertDeployFile(root, relative, true);
 }
 export async function buildDeployFiles(projectDir, value) {
     const result = [];
@@ -93,7 +112,7 @@ export async function preparePreservedFiles(files, releaseRoot, preservedRoot, o
         }
         const destination = path.join(preservedRoot, file.path);
         try {
-            await assertDeployFile(preservedRoot, file.path);
+            await assertPreservedDeployFile(preservedRoot, file.path);
             continue;
         }
         catch (error) {
@@ -124,7 +143,7 @@ export async function preparePreservedFiles(files, releaseRoot, preservedRoot, o
             await handle?.close();
             await rm(temporary, { force: true });
         }
-        await assertDeployFile(preservedRoot, file.path);
+        await assertPreservedDeployFile(preservedRoot, file.path);
     }
 }
 //# sourceMappingURL=deploy-files.js.map
