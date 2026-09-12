@@ -356,5 +356,5 @@ Declare exact relative files in `sporades.json` with `deploy.files`, for example
 `{"deploy":{"files":[{"path":"config/settings.json","update":"preserve"},{"path":"resources/defaults.json"}]}}`.
 The local build fails on missing files. Files keep their relative paths under
 `/app`; `update` defaults to `replace`, while `preserve` keeps server edits across
-deployments and rollbacks. See [Additional deployment files](docs/reference/projects-and-configuration.md#additional-deployment-files)
+deployments and rollbacks. See [Additional deployment files](https://mgscox.github.io/sporades/reference/projects-and-configuration#additional-deployment-files)
 for path rules and storage semantics.
