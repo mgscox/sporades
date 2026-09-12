@@ -26337,17 +26337,27 @@ async function assertPreservedDeployFile(root, relative) {
   return assertDeployFile(root, relative, true);
 }
 async function readDeployFile(root, relative) {
-  await assertDeployFile(root, relative);
-  const canonicalRoot = await realpath(root);
-  const handles = [];
+  root = path.resolve(root);
+  const rootHandle = await open(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  const handles = [rootHandle];
   try {
+    const identity = await rootHandle.stat();
+    await assertDeployFile(root, relative);
+    const rootNow = await lstat(root);
+    if (rootNow.isSymbolicLink() || rootNow.dev !== identity.dev || rootNow.ino !== identity.ino) throw new Error("deploy.files project root changed during the build.");
     let file;
+    let checkRoot;
     if (process.platform === "darwin") {
+      const canonicalRoot = path.join(await realpath(path.dirname(root)), path.basename(root));
+      checkRoot = async () => {
+        const current2 = await lstat(canonicalRoot);
+        if (current2.isSymbolicLink() || current2.dev !== identity.dev || current2.ino !== identity.ino) throw new Error("deploy.files project root changed during the build.");
+      };
+      await checkRoot();
       const O_NOFOLLOW_ANY = 536870912;
       file = await open(path.join(canonicalRoot, relative), constants.O_RDONLY | constants.O_NONBLOCK | O_NOFOLLOW_ANY);
     } else if (process.platform === "linux") {
-      let directory = await open(canonicalRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-      handles.push(directory);
+      let directory = rootHandle;
       const parts = relative.split("/");
       for (const part of parts.slice(0, -1)) {
         directory = await open(`/proc/self/fd/${directory.fd}/${part}`, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
@@ -26358,6 +26368,7 @@ async function readDeployFile(root, relative) {
       throw new Error("Secure deploy.files reads require macOS or Linux.");
     }
     handles.push(file);
+    await checkRoot?.();
     if (!(await file.stat()).isFile()) throw new Error(`deploy.files requires a regular file: ${relative}`);
     return await file.readFile();
   } finally {
@@ -44677,6 +44688,7 @@ function deletionRequiresUnregisterError(request) {
     `Run \`sporades host unregister ${request.capsule.subname} --host ${request.host.alias}\` before deleting Hosted Capsule storage.`
   );
 }
+var activePreservedAttempts = /* @__PURE__ */ new Set();
 async function installRelease(request) {
   validateInstallRequest(request);
   const previousRecord = await verifyRegisteredCapsule(request);
@@ -44689,6 +44701,7 @@ async function installRelease(request) {
   try {
     await installClaimedRelease(request, previousRecord, { ...paths, release: paths.release }, claimedArchive);
   } finally {
+    activePreservedAttempts.delete(path5.join(paths.capsule, "deploy-file-attempt.jsonl"));
     await rm2(claimedArchive.path, { force: true });
     await rm2(request.release.remoteArchive, { force: true });
   }
@@ -44762,6 +44775,7 @@ async function installClaimedRelease(request, previousRecord, paths, claimedArch
   let seedJournal;
   try {
     seedJournal = await beginPreservedFileAttempt(path5.join(paths.capsule, "preserved-files"), release.id, resolveDeployFiles(release.deployFiles).some((file) => file.update === "preserve"));
+    if (seedJournal) activePreservedAttempts.add(seedJournal);
   } catch (error) {
     await removeInstalledReleasePrivateKey(release, paths);
     await rm2(paths.release, { recursive: true, force: true });
@@ -49315,6 +49329,10 @@ function invalidCapsuleHttpLogPathError() {
 async function assertPreservedReleaseFiles(request, recordedRelease) {
   if (!recordedRelease) throw helperError("Current Hosted release is not recorded.", "Reconcile the interrupted release install and its deploy-file-attempt.jsonl journal before starting the Capsule.");
   const paths = canonicalReleasePaths(request);
+  const journal = path5.join(paths.capsule, "deploy-file-attempt.jsonl");
+  if (!activePreservedAttempts.has(journal) && await pathExists(journal)) {
+    throw helperError("Interrupted deploy.files attempt requires recovery.", `Reconcile ${journal} before starting, restarting or selecting a release.`);
+  }
   for (const file of resolveDeployFiles(recordedRelease.source?.deployFiles)) {
     if (file.update === "preserve") await assertPreservedDeployFile(path5.join(paths.capsule, "preserved-files"), file.path);
   }

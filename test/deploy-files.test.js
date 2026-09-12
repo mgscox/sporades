@@ -215,12 +215,13 @@ test("permission rollback uses the helper's actual inode and skips later replace
   assert.equal((await stat(target)).mode & 0o777, 0o600);
 }));
 
-test("deploy.files never follows source or parent symlinks substituted after validation", async () => {
-  for (const parent of [false, true]) await temporary(async (root) => {
+test("deploy.files never follows source, parent or project-root symlink substitutions", async () => {
+  for (const substitution of ["file", "parent", "root"]) await temporary(async (root) => {
     const project = path.join(root, "project");
     const outside = path.join(root, "outside");
     await mkdir(path.join(project, "config"), { recursive: true });
-    await mkdir(outside);
+    await mkdir(path.join(outside, "config"), { recursive: true });
+    await writeFile(path.join(outside, "config/settings.json"), "outside bytes");
     await writeFile(path.join(project, "config/settings.json"), "project bytes");
     await writeFile(path.join(outside, "settings.json"), "outside bytes");
     const moduleUrl = new URL("../dist/deploy-files.js", import.meta.url).href;
@@ -230,11 +231,11 @@ test("deploy.files never follows source or parent symlinks substituted after val
       const original = fs.promises.lstat; let swapped = false;
       fs.promises.lstat = async function(file, ...args) {
         const result = await original.call(this, file, ...args);
-        if (!swapped && String(file).endsWith('/config/settings.json')) {
+        if (!swapped && (${JSON.stringify(substitution)} === 'root' ? String(file) === project : String(file).endsWith('/config/settings.json'))) {
           swapped = true;
-          const target = ${parent} ? path.join(project, 'config') : path.join(project, 'config/settings.json');
+          const target = ${JSON.stringify(substitution)} === 'root' ? project : ${JSON.stringify(substitution)} === 'parent' ? path.join(project, 'config') : path.join(project, 'config/settings.json');
           await fs.promises.rename(target, target + '.held');
-          await fs.promises.symlink(${parent} ? outside : path.join(outside, 'settings.json'), target);
+          await fs.promises.symlink(${JSON.stringify(substitution)} !== 'file' ? outside : path.join(outside, 'settings.json'), target);
         }
         return result;
       }; syncBuiltinESMExports();

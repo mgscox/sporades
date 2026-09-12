@@ -82,18 +82,31 @@ export async function assertPreservedDeployFile(root, relative) {
 // Node does not expose openat. Linux's descriptor paths let each directory
 // remain pinned while opening its child; Darwin provides O_NOFOLLOW_ANY.
 async function readDeployFile(root, relative) {
-    await assertDeployFile(root, relative);
-    const canonicalRoot = await realpath(root);
-    const handles = [];
+    root = path.resolve(root);
+    const rootHandle = await open(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    const handles = [rootHandle];
     try {
+        const identity = await rootHandle.stat();
+        await assertDeployFile(root, relative);
+        const rootNow = await lstat(root);
+        if (rootNow.isSymbolicLink() || rootNow.dev !== identity.dev || rootNow.ino !== identity.ino)
+            throw new Error("deploy.files project root changed during the build.");
         let file;
+        let checkRoot;
         if (process.platform === "darwin") {
+            // Resolve only ancestors, never a replacement symlink at the project root.
+            const canonicalRoot = path.join(await realpath(path.dirname(root)), path.basename(root));
+            checkRoot = async () => {
+                const current = await lstat(canonicalRoot);
+                if (current.isSymbolicLink() || current.dev !== identity.dev || current.ino !== identity.ino)
+                    throw new Error("deploy.files project root changed during the build.");
+            };
+            await checkRoot();
             const O_NOFOLLOW_ANY = 0x20000000; // Darwin sys/fcntl.h
             file = await open(path.join(canonicalRoot, relative), constants.O_RDONLY | constants.O_NONBLOCK | O_NOFOLLOW_ANY);
         }
         else if (process.platform === "linux") {
-            let directory = await open(canonicalRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-            handles.push(directory);
+            let directory = rootHandle;
             const parts = relative.split("/");
             for (const part of parts.slice(0, -1)) {
                 directory = await open(`/proc/self/fd/${directory.fd}/${part}`, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
@@ -105,6 +118,7 @@ async function readDeployFile(root, relative) {
             throw new Error("Secure deploy.files reads require macOS or Linux.");
         }
         handles.push(file);
+        await checkRoot?.();
         if (!(await file.stat()).isFile())
             throw new Error(`deploy.files requires a regular file: ${relative}`);
         return await file.readFile();

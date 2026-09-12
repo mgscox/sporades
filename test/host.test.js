@@ -14768,10 +14768,14 @@ test("Hosted deploy.files preflights recorded releases and preserved files befor
     const original = await readFile(fixture.registryRecordPath);
     const route = path.join(fixture.remoteRoot, "caddy/hosts", fixture.domain, `${fixture.subname}.caddy`);
     const routeBefore = await readFile(route);
-    for (const failure of ["missing", "unsafe", "unrecorded"]) {
+    for (const failure of ["missing", "unsafe", "journal", "unrecorded"]) {
       await rm(stored, { force: true });
       await writeFile(fixture.registryRecordPath, original);
       if (failure === "unsafe") await symlink(path.join(fixture.release.directories.release, "settings.json"), stored);
+      if (failure === "journal") {
+        await writeFile(stored, "uncommitted seed");
+        await writeFile(path.join(fixture.capsuleDir, "deploy-file-attempt.jsonl"), JSON.stringify({ release: "uncommitted-attempt" }));
+      }
       if (failure === "unrecorded") {
         await writeFile(stored, "retained seed");
         const record = JSON.parse(original);
@@ -14781,10 +14785,11 @@ test("Hosted deploy.files preflights recorded releases and preserved files befor
       }
       const registryBefore = await readFile(fixture.registryRecordPath);
       const before = (await docker.calls()).length;
-      for (const action of ["capsule.start", "capsule.restart"]) {
-        const failed = await runHostHelper({ ...request, action }, { cwd: dir, env: docker.env });
+      for (const action of ["capsule.start", "capsule.restart", ...(failure === "journal" ? ["capsule.release.rollback"] : [])]) {
+        const failed = await runHostHelper({ ...request, action, ...(action === "capsule.release.rollback" ? { rollback: { releaseId: fixture.release.id } } : {}) }, { cwd: dir, env: docker.env });
         assert.equal(JSON.parse(failed.stdout).ok, false, failed.stdout);
         if (failure === "unrecorded") assert.match(failed.stdout, /not recorded/);
+        if (failure === "journal") assert.match(failed.stdout, /requires recovery/);
         assert.deepEqual(await readFile(fixture.registryRecordPath), registryBefore);
         assert.deepEqual(await readFile(route), routeBefore);
       }

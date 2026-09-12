@@ -1168,6 +1168,8 @@ async function deleteCapsule(request) {
 function deletionRequiresUnregisterError(request) {
     return helperError("Hosted Capsule must be unregistered before deletion.", `Run \`sporades host unregister ${request.capsule.subname} --host ${request.host.alias}\` before deleting Hosted Capsule storage.`);
 }
+// Only the in-progress install may start a runtime while its journal exists.
+const activePreservedAttempts = new Set();
 async function installRelease(request) {
     validateInstallRequest(request);
     const previousRecord = await verifyRegisteredCapsule(request);
@@ -1181,6 +1183,7 @@ async function installRelease(request) {
         await installClaimedRelease(request, previousRecord, { ...paths, release: paths.release }, claimedArchive);
     }
     finally {
+        activePreservedAttempts.delete(path.join(paths.capsule, "deploy-file-attempt.jsonl"));
         await rm(claimedArchive.path, { force: true });
         await rm(request.release.remoteArchive, { force: true });
     }
@@ -1252,6 +1255,8 @@ async function installClaimedRelease(request, previousRecord, paths, claimedArch
     let seedJournal;
     try {
         seedJournal = await beginPreservedFileAttempt(path.join(paths.capsule, "preserved-files"), release.id, resolveDeployFiles(release.deployFiles).some((file) => file.update === "preserve"));
+        if (seedJournal)
+            activePreservedAttempts.add(seedJournal);
     }
     catch (error) {
         await removeInstalledReleasePrivateKey(release, paths);
@@ -5682,6 +5687,10 @@ async function assertPreservedReleaseFiles(request, recordedRelease) {
     if (!recordedRelease)
         throw helperError("Current Hosted release is not recorded.", "Reconcile the interrupted release install and its deploy-file-attempt.jsonl journal before starting the Capsule.");
     const paths = canonicalReleasePaths(request);
+    const journal = path.join(paths.capsule, "deploy-file-attempt.jsonl");
+    if (!activePreservedAttempts.has(journal) && await pathExists(journal)) {
+        throw helperError("Interrupted deploy.files attempt requires recovery.", `Reconcile ${journal} before starting, restarting or selecting a release.`);
+    }
     for (const file of resolveDeployFiles(recordedRelease.source?.deployFiles)) {
         if (file.update === "preserve")
             await assertPreservedDeployFile(path.join(paths.capsule, "preserved-files"), file.path);

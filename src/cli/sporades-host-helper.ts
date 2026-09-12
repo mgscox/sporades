@@ -1289,6 +1289,9 @@ function deletionRequiresUnregisterError(request: HostHelperRequest) {
   );
 }
 
+// Only the in-progress install may start a runtime while its journal exists.
+const activePreservedAttempts = new Set<string>();
+
 async function installRelease(request: HostHelperRequest) {
   validateInstallRequest(request);
   const previousRecord = await verifyRegisteredCapsule(request);
@@ -1301,6 +1304,7 @@ async function installRelease(request: HostHelperRequest) {
   try {
     await installClaimedRelease(request, previousRecord, { ...paths, release: paths.release }, claimedArchive);
   } finally {
+    activePreservedAttempts.delete(path.join(paths.capsule, "deploy-file-attempt.jsonl"));
     await rm(claimedArchive.path, { force: true });
     await rm(request.release.remoteArchive, { force: true });
   }
@@ -1380,6 +1384,7 @@ async function installClaimedRelease(request: HostHelperRequest, previousRecord:
   let seedJournal: string | undefined;
   try {
     seedJournal = await beginPreservedFileAttempt(path.join(paths.capsule, "preserved-files"), release.id, resolveDeployFiles(release.deployFiles).some((file) => file.update === "preserve"));
+    if (seedJournal) activePreservedAttempts.add(seedJournal);
   } catch (error) {
     await removeInstalledReleasePrivateKey(release, paths);
     await rm(paths.release, { recursive: true, force: true });
@@ -6352,6 +6357,10 @@ function invalidCapsuleHttpLogPathError() {
 async function assertPreservedReleaseFiles(request: HostHelperRequest, recordedRelease: any) {
   if (!recordedRelease) throw helperError("Current Hosted release is not recorded.", "Reconcile the interrupted release install and its deploy-file-attempt.jsonl journal before starting the Capsule.");
   const paths = canonicalReleasePaths(request);
+  const journal = path.join(paths.capsule, "deploy-file-attempt.jsonl");
+  if (!activePreservedAttempts.has(journal) && await pathExists(journal)) {
+    throw helperError("Interrupted deploy.files attempt requires recovery.", `Reconcile ${journal} before starting, restarting or selecting a release.`);
+  }
   for (const file of resolveDeployFiles(recordedRelease.source?.deployFiles)) {
     if (file.update === "preserve") await assertPreservedDeployFile(path.join(paths.capsule, "preserved-files"), file.path);
   }

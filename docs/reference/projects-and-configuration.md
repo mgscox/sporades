@@ -649,6 +649,24 @@ it. Keep edits; remove an unchanged seed only if its attempt did
 not commit. Remove the journal after that reconciliation, then retry deployment.
 Do not remove a journal while its candidate may still be running.
 
+Hosted start, restart, rollback and verification fallback also reject a surviving
+attempt journal until reconciliation. The install currently creating the journal
+may complete its own runtime start; a later command cannot claim that exception.
+
+Local Container snapshots and Hosted archives have different size contracts.
+The shared build checks paths, file types and source availability, but does not
+apply Hosted archive quotas. The Host helper enforces these limits on the **whole
+release archive**, including Sporades-managed files and directories:
+
+- 247 UTF-8 bytes per archive path.
+- 64 MiB per file.
+- 128 MiB total uncompressed file bytes and 128 MiB compressed archive bytes.
+- 2,048 archive entries, including directories.
+
+A file set can therefore build or run in a local Container yet exceed Hosted
+limits and be rejected during Host installation. Keep additional files within
+the remaining archive budget; local build success does not establish that budget.
+
 Local bindings retain pending snapshot cleanup paths until deletion succeeds.
 A later deployment or Container removal retries that cleanup.
 
