@@ -5579,6 +5579,7 @@ function containerLifecycleSummary(status, binding) {
     };
 }
 async function stopLocalContainerSession(options) {
+    await beginPreservedFileAttempt(path.join(options.projectDir, ".sporades", "preserved-files"), "stop", false);
     const { binding } = await requireLocalContainerBinding(options, "stop");
     runDocker(["stop", binding.containerId], options.projectDir, "Failed to stop the local Container session.", "Check Docker is running and the bound container still exists. If it was removed manually, run `sporades deploy remove`.");
     return containerLifecycleSummary("stopped", binding);

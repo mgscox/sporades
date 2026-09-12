@@ -116788,6 +116788,7 @@ function containerLifecycleSummary(status, binding) {
   };
 }
 async function stopLocalContainerSession(options) {
+  await beginPreservedFileAttempt(path13.join(options.projectDir, ".sporades", "preserved-files"), "stop", false);
   const { binding } = await requireLocalContainerBinding(options, "stop");
   runDocker(
     ["stop", binding.containerId],

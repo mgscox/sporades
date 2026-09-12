@@ -5300,7 +5300,7 @@ test("local deploy.files restart repairs atomic-save access and rejects unsafe o
   });
 });
 
-test("local deploy.files remove preserves binding and candidate state while an attempt survives", async () => {
+test("local deploy.files stop and remove preserve binding and candidate state while an attempt survives", async () => {
   await withTempDir(async (dir) => {
     const created = await runCli(["create", "remove-pending", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
     assert.equal(created.code, 0, created.stderr);
@@ -5330,10 +5330,12 @@ cp.spawnSync = function(command, args, ...rest) {
     const journal = path.join(projectDir, ".sporades/deploy-file-attempt.jsonl");
     const beforeJournal = await readFile(journal, "utf8");
     const calls = (await docker.calls()).length;
-    const removed = await runCli(["deploy", "remove", "--json"], { cwd: projectDir, env: docker.env });
-    assert.notEqual(removed.code, 0);
-    assert.match(removed.stdout + removed.stderr, /requires recovery/);
-    assert.equal((await docker.calls()).length, calls);
+    for (const action of ["stop", "remove"]) {
+      const result = await runCli(["deploy", action, "--json"], { cwd: projectDir, env: docker.env });
+      assert.notEqual(result.code, 0);
+      assert.match(result.stdout + result.stderr, /requires recovery/);
+      assert.equal((await docker.calls()).length, calls);
+    }
     assert.equal(await readFile(bindingPath, "utf8"), beforeBinding);
     assert.equal(await readFile(journal, "utf8"), beforeJournal);
     assert.equal(await readFile(snapshot, "utf8"), "snapshot");

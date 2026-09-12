@@ -6337,6 +6337,7 @@ function containerLifecycleSummary(status: string, binding: LooseRecord) {
 }
 
 async function stopLocalContainerSession(options: LooseRecord) {
+  await beginPreservedFileAttempt(path.join(options.projectDir, ".sporades", "preserved-files"), "stop", false);
   const { binding } = await requireLocalContainerBinding(options, "stop");
   runDocker(
     ["stop", binding.containerId],
