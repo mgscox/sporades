@@ -58504,7 +58504,7 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile, readdir, link, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, link, rename, rm, realpath } from "node:fs/promises";
 var RESERVED = [".sporades", "public", "data", "server.mjs", "client.js", "index.html", "sporades.json", ".env.sporades.server"];
 function resolveDeployFiles(value) {
   if (value === void 0) return [];
@@ -58575,11 +58575,39 @@ async function assertDeployFile(root, relative, recoverSeed = false) {
 async function assertPreservedDeployFile(root, relative) {
   return assertDeployFile(root, relative, true);
 }
+async function readDeployFile(root, relative) {
+  await assertDeployFile(root, relative);
+  const canonicalRoot = await realpath(root);
+  const handles = [];
+  try {
+    let file;
+    if (process.platform === "darwin") {
+      const O_NOFOLLOW_ANY = 536870912;
+      file = await open(path.join(canonicalRoot, relative), constants.O_RDONLY | constants.O_NONBLOCK | O_NOFOLLOW_ANY);
+    } else if (process.platform === "linux") {
+      let directory = await open(canonicalRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      handles.push(directory);
+      const parts = relative.split("/");
+      for (const part of parts.slice(0, -1)) {
+        directory = await open(`/proc/self/fd/${directory.fd}/${part}`, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+        handles.push(directory);
+      }
+      file = await open(`/proc/self/fd/${directory.fd}/${parts.at(-1)}`, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+    } else {
+      throw new Error("Secure deploy.files reads require macOS or Linux.");
+    }
+    handles.push(file);
+    if (!(await file.stat()).isFile()) throw new Error(`deploy.files requires a regular file: ${relative}`);
+    return await file.readFile();
+  } finally {
+    for (const handle of handles.reverse()) await handle.close();
+  }
+}
 async function buildDeployFiles(projectDir, value) {
   const result = [];
   for (const file of resolveDeployFiles(value)) {
     try {
-      result.push({ ...file, contents: await readFile(await assertDeployFile(projectDir, file.path)) });
+      result.push({ ...file, contents: await readDeployFile(projectDir, file.path) });
     } catch (error) {
       throw new Error(`Cannot build deploy.files entry ${file.path}: ${error.message}`);
     }
@@ -58644,7 +58672,7 @@ async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, c
     let handle;
     const temporary = path.join(path.dirname(destination), `.seed-${randomUUID()}`);
     try {
-      const contents = await readFile(await assertDeployFile(releaseRoot, file.path));
+      const contents = await readDeployFile(releaseRoot, file.path);
       handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 384);
       await handle.writeFile(contents);
       if (owner) await owner(handle, destination, await handle.stat());
@@ -58796,7 +58824,7 @@ import path7 from "node:path";
 
 // src/client-toolchain.ts
 import path2 from "node:path";
-import { lstat as lstat2, readFile as readFile2, realpath } from "node:fs/promises";
+import { lstat as lstat2, readFile as readFile2, realpath as realpath2 } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
@@ -60341,7 +60369,7 @@ async function buildVite(options) {
   const frameworkPlugins = [];
   let projectRoot = path2.resolve(options.projectDir);
   try {
-    projectRoot = await realpath(options.projectDir);
+    projectRoot = await realpath2(options.projectDir);
     const canonicalIndexHtmlPath = path2.join(projectRoot, path2.basename(options.indexHtmlPath));
     const projectConfigFile = await findProjectViteConfig(projectRoot);
     if (options.frameworkConfig.framework === "vue") {
@@ -60442,7 +60470,7 @@ async function findProjectViteConfig(projectRoot) {
           `Replace ${name2} with a regular project-owned file, then retry.`
         );
       }
-      const canonical = await realpath(candidate);
+      const canonical = await realpath2(candidate);
       if (!isCanonicalDescendant(projectRoot, canonical)) {
         throw clientToolchainError(
           `Vite configuration escaped the Capsule project: ${name2}.`,
@@ -60538,7 +60566,7 @@ async function loadProjectCompilerToolchain(projectRoot, spec) {
   try {
     const nodeModulesMetadata = await lstat2(nodeModulesDir);
     if (!nodeModulesMetadata.isDirectory() || nodeModulesMetadata.isSymbolicLink()) throw new Error("node_modules is not a real directory");
-    canonicalNodeModules = await realpath(nodeModulesDir);
+    canonicalNodeModules = await realpath2(nodeModulesDir);
     if (!isCanonicalDescendant(projectRoot, canonicalNodeModules)) throw new Error("node_modules escaped the project root");
   } catch {
     throw projectToolchainError(spec.framework, `${spec.framework}/Vite requires node_modules to be a real directory contained by the Capsule project.`, spec.installHint);
@@ -60563,9 +60591,9 @@ async function loadProjectCompilerToolchain(projectRoot, spec) {
         if (typeof importTarget !== "string") throw new Error("package has no import export");
         resolved = path2.resolve(packageDir, importTarget);
       }
-      const canonicalPackageDir = await realpath(packageDir);
+      const canonicalPackageDir = await realpath2(packageDir);
       if (!isCanonicalDescendant(canonicalNodeModules, canonicalPackageDir)) throw new Error("package directory escaped project node_modules");
-      const canonicalResolved = await realpath(resolved);
+      const canonicalResolved = await realpath2(resolved);
       if (!isCanonicalDescendant(canonicalPackageDir, canonicalResolved)) throw new Error("package entry escaped its project-owned package root");
       resolved = canonicalResolved;
     } catch {
@@ -109102,7 +109130,7 @@ function sanitizeScheduleInspectionEnvelope(envelope, invalid) {
 
 // src/cli/doctor.ts
 import { spawn as spawn2, spawnSync } from "node:child_process";
-import { lstat as lstat7, readFile as readFile9, realpath as realpath2 } from "node:fs/promises";
+import { lstat as lstat7, readFile as readFile9, realpath as realpath3 } from "node:fs/promises";
 import { connect } from "node:net";
 import path12 from "node:path";
 
@@ -110463,8 +110491,8 @@ async function containerClientReleaseCheck(container, binding, projectDir) {
   try {
     const expected = path12.join(projectDir, ".sporades", "build", ".public-trees", release.publicTree);
     const [actualRoot, expectedRoot, sourceStats, expectedStats] = await Promise.all([
-      realpath2(source),
-      realpath2(expected),
+      realpath3(source),
+      realpath3(expected),
       lstat7(source),
       lstat7(expected)
     ]);

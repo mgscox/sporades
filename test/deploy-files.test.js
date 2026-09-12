@@ -214,3 +214,36 @@ test("permission rollback uses the helper's actual inode and skips later replace
   assert.equal(run(restoreArgs).status, 0);
   assert.equal((await stat(target)).mode & 0o777, 0o600);
 }));
+
+test("deploy.files never follows source or parent symlinks substituted after validation", async () => {
+  for (const parent of [false, true]) await temporary(async (root) => {
+    const project = path.join(root, "project");
+    const outside = path.join(root, "outside");
+    await mkdir(path.join(project, "config"), { recursive: true });
+    await mkdir(outside);
+    await writeFile(path.join(project, "config/settings.json"), "project bytes");
+    await writeFile(path.join(outside, "settings.json"), "outside bytes");
+    const moduleUrl = new URL("../dist/deploy-files.js", import.meta.url).href;
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import fs from 'node:fs'; import path from 'node:path'; import { syncBuiltinESMExports } from 'node:module';
+      const project = ${JSON.stringify(project)}; const outside = ${JSON.stringify(outside)};
+      const original = fs.promises.lstat; let swapped = false;
+      fs.promises.lstat = async function(file, ...args) {
+        const result = await original.call(this, file, ...args);
+        if (!swapped && String(file).endsWith('/config/settings.json')) {
+          swapped = true;
+          const target = ${parent} ? path.join(project, 'config') : path.join(project, 'config/settings.json');
+          await fs.promises.rename(target, target + '.held');
+          await fs.promises.symlink(${parent} ? outside : path.join(outside, 'settings.json'), target);
+        }
+        return result;
+      }; syncBuiltinESMExports();
+      const { buildDeployFiles } = await import(${JSON.stringify(moduleUrl)});
+      try { await buildDeployFiles(project, [{ path: 'config/settings.json' }]); process.exit(19); }
+      catch (error) { if (!swapped) process.exit(20); process.stdout.write(error.message); }
+    `], { encoding: "utf8" });
+    assert.equal(child.status, 0, child.stderr + child.stdout);
+    assert.match(child.stdout, /Cannot build deploy.files/);
+    assert.doesNotMatch(child.stdout, /outside bytes/);
+  });
+});

@@ -653,6 +653,9 @@ A later deployment or Container removal retries that cleanup.
 Preserved storage must have a single link so ownership and rollback operations
 cannot affect an unrelated pathname.
 
+Source snapshots use descriptor-based reads on Linux and macOS to reject symlink
+substitution during a build. Other platforms do not support `deploy.files`.
+
 Edit the file contents in place when editing a bind-mounted file. Replacing its
 inode with an editor's atomic-save operation requires restarting the container
 to refresh the bind mount.

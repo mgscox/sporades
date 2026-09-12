@@ -1,7 +1,7 @@
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile, readdir, link, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, link, rename, rm, realpath } from "node:fs/promises";
 // Paths owned by the runtime, including legacy release paths and writable data.
 const RESERVED = [".sporades", "public", "data", "server.mjs", "client.js", "index.html", "sporades.json", ".env.sporades.server"];
 export function resolveDeployFiles(value) {
@@ -79,11 +79,46 @@ async function assertDeployFile(root, relative, recoverSeed = false) {
 export async function assertPreservedDeployFile(root, relative) {
     return assertDeployFile(root, relative, true);
 }
+// Node does not expose openat. Linux's descriptor paths let each directory
+// remain pinned while opening its child; Darwin provides O_NOFOLLOW_ANY.
+async function readDeployFile(root, relative) {
+    await assertDeployFile(root, relative);
+    const canonicalRoot = await realpath(root);
+    const handles = [];
+    try {
+        let file;
+        if (process.platform === "darwin") {
+            const O_NOFOLLOW_ANY = 0x20000000; // Darwin sys/fcntl.h
+            file = await open(path.join(canonicalRoot, relative), constants.O_RDONLY | constants.O_NONBLOCK | O_NOFOLLOW_ANY);
+        }
+        else if (process.platform === "linux") {
+            let directory = await open(canonicalRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+            handles.push(directory);
+            const parts = relative.split("/");
+            for (const part of parts.slice(0, -1)) {
+                directory = await open(`/proc/self/fd/${directory.fd}/${part}`, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+                handles.push(directory);
+            }
+            file = await open(`/proc/self/fd/${directory.fd}/${parts.at(-1)}`, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+        }
+        else {
+            throw new Error("Secure deploy.files reads require macOS or Linux.");
+        }
+        handles.push(file);
+        if (!(await file.stat()).isFile())
+            throw new Error(`deploy.files requires a regular file: ${relative}`);
+        return await file.readFile();
+    }
+    finally {
+        for (const handle of handles.reverse())
+            await handle.close();
+    }
+}
 export async function buildDeployFiles(projectDir, value) {
     const result = [];
     for (const file of resolveDeployFiles(value)) {
         try {
-            result.push({ ...file, contents: await readFile(await assertDeployFile(projectDir, file.path)) });
+            result.push({ ...file, contents: await readDeployFile(projectDir, file.path) });
         }
         catch (error) {
             throw new Error(`Cannot build deploy.files entry ${file.path}: ${error.message}`);
@@ -159,7 +194,7 @@ export async function preparePreservedFiles(files, releaseRoot, preservedRoot, o
         let handle;
         const temporary = path.join(path.dirname(destination), `.seed-${randomUUID()}`);
         try {
-            const contents = await readFile(await assertDeployFile(releaseRoot, file.path));
+            const contents = await readDeployFile(releaseRoot, file.path);
             handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
             await handle.writeFile(contents);
             if (owner)
