@@ -3513,6 +3513,8 @@ test("sporades host helper registers Hosted Capsules with registry state and una
     assert.equal(output.data.registered, true);
     assert.equal(output.data.authoritative, true);
     assert.deepEqual(output.data.capsule, {
+      aliasDomains: [],
+      aliasUrls: [],
       subname: "team-notes",
       domain: "capsules.example.dev",
       hostedUrl: "https://team-notes.capsules.example.dev",
