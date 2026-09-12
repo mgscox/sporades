@@ -4006,7 +4006,8 @@ test("sporades host helper does not commit registration when the unavailable rou
     const failedOutput = JSON.parse(failed.stdout);
     assert.equal(failedOutput.ok, false);
     assert.equal(failedOutput.data, null);
-    assert.match(failedOutput.error.message, /^Failed to apply Hosted Capsule route/);
+    assert.equal(failedOutput.error.message, "Hosted Capsule registration recovery failed.");
+    assert.match(failedOutput.error.hint, /Registration: Failed to apply Hosted Capsule route/);
     await assert.rejects(readFile(registryRecord, "utf8"), { code: "ENOENT" });
     await assert.rejects(readFile(routeFile, "utf8"), { code: "ENOENT" });
 
@@ -14418,5 +14419,64 @@ test("custom domains allow same-origin HTTP and WebSockets while rejecting unreg
         assert.doesNotMatch(await openRawWebSocketHandshake(baseUrl, rejected, token()), /^HTTP\/1\.1 101/m);
       }
     });
+  });
+});
+
+test("custom domains retain ownership when registration and route rollback both fail", async () => {
+  await withTempDir(async (dir) => {
+    const { remoteRoot, request, invoke } = await customDomainFixture(dir, ["capsules.example.dev", "other.example.dev"]);
+    const failed = await invoke(request, {
+      SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE: "1",
+      FAKE_DOCKER_CADDY_RELOAD_STATUSES: "0,1,0",
+    });
+    const error = JSON.parse(failed.stdout).error;
+    assert.equal(error.message, "Hosted Capsule registration recovery failed.");
+    assert.match(error.hint, /Registration: Failed to write Hosted Capsule registry record/);
+    assert.match(error.hint, /Route rollback: Failed to remove Hosted Capsule route/);
+    const registry = path.join(remoteRoot, "hosts", request.host.domain, "registry");
+    await assert.rejects(readFile(path.join(registry, "capsules", "team-notes.json")), { code: "ENOENT" });
+    const claimPath = path.join(registry, "registration-claims", "team-notes.json");
+    assert.deepEqual(JSON.parse(await readFile(claimPath, "utf8")).aliasDomains, request.registration.aliasDomains);
+    // A separate helper process sees the durable reservation even without a Capsule record.
+    const competitor = { ...request, host: { ...request.host, domain: "other.example.dev" }, capsule: { subname: "competitor" } };
+    assert.equal(JSON.parse((await invoke(competitor)).stdout).error.message, "Hosted Capsule hostname is already reserved.");
+    // Another failed retry must not discard the original orphan-route claim.
+    const retriedFailure = await invoke(request, { SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE: "1" });
+    assert.equal(JSON.parse(retriedFailure.stdout).ok, false);
+    assert.equal(JSON.parse((await invoke(competitor)).stdout).error.message, "Hosted Capsule hostname is already reserved.");
+    const changedAliases = await invoke({ ...request, registration: { aliasDomains: ["replacement.example"] } });
+    assert.equal(JSON.parse(changedAliases.stdout).error.message, "Hosted Capsule registration recovery is required.");
+    const repaired = await invoke({ ...request, registration: undefined });
+    assert.equal(JSON.parse(repaired.stdout).ok, true, repaired.stdout);
+    assert.deepEqual(JSON.parse(repaired.stdout).data.capsule.aliasDomains, request.registration.aliasDomains);
+    await assert.rejects(readFile(claimPath), { code: "ENOENT" });
+  });
+});
+
+test("custom domains always settle a quiesced runtime after registration rollback failure", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleRollbackFixture(dir);
+    const { remoteRoot, request, invoke, docker } = await customDomainFixture(dir, ["capsules.example.dev", "other.example.dev"]);
+    const existing = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    await writeFile(fixture.registryRecordPath, JSON.stringify({ ...existing, status: "unregistered", aliasDomains: ["old.example"] }));
+    const failed = await invoke(request, {
+      SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE: "1",
+      FAKE_DOCKER_CADDY_RELOAD_STATUSES: "0,1,1",
+    });
+    const error = JSON.parse(failed.stdout).error;
+    assert.equal(error.message, "Hosted Capsule registration recovery failed.");
+    assert.match(error.hint, /Registration: Failed to write Hosted Capsule registry record/);
+    assert.match(error.hint, /Route rollback:/);
+    assert.match(error.hint, /Runtime settlement: Hosted Capsule runtime restoration failed/);
+    assert.ok((await docker.calls()).some(({ args }) => args[0] === "stop"));
+    const claimPath = path.join(remoteRoot, "hosts", request.host.domain, "registry", "registration-claims", "team-notes.json");
+    assert.deepEqual(JSON.parse(await readFile(claimPath, "utf8")).previousAliasDomains, ["old.example"]);
+    for (const hostname of ["old.example", "fourteen.example"]) {
+      const competitor = await invoke({ ...request, host: { ...request.host, domain: "other.example.dev" }, capsule: { subname: "competitor" }, registration: { aliasDomains: [hostname] } });
+      assert.equal(JSON.parse(competitor.stdout).error.message, "Hosted Capsule hostname is already reserved.");
+    }
+    const repaired = await invoke();
+    assert.equal(JSON.parse(repaired.stdout).ok, true, repaired.stdout);
+    await assert.rejects(readFile(claimPath), { code: "ENOENT" });
   });
 });

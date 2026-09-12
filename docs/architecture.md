@@ -268,6 +268,13 @@ registry record. Registration checks exact hostname ownership across all Hosted
 domains while holding the Host-wide route flock. Aliases are rendered as
 separate automatic-TLS site blocks in the same canonical Capsule route file,
 so replacement, rollback, and unregister operate on all names together.
+Before publishing a registration route, the helper writes a hostname claim in
+`registry/registration-claims/<subname>.json`, reserving both requested and
+previous aliases. A failed rollback retains that claim across helper restarts;
+runtime settlement always runs, and recovery errors are reported together.
+The claim is released after a successful registration or a verified rollback
+of a fresh attempt. Retrying an unresolved attempt keeps its claim until the
+registration commits.
 The container receives the HTTPS aliases as trusted runtime configuration;
 caller-supplied lifecycle route aliases cannot widen that authority.
 

@@ -43,21 +43,25 @@ export async function assertHostnamesAvailable(remoteRoot, hostnames, owner) {
             throw helperError("Cannot inspect Hosted domain ownership.", "Replace symbolic links in the Host registry with canonical directories.");
         if (!domain.isDirectory())
             continue;
-        const directory = path.join(remoteRoot, "hosts", domain.name, "registry", "capsules");
-        for (const entry of await entries(directory)) {
-            if (!entry.name.endsWith(".json"))
-                continue;
-            if (!entry.isFile())
-                throw helperError("Cannot inspect Hosted Capsule ownership.", "Repair the Host registry before registering domains.");
-            const record = JSON.parse(await readFile(path.join(directory, entry.name), "utf8"));
-            if (record.domain !== domain.name || record.subname !== entry.name.slice(0, -5)) {
-                throw helperError("Invalid Hosted Capsule registry identity.", "Repair the Host registry before registering domains.");
-            }
-            if (record.status === "unregistered")
-                continue;
-            const claimant = `${record.domain}/${record.subname}`;
-            for (const hostname of [`${record.subname}.${record.domain}`, ...validateAliasDomains(record.aliasDomains)]) {
-                assertUnclaimed(hostname, claimant);
+        for (const collection of ["capsules", "registration-claims"]) {
+            const directory = path.join(remoteRoot, "hosts", domain.name, "registry", collection);
+            for (const entry of await entries(directory)) {
+                if (!entry.name.endsWith(".json"))
+                    continue;
+                if (!entry.isFile())
+                    throw helperError("Cannot inspect Hosted Capsule ownership.", "Repair the Host registry before registering domains.");
+                const record = JSON.parse(await readFile(path.join(directory, entry.name), "utf8"));
+                if (record.domain !== domain.name || record.subname !== entry.name.slice(0, -5)) {
+                    throw helperError("Invalid Hosted Capsule registry identity.", "Repair the Host registry before registering domains.");
+                }
+                if (collection === "capsules" && record.status === "unregistered")
+                    continue;
+                const claimant = `${record.domain}/${record.subname}`;
+                const aliases = validateAliasDomains(record.aliasDomains);
+                const previousAliases = collection === "registration-claims" ? validateAliasDomains(record.previousAliasDomains) : [];
+                for (const hostname of [`${record.subname}.${record.domain}`, ...aliases, ...previousAliases]) {
+                    assertUnclaimed(hostname, claimant);
+                }
             }
         }
     }

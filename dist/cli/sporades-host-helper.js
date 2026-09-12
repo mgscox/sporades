@@ -889,6 +889,21 @@ async function bootstrapHost(request) {
 }
 async function registerCapsule(request) {
     validateRegisterRequest(request);
+    const claimPath = path.join(request.host.remoteRoot, "hosts", request.host.domain, "registry", "registration-claims", `${request.capsule.subname}.json`);
+    const pendingClaim = await readFile(claimPath, "utf8").then((contents) => JSON.parse(contents)).catch((error) => {
+        if (errorDetails(error).code === "ENOENT")
+            return null;
+        throw error;
+    });
+    if (pendingClaim) {
+        const aliases = validateAliasDomains(pendingClaim.aliasDomains);
+        if (pendingClaim.domain !== request.host.domain || pendingClaim.subname !== request.capsule.subname
+            || (request.registration?.aliasDomains !== undefined
+                && !isDeepStrictEqual([...request.registration.aliasDomains].sort(), [...aliases].sort()))) {
+            throw helperError("Hosted Capsule registration recovery is required.", "Repair Caddy and retry the original registration with the same alias domains before changing its aliases.");
+        }
+        request = { ...request, registration: { ...request.registration, aliasDomains: aliases } };
+    }
     let registration = normaliseRegistration(request);
     await ensureHostedDomainBootstrapped(request, registration);
     let reactivated = false;
@@ -896,23 +911,36 @@ async function registerCapsule(request) {
     let priorRuntime = null;
     let admissionError = null;
     let priorRoute = null;
-    let routePublished = false;
+    let routeAttempted = false;
+    let claimWritten = Boolean(pendingClaim);
+    const reserveClaim = async (previous = null) => {
+        if (claimWritten)
+            return;
+        await mkdir(path.dirname(claimPath), { recursive: true });
+        await publishHostHelperBytes(Buffer.from(JSON.stringify({
+            domain: registration.domain, subname: registration.subname,
+            aliasDomains: registration.aliasDomains,
+            previousAliasDomains: validateAliasDomains(previous?.aliasDomains),
+        })), claimPath, 0o600);
+        claimWritten = true;
+    };
     try {
         await mkdir(path.dirname(registryLockPath(request)), { recursive: true });
         await withRegistryLock(request, async () => {
             if (await pathExists(registration.registryRecord)) {
                 const existing = await readRegistryRecordForCapsule(request, "register");
                 assertRegistryRecordMatchesRequest(request, existing);
-                if (existing.status === "unregistered") {
+                if (existing.status === "unregistered" || pendingClaim) {
                     registration = normaliseRegistration(request, existing);
                     await assertHostnamesAvailable(request.host.remoteRoot, [registration.route.hostname, ...registration.aliasDomains], registration.remoteCapsuleId);
                     priorRoute = await captureReleaseInstallRoute(request, existing);
+                    await reserveClaim(existing);
                     priorRuntime = captureCapsuleRuntimeSettlement(request, existing);
                     quiesceCapsuleRuntime(priorRuntime);
                     await mkdir(path.dirname(registration.registryRecord), { recursive: true });
                     await mkdir(registration.directories.releases, { recursive: true });
+                    routeAttempted = true;
                     await writeUnavailableRoute(registration.lifecycle);
-                    routePublished = true;
                     sealedServerEnv = await ensureHostSealedEnvKeyPair(registration, existing);
                     await writeRegistryRecordAtomic(registration.registryRecord, { ...reactivateRegistrationRecord(existing, sealedServerEnv), aliasDomains: registration.aliasDomains, route: { tls: registration.route.tls } });
                     reactivated = true;
@@ -922,21 +950,47 @@ async function registerCapsule(request) {
             }
             await assertHostnamesAvailable(request.host.remoteRoot, [registration.route.hostname, ...registration.aliasDomains], registration.remoteCapsuleId);
             priorRoute = await captureReleaseInstallRoute(request, null);
+            await reserveClaim();
             await mkdir(path.dirname(registration.registryRecord), { recursive: true });
             await mkdir(registration.directories.releases, { recursive: true });
             await mkdir(registration.directories.logs, { recursive: true });
+            routeAttempted = true;
             await writeUnavailableRoute(registration.lifecycle);
-            routePublished = true;
             sealedServerEnv = await ensureHostSealedEnvKeyPair(registration);
             await writeRegistryRecordAtomic(registration.registryRecord, createRegistrationRecord(registration, sealedServerEnv));
         });
     }
     catch (error) {
         admissionError = error;
-        if (routePublished && priorRoute)
-            await restoreReleaseInstallRoute(priorRoute);
     }
-    await settleCapsuleRuntime(request, priorRuntime, admissionError);
+    const recoveryErrors = [];
+    if (admissionError && routeAttempted && priorRoute) {
+        try {
+            await restoreReleaseInstallRoute(priorRoute, true);
+        }
+        catch (error) {
+            recoveryErrors.push(`Route rollback: ${errorDetails(error).message}`);
+        }
+    }
+    try {
+        await settleCapsuleRuntime(request, priorRuntime, admissionError);
+    }
+    catch (error) {
+        recoveryErrors.push(`Runtime settlement: ${errorDetails(error).message}`);
+    }
+    // A failed retry may have restored an already-orphaned route. Retain its claim
+    // until registration commits, even if this round's rollback itself succeeded.
+    if (claimWritten && recoveryErrors.length === 0 && (!admissionError || !pendingClaim)) {
+        try {
+            await rm(claimPath);
+        }
+        catch (error) {
+            recoveryErrors.push(`Reservation cleanup: ${errorDetails(error).message}`);
+        }
+    }
+    if (recoveryErrors.length) {
+        throw helperError("Hosted Capsule registration recovery failed.", `${admissionError ? `Registration: ${errorDetails(admissionError).message}` : "Registration committed."} ${recoveryErrors.join(" ")} Hostnames remain reserved; repair the Host services and retry the original registration with the same alias domains.`);
+    }
     if (admissionError)
         throw admissionError;
     writeEnvelope({
@@ -1900,13 +1954,15 @@ async function restoreCurrentReleasePointerTarget(currentLink, previousTarget) {
     await symlink(previousTarget, temporary);
     await rename(temporary, currentLink);
 }
-async function restoreReleaseInstallRoute(snapshot) {
+async function restoreReleaseInstallRoute(snapshot, reloadWhenAbsent = false) {
     if (snapshot.contents !== null) {
         await applyManagedRoute(snapshot.lifecycle, snapshot.routeFile, snapshot.contents);
         return;
     }
     await withManagedRouteLock(snapshot.routeFile, async () => {
         const removed = await removeManagedRouteLocked(snapshot.lifecycle, snapshot.routeFile);
+        if (reloadWhenAbsent && !removed.removed)
+            reloadCaddy(snapshot.lifecycle);
         await finalizeRemovedRouteLocked(removed);
     });
 }

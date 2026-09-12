@@ -35,3 +35,14 @@ source, generated bundles/types, canonical docs and focused integration tests.
 - Live DNS and certificate issuance were not exercised; no production Host was
   changed. Deployment requires Host helper upgrade and a rebuilt Capsule.
 - Pull request: https://github.com/mgscox/sporades/pull/44
+
+## PR review follow-up
+
+Automated review identified a combined registry-write/route-rollback failure
+that could skip runtime settlement and leave live aliases unowned. Registration
+now writes a durable hostname claim before route mutation, preserves claims
+across unsuccessful recovery attempts, always attempts runtime settlement,
+and aggregates original and recovery errors. Retrying with the saved aliases
+completes registration and releases the pending claim. Regression coverage
+includes new registrations and quiesced reactivations with repeated Caddy
+reload failures and rejection of competing claims from another helper.

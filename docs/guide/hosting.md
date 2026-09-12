@@ -52,3 +52,11 @@ Configure each alias callback URL with your OAuth provider and update any
 explicit payment/public-origin settings in the Capsule. Canonical links built
 from the Hosted `publicOrigin` still use the original subdomain. Cookies remain
 scoped to each hostname; sessions are not shared between domains.
+
+If registration and its rollback both fail, the helper keeps a durable hostname
+reservation under `registry/registration-claims/` and reports both the original
+failure and any route/runtime recovery failures. Repair Caddy or the Host
+storage problem, then retry the original registration. Omitted alias flags
+reuse the pending registration's alias list; changing that list is rejected
+until recovery completes. Successful retry commits the registry and removes
+the pending reservation. Other Capsules cannot claim those names meanwhile.
