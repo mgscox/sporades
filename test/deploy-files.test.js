@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { mkdtemp, mkdir, readFile, writeFile, rm, symlink, link, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { buildDeployFiles, resolveDeployFiles, preparePreservedFiles, deployFileMounts, assertPreservedDeployFile } from "../dist/deploy-files.js";
+import { buildDeployFiles, resolveDeployFiles, preparePreservedFiles, deployFileMounts, assertPreservedDeployFile, rollbackPreservedFiles, localPreservedFileAccessArgs } from "../dist/deploy-files.js";
 import { createBundle } from "../dist/bundle-pipeline.js";
 
 async function temporary(fn) {
@@ -79,3 +79,31 @@ test("preserved deploy.files recovers a seed publication interrupted before temp
   await link(destination, path.join(stored, "unrelated.json"));
   await assert.rejects(assertPreservedDeployFile(stored, "settings.json"), /regular files/);
 }));
+
+
+test("failed seed transactions remove only newly published unchanged files", async () => temporary(async (root) => {
+  const source = path.join(root, "release"); const stored = path.join(root, "stored");
+  await mkdir(source);
+  for (const file of ["new.json", "edited.json", "replaced.json", "existing.json"]) await writeFile(path.join(source, file), "seed");
+  await preparePreservedFiles([{ path: "existing.json", update: "preserve" }], source, stored);
+  const created = [];
+  await preparePreservedFiles(["new.json", "edited.json", "replaced.json", "existing.json"].map((file) => ({ path: file, update: "preserve" })), source, stored, undefined, created);
+  await writeFile(path.join(stored, "edited.json"), "operator edit");
+  await rm(path.join(stored, "replaced.json"));
+  await writeFile(path.join(stored, "replaced.json"), "replacement");
+  await rollbackPreservedFiles(created);
+  await assert.rejects(stat(path.join(stored, "new.json")), { code: "ENOENT" });
+  assert.equal(await readFile(path.join(stored, "existing.json"), "utf8"), "seed");
+  assert.equal(await readFile(path.join(stored, "edited.json"), "utf8"), "operator edit");
+  assert.equal(await readFile(path.join(stored, "replaced.json"), "utf8"), "replacement");
+}));
+
+test("local preserved-file access keeps the CLI owner and grants the SSH runtime group on one mount", () => {
+  const args = localPreservedFileAccessArgs("/project/.sporades/preserved-files/settings.json", "501:20", "10001:10001", "image");
+  assert.equal(args[args.indexOf("--user") + 1], "0:0");
+  assert.equal(args[args.indexOf("--network") + 1], "none");
+  assert.equal(args.filter((arg) => arg === "--volume").length, 1);
+  assert(args.includes("/project/.sporades/preserved-files/settings.json:/file:rw"));
+  assert.match(args.at(-1), /fchownSync\(fd, 501, 10001\)/);
+  assert.match(args.at(-1), /fchmodSync\(fd, 0o660\)/);
+});

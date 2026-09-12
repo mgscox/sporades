@@ -3,6 +3,13 @@ export type DeployFile = {
     path: string;
     update: "replace" | "preserve";
 };
+export type PreservedSeed = {
+    root: string;
+    path: string;
+    dev: number;
+    ino: number;
+    sha256: string;
+};
 export type BuiltDeployFile = DeployFile & {
     contents: Buffer;
 };
@@ -14,5 +21,8 @@ export declare function deployFileMounts(files: DeployFile[], releaseRoot: strin
     container: string;
     mode: string;
 }[];
-export declare function preparePreservedFiles(files: DeployFile[], releaseRoot: string, preservedRoot: string, owner?: string | ((handle: FileHandle, target: string, stats: Awaited<ReturnType<FileHandle["stat"]>>) => Promise<void>)): Promise<void>;
+export declare function preparePreservedFiles(files: DeployFile[], releaseRoot: string, preservedRoot: string, owner?: (handle: FileHandle, target: string, stats: Awaited<ReturnType<FileHandle["stat"]>>) => Promise<void>, created?: PreservedSeed[]): Promise<void>;
+export declare function rollbackPreservedFiles(created: PreservedSeed[]): Promise<void>;
+export declare function localPreservedFileAccessArgs(file: string, localUser: string, runtimeUser: string, image: string): string[];
+export declare function removeDeployFileSnapshot(runtimeDir: string, snapshot: unknown): Promise<void>;
 //# sourceMappingURL=deploy-files.d.ts.map

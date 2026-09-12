@@ -612,12 +612,19 @@ location under `/app` in local Container sessions and Hosted Capsules:
 release supplies a read-only file. `"preserve"` seeds the file only if no stored
 copy exists and mounts that copy writable. Server edits survive redeployment,
 restart, and rollback. Replaced files roll back with their release; preserved
-files do not roll back their contents.
+files do not roll back their contents. Failed installation attempts remove
+only newly seeded files whose identity and contents are unchanged; existing
+preserved files and intervening edits are retained.
 
 Removing a preserved entry stops mounting it without deleting its stored copy.
 Switching to `replace` also retains the inactive copy; switching back to
 `preserve` reuses it. On a Host server these copies live under the Capsule's
 `preserved-files/` directory; locally they live in `.sporades/preserved-files/`.
+Local SSH deployments keep the invoking user as file owner and grant the
+container runtime group read/write access through a Docker helper mounted to
+one declared file at a time. Removing a local Container also removes its
+replacement snapshot, while preserving stored edits.
+
 Edit the file contents in place when editing a bind-mounted file. Replacing its
 inode with an editor's atomic-save operation requires restarting the container
 to refresh the bind mount.

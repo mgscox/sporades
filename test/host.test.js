@@ -14645,3 +14645,33 @@ test("Hosted deploy.files install preserves edits and uses recorded mounts acros
 
   });
 });
+
+
+test("Hosted deploy.files rolls back new seeds on registry and startup failure", async () => {
+  for (const failure of ["registry", "startup"]) await withTempDir(async (dir) => {
+    const deployFiles = [{ path: "new.json", update: "preserve" }, { path: "existing.json", update: "preserve" }];
+    const fixture = await writeHostedCapsuleInstallFixture(dir, { rootName: "seed-rollback", previousReleaseId: null, deployFiles, fileContents: "failed seed" });
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    record.status = "registered";
+    await writeFile(fixture.registryRecordPath, JSON.stringify(record));
+    const preserved = path.join(fixture.capsuleDir, "preserved-files");
+    await mkdir(preserved, { recursive: true });
+    await writeFile(path.join(preserved, "existing.json"), "existing edit");
+    fixture.release.restart = failure === "startup";
+    const docker = await installFakeDocker(path.join(dir, "seed-docker"), { env: {
+      FAKE_DOCKER_RUNNING: "false",
+      ...(failure === "registry" ? { SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE: "1" } : { FAKE_DOCKER_RUN_STATUS: "1" }),
+    } });
+    const request = { action: "capsule.release.install", host: { alias: "personal", domain: fixture.domain, remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname }, release: fixture.release };
+    const failed = await runHostHelper(request, { cwd: dir, env: docker.env });
+    assert.equal(JSON.parse(failed.stdout).ok, false, failed.stdout);
+    await assert.rejects(stat(path.join(preserved, "new.json")), { code: "ENOENT" });
+    assert.equal(await readFile(path.join(preserved, "existing.json"), "utf8"), "existing edit");
+    const retry = await writeHostedCapsuleInstallFixture(dir, { rootName: "seed-rollback", previousReleaseId: null, releaseId: "20260912T130000Z-feedface", deployFiles, fileContents: "successful seed" });
+    retry.release.restart = false;
+    const result = await runHostHelper({ ...request, release: retry.release }, { cwd: dir, env: { SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1" } });
+    assert.equal(JSON.parse(result.stdout).ok, true, result.stdout);
+    assert.equal(await readFile(path.join(preserved, "new.json"), "utf8"), "successful seed");
+    assert.equal(await readFile(path.join(preserved, "existing.json"), "utf8"), "existing edit");
+  });
+});

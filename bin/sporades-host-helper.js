@@ -26263,7 +26263,7 @@ var require_png2 = __commonJS({
 
 // src/deploy-files.ts
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, readdir, link, rm } from "node:fs/promises";
 var RESERVED = [".sporades", "public", "data", "server.mjs", "client.js", "index.html", "sporades.json", ".env.sporades.server"];
@@ -26343,7 +26343,7 @@ function deployFileMounts(files, releaseRoot, preservedRoot) {
     mode: file.update === "preserve" ? "rw" : "ro"
   }));
 }
-async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner) {
+async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, created = []) {
   for (const file of files.filter((entry) => entry.update === "preserve")) {
     let directory = preservedRoot;
     for (const part of ["", ...file.path.split("/").slice(0, -1)]) {
@@ -26368,13 +26368,10 @@ async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner) {
       const contents = await readFile(await assertDeployFile(releaseRoot, file.path));
       handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 384);
       await handle.writeFile(contents);
-      if (typeof owner === "function") await owner(handle, destination, await handle.stat());
-      else if (owner) {
-        const [uid, gid] = owner.split(":").map(Number);
-        const stats = await handle.stat();
-        if (stats.uid !== uid || stats.gid !== gid) await handle.chown(uid, gid);
-      }
+      if (owner) await owner(handle, destination, await handle.stat());
+      const identity = await handle.stat();
       await link(temporary, destination);
+      created.push({ root: preservedRoot, path: file.path, dev: identity.dev, ino: identity.ino, sha256: createHash("sha256").update(contents).digest("hex") });
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
     } finally {
@@ -26382,6 +26379,24 @@ async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner) {
       await rm(temporary, { force: true });
     }
     await assertPreservedDeployFile(preservedRoot, file.path);
+  }
+}
+async function rollbackPreservedFiles(created) {
+  for (const seed of [...created].reverse()) {
+    let handle;
+    try {
+      const target = await assertPreservedDeployFile(seed.root, seed.path);
+      handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const info = await handle.stat();
+      if (info.dev !== seed.dev || info.ino !== seed.ino || info.nlink !== 1) continue;
+      if (createHash("sha256").update(await handle.readFile()).digest("hex") !== seed.sha256) continue;
+      const current2 = await lstat(target);
+      if (current2.dev === info.dev && current2.ino === info.ino && current2.mtimeMs === info.mtimeMs && current2.ctimeMs === info.ctimeMs) await rm(target);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    } finally {
+      await handle?.close();
+    }
   }
 }
 
@@ -26494,7 +26509,7 @@ async function assertHostnamesAvailable(remoteRoot, hostnames, owner) {
 import { spawnSync as spawnSync2 } from "node:child_process";
 import { constants as fsConstants, createReadStream, statSync } from "node:fs";
 import { access, chmod, lstat as lstat2, mkdir as mkdir2, open as open2, opendir, readdir as readdir3, readFile as readFile4, readlink, rename, rm as rm2, stat, statfs, symlink, writeFile } from "node:fs/promises";
-import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
+import { createHash as createHash2, generateKeyPairSync, randomBytes } from "node:crypto";
 import { freemem, loadavg, totalmem } from "node:os";
 import path5 from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -43615,7 +43630,7 @@ async function installHostHelperPayload(stage, target, expectedChecksum) {
   const newPayloadName = `.sporades-host-helper-payload-${expectedChecksum}.mjs`;
   const newPayload = path5.join(directory, newPayloadName);
   await mkdir2(directory, { recursive: true });
-  if (createHash("sha256").update(await readFile4(stage)).digest("hex") !== expectedChecksum) {
+  if (createHash2("sha256").update(await readFile4(stage)).digest("hex") !== expectedChecksum) {
     throw helperError("Staged Host helper checksum did not match.", "Upload the immutable Host helper again, then retry the upgrade.");
   }
   await publishHostHelperFile(stage, newPayload, 493);
@@ -43632,7 +43647,7 @@ async function installHostHelperPayload(stage, target, expectedChecksum) {
     previousPayloadName = (await readFile4(pointer, "utf8")).trim();
     await validateHostHelperPayload(directory, previousPayloadName);
   } else {
-    const previousChecksum = createHash("sha256").update(currentTarget).digest("hex");
+    const previousChecksum = createHash2("sha256").update(currentTarget).digest("hex");
     previousPayloadName = `.sporades-host-helper-payload-${previousChecksum}.mjs`;
     await publishHostHelperFile(target, path5.join(directory, previousPayloadName), 493);
     await writeHostHelperPointer(pointer, previousPayloadName);
@@ -43675,7 +43690,7 @@ async function validateHostHelperPayload(directory, payloadName) {
   const match = /^\.sporades-host-helper-payload-([a-f0-9]{64})\.mjs$/.exec(payloadName);
   if (!match) throw helperError("Host helper payload pointer was invalid.", "Retry the Host helper upgrade.");
   const payload = path5.join(directory, payloadName);
-  const actual = createHash("sha256").update(await readFile4(payload)).digest("hex");
+  const actual = createHash2("sha256").update(await readFile4(payload)).digest("hex");
   if (actual !== match[1]) throw helperError("Host helper payload checksum did not match.", "Retry the Host helper upgrade.");
 }
 async function drainUncooperativeHostHelpers(target) {
@@ -44623,12 +44638,14 @@ async function installClaimedRelease(request, previousRecord, paths, claimedArch
       throw error;
     }
   }
+  const createdSeeds = [];
   try {
-    await preparePreservedFiles(resolveDeployFiles(release.deployFiles), paths.release, path5.join(paths.capsule, "preserved-files"), prepareRuntimeDataOwnershipHandle);
+    await preparePreservedFiles(resolveDeployFiles(release.deployFiles), paths.release, path5.join(paths.capsule, "preserved-files"), prepareRuntimeDataOwnershipHandle, createdSeeds);
     await symlink(paths.release, tempCurrentLink);
     await rename(tempCurrentLink, paths.currentLink);
     await recordReleaseUploaded(request, release, installedInventory);
   } catch (error) {
+    await rollbackPreservedFiles(createdSeeds);
     await restoreCurrentReleasePointerTarget(paths.currentLink, previousCurrentTarget);
     await removeInstalledReleasePrivateKey(release, paths);
     await rm2(paths.release, { recursive: true, force: true });
@@ -44659,6 +44676,7 @@ async function installClaimedRelease(request, previousRecord, paths, claimedArch
           priorRuntime,
           release
         );
+        await rollbackPreservedFiles(createdSeeds);
         installRolledBack = true;
       } catch (error) {
         restartError = error;
@@ -44759,7 +44777,7 @@ async function claimReleaseArchive(request) {
 }
 async function releaseArchiveSha256(archivePath) {
   return new Promise((resolve, reject) => {
-    const hash2 = createHash("sha256");
+    const hash2 = createHash2("sha256");
     const stream = createReadStream(archivePath);
     stream.on("data", (chunk) => hash2.update(chunk));
     stream.on("error", reject);
@@ -44816,7 +44834,7 @@ async function validateExtractedReleaseTree(root, expectedFiles) {
         }
         publicClaims.push({ path: publicPath, size: stats.size });
       }
-      actual.push({ path: relative, size: stats.size, sha256: createHash("sha256").update(await readFile4(entryPath)).digest("hex") });
+      actual.push({ path: relative, size: stats.size, sha256: createHash2("sha256").update(await readFile4(entryPath)).digest("hex") });
     }
   }
   await visit(root);
@@ -47125,7 +47143,7 @@ function hostSealedEnvKeyPaths(dataDirectory, fingerprint) {
   };
 }
 function fingerprintPublicKey(publicKey) {
-  return createHash("sha256").update(publicKey).digest("hex").slice(0, 16);
+  return createHash2("sha256").update(publicKey).digest("hex").slice(0, 16);
 }
 function reactivateRegistrationRecord(record, sealedServerEnv = null) {
   const now = (/* @__PURE__ */ new Date()).toISOString();

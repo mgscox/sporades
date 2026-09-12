@@ -1,10 +1,11 @@
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { FileHandle } from "node:fs/promises";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, readdir, link, rm } from "node:fs/promises";
 
 export type DeployFile = { path: string; update: "replace" | "preserve" };
+export type PreservedSeed = { root: string; path: string; dev: number; ino: number; sha256: string };
 export type BuiltDeployFile = DeployFile & { contents: Buffer };
 
 // Paths owned by the runtime, including legacy release paths and writable data.
@@ -103,7 +104,7 @@ export function deployFileMounts(files: DeployFile[], releaseRoot: string, prese
 }
 
 // Parent directories stay host-owned; only explicitly declared files are writable.
-export async function preparePreservedFiles(files: DeployFile[], releaseRoot: string, preservedRoot: string, owner?: string | ((handle: FileHandle, target: string, stats: Awaited<ReturnType<FileHandle["stat"]>>) => Promise<void>)) {
+export async function preparePreservedFiles(files: DeployFile[], releaseRoot: string, preservedRoot: string, owner?: (handle: FileHandle, target: string, stats: Awaited<ReturnType<FileHandle["stat"]>>) => Promise<void>, created: PreservedSeed[] = []) {
   for (const file of files.filter((entry) => entry.update === "preserve")) {
     let directory = preservedRoot;
     for (const part of ["", ...file.path.split("/").slice(0, -1)]) {
@@ -124,13 +125,10 @@ export async function preparePreservedFiles(files: DeployFile[], releaseRoot: st
       const contents = await readFile(await assertDeployFile(releaseRoot, file.path));
       handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
       await handle.writeFile(contents);
-      if (typeof owner === "function") await owner(handle, destination, await handle.stat());
-      else if (owner) {
-        const [uid, gid] = owner.split(":").map(Number);
-        const stats = await handle.stat();
-        if (stats.uid !== uid || stats.gid !== gid) await handle.chown(uid, gid);
-      }
+      if (owner) await owner(handle, destination, await handle.stat());
+      const identity = await handle.stat();
       await link(temporary, destination);
+      created.push({ root: preservedRoot, path: file.path, dev: identity.dev, ino: identity.ino, sha256: createHash("sha256").update(contents).digest("hex") });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     } finally {
@@ -138,5 +136,41 @@ export async function preparePreservedFiles(files: DeployFile[], releaseRoot: st
       await rm(temporary, { force: true });
     }
     await assertPreservedDeployFile(preservedRoot, file.path);
+  }
+}
+
+
+// Roll back only this attempt's unchanged seeds. Retain any operator/runtime edits.
+export async function rollbackPreservedFiles(created: PreservedSeed[]) {
+  for (const seed of [...created].reverse()) {
+    let handle: FileHandle | undefined;
+    try {
+      const target = await assertPreservedDeployFile(seed.root, seed.path);
+      handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const info = await handle.stat();
+      if (info.dev !== seed.dev || info.ino !== seed.ino || info.nlink !== 1) continue;
+      if (createHash("sha256").update(await handle.readFile()).digest("hex") !== seed.sha256) continue;
+      const current = await lstat(target);
+      if (current.dev === info.dev && current.ino === info.ino && current.mtimeMs === info.mtimeMs && current.ctimeMs === info.ctimeMs) await rm(target);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    } finally { await handle?.close(); }
+  }
+}
+
+export function localPreservedFileAccessArgs(file: string, localUser: string, runtimeUser: string, image: string) {
+  const uid = Number(localUser.split(":")[0]);
+  const gid = Number(runtimeUser.split(":")[1]);
+  // Docker provides the ownership operation; the unprivileged CLI keeps ownership.
+  // Owner access supports ordinary local sessions, group access supports SSH's UID.
+  const script = `const fs = require("node:fs"); const fd = fs.openSync("/file", fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); const s = fs.fstatSync(fd); if (!s.isFile() || s.nlink !== 1) throw new Error("Unsafe preserved file"); fs.fchownSync(fd, ${uid}, ${gid}); fs.fchmodSync(fd, 0o660); fs.closeSync(fd);`;
+  return ["run", "--rm", "--network", "none", "--read-only", "--security-opt", "no-new-privileges", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--cap-add", "DAC_OVERRIDE", "--user", "0:0", "--volume", `${file}:/file:rw`, image, "node", "-e", script];
+}
+
+export async function removeDeployFileSnapshot(runtimeDir: string, snapshot: unknown) {
+  if (typeof snapshot === "string"
+    && path.dirname(snapshot) === path.join(runtimeDir, "deploy-files")
+    && /^[a-f0-9]{32}$/.test(path.basename(snapshot))) {
+    await rm(snapshot, { recursive: true, force: true });
   }
 }

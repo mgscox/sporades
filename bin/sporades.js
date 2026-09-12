@@ -58502,7 +58502,7 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
 
 // src/deploy-files.ts
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, readdir, link, rm } from "node:fs/promises";
 var RESERVED = [".sporades", "public", "data", "server.mjs", "client.js", "index.html", "sporades.json", ".env.sporades.server"];
@@ -58593,7 +58593,7 @@ function deployFileMounts(files, releaseRoot, preservedRoot) {
     mode: file.update === "preserve" ? "rw" : "ro"
   }));
 }
-async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner) {
+async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, created = []) {
   for (const file of files.filter((entry) => entry.update === "preserve")) {
     let directory = preservedRoot;
     for (const part of ["", ...file.path.split("/").slice(0, -1)]) {
@@ -58618,13 +58618,10 @@ async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner) {
       const contents = await readFile(await assertDeployFile(releaseRoot, file.path));
       handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 384);
       await handle.writeFile(contents);
-      if (typeof owner === "function") await owner(handle, destination, await handle.stat());
-      else if (owner) {
-        const [uid, gid] = owner.split(":").map(Number);
-        const stats = await handle.stat();
-        if (stats.uid !== uid || stats.gid !== gid) await handle.chown(uid, gid);
-      }
+      if (owner) await owner(handle, destination, await handle.stat());
+      const identity = await handle.stat();
       await link(temporary, destination);
+      created.push({ root: preservedRoot, path: file.path, dev: identity.dev, ino: identity.ino, sha256: createHash("sha256").update(contents).digest("hex") });
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
     } finally {
@@ -58632,6 +58629,35 @@ async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner) {
       await rm(temporary, { force: true });
     }
     await assertPreservedDeployFile(preservedRoot, file.path);
+  }
+}
+async function rollbackPreservedFiles(created) {
+  for (const seed of [...created].reverse()) {
+    let handle;
+    try {
+      const target = await assertPreservedDeployFile(seed.root, seed.path);
+      handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const info2 = await handle.stat();
+      if (info2.dev !== seed.dev || info2.ino !== seed.ino || info2.nlink !== 1) continue;
+      if (createHash("sha256").update(await handle.readFile()).digest("hex") !== seed.sha256) continue;
+      const current2 = await lstat(target);
+      if (current2.dev === info2.dev && current2.ino === info2.ino && current2.mtimeMs === info2.mtimeMs && current2.ctimeMs === info2.ctimeMs) await rm(target);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    } finally {
+      await handle?.close();
+    }
+  }
+}
+function localPreservedFileAccessArgs(file, localUser, runtimeUser, image) {
+  const uid = Number(localUser.split(":")[0]);
+  const gid = Number(runtimeUser.split(":")[1]);
+  const script = `const fs = require("node:fs"); const fd = fs.openSync("/file", fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); const s = fs.fstatSync(fd); if (!s.isFile() || s.nlink !== 1) throw new Error("Unsafe preserved file"); fs.fchownSync(fd, ${uid}, ${gid}); fs.fchmodSync(fd, 0o660); fs.closeSync(fd);`;
+  return ["run", "--rm", "--network", "none", "--read-only", "--security-opt", "no-new-privileges", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--cap-add", "DAC_OVERRIDE", "--user", "0:0", "--volume", `${file}:/file:rw`, image, "node", "-e", script];
+}
+async function removeDeployFileSnapshot(runtimeDir, snapshot) {
+  if (typeof snapshot === "string" && path.dirname(snapshot) === path.join(runtimeDir, "deploy-files") && /^[a-f0-9]{32}$/.test(path.basename(snapshot))) {
+    await rm(snapshot, { recursive: true, force: true });
   }
 }
 
@@ -58694,7 +58720,7 @@ function validateAliasDomains(value) {
 
 // src/cli/sporades.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { createHash as createHash11, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes8, timingSafeEqual as timingSafeEqual4 } from "node:crypto";
+import { createHash as createHash12, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes8, timingSafeEqual as timingSafeEqual4 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer as createServer2 } from "node:http";
 import { appendFile, chmod as chmod2, cp, lstat as lstat8, mkdir as mkdir8, readdir as readdir3, readFile as readFile10, rename as rename5, rm as rm8, writeFile as writeFile7 } from "node:fs/promises";
@@ -60708,7 +60734,7 @@ function hasHint(error) {
 }
 
 // src/sealed-server-env.ts
-import { createCipheriv, createDecipheriv, createHash, createPublicKey, generateKeyPairSync, privateDecrypt, publicEncrypt, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash as createHash2, createPublicKey, generateKeyPairSync, privateDecrypt, publicEncrypt, randomBytes } from "node:crypto";
 import { lstat as lstat3, mkdir as mkdir2, readFile as readFile3, rename, rm as rm2, writeFile } from "node:fs/promises";
 import path3 from "node:path";
 var ENVELOPE_VERSION = 1;
@@ -60907,7 +60933,7 @@ function exportedEnvelope(envelope) {
 }
 function fingerprintPublicKey(publicKey) {
   const fingerprintSource = isBinaryLike(publicKey) ? publicKey : createPublicKey(publicKey).export({ type: "spki", format: "pem" });
-  return createHash("sha256").update(fingerprintSource).digest("hex").slice(0, 16);
+  return createHash2("sha256").update(fingerprintSource).digest("hex").slice(0, 16);
 }
 function validateEnvelope(envelope) {
   if (!isRecord(envelope)) {
@@ -63478,7 +63504,7 @@ function createPreferencesError(message, hint, code) {
 }
 
 // src/teams-runtime.ts
-import { createHash as createHash6, createHmac, randomBytes as randomBytes4, randomUUID as randomUUID6, timingSafeEqual } from "node:crypto";
+import { createHash as createHash7, createHmac, randomBytes as randomBytes4, randomUUID as randomUUID6, timingSafeEqual } from "node:crypto";
 
 // src/maybe-promise.ts
 function isPromiseLike(value) {
@@ -64291,7 +64317,7 @@ function isPlainObject2(value) {
 }
 
 // src/team-billing-runtime.ts
-import { createHash as createHash4, randomUUID as randomUUID4 } from "node:crypto";
+import { createHash as createHash5, randomUUID as randomUUID4 } from "node:crypto";
 
 // src/team-billing-subscription-semantics.ts
 function teamBillingSubscriptionSemantics(eventType, state, cancelAtPeriodEnd) {
@@ -64309,10 +64335,10 @@ function teamBillingStoredSubscriptionSemantics(state, cancelAtPeriodEnd) {
 }
 
 // src/team-billing-convergence.ts
-import { createHash as createHash3, randomUUID as randomUUID3 } from "node:crypto";
+import { createHash as createHash4, randomUUID as randomUUID3 } from "node:crypto";
 
 // src/team-billing-management.ts
-import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash3, randomUUID as randomUUID2 } from "node:crypto";
 var TEAM_BILLING_PLAN_TRANSITION_JOB = "_sporades.team-billing-plan-transition";
 var TEAM_BILLING_SEAT_CONVERGENCE_JOB = "_sporades.team-billing-seat-convergence";
 var CLAIM_TTL_MS = 5 * 60 * 1e3;
@@ -64824,10 +64850,10 @@ function sameQuantityPolicy(left, right) {
   return left?.kind === right?.kind && (left?.kind !== "fixed" || left.value === right.value);
 }
 function intentIdempotency(database, teamId, intentId) {
-  return `sporades-team-billing-${createHash2("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${teamId}\0${intentId}`).digest("hex")}`;
+  return `sporades-team-billing-${createHash3("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${teamId}\0${intentId}`).digest("hex")}`;
 }
 function operationIdempotency(database, operationId) {
-  return `sporades-team-billing-operation-${createHash2("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${operationId}`).digest("hex")}`;
+  return `sporades-team-billing-operation-${createHash3("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${operationId}`).digest("hex")}`;
 }
 async function inTransaction(database, callback) {
   if (database.__transactionActive || typeof database.adapter?.withTransaction !== "function") return callback(database.adapter);
@@ -65243,7 +65269,7 @@ function boundedObjectId(value) {
 }
 function safeDigest(raw) {
   try {
-    return createHash3("sha256").update(JSON.stringify(raw)).digest("hex");
+    return createHash4("sha256").update(JSON.stringify(raw)).digest("hex");
   } catch {
     return null;
   }
@@ -65800,10 +65826,10 @@ async function admitTeamBillingActor(database, transaction, auth, input) {
   return Object.freeze({ admitted: true });
 }
 function teamBillingErasureKey(database, teamId) {
-  return createHash4("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure\0${teamId}`).digest("hex");
+  return createHash5("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure\0${teamId}`).digest("hex");
 }
 function teamBillingErasureObjectKey(database, providerObjectId) {
-  return createHash4("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure-object\0${providerObjectId}`).digest("hex");
+  return createHash5("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure-object\0${providerObjectId}`).digest("hex");
 }
 async function assertTeamBillingErasureInactive(database, transaction, teamId) {
   const active = await transaction.prepare(transaction.dialect.sql(
@@ -66064,7 +66090,7 @@ function checkoutIdempotencyKey(capsuleIdentity, teamId, requestId) {
   return teamBillingOperationIdempotencyKey(capsuleIdentity, "checkout", teamId, requestId);
 }
 function teamBillingOperationIdempotencyKey(capsuleIdentity, kind, teamId, requestId) {
-  const digest = createHash4("sha256").update(`${String(capsuleIdentity)}\0${kind}\0${teamId}\0${requestId}`).digest("base64url");
+  const digest = createHash5("sha256").update(`${String(capsuleIdentity)}\0${kind}\0${teamId}\0${requestId}`).digest("base64url");
   return `sporades:team-${kind}:${digest}`;
 }
 function exactOperationId(payload) {
@@ -66160,7 +66186,7 @@ function teamBillingDenied() {
 }
 
 // src/team-billing-erasure.ts
-import { createHash as createHash5, randomUUID as randomUUID5 } from "node:crypto";
+import { createHash as createHash6, randomUUID as randomUUID5 } from "node:crypto";
 var TEAM_BILLING_ERASURE_JOB = "_sporades.team-billing-erasure";
 var TEAM_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 var CHECKOUT_ID2 = /^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/;
@@ -66288,7 +66314,7 @@ async function performTeamBillingErasure(database, context, payload) {
         )).run(now(database), snapshot.teamId, claimToken);
         return false;
       }
-      const digest = createHash5("sha256").update(JSON.stringify(canonical)).digest("hex");
+      const digest = createHash6("sha256").update(JSON.stringify(canonical)).digest("hex");
       await transaction.prepare(transaction.dialect.sql(
         "INSERT INTO [sporades_team_billing_erasure_tombstones] ([erasureKey], [evidenceDigest], [providerQuiescedAt], [createdAt]) VALUES (?, ?, ?, ?)"
       )).run(current2.erasureKey, digest, canonical.providerObservedAt, now(database));
@@ -66447,7 +66473,7 @@ function validateEvidence(value, expected) {
   return { providerObservedAt: value.providerObservedAt, checkouts, subscriptions };
 }
 function providerIdempotency(database, key) {
-  return `sporades-team-billing-erasure-${createHash5("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${key}`).digest("hex")}`;
+  return `sporades-team-billing-erasure-${createHash6("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${key}`).digest("hex")}`;
 }
 function exactPayload(value) {
   return value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join("\0") === "generationId\0operationId" && TEAM_ID.test(value.operationId) && TEAM_ID.test(value.generationId);
@@ -89258,7 +89284,7 @@ function parseTeamJoinCode(code) {
   return { selector, verifier, signature };
 }
 function hashTeamJoinVerifier(verifier) {
-  return createHash6("sha256").update(verifier).digest("base64url");
+  return createHash7("sha256").update(verifier).digest("base64url");
 }
 function teamJoinSignature(secret, id2, selector, verifier, expiresAt) {
   return createHmac("sha256", secret).update(`v1.${id2}.${selector}.${verifier}.${expiresAt}`).digest("base64url");
@@ -93048,7 +93074,7 @@ function restartPolicyStatus(mode, overrides2 = {}) {
 }
 
 // src/server-runtime-source.ts
-import { createHash as createHash8, randomBytes as randomBytes5, randomUUID as randomUUID9 } from "node:crypto";
+import { createHash as createHash9, randomBytes as randomBytes5, randomUUID as randomUUID9 } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 
 // src/log-envelope.ts
@@ -94381,7 +94407,7 @@ function encodeMimeBase64(value) {
 }
 
 // src/email-events-runtime.ts
-import { createHash as createHash7, createHmac as createHmac2, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+import { createHash as createHash8, createHmac as createHmac2, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 var MAILJET_EVENT_KINDS = {
   sent: "delivered",
   open: "opened",
@@ -94600,7 +94626,7 @@ function normalizePostmarkEvent(raw) {
   const metadata = data2.Metadata && typeof data2.Metadata === "object" && !Array.isArray(data2.Metadata) ? data2.Metadata : {};
   const correlationKey = Object.keys(metadata).find((key) => key.toLowerCase() === "correlationid");
   const correlationId = correlationKey ? text(metadata[correlationKey]).trim() : "";
-  const identity = createHash7("sha256").update(JSON.stringify([recordType, messageId || null, occurredAt, recipient, descriptor.identityDiscriminator])).digest("hex");
+  const identity = createHash8("sha256").update(JSON.stringify([recordType, messageId || null, occurredAt, recipient, descriptor.identityDiscriminator])).digest("hex");
   return {
     provider: "postmark",
     kind: descriptor.kind,
@@ -94634,7 +94660,7 @@ function normalizeMailgunWebhook(raw) {
   const accountId = text(account.id).trim();
   const domainName = text(domain.name).trim().toLowerCase();
   if (!accountId || !domainName) return false;
-  const providerScope = createHash7("sha256").update(JSON.stringify([accountId, domainName])).digest("hex").slice(0, 16);
+  const providerScope = createHash8("sha256").update(JSON.stringify([accountId, domainName])).digest("hex").slice(0, 16);
   return {
     provider: "mailgun",
     kind,
@@ -100809,7 +100835,7 @@ async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest,
   if (decision?.allow !== true || typeof namespace !== "string" || !definition.principalNamespaces.includes(namespace) || typeof key !== "string" || key.length === 0 || Buffer.byteLength(key, "utf8") > 256 || /[\x00-\x1f\x7f]/.test(key) || Buffer.byteLength(serialized, "utf8") > 4096) {
     throw commandError2("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
   }
-  return Object.freeze({ allowFiles, authority: Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash8("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId }) });
+  return Object.freeze({ allowFiles, authority: Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash9("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId }) });
 }
 var endpointMultipartAdmissionTimeoutMs = 5e3;
 function multipartAdmissionDenied() {
@@ -102423,8 +102449,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       const emailProviderEnabled = database.authConfig.providers.email?.enabled === true;
       if (authorized && message.provider === "email" && emailProviderEnabled && normalized.ok && typeof normalized.password === "string") {
         const reauthenticationThrottleKeys = [
-          `email:${createHash8("sha256").update(normalized.email).digest("base64url")}`,
-          `session:${createHash8("sha256").update(client.session.token).digest("base64url")}`
+          `email:${createHash9("sha256").update(normalized.email).digest("base64url")}`,
+          `session:${createHash9("sha256").update(client.session.token).digest("base64url")}`
         ];
         const throttleNow = database.clock.now();
         let reserved = false;
@@ -103201,7 +103227,7 @@ async function sendEmailPasswordResetLink(database, session, email, options = {}
   return { ok: true };
 }
 function createWebSocketAccept(key) {
-  return createHash8("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+  return createHash9("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
 }
 function drainWebSocketFrames(client, onMessage) {
   while (client.buffer.length >= 2) {
@@ -107718,7 +107744,7 @@ function escapeHtml(value) {
 
 // src/dev-clamav-sidecar.ts
 import { spawn } from "node:child_process";
-import { createHash as createHash9, randomBytes as randomBytes6 } from "node:crypto";
+import { createHash as createHash10, randomBytes as randomBytes6 } from "node:crypto";
 import { mkdir as mkdir5, mkdtemp, rm as rm6 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
@@ -107903,7 +107929,7 @@ async function startDevClamavSidecar(options) {
   const dataRoot = path9.join(options.projectDir, ".sporades", "clamav");
   await mkdir5(path9.join(dataRoot, "clamav"), { recursive: true });
   const socketDir = await mkdtemp(path9.join(tmpdir(), "sporades-dev-clamav-"));
-  const identity = createHash9("sha256").update(`${path9.resolve(options.projectDir)}\0${process.pid}\0${randomBytes6(8).toString("hex")}`).digest("hex").slice(0, 20);
+  const identity = createHash10("sha256").update(`${path9.resolve(options.projectDir)}\0${process.pid}\0${randomBytes6(8).toString("hex")}`).digest("hex").slice(0, 20);
   const containerName = `sporades-dev-clamav-${identity}`;
   const socketPath = path9.join(socketDir, "clamd.sock");
   let child;
@@ -109018,7 +109044,7 @@ import { connect } from "node:net";
 import path12 from "node:path";
 
 // src/cli/project-config.ts
-import { createHash as createHash10 } from "node:crypto";
+import { createHash as createHash11 } from "node:crypto";
 import { chmod, mkdir as mkdir7, readFile as readFile8, writeFile as writeFile6 } from "node:fs/promises";
 import path11 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
@@ -109308,7 +109334,7 @@ async function resolveAuthorizedKeyLines(ssh, projectDir) {
 function authorizedKeyFingerprint(line) {
   const parts = line.split(/\s+/);
   const keyTypeIndex = parts.findIndex((part) => isOpenSshPublicKeyType(part));
-  const digest = createHash10("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
+  const digest = createHash11("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
   return `SHA256:${digest}`;
 }
 function withRuntimeSecuritySession(config, session) {
@@ -113963,7 +113989,7 @@ async function ensureHostProfileEnvKey(config, alias) {
   const hostKey = {
     publicKey,
     privateKey,
-    publicKeyFingerprint: createHash11("sha256").update(publicKey).digest("hex").slice(0, 16)
+    publicKeyFingerprint: createHash12("sha256").update(publicKey).digest("hex").slice(0, 16)
   };
   config.profiles[alias].sealedServerEnv = hostKey;
   return hostKey;
@@ -114712,7 +114738,28 @@ async function startContainerSession(options) {
     await writeFile7(destination, file.contents, { mode: 420 });
   }
   const preservedRoot = path13.join(runtimeDir, "preserved-files");
-  await preparePreservedFiles(bundle.deployFiles, deployReleaseRoot, preservedRoot, runtimeUser);
+  const createdSeeds = [];
+  try {
+    await preparePreservedFiles(bundle.deployFiles, deployReleaseRoot, preservedRoot, void 0, createdSeeds);
+    const localUser = localContainerRuntimeUser();
+    for (const file of bundle.deployFiles.filter((entry) => entry.update === "preserve")) {
+      const target = path13.join(preservedRoot, file.path);
+      const info2 = await lstat8(target);
+      if (runtimeUser !== localUser || info2.uid !== Number(localUser.split(":")[0])) {
+        runDocker(
+          localPreservedFileAccessArgs(target, localUser, runtimeUser, SPORADES_BASE_IMAGE.image),
+          options.projectDir,
+          "Failed to prepare preserved file access.",
+          "Check Docker can adjust the declared preserved file for the local and SSH runtime users."
+        );
+      }
+    }
+  } catch (error) {
+    await rollbackPreservedFiles(createdSeeds);
+    await rm8(deployReleaseRoot, { recursive: true, force: true });
+    await discardPublicTree(bundle.staticFiles.publicTree);
+    throw error;
+  }
   const additionalMounts = deployFileMounts(bundle.deployFiles, deployReleaseRoot, preservedRoot);
   const bundleMountArgs = [...bundle.containerMounts.files, ...additionalMounts].flatMap((mount) => ["--volume", formatMount(mount)]);
   const containerTransactionToken = randomBytes8(16).toString("hex");
@@ -114896,14 +114943,12 @@ async function startContainerSession(options) {
         { failures: rollbackFailures, cause: errorDetails(error).message }
       );
     }
+    await rollbackPreservedFiles(createdSeeds);
     await rm8(deployReleaseRoot, { recursive: true, force: true });
     throw error;
   }
   if (!containerId || !binding) throw commandError("Container replacement did not commit.", "Retry deployment.");
-  const previousDeployRoot = existingBinding?.deployFilesRoot;
-  if (typeof previousDeployRoot === "string" && path13.dirname(previousDeployRoot) === path13.join(runtimeDir, "deploy-files") && /^[a-f0-9]{32}$/.test(path13.basename(previousDeployRoot))) {
-    await rm8(previousDeployRoot, { recursive: true, force: true });
-  }
+  await removeDeployFileSnapshot(runtimeDir, existingBinding?.deployFilesRoot);
   if (sshAccess.enabled || explicitSshConfigured(config)) {
     await emitCliSshAuditEvent(config, options.projectDir, {
       event: sshAccess.enabled ? "ssh.access.enabled" : "ssh.access.disabled",
@@ -116212,7 +116257,7 @@ function upgradeHostHelper(options) {
     if (!statSync(localHelper).isFile()) {
       throw new Error("not a file");
     }
-    helperChecksum = createHash11("sha256").update(readFileSync2(localHelper)).digest("hex");
+    helperChecksum = createHash12("sha256").update(readFileSync2(localHelper)).digest("hex");
   } catch {
     throw commandError(
       "Local Host helper file was not found.",
@@ -116617,6 +116662,7 @@ async function removeLocalContainerSession(options) {
     "container",
     claimedConsumer ? { token: claimedConsumer.token, identity: claimedConsumer.identity } : null
   );
+  await removeDeployFileSnapshot(path13.join(options.projectDir, ".sporades"), binding.deployFilesRoot);
   await rm8(bindingPath, { force: true });
   const services = options.stopServices === false ? {} : await stopLocalCapsuleServices({ ...options, silent: true });
   const container = containerLifecycleSummary("removed", binding);

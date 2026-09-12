@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { assertPreservedDeployFile, deployFileMounts, preparePreservedFiles, resolveDeployFiles } from "../deploy-files.js";
+import { assertPreservedDeployFile, rollbackPreservedFiles, type PreservedSeed, deployFileMounts, preparePreservedFiles, resolveDeployFiles } from "../deploy-files.js";
 import { assertHostnamesAvailable, validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
 import { constants as fsConstants, createReadStream, statSync } from "node:fs";
@@ -1376,12 +1376,14 @@ async function installClaimedRelease(request: HostHelperRequest, previousRecord:
     }
   }
 
+  const createdSeeds: PreservedSeed[] = [];
   try {
-    await preparePreservedFiles(resolveDeployFiles(release.deployFiles), paths.release, path.join(paths.capsule, "preserved-files"), prepareRuntimeDataOwnershipHandle);
+    await preparePreservedFiles(resolveDeployFiles(release.deployFiles), paths.release, path.join(paths.capsule, "preserved-files"), prepareRuntimeDataOwnershipHandle, createdSeeds);
     await symlink(paths.release, tempCurrentLink);
     await rename(tempCurrentLink, paths.currentLink);
     await recordReleaseUploaded(request, release, installedInventory);
   } catch (error) {
+    await rollbackPreservedFiles(createdSeeds);
     await restoreCurrentReleasePointerTarget(paths.currentLink, previousCurrentTarget);
     await removeInstalledReleasePrivateKey(release, paths);
     await rm(paths.release, { recursive: true, force: true });
@@ -1413,6 +1415,7 @@ async function installClaimedRelease(request: HostHelperRequest, previousRecord:
           priorRuntime,
           release,
         );
+        await rollbackPreservedFiles(createdSeeds);
         installRolledBack = true;
       } catch (error) {
         restartError = error;

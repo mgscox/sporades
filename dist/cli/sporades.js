@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { deployFileMounts, preparePreservedFiles } from "../deploy-files.js";
+import { deployFileMounts, preparePreservedFiles, rollbackPreservedFiles, localPreservedFileAccessArgs, removeDeployFileSnapshot } from "../deploy-files.js";
 import { validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual } from "node:crypto";
@@ -3733,7 +3733,24 @@ async function startContainerSession(options) {
         await writeFile(destination, file.contents, { mode: 0o644 });
     }
     const preservedRoot = path.join(runtimeDir, "preserved-files");
-    await preparePreservedFiles(bundle.deployFiles, deployReleaseRoot, preservedRoot, runtimeUser);
+    const createdSeeds = [];
+    try {
+        await preparePreservedFiles(bundle.deployFiles, deployReleaseRoot, preservedRoot, undefined, createdSeeds);
+        const localUser = localContainerRuntimeUser();
+        for (const file of bundle.deployFiles.filter((entry) => entry.update === "preserve")) {
+            const target = path.join(preservedRoot, file.path);
+            const info = await lstat(target);
+            if (runtimeUser !== localUser || info.uid !== Number(localUser.split(":")[0])) {
+                runDocker(localPreservedFileAccessArgs(target, localUser, runtimeUser, SPORADES_BASE_IMAGE.image), options.projectDir, "Failed to prepare preserved file access.", "Check Docker can adjust the declared preserved file for the local and SSH runtime users.");
+            }
+        }
+    }
+    catch (error) {
+        await rollbackPreservedFiles(createdSeeds);
+        await rm(deployReleaseRoot, { recursive: true, force: true });
+        await discardPublicTree(bundle.staticFiles.publicTree);
+        throw error;
+    }
     const additionalMounts = deployFileMounts(bundle.deployFiles, deployReleaseRoot, preservedRoot);
     const bundleMountArgs = [...bundle.containerMounts.files, ...additionalMounts].flatMap((mount) => ["--volume", formatMount(mount)]);
     const containerTransactionToken = randomBytes(16).toString("hex");
@@ -3906,17 +3923,13 @@ async function startContainerSession(options) {
         if (rollbackFailures.length > 0) {
             throw commandError("Container replacement recovery is incomplete.", "Inspect the retained Container, binding, and public-tree state before retrying deployment.", { failures: rollbackFailures, cause: errorDetails(error).message });
         }
+        await rollbackPreservedFiles(createdSeeds);
         await rm(deployReleaseRoot, { recursive: true, force: true });
         throw error;
     }
     if (!containerId || !binding)
         throw commandError("Container replacement did not commit.", "Retry deployment.");
-    const previousDeployRoot = existingBinding?.deployFilesRoot;
-    if (typeof previousDeployRoot === "string"
-        && path.dirname(previousDeployRoot) === path.join(runtimeDir, "deploy-files")
-        && /^[a-f0-9]{32}$/.test(path.basename(previousDeployRoot))) {
-        await rm(previousDeployRoot, { recursive: true, force: true });
-    }
+    await removeDeployFileSnapshot(runtimeDir, existingBinding?.deployFilesRoot);
     if (sshAccess.enabled || explicitSshConfigured(config)) {
         await emitCliSshAuditEvent(config, options.projectDir, {
             event: sshAccess.enabled ? "ssh.access.enabled" : "ssh.access.disabled",
@@ -5541,6 +5554,7 @@ async function removeLocalContainerSession(options) {
         throw error;
     }
     await removePublicTreeConsumer(buildDir, "container", claimedConsumer ? { token: claimedConsumer.token, identity: claimedConsumer.identity } : null);
+    await removeDeployFileSnapshot(path.join(options.projectDir, ".sporades"), binding.deployFilesRoot);
     await rm(bindingPath, { force: true });
     const services = options.stopServices === false ? {} : await stopLocalCapsuleServices({ ...options, silent: true });
     const container = containerLifecycleSummary("removed", binding);
