@@ -3144,6 +3144,12 @@ async function manageHost(options) {
                 }
                 throw commandError(result.error.message, result.error.hint);
             }
+            const confirmedAliases = result.data?.capsule?.aliasDomains;
+            if (options.aliasDomains.length && (!Array.isArray(confirmedAliases)
+                || confirmedAliases.length !== options.aliasDomains.length
+                || !options.aliasDomains.every((hostname) => confirmedAliases.includes(hostname)))) {
+                throw commandError("Host helper did not confirm the requested alias domains.", "Upgrade the Host helper and inspect the remote registration before retrying. The canonical Capsule may have been registered, but alias ownership is unconfirmed; no local binding was written.");
+            }
             const bindingPath = path.join(options.projectDir, REMOTE_BINDING_FILE);
             await mkdir(path.dirname(bindingPath), { recursive: true });
             await writeFile(bindingPath, `${JSON.stringify(binding, null, 2)}\n`);

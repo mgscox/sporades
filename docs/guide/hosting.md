@@ -46,7 +46,12 @@ no longer reserves its aliases, so another Capsule can claim them. The helper's
 low-level registration request accepts `aliasDomains: []` to clear the list.
 
 Upgrade the Host helper and rebuild/push the Capsule with this version before
-using custom-domain browser requests. The runtime admits only registered
+using custom-domain browser requests. The CLI requires the helper to confirm
+all explicitly requested aliases before writing a local binding. If an older
+helper ignores them, registration reports an error: upgrade the helper and
+inspect the remote registration before retrying, since the canonical Capsule
+may already exist even though alias ownership is unconfirmed.
+The runtime admits only registered
 HTTPS aliases, and OAuth requires matching host, origin, and forwarded headers.
 Configure each alias callback URL with your OAuth provider and update any
 explicit payment/public-origin settings in the Capsule. Canonical links built

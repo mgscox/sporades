@@ -12195,6 +12195,38 @@ process.exit(0);
   });
 });
 
+test("sporades host register requires complete alias confirmation before writing a binding", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(dir, `
+const capsule = JSON.parse(process.env.FAKE_REGISTER_CAPSULE);
+process.stdout.write(JSON.stringify({ ok: true, data: { registered: true, capsule }, error: null }) + "\\n");
+`);
+    const create = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(create.code, 0, create.stderr);
+    const projectDir = path.join(dir, "todo-island");
+    const env = { ...hostEnv(configDir), ...fakeSsh.env };
+    const add = await runCli(["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--json"], { cwd: projectDir, env });
+    assert.equal(add.code, 0, add.stderr);
+    const bindingPath = path.join(projectDir, ".sporades", "remote-binding.json");
+    const args = ["host", "register", "team-notes", "--host", "personal", "--alias-domain", "fourteen.example", "--alias-domain", "app.fourteen.example", "--json"];
+    for (const capsule of [{}, { aliasDomains: [] }, { aliasDomains: ["fourteen.example"] }, { aliasDomains: ["fourteen.example", "fourteen.example"] }, { aliasDomains: ["fourteen.example", "app.fourteen.example", "extra.example"] }, { aliasDomains: "fourteen.example" }]) {
+      const result = await runCli(args, { cwd: projectDir, env: { ...env, FAKE_REGISTER_CAPSULE: JSON.stringify(capsule) } });
+      assert.equal(result.code, 1, result.stdout);
+      assert.match(JSON.parse(result.stdout).error.message, /did not confirm the requested alias domains/);
+      await assert.rejects(readFile(bindingPath), { code: "ENOENT" });
+    }
+    await mkdir(path.dirname(bindingPath), { recursive: true });
+    await writeFile(bindingPath, "existing binding\n");
+    const denied = await runCli(args, { cwd: projectDir, env: { ...env, FAKE_REGISTER_CAPSULE: "{}" } });
+    assert.equal(denied.code, 1);
+    assert.equal(await readFile(bindingPath, "utf8"), "existing binding\n");
+    const confirmed = await runCli(args, { cwd: projectDir, env: { ...env, FAKE_REGISTER_CAPSULE: JSON.stringify({ aliasDomains: ["app.fourteen.example", "fourteen.example"] }) } });
+    assert.equal(confirmed.code, 0, confirmed.stdout + confirmed.stderr);
+    assert.equal(JSON.parse(confirmed.stdout).data.localBinding, true);
+  });
+});
+
 test("sporades host register relies on the Host server for domain-scoped uniqueness", async () => {
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");
