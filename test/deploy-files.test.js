@@ -172,11 +172,11 @@ test("deploy.files journals seed ownership before publication and blocks interru
     const journal = path.join(root, "deploy-file-attempt.jsonl");
     const records = (await readFile(journal, "utf8")).trim().split("\n").map(JSON.parse);
     assert.equal(records[0].release, "attempt-one");
-    assert.equal(records[1].ino, (await stat(path.join(preserved, "settings.json"))).ino);
+    assert.equal(records.find((record) => record.sha256).ino, (await stat(path.join(preserved, "settings.json"))).ino);
     await assert.rejects(beginPreservedFileAttempt(preserved, "attempt-two", true), /requires recovery/);
     await assert.rejects(beginPreservedFileAttempt(preserved, "attempt-two", false), /requires recovery/);
     // Simulate explicit recovery after the interrupted runtime has been stopped.
-    await rollbackPreservedFiles(records.slice(1));
+    await rollbackPreservedFiles(records.filter((record) => record.sha256));
     await finishPreservedFileAttempt(journal);
     await assert.rejects(stat(path.join(preserved, "settings.json")), { code: "ENOENT" });
     const retry = await beginPreservedFileAttempt(preserved, "attempt-two", true);
@@ -247,3 +247,54 @@ test("deploy.files never follows source or parent symlinks substituted after val
     assert.doesNotMatch(child.stdout, /outside bytes/);
   });
 });
+
+test("deploy.files journals temporary seeds before open and write and cleans them before clearing", async () => {
+  for (const phase of ["open", "write"]) await temporary(async (root) => {
+    const release = path.join(root, "release");
+    const preserved = path.join(root, "preserved-files");
+    await mkdir(release);
+    await writeFile(path.join(release, "settings.json"), "temporary bytes");
+    const moduleUrl = new URL("../dist/deploy-files.js", import.meta.url).href;
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+      const original = fs.promises.open;
+      fs.promises.open = async function(file, ...args) {
+        const handle = await original.call(this, file, ...args);
+        if (String(file).includes('/.seed-')) {
+          if (${JSON.stringify(phase)} === 'open') process.exit(17);
+          const write = handle.writeFile.bind(handle);
+          handle.writeFile = async (...values) => { await write(...values); process.exit(17); };
+        }
+        return handle;
+      }; syncBuiltinESMExports();
+      const { beginPreservedFileAttempt, preparePreservedFiles } = await import(${JSON.stringify(moduleUrl)});
+      const journal = await beginPreservedFileAttempt(${JSON.stringify(preserved)}, 'attempt', true);
+      await preparePreservedFiles([{ path: 'settings.json', update: 'preserve' }], ${JSON.stringify(release)}, ${JSON.stringify(preserved)}, undefined, [], journal);
+    `], { encoding: "utf8" });
+    assert.equal(child.status, 17, child.stderr);
+    const journal = path.join(root, "deploy-file-attempt.jsonl");
+    const records = (await readFile(journal, "utf8")).trim().split("\n").map(JSON.parse);
+    const seedPath = path.join(preserved, records.find((record) => record.temporary).temporary);
+    assert.equal(await readFile(seedPath, "utf8"), phase === "write" ? "temporary bytes" : "");
+    await finishPreservedFileAttempt(journal);
+    await assert.rejects(stat(seedPath), { code: "ENOENT" });
+    await assert.rejects(stat(journal), { code: "ENOENT" });
+  });
+});
+
+test("deploy.files retains journals when temporary cleanup is unsafe", async () => temporary(async (root) => {
+  const preserved = path.join(root, "preserved-files");
+  await mkdir(preserved);
+  const name = ".seed-12345678-1234-1234-1234-123456789abc";
+  const outside = path.join(root, name);
+  await writeFile(outside, "outside bytes");
+  const journal = path.join(root, "deploy-file-attempt.jsonl");
+  await writeFile(journal, JSON.stringify({ temporary: `../${name}` }) + "\n");
+  await assert.rejects(finishPreservedFileAttempt(journal), /Unsafe temporary seed path/);
+  assert.equal(await readFile(outside, "utf8"), "outside bytes");
+  await stat(journal);
+  await mkdir(path.join(preserved, name));
+  await writeFile(journal, JSON.stringify({ temporary: name }) + "\n");
+  await assert.rejects(finishPreservedFileAttempt(journal), /regular files/);
+  await stat(journal);
+}));

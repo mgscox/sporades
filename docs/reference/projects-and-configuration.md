@@ -641,7 +641,9 @@ exits unexpectedly or recovery is incomplete, a subsequent deployment stops with
 the journal path instead of silently adopting uncommitted seed bytes. Recovery is
 explicit: stop any retained candidate runtime, back up the journal and its listed
 files, and reconcile the release/binding with the journal's release and per-file
-inode/hash records. For replacement-only attempts, the journal records the candidate
+inode/hash records. Temporary `.seed-*` paths are journaled before creation;
+remove those recorded temporary files during reconciliation before clearing the
+journal. For replacement-only attempts, the journal records the candidate
 snapshot root; remove that snapshot only after proving no retained Container uses
 it. Keep edits; remove an unchanged seed only if its attempt did
 not commit. Remove the journal after that reconciliation, then retry deployment.

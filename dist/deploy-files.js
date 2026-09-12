@@ -166,9 +166,53 @@ export async function beginPreservedFileAttempt(preservedRoot, release, needed) 
     }
     return journal;
 }
+async function recordPreservedFileAttempt(journal, entry) {
+    if (!journal)
+        return;
+    const handle = await open(journal, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW);
+    try {
+        await handle.writeFile(JSON.stringify(entry) + "\n");
+        await handle.sync();
+    }
+    finally {
+        await handle.close();
+    }
+}
 export async function finishPreservedFileAttempt(journal) {
-    if (journal)
-        await rm(journal, { force: true });
+    if (!journal)
+        return;
+    const handle = await open(journal, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+        .catch((error) => { if (error.code !== "ENOENT")
+        throw error; return null; });
+    if (!handle)
+        return;
+    let records;
+    try {
+        if (!(await handle.stat()).isFile())
+            throw new Error("Unsafe deploy.files journal.");
+        records = (await handle.readFile("utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    }
+    finally {
+        await handle.close();
+    }
+    const root = path.join(path.dirname(journal), "preserved-files");
+    for (const record of records) {
+        if (record.temporary === undefined)
+            continue;
+        const relative = record.temporary;
+        const resolved = path.resolve(root, relative);
+        if (path.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${path.sep}`) || path.relative(root, resolved) !== relative || !/^\.seed-[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(path.basename(relative))) {
+            throw new Error("Unsafe temporary seed path in deploy.files journal.");
+        }
+        try {
+            await rm(await assertDeployFile(root, relative), { force: true });
+        }
+        catch (error) {
+            if (error.code !== "ENOENT")
+                throw error;
+        }
+    }
+    await rm(journal, { force: true });
 }
 // Parent directories stay host-owned; only explicitly declared files are writable.
 export async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, created = [], journal) {
@@ -194,6 +238,7 @@ export async function preparePreservedFiles(files, releaseRoot, preservedRoot, o
         let handle;
         const temporary = path.join(path.dirname(destination), `.seed-${randomUUID()}`);
         try {
+            await recordPreservedFileAttempt(journal, { temporary: path.relative(preservedRoot, temporary) });
             const contents = await readDeployFile(releaseRoot, file.path);
             handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
             await handle.writeFile(contents);
@@ -201,16 +246,7 @@ export async function preparePreservedFiles(files, releaseRoot, preservedRoot, o
                 await owner(handle, destination, await handle.stat());
             const identity = await handle.stat();
             const seed = { root: preservedRoot, path: file.path, dev: identity.dev, ino: identity.ino, sha256: createHash("sha256").update(contents).digest("hex") };
-            if (journal) {
-                const record = await open(journal, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW);
-                try {
-                    await record.writeFile(JSON.stringify(seed) + "\n");
-                    await record.sync();
-                }
-                finally {
-                    await record.close();
-                }
-            }
+            await recordPreservedFileAttempt(journal, seed);
             await link(temporary, destination);
             created.push(seed);
         }
