@@ -9,6 +9,7 @@ import { createHash, createPrivateKey, randomBytes, randomUUID, scryptSync, sign
 import { PathLike, PathOrFileDescriptor, appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { SQLOutputValue, StatementResultingChanges, StatementColumnMetadata } from "node:sqlite";
 import { Duplex } from "stream";
+import { uncappedLogEnvelope, logPayloadMaxBytes, validateLogConfig } from "./log-envelope.js";
 import { validateMailConfig } from "./mail-config.js";
 import { validateStripePaymentsRuntimeConfig } from "./stripe-payment-config.js";
 import { createMailRuntime } from "./mail-runtime.js";
@@ -149,7 +150,7 @@ import {
   getPrivateFileUrl, isAbsoluteFilePath, normalizeAbsoluteFilePath, resolvePrivilegedLiveFileReference,
   revokePublicFileUrl,
 } from "./file-storage-runtime.js";
-import { createEndpointIngressApi, drainIngressClaimAuditOutbox, finalizeEndpointIngressClaims, recoverIngressClaimAuditOutbox, stageMultipartIngress, sweepExpiredFileIngress, validateMultipartIngressPolicy } from "./file-ingress-runtime.js";
+import { createEndpointIngressApi, drainIngressClaimAuditOutbox, finalizeEndpointIngressClaims, initializeClamavRuntime, recoverIngressClaimAuditOutbox, shutdownClamavRuntime, stageMultipartIngress, sweepExpiredFileIngress, validateMultipartIngressPolicy } from "./file-ingress-runtime.js";
 import { createEndpointFileResponseApi } from "./endpoint-file-response.js";
 import {
   abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob,
@@ -167,7 +168,7 @@ import {
 import { dispatchVerifiedStripeEvent } from "./stripe-events-runtime.js";
 
 const mutationResultsWithWrites = new WeakSet<object>();
-const trustedReadPurposes = new Set(["teams.join-admission", "team-billing.authority", "files.ingress-admission"]);
+const trustedReadPurposes = new Set(["teams.join-admission", "team-billing.authority", "files.ingress-admission", "endpoint.multipart-admission"]);
 const trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 const runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
 const atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
@@ -592,6 +593,31 @@ export async function replaceRuntimeDatabase(currentDatabase: LooseRecord, candi
   return candidateDatabase;
 }
 
+export async function replacePreparedRuntimeDatabase(
+  currentDatabase: LooseRecord,
+  candidateDatabase: LooseRecord,
+  prepareCandidate: (candidate: LooseRecord) => Promise<any>,
+  cleanupPreparation: () => Promise<any>,
+) {
+  let replacementStarted = false;
+  try {
+    await prepareCandidate(candidateDatabase);
+    replacementStarted = true;
+    return await replaceRuntimeDatabase(currentDatabase, candidateDatabase);
+  } catch (error) {
+    const cleanupTasks = [Promise.resolve().then(() => cleanupPreparation())];
+    // replaceRuntimeDatabase owns candidate cleanup after it starts. Before
+    // that boundary, preparation failure must not strand the opened adapter.
+    if (!replacementStarted) cleanupTasks.push(Promise.resolve().then(() => candidateDatabase.close()));
+    const settled = await Promise.allSettled(cleanupTasks);
+    const failures = settled.filter((item) => item.status === "rejected").map((item: any) => item.reason);
+    if (failures.length) {
+      throw new AggregateError([error, ...failures], "Runtime replacement and candidate preparation cleanup both failed.");
+    }
+    throw error;
+  }
+}
+
 function emitRuntimeReplacementWarning(database: LooseRecord, event: string, message: string, error: unknown, fallbackCode: string) {
   try {
     const warning = database.log?.emit?.({
@@ -655,6 +681,7 @@ export async function openDevDatabase(
     validateStripeEventSubscription(capsuleDefinition.stripeEvents);
     validateEndpointResponseDeclarations(capsuleDefinition);
   }
+  validateLogConfig(config);
   const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
   if (capsuleDefinition?.teams !== undefined && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
     throw commandError("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
@@ -715,6 +742,11 @@ export async function openDevDatabase(
     }
   }
   const endpoints = [...capsuleEndpoints, ...providerEndpoints];
+  // A declared multipart endpoint needs live maintenance. Keep maintenance
+  // enabled when File storage remains configured as well, so removing the last
+  // endpoint cannot strand durable leases from the preceding release.
+  const fileIngressEnabled = config.files !== undefined
+    || endpoints.some((endpoint: LooseRecord) => endpoint?.options?.body?.multipart !== undefined);
   const fileIngressDefinition = normalizeCapsuleFileIngressDefinition(capsuleDefinition?.files, endpoints);
   const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
   const journeySessionInactivityMinutes = resolveJourneySessionInactivityMinutes(config);
@@ -811,6 +843,7 @@ export async function openDevDatabase(
     capsuleIdentity: String(config.name ?? "capsule"),
     capsuleIngressOwnerId: capsuleIngressAuthUserId(config.name ?? capsuleDefinition?.name ?? "capsule"),
     fileIngressDefinition,
+    fileIngressEnabled,
     scheduleOccurrenceFault: options?.scheduleOccurrenceFault,
     scheduleReconciliationFault: options?.scheduleReconciliationFault,
     jobRecoveryFault: options?.jobRecoveryFault,
@@ -1000,7 +1033,8 @@ export async function openDevDatabase(
       const closeResources = () => {
         const failures: Array<{ index: number; error: unknown }> = [];
         const pending: Promise<void>[] = [];
-        const resources = [
+    const resources = [
+          () => shutdownClamavRuntime(database),
           () => database.mail.close(),
           () => database.adapter.close(),
           () => database.fileStorage.close(),
@@ -1068,6 +1102,7 @@ export async function openDevDatabase(
   database.init = async () => {
     if (database.__runtimeInitialized) return;
     try {
+      if (!await initializeClamavRuntime(database)) throw commandError("Required File inspection is unavailable.", "Check ClamAV signatures and the local daemon socket.", "FILE_INSPECTION_UNAVAILABLE");
       if (database.lifecycleHooks.init !== undefined) {
         if (typeof database.lifecycleHooks.init !== "function") throw commandError("Invalid Capsule init hook.", "Declare hooks.init as a function.");
         await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false }));
@@ -1082,8 +1117,8 @@ export async function openDevDatabase(
       database.__scheduleRecoveryDueAt = null;
       database.__scheduleRecoveryPromise = null;
       database.__scheduleLegacyDiscoveryTimer = null;
-      database.__ingressAuditRecoveryPending = true;
-      await runIngressAuditOutboxDrain(database);
+      await refreshIngressMaintenanceState(database, { discoverInterruptedDelivery: true });
+      if (ingressAuditMaintenanceIsDue(database)) await runIngressAuditOutboxDrain(database);
       // Recovery may classify durable state while the candidate is stopped,
       // but it returns the retained wake instead of arming it. Publication is
       // the single boundary that releases both Job and Schedule work.
@@ -1093,9 +1128,11 @@ export async function openDevDatabase(
       const reconciled = await reconcileSchedules(database);
       database.__scheduleStopped = false;
       startStaticSchedules(database, reconciled.timerPlans);
-      await runPeriodicIngressSweep(database);
-      startPeriodicIngressSweep(database);
-      startPeriodicIngressAuditOutboxDrain(database);
+      if (database.fileIngressEnabled) {
+        await runPeriodicIngressSweep(database);
+        startPeriodicIngressSweep(database);
+      }
+      scheduleIngressAuditOutboxMaintenance(database);
       if (!database.__jobActivationDeferred) {
         // Orderly shutdown deliberately retains queued and delayed Jobs. A
         // fresh runtime has no inherited worker/wake timer, so activation
@@ -1115,7 +1152,7 @@ export async function openDevDatabase(
       database.__scheduleRecoveryTimer = null;
       database.__scheduleRecoveryDueAt = null;
       database.__scheduleLegacyDiscoveryTimer = null;
-      const settlements = [stopCurrentUserJobWorker(database), settleActiveScheduleWork(database)]
+      const settlements = [stopCurrentUserJobWorker(database), settleActiveScheduleWork(database), shutdownClamavRuntime(database)]
         .filter(Boolean)
         .map((pending) => Promise.resolve(pending));
       const cleanup = await Promise.allSettled(settlements);
@@ -1129,41 +1166,44 @@ export async function openDevDatabase(
   };
   database.shutdown = () => {
     if (database.__shutdownPromise) return database.__shutdownPromise;
-    database.__shutdownPromise = (async () => {
-      let shutdownError: unknown;
-      let mailCloseError: unknown;
-      let shutdownRejected = false;
-      let mailCloseRejected = false;
+    const shutdownPromise = (async () => {
+      const failures: unknown[] = [];
+      let workerSettlement: unknown;
       try {
         database.__scheduleStopped = true;
-        const workerSettlement = stopCurrentUserJobWorker(database);
+        workerSettlement = stopCurrentUserJobWorker(database);
+      } catch (error) { failures.push(error); }
+      try {
         abortSchedulePayloadFactories(database);
         for (const timer of database.__scheduleTimers ?? []) database.clock.clearTimer(timer);
         database.__scheduleTimers?.clear?.();
         database.__scheduleRecoveryTimer = null;
         database.__scheduleRecoveryDueAt = null;
         database.__scheduleLegacyDiscoveryTimer = null;
-        if (workerSettlement) await workerSettlement;
-        await settleActiveScheduleWork(database);
-        if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== undefined) {
+      } catch (error) { failures.push(error); }
+      if (workerSettlement) {
+        try { await workerSettlement; }
+        catch (error) { failures.push(error); }
+      }
+      try { await settleActiveScheduleWork(database); }
+      catch (error) { failures.push(error); }
+      if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== undefined) {
+        try {
           if (typeof database.lifecycleHooks.shutdown !== "function") throw commandError("Invalid Capsule shutdown hook.", "Declare hooks.shutdown as a function.");
           await database.lifecycleHooks.shutdown(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false }));
-        }
-      } catch (error) {
-        shutdownRejected = true;
-        shutdownError = error;
-      } finally {
-        database.__runtimeInitialized = false;
+        } catch (error) { failures.push(error); }
       }
+      try { await shutdownClamavRuntime(database); }
+      catch (error) { failures.push(error); }
+      database.__runtimeInitialized = false;
       try { await database.mail.close(); }
-      catch (error) { mailCloseRejected = true; mailCloseError = error; }
-      if (shutdownRejected && mailCloseRejected) {
-        throw new AggregateError([shutdownError, mailCloseError], "Runtime shutdown and mail closure both failed.");
-      }
-      if (shutdownRejected) throw shutdownError;
-      if (mailCloseRejected) throw mailCloseError;
+      catch (error) { failures.push(error); }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "Multiple runtime resources failed to shut down.");
     })();
-    return database.__shutdownPromise;
+    database.__shutdownPromise = shutdownPromise;
+    shutdownPromise.catch(() => { if (database.__shutdownPromise === shutdownPromise) database.__shutdownPromise = null; });
+    return shutdownPromise;
   };
   database.log = createRuntimeLogSink({
     database: sqlite,
@@ -1196,6 +1236,11 @@ export async function openDevDatabase(
   await ensureJobStorage(sqlite);
   await ensureScheduleStorage(sqlite, options?.scheduleStorageFault);
   await sqlite.ensureFileStorage();
+  // A release can remove its final multipart endpoint and optional File storage
+  // while ingress or audit-retention work remains durable. Scanner/sweep
+  // resources follow only active ingress receipts; the audit outbox carries its
+  // own deadline so a delivered row can sleep until its 24-hour expiry.
+  await refreshIngressMaintenanceState(database, { discoverInterruptedDelivery: true });
   await sqlite.ensureLogStorage();
   if (!options?.runtimeActionOnly) {
     await reportIngressSweepSelectionFailure(database, await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() }));
@@ -1411,6 +1456,26 @@ const LEGACY_SCHEDULE_DISCOVERY_INTERVAL_MS = 1_000;
 const LEGACY_SCHEDULE_DISCOVERY_LIMIT = 100;
 const INGRESS_SWEEP_INTERVAL_MS = 60_000;
 const INGRESS_AUDIT_OUTBOX_INTERVAL_MS = 1_000;
+const INGRESS_AUDIT_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+function ingressAuditMaintenanceIsDue(database: LooseRecord) {
+  const dueAt = Date.parse(String(database.__ingressAuditMaintenanceAt ?? ""));
+  return Number.isFinite(dueAt) && dueAt <= database.clock.now().getTime();
+}
+
+async function refreshIngressMaintenanceState(database: LooseRecord, options: LooseRecord = {}) {
+  const state = await database.adapter.readIngressMaintenanceState();
+  database.fileIngressEnabled = database.fileIngressEnabled || state.ingressRequired;
+  if (options.discoverInterruptedDelivery && state.auditDeliveryRequired) database.__ingressAuditRecoveryPending = true;
+  if (state.auditDeliveryRequired) {
+    database.__ingressAuditMaintenanceAt = database.clock.now().toISOString();
+    return;
+  }
+  const deliveredAt = Date.parse(String(state.earliestDeliveredAt ?? ""));
+  database.__ingressAuditMaintenanceAt = Number.isFinite(deliveredAt)
+    ? new Date(deliveredAt + INGRESS_AUDIT_RETENTION_MS).toISOString()
+    : null;
+}
 
 async function runIngressAuditOutboxDrain(database: LooseRecord) {
   if (database.__ingressAuditOutboxPromise) return database.__ingressAuditOutboxPromise;
@@ -1419,23 +1484,37 @@ async function runIngressAuditOutboxDrain(database: LooseRecord) {
       database.__ingressAuditRecoveryPending = !(await recoverIngressClaimAuditOutbox(database));
     }
     await drainIngressClaimAuditOutbox(database);
+    try {
+      await refreshIngressMaintenanceState(database);
+    } catch {
+      database.__ingressAuditMaintenanceAt = new Date(database.clock.now().getTime() + INGRESS_AUDIT_OUTBOX_INTERVAL_MS).toISOString();
+    }
   })();
   database.__ingressAuditOutboxPromise = run;
-  try { await run; } finally { if (database.__ingressAuditOutboxPromise === run) database.__ingressAuditOutboxPromise = null; }
+  try { await run; } finally {
+    if (database.__ingressAuditOutboxPromise === run) database.__ingressAuditOutboxPromise = null;
+    scheduleIngressAuditOutboxMaintenance(database);
+  }
 }
 
-function startPeriodicIngressAuditOutboxDrain(database: LooseRecord) {
-  const arm = () => {
-    if (database.__scheduleStopped) return;
-    const timer = database.clock.setTimer(async () => {
-      database.__scheduleTimers?.delete(timer);
-      await runIngressAuditOutboxDrain(database);
-      arm();
-    }, INGRESS_AUDIT_OUTBOX_INTERVAL_MS);
-    database.__scheduleTimers?.add(timer);
-    database.__ingressAuditOutboxTimer = timer;
-  };
-  arm();
+function scheduleIngressAuditOutboxMaintenance(database: LooseRecord) {
+  if (database.__ingressAuditOutboxTimer != null) {
+    database.clock.clearTimer(database.__ingressAuditOutboxTimer);
+    database.__scheduleTimers?.delete(database.__ingressAuditOutboxTimer);
+    database.__ingressAuditOutboxTimer = null;
+  }
+  if (database.__scheduleStopped || database.__ingressAuditMaintenanceAt == null) return;
+  const dueAt = Date.parse(String(database.__ingressAuditMaintenanceAt));
+  const delayMs = Number.isFinite(dueAt)
+    ? Math.max(INGRESS_AUDIT_OUTBOX_INTERVAL_MS, dueAt - database.clock.now().getTime())
+    : INGRESS_AUDIT_OUTBOX_INTERVAL_MS;
+  const timer = database.clock.setTimer(async () => {
+    database.__scheduleTimers?.delete(timer);
+    if (database.__ingressAuditOutboxTimer === timer) database.__ingressAuditOutboxTimer = null;
+    await runIngressAuditOutboxDrain(database);
+  }, Math.min(MAX_NATIVE_TIMER_DELAY_MS, delayMs));
+  database.__scheduleTimers?.add(timer);
+  database.__ingressAuditOutboxTimer = timer;
 }
 
 async function runPeriodicIngressSweep(database: LooseRecord) {
@@ -2212,11 +2291,6 @@ function jobClaimTokenIsMalformed(claimToken: any) {
     && (typeof claimToken !== "string" || claimToken.length === 0);
 }
 
-function logPayloadMaxBytes(config: LooseRecord = {}) {
-  const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
-  return Number.isInteger(configured) && configured > 0 ? configured : 4096;
-}
-
 function logRedactedValue() {
   return "[REDACTED]";
 }
@@ -2522,31 +2596,11 @@ export async function runRuntimeAccessKeyOperatorAction(database: LooseRecord, a
   }
 }
 export function createLogEnvelope(input: { config: LooseRecord; timestamp: any; category: any; event: any; level: any; message: any; release: any; request: { id: any; method: any; path: any; }; correlation: any; data: any; serverEnv: any; }) {
-  const now = new Date().toISOString();
   const config = input.config ?? {};
-  const capsuleName = String(config.name ?? "unknown");
-  const envelope = {
-    schema: "sporades.log.v1",
-    timestamp: input.timestamp ?? now,
-    category: input.category ?? "platform",
-    event: input.event ?? "runtime.event",
-    level: input.level ?? "info",
-    message: String(input.message ?? ""),
-    capsule: {
-      name: capsuleName,
-      id: String(config.capsule?.id ?? config.id ?? capsuleName),
-    },
-    release: input.release ?? config.release ?? null,
-    request: input.request
-      ? {
-        id: input.request.id ?? randomUUID(),
-        method: input.request.method ?? null,
-        path: input.request.path ?? null,
-      }
-      : null,
-    correlation: input.correlation ?? null,
+  const envelope = uncappedLogEnvelope({
+    ...input,
     data: sanitizeLogData(input.data ?? null, input.serverEnv ?? {}),
-  };
+  });
   return capLogEnvelope(envelope, logPayloadMaxBytes(config));
 }
 
@@ -3344,13 +3398,27 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
     return false;
   }
 
+  const requestAbort = new AbortController();
+  const abortRequest = () => requestAbort.abort();
+  if (request.aborted || request.destroyed) abortRequest();
+  else request.once?.("aborted", abortRequest);
+  (request as LooseRecord).__sporadesEndpointSignal = requestAbort.signal;
+  const closeIncompleteMultipartRequest = () => {
+    if (endpoint.options?.body?.multipart && request.complete === false) {
+      // Preserve the response, then close rather than wait for an unread body.
+      response.shouldKeepAlive = false;
+      response.setHeader("connection", "close");
+      return { connection: "close" };
+    }
+    return {};
+  };
   try {
     const result = await runEndpoint(database, endpoint, requestUrl, request);
     const sensitiveResponseHeaders = (request as LooseRecord).__sporadesAccessKeyAdmitted
       || (request as LooseRecord).__sporadesSecretDisclosed
       ? { "cache-control": "private, no-store", pragma: "no-cache" }
       : undefined;
-    if (!await writeEndpointResult(database as LooseRecord, response, result, sensitiveResponseHeaders)) {
+    if (!await writeEndpointResult(database as LooseRecord, response, result, { ...sensitiveResponseHeaders, ...closeIncompleteMultipartRequest() })) {
       return true;
     }
   } catch (error: any) {
@@ -3364,13 +3432,14 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
         actor: { userId: null, provider: null, isAuthenticated: null, isGuest: null },
       } });
     }
-    if ((request as LooseRecord).__sporadesAccessKeyAdmitted || error?.sporadesAccessKeyFailure) {
+    if ((request as LooseRecord).__sporadesAccessKeyAdmitted || error?.sporadesAccessKeyFailure || (request as LooseRecord).__sporadesCapsuleIngressAdmissionDenied) {
       response.setHeader("cache-control", "no-store");
       response.setHeader("pragma", "no-cache");
     }
+    closeIncompleteMultipartRequest();
     emitHttpFailureLog(database as LooseRecord, request, error);
     writeEndpointError(response, error);
-  }
+  } finally { request.removeListener?.("aborted", abortRequest); delete (request as LooseRecord).__sporadesEndpointSignal; delete (request as LooseRecord).__sporadesCapsuleIngressAdmissionDenied; }
   return true;
 }
 
@@ -3399,6 +3468,20 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
 
 
 
+/** Snapshot explicit admission authority without invoking property accessors. */
+function multipartAdmissionFilePermission(decision: unknown, principalMode = false): boolean {
+  if (!decision || typeof decision !== "object" || Array.isArray(decision)) throw multipartAdmissionDenied();
+  const keys = Reflect.ownKeys(decision);
+  const allow = Object.getOwnPropertyDescriptor(decision, "allow");
+  const allowFiles = Object.getOwnPropertyDescriptor(decision, "allowFiles");
+  const principal = principalMode ? Object.getOwnPropertyDescriptor(decision, "principal") : undefined;
+  if (keys.some((key) => key !== "allow" && key !== "allowFiles" && !(principalMode && key === "principal"))
+    || !allow || !Object.prototype.hasOwnProperty.call(allow, "value") || allow.value !== true
+    || (principalMode && (!principal || !Object.prototype.hasOwnProperty.call(principal, "value")))
+    || (allowFiles && (!Object.prototype.hasOwnProperty.call(allowFiles, "value") || (allowFiles.value !== undefined && typeof allowFiles.value !== "boolean")))) throw multipartAdmissionDenied();
+  return allowFiles?.value !== false;
+}
+
 async function admitCapsuleIngressPrincipal(database: LooseRecord, endpoint: LooseRecord, endpointRequest: LooseRecord, signal: any) {
   const definition = database.fileIngressDefinition;
   if (!definition) throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
@@ -3413,12 +3496,85 @@ async function admitCapsuleIngressPrincipal(database: LooseRecord, endpoint: Loo
     signal,
     request: Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }),
   }), Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }))));
+  let allowFiles: boolean;
+  try { allowFiles = multipartAdmissionFilePermission(decision, true); }
+  catch { throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED"); }
   const namespace = decision?.principal?.namespace; const key = decision?.principal?.key;
   const serialized = (() => { try { return JSON.stringify(decision); } catch { return ""; } })();
   if (decision?.allow !== true || typeof namespace !== "string" || !definition.principalNamespaces.includes(namespace) || typeof key !== "string" || key.length === 0 || Buffer.byteLength(key, "utf8") > 256 || /[\x00-\x1f\x7f]/.test(key) || Buffer.byteLength(serialized, "utf8") > 4096) {
     throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
   }
-  return Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId });
+  return Object.freeze({ allowFiles, authority: Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId }) });
+}
+
+const endpointMultipartAdmissionTimeoutMs = 5_000;
+function multipartAdmissionDenied() {
+  return commandError("Multipart request was not admitted.", "Check the request conditions and retry.", "MULTIPART_ADMISSION_DENIED");
+}
+
+async function admitEndpointMultipart(database: LooseRecord, endpoint: LooseRecord, endpointRequest: LooseRecord, admission: LooseRecord, signal: any) {
+  const policy = endpoint.options?.body?.multipart;
+  if (typeof policy?.admit !== "function") return;
+  if (!admission?.auth?.isAuthenticated || admission.auth.isGuest || isReservedAuthUserId(admission.auth.userId)) throw commandError("Unauthenticated.", "Sign in with a linked human or service User and retry.", "UNAUTHENTICATED");
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener?.("abort", onAbort, { once: true });
+  const deadline = Date.now() + endpointMultipartAdmissionTimeoutMs;
+  const timer = setTimeout(() => controller.abort(), endpointMultipartAdmissionTimeoutMs);
+  const requestHead = Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) });
+  let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const transaction = database.adapter.withTransaction((transaction: LooseRecord) => withTrustedRead(database, {
+      transaction,
+      purpose: "endpoint.multipart-admission",
+      subject: { method: endpoint.options.method, path: endpoint.options.path },
+      signal: controller.signal,
+    }, (db) => {
+      const policyEvaluation = Promise.resolve().then(() => policy.admit(Object.freeze({
+        auth: Object.freeze({ ...admission.auth }),
+        credential: Object.freeze({ ...(admission.credential ?? { kind: "session" }) }),
+        db,
+        env: database.serverEnv,
+        signal: controller.signal,
+        request: requestHead,
+      }), requestHead));
+      // The race itself is inside the transaction: timeout closes the read
+      // capability and transaction before this request can return. A late,
+      // non-cooperative policy cannot retain either one.
+      void policyEvaluation.catch(() => {});
+      let removeAbort = () => {};
+      const aborted = new Promise<never>((_, reject) => {
+        const abort = () => reject(multipartAdmissionDenied());
+        controller.signal.addEventListener("abort", abort, { once: true });
+        removeAbort = () => controller.signal.removeEventListener("abort", abort);
+      });
+      return Promise.race([policyEvaluation, aborted, new Promise<never>((_, reject) => { timeoutTimer = setTimeout(() => reject(multipartAdmissionDenied()), endpointMultipartAdmissionTimeoutMs); })]).finally(removeAbort);
+    }), { signal: controller.signal });
+    // Engine commit/rollback may be asynchronous. The request boundary cannot
+    // wait beyond its deadline merely because later transaction cleanup is
+    // slow; the trusted read has already been revoked by the callback race.
+    void transaction.catch(() => {});
+    let removeSettlementAbort = () => {};
+    const settlementAbort = new Promise<never>((_, reject) => {
+      const abort = () => reject(multipartAdmissionDenied());
+      if (controller.signal.aborted) abort();
+      else {
+        controller.signal.addEventListener("abort", abort, { once: true });
+        removeSettlementAbort = () => controller.signal.removeEventListener("abort", abort);
+      }
+    });
+    const decision = await Promise.race([transaction, settlementAbort]).finally(removeSettlementAbort);
+    // A policy may settle before an asynchronous engine has committed and
+    // released its transaction. Keep the deadline live through that boundary:
+    // an expired or disconnected request never earns body-read authority.
+    if (controller.signal.aborted || Date.now() >= deadline) throw multipartAdmissionDenied();
+    return multipartAdmissionFilePermission(decision);
+  } catch {
+    throw multipartAdmissionDenied();
+  } finally {
+    clearTimeout(timer); if (timeoutTimer) clearTimeout(timeoutTimer); signal?.removeEventListener?.("abort", onAbort); controller.abort();
+  }
 }
 
 export async function runEndpoint(database: any, endpoint: { handler?: Function; handlerSource?: string; }, requestUrl: URL, request: any) {
@@ -3480,16 +3636,28 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
       const claimAuthority = endpointIngressClaimAuthority(endpoint as LooseRecord);
       const admitted = (accessKeyAdmission ?? session) as LooseRecord;
       let ingressAuthority: LooseRecord;
+      let allowFiles = true;
       if (claimAuthority === "capsule-principal") {
-        ingressAuthority = await admitCapsuleIngressPrincipal(database, endpoint as LooseRecord, endpointRequest, request.signal);
+        const admission = await admitCapsuleIngressPrincipal(database, endpoint as LooseRecord, endpointRequest, request.signal);
+        ingressAuthority = admission.authority;
+        allowFiles = admission.allowFiles;
       } else {
         if (!admitted?.auth?.isAuthenticated || admitted.auth.isGuest || isReservedAuthUserId(admitted.auth.userId)) throw commandError("Unauthenticated.", "Sign in with a linked human or service User and retry.", "UNAUTHENTICATED");
+        const endpointSignal = request.signal ?? (request as LooseRecord).__sporadesEndpointSignal;
+        allowFiles = (await admitEndpointMultipart(database, endpoint as LooseRecord, endpointRequest, admitted, endpointSignal)) !== false;
+        // Admission cleanup removes its request listener after it has settled.
+        // Recheck the outer request signal at the body/staging boundary so a
+        // disconnect in that small interval cannot create ingress state.
+        if (endpointSignal?.aborted) throw multipartAdmissionDenied();
         ingressAuthority = Object.freeze({ kind: "actor", actorId: String(admitted.auth.userId), ownerId: String(admitted.auth.userId) });
       }
-      const payload = await stageMultipartIngress(database, endpoint as LooseRecord, request, endpointRequest, admitted.auth, ingressAuthority);
+      const payload = await stageMultipartIngress(database, endpoint as LooseRecord, request, endpointRequest, admitted.auth, ingressAuthority, allowFiles);
       endpointRequest = { ...endpointRequest, ...payload };
     } catch (error: any) {
       if (error?.code === "UNAUTHENTICATED") {
+        if (endpointIngressClaimAuthority(endpoint as LooseRecord) === "capsule-principal") {
+          (request as LooseRecord).__sporadesCapsuleIngressAdmissionDenied = true;
+        }
         try { await database.log.emit({ category: "platform", event: "file.ingress.denied", level: "warn", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "denied", code: "UNAUTHENTICATED" } }); } catch {}
       }
       throw error;
@@ -6189,7 +6357,7 @@ function normalizeQueryArgumentValue(value: unknown, ancestors: Set<object>): un
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
-      if (Object.getOwnPropertyNames(value).some((key) => key !== "length" && (!/^(0|[1-9]\\d*)$/.test(key) || Number(key) >= value.length))) {
+      if (Object.getOwnPropertyNames(value).some((key) => key !== "length" && (!/^(0|[1-9]\d*)$/.test(key) || Number(key) >= value.length))) {
         throw new Error("Query arguments must not contain non-index array properties.");
       }
       const copy: unknown[] = [];

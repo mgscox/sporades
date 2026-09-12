@@ -1264,6 +1264,29 @@ test("File reference docs define the trusted multipart ingress contract and oper
   assert.doesNotMatch(contents, /sweepExpiredFileIngress/);
   assert.match(contents, /Local filesystem and\s+MinIO-backed/i);
   assert.match(contents, /completed receipts remain replayable/i);
+  assert.match(contents, /initial revision body and terminal classic cross-reference table or\s+cross-reference stream/i);
+  assert.match(contents, /stream lengths may be direct bounded integers or indirect integer\s+objects resolved by exact object number and generation through that revision's\s+already validated effective cross-reference state/i);
+  assert.match(contents, /Encryption is detected\s+from each trailer or cross-reference-stream dictionary's structural `\/Encrypt`\s+entry/i);
+  assert.match(contents, /harmless matching bytes in comments, strings, names, or content do\s+not make an otherwise unencrypted PDF fail/i);
+  assert.match(contents, /ordinary streams cannot trigger parser fallback and pose as\s+the\s+terminal revision/i);
+  assert.match(contents, /tables bind every in-use subsection entry's object number, generation, and\s+offset/i);
+  assert.match(contents, /accept out-of-order subsections only when their object identities\s+remain unique/i);
+  assert.match(contents, /generation numbers are limited to\s+0 through 65535, and object 0 must be the generation-65535 free entry/i);
+  assert.match(contents, /At every linked revision, the\s+effective cross-reference state is validated after applying that revision over\s+its predecessors/i);
+  assert.match(contents, /Compressed entries must resolve to an\s+effective in-use\s+`\/Type \/ObjStm` with bounded `\/N` and `\/First`/i);
+  assert.match(contents, /free entries\s+must form one bounded, acyclic chain from object 0 back to the 0\s+sentinel/i);
+  assert.match(contents, /standard single-element `\[\/FlateDecode\]` array/i);
+  assert.match(contents, /one in-range `\/XRefStm` to a genuine same-revision cross-reference\s+stream/i);
+  assert.match(contents, /intervening indirect objects must be indexed/i);
+  assert.match(contents, /current classic entry has the standard lookup precedence over its supplemental\s+stream before `\/Prev`/i);
+  assert.match(contents, /follows at most\s+256 strictly backward `\/Prev` links/i);
+  assert.match(contents, /last\s+linked `%%EOF`\s+must be terminal except for PDF whitespace and printable comment lines/i);
+  assert.match(contents, /every candidate\s+evaluated by the shell classifier is parsed before either narrow plain-data\s+allowance/i);
+  assert.match(contents, /pinned GNU Bash 5\.2 builtin and reserved-word vocabulary/i);
+  assert.match(contents, /bounded current `PATH` search \(at most 128 entries/i);
+  assert.match(contents, /classification can therefore depend on the runtime's bounded current `PATH`\s+and filesystem/i);
+  assert.doesNotMatch(contents, /pre-accepts only narrowly bounded sentence-shaped prose/i);
+  assert.doesNotMatch(contents, /pasted as quoted ticket text/i);
 });
 
 test("docs describe Host-generated Sealed Server env custody and lost-key recovery", async () => {

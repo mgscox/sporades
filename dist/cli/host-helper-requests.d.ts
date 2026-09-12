@@ -20,6 +20,9 @@ export type HostHelperRelease = JsonObject & {
         [key: string]: unknown;
     };
     baseImage?: HostedCapsuleBaseImage | null;
+    inspection?: {
+        requiredInspectors?: string[];
+    } | null;
     restart?: boolean;
     serverEnvIncluded?: boolean;
     sealedServerEnvIncluded?: boolean;

@@ -4,6 +4,7 @@ import path from "node:path";
 import { normaliseBaseImageUpdatePolicy } from "../base-image.js";
 import { validateCapsuleServicesConfig } from "../capsule-services.js";
 import { CLIENT_FRAMEWORK_HINT, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, defaultClientToolchain, isClientFramework, isClientToolchain, supportsClientCapability } from "../client-capabilities.js";
+import { validateLogConfig } from "../log-envelope.js";
 import { validateMailConfig } from "../mail-config.js";
 import { validatePaymentsConfig } from "../stripe-payment-config.js";
 import { commandError, errorDetails } from "./cli-support.js";
@@ -53,6 +54,7 @@ export async function readProjectConfig(projectDir) {
     catch {
         throw commandError("Invalid project configuration: sporades.json", "Fix the JSON syntax in sporades.json.");
     }
+    validateLogConfig(config);
     validateSecurityConfig(config.security);
     validateClientConfig(config.client);
     validateSchedulingConfig(config.scheduling);

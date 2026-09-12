@@ -11,7 +11,7 @@ Add automated or documented smoke coverage that creates a disposable `photo-libr
 - [x] Browser-level verification simulates or links a Google-authenticated user, uploads an image, and confirms it is private by default.
 - [x] Browser-level verification toggles the authenticated user's image public and private and observes the gallery changing accordingly.
 - [x] Browser-level verification confirms the personal page is available only to the Google-authenticated user and shows owned photos with public/private status.
-- [x] The verification path is suitable for a disposable Hosted Capsule on Host server `168.119.161.21`.
+- [x] The verification path is suitable for a disposable Hosted Capsule on the configured Host server.
 
 ## Blocked by
 

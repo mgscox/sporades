@@ -428,6 +428,57 @@ limits. Fragmented multipart boundaries are supported; malformed or truncated
 streams fail without publishing a partial lease. Completed parts appear only
 as private, expiring leases in `ctx.request.multipart.files`. A lease has no
 File URL, File row, or ACL visibility.
+
+### Request-specific multipart admission
+
+An actor-owned multipart endpoint may add `admit` to apply a bounded,
+request-specific domain check after its Session or Access key is authenticated,
+but before any multipart bytes are consumed. The callback receives the admitted
+`auth` and credential provenance, immutable method/path/query/headers, and a
+transactionally consistent read-only `db` view. It returns `{ allow: true }`, `{ allow: true, allowFiles: false }`, or
+`{ allow: false }`; a denial, malformed result, throw, cancellation, or
+timeout returns the same bounded rejection and does not invoke the handler,
+stage a lease, or create a File. The decision must explicitly supply an own
+`allow` data property; an optional `allowFiles` must also be a data property.
+Accessors and additional own keys are rejected, including symbol or
+non-enumerable keys.
+
+```ts
+const schema = { resources: table({ state: String() }) };
+const defineEndpoint = endpointFor(schema);
+
+capsule({ schema, endpoints: {
+  upload: defineEndpoint({ method: "POST", path: "/upload", body: { multipart: {
+    ...limits,
+    admit: async ({ auth, request, db }) => ({
+      allow: auth.isAuthenticated
+        && request.query.resource !== undefined
+        && (await db.resources.where("id", request.query.resource).get())?.state === "available",
+    }),
+  } } }, handler),
+} });
+```
+
+Return `{ allow: true, allowFiles: false }` for an authenticated principal whose
+trusted authorization permits fields only. Fields retain all declared bounds;
+any file part (including an empty filename or empty content) is rejected with
+`MULTIPART_ADMISSION_DENIED` when its headers are recognized, before file-body
+buffering, lease creation, storage writes, or content inspection, in any part
+order. Omitted, `undefined`, or `true` `allowFiles` preserves the declared upload
+capabilities; it never widens endpoint limits. When set, the flag must be a
+boolean supplied by trusted authorization, never a caller-provided file-count
+or permission header.
+
+Use `endpointFor(schema)` when an endpoint callback needs schema-aware database
+typing, such as multipart admission. It binds the declared schema once; the
+ordinary `endpoint(...)` form remains suitable for endpoints that do not need
+that policy database view.
+
+This is an early request filter, not durable authority: handlers must recheck
+mutable domain conditions in their normal transaction before claiming a File.
+The callback cannot add scopes, replace the actor claim authority, or be used
+with Capsule-principal ingress admission. Omitting it preserves the existing
+multipart lifecycle.
 Both token and commonly emitted quoted `boundary` parameters are accepted;
 Sporades validates RFC 2046 `bchars`, applies HTTP-token restrictions to the
 unquoted form, and enforces the 70-character cap before reading the body.
@@ -459,6 +510,267 @@ The durable identity is a versioned, length-framed digest of method, path,
 authority, request key, and part key, so delimiter-bearing values cannot alias.
 Existing pre-0.9.6 delimiter-framed receipts remain replayable only when their
 stored tuple exactly matches; every newly staged receipt uses the framed digest.
+
+### Required inspection evidence
+
+Use a required inspection policy for an integration that accepts material from
+outside its trust boundary and must not create an ordinary File until that
+material has passed a security control. The policy is intentionally opt-in, so
+existing trusted-ingress handlers retain their established behaviour:
+
+```ts
+const inspection = {
+  policyRevision: "support-attachments-v1",
+  maxVerdictAgeMs: 60 * 60 * 1000,
+  requiredInspectors: ["content-policy-v1"],
+};
+
+endpoint({ method: "POST", path: "/attachments", body: {
+  multipart: { ...limits, inspection },
+}}, async (ctx) => ctx.files.claim(ctx.request.multipart.files[0], {
+  path: `/attachments/${ctx.request.multipart.files[0].partId}`,
+}));
+```
+
+`content-policy-v1` is runtime-owned. It accepts only JPEG, PNG, unencrypted
+PDF, and strict UTF-8 text when filename extension, declared MIME type,
+detected signature, and bounded parser checks agree. It rejects archives,
+encrypted containers, SVG/HTML/XML, Office formats, executables, scripts,
+empty/polyglot/ambiguous content, and malformed or oversized input. Endpoint
+handlers cannot supply verdict-producing objects or receive lease bytes.
+JPEG validation walks bounded segment and entropy structure through the exact
+EOI, then decodes under the pinned `jpeg-js@0.4.4` resolution and memory caps.
+PNG validation pre-bounds dimensions, pixels, and expected decoded storage,
+checks chunk bounds/order, PLTE and contiguous-IDAT rules, IHDR constraints,
+every CRC and exact IEND, then uses pinned `pngjs@7.0.0` to inflate and decode
+the exact scanline/filter stream. PDF validation uses pinned maintained server-side
+`pdfjs-dist@6.3.289` for bounded render/operator validation and `pdf-lib@1.17.1`
+for a bounded, cycle-safe traversal of the parsed catalog, pages, annotations,
+streams, arrays, and indirect object graph. It rejects encryption, action
+semantics at any traversed location (including page additional actions,
+JavaScript, URI, Launch, SubmitForm, and ImportData), and embedded files,
+parses the initial revision body and terminal classic cross-reference table or
+cross-reference stream, binds each `startxref` and `%%EOF` footer to that
+section, and follows at most 256 strictly backward `/Prev` links. Cross-reference
+and ordinary stream lengths may be direct bounded integers or indirect integer
+objects resolved by exact object number and generation through that revision's
+already validated effective cross-reference state; missing, cyclic, ambiguous,
+wrong-type, or future-revision references fail closed. Encryption is detected
+from each trailer or cross-reference-stream dictionary's structural `/Encrypt`
+entry, so harmless matching bytes in comments, strings, names, or content do
+not make an otherwise unencrypted PDF fail. Cross-reference tables bind every in-use subsection entry's object number, generation, and
+offset to the referenced indirect object, bound `/Size`, admit normal free
+entries, and accept out-of-order subsections only when their object identities
+remain unique. In either representation generation numbers are limited to
+0 through 65535, and object 0 must be the generation-65535 free entry.
+Cross-reference streams require a real `/Type /XRef`, bounded `/Size`,
+consistent `/W` and `/Index` ranges, exact raw or Flate-decoded records, and an
+entry that identifies the stream itself. At every linked revision, the
+effective cross-reference state is validated after applying that revision over
+its predecessors. Compressed entries must resolve to an effective in-use
+`/Type /ObjStm` with bounded `/N` and `/First`; its raw or Flate-decoded
+object-number table must match every requested index. Effective free entries
+must form one bounded, acyclic chain from object 0 back to the 0 sentinel,
+never through an in-use or compressed entry. Flate is accepted as the direct
+`/FlateDecode` name or the standard single-element `[/FlateDecode]` array;
+unsupported or multiple filter chains fail closed. Hybrid tables must point
+through one in-range `/XRefStm` to a genuine same-revision cross-reference
+stream. Any intervening indirect objects must be indexed. Within either source,
+duplicate object identities fail closed; where the two sources overlap, the
+current classic entry has the standard lookup precedence over its supplemental
+stream before `/Prev` is consulted. Ordinary streams cannot trigger parser fallback and pose as the
+terminal revision. Each linked footer must belong to its referenced section,
+while initial and intervening revision bytes must be bounded PDF comments or
+indirect-object syntax rather than unclaimed payload. The last
+linked `%%EOF`
+must be terminal except for PDF whitespace and printable comment lines, so
+valid incremental updates remain supported while forged terminal footers and
+PDF polyglots are rejected. Validation also caps pages and enforces a short
+inspection timeout. The production dependency
+audit must remain clean when either parser is upgraded. Text is a
+particularly conservative untrusted-evidence lane: strict UTF-8 is rejected
+when it resembles markup, JavaScript, shell, or common script/source forms.
+This includes generic XML and common JavaScript, Python, and shell source forms.
+That deliberately creates false positives for support notes containing code;
+such material needs an explicitly reviewed future evidence policy, never an
+assumption that quoting makes an executable language harmless.
+Strict-text inspection is capped at 1 MiB before UTF-8 decoding or JavaScript,
+Python, and shell parsing. Sporades uses pinned production parsers on the complete
+text without executing the upload. Before invoking either dependency, a
+dependency-free, context-free iterative scan caps aggregate raw `()`, `[]`,
+and `{}` nesting at 256. Every opener increases the depth and every closer
+reduces it without trying to interpret matching, quotes, comments, templates,
+escapes, or regular expressions. The limit is deliberately a conservative
+resource-and-suspicion bound: excessively nested delimiters are rejected even
+when they appear inside prose or quoted text, while shallow unmatched or
+mismatched text remains eligible for normal syntax classification. This
+ensures third-party tokenization never receives recursively deep raw structure.
+Acorn's
+subsequent flat token pass caps work at 100,000 tokens, 256 nested delimiters,
+and 256 recursive-grammar tokens before the recursive parse. The grammar budget
+covers prefix operators, contextual
+`await`/`yield`, construction, arrows, conditionals, assignments, binary and
+exponentiation operators, nested statement bodies, and labels. Acorn's other
+recursive expression and statement paths enter through delimiters; member,
+call, and comma-list continuations are iterative. Comments, regular-expression
+bodies, and template raw text remain opaque tokenizer tokens rather than
+grammar signals. The syntax tree is then walked under 100,000-node and
+256-depth budgets. These independent bounds reject parser stack-exhaustion
+inputs without depending only on diagnostic wording. Unknown parser failures
+fail closed, while structurally ordinary syntax errors remain non-executable
+prose. Programs containing calls, construction, dynamic or
+static imports, assignments, declarations, control flow, or similar executable
+semantics are rejected. This covers comments, parentheses, computed or optional
+member access, and Unicode escapes around call-only programs such as
+`alert("x")`; ordinary prose, including prose containing parentheses or quoted
+call text, remains text when it is not a complete executable program.
+Sporades also parses the complete text with pinned `@lezer/python`. An
+iterative full-tree walk is capped at 100,000 nodes and 512 levels (the extra
+levels account for Lezer wrapper nodes above the already-bounded 256 raw
+delimiter levels). Error-free Python programs containing statements,
+definitions, decorators, imports, assignments, calls, lambdas, comprehensions,
+`async`/`await`, or `yield` are rejected. Trees containing a syntax-error node
+remain eligible as malformed prose, so ordinary sentences and quoted or
+incomplete code references are not broadly classified as Python. Unexpected
+parser failures and any traversal-budget exhaustion fail closed.
+Sporades then parses POSIX/Bash-like input with pinned `unbash@4.0.11`, whose
+typed syntax tree and recovery errors are traversed iteratively under the same
+100,000-node and 512-level caps. An error-free program containing a command,
+assignment, pipeline, substitution, redirect, function, or control structure
+is rejected. Syntax-error trees remain eligible as malformed prose only when
+they contain neither a completed executable prefix nor an exact literal from
+the pinned Bash command vocabulary. Because a bare prose phrase is also a
+syntactically valid shell command, every candidate
+evaluated by the shell classifier is parsed before either narrow plain-data
+allowance is applied. Sentence-shaped prose remains eligible. Exactly one
+literal, side-effect-free token may also be treated as data only when it is not
+in Sporades' pinned GNU Bash 5.2 builtin and reserved-word vocabulary
+(documented in [Bash Builtins](https://www.gnu.org/software/bash/manual/bash.html#Bash-Builtins)
+and [Reserved Words](https://www.gnu.org/software/bash/manual/bash.html#Reserved-Words)),
+is not a filesystem command path, and does not resolve to an executable through the
+bounded current `PATH` search (at most 128 entries, with an empty entry meaning
+the current directory). Quoting a token does not bypass those checks. This
+classification can therefore depend on the runtime's bounded current `PATH`
+and filesystem: a word that names executable code in that environment is a
+script risk, while an otherwise identical non-command label can remain data.
+This is intentionally conservative: ambiguous command-shaped text is rejected
+rather than guessed safe. Unexpected parser failures and traversal-budget
+exhaustion fail closed, and no uploaded program or shell is executed.
+
+The `clamav` inspector is runtime-owned and communicates only with clamd's
+fixed Unix-domain socket inside the Capsule container. There is no TCP,
+hostname, IP, path-scan, or caller-configurable destination surface. Sporades
+sends the exact lease bytes with bounded INSTREAM chunks and a zero terminator;
+customer bytes never leave the deployment. A Capsule declaring `clamav`
+starts the managed daemon during runtime initialization and is not healthy
+until fresh signatures and a bounded `PING` over that socket succeed. Runtime
+health repeats that socket probe, degrades immediately when clamd or the
+signature updater exits or signals, and never marks a terminated child healthy
+again. A transient probe or reload mismatch can recover only while the same
+children remain live and again report a current loaded database. The private
+health route verifies an exact runtime-owned 256-bit credential before any
+signature or socket work. Dev reuses its private session inspection credential;
+local Containers receive a fresh credential, and Hosted Capsules receive the
+credential stored in their protected Host registry and Caddy route. It is not
+reported in CLI output or logs. Capsules that omit ClamAV preserve the legacy
+nonempty private-probe contract for compatibility because that route performs
+only the inexpensive legacy checks. Capsules that omit it do not
+start clamd and retain legacy startup behaviour.
+
+The Base image includes ClamAV, which increases image size, while enabling it
+also costs daemon startup time and RAM. `freshclam` is the only intended
+network egress and downloads public signature updates, never customer data.
+After the initial readiness update, Sporades keeps freshclam's bounded daemon
+running for periodic updates and supervises both children. Shutdown awaits
+both processes after `SIGTERM` and uses a bounded `SIGKILL` fallback, including
+partial-startup failure paths. Managed and Dev startup share one absolute
+120-second readiness window: database verification, socket probes, and retry
+delays are each capped by the time still remaining, so repeated slow probes
+cannot multiply that window. `SIGTERM` and the bounded `SIGKILL` fallback share
+one absolute shutdown deadline; exit or close evidence is required before an
+owned child is cleared. A process error marks health unavailable but is not
+itself proof that the child exited. If a child is still live at the deadline,
+cleanup fails visibly and retains the owned child reference for a later
+shutdown or rollback retry.
+Signatures older than 24 hours, missing databases, daemon/socket failure,
+timeouts, malformed or oversized replies, scan limits, infection, and every
+other inconclusive outcome fail closed. Operators should monitor runtime
+health and signature-update logs, budget memory for clamd, and keep the data
+volume writable for `/app/data/clamav`. The image configuration uses only a
+private socket and caps stream/file/aggregate scan size, recursion, files,
+queue depth, and scan time.
+Local Container sessions invoke clamd and freshclam as the same host UID/GID
+selected for the Capsule; neither configuration switches to the image's
+fallback `sporades` identity. The data bind mount and private `/tmp` socket are
+therefore owned and accessible by that invoking identity without widening the
+socket mode. Hosted Capsules retain the image's non-root `10001:10001` default.
+For a normal Dev session that declares `clamav`, Sporades automatically starts
+one task-scoped sidecar from the exact current Base image. The sidecar runs as
+the invoking host UID/GID, persists official signatures beneath
+`.sporades/clamav`, and exposes only a unique host-owned Unix socket. On Docker
+Desktop, a task-owned local proxy bridges that socket to the exact named
+container's private clamd Unix socket; this avoids bind-mounted socket mode
+changes that the virtual filesystem cannot safely preserve. It publishes no
+port: customer bytes cross only the two Unix-socket endpoints and the exact
+container process bridge, while the container's network access is used solely
+by `freshclam` for public signatures. Hot runtime replacement reuses the same
+session-owned sidecar and signature data. The first sidecar attachment is part
+of the candidate transaction: if image preparation or startup fails, Sporades
+closes the candidate database, removes that exact new sidecar and socket, keeps
+the prior runtime active, and permits a later rebuild to retry. Cleanup failures
+are aggregated rather than hiding the original startup error. Dev shutdown,
+signals, failed startup, and a failed first clamav-requiring rebuild remove
+only that exact labelled container and temporary socket directory;
+another Dev session is never selected by prefix or global process cleanup.
+Capsules that do not declare `clamav` start no sidecar and retain the legacy Dev
+path. Docker must therefore be available when a Dev Capsule explicitly requires
+malware inspection.
+Freshness is derived from ClamAV `sigtool --info` verification of the signed
+database and its embedded build timestamp, never its filesystem modification
+time. Runtime health and every scan also require clamd's bounded `VERSION`
+reply to match that authenticated database version. Copying or touching an old
+database cannot make it current. Multipart ingress captures one authenticated,
+currently loaded scanner identity when request staging begins, so an ordinary
+freshclam file-publication window cannot make a healthy later part report a
+spurious unavailable signature. Each clean scan still checks both clamd's
+current `VERSION` and that captured signature's 24-hour freshness when its
+verdict is recorded. A reload, socket/version loss, or signature that ages out
+while a slow request body is arriving makes a clean verdict inconclusive and
+unclaimable; the next request re-establishes readiness without an app restart.
+An already returned `FOUND` remains rejected even if that post-scan check
+changes or disappears, but its signature version is withheld as unavailable
+rather than falsely attributing the result to the old or new database. This is
+deliberately fail-closed and does not retry uploaded bytes: operators should
+expect a brief rejection window during a real reload or stale-signature event,
+then investigate health and updater logs until a new request becomes clean.
+Replacing the database with an unsigned current-looking header cannot make it
+current. The runtime also enforces the exact 10 MB scanner cap
+before opening the socket or writing any frame.
+Production malware-scanner transport is deliberately a runtime-owned
+integration rather than an endpoint-handler callback: no endpoint handler,
+Capsule policy, caller, or lease API receives the staged bytes. This prevents a
+convenient inspection hook from becoming a second File-download capability. An
+isolated scanner adapter
+must impose its own destination allow-list, byte cap, timeout, response cap,
+and fail-closed handling before a Capsule may use it.
+ClamAV's [INSTREAM protocol](https://docs.clamav.net/manual/Usage/ClamdProtocol.html)
+sends the content over clamd's socket and is bounded by clamd's
+`StreamMaxLength`; ClamAV documents that a TCP clamd socket is unauthenticated
+and unencrypted, so it must remain on an isolated trusted network rather than
+be exposed to callers. Operators must also keep signatures current with
+[freshclam](https://docs.clamav.net/manual/Usage/SignatureManagement.html).
+
+When inspection is required, Sporades seals bounded verdict metadata into the
+private receipt: inspector name and outcome, lease identity, observed byte
+size, SHA-256 digest, policy revision, and inspection time. `claim()` succeeds
+only if every declared inspector has a current `clean` verdict matching that
+exact receipt and policy revision. Missing, stale, malformed, mismatched,
+infected, or inconclusive evidence returns `INGRESS_INSPECTION_REQUIRED` before
+creating a File row. Changing the policy revision deliberately invalidates old
+evidence. This reduces the risk of a stale or substituted scan result being
+reused, but it is not a content-safety guarantee: operators still need a
+maintained scanner, constrained storage, forced-download delivery, and no
+automatic rendering or execution of uploaded material.
 
 By default, the authenticated human or Access-key service User is the actor and
 File owner. A scoped service User remains a normal non-session actor; do not
@@ -505,12 +817,37 @@ cross-principal, and cross-Capsule claims all fail opaquely with
 `INGRESS_AUTHORITY_DENIED`; callers cannot use the error to discover whether a
 lease exists. Completed retries enforce the same authority.
 
+Capsule-level `files.ingress.admit` can return
+`{ allow: true, principal, allowFiles: false }` to admit bounded fields while
+prohibiting file parts for an Application credential. This permission reaches
+the same header-time enforcement as actor admission: empty files and files in
+any part order are rejected before staging or inspection. When parsing ends
+before the complete HTTP request body arrives, the runtime sends its response
+and closes the connection rather than waiting for the unread body. It requires no
+Sporades User Session or Access key. Omitted, `undefined`, or `true` preserves
+the endpoint's declared upload capabilities; no value widens those limits.
+Admission must return own data properties with no extra own keys; malformed
+permissions fail closed before consuming the body. Validate the Application
+credential and derive this flag from trusted authorization, never a claimed
+file count or permission header. The principal remains unchanged for claims,
+retries, and isolation, and handlers must still recheck mutable authorization
+inside their transaction before claiming files or writing domain records.
+
+A rejected Capsule-principal admission returns an opaque `401` before consuming
+request bytes, with `Cache-Control: no-store` and `Pragma: no-cache`.
+
 Trusted server code claims a lease inside the endpoint transaction with an
 application-chosen absolute path:
 
 ```ts
 const file = await ctx.files.claim(lease, { path: `/attachments/${id}/source` });
 ```
+
+Without inspection, trusted handlers may continue to override the stored File
+`name` and `type` at claim. When inspection is required, verdict evidence is
+bound to the staged bytes, filename, and MIME type: a claim may omit or repeat
+the inspected descriptor but cannot relabel it afterward. Use the File `path`
+for the Capsule's application-specific destination.
 
 The staged bytes must exist before the receipt is completed. The File row,
 receipt completion, bucket, application writes, and one runtime-private audit
@@ -532,12 +869,24 @@ live-maintenance retry until recovery succeeds; once clear, ordinary timer
 ticks do not rescan interrupted delivery rows.
 Delivered intents remain inspectable for 24 hours and are then pruned
 oldest-first in batches of 50; pending and in-progress intents are never
-pruned, and completed File retries do not create a new intent. A
+pruned, and completed File retries do not create a new intent. Retention has
+its own durable maintenance deadline: removing the final multipart endpoint
+and File-storage configuration stops unrelated scanner and sweep resources,
+but the replacement runtime still sleeps until the oldest delivered intent is
+due, prunes a bounded batch, and disarms the wake when the outbox is empty. A
 staging receipt becomes claimable only through a key, lease, state, and expiry
 compare-and-set after its object write. If expiry cleanup wins that race,
 Sporades compensates the exact newly written object and never revives the row;
 a concurrently completed receipt is preserved.
-lost response can replay the completed File even after the original lease
+A replacement Capsule discovers unclaimed leases, undelivered audit intents,
+and delivered intents awaiting retention expiry
+from durable storage before activation. Their cleanup and delivery timers stay
+live even if that release removed its last multipart endpoint and relied on the
+implicit local File-storage configuration. Audit retention uses its independent
+deadline rather than keeping the one-second delivery retry or ingress sweeper
+alive. A Capsule with no multipart declaration and no such retained work
+remains maintenance-free; completed receipts alone do not arm the timers.
+A lost response can replay the completed File even after the original lease
 expiry; expired unclaimed leases cannot be claimed. Local filesystem and
 MinIO-backed storage use identical policy, admission, lease, claim, ACL,
 idempotency, expiry, and cleanup semantics. This server-only surface never

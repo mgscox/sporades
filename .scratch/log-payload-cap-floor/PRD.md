@@ -1,60 +1,68 @@
 # Log payload cap floor
 
-Status: ready-for-human
+Status: complete
 
 ## Source Planning
 
-- `docs/guide/configuration.md`
-- `src/server-runtime-source.ts` (`logPayloadMaxBytes`, `capLogEnvelope`)
-- `CONTEXT.md`
+- Original tracker PR: https://github.com/mgscox/sporades/pull/30
+- User authorized implementation on 2026-09-11 using the actual configured identity.
+- `docs/guide/configuration.md` is the canonical shipped contract.
 
-## Problem Statement
+## Problem and decision
 
-`logs.payloadMaxBytes` and its `logging.payloadMaxBytes` alias accept any
-positive integer. `capLogEnvelope` applies that cap to the *serialized
-envelope*, not to `data` alone, and when shedding every `data` key is still not
-enough it replaces `data` wholesale with `{ truncated: true }` and truncates
-`message`.
+A 256-byte cap can discard the structured data in normal platform events.
+The original PR proposed a global floor based on 64-byte identities, but those
+identity limits do not exist. Use actual configured identity and release overhead
+instead, with the bounded event allowances below. This supersedes the global
+floor and the unratified identity limits in the original proposal.
 
-Envelope overhead is not a constant: it varies with the Capsule name and id and
-with the `event`, `message`, `request`, `release`, and `correlation` values of
-the event being written. So there is no single byte count below which every cap
-is unusable and above which every cap is safe. What exists instead is a range in
-which a cap is large enough for some events and silently destroys others, with
-no signal to the operator that it is happening.
+## Contract
 
-Observed on a Dev session configured with `logs.payloadMaxBytes: 256` — both
-events the session produced lost their payload:
+`logs.payloadMaxBytes` caps the serialized JSON log envelope, including metadata
+and the truncation flag; it is not a data-only budget. `logging.payloadMaxBytes`
+is an alias. When both are present, `logs` takes precedence, and both explicitly
+supplied values must validate as safe integers.
 
-```
-dev.session.started   | truncated: true | data: {"truncated":true}
-dev.capsule.reloaded  | truncated: true | data: {"truncated":true}
-```
+The minimum is computed from the same envelope constructor as the runtime writer.
+It includes the actual configured Capsule name and ID (`capsule.id`, then `id`,
+then name; absent name is `unknown`) and configured `release` value, including
+JSON escaping and UTF-8 encoding. It reserves these additional allowances:
 
-Logging appears configured and running while carrying nothing. That is the
-failure mode most likely to be discovered during an incident, when the logs are
-being read for the first time and the events that mattered are already gone.
+| Field | Protected allowance |
+| --- | --- |
+| `event` | 64 bytes of JSON-escaped UTF-8 content, excluding surrounding quotes |
+| `message` | 128 bytes of JSON-escaped UTF-8 content, excluding surrounding quotes |
+| `category`, `level` | 16 bytes each, measured the same way |
+| `timestamp` | 24-byte UTC ISO timestamp, such as `2026-09-11T00:00:00.000Z` |
+| `request`, `correlation` | `null` |
+| `data` | 256 bytes of serialized JSON after redaction |
+| `truncated` | `false`, including the field and value in the byte budget |
 
-## Goals
+An event within all these allowances retains its structured data at the minimum.
+These are protected allowances, not restrictions on the events a Capsule may log.
+Longer messages, additional request/correlation metadata, per-event release
+metadata exceeding the configured release, or larger data can still truncate.
+Redaction continues to apply before budgeting.
 
-- Decide and document the guarantee a configured cap must preserve, stated as a
-  bounded envelope shape rather than a single representative event.
-- Refuse a cap that cannot honour that guarantee, at configuration validation,
-  with a structured error and an actionable hint.
-- Apply the floor globally rather than per-Capsule. Validation runs before any
-  event exists, and the runtime writes its own platform events in every Capsule,
-  so a cap too small for those is unusable regardless of what the Capsule itself
-  logs. A Capsule whose own tiny payloads fit under a very small cap today will
-  stop validating; that cost is accepted deliberately in exchange for the
-  guarantee holding everywhere.
+Configuration loading and runtime startup reject values below the calculated
+minimum with `INVALID_LOG_CONFIG` and a hint containing the required byte count.
+There is no universal numeric floor and no new identity-length limit. The default
+is still 4096 bytes; if even the default is too small for the configured identity
+and release, set an explicit sufficient cap. Values are never silently raised.
+Existing very small caps, numeric strings, and other non-integer values must be
+replaced with valid numeric caps. Changing Capsule identity or release can change
+the required minimum.
 
-## Non-Goals
+## Non-goals
 
-- Do not change `capLogEnvelope`'s shedding order or its truncation fallback;
-  the fallback is correct behaviour for an event that genuinely overruns a
-  usable cap.
-- Do not silently clamp a configured value. Substituting a number the operator
-  did not write trades one invisible surprise for another.
-- Do not attempt a per-event guarantee for unbounded fields. A sufficiently long
-  `message` or `correlation` can overrun any cap, and that remains the
-  envelope's business rather than the validator's.
+Do not change the truncation fallback or shedding order, restrict Capsule names,
+or claim that arbitrary events cannot truncate. Do not change the completed
+Dev reload work from PR #29.
+
+## Completion evidence
+
+Implemented in `bfb6bce1` on `codex/log-payload-cap-floor` in the isolated
+`/Users/mattcox/.codex/worktrees/dd0a/sporades` worktree. See the child issue for
+verification results. Published as https://github.com/mgscox/sporades/pull/41
+with explicit user authorization and merged in `b603028f`. PR #30 now retains
+this completed contract when reconciling its original proposal with main.

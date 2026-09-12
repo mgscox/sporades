@@ -567,16 +567,53 @@ function boundedBuildMessage(error: unknown, projectRoots: string[] = []) {
   let message = typeof errorDetails(firstError).text === "string"
     ? String(errorDetails(firstError).text)
     : typeof details.message === "string" ? details.message : "unknown error";
-  for (const projectRoot of canonicalDiagnosticRoots(projectRoots)) {
-    message = message.split(projectRoot).join("<project>");
-  }
+  message = redactBuildProjectRoots(message, projectRoots);
   return message.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 1200);
+}
+
+function redactBuildProjectRoots(message: string, projectRoots: string[]) {
+  const absoluteRoots = new Set<string>();
+  const relativeRoots = new Set<string>();
+  for (const projectRoot of projectRoots) {
+    const resolved = path.resolve(projectRoot);
+    for (const root of [resolved, path.isAbsolute(projectRoot) ? projectRoot : ""]) {
+      if (!root) continue;
+      for (const normalizedRoot of diagnosticNormalizationForms(root)) {
+        absoluteRoots.add(normalizedRoot);
+        absoluteRoots.add(normalizedRoot.replaceAll("\\", "/"));
+        absoluteRoots.add(normalizedRoot.replaceAll("/", "\\"));
+      }
+    }
+    const relative = path.relative(process.cwd(), resolved);
+    if (!relative || relative === ".") continue;
+    for (const normalizedRoot of diagnosticNormalizationForms(relative)) {
+      for (const root of [normalizedRoot, normalizedRoot.replaceAll("\\", "/"), normalizedRoot.replaceAll("/", "\\")]) {
+        relativeRoots.add(root);
+        relativeRoots.add(`./${root}`);
+        relativeRoots.add(`.\\${root}`);
+      }
+    }
+  }
+  let redacted = message;
+  for (const root of [...absoluteRoots].filter(Boolean).sort((left, right) => right.length - left.length)) {
+    redacted = redacted.split(root).join("<project>");
+  }
+  for (const root of [...relativeRoots].filter(Boolean).sort((left, right) => right.length - left.length)) {
+    const escaped = root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    redacted = redacted.replace(new RegExp(`(^|[^\\p{L}\\p{M}\\p{N}\\p{Pc}.\\/\\\\-])${escaped}(?=[/\\\\])`, "gu"), "$1<project>");
+  }
+  return redacted;
+}
+
+function diagnosticNormalizationForms(value: string) {
+  return [...new Set([value, value.normalize("NFC"), value.normalize("NFD")])];
 }
 
 function canonicalDiagnosticRoots(projectRoots: string[]) {
   return [...new Set(projectRoots.flatMap((projectRoot) => {
     const resolved = path.resolve(projectRoot);
-    return [projectRoot, resolved];
+    const relative = path.relative(process.cwd(), resolved);
+    return [projectRoot, resolved, relative, relative.split(path.sep).join("/")];
   }).filter(Boolean))].sort((left, right) => right.length - left.length);
 }
 

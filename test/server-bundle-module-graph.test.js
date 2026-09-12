@@ -244,6 +244,45 @@ export default capsule({
 });
 `;
 
+const PDF_INGRESS_CAPSULE_SOURCE = `
+import { capsule, endpoint } from "sporades/server";
+
+export default capsule({
+  name: "bundle-pdf-ingress",
+  files: {
+    acl: { read: () => false, delete: () => false },
+    ingress: {
+      principalNamespaces: ["application"],
+      admit: ({ request }) => ({ allow: true, principal: { namespace: "application", key: request.headers["x-app-key"] } }),
+    },
+  },
+  endpoints: {
+    upload: endpoint({
+      method: "POST",
+      path: "/probe/pdf",
+      body: { multipart: {
+        maxFiles: 1,
+        maxFileBytes: 100000,
+        maxTotalFileBytes: 100000,
+        maxFieldCount: 0,
+        maxFieldBytes: 0,
+        maxTotalFieldBytes: 0,
+        allowedMimeTypes: ["application/pdf"],
+        allowedPathPrefixes: ["/attachments"],
+        requestKeyHeader: "idempotency-key",
+        partKeyHeader: "content-id",
+        requireStablePartKeys: true,
+        claimAuthorities: ["capsule-principal"],
+        inspection: { policyRevision: "bundle-pdf-v1", requiredInspectors: ["content-policy-v1"] },
+      } },
+    }, async (ctx) => ({ status: 200, body: await ctx.files.claim(ctx.request.multipart.files[0], {
+      path: "/attachments/note.pdf",
+      authority: { kind: "capsule-principal", ...ctx.ingress.principal },
+    }) })),
+  },
+});
+`;
+
 const CAPSULE_PUBLIC_ORIGIN = "https://capsule.example.com";
 
 function capsuleConfig(extra = {}) {
@@ -253,6 +292,15 @@ function capsuleConfig(extra = {}) {
     __sporadesPublicOrigin: CAPSULE_PUBLIC_ORIGIN,
     ...extra,
   };
+}
+
+function minimalPdf() {
+  const objects = ["1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n", "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", "3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R>>\nendobj\n", "4 0 obj\n<</Length 0>>\nstream\n\nendstream\nendobj\n"];
+  let body = "%PDF-1.4\n"; const offsets = [0];
+  for (const object of objects) { offsets.push(Buffer.byteLength(body)); body += object; }
+  const xref = Buffer.byteLength(body);
+  body += `xref\n0 5\n0000000000 65535 f \n${offsets.slice(1).map((value) => `${String(value).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<</Size 5 /Root 1 0 R>>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(body);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -730,7 +778,7 @@ async function observeBundle({ source, dir, env }) {
   try {
     const http = await driveHttpSurface(booted.baseUrl, context);
     const websocket = await driveWebSocketSurface(booted.baseUrl, context);
-    return { http, websocket };
+    return { http, websocket, stderr: booted.stderr };
   } finally {
     await booted.stop();
   }
@@ -836,6 +884,58 @@ test("the server bundle builds from a module graph and imports nothing but Node 
   assert.match(source, /import\("node:tls"\)/, "bundle lost the SMTP TLS import");
 });
 
+test("a generated server bundle loads PDF support only for PDF inspection", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-pdf-lazy-"));
+  let booted;
+  try {
+    const serverModuleSource = await bundleServerCapsuleModule({
+      serverSource: PDF_INGRESS_CAPSULE_SOURCE,
+      serverSourcePath: path.join(root, "server", "index.ts"),
+    });
+    const source = await buildBundle({
+      config: capsuleConfig({ name: "bundle-pdf-ingress" }),
+      serverEnv: {},
+      serverSource: PDF_INGRESS_CAPSULE_SOURCE,
+      serverModuleSource,
+    });
+    await writePublicTree(root, "<!doctype html><html><body></body></html>");
+    booted = await bootBundle({ source, dir: root });
+    assert.doesNotMatch(booted.stderr, /@napi-rs\/canvas|DOMMatrix|Path2D/, `generated Bundle loaded PDF support before inspection:\n${booted.stderr}`);
+
+    const boundary = "bundle-pdf-boundary";
+    const multipartPdf = (bytes, partId) => Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="note.pdf"\r\nContent-Type: application/pdf\r\nContent-ID: ${partId}\r\n\r\n`),
+      bytes,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+    const response = await fetch(`${booted.baseUrl}/probe/pdf`, {
+      method: "POST",
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}`, "idempotency-key": "bundle-pdf-request", "x-app-key": "bundle-pdf-principal" },
+      body: multipartPdf(minimalPdf(), "stable-pdf"),
+    });
+    const accepted = await response.json();
+    if (response.status === 200) {
+      assert.equal(accepted.name, "note.pdf");
+      assert.equal(accepted.type, "application/pdf");
+    } else {
+      assert.equal(response.status, 500, JSON.stringify(accepted));
+      assert.equal(accepted.error.code, "INGRESS_INSPECTION_REQUIRED");
+    }
+
+    const rejectedResponse = await fetch(`${booted.baseUrl}/probe/pdf`, {
+      method: "POST",
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}`, "idempotency-key": "bundle-bad-pdf-request", "x-app-key": "bundle-pdf-principal" },
+      body: multipartPdf(Buffer.from("%PDF-1.4\nnot a document"), "stable-bad-pdf"),
+    });
+    const rejected = await rejectedResponse.json();
+    assert.equal(rejectedResponse.status, 500, JSON.stringify(rejected));
+    assert.equal(rejected.error.code, "INGRESS_INSPECTION_REQUIRED");
+  } finally {
+    await booted?.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a Capsule built from a module graph answers the HTTP and WebSocket surfaces", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-surface-"));
   try {
@@ -846,6 +946,7 @@ test("a Capsule built from a module graph answers the HTTP and WebSocket surface
     const dir = path.join(root, "graph");
     await mkdir(dir, { recursive: true });
     const run = await observeBundle({ source, dir });
+    assert.doesNotMatch(run.stderr, /@napi-rs\/canvas|DOMMatrix|Path2D/, `ordinary generated Bundle startup initialized optional PDF rendering support:\n${run.stderr}`);
 
     // Every step of both scripts has to have actually run. This guarded the comparison against a
     // normalizer that had collapsed everything into agreement; with nothing to compare against it

@@ -3,7 +3,7 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/sporades"><img alt="npm version" src="https://img.shields.io/npm/v/sporades.svg"></a>
   <a href="https://www.npmjs.com/package/sporades"><img alt="npm downloads" src="https://img.shields.io/npm/dm/sporades.svg"></a>
-  <a href="https://nodejs.org/"><img alt="Node.js >=22" src="https://img.shields.io/badge/node-%3E%3D22-339933?logo=node.js&logoColor=white"></a>
+  <a href="https://nodejs.org/"><img alt="Node.js >=22.13 <23 or >=24" src="https://img.shields.io/badge/node-%3E%3D22.13_%3C23_%7C_%3E%3D24-339933?logo=node.js&logoColor=white"></a>
   <a href="https://github.com/mgscox/sporades/blob/main/LICENSE"><img alt="MIT license" src="https://img.shields.io/npm/l/sporades.svg"></a>
   <a href="https://github.com/mgscox/sporades"><img alt="GitHub repository" src="https://img.shields.io/badge/GitHub-mgscox%2Fsporades-181717?logo=github"></a>
 </p>
@@ -242,7 +242,7 @@ The Default File bucket is only a namespace fallback, not a user bucket or polic
 
 ## Install
 
-Sporades requires Node.js 22 or newer. Install the CLI from npm:
+Sporades requires Node.js `>=22.13 <23` or `>=24`. Install the CLI from npm:
 
 ```sh
 npm install --global sporades

@@ -543,7 +543,7 @@ arbitrary client packets directly to other clients.
 
 ## Data and Migrations
 
-Sporades uses SQLite through Node 22+ `node:sqlite`. Dev sessions store the
+Sporades uses SQLite through Node `>=22.13 <23` or `>=24` built-in `node:sqlite`. Dev sessions store the
 database at `.sporades/data.db`. Local Container sessions and Hosted Capsules
 mount persistent data at `/app/data`, where the runtime stores SQLite data and
 uploaded file bytes.
@@ -1293,3 +1293,12 @@ and exposes value-safe presence checks through `sporades env has <name>`.
 - Making endpoints the main data API.
 - Adding multi-node orchestration, managed backups, DNS automation, or a public
   hosted management API in the current scope.
+
+## Log payload cap validation
+
+Configuration loading and runtime startup reject an insufficient log envelope
+cap with `INVALID_LOG_CONFIG` and the required byte count. The minimum uses the
+actual configured Capsule identity and release; the protected event shape and
+compatibility behavior are specified in
+[the configuration guide](guide/configuration.md#structured-log-payload-cap).
+The writer retains its existing redaction and oversize-event truncation behavior.

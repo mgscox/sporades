@@ -62,7 +62,7 @@ One acceptance criterion carries a caveat worth recording: the payload is free o
 data needing redaction by construction, since it carries only declaration names.
 That is an argument from the code, not from a test asserting redaction.
 
-Known limitation, tracked separately as `.scratch/log-payload-cap-floor/`: a
-`logs.payloadMaxBytes` small enough to defeat the envelope itself still strips
-`data` from every event, this one included. That is a configuration-contract
-defect rather than a defect in this ticket's work.
+At the time of PR #29, a very small `logs.payloadMaxBytes` could strip the
+structured data from this event. PR #41 subsequently fixed that configuration
+contract using an identity-aware minimum; see `.scratch/log-payload-cap-floor/`.
+Events exceeding the documented protected allowances can still truncate.

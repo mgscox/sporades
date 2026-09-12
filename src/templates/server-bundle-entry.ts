@@ -133,6 +133,7 @@ const database: any = await openDevDatabase(databasePath, sporadesServerSource, 
   createStripeCallbackEndpoint,
   createStripeTeamBillingProvider,
 });
+database.runtimeProbeToken = process.env.SPORADES_RUNTIME_PROBE_TOKEN ?? null;
 await database.init();
 database.log.emit({
   category: "platform",

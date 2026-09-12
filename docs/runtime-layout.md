@@ -123,7 +123,7 @@ unavailable.
 
 ```text
 Container
-  Base image: ghcr.io/sporades/sporades-base:0.1.0-node22-alpine
+  Base image: ghcr.io/sporades/sporades-base:0.2.0-node22-alpine
   Runtime user: invoking host UID/GID when available, or 10001:10001 when SSH is enabled
   /app/server.mjs              read-only
   /app/public/                 read-only normalized public tree

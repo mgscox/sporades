@@ -37,7 +37,7 @@ The build-time path that turns a Capsule's server entry, client entry, `sporades
 _Avoid_: build system (too broad), compiler (only part of the work), bundler (esbuild is just one adapter inside it)
 
 **Base image**:
-The thin Sporades-owned Docker image used by local Container sessions and Hosted Capsules: `ghcr.io/sporades/sporades-base:0.1.0-node22-alpine`. It provides Node 22, the non-root `sporades` runtime user (`10001:10001`) for Hosted Capsules and fallback local execution, known read-only release paths, and the `/app/data` writable data contract. Local Container sessions run as the invoking host UID/GID when available so `.sporades/data` remains normal local user-owned state. Runtime hardening lives in the container lifecycle: read-only root filesystem, hardened `/tmp`, dropped capabilities, Docker's default seccomp profile, `no-new-privileges`, loopback-only Hosted Capsule ports behind Caddy, and Docker labels for Base image version/update policy.
+The thin Sporades-owned Docker image used by local Container sessions and Hosted Capsules: `ghcr.io/sporades/sporades-base:0.2.0-node22-alpine`. It provides Node 22, the non-root `sporades` runtime user (`10001:10001`) for Hosted Capsules and fallback local execution, known read-only release paths, and the `/app/data` writable data contract. Local Container sessions run as the invoking host UID/GID when available so `.sporades/data` remains normal local user-owned state. Runtime hardening lives in the container lifecycle: read-only root filesystem, hardened `/tmp`, dropped capabilities, Docker's default seccomp profile, `no-new-privileges`, loopback-only Hosted Capsule ports behind Caddy, and Docker labels for Base image version/update policy.
 _Avoid_: runtime image, host image
 
 **Runtime directory**:
@@ -61,7 +61,7 @@ A local CLI configuration entry that names a Host server plus a Hosted domain, s
 _Avoid_: host, remote config, environment
 
 **Hosted domain**:
-A DNS domain where Capsule subnames resolve to a Host server, such as `mattgscox.co.uk`.
+A DNS domain where Capsule subnames resolve to a Host server, such as `example.com`.
 _Avoid_: host, hostname, server domain
 
 **Hosted Capsule**:
@@ -526,6 +526,13 @@ _Avoid_: streaming output, log lines
 **JSONL log stream**:
 An append-friendly sequence of JSON log events emitted by the runtime for app and platform behavior. It is distinct from `sporades dev --json`, which streams command lifecycle events.
 _Avoid_: text logs, dev JSONL events
+
+**Log payload cap**:
+The maximum serialized log envelope budget configured by `logs.payloadMaxBytes`
+(or `logging.payloadMaxBytes`). Validation computes its minimum from the actual
+Capsule identity and release plus bounded event fields and 256 bytes of redacted
+structured data. The configuration guide owns the exact protected shape.
+_Avoid_: data-only limit, fixed global minimum
 
 **Log index**:
 A bounded SQLite-backed index of recent JSON log events used for structured inspection queries. The JSONL log stream remains the durable append stream, so Log index write failures should degrade inspection rather than roll back app, auth, or file workflows.

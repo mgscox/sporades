@@ -4,7 +4,7 @@ Status: done
 
 ## Problem
 
-Fresh Host servers may not have `ghcr.io/sporades/sporades-base:0.1.0-node22-alpine` installed locally, and the registry pull can fail with `denied`. In that state, `sporades host push --verify` can install the release but fail at container start because Docker cannot resolve the configured base image.
+Fresh Host servers may not have `ghcr.io/sporades/sporades-base:0.2.0-node22-alpine` installed locally, and the registry pull can fail with `denied`. In that state, `sporades host push --verify` can install the release but fail at container start because Docker cannot resolve the configured base image.
 
 Local `sporades deploy` already prepares the base image by inspecting, pulling, and then building from `Dockerfile.base` when needed. Hosted Capsule lifecycle should have the same no-workaround behavior.
 

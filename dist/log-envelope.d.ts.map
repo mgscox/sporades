@@ -1,0 +1,1 @@
+{"version":3,"file":"log-envelope.d.ts","sourceRoot":"","sources":["../src/log-envelope.ts"],"names":[],"mappings":"AAGA,KAAK,WAAW,GAAG,MAAM,CAAC,MAAM,EAAE,GAAG,CAAC,CAAC;AAIvC,wBAAgB,mBAAmB,CAAC,KAAK,EAAE,WAAW;;;;;;;;;;;;;;;;;;;EAyBrD;AAED,wBAAgB,yBAAyB,CAAC,MAAM,GAAE,WAAgB,UAajE;AAED,wBAAgB,kBAAkB,CAAC,MAAM,GAAE,WAAgB,OAE1D;AAED,wBAAgB,iBAAiB,CAAC,MAAM,GAAE,WAAgB,QAgBzD"}

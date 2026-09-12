@@ -297,6 +297,10 @@ const MIGRATED_RUNTIME_MODULES = [
   // replay from a conflicting claim, so it must remain visible to the deployed
   // module census even though Capsule code cannot import it.
   { file: "file-ingress-runtime.js", atLeast: 10, sentinel: "sameFileDescriptor" },
+  // Attachment responses are carried as a sealed runtime module. Its private
+  // identifier validator is the boundary that prevents Capsule-controlled
+  // values from becoming unbounded File selectors.
+  { file: "endpoint-file-response.js", atLeast: 5, sentinel: "exactIdentifier" },
   // Batch 7's two non-domain modules, each holding two functions, so each floor is 1 — a floor only
   // ever asserts that the parse returned something, and for a module this size "something" is both.
   // Both sentinels are exported, as `mail-config`'s and `maybe-promise`'s are, because the monolith
@@ -308,6 +312,7 @@ const MIGRATED_RUNTIME_MODULES = [
   // this batch, so it was visible to these guards by being registered; finding it here is the
   // evidence that it did not leave the census by moving.
   { file: "runtime-log-policy.js", atLeast: 1, sentinel: "isSensitiveLogKey" },
+  { file: "log-envelope.js", atLeast: 1, sentinel: "uncappedLogEnvelope" },
   // Batch 9 renamed this file from `stored-row-decoding.js` and gave it the writing half —
   // `serializeFieldValue` and `normalizeDateValue`, plus the private `toSqlNumber` and
   // `dateValueError` — so it holds six functions rather than two and the floor rises with it. The
@@ -1253,10 +1258,9 @@ const namesRunDelimiters = (source) => {
 // because it is not listed; a listed one that disappears fails too, so the reasons below cannot
 // quietly go stale. Each entry says why it is not the one tokenizer.
 //
-// Four of the seven lex JavaScript rather than SQL. They are here because no detector working from
-// delimiter literals can tell the two apart — both spell a string run with the same three quote
-// characters — and listing them with the reason is honest where narrowing the detector to exclude
-// them would just be the spelling-coupled guard again under a new name.
+// Some entries handle JavaScript or shell syntax rather than SQL. Delimiter literals alone cannot
+// distinguish these languages, which share quote characters. Listing each non-SQL purpose keeps
+// the detector broad instead of hiding new walkers behind language-specific exclusions.
 const RUN_LEXER_CENSUS = {
   skipSqlQuotedOrCommented: "the one tokenizer every read-only inspection consumer asks a dialect of",
   // On the inspection path — every Postgres inspection query passes through it twice — and left
@@ -1268,6 +1272,8 @@ const RUN_LEXER_CENSUS = {
   // Off the inspection path: reached only from libSQL's `exec`, and `runReadOnlyInspectionQuery`
   // goes through `prepare`. Latent duplication of the same class; has its own ticket.
   splitSqlStatements: "recorded exception: reached only from libSQL exec, not from the inspection path",
+  exactShellVocabularyToken: "recognizes quoted Bash vocabulary during uploaded-text screening, not SQL",
+  shellWordHasPathExpansion: "tracks shell quoting for path expansion during uploaded-text screening, not SQL",
   extractObjectPropertySource: "lexes Capsule definition JavaScript, not SQL",
   findMatchingDelimiter: "lexes Capsule definition JavaScript, not SQL",
   findMatchingParen: "lexes Capsule definition JavaScript, not SQL",

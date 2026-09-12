@@ -155,7 +155,7 @@ for (const { framework, template, toolchain } of [
 
     const binding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
     const inspectedImage = await execFileAsync("docker", ["inspect", "--format", "{{.Config.Image}}", binding.containerId], { timeout: 30_000 });
-    assert.equal(inspectedImage.stdout.trim(), "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine");
+    assert.equal(inspectedImage.stdout.trim(), "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine");
     const paths = binding.clientRelease.paths;
     const representatives = {
       html: "index.html",

@@ -41,6 +41,7 @@
       "src/client-toolchain.ts",
       "src/client.ts",
       "src/database-runtime.ts",
+      "src/dev-clamav-sidecar.ts",
       "src/email-events-config.ts",
       "src/email-events-runtime.ts",
       "src/endpoint-file-response.ts",
@@ -50,6 +51,7 @@
       "src/http-runtime.ts",
       "src/inspection-sql.ts",
       "src/jobs-runtime.ts",
+      "src/log-envelope.ts",
       "src/log-index-guard.ts",
       "src/log-index-storage.ts",
       "src/mail-config-validation.ts",
@@ -89,10 +91,11 @@
       "src/types/stripe.d.ts",
       "src/types/team-billing-import.d.ts",
       "src/user-preferences-runtime.ts",
+      "src/vendor-decoders.d.ts",
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "9df324b0fcfed8555d23809c25a72b28d15cafe011b6115ead2ec01d8922dcf2"
+    "digest": "194b31976ac111ba03d1b421c82c2397557f7f840f2f3bfafaacd779e6f6e750"
   },
   "outputs": {
     "files": [
@@ -226,6 +229,10 @@
       "dist/database-runtime.d.ts.map",
       "dist/database-runtime.js",
       "dist/database-runtime.js.map",
+      "dist/dev-clamav-sidecar.d.ts",
+      "dist/dev-clamav-sidecar.d.ts.map",
+      "dist/dev-clamav-sidecar.js",
+      "dist/dev-clamav-sidecar.js.map",
       "dist/email-events-config.d.ts",
       "dist/email-events-config.d.ts.map",
       "dist/email-events-config.js",
@@ -262,6 +269,10 @@
       "dist/jobs-runtime.d.ts.map",
       "dist/jobs-runtime.js",
       "dist/jobs-runtime.js.map",
+      "dist/log-envelope.d.ts",
+      "dist/log-envelope.d.ts.map",
+      "dist/log-envelope.js",
+      "dist/log-envelope.js.map",
       "dist/log-index-guard.d.ts",
       "dist/log-index-guard.d.ts.map",
       "dist/log-index-guard.js",
@@ -403,6 +414,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "d55f69659867a826f7112affb785b2476cd6a52f44abc4e2bf55ea73a73734f9"
+    "digest": "a380d475c49fad27d19dae0d1054d29e494fd53ab3e84c6417a63a6560881f76"
   }
 }

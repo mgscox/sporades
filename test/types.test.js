@@ -69,6 +69,18 @@ test("sporades api bindings compile representative strict TypeScript app code", 
       path.join(dir, "app.ts"),
       `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, requireUserAuth, schedule, stripeEvent, table, type TableApi, type TableDefinition } from "sporades/server";
 import * as publicServerApi from "sporades/server";
+const principalFieldsOnly: publicServerApi.FileIngressAdmissionDecision = { allow: true, principal: { namespace: "application", key: "integration" }, allowFiles: false };
+const principalUndefinedFiles: publicServerApi.FileIngressAdmissionDecision = { allow: true, principal: { namespace: "application", key: "integration" }, allowFiles: undefined };
+// @ts-expect-error principal admission file permission must be a boolean.
+const principalInvalidFiles: publicServerApi.FileIngressAdmissionDecision = { allow: true, principal: { namespace: "application", key: "integration" }, allowFiles: "false" };
+const fieldsOnlyAdmission: publicServerApi.EndpointMultipartAdmissionDecision = { allow: true, allowFiles: false };
+const uploadAdmission: publicServerApi.EndpointMultipartAdmissionDecision = { allow: true, allowFiles: true };
+const legacyAdmission: publicServerApi.EndpointMultipartAdmissionDecision = { allow: true };
+const undefinedAdmission: publicServerApi.EndpointMultipartAdmissionDecision = { allow: true, allowFiles: undefined };
+// @ts-expect-error admission file permission must be a boolean.
+const malformedAdmission: publicServerApi.EndpointMultipartAdmissionDecision = { allow: true, allowFiles: "false" };
+// @ts-expect-error denial cannot grant file permission.
+const deniedAdmission: publicServerApi.EndpointMultipartAdmissionDecision = { allow: false, allowFiles: true };
 import { createStripePaymentIntegration, type StripeCheckoutSessionResult, type StripeCustomerPortalSessionResult, type StripePaymentsDisabledResult, type VerifiedStripeEvent } from "sporades/server/stripe";
 import { importLegacyTeamBillingEvidence, type LegacyTeamBillingEvidence, type TeamBillingImportAdapter } from "sporades/server/team-billing-import";
 import { accessKeys, auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teamBilling, teams, type AccessKeyErrorCode, type JourneyRecord } from "sporades/client";

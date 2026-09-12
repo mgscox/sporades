@@ -26,7 +26,7 @@ than treating them as a live constraint and propagating them into new code.
 One footnote closes: the ADR notes that the accessor raises the effective Node
 floor to 22.3.0 while `package.json` declared `">=22"`, and calls that a gap in
 the declared range that was not its batch's to close. It has since been closed —
-`engines.node` is `">=22.3.0"`.
+`engines.node` is `">=22.13.0 <23 || >=24"`.
 
 Extends ADR-0041, which decided how a migrated runtime region travelled into the
 emitted-list bundle, and narrowed the rule it left in place for how such a module
@@ -107,13 +107,10 @@ the region they moved out of.
 
 ## What this costs, stated rather than left to be found
 
-**It raises the effective Node floor to 22.3.0.** `process.getBuiltinModule` landed
-in Node 22.3.0; `package.json` declares `"node": ">=22"`. The declared range is
-therefore wider than what the runtime now needs, on releases 22.0 through 22.2. The
-shipped container is `node:22-alpine`, which has resolved well past 22.3 since June
-2024, so this is a gap in the declared range rather than an observed one — and it
-is stated here rather than silently closed, because narrowing `engines` is a
-packaging decision with its own consequences and is not this batch's to make.
+**It raises the effective Node floor to 22.13.0.** `process.getBuiltinModule` landed
+earlier, while the pinned PDF parser requires Node 22.13 or Node 24+. `package.json`
+and the runtime guard enforce that same range. The shipped container pins Node
+22.14, so package metadata, startup behaviour, and deployment now agree.
 
 **It is a second way to reach a builtin, and two ways is more than one.** A reader
 now has to know when to use which. That is why the four-step order above is written

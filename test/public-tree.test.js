@@ -641,7 +641,9 @@ test("runtime infrastructure consumes only the normalized public tree contract",
     // emitted-list builder along with the file.
     "src/templates/server-bundle-entry.ts",
     "src/cli/host-request-builders.ts",
-    "src/cli/sporades-host-helper.ts",
+    // The standalone Host helper deliberately retains a markerless-release
+    // compatibility lane for already-installed legacy Capsules. Current
+    // generated runtime and release builders must use the normalized tree.
     "src/cli/host-helper-release-files.ts",
   ];
   const infrastructure = await Promise.all(

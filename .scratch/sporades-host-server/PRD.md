@@ -1,10 +1,13 @@
 # Sporades Host Server MVP
 
+Domain and IP addresses in this plan are documentation placeholders; substitute
+your configured Host domain and SSH target for live validation.
+
 Status: ready-for-agent
 
 ## Problem Statement
 
-Sporades currently supports local dev sessions and local container sessions, but there is no remote host that can receive, run, and manage Capsules. The immediate need is an MVP server that can host Capsules on subdomains, starting with `mattgscox.co.uk` resolving to `168.119.161.21`, while avoiding a design that hard-codes that domain or server into the product.
+Sporades currently supports local dev sessions and local container sessions, but there is no remote host that can receive, run, and manage Capsules. The immediate need is an MVP server that can host Capsules on subdomains, starting with `example.com` resolving to `203.0.113.10`, while avoiding a design that hard-codes that domain or server into the product.
 
 The user needs a Host server that can be controlled entirely through the CLI: register a Capsule subname, push a Capsule Bundle, start/stop/restart the Hosted Capsule through Docker, list Hosted Capsules, and inspect Docker stats. A dashboard may come later, but it is deliberately not part of the MVP.
 
@@ -12,7 +15,7 @@ The user needs a Host server that can be controlled entirely through the CLI: re
 
 Build a single-node Sporades Host server controlled over SSH. The local Sporades CLI will use configured Host profiles to resolve a Host server, Hosted domain, scheme, and remote root. The Host server will store the authoritative domain-aware registry, Capsule release directories, persistent data directories, Docker container metadata, and generated reverse-proxy configuration. A single Host server installation should be able to manage multiple Hosted domains from day one.
 
-The first configured Host profile can point at `root@168.119.161.21` with Hosted domain `mattgscox.co.uk`, but the implementation must support any future domain/server pair from the outset. A Host profile such as `personal` should be a local convenience, not a platform assumption.
+The first configured Host profile can point at `root@203.0.113.10` with Hosted domain `example.com`, but the implementation must support any future domain/server pair from the outset. A Host profile such as `personal` should be a local convenience, not a platform assumption.
 
 The Host server should run Hosted Capsules as Docker containers using the existing Sporades Bundle shape: server bundle, client bundle, `index.html`, `sporades.json`, optional Server env, and persistent `/app/data`. Caddy should use per-Capsule generated routes for each `subname.domain`, aided by Docker labels for container discovery and automation. Hosted domains are assumed to sit behind Cloudflare wildcard SSL, with Caddy presenting a Cloudflare origin certificate on the Host server rather than obtaining public certificates per Capsule. The MVP can use root SSH because the target server is already prepared that way, but the implementation should keep that as configuration, not a security model embedded forever like bad eyeliner.
 
@@ -23,7 +26,7 @@ A registered Hosted Capsule that is not currently running should resolve to a Ho
 ## User Stories
 
 1. As a Sporades developer, I want to configure a named host alias, so that I do not need to pass the server and domain to every command.
-2. As a Sporades developer, I want host configuration to support arbitrary domains, so that `mattgscox.co.uk` is only the first hosted domain rather than a hard-coded platform constant.
+2. As a Sporades developer, I want host configuration to support arbitrary domains, so that `example.com` is only the first hosted domain rather than a hard-coded platform constant.
 3. As a Sporades developer, I want host configuration to support arbitrary SSH targets, so that the hosting server can move without changing command semantics.
 4. As a Sporades developer, I want to choose a current host alias, so that repeated host commands target the intended server/domain pair.
 5. As a Sporades developer, I want to override the host alias per command, so that I can work with multiple remote hosts from one machine.
@@ -71,7 +74,7 @@ A registered Hosted Capsule that is not currently running should resolve to a Ho
 47. As a Sporades developer, I want container names to include domain-safe identity, so that Capsules with the same subname on different domains do not collide.
 48. As a Sporades developer, I want Caddy or equivalent proxy reloads to happen after routing changes, so that registered Capsules become reachable without manual server edits.
 49. As a Sporades developer, I want failed proxy reloads to avoid corrupting the previous working config, so that existing Capsules stay reachable.
-50. As a Sporades developer, I want the first production host to work at `mattgscox.co.uk`, so that the MVP can be tested as soon as DNS points to `168.119.161.21`.
+50. As a Sporades developer, I want the first production host to work at `example.com`, so that the MVP can be tested as soon as DNS points to `203.0.113.10`.
 
 ## Implementation Decisions
 
@@ -91,7 +94,7 @@ A registered Hosted Capsule that is not currently running should resolve to a Ho
 - Start should regenerate the Capsule route to point at the running container. Stop should regenerate the Capsule route back to the Hosted Capsule unavailable response. Restart should end with the route pointing at the replacement running container.
 - If start or restart fails to leave a healthy running container, the Capsule route should point to the Hosted Capsule unavailable response, and the CLI should return structured JSON failure output with an actionable hint.
 - For the MVP, a healthy running container means Docker accepted the start and the container is still running after a short grace check. A full Capsule health endpoint is not required.
-- The target server/domain pair must always come from host configuration or explicit command flags. `mattgscox.co.uk` and `root@168.119.161.21` are seed values for the first setup, not constants.
+- The target server/domain pair must always come from host configuration or explicit command flags. `example.com` and `root@203.0.113.10` are seed values for the first setup, not constants.
 - The remote server layout should be domain-aware. Host state should be grouped by domain under the configured remote root, with each domain containing its registry and Capsule directories.
 - A single Host server can manage multiple Hosted domains. Host profiles keep CLI targeting simple by selecting one Host server and one Hosted domain, while the server-side registry, storage, container names, labels, and proxy config remain domain-scoped.
 - Capsule identity uniqueness is scoped to a domain. Container names and labels should include a domain-safe component plus subname to avoid collisions.
@@ -113,7 +116,7 @@ A registered Hosted Capsule that is not currently running should resolve to a Ho
 - Hosted domains should assume Edge TLS through Cloudflare wildcard SSL. The Host server should present a configured Cloudflare origin certificate; it should not use per-Capsule ACME or DNS-provider certificate automation in the MVP.
 - Bootstrap should assume the Cloudflare origin certificate and key already exist on the Host server. It should configure Caddy to use the Hosted domain TLS directory and fail with an actionable hint if those files are missing or unusable.
 - The Hosted domain TLS directory should live under the domain-scoped remote root at `hosts/<domain>/tls/`, with expected files named `origin.crt` and `origin.key`.
-- The MVP should assume wildcard DNS for each hosted domain. For the first host, both the apex/wanted domain and wildcard subdomains should resolve to `168.119.161.21`.
+- The MVP should assume wildcard DNS for each hosted domain. For the first host, both the apex/wanted domain and wildcard subdomains should resolve to `203.0.113.10`.
 - All host commands should support `--json` using the existing Sporades JSON output envelope.
 - Server stats should use Docker stats in no-stream mode and normalize the output enough for JSON consumers.
 - The MVP may use root SSH because the target server already has key access configured. The design should keep SSH user and server configurable so a dedicated Unix user can replace root later.
@@ -123,7 +126,7 @@ A registered Hosted Capsule that is not currently running should resolve to a Ho
 - The highest-value test seam is the CLI-to-remote-host boundary. Tests should exercise user-visible commands while replacing `ssh`, upload tooling, Docker, and proxy commands with fake executables or fake remote helpers.
 - Tests should assert external behavior: command arguments, created local metadata, JSON output, remote helper inputs, release archive contents, and error envelopes. They should avoid asserting private helper function internals.
 - The existing container session tests provide prior art for fake Docker command capture, JSON CLI assertions, temp project scaffolds, and checking bundled runtime files.
-- Host configuration tests should verify that aliases resolve correctly, current host selection works, explicit host overrides work, and no command relies on `mattgscox.co.uk` unless it was configured.
+- Host configuration tests should verify that aliases resolve correctly, current host selection works, explicit host overrides work, and no command relies on `example.com` unless it was configured.
 - Registration tests should verify subname validation, domain-scoped uniqueness, local remote binding writes, and JSON output.
 - Push tests should verify that the existing Bundle pipeline is invoked and the uploaded release contains server bundle, client bundle, `index.html`, `sporades.json`, and optional Server env.
 - Push tests should verify that `push` does not restart by default and that `push --restart` invokes the restart path after the release is installed.
@@ -154,7 +157,7 @@ A registered Hosted Capsule that is not currently running should resolve to a Ho
 
 ## Further Notes
 
-The first manual host target is expected to be reachable with `ssh root@168.119.161.21`. DNS is expected to point `mattgscox.co.uk` and wildcard subdomains at that IP before end-to-end browser validation.
+The first manual host target is expected to be reachable with `ssh root@203.0.113.10`. DNS is expected to point `example.com` and wildcard subdomains at that IP before end-to-end browser validation.
 
 This PRD is intentionally for the server/host side of the hosted Capsule MVP. A separate CLI ergonomics or dashboard PRD can build on it later if needed.
 
