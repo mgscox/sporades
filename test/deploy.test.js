@@ -5299,3 +5299,96 @@ test("local deploy.files restart repairs atomic-save access and rejects unsafe o
     }
   });
 });
+
+test("local deploy.files remove preserves binding and candidate state while an attempt survives", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "remove-pending", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "remove-pending"));
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.deploy.files = [{ path: "settings.json" }];
+    await writeFile(configPath, JSON.stringify(config));
+    await writeFile(path.join(projectDir, "settings.json"), "snapshot");
+    const docker = await installFakeDocker(dir, "pending-candidate");
+    const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(deployed.code, 0, deployed.stdout + deployed.stderr);
+    const bindingPath = path.join(projectDir, ".sporades/binding.json");
+    const beforeBinding = await readFile(bindingPath, "utf8");
+    const snapshot = path.join(JSON.parse(beforeBinding).deployFilesRoot, "settings.json");
+    const preload = path.join(dir, "exit-candidate.mjs");
+    await writeFile(preload, `import cp from 'node:child_process'; import { syncBuiltinESMExports } from 'node:module';
+const spawn = cp.spawnSync;
+cp.spawnSync = function(command, args, ...rest) {
+  const result = spawn.call(this, command, args, ...rest);
+  if (command === 'docker' && args[0] === 'run' && args.includes('--detach') && result.status === 0) process.exit(17);
+  return result;
+}; syncBuiltinESMExports();`);
+    const interrupted = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...docker.env, NODE_OPTIONS: `--import=${preload}` } });
+    assert.equal(interrupted.code, 17, interrupted.stdout + interrupted.stderr);
+    const journal = path.join(projectDir, ".sporades/deploy-file-attempt.jsonl");
+    const beforeJournal = await readFile(journal, "utf8");
+    const calls = (await docker.calls()).length;
+    const removed = await runCli(["deploy", "remove", "--json"], { cwd: projectDir, env: docker.env });
+    assert.notEqual(removed.code, 0);
+    assert.match(removed.stdout + removed.stderr, /requires recovery/);
+    assert.equal((await docker.calls()).length, calls);
+    assert.equal(await readFile(bindingPath, "utf8"), beforeBinding);
+    assert.equal(await readFile(journal, "utf8"), beforeJournal);
+    assert.equal(await readFile(snapshot, "utf8"), "snapshot");
+  });
+});
+
+test("local deploy.files rollback repairs raced replacement access before restoring SSH runtime", async () => {
+  for (const repairFails of [false, true]) await withTempDir(async (dir) => {
+    const created = await runCli(["create", "rollback-save", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "rollback-save"));
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.ssh = { authorizedKeys: [{ key: TEST_PUBLIC_KEY }] };
+    config.deploy.files = [{ path: "settings.json", update: "preserve" }];
+    await writeFile(configPath, JSON.stringify(config));
+    await writeFile(path.join(projectDir, "settings.json"), "seed");
+    const docker = await installFakeDocker(dir, "rollback-save-candidate");
+    const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(deployed.code, 0, deployed.stdout + deployed.stderr);
+    delete config.ssh;
+    await writeFile(configPath, JSON.stringify(config));
+    const stored = preservedDeployFilePath(path.join(projectDir, ".sporades/preserved-files"), "settings.json");
+    const preload = path.join(dir, "save-during-candidate.mjs");
+    await writeFile(preload, `import fs from 'node:fs'; import cp from 'node:child_process'; import { syncBuiltinESMExports } from 'node:module';
+const target = ${JSON.stringify(stored)}; let replaced = false;
+const lstat = fs.promises.lstat;
+fs.promises.lstat = async function(file, ...rest) {
+  const info = await lstat.call(this, file, ...rest);
+  if (String(file) === target && !replaced) { info.gid = 10001; info.mode = (info.mode & ~0o777) | 0o660; }
+  return info;
+};
+const spawn = cp.spawnSync;
+cp.spawnSync = function(command, args, ...rest) {
+  const result = spawn.call(this, command, args, ...rest);
+  if (command === 'docker' && args[0] === 'run' && args.includes('--detach') && result.status === 0) {
+    fs.writeFileSync(target + '.edit', 'concurrent save', { mode: 0o600 }); fs.renameSync(target + '.edit', target); replaced = true;
+  }
+  if (${repairFails} && replaced && args.includes(target + ':/file:rw') && args.at(-1).includes('10001')) return { ...result, status: 1, stderr: 'injected repair failure' };
+  return result;
+}; syncBuiltinESMExports();`);
+    const before = (await docker.calls()).length;
+    const failed = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...docker.env, NODE_OPTIONS: `--import=${preload}`, SPORADES_TEST_CONTAINER_REPLACEMENT_FAULT: "consumer" } });
+    assert.notEqual(failed.code, 0);
+    const calls = (await docker.calls()).slice(before);
+    const repair = calls.findLastIndex((call) => call.args.includes(`${stored}:/file:rw`));
+    assert(repair >= 0);
+    assert.match(calls[repair].args.at(-1), /fchownSync\(fd, \d+, 10001\)/);
+    assert.match(calls[repair].args.at(-1), /fchmodSync\(fd, 432\)/);
+    const start = calls.findIndex((call) => call.args[0] === "start");
+    if (repairFails) {
+      assert.equal(start, -1);
+      assert.match(failed.stdout, /preserved-file-access/);
+    } else assert(start > repair, JSON.stringify(calls));
+    assert.equal(await readFile(stored, "utf8"), "concurrent save");
+  });
+});

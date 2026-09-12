@@ -3946,6 +3946,14 @@ async function startContainerSession(options) {
                 }
             }
         }
+        if (!candidateRetained && existingBinding) {
+            try {
+                await prepareLocalPreservedFileAccess(options, existingBinding);
+            }
+            catch {
+                rollbackFailures.push("preserved-file-access");
+            }
+        }
         if (oldRenamed) {
             try {
                 runDocker(["rename", rollbackName, oldName], options.projectDir, "", "");
@@ -3953,7 +3961,7 @@ async function startContainerSession(options) {
             catch {
                 rollbackFailures.push("container-name");
             }
-            if (oldWasRunning) {
+            if (oldWasRunning && !rollbackFailures.includes("preserved-file-access")) {
                 try {
                     runDocker(["start", oldName], options.projectDir, "", "");
                 }
@@ -5575,10 +5583,8 @@ async function stopLocalContainerSession(options) {
     runDocker(["stop", binding.containerId], options.projectDir, "Failed to stop the local Container session.", "Check Docker is running and the bound container still exists. If it was removed manually, run `sporades deploy remove`.");
     return containerLifecycleSummary("stopped", binding);
 }
-async function restartLocalContainerSession(options) {
-    const { binding } = await requireLocalContainerBinding(options, "restart");
+async function prepareLocalPreservedFileAccess(options, binding) {
     const preservedRoot = path.join(options.projectDir, ".sporades", "preserved-files");
-    await beginPreservedFileAttempt(preservedRoot, "restart", false);
     const localUser = localContainerRuntimeUser();
     const runtimeUser = binding.ssh?.enabled ? baseImageRuntimeUser() : localUser;
     for (const relative of new Set(resolveDeployFiles(binding.deployFiles).filter((file) => file.update === "preserve").map((file) => file.path.normalize("NFC")))) {
@@ -5589,6 +5595,12 @@ async function restartLocalContainerSession(options) {
             runDocker(localPreservedFileAccessArgs(target, localUser, runtimeUser, SPORADES_BASE_IMAGE.image), options.projectDir, "Failed to restore preserved file access.", "Check Docker can repair file access for the bound Container runtime before restarting.");
         }
     }
+}
+async function restartLocalContainerSession(options) {
+    const { binding } = await requireLocalContainerBinding(options, "restart");
+    const preservedRoot = path.join(options.projectDir, ".sporades", "preserved-files");
+    await beginPreservedFileAttempt(preservedRoot, "restart", false);
+    await prepareLocalPreservedFileAccess(options, binding);
     const config = await readProjectConfig(options.projectDir);
     const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
     const serviceState = await startCapsuleServices(capsuleServices, options.projectDir, {
@@ -5611,6 +5623,7 @@ async function restartLocalContainerSession(options) {
     }
 }
 async function removeLocalContainerSession(options) {
+    await beginPreservedFileAttempt(path.join(options.projectDir, ".sporades", "preserved-files"), "remove", false);
     const bindingPath = path.join(options.projectDir, CONTAINER_BINDING_FILE);
     const binding = await readContainerBinding(bindingPath);
     if (!binding?.containerId) {

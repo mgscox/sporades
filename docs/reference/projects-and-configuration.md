@@ -691,7 +691,7 @@ inode with an editor's atomic-save operation requires restarting the container
 to refresh the bind mount. Locally, use `sporades deploy stop` followed by
 `sporades deploy restart`; Hosted Capsules use `sporades host restart`. These
 paths validate preserved files and restore the bound runtime's file access before
-starting it. A surviving local attempt journal also blocks restart.
+starting it. A surviving local attempt journal also blocks restart and removal until the candidate is reconciled. Failed replacement restores access for the prior binding even when an editor has replaced the file inode; if that repair fails, the old runtime stays stopped and recovery is reported as incomplete.
 
 Paths are normalized using Node path resolution. They must stay under the
 project root and cannot collide with `.sporades/`, `public/`, `data/`, the server
