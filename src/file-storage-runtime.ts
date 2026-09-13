@@ -1489,7 +1489,8 @@ export async function drainCurrentUserFileOperations(context: LooseRecord | unde
         const discardedForwarding = hasDiscardedForwardedFileRejection(operation);
         if (discardedForwarding) return true;
         if (operation.forwardedRejection && !operation.exactForwardingPromiseObserved
-          && ![...operation.promiseNodes].some((node) => !node.forwarded && node.outcome === "rejected")) {
+          && ![...operation.promiseNodes].some((node) => !node.forwarded
+            && (node.outcome === "rejected" || (node.userContinuation && node.outcome === "fulfilled")))) {
           return true;
         }
         const graphFailureWasHandled = operation.promiseNodes.size > 0 && !discardedForwarding;
