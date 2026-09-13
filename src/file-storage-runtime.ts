@@ -944,8 +944,6 @@ type CurrentUserFileOperation = {
   forwardedRejection: boolean;
   exactForwardingPromiseObserved: boolean;
   promiseNodes: Set<ForwardedFilePromiseNode>;
-  rootSequenceAtCreation: number;
-  rootAtInvocation?: Promise<any>;
 };
 type ForwardedFilePromiseNode = {
   promise: Promise<any>;
@@ -975,11 +973,7 @@ let forwardedFilePromiseHookStop: (() => void) | undefined;
 let forwardedFilePromiseHookRetainers = 0;
 let forwardedFilePromiseHookStack: Promise<any>[] = [];
 let forwardedFileResolverOperations = new WeakMap<Function, Set<CurrentUserFileOperation>>();
-let forwardedFileResolverPromises = new WeakMap<Function, Promise<any>>();
-let forwardedFileRootSequences = new WeakMap<Promise<any>, number>();
-let forwardedFileRootPredecessors = new WeakMap<Promise<any>, WeakRef<Promise<any>>>();
-let forwardedFileRootSequence = 0;
-let latestForwardedFileRootPromise: Promise<any> | undefined;
+let forwardedFileRootPromises = new WeakSet<Promise<any>>();
 const forwardedFileCallbackOperationSets: CurrentUserFileOperation[][] = [];
 const forwardedFileCombinatorOperationSets: Set<CurrentUserFileOperation>[] = [];
 const forwardedFilePromiseCombinatorNames = ["all", "allSettled", "any", "race"] as const;
@@ -987,6 +981,7 @@ let forwardedFilePromiseCombinatorDescriptors: Map<string, PropertyDescriptor> |
 let forwardedFilePromiseFinallyDescriptor: PropertyDescriptor | undefined;
 let observingForwardedFilePromise = false;
 const forwardedFileRejectionSettlementTimeoutMs = 1_000;
+const forwardedFileActiveContinuationTimeoutMs = 2_000;
 
 function installForwardedFilePromiseCombinators() {
   if (forwardedFilePromiseCombinatorDescriptors) return;
@@ -1108,12 +1103,7 @@ function retainForwardedFilePromiseHook(state: CurrentUserFileApiState) {
     init(promise: Promise<any>, parent?: Promise<any>) {
       if (observingForwardedFilePromise) return;
       if (!parent) {
-        forwardedFileRootSequence += 1;
-        forwardedFileRootSequences.set(promise, forwardedFileRootSequence);
-        if (latestForwardedFileRootPromise) {
-          forwardedFileRootPredecessors.set(promise, new WeakRef(latestForwardedFileRootPromise));
-        }
-        latestForwardedFileRootPromise = promise;
+        forwardedFileRootPromises.add(promise);
       }
       if (parent) {
         let children = forwardedFilePromiseChildren.get(parent);
@@ -1160,7 +1150,7 @@ function retainForwardedFilePromiseHook(state: CurrentUserFileApiState) {
         ? callbackOperations
         : [...new Set([...(activeNodes?.values() ?? [])].map((node) => node.operation))];
       for (const operation of operations) {
-        if (callbackOperations?.includes(operation) && forwardedFileRootSequences.has(promise)) {
+        if (callbackOperations?.includes(operation) && forwardedFileRootPromises.has(promise)) {
           operation.exactForwardingPromiseObserved = true;
         }
         if (getForwardedFilePromiseNode(promise, operation)) continue;
@@ -1184,10 +1174,7 @@ function releaseForwardedFilePromiseHook(state: CurrentUserFileApiState) {
     forwardedFilePromiseHookStack = [];
     forwardedFileCallbackOperationSets.length = 0;
     forwardedFileResolverOperations = new WeakMap();
-    forwardedFileResolverPromises = new WeakMap();
-    forwardedFileRootSequences = new WeakMap();
-    forwardedFileRootPredecessors = new WeakMap();
-    latestForwardedFileRootPromise = undefined;
+    forwardedFileRootPromises = new WeakSet();
     forwardedFileCombinatorOperationSets.length = 0;
     for (const [name, descriptor] of forwardedFilePromiseCombinatorDescriptors ?? []) {
       Object.defineProperty(Promise, name, descriptor);
@@ -1253,6 +1240,7 @@ function findDiscardedForwardedFileRejection(operation: CurrentUserFileOperation
 
 async function settleForwardedFileRejectionGraph(operation: CurrentUserFileOperation) {
   let deadline: number | undefined;
+  let activeContinuationDeadline: number | undefined;
   const settledUserContinuations = new Set<ForwardedFilePromiseNode>();
   while (true) {
     const pendingNodes = [...operation.promiseNodes]
@@ -1263,8 +1251,17 @@ async function settleForwardedFileRejectionGraph(operation: CurrentUserFileOpera
     if (userContinuations.length > 0) {
       // A consumer-provided rejection handler owns its eventual outcome. It may
       // legitimately perform work for longer than the detached-graph safety
-      // budget, so do not reinterpret it as an unhandled File rejection.
-      await Promise.all(userContinuations.map((node) => node.settlement!));
+      // budget, but it must not retain the transaction indefinitely.
+      activeContinuationDeadline ??= Date.now() + forwardedFileActiveContinuationTimeoutMs;
+      const remainingMs = activeContinuationDeadline - Date.now();
+      if (remainingMs <= 0) return false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const settled = await Promise.race([
+        Promise.all(userContinuations.map((node) => node.settlement!)).then(() => true),
+        new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), remainingMs); }),
+      ]);
+      if (timer) clearTimeout(timer);
+      if (!settled) return false;
       for (const node of userContinuations) settledUserContinuations.add(node);
       continue;
     }
@@ -1322,32 +1319,7 @@ function trackCurrentUserFileOperation(operation: CurrentUserFileOperation): Pro
               forwardedFileResolverOperations.set(onRejected, resolverOperations);
             }
             resolverOperations.add(operation);
-            let forwardingPromise = forwardedFileResolverPromises.get(onRejected);
-            const insideTrackedCombinator = forwardedFileCombinatorOperationSets.length > 0;
-            const latestRootSequence = latestForwardedFileRootPromise
-              ? forwardedFileRootSequences.get(latestForwardedFileRootPromise)
-              : undefined;
-            if (!forwardingPromise
-              && !insideTrackedCombinator
-              && latestForwardedFileRootPromise
-              && latestRootSequence !== undefined
-              && latestRootSequence > operation.rootSequenceAtCreation) {
-              forwardingPromise = latestForwardedFileRootPromise;
-              forwardedFileResolverPromises.set(onRejected, forwardingPromise);
-            }
-            if (!forwardingPromise && !insideTrackedCombinator && operation.rootAtInvocation) {
-              forwardingPromise = operation.rootAtInvocation;
-              forwardedFileResolverPromises.set(onRejected, forwardingPromise);
-            }
-            if (forwardingPromise) {
-              registerForwardedFilePromiseNode(forwardingPromise, operation).forwarded = true;
-            }
-            const precedingInvocationRoot = operation.rootAtInvocation
-              ? forwardedFileRootPredecessors.get(operation.rootAtInvocation)?.deref()
-              : undefined;
-            if (!insideTrackedCombinator && precedingInvocationRoot && precedingInvocationRoot !== forwardingPromise) {
-              registerForwardedFilePromiseNode(precedingInvocationRoot, operation).forwarded = true;
-            }
+            forwardedFileResolverOperations.set(onFulfilled, resolverOperations);
             const targetNode = getForwardedFilePromiseNode(promise, operation);
             if (targetNode) targetNode.forwarded = true;
           }
@@ -1359,6 +1331,12 @@ function trackCurrentUserFileOperation(operation: CurrentUserFileOperation): Pro
           }
         }
         let continuation: Promise<any>;
+        const fulfillmentHandler = trackPromiseResolveForwarding ? (value: any) => {
+          const resolverOperations = forwardedFileResolverOperations.get(onFulfilled) ?? new Set([operation]);
+          forwardedFileCallbackOperationSets.push([...resolverOperations]);
+          try { return onFulfilled(value); }
+          finally { forwardedFileCallbackOperationSets.pop(); }
+        } : onFulfilled;
         const rejectionHandler = trackPromiseResolveForwarding ? (reason: any) => {
           const resolverOperations = forwardedFileResolverOperations.get(onRejected) ?? new Set([operation]);
           forwardedFileCallbackOperationSets.push([...resolverOperations]);
@@ -1381,7 +1359,7 @@ function trackCurrentUserFileOperation(operation: CurrentUserFileOperation): Pro
           }
           return forwardedResult;
         } : onRejected;
-        continuation = Promise.prototype.then.call(promise, onFulfilled, rejectionHandler);
+        continuation = Promise.prototype.then.call(promise, fulfillmentHandler, rejectionHandler);
         const parentNode = getForwardedFilePromiseNode(promise, operation);
         if (promiseResolveForwarding) {
           // Native combinators attach resolver reactions through this method.
@@ -1466,7 +1444,6 @@ export function createCurrentUserFileApi(
         ));
       }
       retainForwardedFilePromiseHook(state);
-      const rootAtInvocation = latestForwardedFileRootPromise;
       const operation = deletePrivateFile(
         database,
         admittedAuth,
@@ -1488,8 +1465,6 @@ export function createCurrentUserFileApi(
         forwardedRejection: false,
         exactForwardingPromiseObserved: false,
         promiseNodes: new Set(),
-        rootSequenceAtCreation: forwardedFileRootSequence,
-        rootAtInvocation,
       };
       registerForwardedFilePromiseNode(operation, trackedOperation);
       for (const operations of forwardedFileCombinatorOperationSets) operations.add(trackedOperation);

@@ -760,6 +760,16 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
         }).catch(() => {});
         return { accepted: true };
       }),
+      handleDeferredOuterManualForwardAfterUnrelatedRoots: mutation((ctx, fileReference) => {
+        void new Promise((resolve) => {
+          void Promise.resolve().then(() => {
+            void new Promise(() => {});
+            void new Promise(() => {});
+            resolve(ctx.files.delete(fileReference));
+          });
+        }).catch(() => {});
+        return { accepted: true };
+      }),
       handleDeleteFailureWithNativeCallback: mutation((ctx, fileReference) => {
         void ctx.files.delete(fileReference).then(undefined, globalThis.__serverFileNativeRejectionHandler);
         return { accepted: true };
@@ -835,6 +845,10 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
         ]);
         return { accepted: true };
       }),
+      deleteInNeverSettlingFulfillment: mutation((ctx, fileReference) => {
+        void ctx.files.delete(fileReference).then(() => new Promise(() => {}));
+        return { accepted: true };
+      }),
       delayedAsyncRethrowResolvedDeleteFailure: mutation((ctx, fileReference) => {
         void Promise.resolve(ctx.files.delete(fileReference)).catch(async (error) => {
           await new Promise((resolve) => setTimeout(resolve, 25));
@@ -887,6 +901,7 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
     const file = await uploadFile(database, owner, "/query/unawaited-failure.txt", "still here");
     const otherFile = await uploadFile(database, other, "/query/post-delete-failure.txt", "also still here");
     const slowAggregateFile = await uploadFile(database, other, "/query/slow-aggregate.txt", "still here too");
+    const neverSettlingFulfillmentFile = await uploadFile(database, other, "/query/pending-fulfillment.txt", "still here three");
     const result = await runQuery(database, other, "deleteWithoutAwait", [file.id]);
 
     assert.equal(result.data, null);
@@ -900,6 +915,17 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
     const slowAggregate = await runMutation(database, other, "deleteInSlowRejectingAggregate", [slowAggregateFile.id]);
     assert.equal(slowAggregate.error.message, "File operation continuation did not settle.");
     assert.equal((await getPrivateFileUrl(database, other, slowAggregateFile.id)).ok, true);
+
+    const neverSettlingFulfillmentStartedAt = Date.now();
+    const neverSettlingFulfillment = await runMutation(
+      database,
+      other,
+      "deleteInNeverSettlingFulfillment",
+      [neverSettlingFulfillmentFile.id],
+    );
+    assert.equal(neverSettlingFulfillment.error.message, "File operation continuation did not settle.");
+    assert.ok(Date.now() - neverSettlingFulfillmentStartedAt < 3_000, "started continuations must remain bounded");
+    assert.equal((await getPrivateFileUrl(database, other, neverSettlingFulfillmentFile.id)).ok, true);
 
     const discardedAny = await runQuery(database, other, "deleteInPendingDiscardedAny", [file.id]);
     assert.equal(discardedAny.data, null);
@@ -1026,6 +1052,16 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
     );
     assert.equal(handledDeferredOuterManualForward.error, null);
     assert.deepEqual(handledDeferredOuterManualForward.data, { accepted: true });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const handledDeferredAfterUnrelatedRoots = await runMutation(
+      database,
+      other,
+      "handleDeferredOuterManualForwardAfterUnrelatedRoots",
+      [file.id],
+    );
+    assert.equal(handledDeferredAfterUnrelatedRoots.error, null);
+    assert.deepEqual(handledDeferredAfterUnrelatedRoots.data, { accepted: true });
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
 
     const handledDiscardedCatch = await runMutation(database, other, "handleDeleteFailureWithDiscardedCatch", [file.id]);
