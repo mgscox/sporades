@@ -820,6 +820,10 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
         void cachedPromiseFinally.call(ctx.files.delete(fileReference), () => {});
         return { accepted: true };
       }),
+      rejectAfterSuccessfulDelete: mutation((ctx, fileReference) => {
+        void ctx.files.delete(fileReference).then(() => { throw new Error("Post-delete failure."); });
+        return { accepted: true };
+      }),
       delayedAsyncRethrowResolvedDeleteFailure: mutation((ctx, fileReference) => {
         void Promise.resolve(ctx.files.delete(fileReference)).catch(async (error) => {
           await new Promise((resolve) => setTimeout(resolve, 25));
@@ -870,11 +874,16 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
 
   try {
     const file = await uploadFile(database, owner, "/query/unawaited-failure.txt", "still here");
+    const otherFile = await uploadFile(database, other, "/query/post-delete-failure.txt", "also still here");
     const result = await runQuery(database, other, "deleteWithoutAwait", [file.id]);
 
     assert.equal(result.data, null);
     assert.equal(result.error.message, "File not found.");
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const rejectedAfterSuccessfulDelete = await runMutation(database, other, "rejectAfterSuccessfulDelete", [otherFile.id]);
+    assert.equal(rejectedAfterSuccessfulDelete.error.message, "Post-delete failure.");
+    assert.equal((await getPrivateFileUrl(database, other, otherFile.id)).ok, true);
 
     const discardedAny = await runQuery(database, other, "deleteInPendingDiscardedAny", [file.id]);
     assert.equal(discardedAny.data, null);

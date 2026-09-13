@@ -956,6 +956,7 @@ type ForwardedFilePromiseNode = {
   propagatesRejection: boolean;
   forwarded: boolean;
   settlement?: Promise<void>;
+  rejectionReason?: any;
   outcome: "pending" | "fulfilled" | "rejected";
 };
 type CurrentUserFileApiState = {
@@ -1080,7 +1081,10 @@ function registerForwardedFilePromiseNode(
     observingForwardedFilePromise = true;
     node.settlement = promise.then(
       () => { node!.outcome = "fulfilled"; },
-      () => { node!.outcome = "rejected"; },
+      (reason) => {
+        node!.outcome = "rejected";
+        node!.rejectionReason = reason;
+      },
     );
     observingForwardedFilePromise = false;
   }
@@ -1194,14 +1198,16 @@ function releaseForwardedFilePromiseHook(state: CurrentUserFileApiState) {
   }
 }
 
-function hasDiscardedForwardedFileRejection(operation: CurrentUserFileOperation) {
-  if ([...operation.promiseNodes].some((node) => node.propagatesRejection
+function findDiscardedForwardedFileRejection(operation: CurrentUserFileOperation) {
+  const propagated = [...operation.promiseNodes].find((node) => node.propagatesRejection
     && node.userChildren.size === 0
-    && node.outcome === "rejected")) return true;
-  if ([...operation.promiseNodes].some((node) => node.userContinuation
+    && node.outcome === "rejected");
+  if (propagated) return propagated;
+  const userContinuation = [...operation.promiseNodes].find((node) => node.userContinuation
     && !node.forwarded
     && node.userChildren.size === 0
-    && node.outcome === "rejected")) return true;
+    && node.outcome === "rejected");
+  if (userContinuation) return userContinuation;
   let nextIndex = 0;
   const indexes = new Map<ForwardedFilePromiseNode, number>();
   const lowLinks = new Map<ForwardedFilePromiseNode, number>();
@@ -1235,8 +1241,9 @@ function hasDiscardedForwardedFileRejection(operation: CurrentUserFileOperation)
   for (const node of operation.promiseNodes) if (!indexes.has(node)) visit(node);
   const componentByNode = new Map<ForwardedFilePromiseNode, ForwardedFilePromiseNode[]>();
   for (const component of components) for (const node of component) componentByNode.set(node, component);
-  return components.some((component) => component.some((node) => node.outcome === "rejected")
+  const discardedComponent = components.find((component) => component.some((node) => node.outcome === "rejected")
     && !component.some((node) => [...node.children].some((child) => componentByNode.get(child) !== component)));
+  return discardedComponent?.find((node) => node.outcome === "rejected");
 }
 
 async function settleForwardedFileRejectionGraph(operation: CurrentUserFileOperation) {
@@ -1490,14 +1497,15 @@ export async function drainCurrentUserFileOperations(context: LooseRecord | unde
       if (operations.some((operation) => operation.promiseNodes.size > 0)) {
         await new Promise((resolve) => setImmediate(resolve));
       }
-      const graphSettled = await Promise.all(operations.map((operation, index) => outcomes[index].status === "rejected"
-        ? settleForwardedFileRejectionGraph(operation)
-        : true));
+      const graphSettled = await Promise.all(operations.map((operation) => settleForwardedFileRejectionGraph(operation)));
+      const discardedRejections = operations.map((operation, index) => graphSettled[index]
+        ? findDiscardedForwardedFileRejection(operation)
+        : undefined);
       const rejected = outcomes.find((outcome, index) => {
         if (outcome.status !== "rejected") return false;
         if (!graphSettled[index]) return true;
         const operation = operations[index];
-        const discardedForwarding = hasDiscardedForwardedFileRejection(operation);
+        const discardedForwarding = discardedRejections[index];
         if (discardedForwarding) return true;
         if (operation.forwardedRejection && !operation.exactForwardingPromiseObserved
           && ![...operation.promiseNodes].some((node) => !node.forwarded
@@ -1508,6 +1516,8 @@ export async function drainCurrentUserFileOperations(context: LooseRecord | unde
         return !operation.explicitRejectionHandler && !graphFailureWasHandled;
       });
       if (rejected?.status === "rejected") throw rejected.reason;
+      const rejectedContinuation = discardedRejections.find((node, index) => outcomes[index].status === "fulfilled" && node);
+      if (rejectedContinuation) throw rejectedContinuation.rejectionReason;
     }
   } finally {
     if (state) releaseForwardedFilePromiseHook(state);
