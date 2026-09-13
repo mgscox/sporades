@@ -1006,6 +1006,13 @@ export function createSharedDatabaseAdapterMethods(dialect) {
         findAuthUserFileAuthority(userId) {
             return this.prepare(sql("SELECT [id], [userKind], [lifecycleStatus] FROM [sporades_auth_users] WHERE [id] = ?")).get(userId) ?? null;
         },
+        lockAuthUserFileAuthority(userId) {
+            const select = sql("SELECT [id], [userKind], [lifecycleStatus] FROM [sporades_auth_users] WHERE [id] = ?");
+            if (dialect.name === "postgres") {
+                return thenIfPromise(this.prepare(`${select} FOR UPDATE`).get(userId), (row) => row ?? null);
+            }
+            return thenIfPromise(this.prepare(sql("UPDATE [sporades_auth_users] SET [id] = [id] WHERE [id] = ?")).run(userId), () => this.prepare(select).get(userId) ?? null);
+        },
         updateAuthUserProfile(row) {
             assertNotReservedAuthUserId(row.id);
             return this.prepare(sql("UPDATE [sporades_auth_users] SET [displayName] = ?, [picture] = ?, [isAuthenticated] = ?, [isGuest] = ? WHERE [id] = ?")).run(row.displayName, row.picture, row.isAuthenticated, row.isGuest, row.id);

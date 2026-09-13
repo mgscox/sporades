@@ -69686,7 +69686,7 @@ async function deletePrivateFile(database, auth, fileReference, credential = { k
   const result = await runFileMetadataTransaction(database, async (sqlite) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
     if (requireLiveActor) {
-      const actor = await sqlite.findAuthUserFileAuthority(auth?.userId);
+      const actor = await sqlite.lockAuthUserFileAuthority(auth?.userId);
       if (!actor || actor.userKind === "service" && actor.lifecycleStatus !== "active") {
         return {
           ok: false,
@@ -97060,6 +97060,18 @@ function createSharedDatabaseAdapterMethods(dialect) {
       return this.prepare(sql(
         "SELECT [id], [userKind], [lifecycleStatus] FROM [sporades_auth_users] WHERE [id] = ?"
       )).get(userId) ?? null;
+    },
+    lockAuthUserFileAuthority(userId) {
+      const select = sql(
+        "SELECT [id], [userKind], [lifecycleStatus] FROM [sporades_auth_users] WHERE [id] = ?"
+      );
+      if (dialect.name === "postgres") {
+        return thenIfPromise(this.prepare(`${select} FOR UPDATE`).get(userId), (row) => row ?? null);
+      }
+      return thenIfPromise(
+        this.prepare(sql("UPDATE [sporades_auth_users] SET [id] = [id] WHERE [id] = ?")).run(userId),
+        () => this.prepare(select).get(userId) ?? null
+      );
     },
     updateAuthUserProfile(row) {
       assertNotReservedAuthUserId(row.id);

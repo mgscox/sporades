@@ -1622,7 +1622,7 @@ export async function deletePrivateFile(
   const result = await runFileMetadataTransaction(database, async (sqlite: LooseRecord) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
     if (requireLiveActor) {
-      const actor = await sqlite.findAuthUserFileAuthority(auth?.userId);
+      const actor = await sqlite.lockAuthUserFileAuthority(auth?.userId);
       if (!actor || (actor.userKind === "service" && actor.lifecycleStatus !== "active")) {
         return {
           ok: false,
