@@ -616,6 +616,15 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
         void Promise.any(inputs());
         return { accepted: true };
       }),
+      deleteInLazyPendingDiscardedAnyAfterUnrelatedRoot: query((ctx, fileReference) => {
+        function* inputs() {
+          void Promise.resolve("unrelated");
+          yield ctx.files.delete(fileReference);
+          yield new Promise((_, reject) => setTimeout(() => reject(new Error("Delayed rejection.")), 25));
+        }
+        void Promise.any(inputs());
+        return { accepted: true };
+      }),
       handleLazyPendingAny: query(async (ctx, fileReference) => {
         function* inputs() {
           yield ctx.files.delete(fileReference);
@@ -837,6 +846,16 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
     const discardedLazyAny = await runQuery(database, other, "deleteInLazyPendingDiscardedAny", [file.id]);
     assert.equal(discardedLazyAny.data, null);
     assert.equal(discardedLazyAny.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const discardedLazyAnyAfterUnrelatedRoot = await runQuery(
+      database,
+      other,
+      "deleteInLazyPendingDiscardedAnyAfterUnrelatedRoot",
+      [file.id],
+    );
+    assert.equal(discardedLazyAnyAfterUnrelatedRoot.data, null);
+    assert.equal(discardedLazyAnyAfterUnrelatedRoot.error.message, "File not found.");
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
 
     const handledLazyAny = await runQuery(database, other, "handleLazyPendingAny", [file.id]);

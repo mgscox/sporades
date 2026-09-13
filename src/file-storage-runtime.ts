@@ -976,8 +976,48 @@ let forwardedFileRootSequences = new WeakMap<Promise<any>, number>();
 let forwardedFileRootSequence = 0;
 let latestForwardedFileRootPromise: Promise<any> | undefined;
 const forwardedFileCallbackOperationSets: CurrentUserFileOperation[][] = [];
+const forwardedFileCombinatorOperationSets: Set<CurrentUserFileOperation>[] = [];
+const forwardedFilePromiseCombinatorNames = ["all", "allSettled", "any", "race"] as const;
+let forwardedFilePromiseCombinatorDescriptors: Map<string, PropertyDescriptor> | undefined;
 let observingForwardedFilePromise = false;
 const forwardedFileRejectionSettlementTimeoutMs = 1_000;
+
+function installForwardedFilePromiseCombinators() {
+  if (forwardedFilePromiseCombinatorDescriptors) return;
+  forwardedFilePromiseCombinatorDescriptors = new Map();
+  for (const name of forwardedFilePromiseCombinatorNames) {
+    const descriptor = Object.getOwnPropertyDescriptor(Promise, name);
+    if (!descriptor || typeof descriptor.value !== "function") continue;
+    forwardedFilePromiseCombinatorDescriptors.set(name, descriptor);
+    const original = descriptor.value;
+    Object.defineProperty(Promise, name, {
+      ...descriptor,
+      value: function forwardedFilePromiseCombinator(this: PromiseConstructor, values: Iterable<any>) {
+        const operations = new Set<CurrentUserFileOperation>();
+        forwardedFileCombinatorOperationSets.push(operations);
+        try {
+          const trackedValues = {
+            *[Symbol.iterator]() {
+              for (const value of values) {
+                for (const operation of forwardedFilePromiseNodes.get(value)?.keys() ?? []) {
+                  operations.add(operation);
+                }
+                yield value;
+              }
+            },
+          };
+          const aggregate = Reflect.apply(original, this, [trackedValues]) as Promise<any>;
+          for (const operation of operations) {
+            registerForwardedFilePromiseNode(aggregate, operation).forwarded = true;
+          }
+          return aggregate;
+        } finally {
+          forwardedFileCombinatorOperationSets.pop();
+        }
+      },
+    });
+  }
+}
 
 function registerForwardedFilePromiseNode(
   promise: Promise<any>,
@@ -1025,6 +1065,7 @@ function retainForwardedFilePromiseHook(state: CurrentUserFileApiState) {
   state.promiseHookRetained = true;
   forwardedFilePromiseHookRetainers += 1;
   if (forwardedFilePromiseHookStop) return;
+  installForwardedFilePromiseCombinators();
   forwardedFilePromiseHookStop = nodePromiseHooks.createHook({
     init(promise: Promise<any>, parent?: Promise<any>) {
       if (observingForwardedFilePromise) return;
@@ -1093,6 +1134,11 @@ function releaseForwardedFilePromiseHook(state: CurrentUserFileApiState) {
     forwardedFileResolverPromises = new WeakMap();
     forwardedFileRootSequences = new WeakMap();
     latestForwardedFileRootPromise = undefined;
+    forwardedFileCombinatorOperationSets.length = 0;
+    for (const [name, descriptor] of forwardedFilePromiseCombinatorDescriptors ?? []) {
+      Object.defineProperty(Promise, name, descriptor);
+    }
+    forwardedFilePromiseCombinatorDescriptors = undefined;
     // Values in this WeakMap contain strong child references. Replace the
     // transient graph so a long-lived parent cannot retain completed handlers.
     forwardedFilePromiseChildren = new WeakMap();
@@ -1148,7 +1194,9 @@ async function settleForwardedFileRejectionGraph(operation: CurrentUserFileOpera
     const pendingNodes = [...operation.promiseNodes]
       .filter((node) => node.outcome === "pending");
     if (pendingNodes.length === 0) return true;
-    const userContinuations = pendingNodes.filter((node) => node.userContinuation);
+    const userContinuations = operation.explicitRejectionHandler
+      ? pendingNodes.filter((node) => node.userContinuation && !node.forwarded)
+      : [];
     if (userContinuations.length > 0) {
       // A consumer-provided rejection handler owns its eventual outcome. It may
       // legitimately perform work for longer than the detached-graph safety
@@ -1199,17 +1247,19 @@ function trackCurrentUserFileOperation(operation: CurrentUserFileOperation): Pro
             }
             resolverOperations.add(operation);
             let forwardingPromise = forwardedFileResolverPromises.get(onRejected);
+            const insideTrackedCombinator = forwardedFileCombinatorOperationSets.length > 0;
             const latestRootSequence = latestForwardedFileRootPromise
               ? forwardedFileRootSequences.get(latestForwardedFileRootPromise)
               : undefined;
             if (!forwardingPromise
+              && !insideTrackedCombinator
               && latestForwardedFileRootPromise
               && latestRootSequence !== undefined
               && latestRootSequence > operation.rootSequenceAtCreation) {
               forwardingPromise = latestForwardedFileRootPromise;
               forwardedFileResolverPromises.set(onRejected, forwardingPromise);
             }
-            if (!forwardingPromise && operation.rootAtInvocation) {
+            if (!forwardingPromise && !insideTrackedCombinator && operation.rootAtInvocation) {
               forwardingPromise = operation.rootAtInvocation;
               forwardedFileResolverPromises.set(onRejected, forwardingPromise);
             }
@@ -1331,6 +1381,7 @@ export function createCurrentUserFileApi(
         rootAtInvocation,
       };
       registerForwardedFilePromiseNode(operation, trackedOperation);
+      for (const operations of forwardedFileCombinatorOperationSets) operations.add(trackedOperation);
       state.pendingOperations.push(trackedOperation);
       return trackCurrentUserFileOperation(trackedOperation);
     },

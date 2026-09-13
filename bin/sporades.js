@@ -69116,8 +69116,47 @@ var forwardedFileRootSequences = /* @__PURE__ */ new WeakMap();
 var forwardedFileRootSequence = 0;
 var latestForwardedFileRootPromise;
 var forwardedFileCallbackOperationSets = [];
+var forwardedFileCombinatorOperationSets = [];
+var forwardedFilePromiseCombinatorNames = ["all", "allSettled", "any", "race"];
+var forwardedFilePromiseCombinatorDescriptors;
 var observingForwardedFilePromise = false;
 var forwardedFileRejectionSettlementTimeoutMs = 1e3;
+function installForwardedFilePromiseCombinators() {
+  if (forwardedFilePromiseCombinatorDescriptors) return;
+  forwardedFilePromiseCombinatorDescriptors = /* @__PURE__ */ new Map();
+  for (const name2 of forwardedFilePromiseCombinatorNames) {
+    const descriptor = Object.getOwnPropertyDescriptor(Promise, name2);
+    if (!descriptor || typeof descriptor.value !== "function") continue;
+    forwardedFilePromiseCombinatorDescriptors.set(name2, descriptor);
+    const original = descriptor.value;
+    Object.defineProperty(Promise, name2, {
+      ...descriptor,
+      value: function forwardedFilePromiseCombinator(values) {
+        const operations = /* @__PURE__ */ new Set();
+        forwardedFileCombinatorOperationSets.push(operations);
+        try {
+          const trackedValues = {
+            *[Symbol.iterator]() {
+              for (const value of values) {
+                for (const operation of forwardedFilePromiseNodes.get(value)?.keys() ?? []) {
+                  operations.add(operation);
+                }
+                yield value;
+              }
+            }
+          };
+          const aggregate = Reflect.apply(original, this, [trackedValues]);
+          for (const operation of operations) {
+            registerForwardedFilePromiseNode(aggregate, operation).forwarded = true;
+          }
+          return aggregate;
+        } finally {
+          forwardedFileCombinatorOperationSets.pop();
+        }
+      }
+    });
+  }
+}
 function registerForwardedFilePromiseNode(promise, operation, parent) {
   let nodes = forwardedFilePromiseNodes.get(promise);
   if (!nodes) {
@@ -69162,6 +69201,7 @@ function retainForwardedFilePromiseHook(state) {
   state.promiseHookRetained = true;
   forwardedFilePromiseHookRetainers += 1;
   if (forwardedFilePromiseHookStop) return;
+  installForwardedFilePromiseCombinators();
   forwardedFilePromiseHookStop = nodePromiseHooks.createHook({
     init(promise, parent) {
       if (observingForwardedFilePromise) return;
@@ -69224,6 +69264,11 @@ function releaseForwardedFilePromiseHook(state) {
     forwardedFileResolverPromises = /* @__PURE__ */ new WeakMap();
     forwardedFileRootSequences = /* @__PURE__ */ new WeakMap();
     latestForwardedFileRootPromise = void 0;
+    forwardedFileCombinatorOperationSets.length = 0;
+    for (const [name2, descriptor] of forwardedFilePromiseCombinatorDescriptors ?? []) {
+      Object.defineProperty(Promise, name2, descriptor);
+    }
+    forwardedFilePromiseCombinatorDescriptors = void 0;
     forwardedFilePromiseChildren = /* @__PURE__ */ new WeakMap();
   }
 }
@@ -69270,7 +69315,7 @@ async function settleForwardedFileRejectionGraph(operation) {
   while (true) {
     const pendingNodes = [...operation.promiseNodes].filter((node) => node.outcome === "pending");
     if (pendingNodes.length === 0) return true;
-    const userContinuations = pendingNodes.filter((node) => node.userContinuation);
+    const userContinuations = operation.explicitRejectionHandler ? pendingNodes.filter((node) => node.userContinuation && !node.forwarded) : [];
     if (userContinuations.length > 0) {
       await Promise.all(userContinuations.map((node) => node.settlement));
       settledUserContinuation = true;
@@ -69312,12 +69357,13 @@ function trackCurrentUserFileOperation(operation) {
             }
             resolverOperations.add(operation);
             let forwardingPromise = forwardedFileResolverPromises.get(onRejected);
+            const insideTrackedCombinator = forwardedFileCombinatorOperationSets.length > 0;
             const latestRootSequence = latestForwardedFileRootPromise ? forwardedFileRootSequences.get(latestForwardedFileRootPromise) : void 0;
-            if (!forwardingPromise && latestForwardedFileRootPromise && latestRootSequence !== void 0 && latestRootSequence > operation.rootSequenceAtCreation) {
+            if (!forwardingPromise && !insideTrackedCombinator && latestForwardedFileRootPromise && latestRootSequence !== void 0 && latestRootSequence > operation.rootSequenceAtCreation) {
               forwardingPromise = latestForwardedFileRootPromise;
               forwardedFileResolverPromises.set(onRejected, forwardingPromise);
             }
-            if (!forwardingPromise && operation.rootAtInvocation) {
+            if (!forwardingPromise && !insideTrackedCombinator && operation.rootAtInvocation) {
               forwardingPromise = operation.rootAtInvocation;
               forwardedFileResolverPromises.set(onRejected, forwardingPromise);
             }
@@ -69425,6 +69471,7 @@ function createCurrentUserFileApi(database, contextGetter, options = {}) {
         rootAtInvocation
       };
       registerForwardedFilePromiseNode(operation, trackedOperation);
+      for (const operations of forwardedFileCombinatorOperationSets) operations.add(trackedOperation);
       state.pendingOperations.push(trackedOperation);
       return trackCurrentUserFileOperation(trackedOperation);
     }

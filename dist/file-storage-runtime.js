@@ -814,8 +814,50 @@ let forwardedFileRootSequences = new WeakMap();
 let forwardedFileRootSequence = 0;
 let latestForwardedFileRootPromise;
 const forwardedFileCallbackOperationSets = [];
+const forwardedFileCombinatorOperationSets = [];
+const forwardedFilePromiseCombinatorNames = ["all", "allSettled", "any", "race"];
+let forwardedFilePromiseCombinatorDescriptors;
 let observingForwardedFilePromise = false;
 const forwardedFileRejectionSettlementTimeoutMs = 1_000;
+function installForwardedFilePromiseCombinators() {
+    if (forwardedFilePromiseCombinatorDescriptors)
+        return;
+    forwardedFilePromiseCombinatorDescriptors = new Map();
+    for (const name of forwardedFilePromiseCombinatorNames) {
+        const descriptor = Object.getOwnPropertyDescriptor(Promise, name);
+        if (!descriptor || typeof descriptor.value !== "function")
+            continue;
+        forwardedFilePromiseCombinatorDescriptors.set(name, descriptor);
+        const original = descriptor.value;
+        Object.defineProperty(Promise, name, {
+            ...descriptor,
+            value: function forwardedFilePromiseCombinator(values) {
+                const operations = new Set();
+                forwardedFileCombinatorOperationSets.push(operations);
+                try {
+                    const trackedValues = {
+                        *[Symbol.iterator]() {
+                            for (const value of values) {
+                                for (const operation of forwardedFilePromiseNodes.get(value)?.keys() ?? []) {
+                                    operations.add(operation);
+                                }
+                                yield value;
+                            }
+                        },
+                    };
+                    const aggregate = Reflect.apply(original, this, [trackedValues]);
+                    for (const operation of operations) {
+                        registerForwardedFilePromiseNode(aggregate, operation).forwarded = true;
+                    }
+                    return aggregate;
+                }
+                finally {
+                    forwardedFileCombinatorOperationSets.pop();
+                }
+            },
+        });
+    }
+}
 function registerForwardedFilePromiseNode(promise, operation, parent) {
     let nodes = forwardedFilePromiseNodes.get(promise);
     if (!nodes) {
@@ -856,6 +898,7 @@ function retainForwardedFilePromiseHook(state) {
     forwardedFilePromiseHookRetainers += 1;
     if (forwardedFilePromiseHookStop)
         return;
+    installForwardedFilePromiseCombinators();
     forwardedFilePromiseHookStop = nodePromiseHooks.createHook({
         init(promise, parent) {
             if (observingForwardedFilePromise)
@@ -923,6 +966,11 @@ function releaseForwardedFilePromiseHook(state) {
         forwardedFileResolverPromises = new WeakMap();
         forwardedFileRootSequences = new WeakMap();
         latestForwardedFileRootPromise = undefined;
+        forwardedFileCombinatorOperationSets.length = 0;
+        for (const [name, descriptor] of forwardedFilePromiseCombinatorDescriptors ?? []) {
+            Object.defineProperty(Promise, name, descriptor);
+        }
+        forwardedFilePromiseCombinatorDescriptors = undefined;
         // Values in this WeakMap contain strong child references. Replace the
         // transient graph so a long-lived parent cannot retain completed handlers.
         forwardedFilePromiseChildren = new WeakMap();
@@ -984,7 +1032,9 @@ async function settleForwardedFileRejectionGraph(operation) {
             .filter((node) => node.outcome === "pending");
         if (pendingNodes.length === 0)
             return true;
-        const userContinuations = pendingNodes.filter((node) => node.userContinuation);
+        const userContinuations = operation.explicitRejectionHandler
+            ? pendingNodes.filter((node) => node.userContinuation && !node.forwarded)
+            : [];
         if (userContinuations.length > 0) {
             // A consumer-provided rejection handler owns its eventual outcome. It may
             // legitimately perform work for longer than the detached-graph safety
@@ -1039,17 +1089,19 @@ function trackCurrentUserFileOperation(operation) {
                             }
                             resolverOperations.add(operation);
                             let forwardingPromise = forwardedFileResolverPromises.get(onRejected);
+                            const insideTrackedCombinator = forwardedFileCombinatorOperationSets.length > 0;
                             const latestRootSequence = latestForwardedFileRootPromise
                                 ? forwardedFileRootSequences.get(latestForwardedFileRootPromise)
                                 : undefined;
                             if (!forwardingPromise
+                                && !insideTrackedCombinator
                                 && latestForwardedFileRootPromise
                                 && latestRootSequence !== undefined
                                 && latestRootSequence > operation.rootSequenceAtCreation) {
                                 forwardingPromise = latestForwardedFileRootPromise;
                                 forwardedFileResolverPromises.set(onRejected, forwardingPromise);
                             }
-                            if (!forwardingPromise && operation.rootAtInvocation) {
+                            if (!forwardingPromise && !insideTrackedCombinator && operation.rootAtInvocation) {
                                 forwardingPromise = operation.rootAtInvocation;
                                 forwardedFileResolverPromises.set(onRejected, forwardingPromise);
                             }
@@ -1165,6 +1217,8 @@ export function createCurrentUserFileApi(database, contextGetter, options = {}) 
                 rootAtInvocation,
             };
             registerForwardedFilePromiseNode(operation, trackedOperation);
+            for (const operations of forwardedFileCombinatorOperationSets)
+                operations.add(trackedOperation);
             state.pendingOperations.push(trackedOperation);
             return trackCurrentUserFileOperation(trackedOperation);
         },
