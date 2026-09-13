@@ -69576,7 +69576,7 @@ async function drainCurrentUserFileOperations(context) {
       }
       const graphSettled = await Promise.all(operations.map((operation) => settleForwardedFileRejectionGraph(operation)));
       const discardedRejections = operations.map((operation, index) => graphSettled[index] ? findDiscardedForwardedFileRejection(operation) : void 0);
-      const rejected = outcomes.find((outcome, index) => {
+      const rejectedIndex = outcomes.findIndex((outcome, index) => {
         if (outcome.status !== "rejected") return false;
         if (!graphSettled[index]) return true;
         const operation = operations[index];
@@ -69588,7 +69588,14 @@ async function drainCurrentUserFileOperations(context) {
         const graphFailureWasHandled = operation.promiseNodes.size > 0 && !discardedForwarding;
         return !operation.explicitRejectionHandler && !graphFailureWasHandled;
       });
-      if (rejected?.status === "rejected") throw rejected.reason;
+      if (rejectedIndex !== -1) {
+        const discardedForwarding = discardedRejections[rejectedIndex];
+        if (discardedForwarding && !discardedForwarding.forwarded) {
+          throw discardedForwarding.rejectionReason;
+        }
+        const rejected = outcomes[rejectedIndex];
+        if (rejected.status === "rejected") throw rejected.reason;
+      }
       if (graphSettled.some((settled, index) => !settled && outcomes[index].status === "fulfilled")) {
         throw createStructuredFileError(
           "File operation continuation did not settle.",

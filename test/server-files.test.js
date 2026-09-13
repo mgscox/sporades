@@ -782,6 +782,10 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
         void ctx.files.delete(fileReference).catch((error) => { throw error; });
         return { accepted: true };
       }),
+      replaceDeleteFailureFromDiscardedCatch: mutation((ctx, fileReference) => {
+        void ctx.files.delete(fileReference).catch(() => { throw new Error("Post-processing failed."); });
+        return { accepted: true };
+      }),
       rejectDeleteFailureFromDiscardedCatch: mutation((ctx, fileReference) => {
         void ctx.files.delete(fileReference).catch((error) => Promise.reject(error));
         return { accepted: true };
@@ -1071,6 +1075,10 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
 
     const rethrownDiscardedCatch = await runMutation(database, other, "rethrowDeleteFailureFromDiscardedCatch", [file.id]);
     assert.equal(rethrownDiscardedCatch.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const replacedDiscardedCatch = await runMutation(database, other, "replaceDeleteFailureFromDiscardedCatch", [file.id]);
+    assert.equal(replacedDiscardedCatch.error.message, "Post-processing failed.");
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
 
     const rejectedDiscardedCatch = await runMutation(database, other, "rejectDeleteFailureFromDiscardedCatch", [file.id]);
