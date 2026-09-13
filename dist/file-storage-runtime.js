@@ -815,6 +815,7 @@ let forwardedFileRootSequence = 0;
 let latestForwardedFileRootPromise;
 const forwardedFileCallbackOperationSets = [];
 let observingForwardedFilePromise = false;
+const forwardedFileRejectionSettlementTimeoutMs = 1_000;
 function registerForwardedFilePromiseNode(promise, operation, parent) {
     let nodes = forwardedFilePromiseNodes.get(promise);
     if (!nodes) {
@@ -976,13 +977,25 @@ function hasDiscardedForwardedFileRejection(operation) {
         && !component.some((node) => [...node.children].some((child) => componentByNode.get(child) !== component)));
 }
 async function settleForwardedFileRejectionGraph(operation) {
+    const deadline = Date.now() + forwardedFileRejectionSettlementTimeoutMs;
     while (true) {
         const pending = [...operation.promiseNodes]
             .filter((node) => node.outcome === "pending")
             .map((node) => node.settlement);
         if (pending.length === 0)
-            return;
-        await Promise.all(pending);
+            return true;
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0)
+            return false;
+        let timer;
+        const settled = await Promise.race([
+            Promise.all(pending).then(() => true),
+            new Promise((resolve) => { timer = setTimeout(() => resolve(false), remainingMs); }),
+        ]);
+        if (timer)
+            clearTimeout(timer);
+        if (!settled)
+            return false;
     }
 }
 function trackCurrentUserFileOperation(operation) {
@@ -1019,6 +1032,10 @@ function trackCurrentUserFileOperation(operation) {
                                 && latestRootSequence !== undefined
                                 && latestRootSequence > operation.rootSequenceAtCreation) {
                                 forwardingPromise = latestForwardedFileRootPromise;
+                                forwardedFileResolverPromises.set(onRejected, forwardingPromise);
+                            }
+                            if (!forwardingPromise && operation.rootAtInvocation) {
+                                forwardingPromise = operation.rootAtInvocation;
                                 forwardedFileResolverPromises.set(onRejected, forwardingPromise);
                             }
                             if (forwardingPromise) {
@@ -1114,6 +1131,7 @@ export function createCurrentUserFileApi(database, contextGetter, options = {}) 
                 return Promise.reject(createStructuredFileError("File deletion requires a user credential.", "Use ctx.files.delete(...) from a user-scoped handler or an audited privileged File operation for userless work."));
             }
             retainForwardedFilePromiseHook(state);
+            const rootAtInvocation = latestForwardedFileRootPromise;
             const operation = deletePrivateFile(database, admittedAuth, fileReference, admittedCredential, database.__transactionActive
                 ? (file) => {
                     state.pendingByteDeletes.push({ database: database.__rootDatabase ?? database, ...file });
@@ -1129,6 +1147,7 @@ export function createCurrentUserFileApi(database, contextGetter, options = {}) 
                 forwardedRejection: false,
                 promiseNodes: new Set(),
                 rootSequenceAtCreation: forwardedFileRootSequence,
+                rootAtInvocation,
             };
             registerForwardedFilePromiseNode(operation, trackedOperation);
             state.pendingOperations.push(trackedOperation);
@@ -1153,12 +1172,14 @@ export async function drainCurrentUserFileOperations(context) {
             if (operations.some((operation) => operation.promiseNodes.size > 0)) {
                 await new Promise((resolve) => setImmediate(resolve));
             }
-            await Promise.all(operations.map((operation, index) => outcomes[index].status === "rejected"
+            const graphSettled = await Promise.all(operations.map((operation, index) => outcomes[index].status === "rejected"
                 ? settleForwardedFileRejectionGraph(operation)
-                : undefined));
+                : true));
             const rejected = outcomes.find((outcome, index) => {
                 if (outcome.status !== "rejected")
                     return false;
+                if (!graphSettled[index])
+                    return true;
                 const operation = operations[index];
                 const discardedForwarding = hasDiscardedForwardedFileRejection(operation);
                 const graphFailureWasHandled = operation.promiseNodes.size > 0 && !discardedForwarding;

@@ -944,6 +944,7 @@ type CurrentUserFileOperation = {
   forwardedRejection: boolean;
   promiseNodes: Set<ForwardedFilePromiseNode>;
   rootSequenceAtCreation: number;
+  rootAtInvocation?: Promise<any>;
 };
 type ForwardedFilePromiseNode = {
   promise: Promise<any>;
@@ -976,6 +977,7 @@ let forwardedFileRootSequence = 0;
 let latestForwardedFileRootPromise: Promise<any> | undefined;
 const forwardedFileCallbackOperationSets: CurrentUserFileOperation[][] = [];
 let observingForwardedFilePromise = false;
+const forwardedFileRejectionSettlementTimeoutMs = 1_000;
 
 function registerForwardedFilePromiseNode(
   promise: Promise<any>,
@@ -1140,12 +1142,21 @@ function hasDiscardedForwardedFileRejection(operation: CurrentUserFileOperation)
 }
 
 async function settleForwardedFileRejectionGraph(operation: CurrentUserFileOperation) {
+  const deadline = Date.now() + forwardedFileRejectionSettlementTimeoutMs;
   while (true) {
     const pending = [...operation.promiseNodes]
       .filter((node) => node.outcome === "pending")
       .map((node) => node.settlement!);
-    if (pending.length === 0) return;
-    await Promise.all(pending);
+    if (pending.length === 0) return true;
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) return false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const settled = await Promise.race([
+      Promise.all(pending).then(() => true),
+      new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), remainingMs); }),
+    ]);
+    if (timer) clearTimeout(timer);
+    if (!settled) return false;
   }
 }
 
@@ -1182,6 +1193,10 @@ function trackCurrentUserFileOperation(operation: CurrentUserFileOperation): Pro
               && latestRootSequence !== undefined
               && latestRootSequence > operation.rootSequenceAtCreation) {
               forwardingPromise = latestForwardedFileRootPromise;
+              forwardedFileResolverPromises.set(onRejected, forwardingPromise);
+            }
+            if (!forwardingPromise && operation.rootAtInvocation) {
+              forwardingPromise = operation.rootAtInvocation;
               forwardedFileResolverPromises.set(onRejected, forwardingPromise);
             }
             if (forwardingPromise) {
@@ -1277,6 +1292,7 @@ export function createCurrentUserFileApi(
         ));
       }
       retainForwardedFilePromiseHook(state);
+      const rootAtInvocation = latestForwardedFileRootPromise;
       const operation = deletePrivateFile(
         database,
         admittedAuth,
@@ -1298,6 +1314,7 @@ export function createCurrentUserFileApi(
         forwardedRejection: false,
         promiseNodes: new Set(),
         rootSequenceAtCreation: forwardedFileRootSequence,
+        rootAtInvocation,
       };
       registerForwardedFilePromiseNode(operation, trackedOperation);
       state.pendingOperations.push(trackedOperation);
@@ -1322,11 +1339,12 @@ export async function drainCurrentUserFileOperations(context: LooseRecord | unde
       if (operations.some((operation) => operation.promiseNodes.size > 0)) {
         await new Promise((resolve) => setImmediate(resolve));
       }
-      await Promise.all(operations.map((operation, index) => outcomes[index].status === "rejected"
+      const graphSettled = await Promise.all(operations.map((operation, index) => outcomes[index].status === "rejected"
         ? settleForwardedFileRejectionGraph(operation)
-        : undefined));
+        : true));
       const rejected = outcomes.find((outcome, index) => {
         if (outcome.status !== "rejected") return false;
+        if (!graphSettled[index]) return true;
         const operation = operations[index];
         const discardedForwarding = hasDiscardedForwardedFileRejection(operation);
         const graphFailureWasHandled = operation.promiseNodes.size > 0 && !discardedForwarding;

@@ -608,6 +608,25 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
         ]);
         return { value };
       }),
+      deleteInLazyPendingDiscardedAny: query((ctx, fileReference) => {
+        function* inputs() {
+          yield ctx.files.delete(fileReference);
+          yield new Promise((_, reject) => setTimeout(() => reject(new Error("Delayed rejection.")), 25));
+        }
+        void Promise.any(inputs());
+        return { accepted: true };
+      }),
+      handleLazyPendingAny: query(async (ctx, fileReference) => {
+        function* inputs() {
+          yield ctx.files.delete(fileReference);
+          yield new Promise((resolve) => setTimeout(() => resolve("fallback"), 25));
+        }
+        return { value: await Promise.any(inputs()) };
+      }),
+      deleteInNeverSettlingAny: query((ctx, fileReference) => {
+        void Promise.any([ctx.files.delete(fileReference), new Promise(() => {})]);
+        return { accepted: true };
+      }),
       recoverDeleteFailure: query(async (ctx, fileReference) => {
         const pendingDeletion = ctx.files.delete(fileReference);
         const isPromise = pendingDeletion instanceof Promise;
@@ -807,6 +826,23 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
     const handledAny = await runQuery(database, other, "handlePendingAny", [file.id]);
     assert.equal(handledAny.error, null);
     assert.deepEqual(handledAny.data, { value: "fallback" });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const discardedLazyAny = await runQuery(database, other, "deleteInLazyPendingDiscardedAny", [file.id]);
+    assert.equal(discardedLazyAny.data, null);
+    assert.equal(discardedLazyAny.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const handledLazyAny = await runQuery(database, other, "handleLazyPendingAny", [file.id]);
+    assert.equal(handledLazyAny.error, null);
+    assert.deepEqual(handledLazyAny.data, { value: "fallback" });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const neverSettlingStartedAt = Date.now();
+    const neverSettlingAny = await runQuery(database, other, "deleteInNeverSettlingAny", [file.id]);
+    assert.equal(neverSettlingAny.data, null);
+    assert.equal(neverSettlingAny.error.message, "File not found.");
+    assert.ok(Date.now() - neverSettlingStartedAt < 2_000, "pending forwarding cleanup must be bounded");
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
 
     const replacedAuth = await runQuery(database, other, "deleteAfterReplacingAuth", [file.id, owner.userId]);

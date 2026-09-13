@@ -69117,6 +69117,7 @@ var forwardedFileRootSequence = 0;
 var latestForwardedFileRootPromise;
 var forwardedFileCallbackOperationSets = [];
 var observingForwardedFilePromise = false;
+var forwardedFileRejectionSettlementTimeoutMs = 1e3;
 function registerForwardedFilePromiseNode(promise, operation, parent) {
   let nodes = forwardedFilePromiseNodes.get(promise);
   if (!nodes) {
@@ -69264,10 +69265,21 @@ function hasDiscardedForwardedFileRejection(operation) {
   return components.some((component) => component.some((node) => node.outcome === "rejected") && !component.some((node) => [...node.children].some((child) => componentByNode.get(child) !== component)));
 }
 async function settleForwardedFileRejectionGraph(operation) {
+  const deadline = Date.now() + forwardedFileRejectionSettlementTimeoutMs;
   while (true) {
     const pending = [...operation.promiseNodes].filter((node) => node.outcome === "pending").map((node) => node.settlement);
-    if (pending.length === 0) return;
-    await Promise.all(pending);
+    if (pending.length === 0) return true;
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) return false;
+    let timer;
+    const settled = await Promise.race([
+      Promise.all(pending).then(() => true),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(false), remainingMs);
+      })
+    ]);
+    if (timer) clearTimeout(timer);
+    if (!settled) return false;
   }
 }
 function trackCurrentUserFileOperation(operation) {
@@ -69294,6 +69306,10 @@ function trackCurrentUserFileOperation(operation) {
             const latestRootSequence = latestForwardedFileRootPromise ? forwardedFileRootSequences.get(latestForwardedFileRootPromise) : void 0;
             if (!forwardingPromise && latestForwardedFileRootPromise && latestRootSequence !== void 0 && latestRootSequence > operation.rootSequenceAtCreation) {
               forwardingPromise = latestForwardedFileRootPromise;
+              forwardedFileResolverPromises.set(onRejected, forwardingPromise);
+            }
+            if (!forwardingPromise && operation.rootAtInvocation) {
+              forwardingPromise = operation.rootAtInvocation;
               forwardedFileResolverPromises.set(onRejected, forwardingPromise);
             }
             if (forwardingPromise) {
@@ -69377,6 +69393,7 @@ function createCurrentUserFileApi(database, contextGetter, options = {}) {
         ));
       }
       retainForwardedFilePromiseHook(state);
+      const rootAtInvocation = latestForwardedFileRootPromise;
       const operation = deletePrivateFile(
         database,
         admittedAuth,
@@ -69395,7 +69412,8 @@ function createCurrentUserFileApi(database, contextGetter, options = {}) {
         explicitRejectionHandler: false,
         forwardedRejection: false,
         promiseNodes: /* @__PURE__ */ new Set(),
-        rootSequenceAtCreation: forwardedFileRootSequence
+        rootSequenceAtCreation: forwardedFileRootSequence,
+        rootAtInvocation
       };
       registerForwardedFilePromiseNode(operation, trackedOperation);
       state.pendingOperations.push(trackedOperation);
@@ -69419,9 +69437,10 @@ async function drainCurrentUserFileOperations(context) {
       if (operations.some((operation) => operation.promiseNodes.size > 0)) {
         await new Promise((resolve) => setImmediate(resolve));
       }
-      await Promise.all(operations.map((operation, index) => outcomes[index].status === "rejected" ? settleForwardedFileRejectionGraph(operation) : void 0));
+      const graphSettled = await Promise.all(operations.map((operation, index) => outcomes[index].status === "rejected" ? settleForwardedFileRejectionGraph(operation) : true));
       const rejected = outcomes.find((outcome, index) => {
         if (outcome.status !== "rejected") return false;
+        if (!graphSettled[index]) return true;
         const operation = operations[index];
         const discardedForwarding = hasDiscardedForwardedFileRejection(operation);
         const graphFailureWasHandled = operation.promiseNodes.size > 0 && !discardedForwarding;
