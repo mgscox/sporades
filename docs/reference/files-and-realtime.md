@@ -205,6 +205,11 @@ allowed by the declared `files.acl.delete` rule. Missing, ambiguous, deleted,
 and unauthorized references fail with the same opaque File-not-found error;
 policy details and File existence are not disclosed.
 
+The user-scoped operation requires an actual Credential. Userless lifecycle
+hooks cannot manufacture Session provenance for File ACL evaluation; use an
+explicit audited `ctx.privileged.run(...)` when lifecycle maintenance must
+delete a File.
+
 For trusted userless maintenance, use
 `privilegedCtx.files.delete(fileReference)` only inside an explicitly audited
 `ctx.privileged.run(...)`. That operation can delete any exact live Capsule

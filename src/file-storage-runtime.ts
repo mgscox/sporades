@@ -962,11 +962,17 @@ export function createCurrentUserFileApi(
           "Call ctx.files.delete(...) only while the Capsule handler is running.",
         ));
       }
+      if (!context.credential) {
+        return Promise.reject(createStructuredFileError(
+          "File deletion requires a user credential.",
+          "Use ctx.files.delete(...) from a user-scoped handler or an audited privileged File operation for userless work.",
+        ));
+      }
       const operation = deletePrivateFile(
         database,
         context.auth,
         fileReference,
-        context.credential ?? { kind: "session" },
+        context.credential,
         database.__transactionActive
           ? (file) => {
             state.pendingByteDeletes.push({ database: database.__rootDatabase ?? database, ...file });

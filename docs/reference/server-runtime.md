@@ -881,7 +881,9 @@ const deletedFile = await ctx.files.delete(fileReference);
 ```
 
 This returns deleted File metadata directly and applies current ownership or a
-declared `files.acl.delete` rule using `ctx.auth` and `ctx.credential`.
+declared `files.acl.delete` rule using `ctx.auth` and `ctx.credential`. Userless
+lifecycle hooks cannot call this operation by synthesizing Session provenance;
+use an explicit audited privileged File operation for intentional maintenance.
 
 The Job Queue uses the bounded Auth and Credential snapshot captured when
 enqueue commits for background work that should stay accountable to the user

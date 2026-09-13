@@ -8,6 +8,7 @@ import test from "node:test";
 
 import {
   completePendingFileUpload,
+  createCurrentUserFileApi,
   createPublicFileUrl,
   createPendingFileUpload,
   deletePrivateFile,
@@ -168,6 +169,20 @@ test("user-scoped File deletion keeps ambiguous paths opaque", async () => {
     message: "File not found.",
     hint: "Pass the id or absolute File path of a private file owned by the current user.",
   });
+});
+
+test("userless server contexts cannot synthesize Session authority for File deletion", async () => {
+  let adapterTouched = false;
+  const api = createCurrentUserFileApi(
+    { adapter: new Proxy({}, { get() { adapterTouched = true; return undefined; } }) },
+    () => ({ auth: guestAuth("__lifecycle__") }),
+  );
+
+  await assert.rejects(
+    api.delete("file-id"),
+    (error) => error?.message === "File deletion requires a user credential.",
+  );
+  assert.equal(adapterTouched, false);
 });
 
 test("Capsule File ACL can authorize server deletion for the current user", async () => {

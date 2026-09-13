@@ -19,7 +19,9 @@ unauthorized. Metadata deletion and public-URL revocation are transactional;
 stored bytes are removed after commit on a best-effort basis. Use
 `privilegedCtx.files.delete(fileReference)` only inside an explicitly audited
 `ctx.privileged.run(...)` when trusted userless work must bypass current-user
-ownership and File ACLs.
+ownership and File ACLs. Userless lifecycle hooks cannot synthesize Session
+provenance for `ctx.files.delete`; enter the audited privileged operation when
+that maintenance behavior is intentional.
 
 The [File uploads reference](../reference/files-and-realtime.md#file-uploads)
 covers the complete workflow and access rules. Storage implementation is
