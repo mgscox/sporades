@@ -580,6 +580,11 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
         void ctx.files.delete(fileReference);
         throw new Error("Original query failure.");
       }),
+      deleteAfterReplacingAuth: query((ctx, fileReference, replacementUserId) => {
+        ctx.auth = { ...ctx.auth, userId: replacementUserId };
+        ctx.credential = { kind: "session" };
+        return ctx.files.delete(fileReference);
+      }),
       deleteInSharedDiscardedAggregate: query(async (ctx, fileReference) => {
         globalThis.__serverFileSharedDeletes.push(ctx.files.delete(fileReference));
         if (globalThis.__serverFileSharedDeletes.length === 2) {
@@ -778,6 +783,11 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
 
     assert.equal(result.data, null);
     assert.equal(result.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const replacedAuth = await runQuery(database, other, "deleteAfterReplacingAuth", [file.id, owner.userId]);
+    assert.equal(replacedAuth.data, null);
+    assert.equal(replacedAuth.error.message, "File not found.");
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
 
     const aggregate = await runMutation(database, other, "deleteInDiscardedAggregate", [file.id]);

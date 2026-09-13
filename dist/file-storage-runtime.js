@@ -1062,12 +1062,16 @@ export function createCurrentUserFileApi(database, contextGetter) {
         promiseHookRetained: false,
     };
     const initialContext = contextGetter?.();
+    const admittedAuth = initialContext?.auth ? Object.freeze({ ...initialContext.auth }) : undefined;
+    const admittedCredential = initialContext?.credential
+        ? Object.freeze({ ...initialContext.credential })
+        : undefined;
     if (initialContext)
         currentUserFileApiState.set(initialContext, state);
     // Credential-bearing handlers have a guaranteed drain/release boundary and
     // may build an outer chain before calling delete. Credentialless schedule and
     // privileged wrapper contexts cannot use this authority and are not retained.
-    if (initialContext?.credential)
+    if (admittedCredential)
         retainForwardedFilePromiseHook(state);
     return Object.freeze({
         delete(fileReference) {
@@ -1075,11 +1079,11 @@ export function createCurrentUserFileApi(database, contextGetter) {
             if (!state.active || !context) {
                 return Promise.reject(createStructuredFileError("File access is no longer active.", "Call ctx.files.delete(...) only while the Capsule handler is running."));
             }
-            if (!context.credential) {
+            if (!admittedCredential || !admittedAuth) {
                 return Promise.reject(createStructuredFileError("File deletion requires a user credential.", "Use ctx.files.delete(...) from a user-scoped handler or an audited privileged File operation for userless work."));
             }
             retainForwardedFilePromiseHook(state);
-            const operation = deletePrivateFile(database, context.auth, fileReference, context.credential, database.__transactionActive
+            const operation = deletePrivateFile(database, admittedAuth, fileReference, admittedCredential, database.__transactionActive
                 ? (file) => {
                     state.pendingByteDeletes.push({ database: database.__rootDatabase ?? database, ...file });
                 }

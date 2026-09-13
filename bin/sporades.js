@@ -69332,8 +69332,10 @@ function createCurrentUserFileApi(database, contextGetter) {
     promiseHookRetained: false
   };
   const initialContext = contextGetter?.();
+  const admittedAuth = initialContext?.auth ? Object.freeze({ ...initialContext.auth }) : void 0;
+  const admittedCredential = initialContext?.credential ? Object.freeze({ ...initialContext.credential }) : void 0;
   if (initialContext) currentUserFileApiState.set(initialContext, state);
-  if (initialContext?.credential) retainForwardedFilePromiseHook(state);
+  if (admittedCredential) retainForwardedFilePromiseHook(state);
   return Object.freeze({
     delete(fileReference) {
       const context = contextGetter?.();
@@ -69343,7 +69345,7 @@ function createCurrentUserFileApi(database, contextGetter) {
           "Call ctx.files.delete(...) only while the Capsule handler is running."
         ));
       }
-      if (!context.credential) {
+      if (!admittedCredential || !admittedAuth) {
         return Promise.reject(createStructuredFileError(
           "File deletion requires a user credential.",
           "Use ctx.files.delete(...) from a user-scoped handler or an audited privileged File operation for userless work."
@@ -69352,9 +69354,9 @@ function createCurrentUserFileApi(database, contextGetter) {
       retainForwardedFilePromiseHook(state);
       const operation = deletePrivateFile(
         database,
-        context.auth,
+        admittedAuth,
         fileReference,
-        context.credential,
+        admittedCredential,
         database.__transactionActive ? (file) => {
           state.pendingByteDeletes.push({ database: database.__rootDatabase ?? database, ...file });
         } : void 0
