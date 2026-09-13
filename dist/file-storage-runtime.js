@@ -1316,6 +1316,7 @@ export function bindCurrentUserFileDeleteState(context, sourceContext) {
 export function createCurrentUserFileApi(database, contextGetter, options = {}) {
     const state = {
         active: true,
+        drainActive: false,
         pendingByteDeletes: [],
         pendingOperations: [],
         promiseHookRetained: false,
@@ -1336,7 +1337,7 @@ export function createCurrentUserFileApi(database, contextGetter, options = {}) 
         delete(fileReference) {
             const context = contextGetter?.();
             const activePromise = forwardedFilePromiseHookStack.at(-1);
-            const registeredDrainContinuation = !state.active && activePromise
+            const registeredDrainContinuation = state.drainActive && !state.active && activePromise
                 ? [...(forwardedFilePromiseNodes.get(activePromise)?.values() ?? [])]
                     .some((node) => node.operation.state === state)
                 : false;
@@ -1375,6 +1376,8 @@ export function createCurrentUserFileApi(database, contextGetter, options = {}) 
 export async function drainCurrentUserFileOperations(context) {
     const state = context ? currentUserFileApiState.get(context) : undefined;
     try {
+        if (state)
+            state.drainActive = true;
         while (state?.pendingOperations.length) {
             const operations = state.pendingOperations.splice(0);
             observingForwardedFilePromise = true;
@@ -1428,8 +1431,10 @@ export async function drainCurrentUserFileOperations(context) {
         }
     }
     finally {
-        if (state)
+        if (state) {
+            state.drainActive = false;
             releaseForwardedFilePromiseHook(state);
+        }
     }
 }
 export async function commitPendingCurrentUserFileByteDeletes(context) {

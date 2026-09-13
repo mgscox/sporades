@@ -14,7 +14,9 @@ import {
   createPublicFileUrl,
   createPendingFileUpload,
   deletePrivateFile,
+  drainCurrentUserFileOperations,
   getPrivateFileUrl,
+  revokeCurrentUserFileApi,
 } from "../dist/file-storage-runtime.js";
 import { handleFileHttpRoute, prepareHttpSecurity } from "../dist/http-runtime.js";
 import { openDevDatabase, routeEndpoint, runAppMessage, runEndpoint, runMutation, runQuery } from "../dist/server-runtime-source.js";
@@ -60,6 +62,56 @@ test("current-user File API tolerates Promise intrinsics frozen during a handler
   `;
   const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
+});
+
+test("timed-out File continuations cannot regain authority during another handler", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "sporades-server-files-"));
+  const definition = capsule({ name: "server-files-late-continuation" });
+  const database = await openDevDatabase(
+    path.join(directory, "data.db"),
+    "",
+    {},
+    { name: definition.name, files: { storagePath: path.join(directory, "files") } },
+    definition,
+  );
+  const owner = guestAuth("late-continuation-owner");
+  const context = { auth: owner, credential: { kind: "session" } };
+  context.files = createCurrentUserFileApi(database, () => context);
+  let releaseContinuation;
+  const continuationGate = new Promise((resolve) => { releaseContinuation = resolve; });
+  let reportLateAttempt;
+  const lateAttempt = new Promise((resolve) => { reportLateAttempt = resolve; });
+
+  try {
+    const firstFile = await uploadFile(database, owner, "/late/first.txt", "first");
+    const secondFile = await uploadFile(database, owner, "/late/second.txt", "second");
+    void context.files.delete(firstFile.id).then(async () => {
+      await continuationGate;
+      try {
+        await context.files.delete(secondFile.id);
+        reportLateAttempt("deleted");
+      } catch (error) {
+        reportLateAttempt(error.message);
+      }
+    });
+    revokeCurrentUserFileApi(context);
+    await assert.rejects(
+      drainCurrentUserFileOperations(context),
+      (error) => error?.message === "File operation continuation did not settle.",
+    );
+
+    const activeContext = { auth: owner, credential: { kind: "session" } };
+    activeContext.files = createCurrentUserFileApi(database, () => activeContext);
+    releaseContinuation();
+    assert.equal(await lateAttempt, "File access is no longer active.");
+    assert.equal((await getPrivateFileUrl(database, owner, secondFile.id)).ok, true);
+    revokeCurrentUserFileApi(activeContext);
+    await drainCurrentUserFileOperations(activeContext);
+  } finally {
+    releaseContinuation?.();
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 function guestAuth(userId) {

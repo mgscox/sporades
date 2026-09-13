@@ -961,6 +961,7 @@ type ForwardedFilePromiseNode = {
 };
 type CurrentUserFileApiState = {
   active: boolean;
+  drainActive: boolean;
   pendingByteDeletes: LooseRecord[];
   pendingOperations: CurrentUserFileOperation[];
   promiseHookRetained: boolean;
@@ -1455,6 +1456,7 @@ export function createCurrentUserFileApi(
 ) {
   const state: CurrentUserFileApiState = {
     active: true,
+    drainActive: false,
     pendingByteDeletes: [],
     pendingOperations: [],
     promiseHookRetained: false,
@@ -1473,7 +1475,7 @@ export function createCurrentUserFileApi(
     delete(fileReference: any) {
       const context = contextGetter?.();
       const activePromise = forwardedFilePromiseHookStack.at(-1);
-      const registeredDrainContinuation = !state.active && activePromise
+      const registeredDrainContinuation = state.drainActive && !state.active && activePromise
         ? [...(forwardedFilePromiseNodes.get(activePromise)?.values() ?? [])]
           .some((node) => node.operation.state === state)
         : false;
@@ -1524,6 +1526,7 @@ export function createCurrentUserFileApi(
 export async function drainCurrentUserFileOperations(context: LooseRecord | undefined) {
   const state = context ? currentUserFileApiState.get(context) : undefined;
   try {
+    if (state) state.drainActive = true;
     while (state?.pendingOperations.length) {
       const operations = state.pendingOperations.splice(0);
       observingForwardedFilePromise = true;
@@ -1573,7 +1576,10 @@ export async function drainCurrentUserFileOperations(context: LooseRecord | unde
       if (rejectedContinuation) throw rejectedContinuation.rejectionReason;
     }
   } finally {
-    if (state) releaseForwardedFilePromiseHook(state);
+    if (state) {
+      state.drainActive = false;
+      releaseForwardedFilePromiseHook(state);
+    }
   }
 }
 

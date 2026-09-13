@@ -69546,6 +69546,7 @@ function bindCurrentUserFileDeleteState(context, sourceContext) {
 function createCurrentUserFileApi(database, contextGetter, options = {}) {
   const state = {
     active: true,
+    drainActive: false,
     pendingByteDeletes: [],
     pendingOperations: [],
     promiseHookRetained: false
@@ -69559,7 +69560,7 @@ function createCurrentUserFileApi(database, contextGetter, options = {}) {
     delete(fileReference) {
       const context = contextGetter?.();
       const activePromise = forwardedFilePromiseHookStack.at(-1);
-      const registeredDrainContinuation = !state.active && activePromise ? [...forwardedFilePromiseNodes.get(activePromise)?.values() ?? []].some((node) => node.operation.state === state) : false;
+      const registeredDrainContinuation = state.drainActive && !state.active && activePromise ? [...forwardedFilePromiseNodes.get(activePromise)?.values() ?? []].some((node) => node.operation.state === state) : false;
       if (!state.active && !registeredDrainContinuation || !context) {
         return Promise.reject(createStructuredFileError(
           "File access is no longer active.",
@@ -69604,6 +69605,7 @@ function createCurrentUserFileApi(database, contextGetter, options = {}) {
 async function drainCurrentUserFileOperations(context) {
   const state = context ? currentUserFileApiState.get(context) : void 0;
   try {
+    if (state) state.drainActive = true;
     while (state?.pendingOperations.length) {
       const operations = state.pendingOperations.splice(0);
       observingForwardedFilePromise = true;
@@ -69649,7 +69651,10 @@ async function drainCurrentUserFileOperations(context) {
       if (rejectedContinuation) throw rejectedContinuation.rejectionReason;
     }
   } finally {
-    if (state) releaseForwardedFilePromiseHook(state);
+    if (state) {
+      state.drainActive = false;
+      releaseForwardedFilePromiseHook(state);
+    }
   }
 }
 async function commitPendingCurrentUserFileByteDeletes(context) {
