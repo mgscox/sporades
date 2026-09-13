@@ -633,9 +633,13 @@ const app = capsule({
     ],
     init: async (ctx) => {
       await ctx.mail.send({ to: "recipient@example.com", subject: "Init", textBody: "Init" });
+      // @ts-expect-error userless lifecycle hooks have no user-scoped File authority.
+      ctx.files.delete("file-id");
     },
     shutdown: async (ctx) => {
       await ctx.mail.send({ to: "recipient@example.com", subject: "Shutdown", textBody: "Shutdown" });
+      // @ts-expect-error userless lifecycle hooks have no user-scoped File authority.
+      ctx.files.delete("file-id");
     },
   },
 });

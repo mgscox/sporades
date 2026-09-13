@@ -1074,8 +1074,8 @@ export type MutationHook<Schema extends SchemaDefinition = SchemaDefinition, Res
 
 /** Capsule lifecycle hooks around named mutations. */
 export type CapsuleHooks<Schema extends SchemaDefinition = SchemaDefinition> = {
-  init?: (ctx: Omit<CapsuleContext<Schema>, "credential">) => MaybePromise<void>;
-  shutdown?: (ctx: Omit<CapsuleContext<Schema>, "credential">) => MaybePromise<void>;
+  init?: (ctx: Omit<CapsuleContext<Schema>, "credential" | "files">) => MaybePromise<void>;
+  shutdown?: (ctx: Omit<CapsuleContext<Schema>, "credential" | "files">) => MaybePromise<void>;
   beforeMutation?: MutationHook<Schema>[];
   afterMutation?: MutationHook<Schema>[];
 };
