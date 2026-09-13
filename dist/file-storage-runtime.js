@@ -808,10 +808,16 @@ const forwardedFilePromiseNodes = new WeakMap();
 let forwardedFilePromiseHookStop;
 let forwardedFilePromiseHookRetainers = 0;
 let forwardedFilePromiseHookStack = [];
-const forwardedFileCallbackOperations = [];
+let forwardedFileResolverOperations = new WeakMap();
+const forwardedFileCallbackOperationSets = [];
 let observingForwardedFilePromise = false;
 function registerForwardedFilePromiseNode(promise, operation, parent) {
-    let node = forwardedFilePromiseNodes.get(promise);
+    let nodes = forwardedFilePromiseNodes.get(promise);
+    if (!nodes) {
+        nodes = new Map();
+        forwardedFilePromiseNodes.set(promise, nodes);
+    }
+    let node = nodes.get(operation);
     if (!node) {
         node = {
             promise,
@@ -822,7 +828,7 @@ function registerForwardedFilePromiseNode(promise, operation, parent) {
             forwarded: false,
             outcome: "pending",
         };
-        forwardedFilePromiseNodes.set(promise, node);
+        nodes.set(operation, node);
         operation.promiseNodes.add(node);
         for (const child of forwardedFilePromiseChildren.get(promise) ?? []) {
             registerForwardedFilePromiseNode(child, operation, node);
@@ -834,6 +840,9 @@ function registerForwardedFilePromiseNode(promise, operation, parent) {
     if (parent && parent !== node)
         parent.children.add(node);
     return node;
+}
+function getForwardedFilePromiseNode(promise, operation) {
+    return forwardedFilePromiseNodes.get(promise)?.get(operation);
 }
 function retainForwardedFilePromiseHook(state) {
     if (!nodePromiseHooks?.createHook || state.promiseHookRetained)
@@ -854,8 +863,8 @@ function retainForwardedFilePromiseHook(state) {
                 }
                 children.add(promise);
             }
-            const parentNode = parent ? forwardedFilePromiseNodes.get(parent) : undefined;
-            if (parentNode) {
+            const parentNodes = parent ? forwardedFilePromiseNodes.get(parent)?.values() : undefined;
+            for (const parentNode of parentNodes ?? []) {
                 const childNode = registerForwardedFilePromiseNode(promise, parentNode.operation, parentNode);
                 const activePromise = forwardedFilePromiseHookStack.at(-1);
                 // A continuation created directly by consumer code can bypass the own
@@ -874,14 +883,19 @@ function retainForwardedFilePromiseHook(state) {
             forwardedFilePromiseHookStack.pop();
         },
         settled(promise) {
-            if (observingForwardedFilePromise || forwardedFilePromiseNodes.has(promise))
+            if (observingForwardedFilePromise)
                 return;
             const activePromise = forwardedFilePromiseHookStack.at(-1);
-            const operation = forwardedFileCallbackOperations.at(-1)
-                ?? (activePromise ? forwardedFilePromiseNodes.get(activePromise)?.operation : undefined);
-            if (!operation)
-                return;
-            registerForwardedFilePromiseNode(promise, operation, activePromise ? forwardedFilePromiseNodes.get(activePromise) : undefined);
+            const callbackOperations = forwardedFileCallbackOperationSets.at(-1);
+            const activeNodes = activePromise ? forwardedFilePromiseNodes.get(activePromise) : undefined;
+            const operations = callbackOperations?.length
+                ? callbackOperations
+                : [...new Set([...(activeNodes?.values() ?? [])].map((node) => node.operation))];
+            for (const operation of operations) {
+                if (getForwardedFilePromiseNode(promise, operation))
+                    continue;
+                registerForwardedFilePromiseNode(promise, operation, activePromise ? getForwardedFilePromiseNode(activePromise, operation) : undefined);
+            }
         },
     });
 }
@@ -894,7 +908,8 @@ function releaseForwardedFilePromiseHook(state) {
         forwardedFilePromiseHookStop?.();
         forwardedFilePromiseHookStop = undefined;
         forwardedFilePromiseHookStack = [];
-        forwardedFileCallbackOperations.length = 0;
+        forwardedFileCallbackOperationSets.length = 0;
+        forwardedFileResolverOperations = new WeakMap();
         // Values in this WeakMap contain strong child references. Replace the
         // transient graph so a long-lived parent cannot retain completed handlers.
         forwardedFilePromiseChildren = new WeakMap();
@@ -972,7 +987,13 @@ function trackCurrentUserFileOperation(operation) {
                         promiseResolveForwarding = nativeResolverPair;
                         if (promiseResolveForwarding) {
                             operation.forwardedRejection = true;
-                            const targetNode = forwardedFilePromiseNodes.get(promise);
+                            let resolverOperations = forwardedFileResolverOperations.get(onRejected);
+                            if (!resolverOperations) {
+                                resolverOperations = new Set();
+                                forwardedFileResolverOperations.set(onRejected, resolverOperations);
+                            }
+                            resolverOperations.add(operation);
+                            const targetNode = getForwardedFilePromiseNode(promise, operation);
                             if (targetNode)
                                 targetNode.forwarded = true;
                         }
@@ -984,17 +1005,18 @@ function trackCurrentUserFileOperation(operation) {
                         }
                     }
                     const rejectionHandler = promiseResolveForwarding ? (reason) => {
-                        forwardedFileCallbackOperations.push(operation);
+                        const resolverOperations = forwardedFileResolverOperations.get(onRejected) ?? new Set([operation]);
+                        forwardedFileCallbackOperationSets.push([...resolverOperations]);
                         try {
                             return onRejected(reason);
                         }
                         finally {
-                            forwardedFileCallbackOperations.pop();
+                            forwardedFileCallbackOperationSets.pop();
                         }
                     } : onRejected;
                     const continuation = Promise.prototype.then.call(promise, onFulfilled, rejectionHandler);
                     if (!promiseResolveForwarding) {
-                        const parentNode = forwardedFilePromiseNodes.get(promise);
+                        const parentNode = getForwardedFilePromiseNode(promise, operation);
                         const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
                         continuationNode.userContinuation = true;
                         if (parentNode)
@@ -1006,7 +1028,7 @@ function trackCurrentUserFileOperation(operation) {
                     if (typeof onRejected === "function")
                         operation.explicitRejectionHandler = true;
                     const continuation = Promise.prototype.then.call(promise, undefined, onRejected);
-                    const parentNode = forwardedFilePromiseNodes.get(promise);
+                    const parentNode = getForwardedFilePromiseNode(promise, operation);
                     const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
                     continuationNode.userContinuation = true;
                     if (parentNode)
@@ -1015,7 +1037,7 @@ function trackCurrentUserFileOperation(operation) {
                 } },
             finally: { configurable: true, value: (onFinally) => {
                     const continuation = Promise.prototype.finally.call(promise, onFinally);
-                    const parentNode = forwardedFilePromiseNodes.get(promise);
+                    const parentNode = getForwardedFilePromiseNode(promise, operation);
                     const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
                     continuationNode.userContinuation = true;
                     if (parentNode)

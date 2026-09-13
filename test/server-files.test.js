@@ -580,6 +580,15 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
         void ctx.files.delete(fileReference);
         throw new Error("Original query failure.");
       }),
+      deleteInSharedDiscardedAggregate: query(async (ctx, fileReference) => {
+        globalThis.__serverFileSharedDeletes.push(ctx.files.delete(fileReference));
+        if (globalThis.__serverFileSharedDeletes.length === 2) {
+          void Promise.all(globalThis.__serverFileSharedDeletes);
+          globalThis.__serverFileSharedDeletesReadyResolve();
+        }
+        await globalThis.__serverFileSharedDeletesReady;
+        return { accepted: true };
+      }),
       recoverDeleteFailure: query(async (ctx, fileReference) => {
         const pendingDeletion = ctx.files.delete(fileReference);
         const isPromise = pendingDeletion instanceof Promise;
@@ -904,6 +913,20 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
     assert.deepEqual(nativeHandledFailures, ["File not found.", "File not found."]);
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
 
+    globalThis.__serverFileSharedDeletes = [];
+    globalThis.__serverFileSharedDeletesReady = new Promise((resolve) => {
+      globalThis.__serverFileSharedDeletesReadyResolve = resolve;
+    });
+    const sharedAggregateResults = await Promise.all([
+      runQuery(database, other, "deleteInSharedDiscardedAggregate", [file.id]),
+      runQuery(database, other, "deleteInSharedDiscardedAggregate", [file.id]),
+    ]);
+    assert.deepEqual(sharedAggregateResults.map((result) => result.error?.message), [
+      "File not found.",
+      "File not found.",
+    ]);
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
     const alreadyFailed = await runQuery(database, other, "deleteWithoutAwaitThenFail", [file.id]);
     assert.equal(alreadyFailed.data, null);
     assert.equal(alreadyFailed.error.message, "Original query failure.");
@@ -923,6 +946,9 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
     delete globalThis.__serverFileNativeHandlerAclGate;
     delete globalThis.__serverFileNativeHandlerAclEntered;
     delete globalThis.__serverFileNativeHandlerAclEnteredResolve;
+    delete globalThis.__serverFileSharedDeletes;
+    delete globalThis.__serverFileSharedDeletesReady;
+    delete globalThis.__serverFileSharedDeletesReadyResolve;
     database.close();
     await rm(directory, { recursive: true, force: true });
   }
