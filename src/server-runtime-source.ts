@@ -144,9 +144,10 @@ import {
   revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode, trackPendingAclWrite,
 } from "./acl-runtime.js";
 import {
-  checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, createFileStorageTables,
+  checkRuntimeFileStorage, commitPendingCurrentUserFileByteDeletes, completePendingFileUpload, contentTypeForFile, createFileStorageTables,
   createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter,
-  createStructuredFileError, deletePrivateFile, fileMetadataFromRow,
+  createCurrentUserFileApi, createStructuredFileError, deletePrivateFile, fileMetadataFromRow,
+  dropPendingCurrentUserFileByteDeletes,
   getPrivateFileUrl, isAbsoluteFilePath, normalizeAbsoluteFilePath, resolvePrivilegedLiveFileReference,
   revokePublicFileUrl,
 } from "./file-storage-runtime.js";
@@ -3693,7 +3694,10 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
               credential: accessKeyAdmission?.credential,
               accessKeyGrants: accessKeyAdmission?.grants,
             });
-            const endpointIngressApi = createEndpointIngressApi(transactionDatabase, endpoint as LooseRecord, endpointRequest, context);
+            const endpointIngressApi = Object.freeze({
+              ...context.files,
+              ...createEndpointIngressApi(transactionDatabase, endpoint as LooseRecord, endpointRequest, context),
+            });
             context.files = endpointIngressApi;
             if ((endpoint as LooseRecord).runtimeOwnedStripeCallback) {
               Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
@@ -3727,6 +3731,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
     }
     finalizeEndpointIngressClaims(context ?? {}, true);
     await runIngressAuditOutboxDrain(database);
+    await commitPendingCurrentUserFileByteDeletes(context);
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
@@ -3737,6 +3742,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
       try { await database.log.emit({ category: "platform", event: "file.ingress.failed", level: "warn", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "failed", code: "INGRESS_ROLLBACK" } }); } catch {}
     }
     finalizeEndpointIngressClaims(context ?? {}, false);
+    dropPendingCurrentUserFileByteDeletes(context);
     dropPendingJobCancellationAborts(context);
     dropAccessKeyLifecycleAuditEvents(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
@@ -4031,6 +4037,7 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
   const holder = createContextHolder(context);
   registerHandlerContextMapping(database, holder);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
+  context.files = createCurrentUserFileApi(database, () => holder.current);
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
   context.mail = {
@@ -6453,6 +6460,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
         }
       });
     });
+    await commitPendingCurrentUserFileByteDeletes(context);
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
@@ -6463,6 +6471,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
     }
     return committed;
   } catch (error: any) {
+    dropPendingCurrentUserFileByteDeletes(context);
     dropPendingJobCancellationAborts(context);
     dropAccessKeyLifecycleAuditEvents(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
@@ -6561,12 +6570,14 @@ export async function runAppMessage(database: LooseRecord, auth: any, messageNam
         await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
       }
     });
+    await commitPendingCurrentUserFileByteDeletes(context);
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     return response;
   } catch (error: any) {
+    dropPendingCurrentUserFileByteDeletes(context);
     dropPendingJobCancellationAborts(context);
     dropAccessKeyLifecycleAuditEvents(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
@@ -6670,6 +6681,7 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
   const holder = createContextHolder(context);
   registerHandlerContextMapping(database, holder);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
+  context.files = createCurrentUserFileApi(database, () => holder.current);
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
   context.mail = {

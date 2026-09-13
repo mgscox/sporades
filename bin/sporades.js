@@ -69103,11 +69103,49 @@ async function revokePublicFileUrl(database, auth, publicUrlId) {
     error: null
   };
 }
-async function deletePrivateFile(database, auth, fileReference) {
+var pendingCurrentUserFileByteDeletes = /* @__PURE__ */ new WeakMap();
+function createCurrentUserFileApi(database, contextGetter) {
+  return Object.freeze({
+    async delete(fileReference) {
+      const context = contextGetter?.();
+      if (!context) {
+        throw createStructuredFileError(
+          "File access is no longer active.",
+          "Call ctx.files.delete(...) only while the Capsule handler is running."
+        );
+      }
+      const result = await deletePrivateFile(
+        database,
+        context.auth,
+        fileReference,
+        context.credential ?? { kind: "session" },
+        database.__transactionActive ? (file) => {
+          const pending = pendingCurrentUserFileByteDeletes.get(context) ?? [];
+          if (pending.length === 0) pendingCurrentUserFileByteDeletes.set(context, pending);
+          pending.push({ database: database.__rootDatabase ?? database, ...file });
+        } : void 0
+      );
+      if (!result.ok) throw result.error;
+      return result.data.file;
+    }
+  });
+}
+async function commitPendingCurrentUserFileByteDeletes(context) {
+  if (!context) return;
+  const pending = pendingCurrentUserFileByteDeletes.get(context) ?? [];
+  pendingCurrentUserFileByteDeletes.delete(context);
+  for (const file of pending) {
+    await removeFileVersionBestEffort(file.database, file.fileId, file.version);
+  }
+}
+function dropPendingCurrentUserFileByteDeletes(context) {
+  if (context) pendingCurrentUserFileByteDeletes.delete(context);
+}
+async function deletePrivateFile(database, auth, fileReference, credential = { kind: "session" }, deferByteRemoval) {
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const result = await runFileMetadataTransaction(database, async (sqlite) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
-    const resolved = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "delete");
+    const resolved = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "delete", credential);
     if (!resolved.ok) {
       return resolved;
     }
@@ -69132,7 +69170,11 @@ async function deletePrivateFile(database, auth, fileReference) {
   if (!result.ok) {
     return result;
   }
-  await removeFileVersionBestEffort(database, result.deletedFile.id, result.deletedFile.version);
+  if (deferByteRemoval) {
+    deferByteRemoval({ fileId: result.deletedFile.id, version: result.deletedFile.version });
+  } else {
+    await removeFileVersionBestEffort(database, result.deletedFile.id, result.deletedFile.version);
+  }
   return {
     ok: true,
     data: result.data,
@@ -100839,7 +100881,10 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
               credential: accessKeyAdmission?.credential,
               accessKeyGrants: accessKeyAdmission?.grants
             });
-            const endpointIngressApi = createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context);
+            const endpointIngressApi = Object.freeze({
+              ...context.files,
+              ...createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context)
+            });
             context.files = endpointIngressApi;
             if (endpoint.runtimeOwnedStripeCallback) {
               Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
@@ -100873,6 +100918,7 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
     }
     finalizeEndpointIngressClaims(context ?? {}, true);
     await runIngressAuditOutboxDrain(database);
+    await commitPendingCurrentUserFileByteDeletes(context);
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
@@ -100886,6 +100932,7 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
       }
     }
     finalizeEndpointIngressClaims(context ?? {}, false);
+    dropPendingCurrentUserFileByteDeletes(context);
     dropPendingJobCancellationAborts(context);
     dropAccessKeyLifecycleAuditEvents(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
@@ -101157,6 +101204,7 @@ function createEndpointContext(database, endpointRequest, session, options = {})
   const holder = createContextHolder(context);
   registerHandlerContextMapping(database, holder);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
+  context.files = createCurrentUserFileApi(database, () => holder.current);
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
   context.mail = {
@@ -103359,6 +103407,7 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
         }
       });
     });
+    await commitPendingCurrentUserFileByteDeletes(context);
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
@@ -103369,6 +103418,7 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
     }
     return committed;
   } catch (error) {
+    dropPendingCurrentUserFileByteDeletes(context);
     dropPendingJobCancellationAborts(context);
     dropAccessKeyLifecycleAuditEvents(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
@@ -103458,12 +103508,14 @@ async function runAppMessage(database, auth, messageName, data2, options = {}) {
         await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
       }
     });
+    await commitPendingCurrentUserFileByteDeletes(context);
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     return response;
   } catch (error) {
+    dropPendingCurrentUserFileByteDeletes(context);
     dropPendingJobCancellationAborts(context);
     dropAccessKeyLifecycleAuditEvents(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
@@ -103557,6 +103609,7 @@ function createMutationContext(database, auth, options = {}) {
   const holder = createContextHolder(context);
   registerHandlerContextMapping(database, holder);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
+  context.files = createCurrentUserFileApi(database, () => holder.current);
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
   context.mail = {

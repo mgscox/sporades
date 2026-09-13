@@ -50,7 +50,7 @@ import { deserializeFieldValue, deserializeRow, normalizeDateValue, serializeFie
 // `test/mail.test.js` — and reach them through the `export *` below rather than through a binding
 // here, so importing them would declare a name nothing in this file reads.
 import { applyReadAcl, assertActivePrivilegedJobAccess, bindPendingAclWrites, createPrivilegedAuditEmitter, createPrivilegedAuditEmissionPublicError, createPrivilegedFileApi, createPrivilegedRunAbortError, createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi, drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit, filterRowsByReadAcl, grantPrivilegedDbAccess, isPrivilegedAuditEmissionPublicError, normalizeFileAcl, normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback, revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode, trackPendingAclWrite, } from "./acl-runtime.js";
-import { createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter, deletePrivateFile, getPrivateFileUrl, revokePublicFileUrl, } from "./file-storage-runtime.js";
+import { commitPendingCurrentUserFileByteDeletes, createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter, createCurrentUserFileApi, deletePrivateFile, dropPendingCurrentUserFileByteDeletes, getPrivateFileUrl, revokePublicFileUrl, } from "./file-storage-runtime.js";
 import { createEndpointIngressApi, drainIngressClaimAuditOutbox, finalizeEndpointIngressClaims, initializeClamavRuntime, recoverIngressClaimAuditOutbox, shutdownClamavRuntime, stageMultipartIngress, sweepExpiredFileIngress, validateMultipartIngressPolicy } from "./file-ingress-runtime.js";
 import { createEndpointFileResponseApi } from "./endpoint-file-response.js";
 import { abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob, canonicalJobCredentialProvenance, captureJobAuthSnapshot, commitPendingJobCancellationAborts, createRuntimeClock, decodeJobCursor, dropPendingJobCancellationAborts, encodeJobCursor, ensureJobStorage, ensureScheduleStorage, finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence, normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, readJobAuthSnapshot, readJobCredentialProvenance, resolveSchedulePayload, RESERVED_JOB_NAME_PREFIX, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure, scheduleStripeEventPayloadCleanup, startStripeEventPayloadCleanup, stopStripeEventPayloadCleanup, STRIPE_EVENT_JOB, stripeEventPayloadRetentionStorageValue, scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduledOccurrenceIdentity, } from "./jobs-runtime.js";
@@ -3500,7 +3500,10 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                             credential: accessKeyAdmission?.credential,
                             accessKeyGrants: accessKeyAdmission?.grants,
                         });
-                        const endpointIngressApi = createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context);
+                        const endpointIngressApi = Object.freeze({
+                            ...context.files,
+                            ...createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context),
+                        });
                         context.files = endpointIngressApi;
                         if (endpoint.runtimeOwnedStripeCallback) {
                             Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
@@ -3537,6 +3540,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
         }
         finalizeEndpointIngressClaims(context ?? {}, true);
         await runIngressAuditOutboxDrain(database);
+        await commitPendingCurrentUserFileByteDeletes(context);
         commitPendingJobCancellationAborts(context);
         await flushAccessKeyLifecycleAuditEvents(database, context);
         flushTeamSecurityEvents(database, context);
@@ -3551,6 +3555,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
             catch { }
         }
         finalizeEndpointIngressClaims(context ?? {}, false);
+        dropPendingCurrentUserFileByteDeletes(context);
         dropPendingJobCancellationAborts(context);
         dropAccessKeyLifecycleAuditEvents(context);
         flushTeamSecurityEvents(database, context, { deniedOnly: true });
@@ -3819,6 +3824,7 @@ function createEndpointContext(database, endpointRequest, session, options = {})
     const holder = createContextHolder(context);
     registerHandlerContextMapping(database, holder);
     context.db = createEndpointDatabaseApi(database, () => holder.current);
+    context.files = createCurrentUserFileApi(database, () => holder.current);
     context.privileged = createContextPrivilegedApi(database, () => holder.current);
     context.jobs = createCurrentUserJobApi(database, () => holder.current);
     context.mail = {
@@ -6139,6 +6145,7 @@ export async function runMutation(database, auth, mutationName, args, options = 
                 }
             });
         });
+        await commitPendingCurrentUserFileByteDeletes(context);
         commitPendingJobCancellationAborts(context);
         await flushAccessKeyLifecycleAuditEvents(database, context);
         flushTeamSecurityEvents(database, context);
@@ -6150,6 +6157,7 @@ export async function runMutation(database, auth, mutationName, args, options = 
         return committed;
     }
     catch (error) {
+        dropPendingCurrentUserFileByteDeletes(context);
         dropPendingJobCancellationAborts(context);
         dropAccessKeyLifecycleAuditEvents(context);
         flushTeamSecurityEvents(database, context, { deniedOnly: true });
@@ -6246,6 +6254,7 @@ export async function runAppMessage(database, auth, messageName, data, options =
                 await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
             }
         });
+        await commitPendingCurrentUserFileByteDeletes(context);
         commitPendingJobCancellationAborts(context);
         await flushAccessKeyLifecycleAuditEvents(database, context);
         flushTeamSecurityEvents(database, context);
@@ -6253,6 +6262,7 @@ export async function runAppMessage(database, auth, messageName, data, options =
         return response;
     }
     catch (error) {
+        dropPendingCurrentUserFileByteDeletes(context);
         dropPendingJobCancellationAborts(context);
         dropAccessKeyLifecycleAuditEvents(context);
         flushTeamSecurityEvents(database, context, { deniedOnly: true });
@@ -6342,6 +6352,7 @@ function createMutationContext(database, auth, options = {}) {
     const holder = createContextHolder(context);
     registerHandlerContextMapping(database, holder);
     context.db = createEndpointDatabaseApi(database, () => holder.current);
+    context.files = createCurrentUserFileApi(database, () => holder.current);
     context.privileged = createContextPrivilegedApi(database, () => holder.current);
     context.jobs = createCurrentUserJobApi(database, () => holder.current);
     context.mail = {

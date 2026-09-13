@@ -1250,6 +1250,34 @@ test("docs describe MinIO storage services and File reference boundaries", async
   assert.doesNotMatch(roadmap, /Allow uploaded bytes to live in S3-compatible object storage/i);
 });
 
+test("public docs distinguish user-scoped and privileged server File deletion", async () => {
+  const [context, prd, guide, filesReference, serverReference, declarations, currentUserApi, privilegedApi] = await Promise.all([
+    readProjectFile("CONTEXT.md"),
+    readProjectFile("docs/PRD.md"),
+    readProjectFile("docs/guide/files.md"),
+    readProjectFile("docs/reference/files-and-realtime.md"),
+    readProjectFile("docs/reference/server-runtime.md"),
+    readProjectFile("src/types/server.d.ts"),
+    readProjectFile("docs/api/types/server.CurrentUserFilesApi.html"),
+    readProjectFile("docs/api/types/server.PrivilegedFileApi.html"),
+  ]);
+
+  for (const contents of [context, prd, guide, filesReference, serverReference]) {
+    assert.match(contents, /ctx\.files\.delete\(fileReference\)/);
+  }
+  assert.match(filesReference, /current `ctx\.auth` and `ctx\.credential`/);
+  assert.match(filesReference, /files\.acl\.delete/);
+  assert.match(filesReference, /Stored-byte removal is deferred until commit/);
+  assert.match(filesReference, /privilegedCtx\.files\.delete/);
+  assert.match(serverReference, /result\.data\.file\.id/);
+  assert.match(declarations, /export type CurrentUserFilesApi/);
+  assert.match(declarations, /delete\(fileReference: string\): Promise<ServerFileMetadata>/);
+  assert.match(declarations, /PrivilegedResult<\{ file: PrivilegedFileMetadata \}>/);
+  assert.match(currentUserApi, /CurrentUserFilesApi/);
+  assert.match(currentUserApi, />delete</);
+  assert.match(privilegedApi, /PrivilegedFileMetadata/);
+});
+
 test("File reference docs define the trusted multipart ingress contract and operations", async () => {
   const contents = await readProjectFile("docs/reference/files-and-realtime.md");
   assert.match(contents, /claimAuthorities: \["capsule-principal"\]/);

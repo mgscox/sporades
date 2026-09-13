@@ -792,13 +792,30 @@ export type PrivilegedPublicFileUrl = {
   [key: string]: unknown;
 };
 
+/** Safe File metadata returned to Capsule server code. */
+export type ServerFileMetadata = Readonly<{
+  id: string;
+  bucket: string;
+  size: number;
+  type: string;
+  name: string;
+  path: string;
+  version: string;
+}>;
+
+/** User-scoped File operations available to trusted Capsule server code. */
+export type CurrentUserFilesApi = {
+  /** Delete a File owned by the current user or allowed by the Capsule's File delete ACL. */
+  delete(fileReference: string): Promise<ServerFileMetadata>;
+};
+
 export type PrivilegedFileApi = {
   /** Return a private runtime URL for one live Capsule File by id or absolute File path. */
   url(fileReference: string): Promise<PrivilegedResult<{ url: string; file: PrivilegedOwnedFileMetadata }>>;
   /** Create a public URL for one live Capsule File while preserving File runtime boundaries. */
   createPublicUrl(fileReference: string, options?: { expires?: string | Date; ttlSeconds?: number; noExpiry?: boolean }): Promise<PrivilegedResult<{ publicUrl: PrivilegedPublicFileUrl }>>;
   /** Delete one live Capsule File through the configured Capsule File storage adapter. */
-  delete(fileReference: string): Promise<PrivilegedResult<PrivilegedFileMetadata>>;
+  delete(fileReference: string): Promise<PrivilegedResult<{ file: PrivilegedFileMetadata }>>;
 };
 
 export type PrivilegedAuthContext = AuthContext & {
@@ -820,7 +837,7 @@ export type PrivilegedAuthContext = AuthContext & {
  * Arbitrary Capsule middleware fields are intentionally not inherited across
  * this boundary, including aliases and closures over lifecycle capabilities.
  */
-export type PrivilegedContext<Schema extends SchemaDefinition = SchemaDefinition> = Omit<CapsuleContext<Schema>, "auth" | "credential" | "privileged" | "teams" | "accessKeys" | "serviceUsers" | "serverAuth" | "teamBilling" | "lifecycle"> & {
+export type PrivilegedContext<Schema extends SchemaDefinition = SchemaDefinition> = Omit<CapsuleContext<Schema>, "auth" | "credential" | "files" | "privileged" | "teams" | "accessKeys" | "serviceUsers" | "serverAuth" | "teamBilling" | "lifecycle"> & {
   auth: PrivilegedAuthContext;
   signal: AbortSignal;
   files: PrivilegedFileApi;
@@ -865,6 +882,8 @@ export type CapsuleContext<
   signal?: AbortSignal;
   log: Logger;
   messages: MessageApi;
+  /** User-scoped File operations using the current Auth and Credential context. */
+  files: CurrentUserFilesApi;
   privileged: PrivilegedApi<Schema>;
   /** Server-only current-user durable Job Queue. */
   jobs: JobApi;
@@ -908,7 +927,7 @@ export type EndpointRequest = {
 export type EndpointFileIngressLease = Readonly<{ leaseId: string; partId: string; fieldName: string; name: string; type: string; declaredSize: number | null; size: number; expiresAt: string }>;
 /** Bounded audit evidence; it never contains bytes, storage paths, handles, or scanner topology. */
 export type EndpointFileIngressInspection = Readonly<{ policyRevision: string; verdicts: readonly Readonly<{ inspector: string; outcome: "clean" | "rejected" | "inconclusive"; digest: string; size: number; version: string; engine: string; signatureVersion: string; inspectedAt: string }>[] }>;
-export type EndpointFileMetadata = Readonly<{ id: string; bucket: string; size: number; type: string; name: string; path: string; version: string }>;
+export type EndpointFileMetadata = ServerFileMetadata;
 export type FileIngressOptions = Readonly<{ path: string; name?: string; type?: string; authority?: { kind: "actor" } | ({ kind: "capsule-principal" } & FileIngressPrincipal) }>;
 /** Exact immutable File identity accepted by endpoint attachment responses. */
 export type EndpointFileAttachmentReference = Readonly<Pick<EndpointFileMetadata, "id" | "version">>;
@@ -922,14 +941,14 @@ export type EndpointFileAttachmentApi = { attachment(file: EndpointFileAttachmen
 export type EndpointContext<
   Schema extends SchemaDefinition = SchemaDefinition,
   Credential extends CredentialProvenance = CredentialProvenance,
-> = Omit<CapsuleContext<Schema, Credential>, "lifecycle"> & {
+> = Omit<CapsuleContext<Schema, Credential>, "files" | "lifecycle"> & {
   request: EndpointRequest;
   /** Available only while handling a declared multipart ingress endpoint. */
-  files: EndpointFileIngressApi;
+  files: CurrentUserFilesApi & EndpointFileIngressApi;
   /** Present only after declared Capsule-principal pre-body admission. */
   readonly ingress?: Readonly<{ principal: FileIngressPrincipal }>;
 };
-export type EndpointFileAttachmentContext<Schema extends SchemaDefinition = SchemaDefinition> = Omit<EndpointContext<Schema>, "files"> & { files: EndpointFileIngressApi & EndpointFileAttachmentApi };
+export type EndpointFileAttachmentContext<Schema extends SchemaDefinition = SchemaDefinition> = Omit<EndpointContext<Schema>, "files"> & { files: CurrentUserFilesApi & EndpointFileIngressApi & EndpointFileAttachmentApi };
 
 /** Provider-neutral lifecycle state reported by an outbound email provider. */
 export type EmailEventKind =

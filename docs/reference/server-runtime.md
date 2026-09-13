@@ -873,6 +873,16 @@ is the live Sporades session behind the request or App message, including
 Anonymous sessions before sign-up. Use it for ordinary per-user reads, writes,
 file ownership, and authorization checks.
 
+For example, delete a File as that actor without round-tripping through the
+browser:
+
+```ts
+const deletedFile = await ctx.files.delete(fileReference);
+```
+
+This returns deleted File metadata directly and applies current ownership or a
+declared `files.acl.delete` rule using `ctx.auth` and `ctx.credential`.
+
 The Job Queue uses the bounded Auth and Credential snapshot captured when
 enqueue commits for background work that should stay accountable to the user
 and named access method that authorized it after the original request ends.
@@ -904,6 +914,17 @@ mutation hooks. The derived `privilegedCtx` exposes `auth.userId` as
 `"__privileged__"`, carries `privilegedCtx.signal`, and may use approved
 Capsule DB and File operations through the normal runtime boundaries.
 
+Privileged File deletion is deliberately explicit:
+
+```ts
+const result = await privilegedCtx.files.delete(fileReference);
+if (result.ok) console.log(result.data.file.id);
+```
+
+Unlike `ctx.files.delete(...)`, this userless operation can delete any exact
+live Capsule File without applying current-user ownership or
+`files.acl.delete`. Use it only when that bypass is intended and auditable.
+
 Privileged server role is not a Capsule role, app admin, Team, user, session,
 service account, or browser credential. It does not make downstream middleware
 or handlers privileged, and leaked derived contexts become ineffective after the
@@ -922,6 +943,10 @@ Privileged server role actor separately from who enqueued it.
 
 Most app behavior should use queries and mutations. Use endpoints for HTTP
 integrations such as webhooks:
+
+Endpoint handlers also receive user-scoped `ctx.files.delete(fileReference)`.
+It coexists with multipart `claim`/`inspection`/`status` and declared
+`attachment` methods without widening those separate authority boundaries.
 
 ```ts
 import { capsule, endpoint } from "sporades/server";

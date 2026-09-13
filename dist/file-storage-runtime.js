@@ -801,11 +801,46 @@ export async function revokePublicFileUrl(database, auth, publicUrlId) {
         error: null,
     };
 }
-export async function deletePrivateFile(database, auth, fileReference) {
+const pendingCurrentUserFileByteDeletes = new WeakMap();
+export function createCurrentUserFileApi(database, contextGetter) {
+    return Object.freeze({
+        async delete(fileReference) {
+            const context = contextGetter?.();
+            if (!context) {
+                throw createStructuredFileError("File access is no longer active.", "Call ctx.files.delete(...) only while the Capsule handler is running.");
+            }
+            const result = await deletePrivateFile(database, context.auth, fileReference, context.credential ?? { kind: "session" }, database.__transactionActive
+                ? (file) => {
+                    const pending = pendingCurrentUserFileByteDeletes.get(context) ?? [];
+                    if (pending.length === 0)
+                        pendingCurrentUserFileByteDeletes.set(context, pending);
+                    pending.push({ database: database.__rootDatabase ?? database, ...file });
+                }
+                : undefined);
+            if (!result.ok)
+                throw result.error;
+            return result.data.file;
+        },
+    });
+}
+export async function commitPendingCurrentUserFileByteDeletes(context) {
+    if (!context)
+        return;
+    const pending = pendingCurrentUserFileByteDeletes.get(context) ?? [];
+    pendingCurrentUserFileByteDeletes.delete(context);
+    for (const file of pending) {
+        await removeFileVersionBestEffort(file.database, file.fileId, file.version);
+    }
+}
+export function dropPendingCurrentUserFileByteDeletes(context) {
+    if (context)
+        pendingCurrentUserFileByteDeletes.delete(context);
+}
+export async function deletePrivateFile(database, auth, fileReference, credential = { kind: "session" }, deferByteRemoval) {
     const now = new Date().toISOString();
     const result = await runFileMetadataTransaction(database, async (sqlite) => {
         const transactionDatabase = { ...database, sqlite, adapter: sqlite };
-        const resolved = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "delete");
+        const resolved = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "delete", credential);
         if (!resolved.ok) {
             return resolved;
         }
@@ -830,7 +865,12 @@ export async function deletePrivateFile(database, auth, fileReference) {
     if (!result.ok) {
         return result;
     }
-    await removeFileVersionBestEffort(database, result.deletedFile.id, result.deletedFile.version);
+    if (deferByteRemoval) {
+        deferByteRemoval({ fileId: result.deletedFile.id, version: result.deletedFile.version });
+    }
+    else {
+        await removeFileVersionBestEffort(database, result.deletedFile.id, result.deletedFile.version);
+    }
     return {
         ok: true,
         data: result.data,
