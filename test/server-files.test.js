@@ -555,8 +555,21 @@ test("query cleanup drains an unawaited user File deletion", async () => {
 
 test("query cleanup reports an unawaited user File deletion failure", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "sporades-server-files-"));
+  const nativeHandledFailures = [];
+  globalThis.__serverFileNativeRejectionHandler = ((error) => nativeHandledFailures.push(error.message)).bind(undefined);
   const definition = capsule({
     name: "server-files-query-unawaited-failure",
+    files: {
+      acl: {
+        delete: async () => {
+          if (globalThis.__serverFileNativeHandlerAclGate) {
+            globalThis.__serverFileNativeHandlerAclEnteredResolve();
+            await globalThis.__serverFileNativeHandlerAclGate;
+          }
+          return false;
+        },
+      },
+    },
     queries: {
       deleteWithoutAwait: query((ctx, fileReference) => {
         void ctx.files.delete(fileReference);
@@ -595,6 +608,10 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
           return { recovered: true, message: error.message };
         }
       }),
+      handleDeleteFailureWithNativeCallback: mutation((ctx, fileReference) => {
+        void ctx.files.delete(fileReference).then(undefined, globalThis.__serverFileNativeRejectionHandler);
+        return { accepted: true };
+      }),
     },
   });
   const database = await openDevDatabase(
@@ -628,6 +645,18 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
     assert.deepEqual(recoveredAggregate.data, { recovered: true, message: "File not found." });
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
 
+    let releaseNativeAcl;
+    let signalNativeAclEntered;
+    globalThis.__serverFileNativeHandlerAclGate = new Promise((resolve) => { releaseNativeAcl = resolve; });
+    globalThis.__serverFileNativeHandlerAclEntered = new Promise((resolve) => { signalNativeAclEntered = resolve; });
+    globalThis.__serverFileNativeHandlerAclEnteredResolve = signalNativeAclEntered;
+    const nativeHandled = runMutation(database, other, "handleDeleteFailureWithNativeCallback", [file.id]);
+    await globalThis.__serverFileNativeHandlerAclEntered;
+    releaseNativeAcl();
+    assert.equal((await nativeHandled).error, null);
+    assert.deepEqual(nativeHandledFailures, ["File not found."]);
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
     const alreadyFailed = await runQuery(database, other, "deleteWithoutAwaitThenFail", [file.id]);
     assert.equal(alreadyFailed.data, null);
     assert.equal(alreadyFailed.error.message, "Original query failure.");
@@ -638,6 +667,10 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
     assert.deepEqual(recovered.data, { recovered: true, isPromise: true, message: "File not found." });
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
   } finally {
+    delete globalThis.__serverFileNativeRejectionHandler;
+    delete globalThis.__serverFileNativeHandlerAclGate;
+    delete globalThis.__serverFileNativeHandlerAclEntered;
+    delete globalThis.__serverFileNativeHandlerAclEnteredResolve;
     database.close();
     await rm(directory, { recursive: true, force: true });
   }

@@ -904,11 +904,16 @@ function trackCurrentUserFileOperation(operation) {
                 return (onFulfilled, onRejected) => {
                     let forwarded = false;
                     if (typeof onRejected === "function") {
-                        const source = Function.prototype.toString.call(onRejected);
-                        if (source.includes("[native code]")) {
+                        const forwardingPromise = forwardedFilePromiseHookStack.at(-1);
+                        const promiseResolveForwarding = forwardingPromise
+                            && typeof onFulfilled === "function"
+                            && onFulfilled.name === ""
+                            && onRejected.name === ""
+                            && Function.prototype.toString.call(onFulfilled).includes("[native code]")
+                            && Function.prototype.toString.call(onRejected).includes("[native code]");
+                        if (promiseResolveForwarding) {
                             operation.forwardedRejection = true;
                             forwarded = true;
-                            const forwardingPromise = forwardedFilePromiseHookStack.at(-1);
                             // Promise combinators assimilate the File promise from a root promise;
                             // direct `await` continuations have an async-function parent. Following
                             // the root lets the drain observe the aggregate and every propagated
@@ -917,8 +922,12 @@ function trackCurrentUserFileOperation(operation) {
                                 tagForwardedFilePromiseTree(forwardingPromise, operation);
                             }
                         }
-                        else
+                        else {
+                            // Native and bound application callbacks (for example console.error)
+                            // are still deliberate rejection handlers. Only the anonymous pair
+                            // installed by native PromiseResolve is internal forwarding.
                             operation.explicitRejectionHandler = true;
+                        }
                     }
                     return wrap(target.then(onFulfilled, typeof onRejected === "function" ? (reason) => {
                         // Once the handler returns, the runtime drain owns this failure. Do not also
