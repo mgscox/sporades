@@ -103272,63 +103272,85 @@ async function runQuery(database, auth, queryName, rawArgs = [], options = {}) {
   const customHandler = database.queries.find((candidate) => candidate.name === queryName);
   const queryHandler = customHandler ? materializeHandler(customHandler) : null;
   let context;
+  let result;
+  let primaryError;
   try {
-    try {
-      context = createMutationContext(database, auth, { sessionToken: options.sessionToken });
-      if (queryHandler) admitCredentialHandler(queryHandler, context, "query");
-      context = await applyContextMiddleware(database, context, "query");
-    } catch (error) {
-      if (error?.sporadesAuthDenialLogData) {
-        emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+    result = await (async () => {
+      try {
+        context = createMutationContext(database, auth, { sessionToken: options.sessionToken });
+        if (queryHandler) admitCredentialHandler(queryHandler, context, "query");
+        context = await applyContextMiddleware(database, context, "query");
+      } catch (error) {
+        if (error?.sporadesAuthDenialLogData) {
+          emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+        }
+        return {
+          rows: null,
+          error: {
+            ...error?.code ? { code: error.code } : {},
+            message: error.message,
+            hint: error.hint ?? "Check the Capsule context middleware and retry the query."
+          }
+        };
       }
-      return {
-        rows: null,
-        error: {
-          ...error?.code ? { code: error.code } : {},
-          message: error.message,
-          hint: error.hint ?? "Check the Capsule context middleware and retry the query."
-        }
-      };
-    }
-    if (queryName === "ctx.env") {
+      if (queryName === "ctx.env") {
+        if (args.length > 0) return { rows: null, data: null, error: invalidQueryArgumentsError() };
+        return { data: context.env, error: null };
+      }
+      const customResult = await runCustomQuery(database, context, queryName, args, queryHandler);
+      if (customResult) {
+        return customResult;
+      }
+      const table = resolveTableForQuery(database.schema, queryName);
+      if (!table) {
+        return {
+          rows: null,
+          error: {
+            message: `Unknown query: ${queryName}`,
+            hint: "Use a query defined by the capsule."
+          }
+        };
+      }
       if (args.length > 0) return { rows: null, data: null, error: invalidQueryArgumentsError() };
-      return { data: context.env, error: null };
-    }
-    const customResult = await runCustomQuery(database, context, queryName, args, queryHandler);
-    if (customResult) {
-      return customResult;
-    }
-    const table = resolveTableForQuery(database.schema, queryName);
-    if (!table) {
-      return {
-        rows: null,
-        error: {
-          message: `Unknown query: ${queryName}`,
-          hint: "Use a query defined by the capsule."
-        }
-      };
-    }
-    if (args.length > 0) return { rows: null, data: null, error: invalidQueryArgumentsError() };
-    const cacheKey = `${table.name}:${context.auth.userId}`;
-    if (!database.rowCache.has(cacheKey)) {
-      const columns = ["id", "createdAt", "updatedAt", ...table.fields.map((field) => field.name)];
-      const ownerScoped = table.fields.some((field) => field.name === "ownerId");
-      const rows2 = (await database.adapter.selectAppRows(table, {
-        columns,
-        ownerId: ownerScoped ? context.auth.userId : void 0,
-        orderBy: { fieldName: "createdAt", direction: "desc" }
-      })).map((row) => rowToApiValue(row, table));
-      database.rowCache.set(cacheKey, rows2);
-    }
-    const rows = await filterRowsByReadAcl(database, table, database.rowCache.get(cacheKey), context);
-    return { rows, error: null };
+      const cacheKey = `${table.name}:${context.auth.userId}`;
+      if (!database.rowCache.has(cacheKey)) {
+        const columns = ["id", "createdAt", "updatedAt", ...table.fields.map((field) => field.name)];
+        const ownerScoped = table.fields.some((field) => field.name === "ownerId");
+        const rows2 = (await database.adapter.selectAppRows(table, {
+          columns,
+          ownerId: ownerScoped ? context.auth.userId : void 0,
+          orderBy: { fieldName: "createdAt", direction: "desc" }
+        })).map((row) => rowToApiValue(row, table));
+        database.rowCache.set(cacheKey, rows2);
+      }
+      const rows = await filterRowsByReadAcl(database, table, database.rowCache.get(cacheKey), context);
+      return { rows, error: null };
+    })();
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
     revokeCurrentUserFileApi(context);
     try {
       await drainCurrentUserFileOperations(context);
-    } catch {
+    } catch (error) {
+      if (!primaryError && !result?.error) {
+        if (error?.sporadesAuthDenialLogData) {
+          emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+        }
+        result = {
+          rows: null,
+          data: null,
+          error: {
+            ...error?.code ? { code: error.code } : {},
+            message: error?.message || "Query handler failed.",
+            hint: error?.hint ?? "Check the Capsule query handler and retry the query."
+          }
+        };
+      }
     }
   }
+  return result;
 }
 async function runCustomQuery(database, context, queryName, args, resolvedHandler = null) {
   const handler = database.queries.find((candidate) => candidate.name === queryName);

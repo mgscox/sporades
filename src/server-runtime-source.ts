@@ -6271,7 +6271,10 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
   const customHandler = database.queries.find((candidate: { name: any; }) => candidate.name === queryName);
   const queryHandler = customHandler ? materializeHandler(customHandler) : null;
   let context;
+  let result;
+  let primaryError;
   try {
+  result = await (async () => {
   try {
     context = createMutationContext(database, auth, { sessionToken: options.sessionToken });
     if (queryHandler) admitCredentialHandler(queryHandler, context, "query");
@@ -6327,11 +6330,32 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
 
   const rows = await filterRowsByReadAcl(database, table, database.rowCache.get(cacheKey), context);
   return { rows, error: null };
+  })();
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
     revokeCurrentUserFileApi(context);
-    try { await drainCurrentUserFileOperations(context); }
-    catch {}
+    try {
+      await drainCurrentUserFileOperations(context);
+    } catch (error: any) {
+      if (!primaryError && !result?.error) {
+        if (error?.sporadesAuthDenialLogData) {
+          emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+        }
+        result = {
+          rows: null as any,
+          data: null as any,
+          error: {
+            ...(error?.code ? { code: error.code } : {}),
+            message: error?.message || "Query handler failed.",
+            hint: error?.hint ?? "Check the Capsule query handler and retry the query.",
+          },
+        };
+      }
+    }
   }
+  return result;
 }
 
 async function runCustomQuery(database: LooseRecord, context: any, queryName: any, args: readonly unknown[], resolvedHandler: Function | null = null) {

@@ -553,6 +553,49 @@ test("query cleanup drains an unawaited user File deletion", async () => {
   }
 });
 
+test("query cleanup reports an unawaited user File deletion failure", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "sporades-server-files-"));
+  const definition = capsule({
+    name: "server-files-query-unawaited-failure",
+    queries: {
+      deleteWithoutAwait: query((ctx, fileReference) => {
+        void ctx.files.delete(fileReference);
+        return { accepted: true };
+      }),
+      deleteWithoutAwaitThenFail: query((ctx, fileReference) => {
+        void ctx.files.delete(fileReference);
+        throw new Error("Original query failure.");
+      }),
+    },
+  });
+  const database = await openDevDatabase(
+    path.join(directory, "data.db"),
+    "",
+    {},
+    { name: definition.name, files: { storagePath: path.join(directory, "files") } },
+    definition,
+  );
+  const owner = guestAuth("query-unawaited-failure-owner");
+  const other = guestAuth("query-unawaited-failure-other");
+
+  try {
+    const file = await uploadFile(database, owner, "/query/unawaited-failure.txt", "still here");
+    const result = await runQuery(database, other, "deleteWithoutAwait", [file.id]);
+
+    assert.equal(result.data, null);
+    assert.equal(result.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const alreadyFailed = await runQuery(database, other, "deleteWithoutAwaitThenFail", [file.id]);
+    assert.equal(alreadyFailed.data, null);
+    assert.equal(alreadyFailed.error.message, "Original query failure.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+  } finally {
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("query middleware cannot retain user File deletion authority", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "sporades-server-files-"));
   const definition = capsule({ name: "server-files-query-revocation" });
