@@ -69104,6 +69104,23 @@ async function revokePublicFileUrl(database, auth, publicUrlId) {
   };
 }
 var currentUserFileApiState = /* @__PURE__ */ new WeakMap();
+function trackCurrentUserFileOperation(operation) {
+  const wrap = (promise) => new Proxy(promise, {
+    get(target, property) {
+      if (property === "then") return (onFulfilled, onRejected) => {
+        if (typeof onRejected === "function") operation.rejectionObserved = true;
+        return wrap(target.then(onFulfilled, onRejected));
+      };
+      if (property === "catch") return (onRejected) => {
+        if (typeof onRejected === "function") operation.rejectionObserved = true;
+        return wrap(target.catch(onRejected));
+      };
+      if (property === "finally") return (onFinally) => wrap(target.finally(onFinally));
+      return Reflect.get(target, property, target);
+    }
+  });
+  return wrap(operation.promise);
+}
 function bindCurrentUserFileDeleteState(context, sourceContext) {
   const state = sourceContext ? currentUserFileApiState.get(sourceContext) : void 0;
   if (state) currentUserFileApiState.set(context, state);
@@ -69139,17 +69156,19 @@ function createCurrentUserFileApi(database, contextGetter) {
         if (!result.ok) throw result.error;
         return result.data.file;
       });
-      state.pendingOperations.push(operation);
+      const trackedOperation = { promise: operation, rejectionObserved: false };
+      state.pendingOperations.push(trackedOperation);
       void operation.then(void 0, () => void 0);
-      return operation;
+      return trackCurrentUserFileOperation(trackedOperation);
     }
   });
 }
 async function drainCurrentUserFileOperations(context) {
   const state = context ? currentUserFileApiState.get(context) : void 0;
   while (state?.pendingOperations.length) {
-    const outcomes = await Promise.allSettled(state.pendingOperations.splice(0));
-    const rejected = outcomes.find((outcome) => outcome.status === "rejected");
+    const operations = state.pendingOperations.splice(0);
+    const outcomes = await Promise.allSettled(operations.map((operation) => operation.promise));
+    const rejected = outcomes.find((outcome, index) => outcome.status === "rejected" && !operations[index].rejectionObserved);
     if (rejected?.status === "rejected") throw rejected.reason;
   }
 }

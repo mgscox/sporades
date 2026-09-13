@@ -566,6 +566,16 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
         void ctx.files.delete(fileReference);
         throw new Error("Original query failure.");
       }),
+      recoverDeleteFailure: query(async (ctx, fileReference) => {
+        const pendingDeletion = ctx.files.delete(fileReference);
+        const isPromise = pendingDeletion instanceof Promise;
+        try {
+          await pendingDeletion;
+          return { recovered: false };
+        } catch (error) {
+          return { recovered: true, isPromise, message: error.message };
+        }
+      }),
     },
   });
   const database = await openDevDatabase(
@@ -589,6 +599,11 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
     const alreadyFailed = await runQuery(database, other, "deleteWithoutAwaitThenFail", [file.id]);
     assert.equal(alreadyFailed.data, null);
     assert.equal(alreadyFailed.error.message, "Original query failure.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const recovered = await runQuery(database, other, "recoverDeleteFailure", [file.id]);
+    assert.equal(recovered.error, null);
+    assert.deepEqual(recovered.data, { recovered: true, isPromise: true, message: "File not found." });
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
   } finally {
     database.close();
