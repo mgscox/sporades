@@ -945,6 +945,10 @@ function retainForwardedFilePromiseHook(state) {
                     children = new Set();
                     forwardedFilePromiseChildren.set(parent, children);
                 }
+                for (const childReference of children) {
+                    if (!childReference.deref())
+                        children.delete(childReference);
+                }
                 // The process-wide hook may remain active while other handlers run.
                 // Keep only a weak edge so a long-lived parent cannot retain completed
                 // continuations until every concurrent handler reaches quiescence.
@@ -1163,17 +1167,34 @@ function trackCurrentUserFileOperation(operation) {
                             operation.explicitRejectionHandler = true;
                         }
                     }
+                    let continuation;
                     const rejectionHandler = trackPromiseResolveForwarding ? (reason) => {
                         const resolverOperations = forwardedFileResolverOperations.get(onRejected) ?? new Set([operation]);
                         forwardedFileCallbackOperationSets.push([...resolverOperations]);
+                        let forwardedResult;
                         try {
-                            return onRejected(reason);
+                            forwardedResult = onRejected(reason);
                         }
                         finally {
                             forwardedFileCallbackOperationSets.pop();
                         }
+                        if (forwardedResult && typeof forwardedResult.then === "function") {
+                            // Native finally reject callbacks return a Promise that rethrows the
+                            // original reason. This remains observable even when Capsule code
+                            // cached Promise.prototype.finally before runtime instrumentation.
+                            for (const resolverOperation of resolverOperations) {
+                                const parentNode = getForwardedFilePromiseNode(promise, resolverOperation);
+                                const continuationNode = registerForwardedFilePromiseNode(continuation, resolverOperation, parentNode);
+                                continuationNode.userContinuation = true;
+                                continuationNode.propagatesRejection = true;
+                                continuationNode.forwarded = false;
+                                parentNode?.userChildren.add(continuationNode);
+                                resolverOperation.exactForwardingPromiseObserved = true;
+                            }
+                        }
+                        return forwardedResult;
                     } : onRejected;
-                    const continuation = Promise.prototype.then.call(promise, onFulfilled, rejectionHandler);
+                    continuation = Promise.prototype.then.call(promise, onFulfilled, rejectionHandler);
                     const parentNode = getForwardedFilePromiseNode(promise, operation);
                     if (promiseResolveForwarding) {
                         // Native combinators attach resolver reactions through this method.

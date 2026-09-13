@@ -69244,6 +69244,9 @@ function retainForwardedFilePromiseHook(state) {
           children = /* @__PURE__ */ new Set();
           forwardedFilePromiseChildren.set(parent, children);
         }
+        for (const childReference of children) {
+          if (!childReference.deref()) children.delete(childReference);
+        }
         children.add(new WeakRef(promise));
       }
       const parentNodes = parent ? forwardedFilePromiseNodes.get(parent)?.values() : void 0;
@@ -69412,16 +69415,30 @@ function trackCurrentUserFileOperation(operation) {
             operation.explicitRejectionHandler = true;
           }
         }
+        let continuation;
         const rejectionHandler = trackPromiseResolveForwarding ? (reason) => {
           const resolverOperations = forwardedFileResolverOperations.get(onRejected) ?? /* @__PURE__ */ new Set([operation]);
           forwardedFileCallbackOperationSets.push([...resolverOperations]);
+          let forwardedResult;
           try {
-            return onRejected(reason);
+            forwardedResult = onRejected(reason);
           } finally {
             forwardedFileCallbackOperationSets.pop();
           }
+          if (forwardedResult && typeof forwardedResult.then === "function") {
+            for (const resolverOperation of resolverOperations) {
+              const parentNode2 = getForwardedFilePromiseNode(promise, resolverOperation);
+              const continuationNode = registerForwardedFilePromiseNode(continuation, resolverOperation, parentNode2);
+              continuationNode.userContinuation = true;
+              continuationNode.propagatesRejection = true;
+              continuationNode.forwarded = false;
+              parentNode2?.userChildren.add(continuationNode);
+              resolverOperation.exactForwardingPromiseObserved = true;
+            }
+          }
+          return forwardedResult;
         } : onRejected;
-        const continuation = Promise.prototype.then.call(promise, onFulfilled, rejectionHandler);
+        continuation = Promise.prototype.then.call(promise, onFulfilled, rejectionHandler);
         const parentNode = getForwardedFilePromiseNode(promise, operation);
         if (promiseResolveForwarding) {
           const continuationNode = getForwardedFilePromiseNode(continuation, operation);

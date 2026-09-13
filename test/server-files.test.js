@@ -557,6 +557,7 @@ test("query cleanup drains an unawaited user File deletion", async () => {
 test("query cleanup reports an unawaited user File deletion failure", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "sporades-server-files-"));
   const cachedPromiseAny = Promise.any.bind(Promise);
+  const cachedPromiseFinally = Promise.prototype.finally;
   const nativeHandledFailures = [];
   globalThis.__serverFileNativeRejectionHandler = ((error) => nativeHandledFailures.push(error.message)).bind(undefined);
   const definition = capsule({
@@ -805,6 +806,10 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
         void Promise.prototype.finally.call(ctx.files.delete(fileReference), () => {});
         return { accepted: true };
       }),
+      discardCachedFinallyDeleteFailure: mutation((ctx, fileReference) => {
+        void cachedPromiseFinally.call(ctx.files.delete(fileReference), () => {});
+        return { accepted: true };
+      }),
       delayedAsyncRethrowResolvedDeleteFailure: mutation((ctx, fileReference) => {
         void Promise.resolve(ctx.files.delete(fileReference)).catch(async (error) => {
           await new Promise((resolve) => setTimeout(resolve, 25));
@@ -1013,6 +1018,10 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
 
     const discardedGenericFinallyDeleteFailure = await runMutation(database, other, "discardGenericFinallyDeleteFailure", [file.id]);
     assert.equal(discardedGenericFinallyDeleteFailure.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const discardedCachedFinallyDeleteFailure = await runMutation(database, other, "discardCachedFinallyDeleteFailure", [file.id]);
+    assert.equal(discardedCachedFinallyDeleteFailure.error.message, "File not found.");
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
 
     const delayedAsyncRethrownResolvedDeleteFailure = await runMutation(database, other, "delayedAsyncRethrowResolvedDeleteFailure", [file.id]);
