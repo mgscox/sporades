@@ -964,7 +964,7 @@ type CurrentUserFileApiState = {
 const currentUserFileApiState = new WeakMap<object, CurrentUserFileApiState>();
 
 const nodePromiseHooks = (process.getBuiltinModule("node:v8") as any)?.promiseHooks;
-const forwardedFilePromiseChildren = new WeakMap<Promise<any>, Set<Promise<any>>>();
+let forwardedFilePromiseChildren = new WeakMap<Promise<any>, Set<Promise<any>>>();
 const forwardedFilePromiseNodes = new WeakMap<Promise<any>, ForwardedFilePromiseNode>();
 let forwardedFilePromiseHookStop: (() => void) | undefined;
 let forwardedFilePromiseHookRetainers = 0;
@@ -1049,6 +1049,9 @@ function releaseForwardedFilePromiseHook(state: CurrentUserFileApiState) {
     forwardedFilePromiseHookStop = undefined;
     forwardedFilePromiseHookStack = [];
     forwardedFileCallbackOperations.length = 0;
+    // Values in this WeakMap contain strong child references. Replace the
+    // transient graph so a long-lived parent cannot retain completed handlers.
+    forwardedFilePromiseChildren = new WeakMap();
   }
 }
 

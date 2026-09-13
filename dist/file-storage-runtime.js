@@ -803,7 +803,7 @@ export async function revokePublicFileUrl(database, auth, publicUrlId) {
 }
 const currentUserFileApiState = new WeakMap();
 const nodePromiseHooks = process.getBuiltinModule("node:v8")?.promiseHooks;
-const forwardedFilePromiseChildren = new WeakMap();
+let forwardedFilePromiseChildren = new WeakMap();
 const forwardedFilePromiseNodes = new WeakMap();
 let forwardedFilePromiseHookStop;
 let forwardedFilePromiseHookRetainers = 0;
@@ -886,6 +886,9 @@ function releaseForwardedFilePromiseHook(state) {
         forwardedFilePromiseHookStop = undefined;
         forwardedFilePromiseHookStack = [];
         forwardedFileCallbackOperations.length = 0;
+        // Values in this WeakMap contain strong child references. Replace the
+        // transient graph so a long-lived parent cannot retain completed handlers.
+        forwardedFilePromiseChildren = new WeakMap();
     }
 }
 function hasDiscardedForwardedFileRejection(operation) {

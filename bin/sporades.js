@@ -69186,6 +69186,7 @@ function releaseForwardedFilePromiseHook(state) {
     forwardedFilePromiseHookStop = void 0;
     forwardedFilePromiseHookStack = [];
     forwardedFileCallbackOperations.length = 0;
+    forwardedFilePromiseChildren = /* @__PURE__ */ new WeakMap();
   }
 }
 function hasDiscardedForwardedFileRejection(operation) {
