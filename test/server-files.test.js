@@ -625,6 +625,10 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
         void ctx.files.delete(fileReference).then(undefined, globalThis.__serverFileNativeRejectionHandler);
         return { accepted: true };
       }),
+      handlePendingAggregateDeleteFailure: mutation((ctx, fileReference) => {
+        void Promise.all([ctx.files.delete(fileReference)]).catch(globalThis.__serverFileNativeRejectionHandler);
+        return { accepted: true };
+      }),
     },
   });
   const database = await openDevDatabase(
@@ -677,6 +681,16 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
     releaseNativeAcl();
     assert.equal((await nativeHandled).error, null);
     assert.deepEqual(nativeHandledFailures, ["File not found."]);
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    globalThis.__serverFileNativeHandlerAclGate = new Promise((resolve) => { releaseNativeAcl = resolve; });
+    globalThis.__serverFileNativeHandlerAclEntered = new Promise((resolve) => { signalNativeAclEntered = resolve; });
+    globalThis.__serverFileNativeHandlerAclEnteredResolve = signalNativeAclEntered;
+    const aggregateHandled = runMutation(database, other, "handlePendingAggregateDeleteFailure", [file.id]);
+    await globalThis.__serverFileNativeHandlerAclEntered;
+    releaseNativeAcl();
+    assert.equal((await aggregateHandled).error, null);
+    assert.deepEqual(nativeHandledFailures, ["File not found.", "File not found."]);
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
 
     const alreadyFailed = await runQuery(database, other, "deleteWithoutAwaitThenFail", [file.id]);

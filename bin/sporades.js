@@ -69196,13 +69196,11 @@ function trackCurrentUserFileOperation(operation) {
   const wrap = (promise) => new Proxy(promise, {
     get(target, property) {
       if (property === "then") return (onFulfilled, onRejected) => {
-        let forwarded = false;
         if (typeof onRejected === "function") {
           const forwardingPromise = forwardedFilePromiseHookStack.at(-1);
           const promiseResolveForwarding = forwardingPromise && typeof onFulfilled === "function" && onFulfilled.name === "" && onRejected.name === "" && Function.prototype.toString.call(onFulfilled).includes("[native code]") && Function.prototype.toString.call(onRejected).includes("[native code]");
           if (promiseResolveForwarding) {
             operation.forwardedRejection = true;
-            forwarded = true;
             if (forwardingPromise && forwardedFilePromiseParents.get(forwardingPromise) === void 0) {
               tagForwardedFilePromiseTree(forwardingPromise, operation);
             }
@@ -69210,10 +69208,7 @@ function trackCurrentUserFileOperation(operation) {
             operation.explicitRejectionHandler = true;
           }
         }
-        return wrap(target.then(onFulfilled, typeof onRejected === "function" ? (reason) => {
-          if (forwarded && operation.draining) return new Promise(() => void 0);
-          return onRejected(reason);
-        } : void 0));
+        return wrap(target.then(onFulfilled, onRejected));
       };
       if (property === "catch") return (onRejected) => {
         if (typeof onRejected === "function") operation.explicitRejectionHandler = true;
@@ -69263,7 +69258,6 @@ function createCurrentUserFileApi(database, contextGetter) {
       const trackedOperation = {
         promise: operation,
         settled: false,
-        draining: false,
         explicitRejectionHandler: false,
         forwardedRejection: false,
         aggregateNodes: /* @__PURE__ */ new Set(),
@@ -69283,14 +69277,19 @@ async function drainCurrentUserFileOperations(context) {
   const state = context ? currentUserFileApiState.get(context) : void 0;
   while (state?.pendingOperations.length) {
     const operations = state.pendingOperations.splice(0);
-    for (const operation of operations) operation.draining = true;
     const settledBeforeDrain = operations.map((operation) => operation.settled);
     try {
       const outcomes = await Promise.allSettled(operations.map((operation) => operation.promise));
       if (operations.some((operation) => operation.aggregateNodes.size > 0)) {
         await new Promise((resolve) => setImmediate(resolve));
       }
-      const rejected = outcomes.find((outcome, index) => outcome.status === "rejected" && (hasDiscardedForwardedFileRejection(operations[index]) || !operations[index].explicitRejectionHandler && !(operations[index].forwardedRejection && settledBeforeDrain[index])));
+      const rejected = outcomes.find((outcome, index) => {
+        if (outcome.status !== "rejected") return false;
+        const operation = operations[index];
+        const discardedForwarding = hasDiscardedForwardedFileRejection(operation);
+        const forwardedFailureWasHandled = operation.forwardedRejection && (operation.aggregateNodes.size > 0 ? !discardedForwarding : settledBeforeDrain[index]);
+        return discardedForwarding || !operation.explicitRejectionHandler && !forwardedFailureWasHandled;
+      });
       if (rejected?.status === "rejected") throw rejected.reason;
     } finally {
       for (const operation of operations) releaseForwardedFilePromiseHook(operation);
