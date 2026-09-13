@@ -69177,8 +69177,9 @@ function registerForwardedFilePromiseNode(promise, operation, parent) {
     };
     nodes.set(operation, node);
     operation.promiseNodes.add(node);
-    for (const child of forwardedFilePromiseChildren.get(promise) ?? []) {
-      registerForwardedFilePromiseNode(child, operation, node);
+    for (const childReference of forwardedFilePromiseChildren.get(promise) ?? []) {
+      const child = childReference.deref();
+      if (child) registerForwardedFilePromiseNode(child, operation, node);
     }
     observingForwardedFilePromise = true;
     node.settlement = promise.then(
@@ -69217,7 +69218,7 @@ function retainForwardedFilePromiseHook(state) {
           children = /* @__PURE__ */ new Set();
           forwardedFilePromiseChildren.set(parent, children);
         }
-        children.add(promise);
+        children.add(new WeakRef(promise));
       }
       const parentNodes = parent ? forwardedFilePromiseNodes.get(parent)?.values() : void 0;
       for (const parentNode of parentNodes ?? []) {

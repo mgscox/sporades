@@ -1266,6 +1266,7 @@ test("public docs distinguish user-scoped and privileged server File deletion", 
     assert.match(contents, /ctx\.files\.delete\(fileReference\)/);
   }
   assert.match(filesReference, /frozen `ctx\.auth` and `ctx\.credential` snapshot admitted/);
+  assert.match(guide, /frozen `ctx\.auth` and `ctx\.credential` snapshot\s+admitted/);
   assert.match(serverReference, /frozen `ctx\.auth` and `ctx\.credential`\s+snapshot admitted/);
   assert.match(filesReference, /files\.acl\.delete/);
   assert.match(filesReference, /Stored-byte removal is deferred until commit/);

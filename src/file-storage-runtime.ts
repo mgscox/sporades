@@ -966,7 +966,7 @@ type CurrentUserFileApiState = {
 const currentUserFileApiState = new WeakMap<object, CurrentUserFileApiState>();
 
 const nodePromiseHooks = (process.getBuiltinModule("node:v8") as any)?.promiseHooks;
-let forwardedFilePromiseChildren = new WeakMap<Promise<any>, Set<Promise<any>>>();
+let forwardedFilePromiseChildren = new WeakMap<Promise<any>, Set<WeakRef<Promise<any>>>>();
 const forwardedFilePromiseNodes = new WeakMap<Promise<any>, Map<CurrentUserFileOperation, ForwardedFilePromiseNode>>();
 let forwardedFilePromiseHookStop: (() => void) | undefined;
 let forwardedFilePromiseHookRetainers = 0;
@@ -1044,8 +1044,9 @@ function registerForwardedFilePromiseNode(
     };
     nodes.set(operation, node);
     operation.promiseNodes.add(node);
-    for (const child of forwardedFilePromiseChildren.get(promise) ?? []) {
-      registerForwardedFilePromiseNode(child, operation, node);
+    for (const childReference of forwardedFilePromiseChildren.get(promise) ?? []) {
+      const child = childReference.deref();
+      if (child) registerForwardedFilePromiseNode(child, operation, node);
     }
     observingForwardedFilePromise = true;
     node.settlement = promise.then(
@@ -1082,7 +1083,10 @@ function retainForwardedFilePromiseHook(state: CurrentUserFileApiState) {
           children = new Set();
           forwardedFilePromiseChildren.set(parent, children);
         }
-        children.add(promise);
+        // The process-wide hook may remain active while other handlers run.
+        // Keep only a weak edge so a long-lived parent cannot retain completed
+        // continuations until every concurrent handler reaches quiescence.
+        children.add(new WeakRef(promise));
       }
       const parentNodes = parent ? forwardedFilePromiseNodes.get(parent)?.values() : undefined;
       for (const parentNode of parentNodes ?? []) {

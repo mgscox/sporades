@@ -12,10 +12,12 @@ through `ctx.acl.teams`. Sharing never transfers File ownership: public URLs
 created by an ACL-approved collaborator are still recorded to—and revocable
 by—the File owner.
 
-Server deletion uses the current `ctx.auth` and `ctx.credential`: the actor must
-own the File or pass a declared `files.acl.delete` rule. It resolves to deleted
-File metadata directly and fails opaquely when the reference is missing or
-unauthorized. Metadata deletion and public-URL revocation are transactional;
+Server deletion uses the frozen `ctx.auth` and `ctx.credential` snapshot
+admitted when the handler context is created; replacing either context property
+cannot change the actor. That actor must own the File or pass a declared
+`files.acl.delete` rule. The operation resolves to deleted File metadata directly
+and fails opaquely when the reference is missing or unauthorized. Metadata
+deletion and public-URL revocation are transactional;
 stored bytes are removed after commit on a best-effort basis. Use
 `privilegedCtx.files.delete(fileReference)` only inside an explicitly audited
 `ctx.privileged.run(...)` when trusted userless work must bypass current-user
