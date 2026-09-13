@@ -944,7 +944,6 @@ type CurrentUserFileOperation = {
   explicitRejectionHandler: boolean;
   forwardedRejection: boolean;
   aggregateNodes: Set<ForwardedFilePromiseNode>;
-  promiseHookRetained: boolean;
 };
 type ForwardedFilePromiseNode = {
   promise: Promise<any>;
@@ -952,11 +951,15 @@ type ForwardedFilePromiseNode = {
   children: Set<ForwardedFilePromiseNode>;
   outcome: "pending" | "fulfilled" | "rejected";
 };
-type CurrentUserFileApiState = { active: boolean; pendingByteDeletes: LooseRecord[]; pendingOperations: CurrentUserFileOperation[] };
+type CurrentUserFileApiState = {
+  active: boolean;
+  pendingByteDeletes: LooseRecord[];
+  pendingOperations: CurrentUserFileOperation[];
+  promiseHookRetained: boolean;
+};
 const currentUserFileApiState = new WeakMap<object, CurrentUserFileApiState>();
 
 const nodePromiseHooks = (process.getBuiltinModule("node:v8") as any)?.promiseHooks;
-const forwardedFilePromiseParents = new WeakMap<Promise<any>, Promise<any> | undefined>();
 const forwardedFilePromiseChildren = new WeakMap<Promise<any>, Set<Promise<any>>>();
 const forwardedFilePromiseOperations = new WeakMap<Promise<any>, CurrentUserFileOperation>();
 const forwardedFilePromiseNodes = new WeakMap<Promise<any>, ForwardedFilePromiseNode>();
@@ -997,14 +1000,13 @@ function tagForwardedFilePromiseTree(promise: Promise<any>, operation: CurrentUs
   registerForwardedFilePromiseNode(promise, operation);
 }
 
-function retainForwardedFilePromiseHook(operation: CurrentUserFileOperation) {
-  if (!nodePromiseHooks?.createHook || operation.promiseHookRetained) return;
-  operation.promiseHookRetained = true;
+function retainForwardedFilePromiseHook(state: CurrentUserFileApiState) {
+  if (!nodePromiseHooks?.createHook || state.promiseHookRetained) return;
+  state.promiseHookRetained = true;
   forwardedFilePromiseHookRetainers += 1;
   if (forwardedFilePromiseHookStop) return;
   forwardedFilePromiseHookStop = nodePromiseHooks.createHook({
     init(promise: Promise<any>, parent?: Promise<any>) {
-      forwardedFilePromiseParents.set(promise, parent);
       if (parent) {
         let children = forwardedFilePromiseChildren.get(parent);
         if (!children) {
@@ -1038,9 +1040,9 @@ function retainForwardedFilePromiseHook(operation: CurrentUserFileOperation) {
   });
 }
 
-function releaseForwardedFilePromiseHook(operation: CurrentUserFileOperation) {
-  if (!operation.promiseHookRetained) return;
-  operation.promiseHookRetained = false;
+function releaseForwardedFilePromiseHook(state: CurrentUserFileApiState) {
+  if (!state.promiseHookRetained) return;
+  state.promiseHookRetained = false;
   forwardedFilePromiseHookRetainers -= 1;
   if (forwardedFilePromiseHookRetainers === 0) {
     forwardedFilePromiseHookStop?.();
@@ -1067,13 +1069,11 @@ function trackCurrentUserFileOperation(operation: CurrentUserFileOperation): Pro
             && Function.prototype.toString.call(onRejected).includes("[native code]");
           if (promiseResolveForwarding) {
             operation.forwardedRejection = true;
-            // Promise combinators assimilate the File promise from a root promise;
-            // direct `await` continuations have an async-function parent. Following
-            // the root lets the drain observe the aggregate and every propagated
-            // descendant instead of guessing from when the File operation settled.
-            if (forwardingPromise && forwardedFilePromiseParents.get(forwardingPromise) === undefined) {
-              tagForwardedFilePromiseTree(forwardingPromise, operation);
-            }
+            // Assimilation may start at a Promise.resolve root, a combinator, an
+            // await continuation, or a promise returned from an existing chain.
+            // Follow whichever promise owns the native forwarding callbacks; its
+            // graph records whether the propagated rejection reaches a handler.
+            if (forwardingPromise) tagForwardedFilePromiseTree(forwardingPromise, operation);
           }
           else {
             // Native and bound application callbacks (for example console.error)
@@ -1104,7 +1104,15 @@ export function createCurrentUserFileApi(
   database: LooseRecord,
   contextGetter: () => LooseRecord,
 ) {
-  const state: CurrentUserFileApiState = { active: true, pendingByteDeletes: [], pendingOperations: [] };
+  const state: CurrentUserFileApiState = {
+    active: true,
+    pendingByteDeletes: [],
+    pendingOperations: [],
+    promiseHookRetained: false,
+  };
+  // Start at the capability boundary, before handler code can build an outer
+  // promise chain that later adopts a File deletion promise.
+  retainForwardedFilePromiseHook(state);
   const initialContext = contextGetter?.();
   if (initialContext) currentUserFileApiState.set(initialContext, state);
   return Object.freeze({
@@ -1142,9 +1150,7 @@ export function createCurrentUserFileApi(
         explicitRejectionHandler: false,
         forwardedRejection: false,
         aggregateNodes: new Set(),
-        promiseHookRetained: false,
       };
-      retainForwardedFilePromiseHook(trackedOperation);
       void operation.finally(() => { trackedOperation.settled = true; }).catch(() => undefined);
       state.pendingOperations.push(trackedOperation);
       void operation.then(undefined, () => undefined);
@@ -1155,10 +1161,10 @@ export function createCurrentUserFileApi(
 
 export async function drainCurrentUserFileOperations(context: LooseRecord | undefined) {
   const state = context ? currentUserFileApiState.get(context) : undefined;
-  while (state?.pendingOperations.length) {
-    const operations = state.pendingOperations.splice(0);
-    const settledBeforeDrain = operations.map((operation) => operation.settled);
-    try {
+  try {
+    while (state?.pendingOperations.length) {
+      const operations = state.pendingOperations.splice(0);
+      const settledBeforeDrain = operations.map((operation) => operation.settled);
       const outcomes = await Promise.allSettled(operations.map((operation) => operation.promise));
       if (operations.some((operation) => operation.aggregateNodes.size > 0)) {
         await new Promise((resolve) => setImmediate(resolve));
@@ -1172,9 +1178,9 @@ export async function drainCurrentUserFileOperations(context: LooseRecord | unde
         return discardedForwarding || (!operation.explicitRejectionHandler && !forwardedFailureWasHandled);
       });
       if (rejected?.status === "rejected") throw rejected.reason;
-    } finally {
-      for (const operation of operations) releaseForwardedFilePromiseHook(operation);
     }
+  } finally {
+    if (state) releaseForwardedFilePromiseHook(state);
   }
 }
 
@@ -1182,6 +1188,7 @@ export async function commitPendingCurrentUserFileByteDeletes(context: LooseReco
   if (!context) return;
   const state = currentUserFileApiState.get(context);
   if (!state) return;
+  releaseForwardedFilePromiseHook(state);
   state.active = false;
   currentUserFileApiState.delete(context);
   for (const file of state.pendingByteDeletes.splice(0)) {
@@ -1193,7 +1200,8 @@ export function dropPendingCurrentUserFileByteDeletes(context: LooseRecord | und
   const state = context ? currentUserFileApiState.get(context) : undefined;
   if (!state) return;
   state.active = false;
-  for (const operation of state.pendingOperations.splice(0)) releaseForwardedFilePromiseHook(operation);
+  state.pendingOperations.length = 0;
+  releaseForwardedFilePromiseHook(state);
   state.pendingByteDeletes.length = 0;
   currentUserFileApiState.delete(context!);
 }
