@@ -815,7 +815,7 @@ function registerForwardedFilePromiseNode(promise, operation, parent) {
     if (!node) {
         node = { promise, operation, children: new Set(), outcome: "pending" };
         forwardedFilePromiseNodes.set(promise, node);
-        operation.aggregateNodes.add(node);
+        operation.promiseNodes.add(node);
         for (const child of forwardedFilePromiseChildren.get(promise) ?? []) {
             registerForwardedFilePromiseNode(child, operation, node);
         }
@@ -924,7 +924,7 @@ function hasDiscardedForwardedFileRejection(operation) {
         } while (member !== node);
         components.push(component);
     };
-    for (const node of operation.aggregateNodes)
+    for (const node of operation.promiseNodes)
         if (!indexes.has(node))
             visit(node);
     const componentByNode = new Map();
@@ -939,14 +939,15 @@ function trackCurrentUserFileOperation(operation) {
         get(target, property) {
             if (property === "then")
                 return (onFulfilled, onRejected) => {
+                    let promiseResolveForwarding = false;
                     if (typeof onRejected === "function") {
                         const forwardingPromise = forwardedFilePromiseHookStack.at(-1);
-                        const promiseResolveForwarding = forwardingPromise
+                        promiseResolveForwarding = Boolean(forwardingPromise
                             && typeof onFulfilled === "function"
                             && onFulfilled.name === ""
                             && onRejected.name === ""
                             && Function.prototype.toString.call(onFulfilled).includes("[native code]")
-                            && Function.prototype.toString.call(onRejected).includes("[native code]");
+                            && Function.prototype.toString.call(onRejected).includes("[native code]"));
                         if (promiseResolveForwarding) {
                             operation.forwardedRejection = true;
                             // Assimilation may start at a Promise.resolve root, a combinator, an
@@ -963,16 +964,26 @@ function trackCurrentUserFileOperation(operation) {
                             operation.explicitRejectionHandler = true;
                         }
                     }
-                    return wrap(target.then(onFulfilled, onRejected));
+                    const continuation = target.then(onFulfilled, onRejected);
+                    if (!promiseResolveForwarding) {
+                        registerForwardedFilePromiseNode(continuation, operation, forwardedFilePromiseNodes.get(target));
+                    }
+                    return wrap(continuation);
                 };
             if (property === "catch")
                 return (onRejected) => {
                     if (typeof onRejected === "function")
                         operation.explicitRejectionHandler = true;
-                    return wrap(target.catch(onRejected));
+                    const continuation = target.catch(onRejected);
+                    registerForwardedFilePromiseNode(continuation, operation, forwardedFilePromiseNodes.get(target));
+                    return wrap(continuation);
                 };
             if (property === "finally")
-                return (onFinally) => wrap(target.finally(onFinally));
+                return (onFinally) => {
+                    const continuation = target.finally(onFinally);
+                    registerForwardedFilePromiseNode(continuation, operation, forwardedFilePromiseNodes.get(target));
+                    return wrap(continuation);
+                };
             return Reflect.get(target, property, target);
         },
     });
@@ -1022,7 +1033,7 @@ export function createCurrentUserFileApi(database, contextGetter) {
                 settled: false,
                 explicitRejectionHandler: false,
                 forwardedRejection: false,
-                aggregateNodes: new Set(),
+                promiseNodes: new Set(),
             };
             void operation.finally(() => { trackedOperation.settled = true; }).catch(() => undefined);
             state.pendingOperations.push(trackedOperation);
@@ -1038,7 +1049,7 @@ export async function drainCurrentUserFileOperations(context) {
             const operations = state.pendingOperations.splice(0);
             const settledBeforeDrain = operations.map((operation) => operation.settled);
             const outcomes = await Promise.allSettled(operations.map((operation) => operation.promise));
-            if (operations.some((operation) => operation.aggregateNodes.size > 0)) {
+            if (operations.some((operation) => operation.promiseNodes.size > 0)) {
                 await new Promise((resolve) => setImmediate(resolve));
             }
             const rejected = outcomes.find((outcome, index) => {
@@ -1047,7 +1058,7 @@ export async function drainCurrentUserFileOperations(context) {
                 const operation = operations[index];
                 const discardedForwarding = hasDiscardedForwardedFileRejection(operation);
                 const forwardedFailureWasHandled = operation.forwardedRejection
-                    && (operation.aggregateNodes.size > 0 ? !discardedForwarding : settledBeforeDrain[index]);
+                    && (operation.promiseNodes.size > 0 ? !discardedForwarding : settledBeforeDrain[index]);
                 return discardedForwarding || (!operation.explicitRejectionHandler && !forwardedFailureWasHandled);
             });
             if (rejected?.status === "rejected")

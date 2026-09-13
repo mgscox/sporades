@@ -651,6 +651,14 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
         void ctx.files.delete(fileReference).then(undefined, globalThis.__serverFileNativeRejectionHandler);
         return { accepted: true };
       }),
+      handleDeleteFailureWithDiscardedCatch: mutation((ctx, fileReference) => {
+        void ctx.files.delete(fileReference).catch(() => undefined);
+        return { accepted: true };
+      }),
+      rethrowDeleteFailureFromDiscardedCatch: mutation((ctx, fileReference) => {
+        void ctx.files.delete(fileReference).catch((error) => { throw error; });
+        return { accepted: true };
+      }),
       handlePendingAggregateDeleteFailure: mutation((ctx, fileReference) => {
         void Promise.all([ctx.files.delete(fileReference)]).catch(globalThis.__serverFileNativeRejectionHandler);
         return { accepted: true };
@@ -713,6 +721,15 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
     const recoveredAsyncWrapper = await runMutation(database, other, "recoverAsyncWrapperDeleteFailure", [file.id]);
     assert.equal(recoveredAsyncWrapper.error, null);
     assert.deepEqual(recoveredAsyncWrapper.data, { recovered: true, message: "File not found." });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const handledDiscardedCatch = await runMutation(database, other, "handleDeleteFailureWithDiscardedCatch", [file.id]);
+    assert.equal(handledDiscardedCatch.error, null);
+    assert.deepEqual(handledDiscardedCatch.data, { accepted: true });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const rethrownDiscardedCatch = await runMutation(database, other, "rethrowDeleteFailureFromDiscardedCatch", [file.id]);
+    assert.equal(rethrownDiscardedCatch.error.message, "File not found.");
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
 
     let releaseNativeAcl;
