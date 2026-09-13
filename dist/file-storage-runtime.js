@@ -811,6 +811,7 @@ let forwardedFilePromiseHookStack = [];
 let forwardedFileResolverOperations = new WeakMap();
 let forwardedFileResolverPromises = new WeakMap();
 let forwardedFileRootSequences = new WeakMap();
+let forwardedFileRootPredecessors = new WeakMap();
 let forwardedFileRootSequence = 0;
 let latestForwardedFileRootPromise;
 const forwardedFileCallbackOperationSets = [];
@@ -937,6 +938,9 @@ function retainForwardedFilePromiseHook(state) {
             if (!parent) {
                 forwardedFileRootSequence += 1;
                 forwardedFileRootSequences.set(promise, forwardedFileRootSequence);
+                if (latestForwardedFileRootPromise) {
+                    forwardedFileRootPredecessors.set(promise, new WeakRef(latestForwardedFileRootPromise));
+                }
                 latestForwardedFileRootPromise = promise;
             }
             if (parent) {
@@ -1006,6 +1010,7 @@ function releaseForwardedFilePromiseHook(state) {
         forwardedFileResolverOperations = new WeakMap();
         forwardedFileResolverPromises = new WeakMap();
         forwardedFileRootSequences = new WeakMap();
+        forwardedFileRootPredecessors = new WeakMap();
         latestForwardedFileRootPromise = undefined;
         forwardedFileCombinatorOperationSets.length = 0;
         for (const [name, descriptor] of forwardedFilePromiseCombinatorDescriptors ?? []) {
@@ -1155,6 +1160,12 @@ function trackCurrentUserFileOperation(operation) {
                             }
                             if (forwardingPromise) {
                                 registerForwardedFilePromiseNode(forwardingPromise, operation).forwarded = true;
+                            }
+                            const precedingInvocationRoot = operation.rootAtInvocation
+                                ? forwardedFileRootPredecessors.get(operation.rootAtInvocation)?.deref()
+                                : undefined;
+                            if (!insideTrackedCombinator && precedingInvocationRoot && precedingInvocationRoot !== forwardingPromise) {
+                                registerForwardedFilePromiseNode(precedingInvocationRoot, operation).forwarded = true;
                             }
                             const targetNode = getForwardedFilePromiseNode(promise, operation);
                             if (targetNode)

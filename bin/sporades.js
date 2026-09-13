@@ -69113,6 +69113,7 @@ var forwardedFilePromiseHookStack = [];
 var forwardedFileResolverOperations = /* @__PURE__ */ new WeakMap();
 var forwardedFileResolverPromises = /* @__PURE__ */ new WeakMap();
 var forwardedFileRootSequences = /* @__PURE__ */ new WeakMap();
+var forwardedFileRootPredecessors = /* @__PURE__ */ new WeakMap();
 var forwardedFileRootSequence = 0;
 var latestForwardedFileRootPromise;
 var forwardedFileCallbackOperationSets = [];
@@ -69236,6 +69237,9 @@ function retainForwardedFilePromiseHook(state) {
       if (!parent) {
         forwardedFileRootSequence += 1;
         forwardedFileRootSequences.set(promise, forwardedFileRootSequence);
+        if (latestForwardedFileRootPromise) {
+          forwardedFileRootPredecessors.set(promise, new WeakRef(latestForwardedFileRootPromise));
+        }
         latestForwardedFileRootPromise = promise;
       }
       if (parent) {
@@ -69297,6 +69301,7 @@ function releaseForwardedFilePromiseHook(state) {
     forwardedFileResolverOperations = /* @__PURE__ */ new WeakMap();
     forwardedFileResolverPromises = /* @__PURE__ */ new WeakMap();
     forwardedFileRootSequences = /* @__PURE__ */ new WeakMap();
+    forwardedFileRootPredecessors = /* @__PURE__ */ new WeakMap();
     latestForwardedFileRootPromise = void 0;
     forwardedFileCombinatorOperationSets.length = 0;
     for (const [name2, descriptor] of forwardedFilePromiseCombinatorDescriptors ?? []) {
@@ -69408,6 +69413,10 @@ function trackCurrentUserFileOperation(operation) {
             }
             if (forwardingPromise) {
               registerForwardedFilePromiseNode(forwardingPromise, operation).forwarded = true;
+            }
+            const precedingInvocationRoot = operation.rootAtInvocation ? forwardedFileRootPredecessors.get(operation.rootAtInvocation)?.deref() : void 0;
+            if (!insideTrackedCombinator && precedingInvocationRoot && precedingInvocationRoot !== forwardingPromise) {
+              registerForwardedFilePromiseNode(precedingInvocationRoot, operation).forwarded = true;
             }
             const targetNode = getForwardedFilePromiseNode(promise, operation);
             if (targetNode) targetNode.forwarded = true;
