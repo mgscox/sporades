@@ -69108,8 +69108,8 @@ function bindCurrentUserFileDeleteState(context, sourceContext) {
   const state = sourceContext ? currentUserFileApiState.get(sourceContext) : void 0;
   if (state) currentUserFileApiState.set(context, state);
 }
-function createCurrentUserFileApi(database, contextGetter, trackOperation) {
-  const state = { active: true, pendingByteDeletes: [] };
+function createCurrentUserFileApi(database, contextGetter) {
+  const state = { active: true, pendingByteDeletes: [], pendingOperations: [] };
   const initialContext = contextGetter?.();
   if (initialContext) currentUserFileApiState.set(initialContext, state);
   return Object.freeze({
@@ -69133,9 +69133,19 @@ function createCurrentUserFileApi(database, contextGetter, trackOperation) {
         if (!result.ok) throw result.error;
         return result.data.file;
       });
-      return trackOperation ? trackOperation(context, operation) : operation;
+      state.pendingOperations.push(operation);
+      void operation.then(void 0, () => void 0);
+      return operation;
     }
   });
+}
+async function drainCurrentUserFileOperations(context) {
+  const state = context ? currentUserFileApiState.get(context) : void 0;
+  while (state?.pendingOperations.length) {
+    const outcomes = await Promise.allSettled(state.pendingOperations.splice(0));
+    const rejected = outcomes.find((outcome) => outcome.status === "rejected");
+    if (rejected?.status === "rejected") throw rejected.reason;
+  }
 }
 async function commitPendingCurrentUserFileByteDeletes(context) {
   if (!context) return;
@@ -69151,6 +69161,7 @@ function dropPendingCurrentUserFileByteDeletes(context) {
   const state = context ? currentUserFileApiState.get(context) : void 0;
   if (!state) return;
   state.active = false;
+  state.pendingOperations.length = 0;
   state.pendingByteDeletes.length = 0;
   currentUserFileApiState.delete(context);
 }
@@ -101224,7 +101235,7 @@ function createEndpointContext(database, endpointRequest, session, options = {})
   const holder = createContextHolder(context);
   registerHandlerContextMapping(database, holder);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
-  context.files = createCurrentUserFileApi(database, () => holder.current, trackMutationContextWork);
+  context.files = createCurrentUserFileApi(database, () => holder.current);
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
   context.mail = {
@@ -101329,6 +101340,7 @@ function releaseHandlerContextMapping(database) {
 async function cleanupTransactionHandler(database, context, preservePrimaryError, clearCache = true) {
   let cleanupFailed = false;
   try {
+    await drainCurrentUserFileOperations(context);
     if (context) await drainPendingAclWrites(context);
     await drainPendingLogWrites(database);
   } catch (error) {
@@ -101352,6 +101364,7 @@ async function runLifecycleHook(hook, context) {
     throw error;
   } finally {
     try {
+      await drainCurrentUserFileOperations(context);
       await drainPendingAclWrites(context);
     } catch (error) {
       if (!hookFailed) throw error;
@@ -103305,7 +103318,7 @@ async function runQuery(database, auth, queryName, rawArgs = [], options = {}) {
     return { rows, error: null };
   } finally {
     try {
-      if (context) await drainPendingAclWrites(context);
+      await drainCurrentUserFileOperations(context);
     } catch {
     } finally {
       revokeCurrentUserFileApi(context);
@@ -103324,7 +103337,7 @@ async function runCustomQuery(database, context, queryName, args, resolvedHandle
     return { data: data2, error: null };
   } catch (error) {
     try {
-      await drainPendingAclWrites(context);
+      await drainCurrentUserFileOperations(context);
     } catch {
     }
     if (error?.sporadesAuthDenialLogData) {
@@ -103663,7 +103676,7 @@ function createMutationContext(database, auth, options = {}) {
   const holder = createContextHolder(context);
   registerHandlerContextMapping(database, holder);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
-  context.files = createCurrentUserFileApi(database, () => holder.current, trackMutationContextWork);
+  context.files = createCurrentUserFileApi(database, () => holder.current);
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
   context.mail = {
@@ -104268,7 +104281,7 @@ async function runCurrentUserJobWorker(database) {
             throw error;
           } finally {
             try {
-              await drainPendingAclWrites(context);
+              await drainCurrentUserFileOperations(context);
             } catch (error) {
               if (!handlerFailed) throw error;
             } finally {

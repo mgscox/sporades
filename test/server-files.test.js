@@ -15,7 +15,7 @@ import {
 } from "../dist/file-storage-runtime.js";
 import { handleFileHttpRoute, prepareHttpSecurity } from "../dist/http-runtime.js";
 import { openDevDatabase, routeEndpoint, runAppMessage, runEndpoint, runMutation, runQuery } from "../dist/server-runtime-source.js";
-import { capsule, endpoint, message, mutation } from "../dist/server.js";
+import { capsule, endpoint, message, mutation, query } from "../dist/server.js";
 
 function guestAuth(userId) {
   return {
@@ -422,7 +422,7 @@ test("retained user File deletion authority is revoked after success and rollbac
   }
 });
 
-test("handler cleanup drains an unawaited user File deletion before commit", async () => {
+test("App message cleanup drains an unawaited user File deletion before commit", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "sporades-server-files-"));
   let releaseAcl;
   let signalAclEntered;
@@ -439,8 +439,8 @@ test("handler cleanup drains an unawaited user File deletion before commit", asy
         },
       },
     },
-    mutations: {
-      deleteWithoutAwait: mutation((ctx, fileReference) => {
+    messages: {
+      deleteWithoutAwait: message((ctx, fileReference) => {
         void ctx.files.delete(fileReference);
         return null;
       }),
@@ -460,7 +460,7 @@ test("handler cleanup drains an unawaited user File deletion before commit", asy
   try {
     const file = await uploadFile(database, owner, "/unawaited/source.txt", "unawaited");
     let settled = false;
-    const pending = runMutation(database, collaborator, "deleteWithoutAwait", [file.id]).finally(() => { settled = true; });
+    const pending = runAppMessage(database, collaborator, "deleteWithoutAwait", file.id).finally(() => { settled = true; });
     await globalThis.__serverFileDeleteAclEntered;
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(settled, false, "the handler transaction must drain the unawaited deletion");
@@ -471,6 +471,60 @@ test("handler cleanup drains an unawaited user File deletion before commit", asy
     delete globalThis.__serverFileDeleteAclGate;
     delete globalThis.__serverFileDeleteAclEntered;
     delete globalThis.__serverFileDeleteAclEnteredResolve;
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("query cleanup drains an unawaited user File deletion", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "sporades-server-files-"));
+  let releaseAcl;
+  let signalAclEntered;
+  globalThis.__serverFileQueryDeleteAclGate = new Promise((resolve) => { releaseAcl = resolve; });
+  globalThis.__serverFileQueryDeleteAclEntered = new Promise((resolve) => { signalAclEntered = resolve; });
+  globalThis.__serverFileQueryDeleteAclEnteredResolve = signalAclEntered;
+  const definition = capsule({
+    name: "server-files-query-unawaited",
+    files: {
+      acl: {
+        delete: async () => {
+          globalThis.__serverFileQueryDeleteAclEnteredResolve();
+          await globalThis.__serverFileQueryDeleteAclGate;
+          return true;
+        },
+      },
+    },
+    queries: {
+      deleteWithoutAwait: query((ctx, fileReference) => {
+        void ctx.files.delete(fileReference);
+        return null;
+      }),
+    },
+  });
+  const database = await openDevDatabase(
+    path.join(directory, "data.db"),
+    "",
+    {},
+    { name: definition.name, files: { storagePath: path.join(directory, "files") } },
+    definition,
+  );
+  const owner = guestAuth("query-unawaited-owner");
+  const collaborator = guestAuth("query-unawaited-collaborator");
+
+  try {
+    const file = await uploadFile(database, owner, "/query/unawaited.txt", "query unawaited");
+    let settled = false;
+    const pending = runQuery(database, collaborator, "deleteWithoutAwait", [file.id]).finally(() => { settled = true; });
+    await globalThis.__serverFileQueryDeleteAclEntered;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled, false, "the query must drain the unawaited deletion");
+    releaseAcl();
+    assert.equal((await pending).error, null);
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, false);
+  } finally {
+    delete globalThis.__serverFileQueryDeleteAclGate;
+    delete globalThis.__serverFileQueryDeleteAclEntered;
+    delete globalThis.__serverFileQueryDeleteAclEnteredResolve;
     database.close();
     await rm(directory, { recursive: true, force: true });
   }

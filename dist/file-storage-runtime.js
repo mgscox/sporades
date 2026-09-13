@@ -807,8 +807,8 @@ export function bindCurrentUserFileDeleteState(context, sourceContext) {
     if (state)
         currentUserFileApiState.set(context, state);
 }
-export function createCurrentUserFileApi(database, contextGetter, trackOperation) {
-    const state = { active: true, pendingByteDeletes: [] };
+export function createCurrentUserFileApi(database, contextGetter) {
+    const state = { active: true, pendingByteDeletes: [], pendingOperations: [] };
     const initialContext = contextGetter?.();
     if (initialContext)
         currentUserFileApiState.set(initialContext, state);
@@ -827,9 +827,20 @@ export function createCurrentUserFileApi(database, contextGetter, trackOperation
                     throw result.error;
                 return result.data.file;
             });
-            return trackOperation ? trackOperation(context, operation) : operation;
+            state.pendingOperations.push(operation);
+            void operation.then(undefined, () => undefined);
+            return operation;
         },
     });
+}
+export async function drainCurrentUserFileOperations(context) {
+    const state = context ? currentUserFileApiState.get(context) : undefined;
+    while (state?.pendingOperations.length) {
+        const outcomes = await Promise.allSettled(state.pendingOperations.splice(0));
+        const rejected = outcomes.find((outcome) => outcome.status === "rejected");
+        if (rejected?.status === "rejected")
+            throw rejected.reason;
+    }
 }
 export async function commitPendingCurrentUserFileByteDeletes(context) {
     if (!context)
@@ -848,6 +859,7 @@ export function dropPendingCurrentUserFileByteDeletes(context) {
     if (!state)
         return;
     state.active = false;
+    state.pendingOperations.length = 0;
     state.pendingByteDeletes.length = 0;
     currentUserFileApiState.delete(context);
 }

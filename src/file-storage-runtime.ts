@@ -938,7 +938,7 @@ export async function revokePublicFileUrl(database: LooseRecord, auth: LooseReco
   };
 }
 
-type CurrentUserFileApiState = { active: boolean; pendingByteDeletes: LooseRecord[] };
+type CurrentUserFileApiState = { active: boolean; pendingByteDeletes: LooseRecord[]; pendingOperations: Promise<any>[] };
 const currentUserFileApiState = new WeakMap<object, CurrentUserFileApiState>();
 
 export function bindCurrentUserFileDeleteState(context: LooseRecord, sourceContext?: LooseRecord) {
@@ -949,9 +949,8 @@ export function bindCurrentUserFileDeleteState(context: LooseRecord, sourceConte
 export function createCurrentUserFileApi(
   database: LooseRecord,
   contextGetter: () => LooseRecord,
-  trackOperation?: (context: LooseRecord, operation: Promise<any>) => Promise<any>,
 ) {
-  const state: CurrentUserFileApiState = { active: true, pendingByteDeletes: [] };
+  const state: CurrentUserFileApiState = { active: true, pendingByteDeletes: [], pendingOperations: [] };
   const initialContext = contextGetter?.();
   if (initialContext) currentUserFileApiState.set(initialContext, state);
   return Object.freeze({
@@ -977,9 +976,20 @@ export function createCurrentUserFileApi(
         if (!result.ok) throw result.error;
         return result.data.file;
       });
-      return trackOperation ? trackOperation(context, operation) : operation;
+      state.pendingOperations.push(operation);
+      void operation.then(undefined, () => undefined);
+      return operation;
     },
   });
+}
+
+export async function drainCurrentUserFileOperations(context: LooseRecord | undefined) {
+  const state = context ? currentUserFileApiState.get(context) : undefined;
+  while (state?.pendingOperations.length) {
+    const outcomes = await Promise.allSettled(state.pendingOperations.splice(0));
+    const rejected = outcomes.find((outcome) => outcome.status === "rejected");
+    if (rejected?.status === "rejected") throw rejected.reason;
+  }
 }
 
 export async function commitPendingCurrentUserFileByteDeletes(context: LooseRecord | undefined) {
@@ -997,6 +1007,7 @@ export function dropPendingCurrentUserFileByteDeletes(context: LooseRecord | und
   const state = context ? currentUserFileApiState.get(context) : undefined;
   if (!state) return;
   state.active = false;
+  state.pendingOperations.length = 0;
   state.pendingByteDeletes.length = 0;
   currentUserFileApiState.delete(context!);
 }

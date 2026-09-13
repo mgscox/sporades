@@ -50,7 +50,7 @@ import { deserializeFieldValue, deserializeRow, normalizeDateValue, serializeFie
 // `test/mail.test.js` — and reach them through the `export *` below rather than through a binding
 // here, so importing them would declare a name nothing in this file reads.
 import { applyReadAcl, assertActivePrivilegedJobAccess, bindPendingAclWrites, createPrivilegedAuditEmitter, createPrivilegedAuditEmissionPublicError, createPrivilegedFileApi, createPrivilegedRunAbortError, createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi, drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit, filterRowsByReadAcl, grantPrivilegedDbAccess, isPrivilegedAuditEmissionPublicError, normalizeFileAcl, normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback, revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode, trackPendingAclWrite, } from "./acl-runtime.js";
-import { bindCurrentUserFileDeleteState, commitPendingCurrentUserFileByteDeletes, createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter, createCurrentUserFileApi, deletePrivateFile, dropPendingCurrentUserFileByteDeletes, revokeCurrentUserFileApi, getPrivateFileUrl, revokePublicFileUrl, } from "./file-storage-runtime.js";
+import { bindCurrentUserFileDeleteState, commitPendingCurrentUserFileByteDeletes, createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter, createCurrentUserFileApi, deletePrivateFile, drainCurrentUserFileOperations, dropPendingCurrentUserFileByteDeletes, revokeCurrentUserFileApi, getPrivateFileUrl, revokePublicFileUrl, } from "./file-storage-runtime.js";
 import { createEndpointIngressApi, drainIngressClaimAuditOutbox, finalizeEndpointIngressClaims, initializeClamavRuntime, recoverIngressClaimAuditOutbox, shutdownClamavRuntime, stageMultipartIngress, sweepExpiredFileIngress, validateMultipartIngressPolicy } from "./file-ingress-runtime.js";
 import { createEndpointFileResponseApi } from "./endpoint-file-response.js";
 import { abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob, canonicalJobCredentialProvenance, captureJobAuthSnapshot, commitPendingJobCancellationAborts, createRuntimeClock, decodeJobCursor, dropPendingJobCancellationAborts, encodeJobCursor, ensureJobStorage, ensureScheduleStorage, finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence, normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, readJobAuthSnapshot, readJobCredentialProvenance, resolveSchedulePayload, RESERVED_JOB_NAME_PREFIX, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure, scheduleStripeEventPayloadCleanup, startStripeEventPayloadCleanup, stopStripeEventPayloadCleanup, STRIPE_EVENT_JOB, stripeEventPayloadRetentionStorageValue, scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduledOccurrenceIdentity, } from "./jobs-runtime.js";
@@ -3826,7 +3826,7 @@ function createEndpointContext(database, endpointRequest, session, options = {})
     const holder = createContextHolder(context);
     registerHandlerContextMapping(database, holder);
     context.db = createEndpointDatabaseApi(database, () => holder.current);
-    context.files = createCurrentUserFileApi(database, () => holder.current, trackMutationContextWork);
+    context.files = createCurrentUserFileApi(database, () => holder.current);
     context.privileged = createContextPrivilegedApi(database, () => holder.current);
     context.jobs = createCurrentUserJobApi(database, () => holder.current);
     context.mail = {
@@ -3926,6 +3926,7 @@ function releaseHandlerContextMapping(database) {
 async function cleanupTransactionHandler(database, context, preservePrimaryError, clearCache = true) {
     let cleanupFailed = false;
     try {
+        await drainCurrentUserFileOperations(context);
         if (context)
             await drainPendingAclWrites(context);
         await drainPendingLogWrites(database);
@@ -3957,6 +3958,7 @@ async function runLifecycleHook(hook, context) {
     }
     finally {
         try {
+            await drainCurrentUserFileOperations(context);
             await drainPendingAclWrites(context);
         }
         catch (error) {
@@ -6012,8 +6014,7 @@ export async function runQuery(database, auth, queryName, rawArgs = [], options 
     }
     finally {
         try {
-            if (context)
-                await drainPendingAclWrites(context);
+            await drainCurrentUserFileOperations(context);
         }
         catch { }
         finally {
@@ -6034,7 +6035,7 @@ async function runCustomQuery(database, context, queryName, args, resolvedHandle
     }
     catch (error) {
         try {
-            await drainPendingAclWrites(context);
+            await drainCurrentUserFileOperations(context);
         }
         catch { }
         if (error?.sporadesAuthDenialLogData) {
@@ -6396,7 +6397,7 @@ function createMutationContext(database, auth, options = {}) {
     const holder = createContextHolder(context);
     registerHandlerContextMapping(database, holder);
     context.db = createEndpointDatabaseApi(database, () => holder.current);
-    context.files = createCurrentUserFileApi(database, () => holder.current, trackMutationContextWork);
+    context.files = createCurrentUserFileApi(database, () => holder.current);
     context.privileged = createContextPrivilegedApi(database, () => holder.current);
     context.jobs = createCurrentUserJobApi(database, () => holder.current);
     context.mail = {
@@ -7050,7 +7051,7 @@ export async function runCurrentUserJobWorker(database) {
                     }
                     finally {
                         try {
-                            await drainPendingAclWrites(context);
+                            await drainCurrentUserFileOperations(context);
                         }
                         catch (error) {
                             if (!handlerFailed)
