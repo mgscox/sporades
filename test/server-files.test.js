@@ -14,7 +14,7 @@ import {
   getPrivateFileUrl,
 } from "../dist/file-storage-runtime.js";
 import { handleFileHttpRoute, prepareHttpSecurity } from "../dist/http-runtime.js";
-import { openDevDatabase, routeEndpoint, runAppMessage, runEndpoint, runMutation } from "../dist/server-runtime-source.js";
+import { openDevDatabase, routeEndpoint, runAppMessage, runEndpoint, runMutation, runQuery } from "../dist/server-runtime-source.js";
 import { capsule, endpoint, message, mutation } from "../dist/server.js";
 
 function guestAuth(userId) {
@@ -417,6 +417,89 @@ test("retained user File deletion authority is revoked after success and rollbac
     await assert.rejects(retainedFiles.delete(file.id), (error) => error?.message === "File access is no longer active.");
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
   } finally {
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("handler cleanup drains an unawaited user File deletion before commit", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "sporades-server-files-"));
+  let releaseAcl;
+  let signalAclEntered;
+  globalThis.__serverFileDeleteAclGate = new Promise((resolve) => { releaseAcl = resolve; });
+  globalThis.__serverFileDeleteAclEntered = new Promise((resolve) => { signalAclEntered = resolve; });
+  const definition = capsule({
+    name: "server-files-unawaited",
+    files: {
+      acl: {
+        delete: async () => {
+          globalThis.__serverFileDeleteAclEnteredResolve();
+          await globalThis.__serverFileDeleteAclGate;
+          return true;
+        },
+      },
+    },
+    mutations: {
+      deleteWithoutAwait: mutation((ctx, fileReference) => {
+        void ctx.files.delete(fileReference);
+        return null;
+      }),
+    },
+  });
+  globalThis.__serverFileDeleteAclEnteredResolve = signalAclEntered;
+  const database = await openDevDatabase(
+    path.join(directory, "data.db"),
+    "",
+    {},
+    { name: definition.name, files: { storagePath: path.join(directory, "files") } },
+    definition,
+  );
+  const owner = guestAuth("unawaited-owner");
+  const collaborator = guestAuth("unawaited-collaborator");
+
+  try {
+    const file = await uploadFile(database, owner, "/unawaited/source.txt", "unawaited");
+    let settled = false;
+    const pending = runMutation(database, collaborator, "deleteWithoutAwait", [file.id]).finally(() => { settled = true; });
+    await globalThis.__serverFileDeleteAclEntered;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled, false, "the handler transaction must drain the unawaited deletion");
+    releaseAcl();
+    assert.equal((await pending).error, null);
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, false);
+  } finally {
+    delete globalThis.__serverFileDeleteAclGate;
+    delete globalThis.__serverFileDeleteAclEntered;
+    delete globalThis.__serverFileDeleteAclEnteredResolve;
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("query middleware cannot retain user File deletion authority", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "sporades-server-files-"));
+  const definition = capsule({ name: "server-files-query-revocation" });
+  const database = await openDevDatabase(
+    path.join(directory, "data.db"),
+    "",
+    {},
+    { name: definition.name, files: { storagePath: path.join(directory, "files") } },
+    definition,
+  );
+  const owner = guestAuth("query-file-owner");
+
+  try {
+    const file = await uploadFile(database, owner, "/query/source.txt", "query");
+    database.contextMiddleware = ["(ctx) => { globalThis.__retainedQueryFiles = ctx.files; return { ...ctx }; }"];
+    const result = await runQuery(database, owner, "missingQuery", []);
+    assert.match(result.error.message, /Unknown query/);
+    await assert.rejects(
+      globalThis.__retainedQueryFiles.delete(file.id),
+      (error) => error?.message === "File access is no longer active.",
+    );
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+  } finally {
+    delete globalThis.__retainedQueryFiles;
     database.close();
     await rm(directory, { recursive: true, force: true });
   }

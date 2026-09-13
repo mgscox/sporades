@@ -1107,8 +1107,7 @@ export async function openDevDatabase(
       if (database.lifecycleHooks.init !== undefined) {
         if (typeof database.lifecycleHooks.init !== "function") throw commandError("Invalid Capsule init hook.", "Declare hooks.init as a function.");
         const context = createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false });
-        try { await database.lifecycleHooks.init(context); }
-        finally { revokeCurrentUserFileApi(context); }
+        await runLifecycleHook(database.lifecycleHooks.init, context);
       }
       if (database.teamBillingDefinition) {
         await repairTeamBillingDesiredStateAtStartup(database);
@@ -1194,8 +1193,7 @@ export async function openDevDatabase(
         try {
           if (typeof database.lifecycleHooks.shutdown !== "function") throw commandError("Invalid Capsule shutdown hook.", "Declare hooks.shutdown as a function.");
           const context = createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false });
-          try { await database.lifecycleHooks.shutdown(context); }
-          finally { revokeCurrentUserFileApi(context); }
+          await runLifecycleHook(database.lifecycleHooks.shutdown, context);
         } catch (error) { failures.push(error); }
       }
       try { await shutdownClamavRuntime(database); }
@@ -4041,7 +4039,7 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
   const holder = createContextHolder(context);
   registerHandlerContextMapping(database, holder);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
-  context.files = createCurrentUserFileApi(database, () => holder.current);
+  context.files = createCurrentUserFileApi(database, () => holder.current, trackMutationContextWork);
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
   context.mail = {
@@ -4172,6 +4170,20 @@ async function cleanupTransactionHandler(
       revokeCurrentUserFileApi(context);
       releaseHandlerContextMapping(database);
     }
+  }
+}
+
+async function runLifecycleHook(hook: Function, context: LooseRecord) {
+  let hookFailed = false;
+  try {
+    await hook(context);
+  } catch (error) {
+    hookFailed = true;
+    throw error;
+  } finally {
+    try { await drainPendingAclWrites(context); }
+    catch (error) { if (!hookFailed) throw error; }
+    finally { revokeCurrentUserFileApi(context); }
   }
 }
 
@@ -6255,6 +6267,7 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
   const queryHandler = customHandler ? materializeHandler(customHandler) : null;
   let context;
   try {
+  try {
     context = createMutationContext(database, auth, { sessionToken: options.sessionToken });
     if (queryHandler) admitCredentialHandler(queryHandler, context, "query");
     context = await applyContextMiddleware(database, context, "query");
@@ -6309,6 +6322,11 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
 
   const rows = await filterRowsByReadAcl(database, table, database.rowCache.get(cacheKey), context);
   return { rows, error: null };
+  } finally {
+    try { if (context) await drainPendingAclWrites(context); }
+    catch {}
+    finally { revokeCurrentUserFileApi(context); }
+  }
 }
 
 async function runCustomQuery(database: LooseRecord, context: any, queryName: any, args: readonly unknown[], resolvedHandler: Function | null = null) {
@@ -6323,6 +6341,8 @@ async function runCustomQuery(database: LooseRecord, context: any, queryName: an
     assertJsonCompatible(data);
     return { data, error: null as any };
   } catch (error: any) {
+    try { await drainPendingAclWrites(context); }
+    catch {}
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
     }
@@ -6689,7 +6709,7 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
   const holder = createContextHolder(context);
   registerHandlerContextMapping(database, holder);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
-  context.files = createCurrentUserFileApi(database, () => holder.current);
+  context.files = createCurrentUserFileApi(database, () => holder.current, trackMutationContextWork);
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
   context.mail = {
@@ -7271,10 +7291,16 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
           const context = createMutationContext(database, auth, { credential }); context.signal = abortController.signal;
           handlerStarted = true;
           database.__runtimeJobAttempts.set(context, Number(row.attempts) + 1);
+          let handlerFailed = false;
           try { result = await handler.handler(context, jobPayload); }
+          catch (error) { handlerFailed = true; throw error; }
           finally {
-            database.__runtimeJobAttempts.delete(context);
-            revokeCurrentUserFileApi(context);
+            try { await drainPendingAclWrites(context); }
+            catch (error) { if (!handlerFailed) throw error; }
+            finally {
+              database.__runtimeJobAttempts.delete(context);
+              revokeCurrentUserFileApi(context);
+            }
           }
         }
         const resultJson = boundedJobJson(result ?? null, 64 * 1024, "JOB_RESULT_TOO_LARGE", "Job result");

@@ -807,25 +807,27 @@ export function bindCurrentUserFileDeleteState(context, sourceContext) {
     if (state)
         currentUserFileApiState.set(context, state);
 }
-export function createCurrentUserFileApi(database, contextGetter) {
+export function createCurrentUserFileApi(database, contextGetter, trackOperation) {
     const state = { active: true, pendingByteDeletes: [] };
     const initialContext = contextGetter?.();
     if (initialContext)
         currentUserFileApiState.set(initialContext, state);
     return Object.freeze({
-        async delete(fileReference) {
+        delete(fileReference) {
             const context = contextGetter?.();
             if (!state.active || !context) {
-                throw createStructuredFileError("File access is no longer active.", "Call ctx.files.delete(...) only while the Capsule handler is running.");
+                return Promise.reject(createStructuredFileError("File access is no longer active.", "Call ctx.files.delete(...) only while the Capsule handler is running."));
             }
-            const result = await deletePrivateFile(database, context.auth, fileReference, context.credential ?? { kind: "session" }, database.__transactionActive
+            const operation = deletePrivateFile(database, context.auth, fileReference, context.credential ?? { kind: "session" }, database.__transactionActive
                 ? (file) => {
                     state.pendingByteDeletes.push({ database: database.__rootDatabase ?? database, ...file });
                 }
-                : undefined);
-            if (!result.ok)
-                throw result.error;
-            return result.data.file;
+                : undefined).then((result) => {
+                if (!result.ok)
+                    throw result.error;
+                return result.data.file;
+            });
+            return trackOperation ? trackOperation(context, operation) : operation;
         },
     });
 }
