@@ -1032,9 +1032,8 @@ async function settleForwardedFileRejectionGraph(operation) {
             .filter((node) => node.outcome === "pending");
         if (pendingNodes.length === 0)
             return true;
-        const userContinuations = operation.explicitRejectionHandler
-            ? pendingNodes.filter((node) => node.userContinuation && !node.forwarded)
-            : [];
+        const userContinuations = pendingNodes
+            .filter((node) => node.userContinuation && !node.forwarded);
         if (userContinuations.length > 0) {
             // A consumer-provided rejection handler owns its eventual outcome. It may
             // legitimately perform work for longer than the detached-graph safety
@@ -1130,8 +1129,19 @@ function trackCurrentUserFileOperation(operation) {
                         }
                     } : onRejected;
                     const continuation = Promise.prototype.then.call(promise, onFulfilled, rejectionHandler);
-                    if (!promiseResolveForwarding) {
-                        const parentNode = getForwardedFilePromiseNode(promise, operation);
+                    const parentNode = getForwardedFilePromiseNode(promise, operation);
+                    if (promiseResolveForwarding) {
+                        // Native combinators attach resolver reactions through this method.
+                        // Their reaction promise is forwarding plumbing, not a consumer-owned
+                        // continuation that may wait without the detached-graph safety bound.
+                        const continuationNode = getForwardedFilePromiseNode(continuation, operation);
+                        if (continuationNode) {
+                            continuationNode.forwarded = true;
+                            continuationNode.userContinuation = false;
+                            parentNode?.userChildren.delete(continuationNode);
+                        }
+                    }
+                    else {
                         const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
                         continuationNode.userContinuation = true;
                         if (parentNode)
