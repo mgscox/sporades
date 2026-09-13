@@ -582,6 +582,19 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
         void Promise.all([ctx.files.delete(fileReference)]);
         return { accepted: true };
       }),
+      deleteInSettledDiscardedAggregate: mutation(async (ctx, fileReference) => {
+        void Promise.all([ctx.files.delete(fileReference)]).then(() => ({ deleted: true }));
+        await new Promise((resolve) => setImmediate(resolve));
+        return { accepted: true };
+      }),
+      recoverAggregateDeleteFailure: mutation(async (ctx, fileReference) => {
+        try {
+          await Promise.all([ctx.files.delete(fileReference)]);
+          return { recovered: false };
+        } catch (error) {
+          return { recovered: true, message: error.message };
+        }
+      }),
     },
   });
   const database = await openDevDatabase(
@@ -604,6 +617,15 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
 
     const aggregate = await runMutation(database, other, "deleteInDiscardedAggregate", [file.id]);
     assert.equal(aggregate.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const settledAggregate = await runMutation(database, other, "deleteInSettledDiscardedAggregate", [file.id]);
+    assert.equal(settledAggregate.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const recoveredAggregate = await runMutation(database, other, "recoverAggregateDeleteFailure", [file.id]);
+    assert.equal(recoveredAggregate.error, null);
+    assert.deepEqual(recoveredAggregate.data, { recovered: true, message: "File not found." });
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
 
     const alreadyFailed = await runQuery(database, other, "deleteWithoutAwaitThenFail", [file.id]);
