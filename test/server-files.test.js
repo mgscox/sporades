@@ -577,6 +577,12 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
         }
       }),
     },
+    mutations: {
+      deleteInDiscardedAggregate: mutation((ctx, fileReference) => {
+        void Promise.all([ctx.files.delete(fileReference)]);
+        return { accepted: true };
+      }),
+    },
   });
   const database = await openDevDatabase(
     path.join(directory, "data.db"),
@@ -594,6 +600,10 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
 
     assert.equal(result.data, null);
     assert.equal(result.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const aggregate = await runMutation(database, other, "deleteInDiscardedAggregate", [file.id]);
+    assert.equal(aggregate.error.message, "File not found.");
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
 
     const alreadyFailed = await runQuery(database, other, "deleteWithoutAwaitThenFail", [file.id]);

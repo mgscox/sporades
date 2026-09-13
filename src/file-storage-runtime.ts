@@ -938,7 +938,13 @@ export async function revokePublicFileUrl(database: LooseRecord, auth: LooseReco
   };
 }
 
-type CurrentUserFileOperation = { promise: Promise<any>; rejectionObserved: boolean };
+type CurrentUserFileOperation = {
+  promise: Promise<any>;
+  settled: boolean;
+  draining: boolean;
+  explicitRejectionHandler: boolean;
+  forwardedRejection: boolean;
+};
 type CurrentUserFileApiState = { active: boolean; pendingByteDeletes: LooseRecord[]; pendingOperations: CurrentUserFileOperation[] };
 const currentUserFileApiState = new WeakMap<object, CurrentUserFileApiState>();
 
@@ -946,11 +952,24 @@ function trackCurrentUserFileOperation(operation: CurrentUserFileOperation): Pro
   const wrap = (promise: Promise<any>): Promise<any> => new Proxy(promise, {
     get(target, property) {
       if (property === "then") return (onFulfilled?: any, onRejected?: any) => {
-        if (typeof onRejected === "function") operation.rejectionObserved = true;
-        return wrap(target.then(onFulfilled, onRejected));
+        let forwarded = false;
+        if (typeof onRejected === "function") {
+          const source = Function.prototype.toString.call(onRejected);
+          if (source.includes("[native code]")) {
+            operation.forwardedRejection = true;
+            forwarded = true;
+          }
+          else operation.explicitRejectionHandler = true;
+        }
+        return wrap(target.then(onFulfilled, typeof onRejected === "function" ? (reason) => {
+          // Once the handler returns, the runtime drain owns this failure. Do not also
+          // reject a discarded Promise aggregate and trigger the process fatal policy.
+          if (forwarded && operation.draining) return new Promise(() => undefined);
+          return onRejected(reason);
+        } : undefined));
       };
       if (property === "catch") return (onRejected?: any) => {
-        if (typeof onRejected === "function") operation.rejectionObserved = true;
+        if (typeof onRejected === "function") operation.explicitRejectionHandler = true;
         return wrap(target.catch(onRejected));
       };
       if (property === "finally") return (onFinally?: any) => wrap(target.finally(onFinally));
@@ -1001,7 +1020,14 @@ export function createCurrentUserFileApi(
         if (!result.ok) throw result.error;
         return result.data.file;
       });
-      const trackedOperation = { promise: operation, rejectionObserved: false };
+      const trackedOperation: CurrentUserFileOperation = {
+        promise: operation,
+        settled: false,
+        draining: false,
+        explicitRejectionHandler: false,
+        forwardedRejection: false,
+      };
+      void operation.finally(() => { trackedOperation.settled = true; }).catch(() => undefined);
       state.pendingOperations.push(trackedOperation);
       void operation.then(undefined, () => undefined);
       return trackCurrentUserFileOperation(trackedOperation);
@@ -1013,8 +1039,14 @@ export async function drainCurrentUserFileOperations(context: LooseRecord | unde
   const state = context ? currentUserFileApiState.get(context) : undefined;
   while (state?.pendingOperations.length) {
     const operations = state.pendingOperations.splice(0);
+    // Mark the handler boundary before waiting so discarded Promise aggregates
+    // cannot consume a failure that must abort this query or transaction.
+    for (const operation of operations) operation.draining = true;
+    const settledBeforeDrain = operations.map((operation) => operation.settled);
     const outcomes = await Promise.allSettled(operations.map((operation) => operation.promise));
-    const rejected = outcomes.find((outcome, index) => outcome.status === "rejected" && !operations[index].rejectionObserved);
+    const rejected = outcomes.find((outcome, index) => outcome.status === "rejected"
+      && !operations[index].explicitRejectionHandler
+      && !(operations[index].forwardedRejection && settledBeforeDrain[index]));
     if (rejected?.status === "rejected") throw rejected.reason;
   }
 }
