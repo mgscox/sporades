@@ -810,6 +810,8 @@ let forwardedFilePromiseHookStop;
 let forwardedFilePromiseHookRetainers = 0;
 let forwardedFilePromiseHookStack = [];
 let observingForwardedFilePromise = false;
+let latestForwardedFileRootPromise;
+let latestForwardedFileRootOwner;
 function registerForwardedFilePromiseNode(promise, operation, parent) {
     let node = forwardedFilePromiseNodes.get(promise);
     if (!node) {
@@ -843,6 +845,10 @@ function retainForwardedFilePromiseHook(state) {
         return;
     forwardedFilePromiseHookStop = nodePromiseHooks.createHook({
         init(promise, parent) {
+            if (!parent && !observingForwardedFilePromise) {
+                latestForwardedFileRootPromise = promise;
+                latestForwardedFileRootOwner = forwardedFilePromiseHookStack.at(-1);
+            }
             if (parent) {
                 let children = forwardedFilePromiseChildren.get(parent);
                 if (!children) {
@@ -889,6 +895,8 @@ function releaseForwardedFilePromiseHook(state) {
         forwardedFilePromiseHookStop?.();
         forwardedFilePromiseHookStop = undefined;
         forwardedFilePromiseHookStack = [];
+        latestForwardedFileRootPromise = undefined;
+        latestForwardedFileRootOwner = undefined;
     }
 }
 function hasDiscardedForwardedFileRejection(operation) {
@@ -941,13 +949,18 @@ function trackCurrentUserFileOperation(operation) {
                 return (onFulfilled, onRejected) => {
                     let promiseResolveForwarding = false;
                     if (typeof onRejected === "function") {
-                        const forwardingPromise = forwardedFilePromiseHookStack.at(-1);
-                        promiseResolveForwarding = Boolean(forwardingPromise
-                            && typeof onFulfilled === "function"
+                        const nativeResolverPair = typeof onFulfilled === "function"
                             && onFulfilled.name === ""
                             && onRejected.name === ""
                             && Function.prototype.toString.call(onFulfilled).includes("[native code]")
-                            && Function.prototype.toString.call(onRejected).includes("[native code]"));
+                            && Function.prototype.toString.call(onRejected).includes("[native code]");
+                        const activePromise = forwardedFilePromiseHookStack.at(-1);
+                        const manualForwarding = operation.manualForwardingCandidate
+                            && operation.manualForwardingCandidateOwner === activePromise;
+                        const forwardingPromise = nativeResolverPair
+                            ? (manualForwarding ? operation.manualForwardingCandidate : activePromise)
+                            : undefined;
+                        promiseResolveForwarding = Boolean(forwardingPromise);
                         if (promiseResolveForwarding) {
                             operation.forwardedRejection = true;
                             // Assimilation may start at a Promise.resolve root, a combinator, an
@@ -1019,6 +1032,10 @@ export function createCurrentUserFileApi(database, contextGetter) {
                 return Promise.reject(createStructuredFileError("File deletion requires a user credential.", "Use ctx.files.delete(...) from a user-scoped handler or an audited privileged File operation for userless work."));
             }
             retainForwardedFilePromiseHook(state);
+            const manualForwardingCandidate = latestForwardedFileRootPromise;
+            const manualForwardingCandidateOwner = latestForwardedFileRootOwner;
+            latestForwardedFileRootPromise = undefined;
+            latestForwardedFileRootOwner = undefined;
             const operation = deletePrivateFile(database, context.auth, fileReference, context.credential, database.__transactionActive
                 ? (file) => {
                     state.pendingByteDeletes.push({ database: database.__rootDatabase ?? database, ...file });
@@ -1034,6 +1051,8 @@ export function createCurrentUserFileApi(database, contextGetter) {
                 explicitRejectionHandler: false,
                 forwardedRejection: false,
                 promiseNodes: new Set(),
+                manualForwardingCandidate,
+                manualForwardingCandidateOwner,
             };
             void operation.finally(() => { trackedOperation.settled = true; }).catch(() => undefined);
             state.pendingOperations.push(trackedOperation);
