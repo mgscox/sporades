@@ -426,6 +426,7 @@ test("App message cleanup drains an unawaited user File deletion before commit",
   const directory = await mkdtemp(path.join(tmpdir(), "sporades-server-files-"));
   let releaseAcl;
   let signalAclEntered;
+  let retainedFilesDuringDrain;
   globalThis.__serverFileDeleteAclGate = new Promise((resolve) => { releaseAcl = resolve; });
   globalThis.__serverFileDeleteAclEntered = new Promise((resolve) => { signalAclEntered = resolve; });
   const definition = capsule({
@@ -441,6 +442,7 @@ test("App message cleanup drains an unawaited user File deletion before commit",
     },
     messages: {
       deleteWithoutAwait: message((ctx, fileReference) => {
+        retainedFilesDuringDrain = ctx.files;
         void ctx.files.delete(fileReference);
         return null;
       }),
@@ -459,14 +461,20 @@ test("App message cleanup drains an unawaited user File deletion before commit",
 
   try {
     const file = await uploadFile(database, owner, "/unawaited/source.txt", "unawaited");
+    const protectedFile = await uploadFile(database, collaborator, "/unawaited/protected.txt", "protected");
     let settled = false;
     const pending = runAppMessage(database, collaborator, "deleteWithoutAwait", file.id).finally(() => { settled = true; });
     await globalThis.__serverFileDeleteAclEntered;
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(settled, false, "the handler transaction must drain the unawaited deletion");
+    await assert.rejects(
+      retainedFilesDuringDrain.delete(protectedFile.id),
+      (error) => error?.message === "File access is no longer active.",
+    );
     releaseAcl();
     assert.equal((await pending).error, null);
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, false);
+    assert.equal((await getPrivateFileUrl(database, collaborator, protectedFile.id)).ok, true);
   } finally {
     delete globalThis.__serverFileDeleteAclGate;
     delete globalThis.__serverFileDeleteAclEntered;

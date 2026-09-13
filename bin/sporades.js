@@ -101340,6 +101340,7 @@ function releaseHandlerContextMapping(database) {
 async function cleanupTransactionHandler(database, context, preservePrimaryError, clearCache = true) {
   let cleanupFailed = false;
   try {
+    revokeCurrentUserFileApi(context);
     await drainCurrentUserFileOperations(context);
     if (context) await drainPendingAclWrites(context);
     await drainPendingLogWrites(database);
@@ -101363,13 +101364,12 @@ async function runLifecycleHook(hook, context) {
     hookFailed = true;
     throw error;
   } finally {
+    revokeCurrentUserFileApi(context);
     try {
       await drainCurrentUserFileOperations(context);
       await drainPendingAclWrites(context);
     } catch (error) {
       if (!hookFailed) throw error;
-    } finally {
-      revokeCurrentUserFileApi(context);
     }
   }
 }
@@ -103317,11 +103317,10 @@ async function runQuery(database, auth, queryName, rawArgs = [], options = {}) {
     const rows = await filterRowsByReadAcl(database, table, database.rowCache.get(cacheKey), context);
     return { rows, error: null };
   } finally {
+    revokeCurrentUserFileApi(context);
     try {
       await drainCurrentUserFileOperations(context);
     } catch {
-    } finally {
-      revokeCurrentUserFileApi(context);
     }
   }
 }
@@ -103336,10 +103335,6 @@ async function runCustomQuery(database, context, queryName, args, resolvedHandle
     assertJsonCompatible(data2);
     return { data: data2, error: null };
   } catch (error) {
-    try {
-      await drainCurrentUserFileOperations(context);
-    } catch {
-    }
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
     }
@@ -104280,13 +104275,13 @@ async function runCurrentUserJobWorker(database) {
             handlerFailed = true;
             throw error;
           } finally {
+            revokeCurrentUserFileApi(context);
             try {
               await drainCurrentUserFileOperations(context);
             } catch (error) {
               if (!handlerFailed) throw error;
             } finally {
               database.__runtimeJobAttempts.delete(context);
-              revokeCurrentUserFileApi(context);
             }
           }
         }

@@ -4158,6 +4158,7 @@ async function cleanupTransactionHandler(
 ) {
   let cleanupFailed = false;
   try {
+    revokeCurrentUserFileApi(context);
     await drainCurrentUserFileOperations(context);
     if (context) await drainPendingAclWrites(context);
     await drainPendingLogWrites(database);
@@ -4182,12 +4183,12 @@ async function runLifecycleHook(hook: Function, context: LooseRecord) {
     hookFailed = true;
     throw error;
   } finally {
+    revokeCurrentUserFileApi(context);
     try {
       await drainCurrentUserFileOperations(context);
       await drainPendingAclWrites(context);
     }
     catch (error) { if (!hookFailed) throw error; }
-    finally { revokeCurrentUserFileApi(context); }
   }
 }
 
@@ -6327,9 +6328,9 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
   const rows = await filterRowsByReadAcl(database, table, database.rowCache.get(cacheKey), context);
   return { rows, error: null };
   } finally {
+    revokeCurrentUserFileApi(context);
     try { await drainCurrentUserFileOperations(context); }
     catch {}
-    finally { revokeCurrentUserFileApi(context); }
   }
 }
 
@@ -6345,8 +6346,6 @@ async function runCustomQuery(database: LooseRecord, context: any, queryName: an
     assertJsonCompatible(data);
     return { data, error: null as any };
   } catch (error: any) {
-    try { await drainCurrentUserFileOperations(context); }
-    catch {}
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
     }
@@ -7299,11 +7298,11 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
           try { result = await handler.handler(context, jobPayload); }
           catch (error) { handlerFailed = true; throw error; }
           finally {
+            revokeCurrentUserFileApi(context);
             try { await drainCurrentUserFileOperations(context); }
             catch (error) { if (!handlerFailed) throw error; }
             finally {
               database.__runtimeJobAttempts.delete(context);
-              revokeCurrentUserFileApi(context);
             }
           }
         }

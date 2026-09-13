@@ -3926,6 +3926,7 @@ function releaseHandlerContextMapping(database) {
 async function cleanupTransactionHandler(database, context, preservePrimaryError, clearCache = true) {
     let cleanupFailed = false;
     try {
+        revokeCurrentUserFileApi(context);
         await drainCurrentUserFileOperations(context);
         if (context)
             await drainPendingAclWrites(context);
@@ -3957,6 +3958,7 @@ async function runLifecycleHook(hook, context) {
         throw error;
     }
     finally {
+        revokeCurrentUserFileApi(context);
         try {
             await drainCurrentUserFileOperations(context);
             await drainPendingAclWrites(context);
@@ -3964,9 +3966,6 @@ async function runLifecycleHook(hook, context) {
         catch (error) {
             if (!hookFailed)
                 throw error;
-        }
-        finally {
-            revokeCurrentUserFileApi(context);
         }
     }
 }
@@ -6013,13 +6012,11 @@ export async function runQuery(database, auth, queryName, rawArgs = [], options 
         return { rows, error: null };
     }
     finally {
+        revokeCurrentUserFileApi(context);
         try {
             await drainCurrentUserFileOperations(context);
         }
         catch { }
-        finally {
-            revokeCurrentUserFileApi(context);
-        }
     }
 }
 async function runCustomQuery(database, context, queryName, args, resolvedHandler = null) {
@@ -6034,10 +6031,6 @@ async function runCustomQuery(database, context, queryName, args, resolvedHandle
         return { data, error: null };
     }
     catch (error) {
-        try {
-            await drainCurrentUserFileOperations(context);
-        }
-        catch { }
         if (error?.sporadesAuthDenialLogData) {
             emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
         }
@@ -7050,6 +7043,7 @@ export async function runCurrentUserJobWorker(database) {
                         throw error;
                     }
                     finally {
+                        revokeCurrentUserFileApi(context);
                         try {
                             await drainCurrentUserFileOperations(context);
                         }
@@ -7059,7 +7053,6 @@ export async function runCurrentUserJobWorker(database) {
                         }
                         finally {
                             database.__runtimeJobAttempts.delete(context);
-                            revokeCurrentUserFileApi(context);
                         }
                     }
                 }
