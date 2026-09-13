@@ -1011,6 +1011,7 @@ function retainForwardedFilePromiseHook(state: CurrentUserFileApiState) {
   if (forwardedFilePromiseHookStop) return;
   forwardedFilePromiseHookStop = nodePromiseHooks.createHook({
     init(promise: Promise<any>, parent?: Promise<any>) {
+      if (observingForwardedFilePromise) return;
       if (parent) {
         let children = forwardedFilePromiseChildren.get(parent);
         if (!children) {
@@ -1019,7 +1020,6 @@ function retainForwardedFilePromiseHook(state: CurrentUserFileApiState) {
         }
         children.add(promise);
       }
-      if (observingForwardedFilePromise) return;
       const parentNode = parent ? forwardedFilePromiseNodes.get(parent) : undefined;
       if (parentNode) registerForwardedFilePromiseNode(promise, parentNode.operation, parentNode);
     },
@@ -1108,9 +1108,9 @@ async function settleForwardedFileRejectionGraph(operation: CurrentUserFileOpera
 }
 
 function trackCurrentUserFileOperation(operation: CurrentUserFileOperation): Promise<any> {
-  const wrap = (promise: Promise<any>): Promise<any> => new Proxy(promise, {
-    get(target, property) {
-      if (property === "then") return (onFulfilled?: any, onRejected?: any) => {
+  const decorate = (promise: Promise<any>): Promise<any> => {
+    Object.defineProperties(promise, {
+      then: { configurable: true, value: (onFulfilled?: any, onRejected?: any) => {
         let promiseResolveForwarding = false;
         if (typeof onRejected === "function") {
           const nativeResolverPair = typeof onFulfilled === "function"
@@ -1121,7 +1121,7 @@ function trackCurrentUserFileOperation(operation: CurrentUserFileOperation): Pro
           promiseResolveForwarding = nativeResolverPair;
           if (promiseResolveForwarding) {
             operation.forwardedRejection = true;
-            const targetNode = forwardedFilePromiseNodes.get(target);
+            const targetNode = forwardedFilePromiseNodes.get(promise);
             if (targetNode) targetNode.forwarded = true;
           }
           else {
@@ -1136,36 +1136,36 @@ function trackCurrentUserFileOperation(operation: CurrentUserFileOperation): Pro
           try { return onRejected(reason); }
           finally { forwardedFileCallbackOperations.pop(); }
         } : onRejected;
-        const continuation = target.then(onFulfilled, rejectionHandler);
+        const continuation = Promise.prototype.then.call(promise, onFulfilled, rejectionHandler);
         if (!promiseResolveForwarding) {
-          const parentNode = forwardedFilePromiseNodes.get(target);
+          const parentNode = forwardedFilePromiseNodes.get(promise);
           const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
           continuationNode.userContinuation = true;
           if (parentNode) parentNode.userChildren.add(continuationNode);
         }
-        return wrap(continuation);
-      };
-      if (property === "catch") return (onRejected?: any) => {
+        return decorate(continuation);
+      } },
+      catch: { configurable: true, value: (onRejected?: any) => {
         if (typeof onRejected === "function") operation.explicitRejectionHandler = true;
-        const continuation = target.catch(onRejected);
-        const parentNode = forwardedFilePromiseNodes.get(target);
+        const continuation = Promise.prototype.then.call(promise, undefined, onRejected);
+        const parentNode = forwardedFilePromiseNodes.get(promise);
         const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
         continuationNode.userContinuation = true;
         if (parentNode) parentNode.userChildren.add(continuationNode);
-        return wrap(continuation);
-      };
-      if (property === "finally") return (onFinally?: any) => {
-        const continuation = target.finally(onFinally);
-        const parentNode = forwardedFilePromiseNodes.get(target);
+        return decorate(continuation);
+      } },
+      finally: { configurable: true, value: (onFinally?: any) => {
+        const continuation = Promise.prototype.finally.call(promise, onFinally);
+        const parentNode = forwardedFilePromiseNodes.get(promise);
         const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
         continuationNode.userContinuation = true;
         if (parentNode) parentNode.userChildren.add(continuationNode);
-        return wrap(continuation);
-      };
-      return Reflect.get(target, property, target);
-    },
-  });
-  return wrap(operation.promise);
+        return decorate(continuation);
+      } },
+    });
+    return promise;
+  };
+  return decorate(operation.promise);
 }
 
 export function bindCurrentUserFileDeleteState(context: LooseRecord, sourceContext?: LooseRecord) {
@@ -1226,9 +1226,18 @@ export function createCurrentUserFileApi(
         forwardedRejection: false,
         promiseNodes: new Set(),
       };
-      void operation.finally(() => { trackedOperation.settled = true; }).catch(() => undefined);
+      registerForwardedFilePromiseNode(operation, trackedOperation);
+      observingForwardedFilePromise = true;
+      try {
+        void Promise.prototype.then.call(
+          operation,
+          () => { trackedOperation.settled = true; },
+          () => { trackedOperation.settled = true; },
+        );
+      } finally {
+        observingForwardedFilePromise = false;
+      }
       state.pendingOperations.push(trackedOperation);
-      void operation.then(undefined, () => undefined);
       return trackCurrentUserFileOperation(trackedOperation);
     },
   });
@@ -1240,7 +1249,14 @@ export async function drainCurrentUserFileOperations(context: LooseRecord | unde
     while (state?.pendingOperations.length) {
       const operations = state.pendingOperations.splice(0);
       const settledBeforeDrain = operations.map((operation) => operation.settled);
-      const outcomes = await Promise.allSettled(operations.map((operation) => operation.promise));
+      observingForwardedFilePromise = true;
+      let outcomesPromise: Promise<PromiseSettledResult<any>[]>;
+      try {
+        outcomesPromise = Promise.allSettled(operations.map((operation) => operation.promise));
+      } finally {
+        observingForwardedFilePromise = false;
+      }
+      const outcomes = await outcomesPromise;
       if (operations.some((operation) => operation.promiseNodes.size > 0)) {
         await new Promise((resolve) => setImmediate(resolve));
       }

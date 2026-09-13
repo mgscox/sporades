@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
+import { types as utilTypes } from "node:util";
 
 import {
   completePendingFileUpload,
@@ -582,11 +583,12 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
       recoverDeleteFailure: query(async (ctx, fileReference) => {
         const pendingDeletion = ctx.files.delete(fileReference);
         const isPromise = pendingDeletion instanceof Promise;
+        const isNativePromise = utilTypes.isPromise(pendingDeletion);
         try {
           await pendingDeletion;
           return { recovered: false };
         } catch (error) {
-          return { recovered: true, isPromise, message: error.message };
+          return { recovered: true, isPromise, isNativePromise, message: error.message };
         }
       }),
     },
@@ -726,6 +728,15 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
         });
         return { accepted: true };
       }),
+      recoverDeleteFailureWithPrototypeThen: mutation(async (ctx, fileReference) => {
+        const pendingDeletion = ctx.files.delete(fileReference);
+        const recovered = await Promise.prototype.then.call(
+          pendingDeletion,
+          () => ({ recovered: false }),
+          (error) => ({ recovered: true, message: error.message }),
+        );
+        return { isNativePromise: utilTypes.isPromise(pendingDeletion), ...recovered };
+      }),
       handlePendingAggregateDeleteFailure: mutation((ctx, fileReference) => {
         void Promise.all([ctx.files.delete(fileReference)]).catch(globalThis.__serverFileNativeRejectionHandler);
         return { accepted: true };
@@ -843,6 +854,15 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
     assert.deepEqual(handledDelayedAsyncResolvedDeleteFailure.data, { accepted: true });
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
 
+    const prototypeThenRecovered = await runMutation(database, other, "recoverDeleteFailureWithPrototypeThen", [file.id]);
+    assert.equal(prototypeThenRecovered.error, null);
+    assert.deepEqual(prototypeThenRecovered.data, {
+      isNativePromise: true,
+      recovered: true,
+      message: "File not found.",
+    });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
     let releaseNativeAcl;
     let signalNativeAclEntered;
     globalThis.__serverFileNativeHandlerAclGate = new Promise((resolve) => { releaseNativeAcl = resolve; });
@@ -872,7 +892,12 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
 
     const recovered = await runQuery(database, other, "recoverDeleteFailure", [file.id]);
     assert.equal(recovered.error, null);
-    assert.deepEqual(recovered.data, { recovered: true, isPromise: true, message: "File not found." });
+    assert.deepEqual(recovered.data, {
+      recovered: true,
+      isPromise: true,
+      isNativePromise: true,
+      message: "File not found.",
+    });
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
   } finally {
     delete globalThis.__serverFileNativeRejectionHandler;
