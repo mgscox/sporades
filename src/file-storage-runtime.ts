@@ -991,11 +991,11 @@ function registerForwardedFilePromiseNode(
 }
 
 function tagForwardedFilePromiseTree(promise: Promise<any>, operation: CurrentUserFileOperation) {
-  if (forwardedFilePromiseOperations.get(promise) === operation) return;
   forwardedFilePromiseOperations.set(promise, operation);
-  for (const child of forwardedFilePromiseChildren.get(promise) ?? []) {
-    tagForwardedFilePromiseTree(child, operation);
-  }
+  // Promise.resolve returns its assimilation root directly, whereas combinators
+  // add descendants that settle a separate aggregate. The root is therefore a
+  // first-class node too; register imports any children that already exist.
+  registerForwardedFilePromiseNode(promise, operation);
 }
 
 function retainForwardedFilePromiseHook(operation: CurrentUserFileOperation) {

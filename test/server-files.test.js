@@ -600,9 +600,22 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
         await new Promise((resolve) => setImmediate(resolve));
         return { accepted: true };
       }),
+      deleteInSettledDiscardedResolve: mutation(async (ctx, fileReference) => {
+        void Promise.resolve(ctx.files.delete(fileReference));
+        await new Promise((resolve) => setImmediate(resolve));
+        return { accepted: true };
+      }),
       recoverAggregateDeleteFailure: mutation(async (ctx, fileReference) => {
         try {
           await Promise.all([ctx.files.delete(fileReference)]);
+          return { recovered: false };
+        } catch (error) {
+          return { recovered: true, message: error.message };
+        }
+      }),
+      recoverResolvedDeleteFailure: mutation(async (ctx, fileReference) => {
+        try {
+          await Promise.resolve(ctx.files.delete(fileReference));
           return { recovered: false };
         } catch (error) {
           return { recovered: true, message: error.message };
@@ -640,9 +653,18 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
     assert.equal(settledAggregate.error.message, "File not found.");
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
 
+    const settledResolve = await runMutation(database, other, "deleteInSettledDiscardedResolve", [file.id]);
+    assert.equal(settledResolve.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
     const recoveredAggregate = await runMutation(database, other, "recoverAggregateDeleteFailure", [file.id]);
     assert.equal(recoveredAggregate.error, null);
     assert.deepEqual(recoveredAggregate.data, { recovered: true, message: "File not found." });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const recoveredResolve = await runMutation(database, other, "recoverResolvedDeleteFailure", [file.id]);
+    assert.equal(recoveredResolve.error, null);
+    assert.deepEqual(recoveredResolve.data, { recovered: true, message: "File not found." });
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
 
     let releaseNativeAcl;

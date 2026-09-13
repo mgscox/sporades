@@ -69137,11 +69137,8 @@ function registerForwardedFilePromiseNode(promise, operation, parent) {
   return node;
 }
 function tagForwardedFilePromiseTree(promise, operation) {
-  if (forwardedFilePromiseOperations.get(promise) === operation) return;
   forwardedFilePromiseOperations.set(promise, operation);
-  for (const child of forwardedFilePromiseChildren.get(promise) ?? []) {
-    tagForwardedFilePromiseTree(child, operation);
-  }
+  registerForwardedFilePromiseNode(promise, operation);
 }
 function retainForwardedFilePromiseHook(operation) {
   if (!nodePromiseHooks?.createHook || operation.promiseHookRetained) return;
