@@ -1213,6 +1213,7 @@ export function bindCurrentUserFileDeleteState(context: LooseRecord, sourceConte
 export function createCurrentUserFileApi(
   database: LooseRecord,
   contextGetter: () => LooseRecord,
+  options: LooseRecord = {},
 ) {
   const state: CurrentUserFileApiState = {
     active: true,
@@ -1256,6 +1257,7 @@ export function createCurrentUserFileApi(
             state.pendingByteDeletes.push({ database: database.__rootDatabase ?? database, ...file });
           }
           : undefined,
+        options.requireLiveActor === true,
       ).then((result: any) => {
         if (!result.ok) throw result.error;
         return result.data.file;
@@ -1352,10 +1354,20 @@ export async function deletePrivateFile(
   fileReference: any,
   credential: LooseRecord = { kind: "session" },
   deferByteRemoval?: (file: Readonly<{ fileId: string; version: string }>) => void,
+  requireLiveActor = false,
 ) {
   const now = new Date().toISOString();
   const result = await runFileMetadataTransaction(database, async (sqlite: LooseRecord) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+    if (requireLiveActor) {
+      const actor = await sqlite.findAuthUserFileAuthority(auth?.userId);
+      if (!actor || (actor.userKind === "service" && actor.lifecycleStatus !== "active")) {
+        return {
+          ok: false,
+          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
+        };
+      }
+    }
     const resolved: any = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "delete", credential);
     if (!resolved.ok) return {
       ok: false,

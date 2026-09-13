@@ -1284,6 +1284,11 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
         ),
       ).run(row.id, row.createdAt, row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider, row.userKind ?? "human", row.lifecycleStatus ?? "active", row.disabledAt ?? null);
     },
+    findAuthUserFileAuthority(userId: string) {
+      return this.prepare(sql(
+        "SELECT [id], [userKind], [lifecycleStatus] FROM [sporades_auth_users] WHERE [id] = ?",
+      )).get(userId) ?? null;
+    },
     updateAuthUserProfile(row: { displayName: any; picture: any; isAuthenticated: any; isGuest: any; id: any; }) {
       assertNotReservedAuthUserId(row.id);
       return this.prepare(

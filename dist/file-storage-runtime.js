@@ -1054,7 +1054,7 @@ export function bindCurrentUserFileDeleteState(context, sourceContext) {
     if (state)
         currentUserFileApiState.set(context, state);
 }
-export function createCurrentUserFileApi(database, contextGetter) {
+export function createCurrentUserFileApi(database, contextGetter, options = {}) {
     const state = {
         active: true,
         pendingByteDeletes: [],
@@ -1087,7 +1087,7 @@ export function createCurrentUserFileApi(database, contextGetter) {
                 ? (file) => {
                     state.pendingByteDeletes.push({ database: database.__rootDatabase ?? database, ...file });
                 }
-                : undefined).then((result) => {
+                : undefined, options.requireLiveActor === true).then((result) => {
                 if (!result.ok)
                     throw result.error;
                 return result.data.file;
@@ -1179,10 +1179,19 @@ export function revokeCurrentUserFileApi(context) {
     if (state)
         state.active = false;
 }
-export async function deletePrivateFile(database, auth, fileReference, credential = { kind: "session" }, deferByteRemoval) {
+export async function deletePrivateFile(database, auth, fileReference, credential = { kind: "session" }, deferByteRemoval, requireLiveActor = false) {
     const now = new Date().toISOString();
     const result = await runFileMetadataTransaction(database, async (sqlite) => {
         const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+        if (requireLiveActor) {
+            const actor = await sqlite.findAuthUserFileAuthority(auth?.userId);
+            if (!actor || (actor.userKind === "service" && actor.lifecycleStatus !== "active")) {
+                return {
+                    ok: false,
+                    error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
+                };
+            }
+        }
         const resolved = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "delete", credential);
         if (!resolved.ok)
             return {

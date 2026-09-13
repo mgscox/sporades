@@ -69324,7 +69324,7 @@ function bindCurrentUserFileDeleteState(context, sourceContext) {
   const state = sourceContext ? currentUserFileApiState.get(sourceContext) : void 0;
   if (state) currentUserFileApiState.set(context, state);
 }
-function createCurrentUserFileApi(database, contextGetter) {
+function createCurrentUserFileApi(database, contextGetter, options = {}) {
   const state = {
     active: true,
     pendingByteDeletes: [],
@@ -69359,7 +69359,8 @@ function createCurrentUserFileApi(database, contextGetter) {
         admittedCredential,
         database.__transactionActive ? (file) => {
           state.pendingByteDeletes.push({ database: database.__rootDatabase ?? database, ...file });
-        } : void 0
+        } : void 0,
+        options.requireLiveActor === true
       ).then((result) => {
         if (!result.ok) throw result.error;
         return result.data.file;
@@ -69446,10 +69447,19 @@ function revokeCurrentUserFileApi(context) {
   const state = context ? currentUserFileApiState.get(context) : void 0;
   if (state) state.active = false;
 }
-async function deletePrivateFile(database, auth, fileReference, credential = { kind: "session" }, deferByteRemoval) {
+async function deletePrivateFile(database, auth, fileReference, credential = { kind: "session" }, deferByteRemoval, requireLiveActor = false) {
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const result = await runFileMetadataTransaction(database, async (sqlite) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+    if (requireLiveActor) {
+      const actor = await sqlite.findAuthUserFileAuthority(auth?.userId);
+      if (!actor || actor.userKind === "service" && actor.lifecycleStatus !== "active") {
+        return {
+          ok: false,
+          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
+        };
+      }
+    }
     const resolved = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "delete", credential);
     if (!resolved.ok) return {
       ok: false,
@@ -96812,6 +96822,11 @@ function createSharedDatabaseAdapterMethods(dialect) {
         )
       ).run(row.id, row.createdAt, row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider, row.userKind ?? "human", row.lifecycleStatus ?? "active", row.disabledAt ?? null);
     },
+    findAuthUserFileAuthority(userId) {
+      return this.prepare(sql(
+        "SELECT [id], [userKind], [lifecycleStatus] FROM [sporades_auth_users] WHERE [id] = ?"
+      )).get(userId) ?? null;
+    },
     updateAuthUserProfile(row) {
       assertNotReservedAuthUserId(row.id);
       return this.prepare(
@@ -101512,7 +101527,9 @@ function createEndpointContext(database, endpointRequest, session, options = {})
   const holder = createContextHolder(context);
   registerHandlerContextMapping(database, holder);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
-  context.files = createCurrentUserFileApi(database, () => holder.current);
+  context.files = createCurrentUserFileApi(database, () => holder.current, {
+    requireLiveActor: options.requireLiveFileActor === true
+  });
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
   context.mail = {
@@ -103970,7 +103987,9 @@ function createMutationContext(database, auth, options = {}) {
   const holder = createContextHolder(context);
   registerHandlerContextMapping(database, holder);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
-  context.files = createCurrentUserFileApi(database, () => holder.current);
+  context.files = createCurrentUserFileApi(database, () => holder.current, {
+    requireLiveActor: options.requireLiveFileActor === true
+  });
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
   context.mail = {
@@ -104563,7 +104582,10 @@ async function runCurrentUserJobWorker(database) {
             await relinquishUnstartedJobClaim(database, row.id, claimToken);
             return;
           }
-          const context = createMutationContext(database, auth, { credential });
+          const context = createMutationContext(database, auth, {
+            credential,
+            requireLiveFileActor: true
+          });
           context.signal = abortController.signal;
           handlerStarted = true;
           database.__runtimeJobAttempts.set(context, Number(row.attempts) + 1);

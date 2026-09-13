@@ -3826,7 +3826,9 @@ function createEndpointContext(database, endpointRequest, session, options = {})
     const holder = createContextHolder(context);
     registerHandlerContextMapping(database, holder);
     context.db = createEndpointDatabaseApi(database, () => holder.current);
-    context.files = createCurrentUserFileApi(database, () => holder.current);
+    context.files = createCurrentUserFileApi(database, () => holder.current, {
+        requireLiveActor: options.requireLiveFileActor === true,
+    });
     context.privileged = createContextPrivilegedApi(database, () => holder.current);
     context.jobs = createCurrentUserJobApi(database, () => holder.current);
     context.mail = {
@@ -6414,7 +6416,9 @@ function createMutationContext(database, auth, options = {}) {
     const holder = createContextHolder(context);
     registerHandlerContextMapping(database, holder);
     context.db = createEndpointDatabaseApi(database, () => holder.current);
-    context.files = createCurrentUserFileApi(database, () => holder.current);
+    context.files = createCurrentUserFileApi(database, () => holder.current, {
+        requireLiveActor: options.requireLiveFileActor === true,
+    });
     context.privileged = createContextPrivilegedApi(database, () => holder.current);
     context.jobs = createCurrentUserJobApi(database, () => holder.current);
     context.mail = {
@@ -7054,7 +7058,10 @@ export async function runCurrentUserJobWorker(database) {
                         await relinquishUnstartedJobClaim(database, row.id, claimToken);
                         return;
                     }
-                    const context = createMutationContext(database, auth, { credential });
+                    const context = createMutationContext(database, auth, {
+                        credential,
+                        requireLiveFileActor: true,
+                    });
                     context.signal = abortController.signal;
                     handlerStarted = true;
                     database.__runtimeJobAttempts.set(context, Number(row.attempts) + 1);

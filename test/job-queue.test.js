@@ -521,6 +521,20 @@ test("Access-key Jobs preserve bounded admission provenance through deletion, re
     type: "text/plain", size: 9, status: "ready", version: 1,
     createdAt: "2026-08-20T12:00:00.000Z", updatedAt: "2026-08-20T12:00:00.000Z",
   };
+  const storedFile = {
+    id: randomUUID(), ownerId: owner.userId, bucketId: randomUUID(), bucketName: "job-files",
+    path: "/jobs/owned.txt", name: "owned.txt", type: "text/plain", size: 5,
+    version: randomUUID(), status: "uploaded",
+    createdAt: "2026-08-20T12:00:00.000Z", updatedAt: "2026-08-20T12:00:00.000Z",
+  };
+  const attemptFileDelete = async (ctx) => {
+    try {
+      await ctx.files.delete(storedFile.id);
+      return null;
+    } catch (error) {
+      return error.message;
+    }
+  };
   const definition = {
     accessKeys: { scopes: ["jobs:enqueue"] },
     schema: {
@@ -535,6 +549,7 @@ test("Access-key Jobs preserve bounded admission provenance through deletion, re
           visibleCount: (await ctx.db.visibleItems.all()).length,
           teamCount: (await ctx.db.teamItems.all()).length,
           fileAllowed: await applyFileAcl(database, "read", fileRow, ctx.auth, ctx.credential),
+          fileDeleteError: await attemptFileDelete(ctx),
         });
         ctx.log.info("durable parent");
         parentAttempts += 1;
@@ -547,6 +562,7 @@ test("Access-key Jobs preserve bounded admission provenance through deletion, re
           visibleCount: (await ctx.db.visibleItems.all()).length,
           teamCount: (await ctx.db.teamItems.all()).length,
           fileAllowed: await applyFileAcl(database, "read", fileRow, ctx.auth, ctx.credential),
+          fileDeleteError: await attemptFileDelete(ctx),
         });
         ctx.log.info("durable child");
         return null;
@@ -577,6 +593,13 @@ test("Access-key Jobs preserve bounded admission provenance through deletion, re
       isGuest: 0,
       provider: owner.provider,
     });
+    await database.adapter.createFileBucket({
+      id: storedFile.bucketId,
+      ownerId: owner.userId,
+      name: storedFile.bucketName,
+      createdAt: storedFile.createdAt,
+    });
+    await database.adapter.insertFileRow(storedFile);
     const ownerSessionToken = `job-owner-session-${owner.userId}`;
     await database.adapter.insertAuthSession({
       token: ownerSessionToken, userId: owner.userId, provider: owner.provider,
@@ -653,9 +676,11 @@ test("Access-key Jobs preserve bounded admission provenance through deletion, re
       assert.equal(entry.visibleCount, 0, "Job ACLs must read current resource state");
       assert.equal(entry.teamCount, 0, "Job Team ACLs must read current membership state");
       assert.equal(entry.fileAllowed, false, "Job File ACLs must read current membership state");
+      assert.equal(entry.fileDeleteError, "File not found.", "deleted owners must lose current File deletion authority");
       assert.equal(Object.isFrozen(entry.auth), true);
       assert.equal(Object.isFrozen(entry.credential), true);
     }
+    assert.equal((await database.adapter.selectFileById(storedFile.id)).deletedAt, null);
     const events = await database.adapter.readRecentLogEvents(50);
     for (const event of events.filter((entry) => entry.message?.startsWith("durable "))) {
       assert.deepEqual(event.data.actor, { userId: owner.userId });

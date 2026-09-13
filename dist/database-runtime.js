@@ -1003,6 +1003,9 @@ export function createSharedDatabaseAdapterMethods(dialect) {
                 "([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind], [lifecycleStatus], [disabledAt]) " +
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")).run(row.id, row.createdAt, row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider, row.userKind ?? "human", row.lifecycleStatus ?? "active", row.disabledAt ?? null);
         },
+        findAuthUserFileAuthority(userId) {
+            return this.prepare(sql("SELECT [id], [userKind], [lifecycleStatus] FROM [sporades_auth_users] WHERE [id] = ?")).get(userId) ?? null;
+        },
         updateAuthUserProfile(row) {
             assertNotReservedAuthUserId(row.id);
             return this.prepare(sql("UPDATE [sporades_auth_users] SET [displayName] = ?, [picture] = ?, [isAuthenticated] = ?, [isGuest] = ? WHERE [id] = ?")).run(row.displayName, row.picture, row.isAuthenticated, row.isGuest, row.id);
