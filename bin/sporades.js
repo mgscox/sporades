@@ -69106,18 +69106,24 @@ async function revokePublicFileUrl(database, auth, publicUrlId) {
 var currentUserFileApiState = /* @__PURE__ */ new WeakMap();
 var nodePromiseHooks = process.getBuiltinModule("node:v8")?.promiseHooks;
 var forwardedFilePromiseChildren = /* @__PURE__ */ new WeakMap();
-var forwardedFilePromiseOperations = /* @__PURE__ */ new WeakMap();
 var forwardedFilePromiseNodes = /* @__PURE__ */ new WeakMap();
 var forwardedFilePromiseHookStop;
 var forwardedFilePromiseHookRetainers = 0;
 var forwardedFilePromiseHookStack = [];
+var forwardedFileCallbackOperations = [];
 var observingForwardedFilePromise = false;
-var latestForwardedFileRootPromise;
-var latestForwardedFileRootOwner;
 function registerForwardedFilePromiseNode(promise, operation, parent) {
   let node = forwardedFilePromiseNodes.get(promise);
   if (!node) {
-    node = { promise, operation, children: /* @__PURE__ */ new Set(), outcome: "pending" };
+    node = {
+      promise,
+      operation,
+      children: /* @__PURE__ */ new Set(),
+      userChildren: /* @__PURE__ */ new Set(),
+      userContinuation: false,
+      forwarded: false,
+      outcome: "pending"
+    };
     forwardedFilePromiseNodes.set(promise, node);
     operation.promiseNodes.add(node);
     for (const child of forwardedFilePromiseChildren.get(promise) ?? []) {
@@ -69137,10 +69143,6 @@ function registerForwardedFilePromiseNode(promise, operation, parent) {
   if (parent && parent !== node) parent.children.add(node);
   return node;
 }
-function tagForwardedFilePromiseTree(promise, operation) {
-  forwardedFilePromiseOperations.set(promise, operation);
-  registerForwardedFilePromiseNode(promise, operation);
-}
 function retainForwardedFilePromiseHook(state) {
   if (!nodePromiseHooks?.createHook || state.promiseHookRetained) return;
   state.promiseHookRetained = true;
@@ -69148,10 +69150,6 @@ function retainForwardedFilePromiseHook(state) {
   if (forwardedFilePromiseHookStop) return;
   forwardedFilePromiseHookStop = nodePromiseHooks.createHook({
     init(promise, parent) {
-      if (!parent && !observingForwardedFilePromise) {
-        latestForwardedFileRootPromise = promise;
-        latestForwardedFileRootOwner = forwardedFilePromiseHookStack.at(-1);
-      }
       if (parent) {
         let children = forwardedFilePromiseChildren.get(parent);
         if (!children) {
@@ -69163,10 +69161,6 @@ function retainForwardedFilePromiseHook(state) {
       if (observingForwardedFilePromise) return;
       const parentNode = parent ? forwardedFilePromiseNodes.get(parent) : void 0;
       if (parentNode) registerForwardedFilePromiseNode(promise, parentNode.operation, parentNode);
-      else {
-        const parentOperation = parent ? forwardedFilePromiseOperations.get(parent) : void 0;
-        if (parentOperation) forwardedFilePromiseOperations.set(promise, parentOperation);
-      }
     },
     before(promise) {
       forwardedFilePromiseHookStack.push(promise);
@@ -69175,9 +69169,9 @@ function retainForwardedFilePromiseHook(state) {
       forwardedFilePromiseHookStack.pop();
     },
     settled(promise) {
-      if (observingForwardedFilePromise || forwardedFilePromiseNodes.has(promise) || forwardedFilePromiseOperations.has(promise)) return;
+      if (observingForwardedFilePromise || forwardedFilePromiseNodes.has(promise)) return;
       const activePromise = forwardedFilePromiseHookStack.at(-1);
-      const operation = activePromise ? forwardedFilePromiseOperations.get(activePromise) ?? forwardedFilePromiseNodes.get(activePromise)?.operation : void 0;
+      const operation = forwardedFileCallbackOperations.at(-1) ?? (activePromise ? forwardedFilePromiseNodes.get(activePromise)?.operation : void 0);
       if (!operation) return;
       registerForwardedFilePromiseNode(promise, operation, activePromise ? forwardedFilePromiseNodes.get(activePromise) : void 0);
     }
@@ -69191,11 +69185,11 @@ function releaseForwardedFilePromiseHook(state) {
     forwardedFilePromiseHookStop?.();
     forwardedFilePromiseHookStop = void 0;
     forwardedFilePromiseHookStack = [];
-    latestForwardedFileRootPromise = void 0;
-    latestForwardedFileRootOwner = void 0;
+    forwardedFileCallbackOperations.length = 0;
   }
 }
 function hasDiscardedForwardedFileRejection(operation) {
+  if ([...operation.promiseNodes].some((node) => node.userContinuation && !node.forwarded && node.userChildren.size === 0 && node.outcome === "rejected")) return true;
   let nextIndex2 = 0;
   const indexes = /* @__PURE__ */ new Map();
   const lowLinks = /* @__PURE__ */ new Map();
@@ -69238,32 +69232,47 @@ function trackCurrentUserFileOperation(operation) {
         let promiseResolveForwarding = false;
         if (typeof onRejected === "function") {
           const nativeResolverPair = typeof onFulfilled === "function" && onFulfilled.name === "" && onRejected.name === "" && Function.prototype.toString.call(onFulfilled).includes("[native code]") && Function.prototype.toString.call(onRejected).includes("[native code]");
-          const activePromise = forwardedFilePromiseHookStack.at(-1);
-          const manualForwarding = operation.manualForwardingCandidate && operation.manualForwardingCandidateOwner === activePromise;
-          const forwardingPromise = nativeResolverPair ? manualForwarding ? operation.manualForwardingCandidate : activePromise : void 0;
-          promiseResolveForwarding = Boolean(forwardingPromise);
+          promiseResolveForwarding = nativeResolverPair;
           if (promiseResolveForwarding) {
             operation.forwardedRejection = true;
-            if (forwardingPromise) tagForwardedFilePromiseTree(forwardingPromise, operation);
+            const targetNode = forwardedFilePromiseNodes.get(target);
+            if (targetNode) targetNode.forwarded = true;
           } else {
             operation.explicitRejectionHandler = true;
           }
         }
-        const continuation = target.then(onFulfilled, onRejected);
+        const rejectionHandler = promiseResolveForwarding ? (reason) => {
+          forwardedFileCallbackOperations.push(operation);
+          try {
+            return onRejected(reason);
+          } finally {
+            forwardedFileCallbackOperations.pop();
+          }
+        } : onRejected;
+        const continuation = target.then(onFulfilled, rejectionHandler);
         if (!promiseResolveForwarding) {
-          registerForwardedFilePromiseNode(continuation, operation, forwardedFilePromiseNodes.get(target));
+          const parentNode = forwardedFilePromiseNodes.get(target);
+          const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
+          continuationNode.userContinuation = true;
+          if (parentNode) parentNode.userChildren.add(continuationNode);
         }
         return wrap(continuation);
       };
       if (property === "catch") return (onRejected) => {
         if (typeof onRejected === "function") operation.explicitRejectionHandler = true;
         const continuation = target.catch(onRejected);
-        registerForwardedFilePromiseNode(continuation, operation, forwardedFilePromiseNodes.get(target));
+        const parentNode = forwardedFilePromiseNodes.get(target);
+        const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
+        continuationNode.userContinuation = true;
+        if (parentNode) parentNode.userChildren.add(continuationNode);
         return wrap(continuation);
       };
       if (property === "finally") return (onFinally) => {
         const continuation = target.finally(onFinally);
-        registerForwardedFilePromiseNode(continuation, operation, forwardedFilePromiseNodes.get(target));
+        const parentNode = forwardedFilePromiseNodes.get(target);
+        const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
+        continuationNode.userContinuation = true;
+        if (parentNode) parentNode.userChildren.add(continuationNode);
         return wrap(continuation);
       };
       return Reflect.get(target, property, target);
@@ -69301,10 +69310,6 @@ function createCurrentUserFileApi(database, contextGetter) {
         ));
       }
       retainForwardedFilePromiseHook(state);
-      const manualForwardingCandidate = latestForwardedFileRootPromise;
-      const manualForwardingCandidateOwner = latestForwardedFileRootOwner;
-      latestForwardedFileRootPromise = void 0;
-      latestForwardedFileRootOwner = void 0;
       const operation = deletePrivateFile(
         database,
         context.auth,
@@ -69322,9 +69327,7 @@ function createCurrentUserFileApi(database, contextGetter) {
         settled: false,
         explicitRejectionHandler: false,
         forwardedRejection: false,
-        promiseNodes: /* @__PURE__ */ new Set(),
-        manualForwardingCandidate,
-        manualForwardingCandidateOwner
+        promiseNodes: /* @__PURE__ */ new Set()
       };
       void operation.finally(() => {
         trackedOperation.settled = true;
