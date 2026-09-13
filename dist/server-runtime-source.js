@@ -50,7 +50,7 @@ import { deserializeFieldValue, deserializeRow, normalizeDateValue, serializeFie
 // `test/mail.test.js` — and reach them through the `export *` below rather than through a binding
 // here, so importing them would declare a name nothing in this file reads.
 import { applyReadAcl, assertActivePrivilegedJobAccess, bindPendingAclWrites, createPrivilegedAuditEmitter, createPrivilegedAuditEmissionPublicError, createPrivilegedFileApi, createPrivilegedRunAbortError, createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi, drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit, filterRowsByReadAcl, grantPrivilegedDbAccess, isPrivilegedAuditEmissionPublicError, normalizeFileAcl, normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback, revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode, trackPendingAclWrite, } from "./acl-runtime.js";
-import { commitPendingCurrentUserFileByteDeletes, createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter, createCurrentUserFileApi, deletePrivateFile, dropPendingCurrentUserFileByteDeletes, getPrivateFileUrl, revokePublicFileUrl, } from "./file-storage-runtime.js";
+import { bindCurrentUserFileDeleteState, commitPendingCurrentUserFileByteDeletes, createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter, createCurrentUserFileApi, deletePrivateFile, dropPendingCurrentUserFileByteDeletes, revokeCurrentUserFileApi, getPrivateFileUrl, revokePublicFileUrl, } from "./file-storage-runtime.js";
 import { createEndpointIngressApi, drainIngressClaimAuditOutbox, finalizeEndpointIngressClaims, initializeClamavRuntime, recoverIngressClaimAuditOutbox, shutdownClamavRuntime, stageMultipartIngress, sweepExpiredFileIngress, validateMultipartIngressPolicy } from "./file-ingress-runtime.js";
 import { createEndpointFileResponseApi } from "./endpoint-file-response.js";
 import { abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob, canonicalJobCredentialProvenance, captureJobAuthSnapshot, commitPendingJobCancellationAborts, createRuntimeClock, decodeJobCursor, dropPendingJobCancellationAborts, encodeJobCursor, ensureJobStorage, ensureScheduleStorage, finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence, normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, readJobAuthSnapshot, readJobCredentialProvenance, resolveSchedulePayload, RESERVED_JOB_NAME_PREFIX, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure, scheduleStripeEventPayloadCleanup, startStripeEventPayloadCleanup, stopStripeEventPayloadCleanup, STRIPE_EVENT_JOB, stripeEventPayloadRetentionStorageValue, scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduledOccurrenceIdentity, } from "./jobs-runtime.js";
@@ -1003,7 +1003,13 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             if (database.lifecycleHooks.init !== undefined) {
                 if (typeof database.lifecycleHooks.init !== "function")
                     throw commandError("Invalid Capsule init hook.", "Declare hooks.init as a function.");
-                await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false }));
+                const context = createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false });
+                try {
+                    await database.lifecycleHooks.init(context);
+                }
+                finally {
+                    revokeCurrentUserFileApi(context);
+                }
             }
             if (database.teamBillingDefinition) {
                 await repairTeamBillingDesiredStateAtStartup(database);
@@ -1109,7 +1115,13 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 try {
                     if (typeof database.lifecycleHooks.shutdown !== "function")
                         throw commandError("Invalid Capsule shutdown hook.", "Declare hooks.shutdown as a function.");
-                    await database.lifecycleHooks.shutdown(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false }));
+                    const context = createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false });
+                    try {
+                        await database.lifecycleHooks.shutdown(context);
+                    }
+                    finally {
+                        revokeCurrentUserFileApi(context);
+                    }
                 }
                 catch (error) {
                     failures.push(error);
@@ -3939,6 +3951,7 @@ async function cleanupTransactionHandler(database, context, preservePrimaryError
                 database.rowCache.clear();
         }
         finally {
+            revokeCurrentUserFileApi(context);
             releaseHandlerContextMapping(database);
         }
     }
@@ -4016,6 +4029,7 @@ async function applyContextMiddleware(database, baseContext, kind) {
         kind,
     };
     bindPendingAclWrites(context, baseContext);
+    bindCurrentUserFileDeleteState(context, baseContext);
     bindMutationSecretState(context, baseContext);
     transferAccessKeyRuntimeState(baseContext, context);
     const holder = baseContext.__sporadesContextHolder ?? createContextHolder(context);
@@ -4050,6 +4064,7 @@ async function applyContextMiddleware(database, baseContext, kind) {
             });
         }
         bindPendingAclWrites(context, previousContext);
+        bindCurrentUserFileDeleteState(context, previousContext);
         bindMutationSecretState(context, previousContext);
         transferAccessKeyRuntimeState(previousContext, context);
     }
@@ -6010,6 +6025,7 @@ async function runCustomQuery(database, context, queryName, args, resolvedHandle
         const holder = context?.__sporadesContextHolder;
         if (holder?.current === context)
             holder.current = null;
+        revokeCurrentUserFileApi(context);
     }
 }
 const QUERY_ARGUMENT_LIMIT_BYTES = 65536;
@@ -7001,6 +7017,7 @@ export async function runCurrentUserJobWorker(database) {
                     }
                     finally {
                         database.__runtimeJobAttempts.delete(context);
+                        revokeCurrentUserFileApi(context);
                     }
                 }
                 const resultJson = boundedJobJson(result ?? null, 64 * 1024, "JOB_RESULT_TOO_LARGE", "Job result");

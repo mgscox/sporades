@@ -8,12 +8,14 @@ import test from "node:test";
 
 import {
   completePendingFileUpload,
+  createPublicFileUrl,
   createPendingFileUpload,
+  deletePrivateFile,
   getPrivateFileUrl,
 } from "../dist/file-storage-runtime.js";
 import { handleFileHttpRoute, prepareHttpSecurity } from "../dist/http-runtime.js";
-import { openDevDatabase, routeEndpoint, runMutation } from "../dist/server-runtime-source.js";
-import { capsule, endpoint, mutation } from "../dist/server.js";
+import { openDevDatabase, routeEndpoint, runAppMessage, runEndpoint, runMutation } from "../dist/server-runtime-source.js";
+import { capsule, endpoint, message, mutation } from "../dist/server.js";
 
 function guestAuth(userId) {
   return {
@@ -143,10 +145,29 @@ test("Capsule server File deletion denies a different user opaquely", async () =
       hint: "Pass the id or absolute File path of a private file owned by the current user.",
     });
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
   } finally {
     database.close();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("user-scoped File deletion keeps ambiguous paths opaque", async () => {
+  const transactionAdapter = {
+    selectLiveFileByPath: async () => [{ id: "one" }, { id: "two" }],
+  };
+  const database = {
+    adapter: {
+      withTransaction: async (callback) => await callback(transactionAdapter),
+    },
+  };
+
+  const result = await deletePrivateFile(database, guestAuth("file-owner"), "/shared/collision.txt");
+
+  assert.deepEqual(result.error, {
+    message: "File not found.",
+    hint: "Pass the id or absolute File path of a private file owned by the current user.",
+  });
 });
 
 test("Capsule File ACL can authorize server deletion for the current user", async () => {
@@ -274,6 +295,8 @@ test("a failed mutation rolls back File deletion without removing its bytes", as
   try {
     await seedSession(database, owner, token);
     const file = await uploadFile(database, owner, "/rollback/source.txt", "still present");
+    const publicUrl = await createPublicFileUrl(database, owner, file.id, { noExpiry: true });
+    assert.equal(publicUrl.ok, true, publicUrl.error?.message);
     server = await startEndpointServer(database);
 
     const failed = await runMutation(database, owner, "deleteThenFail", [file.id], { sessionToken: token });
@@ -285,8 +308,115 @@ test("a failed mutation rolls back File deletion without removing its bytes", as
     );
     assert.equal(response.status, 200);
     assert.equal(await response.text(), "still present");
+    const publicResponse = await fetch(`${server.baseUrl}${publicUrl.data.publicUrl.url}`);
+    assert.equal(publicResponse.status, 200);
+    assert.equal(await publicResponse.text(), "still present");
   } finally {
     await server?.close();
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("failed App messages and endpoints roll back File deletion without removing bytes", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "sporades-server-files-"));
+  const references = { message: null, endpoint: null };
+  const definition = capsule({
+    name: "server-files-handler-rollback",
+    messages: {
+      deleteThenFail: message(async (ctx) => {
+        await ctx.files.delete(references.message);
+        throw new Error("message rollback");
+      }),
+    },
+    endpoints: {
+      deleteThenFail: endpoint({ method: "POST", path: "/files/delete-then-fail" }, async (ctx) => {
+        await ctx.files.delete(references.endpoint);
+        throw new Error("endpoint rollback");
+      }),
+    },
+  });
+  const database = await openDevDatabase(
+    path.join(directory, "data.db"),
+    "",
+    {},
+    { name: definition.name, files: { storagePath: path.join(directory, "files") } },
+    definition,
+  );
+  const owner = {
+    ...guestAuth("handler-rollback-owner"),
+    email: "handler-rollback-owner@example.com",
+    isAuthenticated: true,
+    isGuest: false,
+    provider: "email",
+  };
+  const token = "handler-rollback-owner-session";
+  let server;
+
+  try {
+    await seedSession(database, owner, token);
+    const messageFile = await uploadFile(database, owner, "/rollback/message.txt", "message bytes");
+    const endpointFile = await uploadFile(database, owner, "/rollback/endpoint.txt", "endpoint bytes");
+    references.message = messageFile.id;
+    references.endpoint = endpointFile.id;
+
+    const messageResult = await runAppMessage(database, owner, "deleteThenFail", null, { sessionToken: token });
+    assert.match(messageResult.error.message, /message rollback/);
+    await assert.rejects(
+      runEndpoint(
+        database,
+        database.endpoints[0],
+        new URL("http://capsule.test/files/delete-then-fail"),
+        Object.assign(Readable.from([]), { method: "POST", headers: { "x-sporades-session-token": token } }),
+      ),
+      /endpoint rollback/,
+    );
+
+    server = await startEndpointServer(database);
+    for (const [file, contents] of [[messageFile, "message bytes"], [endpointFile, "endpoint bytes"]]) {
+      const response = await fetch(
+        `${server.baseUrl}/__sporades/files/private/${file.id}?v=${encodeURIComponent(file.version)}`,
+        { headers: { "x-sporades-session-token": token } },
+      );
+      assert.equal(response.status, 200);
+      assert.equal(await response.text(), contents);
+    }
+  } finally {
+    await server?.close();
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("retained user File deletion authority is revoked after success and rollback", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "sporades-server-files-"));
+  let retainedFiles;
+  const definition = capsule({
+    name: "server-files-revocation",
+    mutations: {
+      retain: mutation((ctx) => { retainedFiles = ctx.files; return null; }),
+      retainThenFail: mutation((ctx) => { retainedFiles = ctx.files; throw new Error("rollback retained files"); }),
+    },
+  });
+  const database = await openDevDatabase(
+    path.join(directory, "data.db"),
+    "",
+    {},
+    { name: definition.name, files: { storagePath: path.join(directory, "files") } },
+    definition,
+  );
+  const owner = guestAuth("retained-file-owner");
+
+  try {
+    const file = await uploadFile(database, owner, "/retained/source.txt", "retained");
+    assert.equal((await runMutation(database, owner, "retain", [])).error, null);
+    await assert.rejects(retainedFiles.delete(file.id), (error) => error?.message === "File access is no longer active.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    assert.match((await runMutation(database, owner, "retainThenFail", [])).error.message, /rollback retained files/);
+    await assert.rejects(retainedFiles.delete(file.id), (error) => error?.message === "File access is no longer active.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+  } finally {
     database.close();
     await rm(directory, { recursive: true, force: true });
   }

@@ -69103,12 +69103,19 @@ async function revokePublicFileUrl(database, auth, publicUrlId) {
     error: null
   };
 }
-var pendingCurrentUserFileByteDeletes = /* @__PURE__ */ new WeakMap();
+var currentUserFileApiState = /* @__PURE__ */ new WeakMap();
+function bindCurrentUserFileDeleteState(context, sourceContext) {
+  const state = sourceContext ? currentUserFileApiState.get(sourceContext) : void 0;
+  if (state) currentUserFileApiState.set(context, state);
+}
 function createCurrentUserFileApi(database, contextGetter) {
+  const state = { active: true, pendingByteDeletes: [] };
+  const initialContext = contextGetter?.();
+  if (initialContext) currentUserFileApiState.set(initialContext, state);
   return Object.freeze({
     async delete(fileReference) {
       const context = contextGetter?.();
-      if (!context) {
+      if (!state.active || !context) {
         throw createStructuredFileError(
           "File access is no longer active.",
           "Call ctx.files.delete(...) only while the Capsule handler is running."
@@ -69120,9 +69127,7 @@ function createCurrentUserFileApi(database, contextGetter) {
         fileReference,
         context.credential ?? { kind: "session" },
         database.__transactionActive ? (file) => {
-          const pending = pendingCurrentUserFileByteDeletes.get(context) ?? [];
-          if (pending.length === 0) pendingCurrentUserFileByteDeletes.set(context, pending);
-          pending.push({ database: database.__rootDatabase ?? database, ...file });
+          state.pendingByteDeletes.push({ database: database.__rootDatabase ?? database, ...file });
         } : void 0
       );
       if (!result.ok) throw result.error;
@@ -69132,23 +69137,34 @@ function createCurrentUserFileApi(database, contextGetter) {
 }
 async function commitPendingCurrentUserFileByteDeletes(context) {
   if (!context) return;
-  const pending = pendingCurrentUserFileByteDeletes.get(context) ?? [];
-  pendingCurrentUserFileByteDeletes.delete(context);
-  for (const file of pending) {
+  const state = currentUserFileApiState.get(context);
+  if (!state) return;
+  state.active = false;
+  currentUserFileApiState.delete(context);
+  for (const file of state.pendingByteDeletes.splice(0)) {
     await removeFileVersionBestEffort(file.database, file.fileId, file.version);
   }
 }
 function dropPendingCurrentUserFileByteDeletes(context) {
-  if (context) pendingCurrentUserFileByteDeletes.delete(context);
+  const state = context ? currentUserFileApiState.get(context) : void 0;
+  if (!state) return;
+  state.active = false;
+  state.pendingByteDeletes.length = 0;
+  currentUserFileApiState.delete(context);
+}
+function revokeCurrentUserFileApi(context) {
+  const state = context ? currentUserFileApiState.get(context) : void 0;
+  if (state) state.active = false;
 }
 async function deletePrivateFile(database, auth, fileReference, credential = { kind: "session" }, deferByteRemoval) {
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const result = await runFileMetadataTransaction(database, async (sqlite) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
     const resolved = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "delete", credential);
-    if (!resolved.ok) {
-      return resolved;
-    }
+    if (!resolved.ok) return {
+      ok: false,
+      error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
+    };
     const row = resolved.row;
     if (!row) {
       return {
@@ -98680,7 +98696,12 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       if (!await initializeClamavRuntime(database)) throw commandError2("Required File inspection is unavailable.", "Check ClamAV signatures and the local daemon socket.", "FILE_INSPECTION_UNAVAILABLE");
       if (database.lifecycleHooks.init !== void 0) {
         if (typeof database.lifecycleHooks.init !== "function") throw commandError2("Invalid Capsule init hook.", "Declare hooks.init as a function.");
-        await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false }));
+        const context = createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false });
+        try {
+          await database.lifecycleHooks.init(context);
+        } finally {
+          revokeCurrentUserFileApi(context);
+        }
       }
       if (database.teamBillingDefinition) {
         await repairTeamBillingDesiredStateAtStartup(database);
@@ -98765,7 +98786,12 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== void 0) {
         try {
           if (typeof database.lifecycleHooks.shutdown !== "function") throw commandError2("Invalid Capsule shutdown hook.", "Declare hooks.shutdown as a function.");
-          await database.lifecycleHooks.shutdown(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false }));
+          const context = createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false });
+          try {
+            await database.lifecycleHooks.shutdown(context);
+          } finally {
+            revokeCurrentUserFileApi(context);
+          }
         } catch (error) {
           failures.push(error);
         }
@@ -101318,6 +101344,7 @@ async function cleanupTransactionHandler(database, context, preservePrimaryError
     try {
       if (clearCache || cleanupFailed) database.rowCache.clear();
     } finally {
+      revokeCurrentUserFileApi(context);
       releaseHandlerContextMapping(database);
     }
   }
@@ -101383,6 +101410,7 @@ async function applyContextMiddleware(database, baseContext, kind) {
     kind
   };
   bindPendingAclWrites(context, baseContext);
+  bindCurrentUserFileDeleteState(context, baseContext);
   bindMutationSecretState(context, baseContext);
   transferAccessKeyRuntimeState(baseContext, context);
   const holder = baseContext.__sporadesContextHolder ?? createContextHolder(context);
@@ -101420,6 +101448,7 @@ async function applyContextMiddleware(database, baseContext, kind) {
       });
     }
     bindPendingAclWrites(context, previousContext);
+    bindCurrentUserFileDeleteState(context, previousContext);
     bindMutationSecretState(context, previousContext);
     transferAccessKeyRuntimeState(previousContext, context);
   }
@@ -103288,6 +103317,7 @@ async function runCustomQuery(database, context, queryName, args, resolvedHandle
   } finally {
     const holder = context?.__sporadesContextHolder;
     if (holder?.current === context) holder.current = null;
+    revokeCurrentUserFileApi(context);
   }
 }
 var QUERY_ARGUMENT_LIMIT_BYTES = 65536;
@@ -104210,6 +104240,7 @@ async function runCurrentUserJobWorker(database) {
             result = await handler.handler(context, jobPayload);
           } finally {
             database.__runtimeJobAttempts.delete(context);
+            revokeCurrentUserFileApi(context);
           }
         }
         const resultJson = boundedJobJson(result ?? null, 64 * 1024, "JOB_RESULT_TOO_LARGE", "Job result");

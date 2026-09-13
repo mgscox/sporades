@@ -938,13 +938,22 @@ export async function revokePublicFileUrl(database: LooseRecord, auth: LooseReco
   };
 }
 
-const pendingCurrentUserFileByteDeletes = new WeakMap<object, LooseRecord[]>();
+type CurrentUserFileApiState = { active: boolean; pendingByteDeletes: LooseRecord[] };
+const currentUserFileApiState = new WeakMap<object, CurrentUserFileApiState>();
+
+export function bindCurrentUserFileDeleteState(context: LooseRecord, sourceContext?: LooseRecord) {
+  const state = sourceContext ? currentUserFileApiState.get(sourceContext) : undefined;
+  if (state) currentUserFileApiState.set(context, state);
+}
 
 export function createCurrentUserFileApi(database: LooseRecord, contextGetter: () => LooseRecord) {
+  const state: CurrentUserFileApiState = { active: true, pendingByteDeletes: [] };
+  const initialContext = contextGetter?.();
+  if (initialContext) currentUserFileApiState.set(initialContext, state);
   return Object.freeze({
     async delete(fileReference: any) {
       const context = contextGetter?.();
-      if (!context) {
+      if (!state.active || !context) {
         throw createStructuredFileError(
           "File access is no longer active.",
           "Call ctx.files.delete(...) only while the Capsule handler is running.",
@@ -957,9 +966,7 @@ export function createCurrentUserFileApi(database: LooseRecord, contextGetter: (
         context.credential ?? { kind: "session" },
         database.__transactionActive
           ? (file) => {
-            const pending = pendingCurrentUserFileByteDeletes.get(context) ?? [];
-            if (pending.length === 0) pendingCurrentUserFileByteDeletes.set(context, pending);
-            pending.push({ database: database.__rootDatabase ?? database, ...file });
+            state.pendingByteDeletes.push({ database: database.__rootDatabase ?? database, ...file });
           }
           : undefined,
       );
@@ -971,15 +978,26 @@ export function createCurrentUserFileApi(database: LooseRecord, contextGetter: (
 
 export async function commitPendingCurrentUserFileByteDeletes(context: LooseRecord | undefined) {
   if (!context) return;
-  const pending = pendingCurrentUserFileByteDeletes.get(context) ?? [];
-  pendingCurrentUserFileByteDeletes.delete(context);
-  for (const file of pending) {
+  const state = currentUserFileApiState.get(context);
+  if (!state) return;
+  state.active = false;
+  currentUserFileApiState.delete(context);
+  for (const file of state.pendingByteDeletes.splice(0)) {
     await removeFileVersionBestEffort(file.database, file.fileId, file.version);
   }
 }
 
 export function dropPendingCurrentUserFileByteDeletes(context: LooseRecord | undefined) {
-  if (context) pendingCurrentUserFileByteDeletes.delete(context);
+  const state = context ? currentUserFileApiState.get(context) : undefined;
+  if (!state) return;
+  state.active = false;
+  state.pendingByteDeletes.length = 0;
+  currentUserFileApiState.delete(context!);
+}
+
+export function revokeCurrentUserFileApi(context: LooseRecord | undefined) {
+  const state = context ? currentUserFileApiState.get(context) : undefined;
+  if (state) state.active = false;
 }
 
 export async function deletePrivateFile(
@@ -993,9 +1011,10 @@ export async function deletePrivateFile(
   const result = await runFileMetadataTransaction(database, async (sqlite: LooseRecord) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
     const resolved: any = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "delete", credential);
-    if (!resolved.ok) {
-      return resolved;
-    }
+    if (!resolved.ok) return {
+      ok: false,
+      error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
+    };
     const row = resolved.row;
     if (!row) {
       return {

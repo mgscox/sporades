@@ -169,11 +169,13 @@ export declare function revokePublicFileUrl(database: LooseRecord, auth: LooseRe
     };
     error: any;
 }>;
+export declare function bindCurrentUserFileDeleteState(context: LooseRecord, sourceContext?: LooseRecord): void;
 export declare function createCurrentUserFileApi(database: LooseRecord, contextGetter: () => LooseRecord): Readonly<{
     delete(fileReference: any): Promise<any>;
 }>;
 export declare function commitPendingCurrentUserFileByteDeletes(context: LooseRecord | undefined): Promise<void>;
 export declare function dropPendingCurrentUserFileByteDeletes(context: LooseRecord | undefined): void;
+export declare function revokeCurrentUserFileApi(context: LooseRecord | undefined): void;
 export declare function deletePrivateFile(database: LooseRecord, auth: LooseRecord, fileReference: any, credential?: LooseRecord, deferByteRemoval?: (file: Readonly<{
     fileId: string;
     version: string;
