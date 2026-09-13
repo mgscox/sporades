@@ -38,6 +38,30 @@ test("current-user File API tolerates immutable Promise intrinsics", () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
+test("current-user File API tolerates Promise intrinsics frozen during a handler", () => {
+  const runtimeUrl = new URL("../dist/file-storage-runtime.js", import.meta.url).href;
+  const script = `
+    import { createCurrentUserFileApi, drainCurrentUserFileOperations } from ${JSON.stringify(runtimeUrl)};
+    const firstContext = {
+      auth: { userId: "freezing-promise-user", isAuthenticated: true, isGuest: false },
+      credential: { kind: "session" },
+    };
+    createCurrentUserFileApi({}, () => firstContext);
+    Object.freeze(Promise);
+    Object.freeze(Promise.prototype);
+    await drainCurrentUserFileOperations(firstContext);
+    const secondContext = {
+      auth: { userId: "post-freeze-user", isAuthenticated: true, isGuest: false },
+      credential: { kind: "session" },
+    };
+    const files = createCurrentUserFileApi({}, () => secondContext);
+    if (typeof files.delete !== "function") throw new Error("Second File API was not created.");
+    await drainCurrentUserFileOperations(secondContext);
+  `;
+  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
+
 function guestAuth(userId) {
   return {
     userId,

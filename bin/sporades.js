@@ -69330,15 +69330,21 @@ function releaseForwardedFilePromiseHook(state) {
     forwardedFileRootPromises = /* @__PURE__ */ new WeakSet();
     forwardedFileCombinatorOperationSets.length = 0;
     for (const [name2, descriptor] of forwardedFilePromiseCombinatorDescriptors ?? []) {
-      Object.defineProperty(Promise, name2, descriptor);
+      if (Object.getOwnPropertyDescriptor(Promise, name2)?.configurable) {
+        Object.defineProperty(Promise, name2, descriptor);
+      }
     }
     forwardedFilePromiseCombinatorDescriptors = void 0;
     if (forwardedFilePromiseThenDescriptor) {
-      Object.defineProperty(Promise.prototype, "then", forwardedFilePromiseThenDescriptor);
+      if (Object.getOwnPropertyDescriptor(Promise.prototype, "then")?.configurable) {
+        Object.defineProperty(Promise.prototype, "then", forwardedFilePromiseThenDescriptor);
+      }
       forwardedFilePromiseThenDescriptor = void 0;
     }
     if (forwardedFilePromiseFinallyDescriptor) {
-      Object.defineProperty(Promise.prototype, "finally", forwardedFilePromiseFinallyDescriptor);
+      if (Object.getOwnPropertyDescriptor(Promise.prototype, "finally")?.configurable) {
+        Object.defineProperty(Promise.prototype, "finally", forwardedFilePromiseFinallyDescriptor);
+      }
       forwardedFilePromiseFinallyDescriptor = void 0;
     }
     forwardedFilePromiseChildren = /* @__PURE__ */ new WeakMap();

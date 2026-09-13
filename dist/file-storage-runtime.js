@@ -1049,15 +1049,21 @@ function releaseForwardedFilePromiseHook(state) {
         forwardedFileRootPromises = new WeakSet();
         forwardedFileCombinatorOperationSets.length = 0;
         for (const [name, descriptor] of forwardedFilePromiseCombinatorDescriptors ?? []) {
-            Object.defineProperty(Promise, name, descriptor);
+            if (Object.getOwnPropertyDescriptor(Promise, name)?.configurable) {
+                Object.defineProperty(Promise, name, descriptor);
+            }
         }
         forwardedFilePromiseCombinatorDescriptors = undefined;
         if (forwardedFilePromiseThenDescriptor) {
-            Object.defineProperty(Promise.prototype, "then", forwardedFilePromiseThenDescriptor);
+            if (Object.getOwnPropertyDescriptor(Promise.prototype, "then")?.configurable) {
+                Object.defineProperty(Promise.prototype, "then", forwardedFilePromiseThenDescriptor);
+            }
             forwardedFilePromiseThenDescriptor = undefined;
         }
         if (forwardedFilePromiseFinallyDescriptor) {
-            Object.defineProperty(Promise.prototype, "finally", forwardedFilePromiseFinallyDescriptor);
+            if (Object.getOwnPropertyDescriptor(Promise.prototype, "finally")?.configurable) {
+                Object.defineProperty(Promise.prototype, "finally", forwardedFilePromiseFinallyDescriptor);
+            }
             forwardedFilePromiseFinallyDescriptor = undefined;
         }
         // Values in this WeakMap contain strong child references. Replace the
