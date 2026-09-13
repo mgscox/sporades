@@ -1329,7 +1329,12 @@ export function createCurrentUserFileApi(database, contextGetter, options = {}) 
     return Object.freeze({
         delete(fileReference) {
             const context = contextGetter?.();
-            if (!state.active || !context) {
+            const activePromise = forwardedFilePromiseHookStack.at(-1);
+            const registeredDrainContinuation = !state.active && activePromise
+                ? [...(forwardedFilePromiseNodes.get(activePromise)?.values() ?? [])]
+                    .some((node) => node.operation.state === state)
+                : false;
+            if ((!state.active && !registeredDrainContinuation) || !context) {
                 return Promise.reject(createStructuredFileError("File access is no longer active.", "Call ctx.files.delete(...) only while the Capsule handler is running."));
             }
             if (!admittedCredential || !admittedAuth) {
@@ -1346,6 +1351,7 @@ export function createCurrentUserFileApi(database, contextGetter, options = {}) 
                 return result.data.file;
             });
             const trackedOperation = {
+                state,
                 promise: operation,
                 explicitRejectionHandler: false,
                 forwardedRejection: false,

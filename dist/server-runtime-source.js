@@ -6042,6 +6042,13 @@ export async function runQuery(database, auth, queryName, rawArgs = [], options 
                 };
             }
         }
+        finally {
+            const finalContext = context;
+            const holder = finalContext?.__sporadesContextHolder;
+            if (holder?.current === finalContext)
+                holder.current = null;
+            revokeCurrentUserFileApi(finalContext);
+        }
     }
     return result;
 }
@@ -6068,12 +6075,6 @@ async function runCustomQuery(database, context, queryName, args, resolvedHandle
                 hint: error?.hint ?? "Check the Capsule query handler and retry the query.",
             },
         };
-    }
-    finally {
-        const holder = context?.__sporadesContextHolder;
-        if (holder?.current === context)
-            holder.current = null;
-        revokeCurrentUserFileApi(context);
     }
 }
 const QUERY_ARGUMENT_LIMIT_BYTES = 65536;

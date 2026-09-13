@@ -542,6 +542,10 @@ test("query cleanup drains an unawaited user File deletion", async () => {
         void ctx.files.delete(fileReference);
         return null;
       }),
+      deleteChainedWithoutAwait: query((ctx, firstFileReference, secondFileReference) => {
+        void ctx.files.delete(firstFileReference).then(() => ctx.files.delete(secondFileReference));
+        return null;
+      }),
     },
   });
   const database = await openDevDatabase(
@@ -564,6 +568,23 @@ test("query cleanup drains an unawaited user File deletion", async () => {
     releaseAcl();
     assert.equal((await pending).error, null);
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, false);
+
+    const firstChainedFile = await uploadFile(database, owner, "/query/chained-first.txt", "first");
+    const secondChainedFile = await uploadFile(database, owner, "/query/chained-second.txt", "second");
+    globalThis.__serverFileQueryDeleteAclGate = new Promise((resolve) => { releaseAcl = resolve; });
+    globalThis.__serverFileQueryDeleteAclEntered = new Promise((resolve) => { signalAclEntered = resolve; });
+    globalThis.__serverFileQueryDeleteAclEnteredResolve = signalAclEntered;
+    const chained = runQuery(
+      database,
+      collaborator,
+      "deleteChainedWithoutAwait",
+      [firstChainedFile.id, secondChainedFile.id],
+    );
+    await globalThis.__serverFileQueryDeleteAclEntered;
+    releaseAcl();
+    assert.equal((await chained).error, null);
+    assert.equal((await getPrivateFileUrl(database, owner, firstChainedFile.id)).ok, false);
+    assert.equal((await getPrivateFileUrl(database, owner, secondChainedFile.id)).ok, false);
   } finally {
     delete globalThis.__serverFileQueryDeleteAclGate;
     delete globalThis.__serverFileQueryDeleteAclEntered;

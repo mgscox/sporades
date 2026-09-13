@@ -939,6 +939,7 @@ export async function revokePublicFileUrl(database: LooseRecord, auth: LooseReco
 }
 
 type CurrentUserFileOperation = {
+  state: CurrentUserFileApiState;
   promise: Promise<any>;
   explicitRejectionHandler: boolean;
   forwardedRejection: boolean;
@@ -1465,7 +1466,12 @@ export function createCurrentUserFileApi(
   return Object.freeze({
     delete(fileReference: any) {
       const context = contextGetter?.();
-      if (!state.active || !context) {
+      const activePromise = forwardedFilePromiseHookStack.at(-1);
+      const registeredDrainContinuation = !state.active && activePromise
+        ? [...(forwardedFilePromiseNodes.get(activePromise)?.values() ?? [])]
+          .some((node) => node.operation.state === state)
+        : false;
+      if ((!state.active && !registeredDrainContinuation) || !context) {
         return Promise.reject(createStructuredFileError(
           "File access is no longer active.",
           "Call ctx.files.delete(...) only while the Capsule handler is running.",
@@ -1494,6 +1500,7 @@ export function createCurrentUserFileApi(
         return result.data.file;
       });
       const trackedOperation: CurrentUserFileOperation = {
+        state,
         promise: operation,
         explicitRejectionHandler: false,
         forwardedRejection: false,

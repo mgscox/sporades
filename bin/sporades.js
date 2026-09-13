@@ -69552,7 +69552,9 @@ function createCurrentUserFileApi(database, contextGetter, options = {}) {
   return Object.freeze({
     delete(fileReference) {
       const context = contextGetter?.();
-      if (!state.active || !context) {
+      const activePromise = forwardedFilePromiseHookStack.at(-1);
+      const registeredDrainContinuation = !state.active && activePromise ? [...forwardedFilePromiseNodes.get(activePromise)?.values() ?? []].some((node) => node.operation.state === state) : false;
+      if (!state.active && !registeredDrainContinuation || !context) {
         return Promise.reject(createStructuredFileError(
           "File access is no longer active.",
           "Call ctx.files.delete(...) only while the Capsule handler is running."
@@ -69579,6 +69581,7 @@ function createCurrentUserFileApi(database, contextGetter, options = {}) {
         return result.data.file;
       });
       const trackedOperation = {
+        state,
         promise: operation,
         explicitRejectionHandler: false,
         forwardedRejection: false,
@@ -103856,6 +103859,11 @@ async function runQuery(database, auth, queryName, rawArgs = [], options = {}) {
           }
         };
       }
+    } finally {
+      const finalContext = context;
+      const holder = finalContext?.__sporadesContextHolder;
+      if (holder?.current === finalContext) holder.current = null;
+      revokeCurrentUserFileApi(finalContext);
     }
   }
   return result;
@@ -103882,10 +103890,6 @@ async function runCustomQuery(database, context, queryName, args, resolvedHandle
         hint: error?.hint ?? "Check the Capsule query handler and retry the query."
       }
     };
-  } finally {
-    const holder = context?.__sporadesContextHolder;
-    if (holder?.current === context) holder.current = null;
-    revokeCurrentUserFileApi(context);
   }
 }
 var QUERY_ARGUMENT_LIMIT_BYTES = 65536;

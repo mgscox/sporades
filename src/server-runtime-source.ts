@@ -6355,6 +6355,11 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
           },
         };
       }
+    } finally {
+      const finalContext = context as LooseRecord | undefined;
+      const holder = finalContext?.__sporadesContextHolder;
+      if (holder?.current === finalContext) holder.current = null;
+      revokeCurrentUserFileApi(finalContext);
     }
   }
   return result;
@@ -6383,10 +6388,6 @@ async function runCustomQuery(database: LooseRecord, context: any, queryName: an
         hint: error?.hint ?? "Check the Capsule query handler and retry the query.",
       },
     };
-  } finally {
-    const holder = context?.__sporadesContextHolder;
-    if (holder?.current === context) holder.current = null;
-    revokeCurrentUserFileApi(context);
   }
 }
 
