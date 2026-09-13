@@ -942,6 +942,7 @@ type CurrentUserFileOperation = {
   promise: Promise<any>;
   explicitRejectionHandler: boolean;
   forwardedRejection: boolean;
+  exactForwardingPromiseObserved: boolean;
   promiseNodes: Set<ForwardedFilePromiseNode>;
   rootSequenceAtCreation: number;
   rootAtInvocation?: Promise<any>;
@@ -980,6 +981,7 @@ const forwardedFileCallbackOperationSets: CurrentUserFileOperation[][] = [];
 const forwardedFileCombinatorOperationSets: Set<CurrentUserFileOperation>[] = [];
 const forwardedFilePromiseCombinatorNames = ["all", "allSettled", "any", "race"] as const;
 let forwardedFilePromiseCombinatorDescriptors: Map<string, PropertyDescriptor> | undefined;
+let forwardedFilePromiseFinallyDescriptor: PropertyDescriptor | undefined;
 let observingForwardedFilePromise = false;
 const forwardedFileRejectionSettlementTimeoutMs = 1_000;
 
@@ -994,6 +996,7 @@ function installForwardedFilePromiseCombinators() {
     Object.defineProperty(Promise, name, {
       ...descriptor,
       value: function forwardedFilePromiseCombinator(this: PromiseConstructor, values: Iterable<any>) {
+        if (observingForwardedFilePromise) return Reflect.apply(original, this, [values]);
         const operations = new Set<CurrentUserFileOperation>();
         forwardedFileCombinatorOperationSets.push(operations);
         try {
@@ -1010,11 +1013,36 @@ function installForwardedFilePromiseCombinators() {
           const aggregate = Reflect.apply(original, this, [trackedValues]) as Promise<any>;
           for (const operation of operations) {
             registerForwardedFilePromiseNode(aggregate, operation).forwarded = true;
+            operation.exactForwardingPromiseObserved = true;
           }
           return aggregate;
         } finally {
           forwardedFileCombinatorOperationSets.pop();
         }
+      },
+    });
+  }
+  const finallyDescriptor = Object.getOwnPropertyDescriptor(Promise.prototype, "finally");
+  if (finallyDescriptor && typeof finallyDescriptor.value === "function") {
+    forwardedFilePromiseFinallyDescriptor = finallyDescriptor;
+    const originalFinally = finallyDescriptor.value;
+    Object.defineProperty(Promise.prototype, "finally", {
+      ...finallyDescriptor,
+      value: function forwardedFilePromiseFinally(this: Promise<any>, onFinally?: any) {
+        const operations = [...(forwardedFilePromiseNodes.get(this)?.values() ?? [])]
+          .map((node) => node.operation);
+        const priorForwarding = new Map(operations.map((operation) => [operation, operation.forwardedRejection]));
+        const continuation = Reflect.apply(originalFinally, this, [onFinally]) as Promise<any>;
+        for (const operation of operations) {
+          operation.forwardedRejection = priorForwarding.get(operation) ?? false;
+          const parentNode = getForwardedFilePromiseNode(this, operation);
+          const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
+          continuationNode.userContinuation = true;
+          continuationNode.propagatesRejection = true;
+          continuationNode.forwarded = false;
+          parentNode?.userChildren.add(continuationNode);
+        }
+        return continuation;
       },
     });
   }
@@ -1116,6 +1144,9 @@ function retainForwardedFilePromiseHook(state: CurrentUserFileApiState) {
         ? callbackOperations
         : [...new Set([...(activeNodes?.values() ?? [])].map((node) => node.operation))];
       for (const operation of operations) {
+        if (callbackOperations?.includes(operation) && forwardedFileRootSequences.has(promise)) {
+          operation.exactForwardingPromiseObserved = true;
+        }
         if (getForwardedFilePromiseNode(promise, operation)) continue;
         registerForwardedFilePromiseNode(
           promise,
@@ -1145,6 +1176,10 @@ function releaseForwardedFilePromiseHook(state: CurrentUserFileApiState) {
       Object.defineProperty(Promise, name, descriptor);
     }
     forwardedFilePromiseCombinatorDescriptors = undefined;
+    if (forwardedFilePromiseFinallyDescriptor) {
+      Object.defineProperty(Promise.prototype, "finally", forwardedFilePromiseFinallyDescriptor);
+      forwardedFilePromiseFinallyDescriptor = undefined;
+    }
     // Values in this WeakMap contain strong child references. Replace the
     // transient graph so a long-lived parent cannot retain completed handlers.
     forwardedFilePromiseChildren = new WeakMap();
@@ -1395,6 +1430,7 @@ export function createCurrentUserFileApi(
         promise: operation,
         explicitRejectionHandler: false,
         forwardedRejection: false,
+        exactForwardingPromiseObserved: false,
         promiseNodes: new Set(),
         rootSequenceAtCreation: forwardedFileRootSequence,
         rootAtInvocation,
@@ -1431,8 +1467,13 @@ export async function drainCurrentUserFileOperations(context: LooseRecord | unde
         if (!graphSettled[index]) return true;
         const operation = operations[index];
         const discardedForwarding = hasDiscardedForwardedFileRejection(operation);
+        if (discardedForwarding) return true;
+        if (operation.forwardedRejection && !operation.exactForwardingPromiseObserved
+          && ![...operation.promiseNodes].some((node) => !node.forwarded && node.outcome === "rejected")) {
+          return true;
+        }
         const graphFailureWasHandled = operation.promiseNodes.size > 0 && !discardedForwarding;
-        return discardedForwarding || (!operation.explicitRejectionHandler && !graphFailureWasHandled);
+        return !operation.explicitRejectionHandler && !graphFailureWasHandled;
       });
       if (rejected?.status === "rejected") throw rejected.reason;
     }

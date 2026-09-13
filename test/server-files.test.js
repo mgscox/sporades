@@ -556,6 +556,7 @@ test("query cleanup drains an unawaited user File deletion", async () => {
 
 test("query cleanup reports an unawaited user File deletion failure", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "sporades-server-files-"));
+  const cachedPromiseAny = Promise.any.bind(Promise);
   const nativeHandledFailures = [];
   globalThis.__serverFileNativeRejectionHandler = ((error) => nativeHandledFailures.push(error.message)).bind(undefined);
   const definition = capsule({
@@ -634,6 +635,15 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
       }),
       deleteInNeverSettlingAny: query((ctx, fileReference) => {
         void Promise.any([ctx.files.delete(fileReference), new Promise(() => {})]);
+        return { accepted: true };
+      }),
+      deleteInCachedLazyPendingAny: query((ctx, fileReference) => {
+        function* inputs() {
+          void Promise.resolve("unrelated");
+          yield ctx.files.delete(fileReference);
+          yield new Promise(() => {});
+        }
+        void cachedPromiseAny(inputs());
         return { accepted: true };
       }),
       recoverDeleteFailure: query(async (ctx, fileReference) => {
@@ -791,6 +801,10 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
         void ctx.files.delete(fileReference).finally(() => {}).catch(() => {});
         return { accepted: true };
       }),
+      discardGenericFinallyDeleteFailure: mutation((ctx, fileReference) => {
+        void Promise.prototype.finally.call(ctx.files.delete(fileReference), () => {});
+        return { accepted: true };
+      }),
       delayedAsyncRethrowResolvedDeleteFailure: mutation((ctx, fileReference) => {
         void Promise.resolve(ctx.files.delete(fileReference)).catch(async (error) => {
           await new Promise((resolve) => setTimeout(resolve, 25));
@@ -882,6 +896,11 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
     assert.equal(neverSettlingAny.data, null);
     assert.equal(neverSettlingAny.error.message, "File not found.");
     assert.ok(Date.now() - neverSettlingStartedAt < 2_000, "pending forwarding cleanup must be bounded");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const cachedLazyPendingAny = await runQuery(database, other, "deleteInCachedLazyPendingAny", [file.id]);
+    assert.equal(cachedLazyPendingAny.data, null);
+    assert.equal(cachedLazyPendingAny.error.message, "File not found.");
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
 
     const replacedAuth = await runQuery(database, other, "deleteAfterReplacingAuth", [file.id, owner.userId]);
@@ -990,6 +1009,10 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
     const handledFinallyDeleteFailure = await runMutation(database, other, "handleFinallyDeleteFailure", [file.id]);
     assert.equal(handledFinallyDeleteFailure.error, null);
     assert.deepEqual(handledFinallyDeleteFailure.data, { accepted: true });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const discardedGenericFinallyDeleteFailure = await runMutation(database, other, "discardGenericFinallyDeleteFailure", [file.id]);
+    assert.equal(discardedGenericFinallyDeleteFailure.error.message, "File not found.");
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
 
     const delayedAsyncRethrownResolvedDeleteFailure = await runMutation(database, other, "delayedAsyncRethrowResolvedDeleteFailure", [file.id]);
