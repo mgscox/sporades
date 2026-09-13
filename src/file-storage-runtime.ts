@@ -953,6 +953,7 @@ type ForwardedFilePromiseNode = {
   children: Set<ForwardedFilePromiseNode>;
   userChildren: Set<ForwardedFilePromiseNode>;
   userContinuation: boolean;
+  callbackStarted: boolean;
   propagatesRejection: boolean;
   forwarded: boolean;
   settlement?: Promise<void>;
@@ -1068,6 +1069,7 @@ function registerForwardedFilePromiseNode(
       children: new Set(),
       userChildren: new Set(),
       userContinuation: false,
+      callbackStarted: false,
       propagatesRejection: false,
       forwarded: false,
       outcome: "pending",
@@ -1141,6 +1143,9 @@ function retainForwardedFilePromiseHook(state: CurrentUserFileApiState) {
       }
     },
     before(promise: Promise<any>) {
+      for (const node of forwardedFilePromiseNodes.get(promise)?.values() ?? []) {
+        node.callbackStarted = true;
+      }
       forwardedFilePromiseHookStack.push(promise);
     },
     after() {
@@ -1248,25 +1253,38 @@ function findDiscardedForwardedFileRejection(operation: CurrentUserFileOperation
 
 async function settleForwardedFileRejectionGraph(operation: CurrentUserFileOperation) {
   let deadline: number | undefined;
-  let settledUserContinuation = false;
+  const settledUserContinuations = new Set<ForwardedFilePromiseNode>();
   while (true) {
     const pendingNodes = [...operation.promiseNodes]
       .filter((node) => node.outcome === "pending");
     if (pendingNodes.length === 0) return true;
     const userContinuations = pendingNodes
-      .filter((node) => node.userContinuation && !node.forwarded);
+      .filter((node) => node.userContinuation && node.callbackStarted && !node.forwarded);
     if (userContinuations.length > 0) {
       // A consumer-provided rejection handler owns its eventual outcome. It may
       // legitimately perform work for longer than the detached-graph safety
       // budget, so do not reinterpret it as an unhandled File rejection.
       await Promise.all(userContinuations.map((node) => node.settlement!));
-      settledUserContinuation = true;
+      for (const node of userContinuations) settledUserContinuations.add(node);
       continue;
     }
     // Internal promises adopted by a user continuation can remain pending after
     // that continuation itself has reached the outcome Capsule code observes.
-    // The settled user node is sufficient for the discarded-rejection check.
-    if (settledUserContinuation) return true;
+    // Ignore only descendants of that settled continuation, rather than an
+    // unrelated pending aggregate elsewhere in the same File operation graph.
+    if (settledUserContinuations.size > 0) {
+      const continuationDescendants = new Set<ForwardedFilePromiseNode>();
+      const remaining = [...settledUserContinuations];
+      while (remaining.length > 0) {
+        const parent = remaining.pop()!;
+        for (const child of parent.children) {
+          if (continuationDescendants.has(child)) continue;
+          continuationDescendants.add(child);
+          remaining.push(child);
+        }
+      }
+      if (pendingNodes.every((node) => continuationDescendants.has(node))) return true;
+    }
     deadline ??= Date.now() + forwardedFileRejectionSettlementTimeoutMs;
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) return false;
@@ -1516,6 +1534,12 @@ export async function drainCurrentUserFileOperations(context: LooseRecord | unde
         return !operation.explicitRejectionHandler && !graphFailureWasHandled;
       });
       if (rejected?.status === "rejected") throw rejected.reason;
+      if (graphSettled.some((settled, index) => !settled && outcomes[index].status === "fulfilled")) {
+        throw createStructuredFileError(
+          "File operation continuation did not settle.",
+          "Ensure File operation Promise continuations settle before the handler finishes.",
+        );
+      }
       const rejectedContinuation = discardedRejections.find((node, index) => outcomes[index].status === "fulfilled" && node);
       if (rejectedContinuation) throw rejectedContinuation.rejectionReason;
     }

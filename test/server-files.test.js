@@ -638,6 +638,10 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
         void Promise.any([ctx.files.delete(fileReference), new Promise(() => {})]);
         return { accepted: true };
       }),
+      handleNeverSettlingAny: query((ctx, fileReference) => {
+        void Promise.any([ctx.files.delete(fileReference), new Promise(() => {})]).catch(() => {});
+        return { accepted: true };
+      }),
       deleteInCachedLazyPendingAny: query((ctx, fileReference) => {
         function* inputs() {
           void Promise.resolve("unrelated");
@@ -824,6 +828,13 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
         void ctx.files.delete(fileReference).then(() => { throw new Error("Post-delete failure."); });
         return { accepted: true };
       }),
+      deleteInSlowRejectingAggregate: mutation((ctx, fileReference) => {
+        void Promise.all([
+          ctx.files.delete(fileReference),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Delayed aggregate failure.")), 1_250)),
+        ]);
+        return { accepted: true };
+      }),
       delayedAsyncRethrowResolvedDeleteFailure: mutation((ctx, fileReference) => {
         void Promise.resolve(ctx.files.delete(fileReference)).catch(async (error) => {
           await new Promise((resolve) => setTimeout(resolve, 25));
@@ -875,6 +886,7 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
   try {
     const file = await uploadFile(database, owner, "/query/unawaited-failure.txt", "still here");
     const otherFile = await uploadFile(database, other, "/query/post-delete-failure.txt", "also still here");
+    const slowAggregateFile = await uploadFile(database, other, "/query/slow-aggregate.txt", "still here too");
     const result = await runQuery(database, other, "deleteWithoutAwait", [file.id]);
 
     assert.equal(result.data, null);
@@ -884,6 +896,10 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
     const rejectedAfterSuccessfulDelete = await runMutation(database, other, "rejectAfterSuccessfulDelete", [otherFile.id]);
     assert.equal(rejectedAfterSuccessfulDelete.error.message, "Post-delete failure.");
     assert.equal((await getPrivateFileUrl(database, other, otherFile.id)).ok, true);
+
+    const slowAggregate = await runMutation(database, other, "deleteInSlowRejectingAggregate", [slowAggregateFile.id]);
+    assert.equal(slowAggregate.error.message, "File operation continuation did not settle.");
+    assert.equal((await getPrivateFileUrl(database, other, slowAggregateFile.id)).ok, true);
 
     const discardedAny = await runQuery(database, other, "deleteInPendingDiscardedAny", [file.id]);
     assert.equal(discardedAny.data, null);
@@ -920,6 +936,13 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
     assert.equal(neverSettlingAny.data, null);
     assert.equal(neverSettlingAny.error.message, "File not found.");
     assert.ok(Date.now() - neverSettlingStartedAt < 2_000, "pending forwarding cleanup must be bounded");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const handledNeverSettlingStartedAt = Date.now();
+    const handledNeverSettlingAny = await runQuery(database, other, "handleNeverSettlingAny", [file.id]);
+    assert.equal(handledNeverSettlingAny.data, null);
+    assert.equal(handledNeverSettlingAny.error.message, "File not found.");
+    assert.ok(Date.now() - handledNeverSettlingStartedAt < 2_000, "inactive rejection handlers must not block cleanup");
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
 
     const cachedLazyPendingAny = await runQuery(database, other, "deleteInCachedLazyPendingAny", [file.id]);

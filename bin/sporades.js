@@ -69198,6 +69198,7 @@ function registerForwardedFilePromiseNode(promise, operation, parent) {
       children: /* @__PURE__ */ new Set(),
       userChildren: /* @__PURE__ */ new Set(),
       userContinuation: false,
+      callbackStarted: false,
       propagatesRejection: false,
       forwarded: false,
       outcome: "pending"
@@ -69265,6 +69266,9 @@ function retainForwardedFilePromiseHook(state) {
       }
     },
     before(promise) {
+      for (const node of forwardedFilePromiseNodes.get(promise)?.values() ?? []) {
+        node.callbackStarted = true;
+      }
       forwardedFilePromiseHookStack.push(promise);
     },
     after() {
@@ -69359,17 +69363,29 @@ function findDiscardedForwardedFileRejection(operation) {
 }
 async function settleForwardedFileRejectionGraph(operation) {
   let deadline;
-  let settledUserContinuation = false;
+  const settledUserContinuations = /* @__PURE__ */ new Set();
   while (true) {
     const pendingNodes = [...operation.promiseNodes].filter((node) => node.outcome === "pending");
     if (pendingNodes.length === 0) return true;
-    const userContinuations = pendingNodes.filter((node) => node.userContinuation && !node.forwarded);
+    const userContinuations = pendingNodes.filter((node) => node.userContinuation && node.callbackStarted && !node.forwarded);
     if (userContinuations.length > 0) {
       await Promise.all(userContinuations.map((node) => node.settlement));
-      settledUserContinuation = true;
+      for (const node of userContinuations) settledUserContinuations.add(node);
       continue;
     }
-    if (settledUserContinuation) return true;
+    if (settledUserContinuations.size > 0) {
+      const continuationDescendants = /* @__PURE__ */ new Set();
+      const remaining = [...settledUserContinuations];
+      while (remaining.length > 0) {
+        const parent = remaining.pop();
+        for (const child of parent.children) {
+          if (continuationDescendants.has(child)) continue;
+          continuationDescendants.add(child);
+          remaining.push(child);
+        }
+      }
+      if (pendingNodes.every((node) => continuationDescendants.has(node))) return true;
+    }
     deadline ??= Date.now() + forwardedFileRejectionSettlementTimeoutMs;
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) return false;
@@ -69583,6 +69599,12 @@ async function drainCurrentUserFileOperations(context) {
         return !operation.explicitRejectionHandler && !graphFailureWasHandled;
       });
       if (rejected?.status === "rejected") throw rejected.reason;
+      if (graphSettled.some((settled, index) => !settled && outcomes[index].status === "fulfilled")) {
+        throw createStructuredFileError(
+          "File operation continuation did not settle.",
+          "Ensure File operation Promise continuations settle before the handler finishes."
+        );
+      }
       const rejectedContinuation = discardedRejections.find((node, index) => outcomes[index].status === "fulfilled" && node);
       if (rejectedContinuation) throw rejectedContinuation.rejectionReason;
     }
