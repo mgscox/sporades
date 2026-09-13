@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -18,6 +19,24 @@ import {
 import { handleFileHttpRoute, prepareHttpSecurity } from "../dist/http-runtime.js";
 import { openDevDatabase, routeEndpoint, runAppMessage, runEndpoint, runMutation, runQuery } from "../dist/server-runtime-source.js";
 import { capsule, endpoint, message, mutation, query } from "../dist/server.js";
+
+test("current-user File API tolerates immutable Promise intrinsics", () => {
+  const runtimeUrl = new URL("../dist/file-storage-runtime.js", import.meta.url).href;
+  const script = `
+    import { createCurrentUserFileApi, drainCurrentUserFileOperations } from ${JSON.stringify(runtimeUrl)};
+    Object.freeze(Promise);
+    Object.freeze(Promise.prototype);
+    const context = {
+      auth: { userId: "frozen-promise-user", isAuthenticated: true, isGuest: false },
+      credential: { kind: "session" },
+    };
+    const files = createCurrentUserFileApi({}, () => context);
+    if (typeof files.delete !== "function") throw new Error("File API was not created.");
+    await drainCurrentUserFileOperations(context);
+  `;
+  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
 
 function guestAuth(userId) {
   return {

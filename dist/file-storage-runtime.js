@@ -831,7 +831,7 @@ function installForwardedFilePromiseCombinators() {
     if (forwardedFilePromiseCombinatorDescriptors)
         return;
     const thenDescriptor = Object.getOwnPropertyDescriptor(Promise.prototype, "then");
-    if (thenDescriptor && typeof thenDescriptor.value === "function") {
+    if (thenDescriptor?.configurable && typeof thenDescriptor.value === "function") {
         forwardedFilePromiseThenDescriptor = thenDescriptor;
         const originalThen = thenDescriptor.value;
         Object.defineProperty(Promise.prototype, "then", {
@@ -863,7 +863,7 @@ function installForwardedFilePromiseCombinators() {
     forwardedFilePromiseCombinatorDescriptors = new Map();
     for (const name of forwardedFilePromiseCombinatorNames) {
         const descriptor = Object.getOwnPropertyDescriptor(Promise, name);
-        if (!descriptor || typeof descriptor.value !== "function")
+        if (!descriptor?.configurable || typeof descriptor.value !== "function")
             continue;
         forwardedFilePromiseCombinatorDescriptors.set(name, descriptor);
         const original = descriptor.value;
@@ -899,7 +899,7 @@ function installForwardedFilePromiseCombinators() {
         });
     }
     const finallyDescriptor = Object.getOwnPropertyDescriptor(Promise.prototype, "finally");
-    if (finallyDescriptor && typeof finallyDescriptor.value === "function") {
+    if (finallyDescriptor?.configurable && typeof finallyDescriptor.value === "function") {
         forwardedFilePromiseFinallyDescriptor = finallyDescriptor;
         const originalFinally = finallyDescriptor.value;
         Object.defineProperty(Promise.prototype, "finally", {
