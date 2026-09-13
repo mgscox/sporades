@@ -610,6 +610,13 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
         ]);
         return { value };
       }),
+      handleCachedPendingAny: query(async (ctx, fileReference) => {
+        const value = await cachedPromiseAny([
+          ctx.files.delete(fileReference),
+          Promise.resolve("fallback"),
+        ]);
+        return { value };
+      }),
       deleteInLazyPendingDiscardedAny: query((ctx, fileReference) => {
         function* inputs() {
           yield ctx.files.delete(fileReference);
@@ -939,6 +946,11 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
     const handledAny = await runQuery(database, other, "handlePendingAny", [file.id]);
     assert.equal(handledAny.error, null);
     assert.deepEqual(handledAny.data, { value: "fallback" });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const handledCachedAny = await runQuery(database, other, "handleCachedPendingAny", [file.id]);
+    assert.equal(handledCachedAny.error, null);
+    assert.deepEqual(handledCachedAny.data, { value: "fallback" });
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
 
     const discardedLazyAny = await runQuery(database, other, "deleteInLazyPendingDiscardedAny", [file.id]);

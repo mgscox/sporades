@@ -814,13 +814,52 @@ const forwardedFileCallbackOperationSets = [];
 const forwardedFileCombinatorOperationSets = [];
 const forwardedFilePromiseCombinatorNames = ["all", "allSettled", "any", "race"];
 let forwardedFilePromiseCombinatorDescriptors;
+let forwardedFilePromiseThenDescriptor;
 let forwardedFilePromiseFinallyDescriptor;
 let observingForwardedFilePromise = false;
 const forwardedFileRejectionSettlementTimeoutMs = 1_000;
 const forwardedFileActiveContinuationTimeoutMs = 2_000;
+function isNativePromiseResolverPair(onFulfilled, onRejected) {
+    return typeof onFulfilled === "function"
+        && typeof onRejected === "function"
+        && onFulfilled.name === ""
+        && onRejected.name === ""
+        && Function.prototype.toString.call(onFulfilled).includes("[native code]")
+        && Function.prototype.toString.call(onRejected).includes("[native code]");
+}
 function installForwardedFilePromiseCombinators() {
     if (forwardedFilePromiseCombinatorDescriptors)
         return;
+    const thenDescriptor = Object.getOwnPropertyDescriptor(Promise.prototype, "then");
+    if (thenDescriptor && typeof thenDescriptor.value === "function") {
+        forwardedFilePromiseThenDescriptor = thenDescriptor;
+        const originalThen = thenDescriptor.value;
+        Object.defineProperty(Promise.prototype, "then", {
+            ...thenDescriptor,
+            value: function forwardedFilePromiseThen(onFulfilled, onRejected) {
+                if (observingForwardedFilePromise || !isNativePromiseResolverPair(onFulfilled, onRejected)) {
+                    return Reflect.apply(originalThen, this, [onFulfilled, onRejected]);
+                }
+                const invokeResolver = (resolver, value) => {
+                    const operations = forwardedFileResolverOperations.get(onRejected)
+                        ?? forwardedFileResolverOperations.get(onFulfilled);
+                    if (!operations?.size)
+                        return resolver(value);
+                    forwardedFileCallbackOperationSets.push([...operations]);
+                    try {
+                        return resolver(value);
+                    }
+                    finally {
+                        forwardedFileCallbackOperationSets.pop();
+                    }
+                };
+                return Reflect.apply(originalThen, this, [
+                    (value) => invokeResolver(onFulfilled, value),
+                    (reason) => invokeResolver(onRejected, reason),
+                ]);
+            },
+        });
+    }
     forwardedFilePromiseCombinatorDescriptors = new Map();
     for (const name of forwardedFilePromiseCombinatorNames) {
         const descriptor = Object.getOwnPropertyDescriptor(Promise, name);
@@ -1013,6 +1052,10 @@ function releaseForwardedFilePromiseHook(state) {
             Object.defineProperty(Promise, name, descriptor);
         }
         forwardedFilePromiseCombinatorDescriptors = undefined;
+        if (forwardedFilePromiseThenDescriptor) {
+            Object.defineProperty(Promise.prototype, "then", forwardedFilePromiseThenDescriptor);
+            forwardedFilePromiseThenDescriptor = undefined;
+        }
         if (forwardedFilePromiseFinallyDescriptor) {
             Object.defineProperty(Promise.prototype, "finally", forwardedFilePromiseFinallyDescriptor);
             forwardedFilePromiseFinallyDescriptor = undefined;
@@ -1150,12 +1193,7 @@ function trackCurrentUserFileOperation(operation) {
                     let promiseResolveForwarding = false;
                     let trackPromiseResolveForwarding = false;
                     if (typeof onRejected === "function") {
-                        const nativeResolverPair = typeof onFulfilled === "function"
-                            && onFulfilled.name === ""
-                            && onRejected.name === ""
-                            && Function.prototype.toString.call(onFulfilled).includes("[native code]")
-                            && Function.prototype.toString.call(onRejected).includes("[native code]");
-                        promiseResolveForwarding = nativeResolverPair;
+                        promiseResolveForwarding = isNativePromiseResolverPair(onFulfilled, onRejected);
                         if (promiseResolveForwarding) {
                             trackPromiseResolveForwarding = !observingForwardedFilePromise;
                             if (trackPromiseResolveForwarding)
