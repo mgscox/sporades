@@ -169,7 +169,18 @@ export declare function revokePublicFileUrl(database: LooseRecord, auth: LooseRe
     };
     error: any;
 }>;
-export declare function deletePrivateFile(database: LooseRecord, auth: LooseRecord, fileReference: any): Promise<any>;
+export declare function bindCurrentUserFileDeleteState(context: LooseRecord, sourceContext?: LooseRecord): void;
+export declare function createCurrentUserFileApi(database: LooseRecord, contextGetter: () => LooseRecord, options?: LooseRecord): Readonly<{
+    delete(fileReference: any): Promise<any>;
+}>;
+export declare function drainCurrentUserFileOperations(context: LooseRecord | undefined): Promise<void>;
+export declare function commitPendingCurrentUserFileByteDeletes(context: LooseRecord | undefined): Promise<void>;
+export declare function dropPendingCurrentUserFileByteDeletes(context: LooseRecord | undefined): void;
+export declare function revokeCurrentUserFileApi(context: LooseRecord | undefined): void;
+export declare function deletePrivateFile(database: LooseRecord, auth: LooseRecord, fileReference: any, credential?: LooseRecord, deferByteRemoval?: (file: Readonly<{
+    fileId: string;
+    version: string;
+}>) => void, requireLiveActor?: boolean): Promise<any>;
 export declare function fileRowForOwner(database: LooseRecord, fileId: string, ownerId: any): Promise<any>;
 export declare function fileRowForActor(database: LooseRecord, auth: LooseRecord, fileReference: any, credential?: LooseRecord): Promise<any>;
 export declare function fileMetadataFromRow(row: LooseRecord): {

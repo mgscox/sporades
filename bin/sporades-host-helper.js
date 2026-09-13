@@ -26672,6 +26672,7 @@ var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
 
 // src/file-storage-runtime.ts
 var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
+var nodePromiseHooks = process.getBuiltinModule("node:v8")?.promiseHooks;
 
 // src/file-ingress-runtime.ts
 var import_pdf_lib = __toESM(require_cjs(), 1);

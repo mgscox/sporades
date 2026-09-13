@@ -50,7 +50,7 @@ import { deserializeFieldValue, deserializeRow, normalizeDateValue, serializeFie
 // `test/mail.test.js` — and reach them through the `export *` below rather than through a binding
 // here, so importing them would declare a name nothing in this file reads.
 import { applyReadAcl, assertActivePrivilegedJobAccess, bindPendingAclWrites, createPrivilegedAuditEmitter, createPrivilegedAuditEmissionPublicError, createPrivilegedFileApi, createPrivilegedRunAbortError, createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi, drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit, filterRowsByReadAcl, grantPrivilegedDbAccess, isPrivilegedAuditEmissionPublicError, normalizeFileAcl, normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback, revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode, trackPendingAclWrite, } from "./acl-runtime.js";
-import { createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter, deletePrivateFile, getPrivateFileUrl, revokePublicFileUrl, } from "./file-storage-runtime.js";
+import { bindCurrentUserFileDeleteState, commitPendingCurrentUserFileByteDeletes, createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter, createCurrentUserFileApi, deletePrivateFile, drainCurrentUserFileOperations, dropPendingCurrentUserFileByteDeletes, revokeCurrentUserFileApi, getPrivateFileUrl, revokePublicFileUrl, } from "./file-storage-runtime.js";
 import { createEndpointIngressApi, drainIngressClaimAuditOutbox, finalizeEndpointIngressClaims, initializeClamavRuntime, recoverIngressClaimAuditOutbox, shutdownClamavRuntime, stageMultipartIngress, sweepExpiredFileIngress, validateMultipartIngressPolicy } from "./file-ingress-runtime.js";
 import { createEndpointFileResponseApi } from "./endpoint-file-response.js";
 import { abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob, canonicalJobCredentialProvenance, captureJobAuthSnapshot, commitPendingJobCancellationAborts, createRuntimeClock, decodeJobCursor, dropPendingJobCancellationAborts, encodeJobCursor, ensureJobStorage, ensureScheduleStorage, finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence, normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, readJobAuthSnapshot, readJobCredentialProvenance, resolveSchedulePayload, RESERVED_JOB_NAME_PREFIX, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure, scheduleStripeEventPayloadCleanup, startStripeEventPayloadCleanup, stopStripeEventPayloadCleanup, STRIPE_EVENT_JOB, stripeEventPayloadRetentionStorageValue, scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduledOccurrenceIdentity, } from "./jobs-runtime.js";
@@ -1003,7 +1003,8 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             if (database.lifecycleHooks.init !== undefined) {
                 if (typeof database.lifecycleHooks.init !== "function")
                     throw commandError("Invalid Capsule init hook.", "Declare hooks.init as a function.");
-                await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false }));
+                const context = createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false });
+                await runLifecycleHook(database.lifecycleHooks.init, context);
             }
             if (database.teamBillingDefinition) {
                 await repairTeamBillingDesiredStateAtStartup(database);
@@ -1109,7 +1110,8 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 try {
                     if (typeof database.lifecycleHooks.shutdown !== "function")
                         throw commandError("Invalid Capsule shutdown hook.", "Declare hooks.shutdown as a function.");
-                    await database.lifecycleHooks.shutdown(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false }));
+                    const context = createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false });
+                    await runLifecycleHook(database.lifecycleHooks.shutdown, context);
                 }
                 catch (error) {
                     failures.push(error);
@@ -3500,7 +3502,10 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                             credential: accessKeyAdmission?.credential,
                             accessKeyGrants: accessKeyAdmission?.grants,
                         });
-                        const endpointIngressApi = createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context);
+                        const endpointIngressApi = Object.freeze({
+                            ...context.files,
+                            ...createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context),
+                        });
                         context.files = endpointIngressApi;
                         if (endpoint.runtimeOwnedStripeCallback) {
                             Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
@@ -3537,6 +3542,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
         }
         finalizeEndpointIngressClaims(context ?? {}, true);
         await runIngressAuditOutboxDrain(database);
+        await commitPendingCurrentUserFileByteDeletes(context);
         commitPendingJobCancellationAborts(context);
         await flushAccessKeyLifecycleAuditEvents(database, context);
         flushTeamSecurityEvents(database, context);
@@ -3551,6 +3557,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
             catch { }
         }
         finalizeEndpointIngressClaims(context ?? {}, false);
+        dropPendingCurrentUserFileByteDeletes(context);
         dropPendingJobCancellationAborts(context);
         dropAccessKeyLifecycleAuditEvents(context);
         flushTeamSecurityEvents(database, context, { deniedOnly: true });
@@ -3819,6 +3826,9 @@ function createEndpointContext(database, endpointRequest, session, options = {})
     const holder = createContextHolder(context);
     registerHandlerContextMapping(database, holder);
     context.db = createEndpointDatabaseApi(database, () => holder.current);
+    context.files = createCurrentUserFileApi(database, () => holder.current, {
+        requireLiveActor: options.requireLiveFileActor === true,
+    });
     context.privileged = createContextPrivilegedApi(database, () => holder.current);
     context.jobs = createCurrentUserJobApi(database, () => holder.current);
     context.mail = {
@@ -3918,6 +3928,8 @@ function releaseHandlerContextMapping(database) {
 async function cleanupTransactionHandler(database, context, preservePrimaryError, clearCache = true) {
     let cleanupFailed = false;
     try {
+        revokeCurrentUserFileApi(context);
+        await drainCurrentUserFileOperations(context);
         if (context)
             await drainPendingAclWrites(context);
         await drainPendingLogWrites(database);
@@ -3933,7 +3945,29 @@ async function cleanupTransactionHandler(database, context, preservePrimaryError
                 database.rowCache.clear();
         }
         finally {
+            revokeCurrentUserFileApi(context);
             releaseHandlerContextMapping(database);
+        }
+    }
+}
+async function runLifecycleHook(hook, context) {
+    let hookFailed = false;
+    try {
+        await hook(context);
+    }
+    catch (error) {
+        hookFailed = true;
+        throw error;
+    }
+    finally {
+        revokeCurrentUserFileApi(context);
+        try {
+            await drainCurrentUserFileOperations(context);
+            await drainPendingAclWrites(context);
+        }
+        catch (error) {
+            if (!hookFailed)
+                throw error;
         }
     }
 }
@@ -4010,6 +4044,7 @@ async function applyContextMiddleware(database, baseContext, kind) {
         kind,
     };
     bindPendingAclWrites(context, baseContext);
+    bindCurrentUserFileDeleteState(context, baseContext);
     bindMutationSecretState(context, baseContext);
     transferAccessKeyRuntimeState(baseContext, context);
     const holder = baseContext.__sporadesContextHolder ?? createContextHolder(context);
@@ -4044,6 +4079,7 @@ async function applyContextMiddleware(database, baseContext, kind) {
             });
         }
         bindPendingAclWrites(context, previousContext);
+        bindCurrentUserFileDeleteState(context, previousContext);
         bindMutationSecretState(context, previousContext);
         transferAccessKeyRuntimeState(previousContext, context);
     }
@@ -5922,59 +5958,99 @@ export async function runQuery(database, auth, queryName, rawArgs = [], options 
     const customHandler = database.queries.find((candidate) => candidate.name === queryName);
     const queryHandler = customHandler ? materializeHandler(customHandler) : null;
     let context;
+    let result;
+    let primaryError;
     try {
-        context = createMutationContext(database, auth, { sessionToken: options.sessionToken });
-        if (queryHandler)
-            admitCredentialHandler(queryHandler, context, "query");
-        context = await applyContextMiddleware(database, context, "query");
+        result = await (async () => {
+            try {
+                context = createMutationContext(database, auth, { sessionToken: options.sessionToken });
+                if (queryHandler)
+                    admitCredentialHandler(queryHandler, context, "query");
+                context = await applyContextMiddleware(database, context, "query");
+            }
+            catch (error) {
+                if (error?.sporadesAuthDenialLogData) {
+                    emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+                }
+                return {
+                    rows: null,
+                    error: {
+                        ...(error?.code ? { code: error.code } : {}),
+                        message: error.message,
+                        hint: error.hint ?? "Check the Capsule context middleware and retry the query.",
+                    },
+                };
+            }
+            if (queryName === "ctx.env") {
+                if (args.length > 0)
+                    return { rows: null, data: null, error: invalidQueryArgumentsError() };
+                return { data: context.env, error: null };
+            }
+            const customResult = await runCustomQuery(database, context, queryName, args, queryHandler);
+            if (customResult) {
+                return customResult;
+            }
+            const table = resolveTableForQuery(database.schema, queryName);
+            if (!table) {
+                return {
+                    rows: null,
+                    error: {
+                        message: `Unknown query: ${queryName}`,
+                        hint: "Use a query defined by the capsule.",
+                    },
+                };
+            }
+            if (args.length > 0)
+                return { rows: null, data: null, error: invalidQueryArgumentsError() };
+            const cacheKey = `${table.name}:${context.auth.userId}`;
+            if (!database.rowCache.has(cacheKey)) {
+                const columns = ["id", "createdAt", "updatedAt", ...table.fields.map((field) => field.name)];
+                const ownerScoped = table.fields.some((field) => field.name === "ownerId");
+                const rows = (await database.adapter.selectAppRows(table, {
+                    columns,
+                    ownerId: ownerScoped ? context.auth.userId : undefined,
+                    orderBy: { fieldName: "createdAt", direction: "desc" },
+                })).map((row) => rowToApiValue(row, table));
+                database.rowCache.set(cacheKey, rows);
+            }
+            const rows = await filterRowsByReadAcl(database, table, database.rowCache.get(cacheKey), context);
+            return { rows, error: null };
+        })();
     }
     catch (error) {
-        if (error?.sporadesAuthDenialLogData) {
-            emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+        primaryError = error;
+        throw error;
+    }
+    finally {
+        revokeCurrentUserFileApi(context);
+        try {
+            await drainCurrentUserFileOperations(context);
         }
-        return {
-            rows: null,
-            error: {
-                ...(error?.code ? { code: error.code } : {}),
-                message: error.message,
-                hint: error.hint ?? "Check the Capsule context middleware and retry the query.",
-            },
-        };
+        catch (error) {
+            if (!primaryError && !result?.error) {
+                if (error?.sporadesAuthDenialLogData) {
+                    emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+                }
+                result = {
+                    rows: null,
+                    data: null,
+                    error: {
+                        ...(error?.code ? { code: error.code } : {}),
+                        message: error?.message || "Query handler failed.",
+                        hint: error?.hint ?? "Check the Capsule query handler and retry the query.",
+                    },
+                };
+            }
+        }
+        finally {
+            const finalContext = context;
+            const holder = finalContext?.__sporadesContextHolder;
+            if (holder?.current === finalContext)
+                holder.current = null;
+            revokeCurrentUserFileApi(finalContext);
+        }
     }
-    if (queryName === "ctx.env") {
-        if (args.length > 0)
-            return { rows: null, data: null, error: invalidQueryArgumentsError() };
-        return { data: context.env, error: null };
-    }
-    const customResult = await runCustomQuery(database, context, queryName, args, queryHandler);
-    if (customResult) {
-        return customResult;
-    }
-    const table = resolveTableForQuery(database.schema, queryName);
-    if (!table) {
-        return {
-            rows: null,
-            error: {
-                message: `Unknown query: ${queryName}`,
-                hint: "Use a query defined by the capsule.",
-            },
-        };
-    }
-    if (args.length > 0)
-        return { rows: null, data: null, error: invalidQueryArgumentsError() };
-    const cacheKey = `${table.name}:${context.auth.userId}`;
-    if (!database.rowCache.has(cacheKey)) {
-        const columns = ["id", "createdAt", "updatedAt", ...table.fields.map((field) => field.name)];
-        const ownerScoped = table.fields.some((field) => field.name === "ownerId");
-        const rows = (await database.adapter.selectAppRows(table, {
-            columns,
-            ownerId: ownerScoped ? context.auth.userId : undefined,
-            orderBy: { fieldName: "createdAt", direction: "desc" },
-        })).map((row) => rowToApiValue(row, table));
-        database.rowCache.set(cacheKey, rows);
-    }
-    const rows = await filterRowsByReadAcl(database, table, database.rowCache.get(cacheKey), context);
-    return { rows, error: null };
+    return result;
 }
 async function runCustomQuery(database, context, queryName, args, resolvedHandler = null) {
     const handler = database.queries.find((candidate) => candidate.name === queryName);
@@ -5999,11 +6075,6 @@ async function runCustomQuery(database, context, queryName, args, resolvedHandle
                 hint: error?.hint ?? "Check the Capsule query handler and retry the query.",
             },
         };
-    }
-    finally {
-        const holder = context?.__sporadesContextHolder;
-        if (holder?.current === context)
-            holder.current = null;
     }
 }
 const QUERY_ARGUMENT_LIMIT_BYTES = 65536;
@@ -6139,6 +6210,7 @@ export async function runMutation(database, auth, mutationName, args, options = 
                 }
             });
         });
+        await commitPendingCurrentUserFileByteDeletes(context);
         commitPendingJobCancellationAborts(context);
         await flushAccessKeyLifecycleAuditEvents(database, context);
         flushTeamSecurityEvents(database, context);
@@ -6150,6 +6222,7 @@ export async function runMutation(database, auth, mutationName, args, options = 
         return committed;
     }
     catch (error) {
+        dropPendingCurrentUserFileByteDeletes(context);
         dropPendingJobCancellationAborts(context);
         dropAccessKeyLifecycleAuditEvents(context);
         flushTeamSecurityEvents(database, context, { deniedOnly: true });
@@ -6246,6 +6319,7 @@ export async function runAppMessage(database, auth, messageName, data, options =
                 await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
             }
         });
+        await commitPendingCurrentUserFileByteDeletes(context);
         commitPendingJobCancellationAborts(context);
         await flushAccessKeyLifecycleAuditEvents(database, context);
         flushTeamSecurityEvents(database, context);
@@ -6253,6 +6327,7 @@ export async function runAppMessage(database, auth, messageName, data, options =
         return response;
     }
     catch (error) {
+        dropPendingCurrentUserFileByteDeletes(context);
         dropPendingJobCancellationAborts(context);
         dropAccessKeyLifecycleAuditEvents(context);
         flushTeamSecurityEvents(database, context, { deniedOnly: true });
@@ -6342,6 +6417,9 @@ function createMutationContext(database, auth, options = {}) {
     const holder = createContextHolder(context);
     registerHandlerContextMapping(database, holder);
     context.db = createEndpointDatabaseApi(database, () => holder.current);
+    context.files = createCurrentUserFileApi(database, () => holder.current, {
+        requireLiveActor: options.requireLiveFileActor === true,
+    });
     context.privileged = createContextPrivilegedApi(database, () => holder.current);
     context.jobs = createCurrentUserJobApi(database, () => holder.current);
     context.mail = {
@@ -6981,15 +7059,33 @@ export async function runCurrentUserJobWorker(database) {
                         await relinquishUnstartedJobClaim(database, row.id, claimToken);
                         return;
                     }
-                    const context = createMutationContext(database, auth, { credential });
+                    const context = createMutationContext(database, auth, {
+                        credential,
+                        requireLiveFileActor: true,
+                    });
                     context.signal = abortController.signal;
                     handlerStarted = true;
                     database.__runtimeJobAttempts.set(context, Number(row.attempts) + 1);
+                    let handlerFailed = false;
                     try {
                         result = await handler.handler(context, jobPayload);
                     }
+                    catch (error) {
+                        handlerFailed = true;
+                        throw error;
+                    }
                     finally {
-                        database.__runtimeJobAttempts.delete(context);
+                        revokeCurrentUserFileApi(context);
+                        try {
+                            await drainCurrentUserFileOperations(context);
+                        }
+                        catch (error) {
+                            if (!handlerFailed)
+                                throw error;
+                        }
+                        finally {
+                            database.__runtimeJobAttempts.delete(context);
+                        }
                     }
                 }
                 const resultJson = boundedJobJson(result ?? null, 64 * 1024, "JOB_RESULT_TOO_LARGE", "Job result");

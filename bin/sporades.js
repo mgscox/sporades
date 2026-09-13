@@ -69103,14 +69103,602 @@ async function revokePublicFileUrl(database, auth, publicUrlId) {
     error: null
   };
 }
-async function deletePrivateFile(database, auth, fileReference) {
+var currentUserFileApiState = /* @__PURE__ */ new WeakMap();
+var nodePromiseHooks = process.getBuiltinModule("node:v8")?.promiseHooks;
+var forwardedFilePromiseChildren = /* @__PURE__ */ new WeakMap();
+var forwardedFilePromiseNodes = /* @__PURE__ */ new WeakMap();
+var forwardedFilePromiseHookStop;
+var forwardedFilePromiseHookRetainers = 0;
+var forwardedFilePromiseHookStack = [];
+var forwardedFileResolverOperations = /* @__PURE__ */ new WeakMap();
+var forwardedFileRootPromises = /* @__PURE__ */ new WeakSet();
+var forwardedFileCallbackOperationSets = [];
+var forwardedFileCombinatorOperationSets = [];
+var forwardedFilePromiseCombinatorNames = ["all", "allSettled", "any", "race"];
+var forwardedFilePromiseCombinatorDescriptors;
+var forwardedFilePromiseThenDescriptor;
+var forwardedFilePromiseFinallyDescriptor;
+var observingForwardedFilePromise = false;
+var forwardedFileRejectionSettlementTimeoutMs = 1e3;
+var forwardedFileActiveContinuationTimeoutMs = 2e3;
+function isNativePromiseResolverPair(onFulfilled, onRejected) {
+  return typeof onFulfilled === "function" && typeof onRejected === "function" && onFulfilled.name === "" && onRejected.name === "" && Function.prototype.toString.call(onFulfilled).includes("[native code]") && Function.prototype.toString.call(onRejected).includes("[native code]");
+}
+function installForwardedFilePromiseCombinators() {
+  if (forwardedFilePromiseCombinatorDescriptors) return;
+  const thenDescriptor = Object.getOwnPropertyDescriptor(Promise.prototype, "then");
+  if (thenDescriptor?.configurable && typeof thenDescriptor.value === "function") {
+    forwardedFilePromiseThenDescriptor = thenDescriptor;
+    const originalThen = thenDescriptor.value;
+    Object.defineProperty(Promise.prototype, "then", {
+      ...thenDescriptor,
+      value: function forwardedFilePromiseThen(onFulfilled, onRejected) {
+        if (observingForwardedFilePromise || !isNativePromiseResolverPair(onFulfilled, onRejected)) {
+          return Reflect.apply(originalThen, this, [onFulfilled, onRejected]);
+        }
+        const invokeResolver = (resolver, value) => {
+          const operations = forwardedFileResolverOperations.get(onRejected) ?? forwardedFileResolverOperations.get(onFulfilled);
+          if (!operations?.size) return resolver(value);
+          forwardedFileCallbackOperationSets.push([...operations]);
+          try {
+            return resolver(value);
+          } finally {
+            forwardedFileCallbackOperationSets.pop();
+          }
+        };
+        return Reflect.apply(originalThen, this, [
+          (value) => invokeResolver(onFulfilled, value),
+          (reason) => invokeResolver(onRejected, reason)
+        ]);
+      }
+    });
+  }
+  forwardedFilePromiseCombinatorDescriptors = /* @__PURE__ */ new Map();
+  for (const name2 of forwardedFilePromiseCombinatorNames) {
+    const descriptor = Object.getOwnPropertyDescriptor(Promise, name2);
+    if (!descriptor?.configurable || typeof descriptor.value !== "function") continue;
+    forwardedFilePromiseCombinatorDescriptors.set(name2, descriptor);
+    const original = descriptor.value;
+    Object.defineProperty(Promise, name2, {
+      ...descriptor,
+      value: function forwardedFilePromiseCombinator(values) {
+        if (observingForwardedFilePromise) return Reflect.apply(original, this, [values]);
+        const operations = /* @__PURE__ */ new Set();
+        forwardedFileCombinatorOperationSets.push(operations);
+        try {
+          const trackedValues = {
+            *[Symbol.iterator]() {
+              for (const value of values) {
+                for (const operation of forwardedFilePromiseNodes.get(value)?.keys() ?? []) {
+                  operations.add(operation);
+                }
+                yield value;
+              }
+            }
+          };
+          const aggregate = Reflect.apply(original, this, [trackedValues]);
+          for (const operation of operations) {
+            registerForwardedFilePromiseNode(aggregate, operation).forwarded = true;
+            operation.exactForwardingPromiseObserved = true;
+          }
+          return aggregate;
+        } finally {
+          forwardedFileCombinatorOperationSets.pop();
+        }
+      }
+    });
+  }
+  const finallyDescriptor = Object.getOwnPropertyDescriptor(Promise.prototype, "finally");
+  if (finallyDescriptor?.configurable && typeof finallyDescriptor.value === "function") {
+    forwardedFilePromiseFinallyDescriptor = finallyDescriptor;
+    const originalFinally = finallyDescriptor.value;
+    Object.defineProperty(Promise.prototype, "finally", {
+      ...finallyDescriptor,
+      value: function forwardedFilePromiseFinally(onFinally) {
+        const operations = [...forwardedFilePromiseNodes.get(this)?.values() ?? []].map((node) => node.operation);
+        const priorForwarding = new Map(operations.map((operation) => [operation, operation.forwardedRejection]));
+        const continuation = Reflect.apply(originalFinally, this, [onFinally]);
+        for (const operation of operations) {
+          operation.forwardedRejection = priorForwarding.get(operation) ?? false;
+          const parentNode = getForwardedFilePromiseNode(this, operation);
+          const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
+          continuationNode.userContinuation = true;
+          continuationNode.propagatesRejection = true;
+          continuationNode.forwarded = false;
+          parentNode?.userChildren.add(continuationNode);
+        }
+        return continuation;
+      }
+    });
+  }
+}
+function registerForwardedFilePromiseNode(promise, operation, parent) {
+  let nodes = forwardedFilePromiseNodes.get(promise);
+  if (!nodes) {
+    nodes = /* @__PURE__ */ new Map();
+    forwardedFilePromiseNodes.set(promise, nodes);
+  }
+  let node = nodes.get(operation);
+  if (!node) {
+    node = {
+      promise,
+      operation,
+      children: /* @__PURE__ */ new Set(),
+      userChildren: /* @__PURE__ */ new Set(),
+      userContinuation: false,
+      callbackStarted: false,
+      propagatesRejection: false,
+      forwarded: false,
+      outcome: "pending"
+    };
+    nodes.set(operation, node);
+    operation.promiseNodes.add(node);
+    for (const childReference of forwardedFilePromiseChildren.get(promise) ?? []) {
+      const child = childReference.deref();
+      if (child) registerForwardedFilePromiseNode(child, operation, node);
+    }
+    observingForwardedFilePromise = true;
+    node.settlement = promise.then(
+      () => {
+        node.outcome = "fulfilled";
+      },
+      (reason) => {
+        node.outcome = "rejected";
+        node.rejectionReason = reason;
+      }
+    );
+    observingForwardedFilePromise = false;
+  }
+  if (parent && parent !== node) parent.children.add(node);
+  return node;
+}
+function getForwardedFilePromiseNode(promise, operation) {
+  return forwardedFilePromiseNodes.get(promise)?.get(operation);
+}
+function retainForwardedFilePromiseHook(state) {
+  if (!nodePromiseHooks?.createHook || state.promiseHookRetained) return;
+  state.promiseHookRetained = true;
+  forwardedFilePromiseHookRetainers += 1;
+  if (forwardedFilePromiseHookStop) return;
+  installForwardedFilePromiseCombinators();
+  forwardedFilePromiseHookStop = nodePromiseHooks.createHook({
+    init(promise, parent) {
+      if (observingForwardedFilePromise) return;
+      if (!parent) {
+        forwardedFileRootPromises.add(promise);
+      }
+      if (parent) {
+        let children = forwardedFilePromiseChildren.get(parent);
+        if (!children) {
+          children = /* @__PURE__ */ new Set();
+          forwardedFilePromiseChildren.set(parent, children);
+        }
+        for (const childReference of children) {
+          if (!childReference.deref()) children.delete(childReference);
+        }
+        children.add(new WeakRef(promise));
+      }
+      const parentNodes = parent ? forwardedFilePromiseNodes.get(parent)?.values() : void 0;
+      for (const parentNode of parentNodes ?? []) {
+        const childNode = registerForwardedFilePromiseNode(promise, parentNode.operation, parentNode);
+        const activePromise = forwardedFilePromiseHookStack.at(-1);
+        if (!activePromise || !forwardedFilePromiseNodes.has(activePromise)) {
+          childNode.userContinuation = true;
+          parentNode.userChildren.add(childNode);
+        }
+      }
+    },
+    before(promise) {
+      for (const node of forwardedFilePromiseNodes.get(promise)?.values() ?? []) {
+        node.callbackStarted = true;
+      }
+      forwardedFilePromiseHookStack.push(promise);
+    },
+    after() {
+      forwardedFilePromiseHookStack.pop();
+    },
+    settled(promise) {
+      if (observingForwardedFilePromise) return;
+      const activePromise = forwardedFilePromiseHookStack.at(-1);
+      const callbackOperations = forwardedFileCallbackOperationSets.at(-1);
+      const activeNodes = activePromise ? forwardedFilePromiseNodes.get(activePromise) : void 0;
+      const operations = callbackOperations?.length ? callbackOperations : [...new Set([...activeNodes?.values() ?? []].map((node) => node.operation))];
+      for (const operation of operations) {
+        if (callbackOperations?.includes(operation) && forwardedFileRootPromises.has(promise)) {
+          operation.exactForwardingPromiseObserved = true;
+        }
+        if (getForwardedFilePromiseNode(promise, operation)) continue;
+        registerForwardedFilePromiseNode(
+          promise,
+          operation,
+          activePromise ? getForwardedFilePromiseNode(activePromise, operation) : void 0
+        );
+      }
+    }
+  });
+}
+function releaseForwardedFilePromiseHook(state) {
+  if (!state.promiseHookRetained) return;
+  state.promiseHookRetained = false;
+  forwardedFilePromiseHookRetainers -= 1;
+  if (forwardedFilePromiseHookRetainers === 0) {
+    forwardedFilePromiseHookStop?.();
+    forwardedFilePromiseHookStop = void 0;
+    forwardedFilePromiseHookStack = [];
+    forwardedFileCallbackOperationSets.length = 0;
+    forwardedFileResolverOperations = /* @__PURE__ */ new WeakMap();
+    forwardedFileRootPromises = /* @__PURE__ */ new WeakSet();
+    forwardedFileCombinatorOperationSets.length = 0;
+    for (const [name2, descriptor] of forwardedFilePromiseCombinatorDescriptors ?? []) {
+      if (Object.getOwnPropertyDescriptor(Promise, name2)?.configurable) {
+        Object.defineProperty(Promise, name2, descriptor);
+      }
+    }
+    forwardedFilePromiseCombinatorDescriptors = void 0;
+    if (forwardedFilePromiseThenDescriptor) {
+      if (Object.getOwnPropertyDescriptor(Promise.prototype, "then")?.configurable) {
+        Object.defineProperty(Promise.prototype, "then", forwardedFilePromiseThenDescriptor);
+      }
+      forwardedFilePromiseThenDescriptor = void 0;
+    }
+    if (forwardedFilePromiseFinallyDescriptor) {
+      if (Object.getOwnPropertyDescriptor(Promise.prototype, "finally")?.configurable) {
+        Object.defineProperty(Promise.prototype, "finally", forwardedFilePromiseFinallyDescriptor);
+      }
+      forwardedFilePromiseFinallyDescriptor = void 0;
+    }
+    forwardedFilePromiseChildren = /* @__PURE__ */ new WeakMap();
+  }
+}
+function findDiscardedForwardedFileRejection(operation) {
+  const propagated = [...operation.promiseNodes].find((node) => node.propagatesRejection && node.userChildren.size === 0 && node.outcome === "rejected");
+  if (propagated) return propagated;
+  const userContinuation = [...operation.promiseNodes].find((node) => node.userContinuation && !node.forwarded && node.userChildren.size === 0 && node.outcome === "rejected");
+  if (userContinuation) return userContinuation;
+  let nextIndex2 = 0;
+  const indexes = /* @__PURE__ */ new Map();
+  const lowLinks = /* @__PURE__ */ new Map();
+  const stack = [];
+  const stacked = /* @__PURE__ */ new Set();
+  const components = [];
+  const visit = (node) => {
+    indexes.set(node, nextIndex2);
+    lowLinks.set(node, nextIndex2);
+    nextIndex2 += 1;
+    stack.push(node);
+    stacked.add(node);
+    for (const child of node.children) {
+      if (!indexes.has(child)) {
+        visit(child);
+        lowLinks.set(node, Math.min(lowLinks.get(node), lowLinks.get(child)));
+      } else if (stacked.has(child)) {
+        lowLinks.set(node, Math.min(lowLinks.get(node), indexes.get(child)));
+      }
+    }
+    if (lowLinks.get(node) !== indexes.get(node)) return;
+    const component = [];
+    let member;
+    do {
+      member = stack.pop();
+      stacked.delete(member);
+      component.push(member);
+    } while (member !== node);
+    components.push(component);
+  };
+  for (const node of operation.promiseNodes) if (!indexes.has(node)) visit(node);
+  const componentByNode = /* @__PURE__ */ new Map();
+  for (const component of components) for (const node of component) componentByNode.set(node, component);
+  const discardedComponent = components.find((component) => component.some((node) => node.outcome === "rejected") && !component.some((node) => [...node.children].some((child) => componentByNode.get(child) !== component)));
+  return discardedComponent?.find((node) => node.outcome === "rejected");
+}
+async function settleForwardedFileRejectionGraph(operation) {
+  let deadline;
+  let activeContinuationDeadline;
+  const settledUserContinuations = /* @__PURE__ */ new Set();
+  while (true) {
+    const pendingNodes = [...operation.promiseNodes].filter((node) => node.outcome === "pending");
+    if (pendingNodes.length === 0) return true;
+    const userContinuations = pendingNodes.filter((node) => node.userContinuation && node.callbackStarted && !node.forwarded);
+    if (userContinuations.length > 0) {
+      activeContinuationDeadline ??= Date.now() + forwardedFileActiveContinuationTimeoutMs;
+      const remainingMs2 = activeContinuationDeadline - Date.now();
+      if (remainingMs2 <= 0) return false;
+      let timer2;
+      const settled2 = await Promise.race([
+        Promise.all(userContinuations.map((node) => node.settlement)).then(() => true),
+        new Promise((resolve) => {
+          timer2 = setTimeout(() => resolve(false), remainingMs2);
+        })
+      ]);
+      if (timer2) clearTimeout(timer2);
+      if (!settled2) return false;
+      for (const node of userContinuations) settledUserContinuations.add(node);
+      continue;
+    }
+    if (settledUserContinuations.size > 0) {
+      const continuationDescendants = /* @__PURE__ */ new Set();
+      const remaining = [...settledUserContinuations];
+      while (remaining.length > 0) {
+        const parent = remaining.pop();
+        for (const child of parent.children) {
+          if (continuationDescendants.has(child)) continue;
+          continuationDescendants.add(child);
+          remaining.push(child);
+        }
+      }
+      if (pendingNodes.every((node) => continuationDescendants.has(node))) return true;
+    }
+    deadline ??= Date.now() + forwardedFileRejectionSettlementTimeoutMs;
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) return false;
+    let timer;
+    const settled = await Promise.race([
+      Promise.all(pendingNodes.map((node) => node.settlement)).then(() => true),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(false), remainingMs);
+      })
+    ]);
+    if (timer) clearTimeout(timer);
+    if (!settled) return false;
+  }
+}
+function trackCurrentUserFileOperation(operation) {
+  const decorate = (promise) => {
+    Object.defineProperties(promise, {
+      then: { configurable: true, value: (onFulfilled, onRejected) => {
+        let promiseResolveForwarding = false;
+        let trackPromiseResolveForwarding = false;
+        if (typeof onRejected === "function") {
+          promiseResolveForwarding = isNativePromiseResolverPair(onFulfilled, onRejected);
+          if (promiseResolveForwarding) {
+            trackPromiseResolveForwarding = !observingForwardedFilePromise;
+            if (trackPromiseResolveForwarding) operation.forwardedRejection = true;
+          }
+          if (trackPromiseResolveForwarding) {
+            let resolverOperations = forwardedFileResolverOperations.get(onRejected);
+            if (!resolverOperations) {
+              resolverOperations = /* @__PURE__ */ new Set();
+              forwardedFileResolverOperations.set(onRejected, resolverOperations);
+            }
+            resolverOperations.add(operation);
+            forwardedFileResolverOperations.set(onFulfilled, resolverOperations);
+            const targetNode = getForwardedFilePromiseNode(promise, operation);
+            if (targetNode) targetNode.forwarded = true;
+          } else if (!promiseResolveForwarding) {
+            operation.explicitRejectionHandler = true;
+          }
+        }
+        let continuation;
+        const fulfillmentHandler = trackPromiseResolveForwarding ? (value) => {
+          const resolverOperations = forwardedFileResolverOperations.get(onFulfilled) ?? /* @__PURE__ */ new Set([operation]);
+          forwardedFileCallbackOperationSets.push([...resolverOperations]);
+          try {
+            return onFulfilled(value);
+          } finally {
+            forwardedFileCallbackOperationSets.pop();
+          }
+        } : onFulfilled;
+        const rejectionHandler = trackPromiseResolveForwarding ? (reason) => {
+          const resolverOperations = forwardedFileResolverOperations.get(onRejected) ?? /* @__PURE__ */ new Set([operation]);
+          forwardedFileCallbackOperationSets.push([...resolverOperations]);
+          let forwardedResult;
+          try {
+            forwardedResult = onRejected(reason);
+          } finally {
+            forwardedFileCallbackOperationSets.pop();
+          }
+          if (forwardedResult && typeof forwardedResult.then === "function") {
+            for (const resolverOperation of resolverOperations) {
+              const parentNode2 = getForwardedFilePromiseNode(promise, resolverOperation);
+              const continuationNode = registerForwardedFilePromiseNode(continuation, resolverOperation, parentNode2);
+              continuationNode.userContinuation = true;
+              continuationNode.propagatesRejection = true;
+              continuationNode.forwarded = false;
+              parentNode2?.userChildren.add(continuationNode);
+              resolverOperation.exactForwardingPromiseObserved = true;
+            }
+          }
+          return forwardedResult;
+        } : onRejected;
+        continuation = Promise.prototype.then.call(promise, fulfillmentHandler, rejectionHandler);
+        const parentNode = getForwardedFilePromiseNode(promise, operation);
+        if (promiseResolveForwarding) {
+          const continuationNode = getForwardedFilePromiseNode(continuation, operation);
+          if (continuationNode) {
+            continuationNode.forwarded = true;
+            continuationNode.userContinuation = false;
+            parentNode?.userChildren.delete(continuationNode);
+          }
+        } else {
+          const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
+          continuationNode.userContinuation = true;
+          if (parentNode) parentNode.userChildren.add(continuationNode);
+        }
+        return decorate(continuation);
+      } },
+      catch: { configurable: true, value: (onRejected) => {
+        if (typeof onRejected === "function") operation.explicitRejectionHandler = true;
+        const continuation = Promise.prototype.then.call(promise, void 0, onRejected);
+        const parentNode = getForwardedFilePromiseNode(promise, operation);
+        const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
+        continuationNode.userContinuation = true;
+        if (parentNode) parentNode.userChildren.add(continuationNode);
+        return decorate(continuation);
+      } },
+      finally: { configurable: true, value: (onFinally) => {
+        const continuation = Promise.prototype.finally.call(promise, onFinally);
+        const parentNode = getForwardedFilePromiseNode(promise, operation);
+        const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
+        continuationNode.userContinuation = true;
+        continuationNode.propagatesRejection = true;
+        if (parentNode) parentNode.userChildren.add(continuationNode);
+        return decorate(continuation);
+      } }
+    });
+    return promise;
+  };
+  return decorate(operation.promise);
+}
+function bindCurrentUserFileDeleteState(context, sourceContext) {
+  const state = sourceContext ? currentUserFileApiState.get(sourceContext) : void 0;
+  if (state) currentUserFileApiState.set(context, state);
+}
+function createCurrentUserFileApi(database, contextGetter, options = {}) {
+  const state = {
+    active: true,
+    drainActive: false,
+    pendingByteDeletes: [],
+    pendingOperations: [],
+    promiseHookRetained: false
+  };
+  const initialContext = contextGetter?.();
+  const admittedAuth = initialContext?.auth ? Object.freeze({ ...initialContext.auth }) : void 0;
+  const admittedCredential = initialContext?.credential ? Object.freeze({ ...initialContext.credential }) : void 0;
+  if (initialContext) currentUserFileApiState.set(initialContext, state);
+  if (admittedCredential) retainForwardedFilePromiseHook(state);
+  return Object.freeze({
+    delete(fileReference) {
+      const context = contextGetter?.();
+      const activePromise = forwardedFilePromiseHookStack.at(-1);
+      const registeredDrainContinuation = state.drainActive && !state.active && activePromise ? [...forwardedFilePromiseNodes.get(activePromise)?.values() ?? []].some((node) => node.operation.state === state) : false;
+      if (!state.active && !registeredDrainContinuation || !context) {
+        return Promise.reject(createStructuredFileError(
+          "File access is no longer active.",
+          "Call ctx.files.delete(...) only while the Capsule handler is running."
+        ));
+      }
+      if (!admittedCredential || !admittedAuth) {
+        return Promise.reject(createStructuredFileError(
+          "File deletion requires a user credential.",
+          "Use ctx.files.delete(...) from a user-scoped handler or an audited privileged File operation for userless work."
+        ));
+      }
+      retainForwardedFilePromiseHook(state);
+      const operation = deletePrivateFile(
+        database,
+        admittedAuth,
+        fileReference,
+        admittedCredential,
+        database.__transactionActive ? (file) => {
+          state.pendingByteDeletes.push({ database: database.__rootDatabase ?? database, ...file });
+        } : void 0,
+        options.requireLiveActor === true
+      ).then((result) => {
+        if (!result.ok) throw result.error;
+        return result.data.file;
+      });
+      const trackedOperation = {
+        state,
+        promise: operation,
+        explicitRejectionHandler: false,
+        forwardedRejection: false,
+        exactForwardingPromiseObserved: false,
+        promiseNodes: /* @__PURE__ */ new Set()
+      };
+      registerForwardedFilePromiseNode(operation, trackedOperation);
+      for (const operations of forwardedFileCombinatorOperationSets) operations.add(trackedOperation);
+      state.pendingOperations.push(trackedOperation);
+      return trackCurrentUserFileOperation(trackedOperation);
+    }
+  });
+}
+async function drainCurrentUserFileOperations(context) {
+  const state = context ? currentUserFileApiState.get(context) : void 0;
+  try {
+    if (state) state.drainActive = true;
+    while (state?.pendingOperations.length) {
+      const operations = state.pendingOperations.splice(0);
+      observingForwardedFilePromise = true;
+      let outcomesPromise;
+      try {
+        outcomesPromise = Promise.allSettled(operations.map((operation) => operation.promise));
+      } finally {
+        observingForwardedFilePromise = false;
+      }
+      const outcomes = await outcomesPromise;
+      if (operations.some((operation) => operation.promiseNodes.size > 0)) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      const graphSettled = await Promise.all(operations.map((operation) => settleForwardedFileRejectionGraph(operation)));
+      const discardedRejections = operations.map((operation, index) => graphSettled[index] ? findDiscardedForwardedFileRejection(operation) : void 0);
+      const rejectedIndex = outcomes.findIndex((outcome, index) => {
+        if (outcome.status !== "rejected") return false;
+        if (!graphSettled[index]) return true;
+        const operation = operations[index];
+        const discardedForwarding = discardedRejections[index];
+        if (discardedForwarding) return true;
+        if (operation.forwardedRejection && !operation.exactForwardingPromiseObserved && ![...operation.promiseNodes].some((node) => !node.forwarded && (node.outcome === "rejected" || node.userContinuation && node.outcome === "fulfilled"))) {
+          return true;
+        }
+        const graphFailureWasHandled = operation.promiseNodes.size > 0 && !discardedForwarding;
+        return !operation.explicitRejectionHandler && !graphFailureWasHandled;
+      });
+      if (rejectedIndex !== -1) {
+        const discardedForwarding = discardedRejections[rejectedIndex];
+        if (discardedForwarding && !discardedForwarding.forwarded) {
+          throw discardedForwarding.rejectionReason;
+        }
+        const rejected = outcomes[rejectedIndex];
+        if (rejected.status === "rejected") throw rejected.reason;
+      }
+      if (graphSettled.some((settled, index) => !settled && outcomes[index].status === "fulfilled")) {
+        throw createStructuredFileError(
+          "File operation continuation did not settle.",
+          "Ensure File operation Promise continuations settle before the handler finishes."
+        );
+      }
+      const rejectedContinuation = discardedRejections.find((node, index) => outcomes[index].status === "fulfilled" && node);
+      if (rejectedContinuation) throw rejectedContinuation.rejectionReason;
+    }
+  } finally {
+    if (state) {
+      state.drainActive = false;
+      releaseForwardedFilePromiseHook(state);
+    }
+  }
+}
+async function commitPendingCurrentUserFileByteDeletes(context) {
+  if (!context) return;
+  const state = currentUserFileApiState.get(context);
+  if (!state) return;
+  releaseForwardedFilePromiseHook(state);
+  state.active = false;
+  currentUserFileApiState.delete(context);
+  for (const file of state.pendingByteDeletes.splice(0)) {
+    await removeFileVersionBestEffort(file.database, file.fileId, file.version);
+  }
+}
+function dropPendingCurrentUserFileByteDeletes(context) {
+  const state = context ? currentUserFileApiState.get(context) : void 0;
+  if (!state) return;
+  state.active = false;
+  state.pendingOperations.length = 0;
+  releaseForwardedFilePromiseHook(state);
+  state.pendingByteDeletes.length = 0;
+  currentUserFileApiState.delete(context);
+}
+function revokeCurrentUserFileApi(context) {
+  const state = context ? currentUserFileApiState.get(context) : void 0;
+  if (state) state.active = false;
+}
+async function deletePrivateFile(database, auth, fileReference, credential = { kind: "session" }, deferByteRemoval, requireLiveActor = false) {
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const result = await runFileMetadataTransaction(database, async (sqlite) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
-    const resolved = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "delete");
-    if (!resolved.ok) {
-      return resolved;
+    if (requireLiveActor) {
+      const actor = await sqlite.lockAuthUserFileAuthority(auth?.userId);
+      if (!actor || actor.userKind === "service" && actor.lifecycleStatus !== "active") {
+        return {
+          ok: false,
+          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
+        };
+      }
     }
+    const resolved = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "delete", credential);
+    if (!resolved.ok) return {
+      ok: false,
+      error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
+    };
     const row = resolved.row;
     if (!row) {
       return {
@@ -69132,7 +69720,11 @@ async function deletePrivateFile(database, auth, fileReference) {
   if (!result.ok) {
     return result;
   }
-  await removeFileVersionBestEffort(database, result.deletedFile.id, result.deletedFile.version);
+  if (deferByteRemoval) {
+    deferByteRemoval({ fileId: result.deletedFile.id, version: result.deletedFile.version });
+  } else {
+    await removeFileVersionBestEffort(database, result.deletedFile.id, result.deletedFile.version);
+  }
   return {
     ok: true,
     data: result.data,
@@ -96464,6 +97056,23 @@ function createSharedDatabaseAdapterMethods(dialect) {
         )
       ).run(row.id, row.createdAt, row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider, row.userKind ?? "human", row.lifecycleStatus ?? "active", row.disabledAt ?? null);
     },
+    findAuthUserFileAuthority(userId) {
+      return this.prepare(sql(
+        "SELECT [id], [userKind], [lifecycleStatus] FROM [sporades_auth_users] WHERE [id] = ?"
+      )).get(userId) ?? null;
+    },
+    lockAuthUserFileAuthority(userId) {
+      const select = sql(
+        "SELECT [id], [userKind], [lifecycleStatus] FROM [sporades_auth_users] WHERE [id] = ?"
+      );
+      if (dialect.name === "postgres") {
+        return thenIfPromise(this.prepare(`${select} FOR UPDATE`).get(userId), (row) => row ?? null);
+      }
+      return thenIfPromise(
+        this.prepare(sql("UPDATE [sporades_auth_users] SET [id] = [id] WHERE [id] = ?")).run(userId),
+        () => this.prepare(select).get(userId) ?? null
+      );
+    },
     updateAuthUserProfile(row) {
       assertNotReservedAuthUserId(row.id);
       return this.prepare(
@@ -98638,7 +99247,8 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       if (!await initializeClamavRuntime(database)) throw commandError2("Required File inspection is unavailable.", "Check ClamAV signatures and the local daemon socket.", "FILE_INSPECTION_UNAVAILABLE");
       if (database.lifecycleHooks.init !== void 0) {
         if (typeof database.lifecycleHooks.init !== "function") throw commandError2("Invalid Capsule init hook.", "Declare hooks.init as a function.");
-        await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false }));
+        const context = createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false });
+        await runLifecycleHook(database.lifecycleHooks.init, context);
       }
       if (database.teamBillingDefinition) {
         await repairTeamBillingDesiredStateAtStartup(database);
@@ -98723,7 +99333,8 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== void 0) {
         try {
           if (typeof database.lifecycleHooks.shutdown !== "function") throw commandError2("Invalid Capsule shutdown hook.", "Declare hooks.shutdown as a function.");
-          await database.lifecycleHooks.shutdown(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false }));
+          const context = createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false });
+          await runLifecycleHook(database.lifecycleHooks.shutdown, context);
         } catch (error) {
           failures.push(error);
         }
@@ -100839,7 +101450,10 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
               credential: accessKeyAdmission?.credential,
               accessKeyGrants: accessKeyAdmission?.grants
             });
-            const endpointIngressApi = createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context);
+            const endpointIngressApi = Object.freeze({
+              ...context.files,
+              ...createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context)
+            });
             context.files = endpointIngressApi;
             if (endpoint.runtimeOwnedStripeCallback) {
               Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
@@ -100873,6 +101487,7 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
     }
     finalizeEndpointIngressClaims(context ?? {}, true);
     await runIngressAuditOutboxDrain(database);
+    await commitPendingCurrentUserFileByteDeletes(context);
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
@@ -100886,6 +101501,7 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
       }
     }
     finalizeEndpointIngressClaims(context ?? {}, false);
+    dropPendingCurrentUserFileByteDeletes(context);
     dropPendingJobCancellationAborts(context);
     dropAccessKeyLifecycleAuditEvents(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
@@ -101157,6 +101773,9 @@ function createEndpointContext(database, endpointRequest, session, options = {})
   const holder = createContextHolder(context);
   registerHandlerContextMapping(database, holder);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
+  context.files = createCurrentUserFileApi(database, () => holder.current, {
+    requireLiveActor: options.requireLiveFileActor === true
+  });
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
   context.mail = {
@@ -101261,6 +101880,8 @@ function releaseHandlerContextMapping(database) {
 async function cleanupTransactionHandler(database, context, preservePrimaryError, clearCache = true) {
   let cleanupFailed = false;
   try {
+    revokeCurrentUserFileApi(context);
+    await drainCurrentUserFileOperations(context);
     if (context) await drainPendingAclWrites(context);
     await drainPendingLogWrites(database);
   } catch (error) {
@@ -101270,7 +101891,25 @@ async function cleanupTransactionHandler(database, context, preservePrimaryError
     try {
       if (clearCache || cleanupFailed) database.rowCache.clear();
     } finally {
+      revokeCurrentUserFileApi(context);
       releaseHandlerContextMapping(database);
+    }
+  }
+}
+async function runLifecycleHook(hook, context) {
+  let hookFailed = false;
+  try {
+    await hook(context);
+  } catch (error) {
+    hookFailed = true;
+    throw error;
+  } finally {
+    revokeCurrentUserFileApi(context);
+    try {
+      await drainCurrentUserFileOperations(context);
+      await drainPendingAclWrites(context);
+    } catch (error) {
+      if (!hookFailed) throw error;
     }
   }
 }
@@ -101335,6 +101974,7 @@ async function applyContextMiddleware(database, baseContext, kind) {
     kind
   };
   bindPendingAclWrites(context, baseContext);
+  bindCurrentUserFileDeleteState(context, baseContext);
   bindMutationSecretState(context, baseContext);
   transferAccessKeyRuntimeState(baseContext, context);
   const holder = baseContext.__sporadesContextHolder ?? createContextHolder(context);
@@ -101372,6 +102012,7 @@ async function applyContextMiddleware(database, baseContext, kind) {
       });
     }
     bindPendingAclWrites(context, previousContext);
+    bindCurrentUserFileDeleteState(context, previousContext);
     bindMutationSecretState(context, previousContext);
     transferAccessKeyRuntimeState(previousContext, context);
   }
@@ -103165,55 +103806,90 @@ async function runQuery(database, auth, queryName, rawArgs = [], options = {}) {
   const customHandler = database.queries.find((candidate) => candidate.name === queryName);
   const queryHandler = customHandler ? materializeHandler(customHandler) : null;
   let context;
+  let result;
+  let primaryError;
   try {
-    context = createMutationContext(database, auth, { sessionToken: options.sessionToken });
-    if (queryHandler) admitCredentialHandler(queryHandler, context, "query");
-    context = await applyContextMiddleware(database, context, "query");
+    result = await (async () => {
+      try {
+        context = createMutationContext(database, auth, { sessionToken: options.sessionToken });
+        if (queryHandler) admitCredentialHandler(queryHandler, context, "query");
+        context = await applyContextMiddleware(database, context, "query");
+      } catch (error) {
+        if (error?.sporadesAuthDenialLogData) {
+          emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+        }
+        return {
+          rows: null,
+          error: {
+            ...error?.code ? { code: error.code } : {},
+            message: error.message,
+            hint: error.hint ?? "Check the Capsule context middleware and retry the query."
+          }
+        };
+      }
+      if (queryName === "ctx.env") {
+        if (args.length > 0) return { rows: null, data: null, error: invalidQueryArgumentsError() };
+        return { data: context.env, error: null };
+      }
+      const customResult = await runCustomQuery(database, context, queryName, args, queryHandler);
+      if (customResult) {
+        return customResult;
+      }
+      const table = resolveTableForQuery(database.schema, queryName);
+      if (!table) {
+        return {
+          rows: null,
+          error: {
+            message: `Unknown query: ${queryName}`,
+            hint: "Use a query defined by the capsule."
+          }
+        };
+      }
+      if (args.length > 0) return { rows: null, data: null, error: invalidQueryArgumentsError() };
+      const cacheKey = `${table.name}:${context.auth.userId}`;
+      if (!database.rowCache.has(cacheKey)) {
+        const columns = ["id", "createdAt", "updatedAt", ...table.fields.map((field) => field.name)];
+        const ownerScoped = table.fields.some((field) => field.name === "ownerId");
+        const rows2 = (await database.adapter.selectAppRows(table, {
+          columns,
+          ownerId: ownerScoped ? context.auth.userId : void 0,
+          orderBy: { fieldName: "createdAt", direction: "desc" }
+        })).map((row) => rowToApiValue(row, table));
+        database.rowCache.set(cacheKey, rows2);
+      }
+      const rows = await filterRowsByReadAcl(database, table, database.rowCache.get(cacheKey), context);
+      return { rows, error: null };
+    })();
   } catch (error) {
-    if (error?.sporadesAuthDenialLogData) {
-      emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+    primaryError = error;
+    throw error;
+  } finally {
+    revokeCurrentUserFileApi(context);
+    try {
+      await drainCurrentUserFileOperations(context);
+    } catch (error) {
+      if (!primaryError && !result?.error) {
+        if (error?.sporadesAuthDenialLogData) {
+          emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+        }
+        result = {
+          rows: null,
+          data: null,
+          error: {
+            ...error?.code ? { code: error.code } : {},
+            message: error?.message || "Query handler failed.",
+            hint: error?.hint ?? "Check the Capsule query handler and retry the query."
+          }
+        };
+      }
+    } finally {
+      const finalContext = context;
+      const holder = finalContext?.__sporadesContextHolder;
+      if (holder?.current === finalContext) holder.current = null;
+      revokeCurrentUserFileApi(finalContext);
     }
-    return {
-      rows: null,
-      error: {
-        ...error?.code ? { code: error.code } : {},
-        message: error.message,
-        hint: error.hint ?? "Check the Capsule context middleware and retry the query."
-      }
-    };
   }
-  if (queryName === "ctx.env") {
-    if (args.length > 0) return { rows: null, data: null, error: invalidQueryArgumentsError() };
-    return { data: context.env, error: null };
-  }
-  const customResult = await runCustomQuery(database, context, queryName, args, queryHandler);
-  if (customResult) {
-    return customResult;
-  }
-  const table = resolveTableForQuery(database.schema, queryName);
-  if (!table) {
-    return {
-      rows: null,
-      error: {
-        message: `Unknown query: ${queryName}`,
-        hint: "Use a query defined by the capsule."
-      }
-    };
-  }
-  if (args.length > 0) return { rows: null, data: null, error: invalidQueryArgumentsError() };
-  const cacheKey = `${table.name}:${context.auth.userId}`;
-  if (!database.rowCache.has(cacheKey)) {
-    const columns = ["id", "createdAt", "updatedAt", ...table.fields.map((field) => field.name)];
-    const ownerScoped = table.fields.some((field) => field.name === "ownerId");
-    const rows2 = (await database.adapter.selectAppRows(table, {
-      columns,
-      ownerId: ownerScoped ? context.auth.userId : void 0,
-      orderBy: { fieldName: "createdAt", direction: "desc" }
-    })).map((row) => rowToApiValue(row, table));
-    database.rowCache.set(cacheKey, rows2);
-  }
-  const rows = await filterRowsByReadAcl(database, table, database.rowCache.get(cacheKey), context);
-  return { rows, error: null };
+  return result;
 }
 async function runCustomQuery(database, context, queryName, args, resolvedHandler = null) {
   const handler = database.queries.find((candidate) => candidate.name === queryName);
@@ -103237,9 +103913,6 @@ async function runCustomQuery(database, context, queryName, args, resolvedHandle
         hint: error?.hint ?? "Check the Capsule query handler and retry the query."
       }
     };
-  } finally {
-    const holder = context?.__sporadesContextHolder;
-    if (holder?.current === context) holder.current = null;
   }
 }
 var QUERY_ARGUMENT_LIMIT_BYTES = 65536;
@@ -103359,6 +104032,7 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
         }
       });
     });
+    await commitPendingCurrentUserFileByteDeletes(context);
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
@@ -103369,6 +104043,7 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
     }
     return committed;
   } catch (error) {
+    dropPendingCurrentUserFileByteDeletes(context);
     dropPendingJobCancellationAborts(context);
     dropAccessKeyLifecycleAuditEvents(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
@@ -103458,12 +104133,14 @@ async function runAppMessage(database, auth, messageName, data2, options = {}) {
         await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
       }
     });
+    await commitPendingCurrentUserFileByteDeletes(context);
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     return response;
   } catch (error) {
+    dropPendingCurrentUserFileByteDeletes(context);
     dropPendingJobCancellationAborts(context);
     dropAccessKeyLifecycleAuditEvents(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
@@ -103557,6 +104234,9 @@ function createMutationContext(database, auth, options = {}) {
   const holder = createContextHolder(context);
   registerHandlerContextMapping(database, holder);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
+  context.files = createCurrentUserFileApi(database, () => holder.current, {
+    requireLiveActor: options.requireLiveFileActor === true
+  });
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
   context.mail = {
@@ -104149,14 +104829,28 @@ async function runCurrentUserJobWorker(database) {
             await relinquishUnstartedJobClaim(database, row.id, claimToken);
             return;
           }
-          const context = createMutationContext(database, auth, { credential });
+          const context = createMutationContext(database, auth, {
+            credential,
+            requireLiveFileActor: true
+          });
           context.signal = abortController.signal;
           handlerStarted = true;
           database.__runtimeJobAttempts.set(context, Number(row.attempts) + 1);
+          let handlerFailed = false;
           try {
             result = await handler.handler(context, jobPayload);
+          } catch (error) {
+            handlerFailed = true;
+            throw error;
           } finally {
-            database.__runtimeJobAttempts.delete(context);
+            revokeCurrentUserFileApi(context);
+            try {
+              await drainCurrentUserFileOperations(context);
+            } catch (error) {
+              if (!handlerFailed) throw error;
+            } finally {
+              database.__runtimeJobAttempts.delete(context);
+            }
           }
         }
         const resultJson = boundedJobJson(result ?? null, 64 * 1024, "JOB_RESULT_TOO_LARGE", "Job result");

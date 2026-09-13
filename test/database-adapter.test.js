@@ -1719,6 +1719,9 @@ test("SQLite database adapter owns runtime storage for auth, files, logs, and sy
       isGuest: 1,
       provider: "anonymous",
     });
+    const lockedFileActor = await adapter.withTransaction((transaction) =>
+      transaction.lockAuthUserFileAuthority("user-1"));
+    assert.equal(lockedFileActor.id, "user-1");
     adapter.insertAuthSession({
       token: "session-1",
       userId: "user-1",
@@ -5255,6 +5258,7 @@ function wrapAsyncRuntimeAdapter(adapter) {
     "insertAuthIdentity",
     "updateAuthIdentity",
     "insertAuthUser",
+    "lockAuthUserFileAuthority",
     "updateAuthUserProfile",
     "linkAuthUser",
     "insertAuthSession",

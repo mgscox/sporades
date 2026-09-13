@@ -378,7 +378,7 @@ The app-scoped record returned by an Upload call, including the file's absolute 
 _Avoid_: file field, attachment row, upload result
 
 **File metadata transaction**:
-The Transaction boundary for file metadata changes during Upload calls, replacement, deletion, and public file URL changes. Uploaded file bytes live in Capsule storage, so byte side effects that cannot share the database transaction must use explicit compensating cleanup when metadata changes fail.
+The Transaction boundary for file metadata changes during Upload calls, replacement, deletion, and public file URL changes. Browser `files.delete(fileReference)` and server `ctx.files.delete(fileReference)` use this boundary; a server deletion inside a mutation, App message, or Custom endpoint rolls back with that handler transaction. Uploaded file bytes live in Capsule storage, so byte removal is deferred until a surrounding handler transaction commits and other byte side effects that cannot share the database transaction use explicit compensating cleanup when metadata changes fail.
 _Avoid_: file-byte transaction, storage transaction, best-effort upload metadata
 
 **File version**:
@@ -390,7 +390,7 @@ The stable identifier of a file metadata record. File content can change without
 _Avoid_: content ID, object ID, storage key
 
 **File reference**:
-Any app/API value that resolves to one live file metadata record, such as a File ID or absolute File path. File operations may accept File references when they only need to identify an existing file.
+Any app/API value that resolves to one live file metadata record, such as a File ID or absolute File path. File operations such as browser `files.delete(fileReference)` and server `ctx.files.delete(fileReference)` accept File references when they only need to identify an existing file.
 _Avoid_: storage locator, URL, object key
 
 **File bucket**:
@@ -473,6 +473,7 @@ _Avoid_: subscription hook, pending member, billing ACL exception
 
 **Privileged server role**:
 A server-only authority for trusted system-owned execution that intentionally runs without a Sporades user identity, such as scheduled Jobs or platform-owned maintenance. It is separate from Capsule roles, app admin users, browser credentials, users, team members, sessions, and accounts.
+Its `privilegedCtx.files.delete(fileReference)` operation can delete any exact live Capsule File without current-user ownership or `files.acl.delete` authorization and is therefore distinct from user-scoped `ctx.files.delete(fileReference)`; it remains callback-bound and covered by the Privileged audit lifecycle.
 Inside an active audited callback it may inspect one explicit existing Team's accepted-member count, safe member projection, and active Join-link metadata (never the target email), or safely inspect a Join link. It cannot list a current user's Teams, validate an email-bound Join link, or mutate Team state; no Team inspection grants or invents user identity or membership authority. In-flight inspection fails closed if the callback ends or its AbortSignal aborts before a result returns. Unknown or deleted explicit Teams fail as `TEAM_NOT_FOUND`; safe Join-link inspection preserves its invalid-capability result.
 _Avoid_: root server role, admin user, superuser account, service account, Capsule role
 
