@@ -737,6 +737,16 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
         );
         return { isNativePromise: utilTypes.isPromise(pendingDeletion), ...recovered };
       }),
+      handleRethrownDeleteFailureWithPrototypeThen: mutation((ctx, fileReference) => {
+        const forwarded = ctx.files.delete(fileReference).catch((error) => { throw error; });
+        void Promise.prototype.then.call(forwarded, undefined, () => undefined);
+        return { accepted: true };
+      }),
+      rethrowRethrownDeleteFailureWithPrototypeThen: mutation((ctx, fileReference) => {
+        const forwarded = ctx.files.delete(fileReference).catch((error) => { throw error; });
+        void Promise.prototype.then.call(forwarded, undefined, (error) => { throw error; });
+        return { accepted: true };
+      }),
       handlePendingAggregateDeleteFailure: mutation((ctx, fileReference) => {
         void Promise.all([ctx.files.delete(fileReference)]).catch(globalThis.__serverFileNativeRejectionHandler);
         return { accepted: true };
@@ -861,6 +871,15 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
       recovered: true,
       message: "File not found.",
     });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const prototypeThenHandled = await runMutation(database, other, "handleRethrownDeleteFailureWithPrototypeThen", [file.id]);
+    assert.equal(prototypeThenHandled.error, null);
+    assert.deepEqual(prototypeThenHandled.data, { accepted: true });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const prototypeThenRethrown = await runMutation(database, other, "rethrowRethrownDeleteFailureWithPrototypeThen", [file.id]);
+    assert.equal(prototypeThenRethrown.error.message, "File not found.");
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
 
     let releaseNativeAcl;

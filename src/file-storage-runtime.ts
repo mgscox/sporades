@@ -1021,7 +1021,17 @@ function retainForwardedFilePromiseHook(state: CurrentUserFileApiState) {
         children.add(promise);
       }
       const parentNode = parent ? forwardedFilePromiseNodes.get(parent) : undefined;
-      if (parentNode) registerForwardedFilePromiseNode(promise, parentNode.operation, parentNode);
+      if (parentNode) {
+        const childNode = registerForwardedFilePromiseNode(promise, parentNode.operation, parentNode);
+        const activePromise = forwardedFilePromiseHookStack.at(-1);
+        // A continuation created directly by consumer code can bypass the own
+        // methods via Promise.prototype.then.call(...). Internal adoption edges
+        // are created while another tracked promise callback is active.
+        if (!activePromise || !forwardedFilePromiseNodes.has(activePromise)) {
+          childNode.userContinuation = true;
+          parentNode.userChildren.add(childNode);
+        }
+      }
     },
     before(promise: Promise<any>) {
       forwardedFilePromiseHookStack.push(promise);

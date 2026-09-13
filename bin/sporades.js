@@ -69160,7 +69160,14 @@ function retainForwardedFilePromiseHook(state) {
         children.add(promise);
       }
       const parentNode = parent ? forwardedFilePromiseNodes.get(parent) : void 0;
-      if (parentNode) registerForwardedFilePromiseNode(promise, parentNode.operation, parentNode);
+      if (parentNode) {
+        const childNode = registerForwardedFilePromiseNode(promise, parentNode.operation, parentNode);
+        const activePromise = forwardedFilePromiseHookStack.at(-1);
+        if (!activePromise || !forwardedFilePromiseNodes.has(activePromise)) {
+          childNode.userContinuation = true;
+          parentNode.userChildren.add(childNode);
+        }
+      }
     },
     before(promise) {
       forwardedFilePromiseHookStack.push(promise);
