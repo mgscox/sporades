@@ -69130,7 +69130,7 @@ function registerForwardedFilePromiseNode(promise, operation, parent) {
       registerForwardedFilePromiseNode(child, operation, node);
     }
     observingForwardedFilePromise = true;
-    void promise.then(
+    node.settlement = promise.then(
       () => {
         node.outcome = "fulfilled";
       },
@@ -69224,6 +69224,13 @@ function hasDiscardedForwardedFileRejection(operation) {
   const componentByNode = /* @__PURE__ */ new Map();
   for (const component of components) for (const node of component) componentByNode.set(node, component);
   return components.some((component) => component.some((node) => node.outcome === "rejected") && !component.some((node) => [...node.children].some((child) => componentByNode.get(child) !== component)));
+}
+async function settleUserFileRejectionContinuations(operation) {
+  while (true) {
+    const pending = [...operation.promiseNodes].filter((node) => node.userContinuation && node.outcome === "pending").map((node) => node.settlement);
+    if (pending.length === 0) return;
+    await Promise.all(pending);
+  }
 }
 function trackCurrentUserFileOperation(operation) {
   const wrap = (promise) => new Proxy(promise, {
@@ -69348,6 +69355,7 @@ async function drainCurrentUserFileOperations(context) {
       if (operations.some((operation) => operation.promiseNodes.size > 0)) {
         await new Promise((resolve) => setImmediate(resolve));
       }
+      await Promise.all(operations.map((operation, index) => outcomes[index].status === "rejected" ? settleUserFileRejectionContinuations(operation) : void 0));
       const rejected = outcomes.find((outcome, index) => {
         if (outcome.status !== "rejected") return false;
         const operation = operations[index];

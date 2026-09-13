@@ -700,6 +700,19 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
         });
         return { accepted: true };
       }),
+      delayedAsyncRethrowDeleteFailureFromDiscardedCatch: mutation((ctx, fileReference) => {
+        void ctx.files.delete(fileReference).catch(async (error) => {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          throw error;
+        });
+        return { accepted: true };
+      }),
+      handleDelayedAsyncDeleteFailure: mutation((ctx, fileReference) => {
+        void ctx.files.delete(fileReference).catch(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        });
+        return { accepted: true };
+      }),
       handlePendingAggregateDeleteFailure: mutation((ctx, fileReference) => {
         void Promise.all([ctx.files.delete(fileReference)]).catch(globalThis.__serverFileNativeRejectionHandler);
         return { accepted: true };
@@ -797,6 +810,15 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
 
     const asyncRethrownDiscardedCatch = await runMutation(database, other, "asyncRethrowDeleteFailureFromDiscardedCatch", [file.id]);
     assert.equal(asyncRethrownDiscardedCatch.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const delayedAsyncRethrownDiscardedCatch = await runMutation(database, other, "delayedAsyncRethrowDeleteFailureFromDiscardedCatch", [file.id]);
+    assert.equal(delayedAsyncRethrownDiscardedCatch.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const handledDelayedAsyncDeleteFailure = await runMutation(database, other, "handleDelayedAsyncDeleteFailure", [file.id]);
+    assert.equal(handledDelayedAsyncDeleteFailure.error, null);
+    assert.deepEqual(handledDelayedAsyncDeleteFailure.data, { accepted: true });
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
 
     let releaseNativeAcl;

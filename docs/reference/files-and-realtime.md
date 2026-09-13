@@ -186,9 +186,9 @@ ACL explicitly permits the deletion:
 await files.delete(file.id);
 ```
 
-Trusted Capsule server handlers use the equivalent user-scoped operation
-directly, including from queries, mutations, App messages, Jobs, and Custom
-endpoints:
+Trusted Capsule current-user handlers use the equivalent user-scoped operation
+directly, including from queries, mutations, App messages, current-user Jobs,
+and Custom endpoints:
 
 ```ts
 mutations: {
@@ -204,6 +204,11 @@ current `ctx.auth` and `ctx.credential`, so the actor must own the File or be
 allowed by the declared `files.acl.delete` rule. Missing, ambiguous, deleted,
 and unauthorized references fail with the same opaque File-not-found error;
 policy details and File existence are not disclosed.
+
+Scheduled Jobs receive a `PrivilegedContext` instead of a current-user context.
+Their `ctx.files.delete(...)` is the explicitly privileged operation: it does
+not apply ownership or `files.acl.delete`, and returns a structured result with
+the deleted metadata at `result.data.file` when `result.ok` is true.
 
 The user-scoped operation requires an actual Credential. Userless lifecycle
 hooks cannot manufacture Session provenance for File ACL evaluation; use an
