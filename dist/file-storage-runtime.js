@@ -892,7 +892,47 @@ function releaseForwardedFilePromiseHook(state) {
     }
 }
 function hasDiscardedForwardedFileRejection(operation) {
-    return [...operation.aggregateNodes].some((node) => node.outcome === "rejected" && node.children.size === 0);
+    let nextIndex = 0;
+    const indexes = new Map();
+    const lowLinks = new Map();
+    const stack = [];
+    const stacked = new Set();
+    const components = [];
+    const visit = (node) => {
+        indexes.set(node, nextIndex);
+        lowLinks.set(node, nextIndex);
+        nextIndex += 1;
+        stack.push(node);
+        stacked.add(node);
+        for (const child of node.children) {
+            if (!indexes.has(child)) {
+                visit(child);
+                lowLinks.set(node, Math.min(lowLinks.get(node), lowLinks.get(child)));
+            }
+            else if (stacked.has(child)) {
+                lowLinks.set(node, Math.min(lowLinks.get(node), indexes.get(child)));
+            }
+        }
+        if (lowLinks.get(node) !== indexes.get(node))
+            return;
+        const component = [];
+        let member;
+        do {
+            member = stack.pop();
+            stacked.delete(member);
+            component.push(member);
+        } while (member !== node);
+        components.push(component);
+    };
+    for (const node of operation.aggregateNodes)
+        if (!indexes.has(node))
+            visit(node);
+    const componentByNode = new Map();
+    for (const component of components)
+        for (const node of component)
+            componentByNode.set(node, component);
+    return components.some((component) => component.some((node) => node.outcome === "rejected")
+        && !component.some((node) => [...node.children].some((child) => componentByNode.get(child) !== component)));
 }
 function trackCurrentUserFileOperation(operation) {
     const wrap = (promise) => new Proxy(promise, {
@@ -950,12 +990,14 @@ export function createCurrentUserFileApi(database, contextGetter) {
         pendingOperations: [],
         promiseHookRetained: false,
     };
-    // Start at the capability boundary, before handler code can build an outer
-    // promise chain that later adopts a File deletion promise.
-    retainForwardedFilePromiseHook(state);
     const initialContext = contextGetter?.();
     if (initialContext)
         currentUserFileApiState.set(initialContext, state);
+    // Credential-bearing handlers have a guaranteed drain/release boundary and
+    // may build an outer chain before calling delete. Credentialless schedule and
+    // privileged wrapper contexts cannot use this authority and are not retained.
+    if (initialContext?.credential)
+        retainForwardedFilePromiseHook(state);
     return Object.freeze({
         delete(fileReference) {
             const context = contextGetter?.();
@@ -965,6 +1007,7 @@ export function createCurrentUserFileApi(database, contextGetter) {
             if (!context.credential) {
                 return Promise.reject(createStructuredFileError("File deletion requires a user credential.", "Use ctx.files.delete(...) from a user-scoped handler or an audited privileged File operation for userless work."));
             }
+            retainForwardedFilePromiseHook(state);
             const operation = deletePrivateFile(database, context.auth, fileReference, context.credential, database.__transactionActive
                 ? (file) => {
                     state.pendingByteDeletes.push({ database: database.__rootDatabase ?? database, ...file });

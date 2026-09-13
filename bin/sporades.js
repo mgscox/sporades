@@ -69188,7 +69188,40 @@ function releaseForwardedFilePromiseHook(state) {
   }
 }
 function hasDiscardedForwardedFileRejection(operation) {
-  return [...operation.aggregateNodes].some((node) => node.outcome === "rejected" && node.children.size === 0);
+  let nextIndex2 = 0;
+  const indexes = /* @__PURE__ */ new Map();
+  const lowLinks = /* @__PURE__ */ new Map();
+  const stack = [];
+  const stacked = /* @__PURE__ */ new Set();
+  const components = [];
+  const visit = (node) => {
+    indexes.set(node, nextIndex2);
+    lowLinks.set(node, nextIndex2);
+    nextIndex2 += 1;
+    stack.push(node);
+    stacked.add(node);
+    for (const child of node.children) {
+      if (!indexes.has(child)) {
+        visit(child);
+        lowLinks.set(node, Math.min(lowLinks.get(node), lowLinks.get(child)));
+      } else if (stacked.has(child)) {
+        lowLinks.set(node, Math.min(lowLinks.get(node), indexes.get(child)));
+      }
+    }
+    if (lowLinks.get(node) !== indexes.get(node)) return;
+    const component = [];
+    let member;
+    do {
+      member = stack.pop();
+      stacked.delete(member);
+      component.push(member);
+    } while (member !== node);
+    components.push(component);
+  };
+  for (const node of operation.aggregateNodes) if (!indexes.has(node)) visit(node);
+  const componentByNode = /* @__PURE__ */ new Map();
+  for (const component of components) for (const node of component) componentByNode.set(node, component);
+  return components.some((component) => component.some((node) => node.outcome === "rejected") && !component.some((node) => [...node.children].some((child) => componentByNode.get(child) !== component)));
 }
 function trackCurrentUserFileOperation(operation) {
   const wrap = (promise) => new Proxy(promise, {
@@ -69227,9 +69260,9 @@ function createCurrentUserFileApi(database, contextGetter) {
     pendingOperations: [],
     promiseHookRetained: false
   };
-  retainForwardedFilePromiseHook(state);
   const initialContext = contextGetter?.();
   if (initialContext) currentUserFileApiState.set(initialContext, state);
+  if (initialContext?.credential) retainForwardedFilePromiseHook(state);
   return Object.freeze({
     delete(fileReference) {
       const context = contextGetter?.();
@@ -69245,6 +69278,7 @@ function createCurrentUserFileApi(database, contextGetter) {
           "Use ctx.files.delete(...) from a user-scoped handler or an audited privileged File operation for userless work."
         ));
       }
+      retainForwardedFilePromiseHook(state);
       const operation = deletePrivateFile(
         database,
         context.auth,
