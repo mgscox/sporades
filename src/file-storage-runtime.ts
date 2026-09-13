@@ -1142,17 +1142,31 @@ function hasDiscardedForwardedFileRejection(operation: CurrentUserFileOperation)
 }
 
 async function settleForwardedFileRejectionGraph(operation: CurrentUserFileOperation) {
-  const deadline = Date.now() + forwardedFileRejectionSettlementTimeoutMs;
+  let deadline: number | undefined;
+  let settledUserContinuation = false;
   while (true) {
-    const pending = [...operation.promiseNodes]
-      .filter((node) => node.outcome === "pending")
-      .map((node) => node.settlement!);
-    if (pending.length === 0) return true;
+    const pendingNodes = [...operation.promiseNodes]
+      .filter((node) => node.outcome === "pending");
+    if (pendingNodes.length === 0) return true;
+    const userContinuations = pendingNodes.filter((node) => node.userContinuation);
+    if (userContinuations.length > 0) {
+      // A consumer-provided rejection handler owns its eventual outcome. It may
+      // legitimately perform work for longer than the detached-graph safety
+      // budget, so do not reinterpret it as an unhandled File rejection.
+      await Promise.all(userContinuations.map((node) => node.settlement!));
+      settledUserContinuation = true;
+      continue;
+    }
+    // Internal promises adopted by a user continuation can remain pending after
+    // that continuation itself has reached the outcome Capsule code observes.
+    // The settled user node is sufficient for the discarded-rejection check.
+    if (settledUserContinuation) return true;
+    deadline ??= Date.now() + forwardedFileRejectionSettlementTimeoutMs;
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) return false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const settled = await Promise.race([
-      Promise.all(pending).then(() => true),
+      Promise.all(pendingNodes.map((node) => node.settlement!)).then(() => true),
       new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), remainingMs); }),
     ]);
     if (timer) clearTimeout(timer);

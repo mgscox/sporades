@@ -200,10 +200,12 @@ mutations: {
 ```
 
 `ctx.files.delete(...)` resolves to the deleted File metadata. It uses the
-current `ctx.auth` and `ctx.credential`, so the actor must own the File or be
-allowed by the declared `files.acl.delete` rule. Missing, ambiguous, deleted,
-and unauthorized references fail with the same opaque File-not-found error;
-policy details and File existence are not disclosed.
+frozen `ctx.auth` and `ctx.credential` snapshot admitted when the handler
+context was created, so replacing either context property cannot change the
+actor. That admitted actor must own the File or be allowed by the declared
+`files.acl.delete` rule. Missing, ambiguous, deleted, and unauthorized
+references fail with the same opaque File-not-found error; policy details and
+File existence are not disclosed.
 
 Scheduled Jobs receive a `PrivilegedContext` instead of a current-user context.
 Their `ctx.files.delete(...)` is the explicitly privileged operation: it does

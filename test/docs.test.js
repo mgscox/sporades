@@ -1265,13 +1265,14 @@ test("public docs distinguish user-scoped and privileged server File deletion", 
   for (const contents of [context, prd, guide, filesReference, serverReference]) {
     assert.match(contents, /ctx\.files\.delete\(fileReference\)/);
   }
-  assert.match(filesReference, /current `ctx\.auth` and `ctx\.credential`/);
+  assert.match(filesReference, /frozen `ctx\.auth` and `ctx\.credential` snapshot admitted/);
+  assert.match(serverReference, /frozen `ctx\.auth` and `ctx\.credential`\s+snapshot admitted/);
   assert.match(filesReference, /files\.acl\.delete/);
   assert.match(filesReference, /Stored-byte removal is deferred until commit/);
   assert.match(filesReference, /Userless lifecycle\s+hooks cannot manufacture Session provenance/);
   assert.match(filesReference, /privilegedCtx\.files\.delete/);
   assert.match(guide, /Userless lifecycle hooks cannot synthesize Session\s+provenance/);
-  assert.match(serverReference, /Userless\s+lifecycle hooks cannot call this operation/);
+  assert.match(serverReference, /Userless\s+lifecycle hooks cannot call\s+this operation/);
   assert.match(serverReference, /result\.data\.file\.id/);
   assert.match(declarations, /export type CurrentUserFilesApi/);
   assert.match(declarations, /delete\(fileReference: string\): Promise<ServerFileMetadata>/);
