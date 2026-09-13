@@ -940,10 +940,10 @@ export async function revokePublicFileUrl(database: LooseRecord, auth: LooseReco
 
 type CurrentUserFileOperation = {
   promise: Promise<any>;
-  settled: boolean;
   explicitRejectionHandler: boolean;
   forwardedRejection: boolean;
   promiseNodes: Set<ForwardedFilePromiseNode>;
+  rootSequenceAtCreation: number;
 };
 type ForwardedFilePromiseNode = {
   promise: Promise<any>;
@@ -970,6 +970,10 @@ let forwardedFilePromiseHookStop: (() => void) | undefined;
 let forwardedFilePromiseHookRetainers = 0;
 let forwardedFilePromiseHookStack: Promise<any>[] = [];
 let forwardedFileResolverOperations = new WeakMap<Function, Set<CurrentUserFileOperation>>();
+let forwardedFileResolverPromises = new WeakMap<Function, Promise<any>>();
+let forwardedFileRootSequences = new WeakMap<Promise<any>, number>();
+let forwardedFileRootSequence = 0;
+let latestForwardedFileRootPromise: Promise<any> | undefined;
 const forwardedFileCallbackOperationSets: CurrentUserFileOperation[][] = [];
 let observingForwardedFilePromise = false;
 
@@ -1022,6 +1026,11 @@ function retainForwardedFilePromiseHook(state: CurrentUserFileApiState) {
   forwardedFilePromiseHookStop = nodePromiseHooks.createHook({
     init(promise: Promise<any>, parent?: Promise<any>) {
       if (observingForwardedFilePromise) return;
+      if (!parent) {
+        forwardedFileRootSequence += 1;
+        forwardedFileRootSequences.set(promise, forwardedFileRootSequence);
+        latestForwardedFileRootPromise = promise;
+      }
       if (parent) {
         let children = forwardedFilePromiseChildren.get(parent);
         if (!children) {
@@ -1079,6 +1088,9 @@ function releaseForwardedFilePromiseHook(state: CurrentUserFileApiState) {
     forwardedFilePromiseHookStack = [];
     forwardedFileCallbackOperationSets.length = 0;
     forwardedFileResolverOperations = new WeakMap();
+    forwardedFileResolverPromises = new WeakMap();
+    forwardedFileRootSequences = new WeakMap();
+    latestForwardedFileRootPromise = undefined;
     // Values in this WeakMap contain strong child references. Replace the
     // transient graph so a long-lived parent cannot retain completed handlers.
     forwardedFilePromiseChildren = new WeakMap();
@@ -1142,6 +1154,7 @@ function trackCurrentUserFileOperation(operation: CurrentUserFileOperation): Pro
     Object.defineProperties(promise, {
       then: { configurable: true, value: (onFulfilled?: any, onRejected?: any) => {
         let promiseResolveForwarding = false;
+        let trackPromiseResolveForwarding = false;
         if (typeof onRejected === "function") {
           const nativeResolverPair = typeof onFulfilled === "function"
             && onFulfilled.name === ""
@@ -1150,24 +1163,41 @@ function trackCurrentUserFileOperation(operation: CurrentUserFileOperation): Pro
             && Function.prototype.toString.call(onRejected).includes("[native code]");
           promiseResolveForwarding = nativeResolverPair;
           if (promiseResolveForwarding) {
-            operation.forwardedRejection = true;
+            trackPromiseResolveForwarding = !observingForwardedFilePromise;
+            if (trackPromiseResolveForwarding) operation.forwardedRejection = true;
+          }
+          if (trackPromiseResolveForwarding) {
             let resolverOperations = forwardedFileResolverOperations.get(onRejected);
             if (!resolverOperations) {
               resolverOperations = new Set();
               forwardedFileResolverOperations.set(onRejected, resolverOperations);
             }
             resolverOperations.add(operation);
+            let forwardingPromise = forwardedFileResolverPromises.get(onRejected);
+            const latestRootSequence = latestForwardedFileRootPromise
+              ? forwardedFileRootSequences.get(latestForwardedFileRootPromise)
+              : undefined;
+            if (!forwardingPromise
+              && latestForwardedFileRootPromise
+              && latestRootSequence !== undefined
+              && latestRootSequence > operation.rootSequenceAtCreation) {
+              forwardingPromise = latestForwardedFileRootPromise;
+              forwardedFileResolverPromises.set(onRejected, forwardingPromise);
+            }
+            if (forwardingPromise) {
+              registerForwardedFilePromiseNode(forwardingPromise, operation).forwarded = true;
+            }
             const targetNode = getForwardedFilePromiseNode(promise, operation);
             if (targetNode) targetNode.forwarded = true;
           }
-          else {
+          else if (!promiseResolveForwarding) {
             // Native and bound application callbacks (for example console.error)
             // are still deliberate rejection handlers. Only the anonymous pair
             // installed by native PromiseResolve is internal forwarding.
             operation.explicitRejectionHandler = true;
           }
         }
-        const rejectionHandler = promiseResolveForwarding ? (reason: any) => {
+        const rejectionHandler = trackPromiseResolveForwarding ? (reason: any) => {
           const resolverOperations = forwardedFileResolverOperations.get(onRejected) ?? new Set([operation]);
           forwardedFileCallbackOperationSets.push([...resolverOperations]);
           try { return onRejected(reason); }
@@ -1264,22 +1294,12 @@ export function createCurrentUserFileApi(
       });
       const trackedOperation: CurrentUserFileOperation = {
         promise: operation,
-        settled: false,
         explicitRejectionHandler: false,
         forwardedRejection: false,
         promiseNodes: new Set(),
+        rootSequenceAtCreation: forwardedFileRootSequence,
       };
       registerForwardedFilePromiseNode(operation, trackedOperation);
-      observingForwardedFilePromise = true;
-      try {
-        void Promise.prototype.then.call(
-          operation,
-          () => { trackedOperation.settled = true; },
-          () => { trackedOperation.settled = true; },
-        );
-      } finally {
-        observingForwardedFilePromise = false;
-      }
       state.pendingOperations.push(trackedOperation);
       return trackCurrentUserFileOperation(trackedOperation);
     },
@@ -1291,7 +1311,6 @@ export async function drainCurrentUserFileOperations(context: LooseRecord | unde
   try {
     while (state?.pendingOperations.length) {
       const operations = state.pendingOperations.splice(0);
-      const settledBeforeDrain = operations.map((operation) => operation.settled);
       observingForwardedFilePromise = true;
       let outcomesPromise: Promise<PromiseSettledResult<any>[]>;
       try {
@@ -1310,9 +1329,8 @@ export async function drainCurrentUserFileOperations(context: LooseRecord | unde
         if (outcome.status !== "rejected") return false;
         const operation = operations[index];
         const discardedForwarding = hasDiscardedForwardedFileRejection(operation);
-        const forwardedFailureWasHandled = operation.forwardedRejection
-          && (operation.promiseNodes.size > 0 ? !discardedForwarding : settledBeforeDrain[index]);
-        return discardedForwarding || (!operation.explicitRejectionHandler && !forwardedFailureWasHandled);
+        const graphFailureWasHandled = operation.promiseNodes.size > 0 && !discardedForwarding;
+        return discardedForwarding || (!operation.explicitRejectionHandler && !graphFailureWasHandled);
       });
       if (rejected?.status === "rejected") throw rejected.reason;
     }

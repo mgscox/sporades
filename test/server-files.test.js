@@ -594,6 +594,20 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
         await globalThis.__serverFileSharedDeletesReady;
         return { accepted: true };
       }),
+      deleteInPendingDiscardedAny: query((ctx, fileReference) => {
+        void Promise.any([
+          ctx.files.delete(fileReference),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Delayed rejection.")), 25)),
+        ]);
+        return { accepted: true };
+      }),
+      handlePendingAny: query(async (ctx, fileReference) => {
+        const value = await Promise.any([
+          ctx.files.delete(fileReference),
+          new Promise((resolve) => setTimeout(() => resolve("fallback"), 25)),
+        ]);
+        return { value };
+      }),
       recoverDeleteFailure: query(async (ctx, fileReference) => {
         const pendingDeletion = ctx.files.delete(fileReference);
         const isPromise = pendingDeletion instanceof Promise;
@@ -783,6 +797,16 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
 
     assert.equal(result.data, null);
     assert.equal(result.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const discardedAny = await runQuery(database, other, "deleteInPendingDiscardedAny", [file.id]);
+    assert.equal(discardedAny.data, null);
+    assert.equal(discardedAny.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const handledAny = await runQuery(database, other, "handlePendingAny", [file.id]);
+    assert.equal(handledAny.error, null);
+    assert.deepEqual(handledAny.data, { value: "fallback" });
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
 
     const replacedAuth = await runQuery(database, other, "deleteAfterReplacingAuth", [file.id, owner.userId]);
