@@ -713,6 +713,19 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
         });
         return { accepted: true };
       }),
+      delayedAsyncRethrowResolvedDeleteFailure: mutation((ctx, fileReference) => {
+        void Promise.resolve(ctx.files.delete(fileReference)).catch(async (error) => {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          throw error;
+        });
+        return { accepted: true };
+      }),
+      handleDelayedAsyncResolvedDeleteFailure: mutation((ctx, fileReference) => {
+        void Promise.resolve(ctx.files.delete(fileReference)).catch(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        });
+        return { accepted: true };
+      }),
       handlePendingAggregateDeleteFailure: mutation((ctx, fileReference) => {
         void Promise.all([ctx.files.delete(fileReference)]).catch(globalThis.__serverFileNativeRejectionHandler);
         return { accepted: true };
@@ -819,6 +832,15 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
     const handledDelayedAsyncDeleteFailure = await runMutation(database, other, "handleDelayedAsyncDeleteFailure", [file.id]);
     assert.equal(handledDelayedAsyncDeleteFailure.error, null);
     assert.deepEqual(handledDelayedAsyncDeleteFailure.data, { accepted: true });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const delayedAsyncRethrownResolvedDeleteFailure = await runMutation(database, other, "delayedAsyncRethrowResolvedDeleteFailure", [file.id]);
+    assert.equal(delayedAsyncRethrownResolvedDeleteFailure.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const handledDelayedAsyncResolvedDeleteFailure = await runMutation(database, other, "handleDelayedAsyncResolvedDeleteFailure", [file.id]);
+    assert.equal(handledDelayedAsyncResolvedDeleteFailure.error, null);
+    assert.deepEqual(handledDelayedAsyncResolvedDeleteFailure.data, { accepted: true });
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
 
     let releaseNativeAcl;

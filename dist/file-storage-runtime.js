@@ -939,10 +939,10 @@ function hasDiscardedForwardedFileRejection(operation) {
     return components.some((component) => component.some((node) => node.outcome === "rejected")
         && !component.some((node) => [...node.children].some((child) => componentByNode.get(child) !== component)));
 }
-async function settleUserFileRejectionContinuations(operation) {
+async function settleForwardedFileRejectionGraph(operation) {
     while (true) {
         const pending = [...operation.promiseNodes]
-            .filter((node) => node.userContinuation && node.outcome === "pending")
+            .filter((node) => node.outcome === "pending")
             .map((node) => node.settlement);
         if (pending.length === 0)
             return;
@@ -1085,7 +1085,7 @@ export async function drainCurrentUserFileOperations(context) {
                 await new Promise((resolve) => setImmediate(resolve));
             }
             await Promise.all(operations.map((operation, index) => outcomes[index].status === "rejected"
-                ? settleUserFileRejectionContinuations(operation)
+                ? settleForwardedFileRejectionGraph(operation)
                 : undefined));
             const rejected = outcomes.find((outcome, index) => {
                 if (outcome.status !== "rejected")
