@@ -952,6 +952,7 @@ type ForwardedFilePromiseNode = {
   children: Set<ForwardedFilePromiseNode>;
   userChildren: Set<ForwardedFilePromiseNode>;
   userContinuation: boolean;
+  propagatesRejection: boolean;
   forwarded: boolean;
   settlement?: Promise<void>;
   outcome: "pending" | "fulfilled" | "rejected";
@@ -1037,6 +1038,7 @@ function registerForwardedFilePromiseNode(
       children: new Set(),
       userChildren: new Set(),
       userContinuation: false,
+      propagatesRejection: false,
       forwarded: false,
       outcome: "pending",
     };
@@ -1146,6 +1148,9 @@ function releaseForwardedFilePromiseHook(state: CurrentUserFileApiState) {
 }
 
 function hasDiscardedForwardedFileRejection(operation: CurrentUserFileOperation) {
+  if ([...operation.promiseNodes].some((node) => node.propagatesRejection
+    && node.userChildren.size === 0
+    && node.outcome === "rejected")) return true;
   if ([...operation.promiseNodes].some((node) => node.userContinuation
     && !node.forwarded
     && node.userChildren.size === 0
@@ -1314,6 +1319,7 @@ function trackCurrentUserFileOperation(operation: CurrentUserFileOperation): Pro
         const parentNode = getForwardedFilePromiseNode(promise, operation);
         const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
         continuationNode.userContinuation = true;
+        continuationNode.propagatesRejection = true;
         if (parentNode) parentNode.userChildren.add(continuationNode);
         return decorate(continuation);
       } },

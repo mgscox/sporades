@@ -783,6 +783,14 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
         });
         return { accepted: true };
       }),
+      discardFinallyDeleteFailure: mutation((ctx, fileReference) => {
+        void ctx.files.delete(fileReference).finally(() => {});
+        return { accepted: true };
+      }),
+      handleFinallyDeleteFailure: mutation((ctx, fileReference) => {
+        void ctx.files.delete(fileReference).finally(() => {}).catch(() => {});
+        return { accepted: true };
+      }),
       delayedAsyncRethrowResolvedDeleteFailure: mutation((ctx, fileReference) => {
         void Promise.resolve(ctx.files.delete(fileReference)).catch(async (error) => {
           await new Promise((resolve) => setTimeout(resolve, 25));
@@ -973,6 +981,15 @@ test("query cleanup reports an unawaited user File deletion failure", async () =
     const handledSlowAggregateDeleteFailure = await runMutation(database, other, "handleSlowAggregateDeleteFailure", [file.id]);
     assert.equal(handledSlowAggregateDeleteFailure.error, null);
     assert.deepEqual(handledSlowAggregateDeleteFailure.data, { accepted: true });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const discardedFinallyDeleteFailure = await runMutation(database, other, "discardFinallyDeleteFailure", [file.id]);
+    assert.equal(discardedFinallyDeleteFailure.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const handledFinallyDeleteFailure = await runMutation(database, other, "handleFinallyDeleteFailure", [file.id]);
+    assert.equal(handledFinallyDeleteFailure.error, null);
+    assert.deepEqual(handledFinallyDeleteFailure.data, { accepted: true });
     assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
 
     const delayedAsyncRethrownResolvedDeleteFailure = await runMutation(database, other, "delayedAsyncRethrowResolvedDeleteFailure", [file.id]);

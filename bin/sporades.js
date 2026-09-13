@@ -69171,6 +69171,7 @@ function registerForwardedFilePromiseNode(promise, operation, parent) {
       children: /* @__PURE__ */ new Set(),
       userChildren: /* @__PURE__ */ new Set(),
       userContinuation: false,
+      propagatesRejection: false,
       forwarded: false,
       outcome: "pending"
     };
@@ -69273,6 +69274,7 @@ function releaseForwardedFilePromiseHook(state) {
   }
 }
 function hasDiscardedForwardedFileRejection(operation) {
+  if ([...operation.promiseNodes].some((node) => node.propagatesRejection && node.userChildren.size === 0 && node.outcome === "rejected")) return true;
   if ([...operation.promiseNodes].some((node) => node.userContinuation && !node.forwarded && node.userChildren.size === 0 && node.outcome === "rejected")) return true;
   let nextIndex2 = 0;
   const indexes = /* @__PURE__ */ new Map();
@@ -69415,6 +69417,7 @@ function trackCurrentUserFileOperation(operation) {
         const parentNode = getForwardedFilePromiseNode(promise, operation);
         const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
         continuationNode.userContinuation = true;
+        continuationNode.propagatesRejection = true;
         if (parentNode) parentNode.userChildren.add(continuationNode);
         return decorate(continuation);
       } }
