@@ -1,10 +1,11 @@
+import { resolveDeployFiles } from "../deploy-files.js";
 import type { HostHelperRelease } from "./host-helper-contract.js";
 
 export function expectedReleaseFiles(release: HostHelperRelease) {
   const publicFiles = Array.isArray(release.files)
     ? release.files.filter((file): file is string => typeof file === "string" && file.startsWith("public/"))
     : [];
-  const files = ["server.mjs", "sporades.json", ...publicFiles];
+  const files = ["server.mjs", "sporades.json", ...publicFiles, ...resolveDeployFiles(release.deployFiles).map((file) => file.path)];
   if (release.serverEnvIncluded) {
     files.push(".env.sporades.server");
   }
@@ -17,8 +18,8 @@ export function expectedReleaseFiles(release: HostHelperRelease) {
   return files;
 }
 
-export function isExpectedClaimedReleaseFile(file: unknown) {
-  return typeof file === "string" && (file.startsWith("public/") || [
+export function isExpectedClaimedReleaseFile(file: unknown, deployFiles: string[] = []) {
+  return typeof file === "string" && (file.startsWith("public/") || deployFiles.includes(file) || [
     "server.mjs",
     "sporades.json",
     ".env.sporades.server",

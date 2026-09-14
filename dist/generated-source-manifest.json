@@ -42,6 +42,7 @@
       "src/client-toolchain.ts",
       "src/client.ts",
       "src/database-runtime.ts",
+      "src/deploy-files.ts",
       "src/dev-clamav-sidecar.ts",
       "src/email-events-config.ts",
       "src/email-events-runtime.ts",
@@ -96,7 +97,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "a0090fe1941530afba35dfb0750fdea2110adf6961bdd1eeab64d2b7b6c1cf2c"
+    "digest": "c4c19e87132e026442a4fbcd2697d9c70313f03edaac3252450074d96203aded"
   },
   "outputs": {
     "files": [
@@ -234,6 +235,10 @@
       "dist/database-runtime.d.ts.map",
       "dist/database-runtime.js",
       "dist/database-runtime.js.map",
+      "dist/deploy-files.d.ts",
+      "dist/deploy-files.d.ts.map",
+      "dist/deploy-files.js",
+      "dist/deploy-files.js.map",
       "dist/dev-clamav-sidecar.d.ts",
       "dist/dev-clamav-sidecar.d.ts.map",
       "dist/dev-clamav-sidecar.js",
@@ -419,6 +424,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "723f27b5826a4bcb3cb4a65d2cfa64aaca79d8074baed56a6245cbe57cfe3bb9"
+    "digest": "db25a0ef5b75e29f51e156c7c37c7aabbff1489a2537392cf7e20a9284576bda"
   }
 }

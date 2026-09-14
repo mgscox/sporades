@@ -216,6 +216,7 @@ sporades deploy --json
 sporades deploy stop --json
 sporades deploy restart --json
 sporades deploy remove --json
+sporades deploy reconcile --json
 ```
 
 The command:
@@ -227,7 +228,10 @@ The command:
    host UID/GID when available.
 5. Mounts Sealed Server env or legacy Server env read-only.
 6. Persists SQLite data through the Runtime directory.
-7. Writes the container binding to `.sporades/binding.json`.
+7. Writes the container binding to `.sporades/binding.json`. Besides the
+   container ID and name, the binding records the release's `deployFiles`
+   policy, its replacement snapshot root under `.sporades/deploy-files/`, and
+   any `pendingDeployFileCleanup` snapshot paths still awaiting deletion.
 
 Use `--force` if the previous Docker container was deleted manually and the
 local binding is stale.
@@ -241,6 +245,7 @@ Lifecycle commands operate on the local Container session recorded in
 | `sporades deploy restart` | Starts the stopped bound Docker container again, starting declared Capsule services first when needed. It does not rebuild bundles. |
 | `sporades deploy remove` | Force-removes the bound Docker container, removes `.sporades/binding.json`, and stops generated local Capsule services. Persistent data remains in the Runtime directory. |
 | `sporades deploy reset` | Removes the bound Docker container when present, stops generated services, and deletes generated Capsule service state such as Compose volumes, networks, and Sporades-owned service data. |
+| `sporades deploy reconcile` | Settles an interrupted `deploy.files` attempt from its journal: removes the untracked candidate, rolls back unchanged seeds, drops the candidate snapshot, and clears the journal that blocks the other lifecycle commands. Safe to repeat. |
 
 When running through the scaffolded npm script, pass flags after `--`:
 
@@ -294,7 +299,8 @@ where possible. Empty effective key sets leave SSH disabled.
 When SSH is enabled, sessions log in as the `sporades` user with key-based
 authentication only. Sporades does not provide root login, sudoers access,
 passwords, custom SSH ports, or public SSH port exposure. Release files remain
-read-only; Capsule data remains the writable runtime area. Hosted Capsule SSH
+read-only; Capsule data and explicitly declared preserved deployment files are
+the writable runtime areas. Hosted Capsule SSH
 ports are Docker-assigned and loopback-only on the Host server, separate from
 Caddy HTTP routing.
 
@@ -381,7 +387,14 @@ sporades host logs http --host personal --subname team-notes -n 200 --json
 sporades host logs stdout --host personal --subname team-notes -n 200 --json
 sporades host restart team-notes --host personal --json
 sporades host stop team-notes --host personal --json
+sporades host reconcile team-notes --host personal --json
 ```
+
+`sporades host reconcile` settles an interrupted release install whose
+`deploy-file-attempt.jsonl` journal blocks start, restart and rollback. It
+discards an unrecorded release (unchanged seeds, candidate directory, private
+key, and the `current` pointer) or, for a recorded release, clears only the
+journal. See [Additional deployment files](projects-and-configuration.md#additional-deployment-files).
 
 If a Capsule declares `services` today, those services are only managed for
 local Dev sessions and local Container sessions. A later Hosted Capsule service

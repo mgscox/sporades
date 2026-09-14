@@ -1,3 +1,4 @@
+import { preservedDeployFilePath } from "../dist/deploy-files.js";
 import assert from "node:assert/strict";
 import { chmod, chown, copyFile, lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -1272,7 +1273,13 @@ async function writeHostedCapsuleInstallFixture(dir, options = {}) {
     "public/assets/images/logo-a1b2.png",
     "public/assets/fonts/app-a1b2.woff2",
   ];
-  await createTarGz(archivePath, runtimeDir, ["server.mjs", "sporades.json", ...publicFiles]);
+  const deployFiles = options.deployFiles ?? [];
+  for (const file of deployFiles) {
+    const target = path.join(runtimeDir, file.path);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, options.fileContents ?? "seed");
+  }
+  await createTarGz(archivePath, runtimeDir, ["server.mjs", "sporades.json", ...publicFiles, ...deployFiles.map((file) => file.path)]);
   await writeFile(
     registryRecordPath,
     `${JSON.stringify({
@@ -1313,7 +1320,8 @@ async function writeHostedCapsuleInstallFixture(dir, options = {}) {
       remoteArchive: archivePath,
       restart: true,
       serverEnvIncluded: false,
-      files: ["server.mjs", "sporades.json", ...publicFiles],
+      files: ["server.mjs", "sporades.json", ...publicFiles, ...deployFiles.map((file) => file.path)],
+      deployFiles,
       directories: {
         capsule: capsuleDir,
         releases: path.join(capsuleDir, "releases"),
@@ -4254,7 +4262,7 @@ process.exit(0);
   });
 });
 
-test("sporades host push uploads a runtime-only release archive and installs it without restart by default", async () => {
+test("sporades host push uploads a release archive with declared deploy.files and installs it without restart by default", async () => {
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
@@ -4301,6 +4309,16 @@ process.exit(0);
     await installFakeReact(projectDir);
     await rm(path.join(projectDir, ".env.sporades.server"), { force: true });
 
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.deploy.files = [{ path: "config/settings.json", update: "preserve" }, { path: "defaults.json" }];
+    await writeFile(configPath, JSON.stringify(config));
+    await mkdir(path.join(projectDir, "config"));
+    await writeFile(path.join(projectDir, "config/settings.json"), "settings seed", { mode: 0o600 });
+    await mkdir(path.join(projectDir, ".sporades/host-push"), { recursive: true, mode: 0o755 });
+    await chmod(path.join(projectDir, ".sporades/host-push"), 0o755);
+    await writeFile(path.join(projectDir, "defaults.json"), "defaults seed");
+
     const env = {
       ...hostEnv(configDir),
       ...fakeSsh.env,
@@ -4333,15 +4351,27 @@ process.exit(0);
       "public/client.js",
       "public/client.js.map",
       "public/index.html",
+      "config/settings.json",
+      "defaults.json",
     ]);
 
+    const stagingRoot = path.join(projectDir, ".sporades/host-push");
+    const staging = path.join(stagingRoot, `${output.data.release.id}-files`);
+    assert.equal((await stat(stagingRoot)).mode & 0o777, 0o700);
+    assert.equal((await stat(staging)).mode & 0o777, 0o700);
+    assert.equal((await stat(path.join(staging, "config"))).mode & 0o777, 0o700);
+    assert.equal((await stat(path.join(staging, "config/settings.json"))).mode & 0o777, 0o600);
+    assert.equal((await stat(path.join(stagingRoot, `${output.data.release.id}.tar.gz`))).mode & 0o777, 0o600);
     const [scpCall] = await readJsonl(fakeScp.logPath);
     assert.match(scpCall.source, /\.sporades\/host-push\/.+\.tar\.gz$/);
     assert.equal(scpCall.target, `root@example.test:/opt/sporades/incoming/${output.data.release.id}.tar.gz`);
     const uploadedArchives = await readdir(fakeScp.uploadDir);
     assert.deepEqual(uploadedArchives, [`${output.data.release.id}.tar.gz`]);
     const entries = await listArchiveEntries(path.join(fakeScp.uploadDir, uploadedArchives[0]), projectDir);
+    assert.equal(await extractArchiveFile(path.join(fakeScp.uploadDir, uploadedArchives[0]), "config/settings.json", projectDir), "settings seed");
     assert.deepEqual(entries, [
+      "config/settings.json",
+      "defaults.json",
       "public/client.js",
       "public/client.js.map",
       "public/index.html",
@@ -4352,6 +4382,7 @@ process.exit(0);
     const [sshCall] = await readJsonl(fakeSsh.logPath);
     assert.deepEqual(sshCall.args, ["root@example.test", "/opt/sporades/bin/sporades-host-helper"]);
     const request = JSON.parse(sshCall.stdin);
+    assert.deepEqual(request.release.deployFiles, [{ path: "config/settings.json", update: "preserve" }, { path: "defaults.json", update: "replace" }]);
     assert.equal(request.action, "capsule.release.install");
     assert.equal(request.capsule.subname, "team-notes");
     assert.equal(request.release.restart, false);
@@ -5398,10 +5429,17 @@ process.exit(0);
     assert.equal(restart.code, 0, restart.stderr);
     assert.equal(JSON.parse(restart.stdout).data.action, "capsule.restart");
 
+    const reconcile = await runCli(["host", "reconcile", "team-notes", "--host", "personal", "--json"], {
+      cwd: dir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(reconcile.code, 0, reconcile.stderr);
+    assert.equal(JSON.parse(reconcile.stdout).data.action, "capsule.release.reconcile");
+
     const calls = await readJsonl(fakeSsh.logPath);
     assert.deepEqual(
       calls.map((call) => JSON.parse(call.stdin).action),
-      ["capsule.start", "capsule.stop", "capsule.restart"],
+      ["capsule.start", "capsule.stop", "capsule.restart", "capsule.release.reconcile"],
     );
     const startRequest = JSON.parse(calls[0].stdin);
     assert.equal(startRequest.lifecycle.currentLink, "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current");
@@ -9684,6 +9722,7 @@ test("sporades host helper reports no release and failed starts with unavailable
     const releaseDir = path.join(capsuleDir, "releases", "20260630T221500Z-feedface");
     await mkdir(releaseDir, { recursive: true });
     await symlink(releaseDir, path.join(capsuleDir, "current"));
+    await writeFile(registryRecordPath, JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev", currentRelease: { id: path.basename(releaseDir) } }));
     const failedStart = await runHostHelper(request, { cwd: dir, env: docker.env });
     assert.equal(JSON.parse(failedStart.stdout).ok, false);
     assert.equal(JSON.parse(failedStart.stdout).error.message, "Hosted Capsule container did not stay running.");
@@ -9968,6 +10007,7 @@ test("sporades host helper fails start with guidance when the base image cannot 
     await mkdir(path.dirname(registryRecordPath), { recursive: true });
     await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
     await symlink(releaseDir, path.join(capsuleDir, "current"));
+    await writeFile(registryRecordPath, JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev", currentRelease: { id: path.basename(releaseDir) } }));
     const docker = await installFakeDocker(dir, {
       env: {
         FAKE_DOCKER_IMAGE_INSPECT_STATUS: "1",
@@ -10025,6 +10065,7 @@ test("sporades host helper fails start when Docker does not report a usable loop
     await mkdir(path.dirname(registryRecordPath), { recursive: true });
     await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
     await symlink(releaseDir, path.join(capsuleDir, "current"));
+    await writeFile(registryRecordPath, JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev", currentRelease: { id: path.basename(releaseDir) } }));
     const docker = await installFakeDocker(dir, { env: { FAKE_DOCKER_PUBLISHED_PORT: "0.0.0.0:49153" } });
 
     const start = await runHostHelper(
@@ -11397,6 +11438,7 @@ test("sporades host helper applies verification fallback with the selected relea
       rootName: "verify-fallback-success",
       domain: `localhost:${port}`,
       scheme: "http",
+      deployFiles: [{ path: "settings.json", update: "replace" }],
     });
     const previousReleaseDir = path.join(fixture.capsuleDir, "releases", fixture.previousReleaseId);
     await mkdir(path.join(previousReleaseDir, "public", "assets"), { recursive: true });
@@ -11404,8 +11446,12 @@ test("sporades host helper applies verification fallback with the selected relea
     await writeFile(path.join(previousReleaseDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
     await writeFile(path.join(previousReleaseDir, "public", "index.html"), '<script type="module" src="/assets/previous-deadbeef.js"></script>\n');
     await writeFile(path.join(previousReleaseDir, "public", "assets", "previous-deadbeef.js"), "console.log('previous complete release');\n");
+    await writeFile(path.join(previousReleaseDir, "settings.json"), "previous seed");
+    const preservedRoot = path.join(fixture.capsuleDir, "preserved-files");
+    await mkdir(preservedRoot, { recursive: true });
+    await writeFile(preservedDeployFilePath(preservedRoot, "settings.json"), "server edit");
     const before = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
-    before.releases[0].source = { inspection: { requiredInspectors: ["clamav"] } };
+    before.releases[0].source = { inspection: { requiredInspectors: ["clamav"] }, deployFiles: [{ path: "settings.json", update: "preserve" }] };
     await writeFile(fixture.registryRecordPath, `${JSON.stringify(before, null, 2)}\n`);
     fixture.release.inspection = null;
     const clock = path.join(dir, "fallback-stepping-clock.mjs");
@@ -11433,6 +11479,11 @@ test("sporades host helper applies verification fallback with the selected relea
     assert.equal(output.data.fallback.applied, true);
     assert.equal(output.data.fallback.release.id, fixture.previousReleaseId);
     assert.equal(output.data.fallback.lifecycle.release.id, fixture.previousReleaseId);
+    const runs = (await docker.calls()).filter((call) => call.args[0] === "run");
+    assert(runs[0].args.includes(`${path.join(fixture.capsuleDir, "current/settings.json")}:/app/settings.json:ro`));
+    assert(runs.at(-1).args.includes(`${preservedDeployFilePath(preservedRoot, "settings.json")}:/app/settings.json:rw`));
+    assert(!runs.at(-1).args.includes(`${path.join(fixture.capsuleDir, "current/settings.json")}:/app/settings.json:ro`));
+
     assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), previousReleaseDir);
     assert.match(await readFile(path.join(fixture.capsuleDir, "current", "public", "index.html"), "utf8"), /previous-deadbeef\.js/);
     assert.match(await readFile(path.join(fixture.capsuleDir, "current", "public", "assets", "previous-deadbeef.js"), "utf8"), /previous complete release/);
@@ -14568,4 +14619,392 @@ syncBuiltinESMExports();
       assert.equal(JSON.parse((await invoke({ ...request, capsule: { subname: "new-owner" } })).stdout).ok, true);
     });
   }
+});
+
+
+test("Hosted deploy.files install preserves edits and uses recorded mounts across restart and policy changes", async () => {
+  await withTempDir(async (dir) => {
+    const docker = await installFakeDocker(path.join(dir, "deploy-files-docker"));
+    let savedRecord = null;
+    let fixture;
+    const policies = ["preserve", "preserve", "replace", null, "preserve"];
+    for (let index = 0; index < policies.length; index++) {
+      const policy = policies[index];
+      fixture = await writeHostedCapsuleInstallFixture(dir, {
+        rootName: "deploy-files", previousReleaseId: null,
+        releaseId: `20260912T12000${index}Z-feedface`,
+        deployFiles: policy ? [{ path: "config/settings.json", update: policy }] : [],
+        fileContents: `local-${index}`,
+      });
+      if (savedRecord) await writeFile(fixture.registryRecordPath, savedRecord);
+      const request = {
+        action: "capsule.release.install",
+        host: { alias: "personal", domain: fixture.domain, remoteRoot: fixture.remoteRoot },
+        capsule: { subname: fixture.subname }, release: fixture.release, lifecycle: fixture.lifecycle,
+      };
+      const install = await runHostHelper(request, { cwd: dir, env: docker.env });
+      assert.equal(install.code, 0, install.stdout + install.stderr);
+      assert.equal(JSON.parse(install.stdout).ok, true, install.stdout);
+      const preserved = preservedDeployFilePath(path.join(fixture.capsuleDir, "preserved-files"), "config/settings.json");
+      if (index === 0) await writeFile(preserved, "server edit");
+      assert.equal(await readFile(preserved, "utf8"), "server edit");
+      const run = (await docker.calls()).filter((call) => call.args[0] === "run").at(-1);
+      const fileMounts = run.args.filter((arg) => arg.includes(":/app/config/settings.json:"));
+      assert.deepEqual(fileMounts, policy ? [policy === "preserve" ? `${preserved}:/app/config/settings.json:rw` : `${path.join(fixture.capsuleDir, "current/config/settings.json")}:/app/config/settings.json:ro`] : []);
+      savedRecord = await readFile(fixture.registryRecordPath, "utf8");
+      if (policy) {
+        assert.equal(await readFile(path.join(fixture.release.directories.release, "config/settings.json"), "utf8"), `local-${index}`);
+        assert.equal((await stat(path.join(fixture.release.directories.release, "config/settings.json"))).mode & 0o777, 0o400);
+        assert.equal((await stat(path.join(fixture.capsuleDir, "preserved-files"))).mode & 0o777, 0o700);
+      }
+    }
+    const restart = await runHostHelper({
+      action: "capsule.restart", host: { alias: "personal", domain: fixture.domain, remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+    }, { cwd: dir, env: docker.env });
+    assert.equal(restart.code, 0, restart.stdout + restart.stderr);
+    const run = (await docker.calls()).filter((call) => call.args[0] === "run").at(-1);
+    assert(run.args.includes(`${preservedDeployFilePath(path.join(fixture.capsuleDir, "preserved-files"), "config/settings.json")}:/app/config/settings.json:rw`));
+    for (const [releaseId, update] of [["20260912T120002Z-feedface", "replace"], ["20260912T120000Z-feedface", "preserve"]]) {
+      const rollback = await runHostHelper({
+        action: "capsule.release.rollback", host: { alias: "personal", domain: fixture.domain, remoteRoot: fixture.remoteRoot },
+        capsule: { subname: fixture.subname }, rollback: { releaseId },
+      }, { cwd: dir, env: docker.env });
+      assert.equal(rollback.code, 0, rollback.stdout + rollback.stderr);
+      const latest = (await docker.calls()).filter((call) => call.args[0] === "run").at(-1);
+      const hostPath = update === "preserve" ? preservedDeployFilePath(path.join(fixture.capsuleDir, "preserved-files"), "config/settings.json") : path.join(fixture.capsuleDir, "current", "config/settings.json");
+      assert(latest.args.includes(`${hostPath}:/app/config/settings.json:${update === "preserve" ? "rw" : "ro"}`));
+      assert.equal(await readFile(preservedDeployFilePath(path.join(fixture.capsuleDir, "preserved-files"), "config/settings.json"), "utf8"), "server edit");
+    }
+
+  });
+});
+
+
+test("Hosted deploy.files rolls back new seeds on registry and startup failure", async () => {
+  for (const failure of ["registry", "startup"]) await withTempDir(async (dir) => {
+    const deployFiles = [{ path: "new.json", update: "preserve" }, { path: "existing.json", update: "preserve" }];
+    const fixture = await writeHostedCapsuleInstallFixture(dir, { rootName: "seed-rollback", previousReleaseId: null, deployFiles, fileContents: "failed seed" });
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    record.status = "registered";
+    await writeFile(fixture.registryRecordPath, JSON.stringify(record));
+    const preserved = path.join(fixture.capsuleDir, "preserved-files");
+    await mkdir(preserved, { recursive: true });
+    await writeFile(preservedDeployFilePath(preserved, "existing.json"), "existing edit");
+    fixture.release.restart = failure === "startup";
+    const docker = await installFakeDocker(path.join(dir, "seed-docker"), { env: {
+      FAKE_DOCKER_RUNNING: "false",
+      ...(failure === "registry" ? { SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE: "1" } : { FAKE_DOCKER_RUN_STATUS: "1" }),
+    } });
+    const request = { action: "capsule.release.install", host: { alias: "personal", domain: fixture.domain, remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname }, release: fixture.release };
+    const failed = await runHostHelper(request, { cwd: dir, env: docker.env });
+    assert.equal(JSON.parse(failed.stdout).ok, false, failed.stdout);
+    await assert.rejects(stat(preservedDeployFilePath(preserved, "new.json")), { code: "ENOENT" });
+    assert.equal(await readFile(preservedDeployFilePath(preserved, "existing.json"), "utf8"), "existing edit");
+    const retry = await writeHostedCapsuleInstallFixture(dir, { rootName: "seed-rollback", previousReleaseId: null, releaseId: "20260912T130000Z-feedface", deployFiles, fileContents: "successful seed" });
+    retry.release.restart = false;
+    const result = await runHostHelper({ ...request, release: retry.release }, { cwd: dir, env: { SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1" } });
+    assert.equal(JSON.parse(result.stdout).ok, true, result.stdout);
+    assert.equal(await readFile(preservedDeployFilePath(preserved, "new.json"), "utf8"), "successful seed");
+    assert.equal(await readFile(preservedDeployFilePath(preserved, "existing.json"), "utf8"), "existing edit");
+  });
+});
+
+
+test("Hosted deploy.files restores the pointer and release when seed cleanup fails", async () => {
+  for (const failure of ["registry", "startup", "verified-startup"]) await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleInstallFixture(dir, { rootName: "cleanup-failure", previousReleaseId: null,
+      deployFiles: [{ path: "new.json", update: "preserve" }] });
+    fixture.release.restart = failure !== "registry";
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    record.status = "registered";
+    await writeFile(fixture.registryRecordPath, JSON.stringify(record));
+    const docker = await installFakeDocker(path.join(dir, "cleanup-docker"), { env: { FAKE_DOCKER_RUNNING: "false" } });
+    const preload = path.join(dir, "fail-cleanup.mjs");
+    await writeFile(preload, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+let settlement = false; const write = fs.promises.writeFile; const stat = fs.promises.lstat;
+fs.promises.writeFile = async function(file, ...args) {
+  const result = await write.call(this, file, ...args);
+  if (String(file).includes('/registry/capsules/') && String(file).includes('.tmp-')) settlement = true;
+  return result;
+};
+fs.promises.lstat = async function(file, ...args) {
+  if (settlement && String(file) === ${JSON.stringify(preservedDeployFilePath(path.join(fixture.capsuleDir, 'preserved-files'), 'new.json'))}) throw Object.assign(new Error('injected cleanup denial'), { code: 'EACCES' });
+  return stat.call(this, file, ...args);
+}; syncBuiltinESMExports();`);
+    const registry = await readFile(fixture.registryRecordPath);
+    const result = await runHostHelper({ action: "capsule.release.install", host: { alias: "personal", domain: fixture.domain, remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname }, release: fixture.release, ...(failure === "verified-startup" ? { verification: { enabled: true } } : {}) },
+      { cwd: dir, env: { ...docker.env, NODE_OPTIONS: `--import=${preload}`, ...(failure === "registry" ? { SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE: "1" } : {}) } });
+    assert.equal(JSON.parse(result.stdout).ok, false, result.stdout);
+    const output = JSON.parse(result.stdout);
+    if (failure === "registry") assert.match(output.error.message, /cleanup is incomplete/);
+    else {
+      assert.equal(output.data.installed, false, result.stdout);
+      assert.equal(output.data.rollback.applied, true);
+      assert.equal(output.data.cleanup.complete, false);
+      assert.equal(output.data.cleanup.reason, "preserved-seed-cleanup-failed");
+      if (failure === "verified-startup") assert.equal(output.data.fallback.reason, "install-rolled-back");
+    }
+    await assert.rejects(lstat(path.join(fixture.capsuleDir, "current")), { code: "ENOENT" });
+    await assert.rejects(lstat(fixture.release.directories.release), { code: "ENOENT" });
+    assert.deepEqual(await readFile(fixture.registryRecordPath), registry);
+  });
+});
+
+
+test("Hosted deploy.files retains candidate seeds when pointer restoration fails", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleInstallFixture(dir, { rootName: "pointer-failure", previousReleaseId: null,
+      deployFiles: [{ path: "new.json", update: "preserve" }], fileContents: "retained candidate" });
+    fixture.release.restart = false;
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    record.status = "registered";
+    await writeFile(fixture.registryRecordPath, JSON.stringify(record));
+    const preload = path.join(dir, "fail-pointer.mjs");
+    await writeFile(preload, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const original = fs.promises.rm;
+fs.promises.rm = async function(file, ...args) {
+  if (String(file).endsWith('/current')) throw Object.assign(new Error('injected pointer restoration denial'), { code: 'EACCES' });
+  return original.call(this, file, ...args);
+}; syncBuiltinESMExports();`);
+    const result = await runHostHelper({ action: "capsule.release.install", host: { alias: "personal", domain: fixture.domain, remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname }, release: fixture.release },
+      { cwd: dir, env: { NODE_OPTIONS: `--import=${preload}`, SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE: "1", SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1" } });
+    assert.equal(JSON.parse(result.stdout).ok, false, result.stdout);
+    assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), fixture.release.directories.release);
+    assert.equal(await readFile(preservedDeployFilePath(path.join(fixture.capsuleDir, "preserved-files"), "new.json"), "utf8"), "retained candidate");
+    await stat(fixture.release.directories.release);
+    await stat(path.join(fixture.capsuleDir, "deploy-file-attempt.jsonl"));
+  });
+});
+
+test("Hosted deploy.files reconcile discards an unrecorded attempt and clears a recorded one", async () => {
+  await withTempDir(async (dir) => {
+    // Each install claims and consumes the incoming archive, so regenerate the
+    // fixture before every attempt; the registry record is rewritten identically.
+    const refresh = async () => {
+      const fixture = await writeHostedCapsuleInstallFixture(dir, { rootName: "reconcile-files", previousReleaseId: null,
+        deployFiles: [{ path: "new.json", update: "preserve" }], fileContents: "retained candidate" });
+      fixture.release.restart = false;
+      const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+      record.status = "registered";
+      await writeFile(fixture.registryRecordPath, JSON.stringify(record));
+      return fixture;
+    };
+    let fixture = await refresh();
+    const registry = await readFile(fixture.registryRecordPath);
+    const request = { host: { alias: "personal", domain: fixture.domain, remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname } };
+    const preload = path.join(dir, "fail-pointer.mjs");
+    await writeFile(preload, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const original = fs.promises.rm;
+fs.promises.rm = async function(file, ...args) {
+  if (String(file).endsWith('/current')) throw Object.assign(new Error('injected pointer restoration denial'), { code: 'EACCES' });
+  return original.call(this, file, ...args);
+}; syncBuiltinESMExports();`);
+    const failed = await runHostHelper({ ...request, action: "capsule.release.install", release: fixture.release },
+      { cwd: dir, env: { NODE_OPTIONS: `--import=${preload}`, SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE: "1", SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1" } });
+    assert.equal(JSON.parse(failed.stdout).ok, false, failed.stdout);
+    const journal = path.join(fixture.capsuleDir, "deploy-file-attempt.jsonl");
+    const seed = preservedDeployFilePath(path.join(fixture.capsuleDir, "preserved-files"), "new.json");
+    await stat(journal);
+
+    const blocked = await runHostHelper({ ...request, action: "capsule.start" }, { cwd: dir, env: { SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1" } });
+    assert.match(JSON.parse(blocked.stdout).error.hint, /sporades host reconcile/);
+
+    // Unrecorded attempt: unchanged seed, candidate pointer and directory are discarded.
+    const reconciled = await runHostHelper({ ...request, action: "capsule.release.reconcile" }, { cwd: dir, env: { SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1" } });
+    const outcome = JSON.parse(reconciled.stdout);
+    assert.equal(outcome.ok, true, reconciled.stdout);
+    assert.equal(outcome.data.reconciled, true);
+    assert.equal(outcome.data.committed, false);
+    assert.equal(outcome.data.release, fixture.release.id);
+    assert.deepEqual(outcome.data.actions, ["seeds-rolled-back", "current-pointer-restored", "candidate-release-removed", "journal-removed"]);
+    await assert.rejects(lstat(seed), { code: "ENOENT" });
+    assert((await readdir(path.join(fixture.capsuleDir, "preserved-files"))).some((entry) => entry.startsWith(".rollback-")), "seed retained as a recovery copy");
+    // The registry still records the fixture's previous release, so the pointer returns to it.
+    assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), path.join(fixture.capsuleDir, "releases", "20260629T120000Z-deadbeef"));
+    await assert.rejects(lstat(fixture.release.directories.release), { code: "ENOENT" });
+    await assert.rejects(lstat(journal), { code: "ENOENT" });
+    assert.deepEqual(await readFile(fixture.registryRecordPath), registry);
+    const clean = await runHostHelper({ ...request, action: "capsule.release.reconcile" }, { cwd: dir, env: { SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1" } });
+    assert.equal(JSON.parse(clean.stdout).data.reconciled, false, clean.stdout);
+
+    // An edited seed survives reconciliation even when the attempt is discarded.
+    fixture = await refresh();
+    const edited = await runHostHelper({ ...request, action: "capsule.release.install", release: fixture.release },
+      { cwd: dir, env: { NODE_OPTIONS: `--import=${preload}`, SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE: "1", SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1" } });
+    assert.equal(JSON.parse(edited.stdout).ok, false, edited.stdout);
+    await writeFile(seed, "operator edit");
+    const kept = await runHostHelper({ ...request, action: "capsule.release.reconcile" }, { cwd: dir, env: { SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1" } });
+    assert.equal(JSON.parse(kept.stdout).ok, true, kept.stdout);
+    assert.equal(await readFile(seed, "utf8"), "operator edit");
+    await rm(seed, { force: true });
+
+    // Recorded attempt: the release stays installed and only the journal clears.
+    fixture = await refresh();
+    const docker = await installFakeDocker(path.join(dir, "reconcile-docker"));
+    const installed = await runHostHelper({ ...request, action: "capsule.release.install", release: fixture.release }, { cwd: dir, env: docker.env });
+    assert.equal(JSON.parse(installed.stdout).ok, true, installed.stdout);
+    await writeFile(journal, `${JSON.stringify({ release: fixture.release.id, preservedRoot: path.join(fixture.capsuleDir, "preserved-files") })}\n${JSON.stringify({ temporary: ".seed-0123abcd-0123-0123-0123-0123456789ab" })}\n`);
+    await writeFile(path.join(fixture.capsuleDir, "preserved-files", ".seed-0123abcd-0123-0123-0123-0123456789ab"), "stale temporary");
+    const committed = await runHostHelper({ ...request, action: "capsule.release.reconcile" }, { cwd: dir, env: docker.env });
+    const committedOutcome = JSON.parse(committed.stdout);
+    assert.equal(committedOutcome.ok, true, committed.stdout);
+    assert.deepEqual(committedOutcome.data.actions, ["journal-removed"]);
+    assert.equal(committedOutcome.data.committed, true);
+    await assert.rejects(lstat(journal), { code: "ENOENT" });
+    await assert.rejects(lstat(path.join(fixture.capsuleDir, "preserved-files", ".seed-0123abcd-0123-0123-0123-0123456789ab")), { code: "ENOENT" });
+    assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), fixture.release.directories.release);
+    assert.equal(await readFile(seed, "utf8"), "retained candidate");
+    const restarted = await runHostHelper({ ...request, action: "capsule.restart" }, { cwd: dir, env: docker.env });
+    assert.equal(JSON.parse(restarted.stdout).ok, true, restarted.stdout);
+  });
+});
+
+test("Hosted deploy.files preflights recorded releases and preserved files before start or restart", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleInstallFixture(dir, { rootName: "preflight-files", previousReleaseId: null,
+      deployFiles: [{ path: "settings.json", update: "preserve" }] });
+    const docker = await installFakeDocker(path.join(dir, "preflight-docker"));
+    const request = { host: { alias: "personal", domain: fixture.domain, remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname } };
+    const installed = await runHostHelper({ ...request, action: "capsule.release.install", release: fixture.release }, { cwd: dir, env: docker.env });
+    assert.equal(installed.code, 0, installed.stdout + installed.stderr);
+    const stored = preservedDeployFilePath(path.join(fixture.capsuleDir, "preserved-files"), "settings.json");
+    const original = await readFile(fixture.registryRecordPath);
+    const route = path.join(fixture.remoteRoot, "caddy/hosts", fixture.domain, `${fixture.subname}.caddy`);
+    const routeBefore = await readFile(route);
+    for (const failure of ["missing", "unsafe", "journal", "unrecorded"]) {
+      await rm(stored, { force: true });
+      await writeFile(fixture.registryRecordPath, original);
+      if (failure === "unsafe") await symlink(path.join(fixture.release.directories.release, "settings.json"), stored);
+      if (failure === "journal") {
+        await writeFile(stored, "uncommitted seed");
+        await writeFile(path.join(fixture.capsuleDir, "deploy-file-attempt.jsonl"), JSON.stringify({ release: "uncommitted-attempt" }));
+      }
+      if (failure === "unrecorded") {
+        await writeFile(stored, "retained seed");
+        const record = JSON.parse(original);
+        record.currentRelease = null; record.releases = [];
+        await writeFile(fixture.registryRecordPath, JSON.stringify(record));
+        await writeFile(path.join(fixture.capsuleDir, "deploy-file-attempt.jsonl"), JSON.stringify({ release: fixture.release.id }));
+      }
+      const registryBefore = await readFile(fixture.registryRecordPath);
+      const before = (await docker.calls()).length;
+      for (const action of ["capsule.start", "capsule.restart", ...(failure === "journal" ? ["capsule.release.rollback"] : [])]) {
+        const failed = await runHostHelper({ ...request, action, ...(action === "capsule.release.rollback" ? { rollback: { releaseId: fixture.release.id } } : {}) }, { cwd: dir, env: docker.env });
+        assert.equal(JSON.parse(failed.stdout).ok, false, failed.stdout);
+        if (failure === "unrecorded") assert.match(failed.stdout, /not recorded/);
+        if (failure === "journal") assert.match(failed.stdout, /requires recovery/);
+        assert.deepEqual(await readFile(fixture.registryRecordPath), registryBefore);
+        assert.deepEqual(await readFile(route), routeBefore);
+      }
+      assert.equal((await docker.calls()).slice(before).filter((call) => ["stop", "rm", "run"].includes(call.args[0])).length, 0);
+    }
+  });
+});
+
+test("Hosted deploy.files rollback preflights retained storage before changing pointers", async () => {
+  await withTempDir(async (dir) => {
+    const docker = await installFakeDocker(path.join(dir, "rollback-preflight-docker"));
+    const first = await writeHostedCapsuleInstallFixture(dir, { rootName: "rollback-preflight", previousReleaseId: null,
+      releaseId: "20260912T150000Z-feedface", deployFiles: [{ path: "settings.json", update: "preserve" }] });
+    const request = { host: { alias: "personal", domain: first.domain, remoteRoot: first.remoteRoot }, capsule: { subname: first.subname } };
+    const installed = await runHostHelper({ ...request, action: "capsule.release.install", release: first.release }, { cwd: dir, env: docker.env });
+    assert.equal(installed.code, 0, installed.stdout + installed.stderr);
+    const firstRecord = await readFile(first.registryRecordPath);
+    const second = await writeHostedCapsuleInstallFixture(dir, { rootName: "rollback-preflight", previousReleaseId: null,
+      releaseId: "20260912T150100Z-feedface", deployFiles: [{ path: "settings.json" }] });
+    await writeFile(first.registryRecordPath, firstRecord);
+    const replaced = await runHostHelper({ ...request, action: "capsule.release.install", release: second.release }, { cwd: dir, env: docker.env });
+    assert.equal(replaced.code, 0, replaced.stdout + replaced.stderr);
+    const stored = preservedDeployFilePath(path.join(first.capsuleDir, "preserved-files"), "settings.json");
+    const route = path.join(first.remoteRoot, "caddy/hosts", first.domain, `${first.subname}.caddy`);
+    const registryBefore = await readFile(first.registryRecordPath);
+    const routeBefore = await readFile(route);
+    const pointerBefore = await readlink(path.join(first.capsuleDir, "current"));
+    for (const unsafe of [false, true]) {
+      await rm(stored, { force: true });
+      if (unsafe) await symlink(path.join(first.release.directories.release, "settings.json"), stored);
+      const before = (await docker.calls()).length;
+      const failed = await runHostHelper({ ...request, action: "capsule.release.rollback", rollback: { releaseId: first.release.id } }, { cwd: dir, env: docker.env });
+      assert.equal(JSON.parse(failed.stdout).ok, false, failed.stdout);
+      assert.deepEqual(await readFile(first.registryRecordPath), registryBefore);
+      assert.deepEqual(await readFile(route), routeBefore);
+      assert.equal(await readlink(path.join(first.capsuleDir, "current")), pointerBefore);
+      assert.equal((await docker.calls()).slice(before).filter((call) => ["stop", "rm", "run"].includes(call.args[0])).length, 0);
+    }
+  });
+});
+
+test("Hosted deploy.files retains historical path shapes across deploy and rollback", async () => {
+  await withTempDir(async (dir) => {
+    const docker = await installFakeDocker(path.join(dir, "shape-docker"));
+    let savedRecord; let fixture;
+    for (const [index, relative] of ["config", "config/settings.json", "config"].entries()) {
+      await rm(path.join(dir, "shape-files-runtime-files/config"), { force: true, recursive: true });
+      fixture = await writeHostedCapsuleInstallFixture(dir, { rootName: "shape-files", previousReleaseId: null,
+        releaseId: `20260912T16000${index}Z-feedface`, deployFiles: [{ path: relative, update: "preserve" }], fileContents: `seed-${index}` });
+      if (savedRecord) await writeFile(fixture.registryRecordPath, savedRecord);
+      const installed = await runHostHelper({ action: "capsule.release.install", host: { alias: "personal", domain: fixture.domain, remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname }, release: fixture.release }, { cwd: dir, env: docker.env });
+      assert.equal(installed.code, 0, installed.stdout + installed.stderr);
+      savedRecord = await readFile(fixture.registryRecordPath);
+      const stored = preservedDeployFilePath(path.join(fixture.capsuleDir, "preserved-files"), relative);
+      const run = (await docker.calls()).filter((call) => call.args[0] === "run").at(-1);
+      assert(run.args.includes(`${stored}:/app/${relative}:rw`));
+      if (index < 2) await writeFile(stored, `edit-${index}`);
+    }
+    const root = path.join(fixture.capsuleDir, "preserved-files");
+    assert.equal(await readFile(preservedDeployFilePath(root, "config"), "utf8"), "edit-0");
+    assert.equal(await readFile(preservedDeployFilePath(root, "config/settings.json"), "utf8"), "edit-1");
+    const rollback = await runHostHelper({ action: "capsule.release.rollback", host: { alias: "personal", domain: fixture.domain, remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname }, rollback: { releaseId: "20260912T160001Z-feedface" } }, { cwd: dir, env: docker.env });
+    assert.equal(rollback.code, 0, rollback.stdout + rollback.stderr);
+    const run = (await docker.calls()).filter((call) => call.args[0] === "run").at(-1);
+    assert(run.args.includes(`${preservedDeployFilePath(root, "config/settings.json")}:/app/config/settings.json:rw`));
+  });
+});
+
+test("Hosted deploy.files repairs atomic-save ownership before quiescing and preserves service on repair failure", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleInstallFixture(dir, { rootName: "restart-file-access", previousReleaseId: null,
+      deployFiles: [{ path: "settings.json", update: "preserve" }] });
+    const docker = await installFakeDocker(path.join(dir, "restart-access-docker"));
+    const request = { host: { alias: "personal", domain: fixture.domain, remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname } };
+    const installed = await runHostHelper({ ...request, action: "capsule.release.install", release: fixture.release }, { cwd: dir, env: docker.env });
+    assert.equal(installed.code, 0, installed.stdout + installed.stderr);
+    const stored = preservedDeployFilePath(path.join(fixture.capsuleDir, "preserved-files"), "settings.json");
+    await writeFile(path.join(dir, "replacement"), "atomic edit", { mode: 0o400 });
+    await rename(path.join(dir, "replacement"), stored);
+    const registry = await readFile(fixture.registryRecordPath);
+    const route = path.join(fixture.remoteRoot, "caddy/hosts", fixture.domain, `${fixture.subname}.caddy`);
+    const routeBefore = await readFile(route);
+    const count = (await docker.calls()).length;
+    const failed = await runHostHelper({ ...request, action: "capsule.restart" }, { cwd: dir, env: { ...docker.env, SPORADES_TEST_FORCE_RUNTIME_DATA_CHOWN_FAILURE: "1" } });
+    assert.equal(JSON.parse(failed.stdout).ok, false, failed.stdout);
+    assert.equal((await docker.calls()).slice(count).filter((call) => ["stop", "rm", "run"].includes(call.args[0])).length, 0);
+    assert.deepEqual(await readFile(fixture.registryRecordPath), registry);
+    assert.deepEqual(await readFile(route), routeBefore);
+    const timeline = path.join(dir, "access-timeline.jsonl");
+    const preload = path.join(dir, "track-file-repair.mjs");
+    await writeFile(preload, `import fs from 'node:fs'; import child from 'node:child_process'; import { syncBuiltinESMExports } from 'node:module';
+const original = fs.promises.open;
+fs.promises.open = async function(file, ...args) {
+  const handle = await original.call(this, file, ...args);
+  if (String(file).endsWith(${JSON.stringify(`/preserved-files/${path.basename(stored)}`)})) {
+    const chown = handle.chown.bind(handle);
+    handle.chown = async (...values) => { fs.appendFileSync(${JSON.stringify(timeline)}, JSON.stringify({ chown: values }) + '\\n'); return chown(...values); };
+  }
+  return handle;
+};
+const spawn = child.spawnSync;
+child.spawnSync = function(command, args, ...rest) {
+  if (command === 'docker' && ['stop', 'rm', 'run'].includes(args[0])) fs.appendFileSync(${JSON.stringify(timeline)}, JSON.stringify({ docker: args[0] }) + '\\n');
+  return spawn.call(this, command, args, ...rest);
+}; syncBuiltinESMExports();`);
+    const repaired = await runHostHelper({ ...request, action: "capsule.restart" }, { cwd: dir, env: { ...docker.env, NODE_OPTIONS: `--import=${preload}` } });
+    assert.equal(repaired.code, 0, repaired.stdout + repaired.stderr);
+    const events = (await readFile(timeline, "utf8")).trim().split("\n").map(JSON.parse);
+    assert.deepEqual(events[0], { chown: [10001, 10001] });
+    assert(events.findIndex((event) => event.docker === "stop") > 0);
+    assert.equal((await stat(stored)).mode & 0o777, 0o600);
+    assert.equal(await readFile(stored, "utf8"), "atomic edit");
+  });
 });

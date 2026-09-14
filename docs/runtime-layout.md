@@ -103,13 +103,37 @@ effective OpenSSH `authorized_keys` line. For Hosted Capsule releases, this
 file contains generated public key policy only; original source `file` paths
 are not copied into release archives.
 
+### Additional server files
+
+Optional `deploy.files` entries add exact project-relative files to the release.
+They appear at matching paths under `/app`, outside Sporades-managed paths.
+`replace` (the default) uses read-only release bytes. `preserve` seeds a writable
+file keyed by the hash of its logical path under the Capsule's `preserved-files/`
+directory and mounts that file at
+its declared `/app` path. Stored edits survive release changes and rollback;
+removing the declaration retains the inactive copy. Failed-install seeds are
+moved off their active paths into `.rollback-<id>` recovery files in the same
+preserved storage, so concurrent editor writes remain recoverable.
+
+Local Container sessions keep replacement snapshots in `.sporades/deploy-files/`
+and preserved copies in `.sporades/preserved-files/`. An in-flight attempt is
+journaled in `deploy-file-attempt.jsonl` beside `preserved-files/` (locally under
+`.sporades/`, on a Host in the Capsule directory); a surviving journal blocks
+lifecycle commands until `sporades deploy reconcile` or `sporades host reconcile`
+settles it. Hosted Capsules keep
+preserved copies beside `data/`, outside immutable releases. These directories
+are created only when needed. See [Additional deployment files](./reference/projects-and-configuration.md#additional-deployment-files)
+for configuration and validation rules.
+
 ## Local Container Mounts
 
 `sporades deploy` runs a local Container session with release files mounted
 read-only and persistent data mounted read-write.
 
 The local Container binding at `.sporades/binding.json` records the Docker
-container ID and name for lifecycle commands. `sporades deploy stop` stops the
+container ID and name for lifecycle commands, plus the release's `deployFiles`
+policy, its `deployFilesRoot` replacement snapshot, and `pendingDeployFileCleanup`
+snapshot paths that a later deployment or removal still has to delete. `sporades deploy stop` stops the
 bound container and keeps the binding, `sporades deploy restart` starts that
 same stopped container without rebuilding, and `sporades deploy remove`
 force-removes the bound container and deletes the binding. Persistent Capsule
@@ -264,8 +288,8 @@ of any immutable release.
 Hosted Capsules use the same Docker hardening posture as local Container
 sessions: read-only root filesystem, writable hardened `/tmp` tmpfs, dropped
 Linux capabilities, and `no-new-privileges`. Release files and optional Server
-env inputs remain read-only mounts; only the Hosted Capsule `data/` directory is
-mounted read-write. Hosted Capsule containers run as `10001:10001` from the
+env inputs remain read-only mounts; the Hosted Capsule `data/` directory and
+explicitly declared preserved files are mounted read-write. Hosted Capsule containers run as `10001:10001` from the
 Sporades Base image. Host-generated Sealed Server env private keys live in
 Hosted Capsule data state under `sealed-server-env/keys/`, not in exported
 sealed envelopes, release archives, local Host profiles, or CLI output. Host
