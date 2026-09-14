@@ -1,0 +1,1373 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { createServer } from "node:http";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { Readable } from "node:stream";
+import test from "node:test";
+import { types as utilTypes } from "node:util";
+
+import {
+  completePendingFileUpload,
+  createCurrentUserFileApi,
+  createPublicFileUrl,
+  createPendingFileUpload,
+  deletePrivateFile,
+  drainCurrentUserFileOperations,
+  getPrivateFileUrl,
+  revokeCurrentUserFileApi,
+} from "../dist/file-storage-runtime.js";
+import { handleFileHttpRoute, prepareHttpSecurity } from "../dist/http-runtime.js";
+import { openDevDatabase, routeEndpoint, runAppMessage, runEndpoint, runMutation, runQuery } from "../dist/server-runtime-source.js";
+import { capsule, endpoint, message, mutation, query } from "../dist/server.js";
+
+test("current-user File API tolerates immutable Promise intrinsics", () => {
+  const runtimeUrl = new URL("../dist/file-storage-runtime.js", import.meta.url).href;
+  const script = `
+    import { createCurrentUserFileApi, drainCurrentUserFileOperations } from ${JSON.stringify(runtimeUrl)};
+    Object.freeze(Promise);
+    Object.freeze(Promise.prototype);
+    const context = {
+      auth: { userId: "frozen-promise-user", isAuthenticated: true, isGuest: false },
+      credential: { kind: "session" },
+    };
+    const files = createCurrentUserFileApi({}, () => context);
+    if (typeof files.delete !== "function") throw new Error("File API was not created.");
+    await drainCurrentUserFileOperations(context);
+  `;
+  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("current-user File API tolerates Promise intrinsics frozen during a handler", () => {
+  const runtimeUrl = new URL("../dist/file-storage-runtime.js", import.meta.url).href;
+  const script = `
+    import { createCurrentUserFileApi, drainCurrentUserFileOperations } from ${JSON.stringify(runtimeUrl)};
+    const firstContext = {
+      auth: { userId: "freezing-promise-user", isAuthenticated: true, isGuest: false },
+      credential: { kind: "session" },
+    };
+    createCurrentUserFileApi({}, () => firstContext);
+    Object.freeze(Promise);
+    Object.freeze(Promise.prototype);
+    await drainCurrentUserFileOperations(firstContext);
+    const secondContext = {
+      auth: { userId: "post-freeze-user", isAuthenticated: true, isGuest: false },
+      credential: { kind: "session" },
+    };
+    const files = createCurrentUserFileApi({}, () => secondContext);
+    if (typeof files.delete !== "function") throw new Error("Second File API was not created.");
+    await drainCurrentUserFileOperations(secondContext);
+  `;
+  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("timed-out File continuations cannot regain authority during another handler", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "sporades-server-files-"));
+  const definition = capsule({ name: "server-files-late-continuation" });
+  const database = await openDevDatabase(
+    path.join(directory, "data.db"),
+    "",
+    {},
+    { name: definition.name, files: { storagePath: path.join(directory, "files") } },
+    definition,
+  );
+  const owner = guestAuth("late-continuation-owner");
+  const context = { auth: owner, credential: { kind: "session" } };
+  context.files = createCurrentUserFileApi(database, () => context);
+  let releaseContinuation;
+  const continuationGate = new Promise((resolve) => { releaseContinuation = resolve; });
+  let reportLateAttempt;
+  const lateAttempt = new Promise((resolve) => { reportLateAttempt = resolve; });
+
+  try {
+    const firstFile = await uploadFile(database, owner, "/late/first.txt", "first");
+    const secondFile = await uploadFile(database, owner, "/late/second.txt", "second");
+    void context.files.delete(firstFile.id).then(async () => {
+      await continuationGate;
+      try {
+        await context.files.delete(secondFile.id);
+        reportLateAttempt("deleted");
+      } catch (error) {
+        reportLateAttempt(error.message);
+      }
+    });
+    revokeCurrentUserFileApi(context);
+    await assert.rejects(
+      drainCurrentUserFileOperations(context),
+      (error) => error?.message === "File operation continuation did not settle.",
+    );
+
+    const activeContext = { auth: owner, credential: { kind: "session" } };
+    activeContext.files = createCurrentUserFileApi(database, () => activeContext);
+    releaseContinuation();
+    assert.equal(await lateAttempt, "File access is no longer active.");
+    assert.equal((await getPrivateFileUrl(database, owner, secondFile.id)).ok, true);
+    revokeCurrentUserFileApi(activeContext);
+    await drainCurrentUserFileOperations(activeContext);
+  } finally {
+    releaseContinuation?.();
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+function guestAuth(userId) {
+  return {
+    userId,
+    displayName: userId,
+    email: null,
+    picture: null,
+    isAuthenticated: false,
+    isGuest: true,
+    provider: "anonymous",
+  };
+}
+
+async function uploadFile(database, auth, filePath, contents) {
+  const pending = await createPendingFileUpload(database, auth, {
+    file: {
+      name: path.basename(filePath),
+      path: filePath,
+      type: "text/plain",
+      size: Buffer.byteLength(contents),
+    },
+  });
+  assert.equal(pending.ok, true, pending.error?.message);
+  const completed = await completePendingFileUpload(
+    database,
+    pending.data.uploadUrl.split("/").pop(),
+    Readable.from([Buffer.from(contents)]),
+  );
+  assert.equal(completed.ok, true, completed.error?.message);
+  return completed.data.file;
+}
+
+async function seedSession(database, auth, token) {
+  await database.adapter.insertAuthUser({
+    id: auth.userId,
+    createdAt: "2026-09-13T00:00:00.000Z",
+    displayName: auth.displayName,
+    email: `${auth.userId}@example.com`,
+    picture: null,
+    isAuthenticated: 1,
+    isGuest: 0,
+    provider: "email",
+  });
+  await database.adapter.insertAuthSession({
+    token,
+    userId: auth.userId,
+    provider: "email",
+    createdAt: "2026-09-13T00:00:00.000Z",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  });
+}
+
+async function startEndpointServer(database) {
+  const server = createServer(async (request, response) => {
+    if (prepareHttpSecurity(database, request, response)) return;
+    if (await routeEndpoint(database, request, response)) return;
+    if (await handleFileHttpRoute(database, request, response)) return;
+    response.writeHead(404).end("Not found");
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    close: () => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
+  };
+}
+
+test("Capsule server code can delete a File as the current user", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "sporades-server-files-"));
+  const definition = capsule({
+    name: "server-files-current-user",
+    mutations: {
+      deleteFile: mutation((ctx, fileReference) => ctx.files.delete(fileReference)),
+    },
+  });
+  const database = await openDevDatabase(
+    path.join(directory, "data.db"),
+    "",
+    {},
+    { name: definition.name, files: { storagePath: path.join(directory, "files") } },
+    definition,
+  );
+  const owner = guestAuth("file-owner");
+
+  try {
+    const file = await uploadFile(database, owner, "/documents/report.txt", "report");
+
+    const deleted = await runMutation(database, owner, "deleteFile", [file.id]);
+
+    assert.equal(deleted.error, null);
+    assert.equal(deleted.data.id, file.id);
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, false);
+  } finally {
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Capsule server File deletion denies a different user opaquely", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "sporades-server-files-"));
+  const definition = capsule({
+    name: "server-files-denied-user",
+    mutations: {
+      deleteFile: mutation((ctx, fileReference) => ctx.files.delete(fileReference)),
+    },
+  });
+  const database = await openDevDatabase(
+    path.join(directory, "data.db"),
+    "",
+    {},
+    { name: definition.name, files: { storagePath: path.join(directory, "files") } },
+    definition,
+  );
+  const owner = guestAuth("file-owner");
+  const other = guestAuth("other-user");
+
+  try {
+    const file = await uploadFile(database, owner, "/documents/private.txt", "private");
+
+    const denied = await runMutation(database, other, "deleteFile", [file.id]);
+
+    assert.deepEqual(denied.error, {
+      message: "File not found.",
+      hint: "Pass the id or absolute File path of a private file owned by the current user.",
+    });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+  } finally {
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("user-scoped File deletion keeps ambiguous paths opaque", async () => {
+  const transactionAdapter = {
+    selectLiveFileByPath: async () => [{ id: "one" }, { id: "two" }],
+  };
+  const database = {
+    adapter: {
+      withTransaction: async (callback) => await callback(transactionAdapter),
+    },
+  };
+
+  const result = await deletePrivateFile(database, guestAuth("file-owner"), "/shared/collision.txt");
+
+  assert.deepEqual(result.error, {
+    message: "File not found.",
+    hint: "Pass the id or absolute File path of a private file owned by the current user.",
+  });
+});
+
+test("userless server contexts cannot synthesize Session authority for File deletion", async () => {
+  let adapterTouched = false;
+  const api = createCurrentUserFileApi(
+    { adapter: new Proxy({}, { get() { adapterTouched = true; return undefined; } }) },
+    () => ({ auth: guestAuth("__lifecycle__") }),
+  );
+
+  await assert.rejects(
+    api.delete("file-id"),
+    (error) => error?.message === "File deletion requires a user credential.",
+  );
+  assert.equal(adapterTouched, false);
+});
+
+test("Capsule File ACL can authorize server deletion for the current user", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "sporades-server-files-"));
+  const definition = capsule({
+    name: "server-files-acl-user",
+    files: {
+      acl: {
+        delete: ({ ctx, file }) => ctx.auth.userId === "collaborator" && file.path === "/shared/review.txt",
+      },
+    },
+    mutations: {
+      deleteFile: mutation((ctx, fileReference) => ctx.files.delete(fileReference)),
+    },
+  });
+  const database = await openDevDatabase(
+    path.join(directory, "data.db"),
+    "",
+    {},
+    { name: definition.name, files: { storagePath: path.join(directory, "files") } },
+    definition,
+  );
+  const owner = guestAuth("file-owner");
+  const collaborator = guestAuth("collaborator");
+
+  try {
+    const file = await uploadFile(database, owner, "/shared/review.txt", "review");
+
+    const deleted = await runMutation(database, collaborator, "deleteFile", [file.id]);
+
+    assert.equal(deleted.error, null);
+    assert.equal(deleted.data.id, file.id);
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, false);
+  } finally {
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("endpoint File APIs retain ingress and attachment methods alongside user deletion", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "sporades-server-files-"));
+  const holder = { fileId: null };
+  const definition = capsule({
+    name: "server-files-endpoint",
+    endpoints: {
+      deleteFile: endpoint(
+        { method: "POST", path: "/files/delete", response: { fileAttachment: true } },
+        async (ctx) => ({
+          body: {
+            methods: ["claim", "inspection", "status", "attachment", "delete"]
+              .filter((name) => typeof ctx.files[name] === "function"),
+            file: await ctx.files.delete(holder.fileId),
+          },
+        }),
+      ),
+    },
+  });
+  const database = await openDevDatabase(
+    path.join(directory, "data.db"),
+    "",
+    {},
+    { name: definition.name, files: { storagePath: path.join(directory, "files") } },
+    definition,
+  );
+  const owner = {
+    ...guestAuth("endpoint-owner"),
+    email: "endpoint-owner@example.com",
+    isAuthenticated: true,
+    isGuest: false,
+    provider: "email",
+  };
+  const token = "endpoint-owner-session";
+  let server;
+
+  try {
+    await seedSession(database, owner, token);
+    const file = await uploadFile(database, owner, "/endpoint/source.txt", "endpoint");
+    holder.fileId = file.id;
+    server = await startEndpointServer(database);
+
+    const response = await fetch(`${server.baseUrl}/files/delete`, {
+      method: "POST",
+      headers: { "x-sporades-session-token": token },
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(body));
+    assert.deepEqual(body.methods, ["claim", "inspection", "status", "attachment", "delete"]);
+    assert.equal(body.file.id, file.id);
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, false);
+  } finally {
+    await server?.close();
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a failed mutation rolls back File deletion without removing its bytes", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "sporades-server-files-"));
+  const definition = capsule({
+    name: "server-files-rollback",
+    mutations: {
+      deleteThenFail: mutation(async (ctx, fileReference) => {
+        await ctx.files.delete(fileReference);
+        throw new Error("rollback deletion");
+      }),
+    },
+  });
+  const database = await openDevDatabase(
+    path.join(directory, "data.db"),
+    "",
+    {},
+    { name: definition.name, files: { storagePath: path.join(directory, "files") } },
+    definition,
+  );
+  const owner = {
+    ...guestAuth("rollback-owner"),
+    email: "rollback-owner@example.com",
+    isAuthenticated: true,
+    isGuest: false,
+    provider: "email",
+  };
+  const token = "rollback-owner-session";
+  let server;
+
+  try {
+    await seedSession(database, owner, token);
+    const file = await uploadFile(database, owner, "/rollback/source.txt", "still present");
+    const publicUrl = await createPublicFileUrl(database, owner, file.id, { noExpiry: true });
+    assert.equal(publicUrl.ok, true, publicUrl.error?.message);
+    server = await startEndpointServer(database);
+
+    const failed = await runMutation(database, owner, "deleteThenFail", [file.id], { sessionToken: token });
+
+    assert.equal(failed.error.message, "rollback deletion");
+    const response = await fetch(
+      `${server.baseUrl}/__sporades/files/private/${file.id}?v=${encodeURIComponent(file.version)}`,
+      { headers: { "x-sporades-session-token": token } },
+    );
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "still present");
+    const publicResponse = await fetch(`${server.baseUrl}${publicUrl.data.publicUrl.url}`);
+    assert.equal(publicResponse.status, 200);
+    assert.equal(await publicResponse.text(), "still present");
+  } finally {
+    await server?.close();
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("failed App messages and endpoints roll back File deletion without removing bytes", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "sporades-server-files-"));
+  const references = { message: null, endpoint: null };
+  const definition = capsule({
+    name: "server-files-handler-rollback",
+    messages: {
+      deleteThenFail: message(async (ctx) => {
+        await ctx.files.delete(references.message);
+        throw new Error("message rollback");
+      }),
+    },
+    endpoints: {
+      deleteThenFail: endpoint({ method: "POST", path: "/files/delete-then-fail" }, async (ctx) => {
+        await ctx.files.delete(references.endpoint);
+        throw new Error("endpoint rollback");
+      }),
+    },
+  });
+  const database = await openDevDatabase(
+    path.join(directory, "data.db"),
+    "",
+    {},
+    { name: definition.name, files: { storagePath: path.join(directory, "files") } },
+    definition,
+  );
+  const owner = {
+    ...guestAuth("handler-rollback-owner"),
+    email: "handler-rollback-owner@example.com",
+    isAuthenticated: true,
+    isGuest: false,
+    provider: "email",
+  };
+  const token = "handler-rollback-owner-session";
+  let server;
+
+  try {
+    await seedSession(database, owner, token);
+    const messageFile = await uploadFile(database, owner, "/rollback/message.txt", "message bytes");
+    const endpointFile = await uploadFile(database, owner, "/rollback/endpoint.txt", "endpoint bytes");
+    references.message = messageFile.id;
+    references.endpoint = endpointFile.id;
+
+    const messageResult = await runAppMessage(database, owner, "deleteThenFail", null, { sessionToken: token });
+    assert.match(messageResult.error.message, /message rollback/);
+    await assert.rejects(
+      runEndpoint(
+        database,
+        database.endpoints[0],
+        new URL("http://capsule.test/files/delete-then-fail"),
+        Object.assign(Readable.from([]), { method: "POST", headers: { "x-sporades-session-token": token } }),
+      ),
+      /endpoint rollback/,
+    );
+
+    server = await startEndpointServer(database);
+    for (const [file, contents] of [[messageFile, "message bytes"], [endpointFile, "endpoint bytes"]]) {
+      const response = await fetch(
+        `${server.baseUrl}/__sporades/files/private/${file.id}?v=${encodeURIComponent(file.version)}`,
+        { headers: { "x-sporades-session-token": token } },
+      );
+      assert.equal(response.status, 200);
+      assert.equal(await response.text(), contents);
+    }
+  } finally {
+    await server?.close();
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("retained user File deletion authority is revoked after success and rollback", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "sporades-server-files-"));
+  let retainedFiles;
+  const definition = capsule({
+    name: "server-files-revocation",
+    mutations: {
+      retain: mutation((ctx) => { retainedFiles = ctx.files; return null; }),
+      retainThenFail: mutation((ctx) => { retainedFiles = ctx.files; throw new Error("rollback retained files"); }),
+    },
+  });
+  const database = await openDevDatabase(
+    path.join(directory, "data.db"),
+    "",
+    {},
+    { name: definition.name, files: { storagePath: path.join(directory, "files") } },
+    definition,
+  );
+  const owner = guestAuth("retained-file-owner");
+
+  try {
+    const file = await uploadFile(database, owner, "/retained/source.txt", "retained");
+    assert.equal((await runMutation(database, owner, "retain", [])).error, null);
+    await assert.rejects(retainedFiles.delete(file.id), (error) => error?.message === "File access is no longer active.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    assert.match((await runMutation(database, owner, "retainThenFail", [])).error.message, /rollback retained files/);
+    await assert.rejects(retainedFiles.delete(file.id), (error) => error?.message === "File access is no longer active.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+  } finally {
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("App message cleanup drains an unawaited user File deletion before commit", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "sporades-server-files-"));
+  let releaseAcl;
+  let signalAclEntered;
+  let retainedFilesDuringDrain;
+  globalThis.__serverFileDeleteAclGate = new Promise((resolve) => { releaseAcl = resolve; });
+  globalThis.__serverFileDeleteAclEntered = new Promise((resolve) => { signalAclEntered = resolve; });
+  const definition = capsule({
+    name: "server-files-unawaited",
+    files: {
+      acl: {
+        delete: async () => {
+          globalThis.__serverFileDeleteAclEnteredResolve();
+          await globalThis.__serverFileDeleteAclGate;
+          return true;
+        },
+      },
+    },
+    messages: {
+      deleteWithoutAwait: message((ctx, fileReference) => {
+        retainedFilesDuringDrain = ctx.files;
+        void ctx.files.delete(fileReference);
+        return null;
+      }),
+    },
+  });
+  globalThis.__serverFileDeleteAclEnteredResolve = signalAclEntered;
+  const database = await openDevDatabase(
+    path.join(directory, "data.db"),
+    "",
+    {},
+    { name: definition.name, files: { storagePath: path.join(directory, "files") } },
+    definition,
+  );
+  const owner = guestAuth("unawaited-owner");
+  const collaborator = guestAuth("unawaited-collaborator");
+
+  try {
+    const file = await uploadFile(database, owner, "/unawaited/source.txt", "unawaited");
+    const protectedFile = await uploadFile(database, collaborator, "/unawaited/protected.txt", "protected");
+    let settled = false;
+    const pending = runAppMessage(database, collaborator, "deleteWithoutAwait", file.id).finally(() => { settled = true; });
+    await globalThis.__serverFileDeleteAclEntered;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled, false, "the handler transaction must drain the unawaited deletion");
+    await assert.rejects(
+      retainedFilesDuringDrain.delete(protectedFile.id),
+      (error) => error?.message === "File access is no longer active.",
+    );
+    releaseAcl();
+    assert.equal((await pending).error, null);
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, false);
+    assert.equal((await getPrivateFileUrl(database, collaborator, protectedFile.id)).ok, true);
+  } finally {
+    delete globalThis.__serverFileDeleteAclGate;
+    delete globalThis.__serverFileDeleteAclEntered;
+    delete globalThis.__serverFileDeleteAclEnteredResolve;
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("query cleanup drains an unawaited user File deletion", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "sporades-server-files-"));
+  let releaseAcl;
+  let signalAclEntered;
+  globalThis.__serverFileQueryDeleteAclGate = new Promise((resolve) => { releaseAcl = resolve; });
+  globalThis.__serverFileQueryDeleteAclEntered = new Promise((resolve) => { signalAclEntered = resolve; });
+  globalThis.__serverFileQueryDeleteAclEnteredResolve = signalAclEntered;
+  const definition = capsule({
+    name: "server-files-query-unawaited",
+    files: {
+      acl: {
+        delete: async () => {
+          globalThis.__serverFileQueryDeleteAclEnteredResolve();
+          await globalThis.__serverFileQueryDeleteAclGate;
+          return true;
+        },
+      },
+    },
+    queries: {
+      deleteWithoutAwait: query((ctx, fileReference) => {
+        void ctx.files.delete(fileReference);
+        return null;
+      }),
+      deleteChainedWithoutAwait: query((ctx, firstFileReference, secondFileReference) => {
+        void ctx.files.delete(firstFileReference).then(() => ctx.files.delete(secondFileReference));
+        return null;
+      }),
+    },
+  });
+  const database = await openDevDatabase(
+    path.join(directory, "data.db"),
+    "",
+    {},
+    { name: definition.name, files: { storagePath: path.join(directory, "files") } },
+    definition,
+  );
+  const owner = guestAuth("query-unawaited-owner");
+  const collaborator = guestAuth("query-unawaited-collaborator");
+
+  try {
+    const file = await uploadFile(database, owner, "/query/unawaited.txt", "query unawaited");
+    let settled = false;
+    const pending = runQuery(database, collaborator, "deleteWithoutAwait", [file.id]).finally(() => { settled = true; });
+    await globalThis.__serverFileQueryDeleteAclEntered;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled, false, "the query must drain the unawaited deletion");
+    releaseAcl();
+    assert.equal((await pending).error, null);
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, false);
+
+    const firstChainedFile = await uploadFile(database, owner, "/query/chained-first.txt", "first");
+    const secondChainedFile = await uploadFile(database, owner, "/query/chained-second.txt", "second");
+    globalThis.__serverFileQueryDeleteAclGate = new Promise((resolve) => { releaseAcl = resolve; });
+    globalThis.__serverFileQueryDeleteAclEntered = new Promise((resolve) => { signalAclEntered = resolve; });
+    globalThis.__serverFileQueryDeleteAclEnteredResolve = signalAclEntered;
+    const chained = runQuery(
+      database,
+      collaborator,
+      "deleteChainedWithoutAwait",
+      [firstChainedFile.id, secondChainedFile.id],
+    );
+    await globalThis.__serverFileQueryDeleteAclEntered;
+    releaseAcl();
+    assert.equal((await chained).error, null);
+    assert.equal((await getPrivateFileUrl(database, owner, firstChainedFile.id)).ok, false);
+    assert.equal((await getPrivateFileUrl(database, owner, secondChainedFile.id)).ok, false);
+  } finally {
+    delete globalThis.__serverFileQueryDeleteAclGate;
+    delete globalThis.__serverFileQueryDeleteAclEntered;
+    delete globalThis.__serverFileQueryDeleteAclEnteredResolve;
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("query cleanup reports an unawaited user File deletion failure", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "sporades-server-files-"));
+  const cachedPromiseAny = Promise.any.bind(Promise);
+  const cachedPromiseFinally = Promise.prototype.finally;
+  const nativeHandledFailures = [];
+  globalThis.__serverFileNativeRejectionHandler = ((error) => nativeHandledFailures.push(error.message)).bind(undefined);
+  const definition = capsule({
+    name: "server-files-query-unawaited-failure",
+    files: {
+      acl: {
+        delete: async () => {
+          if (globalThis.__serverFileNativeHandlerAclGate) {
+            globalThis.__serverFileNativeHandlerAclEnteredResolve();
+            await globalThis.__serverFileNativeHandlerAclGate;
+          }
+          return false;
+        },
+      },
+    },
+    queries: {
+      deleteWithoutAwait: query((ctx, fileReference) => {
+        void ctx.files.delete(fileReference);
+        return { accepted: true };
+      }),
+      deleteWithoutAwaitThenFail: query((ctx, fileReference) => {
+        void ctx.files.delete(fileReference);
+        throw new Error("Original query failure.");
+      }),
+      deleteAfterReplacingAuth: query((ctx, fileReference, replacementUserId) => {
+        ctx.auth = { ...ctx.auth, userId: replacementUserId };
+        ctx.credential = { kind: "session" };
+        return ctx.files.delete(fileReference);
+      }),
+      deleteInSharedDiscardedAggregate: query(async (ctx, fileReference) => {
+        globalThis.__serverFileSharedDeletes.push(ctx.files.delete(fileReference));
+        if (globalThis.__serverFileSharedDeletes.length === 2) {
+          void Promise.all(globalThis.__serverFileSharedDeletes);
+          globalThis.__serverFileSharedDeletesReadyResolve();
+        }
+        await globalThis.__serverFileSharedDeletesReady;
+        return { accepted: true };
+      }),
+      deleteInPendingDiscardedAny: query((ctx, fileReference) => {
+        void Promise.any([
+          ctx.files.delete(fileReference),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Delayed rejection.")), 25)),
+        ]);
+        return { accepted: true };
+      }),
+      handlePendingAny: query(async (ctx, fileReference) => {
+        const value = await Promise.any([
+          ctx.files.delete(fileReference),
+          new Promise((resolve) => setTimeout(() => resolve("fallback"), 25)),
+        ]);
+        return { value };
+      }),
+      handleCachedPendingAny: query(async (ctx, fileReference) => {
+        const value = await cachedPromiseAny([
+          ctx.files.delete(fileReference),
+          Promise.resolve("fallback"),
+        ]);
+        return { value };
+      }),
+      deleteInLazyPendingDiscardedAny: query((ctx, fileReference) => {
+        function* inputs() {
+          yield ctx.files.delete(fileReference);
+          yield new Promise((_, reject) => setTimeout(() => reject(new Error("Delayed rejection.")), 25));
+        }
+        void Promise.any(inputs());
+        return { accepted: true };
+      }),
+      deleteInLazyPendingDiscardedAnyAfterUnrelatedRoot: query((ctx, fileReference) => {
+        function* inputs() {
+          void Promise.resolve("unrelated");
+          yield ctx.files.delete(fileReference);
+          yield new Promise((_, reject) => setTimeout(() => reject(new Error("Delayed rejection.")), 25));
+        }
+        void Promise.any(inputs());
+        return { accepted: true };
+      }),
+      handleLazyPendingAny: query(async (ctx, fileReference) => {
+        function* inputs() {
+          yield ctx.files.delete(fileReference);
+          yield new Promise((resolve) => setTimeout(() => resolve("fallback"), 25));
+        }
+        return { value: await Promise.any(inputs()) };
+      }),
+      deleteInNeverSettlingAny: query((ctx, fileReference) => {
+        void Promise.any([ctx.files.delete(fileReference), new Promise(() => {})]);
+        return { accepted: true };
+      }),
+      handleNeverSettlingAny: query((ctx, fileReference) => {
+        void Promise.any([ctx.files.delete(fileReference), new Promise(() => {})]).catch(() => {});
+        return { accepted: true };
+      }),
+      deleteInCachedLazyPendingAny: query((ctx, fileReference) => {
+        function* inputs() {
+          void Promise.resolve("unrelated");
+          yield ctx.files.delete(fileReference);
+          yield new Promise(() => {});
+        }
+        void cachedPromiseAny(inputs());
+        return { accepted: true };
+      }),
+      recoverDeleteFailure: query(async (ctx, fileReference) => {
+        const pendingDeletion = ctx.files.delete(fileReference);
+        const isPromise = pendingDeletion instanceof Promise;
+        const isNativePromise = utilTypes.isPromise(pendingDeletion);
+        try {
+          await pendingDeletion;
+          return { recovered: false };
+        } catch (error) {
+          return { recovered: true, isPromise, isNativePromise, message: error.message };
+        }
+      }),
+    },
+    mutations: {
+      deleteInDiscardedAggregate: mutation((ctx, fileReference) => {
+        void Promise.all([ctx.files.delete(fileReference)]);
+        return { accepted: true };
+      }),
+      deleteInSettledDiscardedAggregate: mutation(async (ctx, fileReference) => {
+        void Promise.all([ctx.files.delete(fileReference)]).then(() => ({ deleted: true }));
+        await new Promise((resolve) => setImmediate(resolve));
+        return { accepted: true };
+      }),
+      deleteInSettledDiscardedResolve: mutation(async (ctx, fileReference) => {
+        void Promise.resolve(ctx.files.delete(fileReference));
+        await new Promise((resolve) => setImmediate(resolve));
+        return { accepted: true };
+      }),
+      deleteInSettledDiscardedReturnedChain: mutation(async (ctx, fileReference) => {
+        void Promise.resolve().then(() => ctx.files.delete(fileReference));
+        await new Promise((resolve) => setImmediate(resolve));
+        return { accepted: true };
+      }),
+      deleteInSettledDiscardedAsyncWrapper: mutation(async (ctx, fileReference) => {
+        void (async () => { await ctx.files.delete(fileReference); })();
+        await new Promise((resolve) => setImmediate(resolve));
+        return { accepted: true };
+      }),
+      deleteInSettledDiscardedManualForward: mutation(async (ctx, fileReference) => {
+        void new Promise((resolve, reject) => ctx.files.delete(fileReference).then(resolve, reject));
+        await new Promise((resolve) => setImmediate(resolve));
+        return { accepted: true };
+      }),
+      deleteInSettledDeferredManualForward: mutation(async (ctx, fileReference) => {
+        void new Promise((resolve, reject) => {
+          void Promise.resolve().then(() => ctx.files.delete(fileReference).then(resolve, reject));
+        });
+        await new Promise((resolve) => setImmediate(resolve));
+        return { accepted: true };
+      }),
+      recoverAggregateDeleteFailure: mutation(async (ctx, fileReference) => {
+        try {
+          await Promise.all([ctx.files.delete(fileReference)]);
+          return { recovered: false };
+        } catch (error) {
+          return { recovered: true, message: error.message };
+        }
+      }),
+      recoverResolvedDeleteFailure: mutation(async (ctx, fileReference) => {
+        try {
+          await Promise.resolve(ctx.files.delete(fileReference));
+          return { recovered: false };
+        } catch (error) {
+          return { recovered: true, message: error.message };
+        }
+      }),
+      recoverReturnedChainDeleteFailure: mutation(async (ctx, fileReference) => {
+        try {
+          await Promise.resolve().then(() => ctx.files.delete(fileReference));
+          return { recovered: false };
+        } catch (error) {
+          return { recovered: true, message: error.message };
+        }
+      }),
+      recoverAsyncWrapperDeleteFailure: mutation(async (ctx, fileReference) => {
+        try {
+          await (async () => { await ctx.files.delete(fileReference); })();
+          return { recovered: false };
+        } catch (error) {
+          return { recovered: true, message: error.message };
+        }
+      }),
+      recoverManualForwardDeleteFailure: mutation(async (ctx, fileReference) => {
+        try {
+          await new Promise((resolve, reject) => ctx.files.delete(fileReference).then(resolve, reject));
+          return { recovered: false };
+        } catch (error) {
+          return { recovered: true, message: error.message };
+        }
+      }),
+      recoverDeferredManualForwardDeleteFailure: mutation(async (ctx, fileReference) => {
+        try {
+          await new Promise((resolve, reject) => {
+            void Promise.resolve().then(() => ctx.files.delete(fileReference).then(resolve, reject));
+          });
+          return { recovered: false };
+        } catch (error) {
+          return { recovered: true, message: error.message };
+        }
+      }),
+      handleManualForwardDeleteFailure: mutation((ctx, fileReference) => {
+        void new Promise((resolve) => resolve(ctx.files.delete(fileReference))).catch(() => {});
+        return { accepted: true };
+      }),
+      handleDeferredOuterManualForwardDeleteFailure: mutation((ctx, fileReference) => {
+        void new Promise((resolve) => {
+          void Promise.resolve().then(() => resolve(ctx.files.delete(fileReference)));
+        }).catch(() => {});
+        return { accepted: true };
+      }),
+      handleDeferredOuterManualForwardAfterUnrelatedRoots: mutation((ctx, fileReference) => {
+        void new Promise((resolve) => {
+          void Promise.resolve().then(() => {
+            void new Promise(() => {});
+            void new Promise(() => {});
+            resolve(ctx.files.delete(fileReference));
+          });
+        }).catch(() => {});
+        return { accepted: true };
+      }),
+      handleDeleteFailureWithNativeCallback: mutation((ctx, fileReference) => {
+        void ctx.files.delete(fileReference).then(undefined, globalThis.__serverFileNativeRejectionHandler);
+        return { accepted: true };
+      }),
+      handleDeleteFailureWithDiscardedCatch: mutation((ctx, fileReference) => {
+        void ctx.files.delete(fileReference).catch(() => undefined);
+        return { accepted: true };
+      }),
+      rethrowDeleteFailureFromDiscardedCatch: mutation((ctx, fileReference) => {
+        void ctx.files.delete(fileReference).catch((error) => { throw error; });
+        return { accepted: true };
+      }),
+      replaceDeleteFailureFromDiscardedCatch: mutation((ctx, fileReference) => {
+        void ctx.files.delete(fileReference).catch(() => { throw new Error("Post-processing failed."); });
+        return { accepted: true };
+      }),
+      rejectDeleteFailureFromDiscardedCatch: mutation((ctx, fileReference) => {
+        void ctx.files.delete(fileReference).catch((error) => Promise.reject(error));
+        return { accepted: true };
+      }),
+      asyncRethrowDeleteFailureFromDiscardedCatch: mutation((ctx, fileReference) => {
+        void ctx.files.delete(fileReference).catch(async (error) => {
+          await Promise.resolve();
+          throw error;
+        });
+        return { accepted: true };
+      }),
+      delayedAsyncRethrowDeleteFailureFromDiscardedCatch: mutation((ctx, fileReference) => {
+        void ctx.files.delete(fileReference).catch(async (error) => {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          throw error;
+        });
+        return { accepted: true };
+      }),
+      handleDelayedAsyncDeleteFailure: mutation((ctx, fileReference) => {
+        void ctx.files.delete(fileReference).catch(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        });
+        return { accepted: true };
+      }),
+      handleSlowAsyncDeleteFailure: mutation((ctx, fileReference) => {
+        void ctx.files.delete(fileReference).catch(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 1_250));
+        });
+        return { accepted: true };
+      }),
+      handleSlowAggregateDeleteFailure: mutation((ctx, fileReference) => {
+        void Promise.all([ctx.files.delete(fileReference)]).catch(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 1_250));
+        });
+        return { accepted: true };
+      }),
+      discardFinallyDeleteFailure: mutation((ctx, fileReference) => {
+        void ctx.files.delete(fileReference).finally(() => {});
+        return { accepted: true };
+      }),
+      handleFinallyDeleteFailure: mutation((ctx, fileReference) => {
+        void ctx.files.delete(fileReference).finally(() => {}).catch(() => {});
+        return { accepted: true };
+      }),
+      discardGenericFinallyDeleteFailure: mutation((ctx, fileReference) => {
+        void Promise.prototype.finally.call(ctx.files.delete(fileReference), () => {});
+        return { accepted: true };
+      }),
+      discardCachedFinallyDeleteFailure: mutation((ctx, fileReference) => {
+        void cachedPromiseFinally.call(ctx.files.delete(fileReference), () => {});
+        return { accepted: true };
+      }),
+      rejectAfterSuccessfulDelete: mutation((ctx, fileReference) => {
+        void ctx.files.delete(fileReference).then(() => { throw new Error("Post-delete failure."); });
+        return { accepted: true };
+      }),
+      deleteInSlowRejectingAggregate: mutation((ctx, fileReference) => {
+        void Promise.all([
+          ctx.files.delete(fileReference),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Delayed aggregate failure.")), 1_250)),
+        ]);
+        return { accepted: true };
+      }),
+      deleteInNeverSettlingFulfillment: mutation((ctx, fileReference) => {
+        void ctx.files.delete(fileReference).then(() => new Promise(() => {}));
+        return { accepted: true };
+      }),
+      delayedAsyncRethrowResolvedDeleteFailure: mutation((ctx, fileReference) => {
+        void Promise.resolve(ctx.files.delete(fileReference)).catch(async (error) => {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          throw error;
+        });
+        return { accepted: true };
+      }),
+      handleDelayedAsyncResolvedDeleteFailure: mutation((ctx, fileReference) => {
+        void Promise.resolve(ctx.files.delete(fileReference)).catch(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        });
+        return { accepted: true };
+      }),
+      recoverDeleteFailureWithPrototypeThen: mutation(async (ctx, fileReference) => {
+        const pendingDeletion = ctx.files.delete(fileReference);
+        const recovered = await Promise.prototype.then.call(
+          pendingDeletion,
+          () => ({ recovered: false }),
+          (error) => ({ recovered: true, message: error.message }),
+        );
+        return { isNativePromise: utilTypes.isPromise(pendingDeletion), ...recovered };
+      }),
+      handleRethrownDeleteFailureWithPrototypeThen: mutation((ctx, fileReference) => {
+        const forwarded = ctx.files.delete(fileReference).catch((error) => { throw error; });
+        void Promise.prototype.then.call(forwarded, undefined, () => undefined);
+        return { accepted: true };
+      }),
+      rethrowRethrownDeleteFailureWithPrototypeThen: mutation((ctx, fileReference) => {
+        const forwarded = ctx.files.delete(fileReference).catch((error) => { throw error; });
+        void Promise.prototype.then.call(forwarded, undefined, (error) => { throw error; });
+        return { accepted: true };
+      }),
+      handlePendingAggregateDeleteFailure: mutation((ctx, fileReference) => {
+        void Promise.all([ctx.files.delete(fileReference)]).catch(globalThis.__serverFileNativeRejectionHandler);
+        return { accepted: true };
+      }),
+    },
+  });
+  const database = await openDevDatabase(
+    path.join(directory, "data.db"),
+    "",
+    {},
+    { name: definition.name, files: { storagePath: path.join(directory, "files") } },
+    definition,
+  );
+  const owner = guestAuth("query-unawaited-failure-owner");
+  const other = guestAuth("query-unawaited-failure-other");
+
+  try {
+    const file = await uploadFile(database, owner, "/query/unawaited-failure.txt", "still here");
+    const otherFile = await uploadFile(database, other, "/query/post-delete-failure.txt", "also still here");
+    const slowAggregateFile = await uploadFile(database, other, "/query/slow-aggregate.txt", "still here too");
+    const neverSettlingFulfillmentFile = await uploadFile(database, other, "/query/pending-fulfillment.txt", "still here three");
+    const result = await runQuery(database, other, "deleteWithoutAwait", [file.id]);
+
+    assert.equal(result.data, null);
+    assert.equal(result.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const rejectedAfterSuccessfulDelete = await runMutation(database, other, "rejectAfterSuccessfulDelete", [otherFile.id]);
+    assert.equal(rejectedAfterSuccessfulDelete.error.message, "Post-delete failure.");
+    assert.equal((await getPrivateFileUrl(database, other, otherFile.id)).ok, true);
+
+    const slowAggregate = await runMutation(database, other, "deleteInSlowRejectingAggregate", [slowAggregateFile.id]);
+    assert.equal(slowAggregate.error.message, "File operation continuation did not settle.");
+    assert.equal((await getPrivateFileUrl(database, other, slowAggregateFile.id)).ok, true);
+
+    const neverSettlingFulfillmentStartedAt = Date.now();
+    const neverSettlingFulfillment = await runMutation(
+      database,
+      other,
+      "deleteInNeverSettlingFulfillment",
+      [neverSettlingFulfillmentFile.id],
+    );
+    assert.equal(neverSettlingFulfillment.error.message, "File operation continuation did not settle.");
+    assert.ok(Date.now() - neverSettlingFulfillmentStartedAt < 3_000, "started continuations must remain bounded");
+    assert.equal((await getPrivateFileUrl(database, other, neverSettlingFulfillmentFile.id)).ok, true);
+
+    const discardedAny = await runQuery(database, other, "deleteInPendingDiscardedAny", [file.id]);
+    assert.equal(discardedAny.data, null);
+    assert.equal(discardedAny.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const handledAny = await runQuery(database, other, "handlePendingAny", [file.id]);
+    assert.equal(handledAny.error, null);
+    assert.deepEqual(handledAny.data, { value: "fallback" });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const handledCachedAny = await runQuery(database, other, "handleCachedPendingAny", [file.id]);
+    assert.equal(handledCachedAny.error, null);
+    assert.deepEqual(handledCachedAny.data, { value: "fallback" });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const discardedLazyAny = await runQuery(database, other, "deleteInLazyPendingDiscardedAny", [file.id]);
+    assert.equal(discardedLazyAny.data, null);
+    assert.equal(discardedLazyAny.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const discardedLazyAnyAfterUnrelatedRoot = await runQuery(
+      database,
+      other,
+      "deleteInLazyPendingDiscardedAnyAfterUnrelatedRoot",
+      [file.id],
+    );
+    assert.equal(discardedLazyAnyAfterUnrelatedRoot.data, null);
+    assert.equal(discardedLazyAnyAfterUnrelatedRoot.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const handledLazyAny = await runQuery(database, other, "handleLazyPendingAny", [file.id]);
+    assert.equal(handledLazyAny.error, null);
+    assert.deepEqual(handledLazyAny.data, { value: "fallback" });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const neverSettlingStartedAt = Date.now();
+    const neverSettlingAny = await runQuery(database, other, "deleteInNeverSettlingAny", [file.id]);
+    assert.equal(neverSettlingAny.data, null);
+    assert.equal(neverSettlingAny.error.message, "File not found.");
+    assert.ok(Date.now() - neverSettlingStartedAt < 2_000, "pending forwarding cleanup must be bounded");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const handledNeverSettlingStartedAt = Date.now();
+    const handledNeverSettlingAny = await runQuery(database, other, "handleNeverSettlingAny", [file.id]);
+    assert.equal(handledNeverSettlingAny.data, null);
+    assert.equal(handledNeverSettlingAny.error.message, "File not found.");
+    assert.ok(Date.now() - handledNeverSettlingStartedAt < 2_000, "inactive rejection handlers must not block cleanup");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const cachedLazyPendingAny = await runQuery(database, other, "deleteInCachedLazyPendingAny", [file.id]);
+    assert.equal(cachedLazyPendingAny.data, null);
+    assert.equal(cachedLazyPendingAny.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const replacedAuth = await runQuery(database, other, "deleteAfterReplacingAuth", [file.id, owner.userId]);
+    assert.equal(replacedAuth.data, null);
+    assert.equal(replacedAuth.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const aggregate = await runMutation(database, other, "deleteInDiscardedAggregate", [file.id]);
+    assert.equal(aggregate.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const settledAggregate = await runMutation(database, other, "deleteInSettledDiscardedAggregate", [file.id]);
+    assert.equal(settledAggregate.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const settledResolve = await runMutation(database, other, "deleteInSettledDiscardedResolve", [file.id]);
+    assert.equal(settledResolve.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const settledReturnedChain = await runMutation(database, other, "deleteInSettledDiscardedReturnedChain", [file.id]);
+    assert.equal(settledReturnedChain.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const settledAsyncWrapper = await runMutation(database, other, "deleteInSettledDiscardedAsyncWrapper", [file.id]);
+    assert.equal(settledAsyncWrapper.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const settledManualForward = await runMutation(database, other, "deleteInSettledDiscardedManualForward", [file.id]);
+    assert.equal(settledManualForward.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const settledDeferredManualForward = await runMutation(database, other, "deleteInSettledDeferredManualForward", [file.id]);
+    assert.equal(settledDeferredManualForward.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const recoveredAggregate = await runMutation(database, other, "recoverAggregateDeleteFailure", [file.id]);
+    assert.equal(recoveredAggregate.error, null);
+    assert.deepEqual(recoveredAggregate.data, { recovered: true, message: "File not found." });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const recoveredResolve = await runMutation(database, other, "recoverResolvedDeleteFailure", [file.id]);
+    assert.equal(recoveredResolve.error, null);
+    assert.deepEqual(recoveredResolve.data, { recovered: true, message: "File not found." });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const recoveredReturnedChain = await runMutation(database, other, "recoverReturnedChainDeleteFailure", [file.id]);
+    assert.equal(recoveredReturnedChain.error, null);
+    assert.deepEqual(recoveredReturnedChain.data, { recovered: true, message: "File not found." });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const recoveredAsyncWrapper = await runMutation(database, other, "recoverAsyncWrapperDeleteFailure", [file.id]);
+    assert.equal(recoveredAsyncWrapper.error, null);
+    assert.deepEqual(recoveredAsyncWrapper.data, { recovered: true, message: "File not found." });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const recoveredManualForward = await runMutation(database, other, "recoverManualForwardDeleteFailure", [file.id]);
+    assert.equal(recoveredManualForward.error, null);
+    assert.deepEqual(recoveredManualForward.data, { recovered: true, message: "File not found." });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const recoveredDeferredManualForward = await runMutation(database, other, "recoverDeferredManualForwardDeleteFailure", [file.id]);
+    assert.equal(recoveredDeferredManualForward.error, null);
+    assert.deepEqual(recoveredDeferredManualForward.data, { recovered: true, message: "File not found." });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const handledManualForward = await runMutation(database, other, "handleManualForwardDeleteFailure", [file.id]);
+    assert.equal(handledManualForward.error, null);
+    assert.deepEqual(handledManualForward.data, { accepted: true });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const handledDeferredOuterManualForward = await runMutation(
+      database,
+      other,
+      "handleDeferredOuterManualForwardDeleteFailure",
+      [file.id],
+    );
+    assert.equal(handledDeferredOuterManualForward.error, null);
+    assert.deepEqual(handledDeferredOuterManualForward.data, { accepted: true });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const handledDeferredAfterUnrelatedRoots = await runMutation(
+      database,
+      other,
+      "handleDeferredOuterManualForwardAfterUnrelatedRoots",
+      [file.id],
+    );
+    assert.equal(handledDeferredAfterUnrelatedRoots.error, null);
+    assert.deepEqual(handledDeferredAfterUnrelatedRoots.data, { accepted: true });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const handledDiscardedCatch = await runMutation(database, other, "handleDeleteFailureWithDiscardedCatch", [file.id]);
+    assert.equal(handledDiscardedCatch.error, null);
+    assert.deepEqual(handledDiscardedCatch.data, { accepted: true });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const rethrownDiscardedCatch = await runMutation(database, other, "rethrowDeleteFailureFromDiscardedCatch", [file.id]);
+    assert.equal(rethrownDiscardedCatch.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const replacedDiscardedCatch = await runMutation(database, other, "replaceDeleteFailureFromDiscardedCatch", [file.id]);
+    assert.equal(replacedDiscardedCatch.error.message, "Post-processing failed.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const rejectedDiscardedCatch = await runMutation(database, other, "rejectDeleteFailureFromDiscardedCatch", [file.id]);
+    assert.equal(rejectedDiscardedCatch.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const asyncRethrownDiscardedCatch = await runMutation(database, other, "asyncRethrowDeleteFailureFromDiscardedCatch", [file.id]);
+    assert.equal(asyncRethrownDiscardedCatch.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const delayedAsyncRethrownDiscardedCatch = await runMutation(database, other, "delayedAsyncRethrowDeleteFailureFromDiscardedCatch", [file.id]);
+    assert.equal(delayedAsyncRethrownDiscardedCatch.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const handledDelayedAsyncDeleteFailure = await runMutation(database, other, "handleDelayedAsyncDeleteFailure", [file.id]);
+    assert.equal(handledDelayedAsyncDeleteFailure.error, null);
+    assert.deepEqual(handledDelayedAsyncDeleteFailure.data, { accepted: true });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const handledSlowAsyncDeleteFailure = await runMutation(database, other, "handleSlowAsyncDeleteFailure", [file.id]);
+    assert.equal(handledSlowAsyncDeleteFailure.error, null);
+    assert.deepEqual(handledSlowAsyncDeleteFailure.data, { accepted: true });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const handledSlowAggregateDeleteFailure = await runMutation(database, other, "handleSlowAggregateDeleteFailure", [file.id]);
+    assert.equal(handledSlowAggregateDeleteFailure.error, null);
+    assert.deepEqual(handledSlowAggregateDeleteFailure.data, { accepted: true });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const discardedFinallyDeleteFailure = await runMutation(database, other, "discardFinallyDeleteFailure", [file.id]);
+    assert.equal(discardedFinallyDeleteFailure.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const handledFinallyDeleteFailure = await runMutation(database, other, "handleFinallyDeleteFailure", [file.id]);
+    assert.equal(handledFinallyDeleteFailure.error, null);
+    assert.deepEqual(handledFinallyDeleteFailure.data, { accepted: true });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const discardedGenericFinallyDeleteFailure = await runMutation(database, other, "discardGenericFinallyDeleteFailure", [file.id]);
+    assert.equal(discardedGenericFinallyDeleteFailure.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const discardedCachedFinallyDeleteFailure = await runMutation(database, other, "discardCachedFinallyDeleteFailure", [file.id]);
+    assert.equal(discardedCachedFinallyDeleteFailure.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const delayedAsyncRethrownResolvedDeleteFailure = await runMutation(database, other, "delayedAsyncRethrowResolvedDeleteFailure", [file.id]);
+    assert.equal(delayedAsyncRethrownResolvedDeleteFailure.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const handledDelayedAsyncResolvedDeleteFailure = await runMutation(database, other, "handleDelayedAsyncResolvedDeleteFailure", [file.id]);
+    assert.equal(handledDelayedAsyncResolvedDeleteFailure.error, null);
+    assert.deepEqual(handledDelayedAsyncResolvedDeleteFailure.data, { accepted: true });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const prototypeThenRecovered = await runMutation(database, other, "recoverDeleteFailureWithPrototypeThen", [file.id]);
+    assert.equal(prototypeThenRecovered.error, null);
+    assert.deepEqual(prototypeThenRecovered.data, {
+      isNativePromise: true,
+      recovered: true,
+      message: "File not found.",
+    });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const prototypeThenHandled = await runMutation(database, other, "handleRethrownDeleteFailureWithPrototypeThen", [file.id]);
+    assert.equal(prototypeThenHandled.error, null);
+    assert.deepEqual(prototypeThenHandled.data, { accepted: true });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const prototypeThenRethrown = await runMutation(database, other, "rethrowRethrownDeleteFailureWithPrototypeThen", [file.id]);
+    assert.equal(prototypeThenRethrown.error.message, "File not found.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    let releaseNativeAcl;
+    let signalNativeAclEntered;
+    globalThis.__serverFileNativeHandlerAclGate = new Promise((resolve) => { releaseNativeAcl = resolve; });
+    globalThis.__serverFileNativeHandlerAclEntered = new Promise((resolve) => { signalNativeAclEntered = resolve; });
+    globalThis.__serverFileNativeHandlerAclEnteredResolve = signalNativeAclEntered;
+    const nativeHandled = runMutation(database, other, "handleDeleteFailureWithNativeCallback", [file.id]);
+    await globalThis.__serverFileNativeHandlerAclEntered;
+    releaseNativeAcl();
+    assert.equal((await nativeHandled).error, null);
+    assert.deepEqual(nativeHandledFailures, ["File not found."]);
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    globalThis.__serverFileNativeHandlerAclGate = new Promise((resolve) => { releaseNativeAcl = resolve; });
+    globalThis.__serverFileNativeHandlerAclEntered = new Promise((resolve) => { signalNativeAclEntered = resolve; });
+    globalThis.__serverFileNativeHandlerAclEnteredResolve = signalNativeAclEntered;
+    const aggregateHandled = runMutation(database, other, "handlePendingAggregateDeleteFailure", [file.id]);
+    await globalThis.__serverFileNativeHandlerAclEntered;
+    releaseNativeAcl();
+    assert.equal((await aggregateHandled).error, null);
+    assert.deepEqual(nativeHandledFailures, ["File not found.", "File not found."]);
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    globalThis.__serverFileSharedDeletes = [];
+    globalThis.__serverFileSharedDeletesReady = new Promise((resolve) => {
+      globalThis.__serverFileSharedDeletesReadyResolve = resolve;
+    });
+    const sharedAggregateResults = await Promise.all([
+      runQuery(database, other, "deleteInSharedDiscardedAggregate", [file.id]),
+      runQuery(database, other, "deleteInSharedDiscardedAggregate", [file.id]),
+    ]);
+    assert.deepEqual(sharedAggregateResults.map((result) => result.error?.message), [
+      "File not found.",
+      "File not found.",
+    ]);
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const alreadyFailed = await runQuery(database, other, "deleteWithoutAwaitThenFail", [file.id]);
+    assert.equal(alreadyFailed.data, null);
+    assert.equal(alreadyFailed.error.message, "Original query failure.");
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+
+    const recovered = await runQuery(database, other, "recoverDeleteFailure", [file.id]);
+    assert.equal(recovered.error, null);
+    assert.deepEqual(recovered.data, {
+      recovered: true,
+      isPromise: true,
+      isNativePromise: true,
+      message: "File not found.",
+    });
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+  } finally {
+    delete globalThis.__serverFileNativeRejectionHandler;
+    delete globalThis.__serverFileNativeHandlerAclGate;
+    delete globalThis.__serverFileNativeHandlerAclEntered;
+    delete globalThis.__serverFileNativeHandlerAclEnteredResolve;
+    delete globalThis.__serverFileSharedDeletes;
+    delete globalThis.__serverFileSharedDeletesReady;
+    delete globalThis.__serverFileSharedDeletesReadyResolve;
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("query middleware cannot retain user File deletion authority", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "sporades-server-files-"));
+  const definition = capsule({ name: "server-files-query-revocation" });
+  const database = await openDevDatabase(
+    path.join(directory, "data.db"),
+    "",
+    {},
+    { name: definition.name, files: { storagePath: path.join(directory, "files") } },
+    definition,
+  );
+  const owner = guestAuth("query-file-owner");
+
+  try {
+    const file = await uploadFile(database, owner, "/query/source.txt", "query");
+    database.contextMiddleware = ["(ctx) => { globalThis.__retainedQueryFiles = ctx.files; return { ...ctx }; }"];
+    const result = await runQuery(database, owner, "missingQuery", []);
+    assert.match(result.error.message, /Unknown query/);
+    await assert.rejects(
+      globalThis.__retainedQueryFiles.delete(file.id),
+      (error) => error?.message === "File access is no longer active.",
+    );
+    assert.equal((await getPrivateFileUrl(database, owner, file.id)).ok, true);
+  } finally {
+    delete globalThis.__retainedQueryFiles;
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

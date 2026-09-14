@@ -131,7 +131,7 @@ Options:
   --json              Write JSON output
   --help, -h          Show this help
 `,
-  deploy: `Usage: sporades deploy [status|stop|restart|remove|reset|ssh] [options]
+  deploy: `Usage: sporades deploy [status|stop|restart|reconcile|remove|reset|ssh] [options]
 
 Start and manage a local Container session.
 
@@ -140,6 +140,7 @@ Commands:
   deploy status       Print Container session status
   deploy stop         Stop the running Container session
   deploy restart      Restart the running Container session
+  deploy reconcile    Settle an interrupted deployment-file attempt
   deploy ssh          Inspect effective Container SSH access
   deploy remove       Remove the Container session
   deploy reset        Remove the Container session and local container state
@@ -169,6 +170,7 @@ Capsule commands:
   start <subname>     Start a Hosted Capsule
   stop <subname>      Stop a Hosted Capsule
   restart <subname>   Restart a Hosted Capsule
+  reconcile <subname> Settle an interrupted deployment-file attempt
   ssh [subname]       Inspect effective Hosted Capsule SSH access
   stats [subname]     Print Host server or Hosted Capsule stats
   logs [source]       Print Hosted Capsule logs

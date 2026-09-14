@@ -106,6 +106,11 @@ application capabilities may not be Sporades Users. The handler must derive the
 exact File from current domain authorization, retention, and safety state. Do
 not accept an arbitrary request-supplied File ID and pass it through.
 
+User-scoped `ctx.files.delete(fileReference)` is independent of attachment
+authority and is available whether or not the endpoint declares
+`response: { fileAttachment: true }`. It continues to require current-user
+ownership or an explicit `files.acl.delete` decision.
+
 `ctx.files.attachment()` creates an opaque, runtime-only endpoint result. It
 accepts only the exact File `id` and `version` plus a presentation filename;
 plain objects that resemble it are ordinary endpoint values and cannot cause a
@@ -181,10 +186,52 @@ ACL explicitly permits the deletion:
 await files.delete(file.id);
 ```
 
+Trusted Capsule current-user handlers use the equivalent user-scoped operation
+directly, including from queries, mutations, App messages, current-user Jobs,
+and Custom endpoints:
+
+```ts
+mutations: {
+  deleteFile: mutation(async (ctx, fileReference: string) => {
+    const deletedFile = await ctx.files.delete(fileReference);
+    return { id: deletedFile.id, path: deletedFile.path };
+  }),
+}
+```
+
+`ctx.files.delete(...)` resolves to the deleted File metadata. It uses the
+frozen `ctx.auth` and `ctx.credential` snapshot admitted when the handler
+context was created, so replacing either context property cannot change the
+actor. That admitted actor must own the File or be allowed by the declared
+`files.acl.delete` rule. Missing, ambiguous, deleted, and unauthorized
+references fail with the same opaque File-not-found error; policy details and
+File existence are not disclosed.
+
+Scheduled Jobs receive a `PrivilegedContext` instead of a current-user context.
+Their `ctx.files.delete(...)` is the explicitly privileged operation: it does
+not apply ownership or `files.acl.delete`, and returns a structured result with
+the deleted metadata at `result.data.file` when `result.ok` is true.
+
+The user-scoped operation requires an actual Credential. Userless lifecycle
+hooks cannot manufacture Session provenance for File ACL evaluation; use an
+explicit audited `ctx.privileged.run(...)` when lifecycle maintenance must
+delete a File.
+
+For trusted userless maintenance, use
+`privilegedCtx.files.delete(fileReference)` only inside an explicitly audited
+`ctx.privileged.run(...)`. That operation can delete any exact live Capsule
+File without current-user ownership or `files.acl.delete`, and returns the
+deleted metadata at `result.data.file` when `result.ok` is true.
+
 Deleting a file marks it deleted, removes the current stored bytes on a
 best-effort basis, and revokes any active public URLs for that file. If you
 stored the returned file metadata in one of your own tables, delete or update
 that row separately with a normal mutation.
+
+When server deletion runs inside a mutation, App message, or Custom endpoint,
+metadata deletion and public-URL revocation join the handler transaction.
+Stored-byte removal is deferred until commit, so a failed handler does not
+restore live metadata after its bytes have already disappeared.
 
 Replace file bytes while preserving the file ID:
 
@@ -398,6 +445,11 @@ A Custom endpoint should use trusted multipart ingress when an HTTP integration
 must send files directly to an endpoint. Browser and first-party app uploads
 should continue to use the normal `files.upload` flow. The endpoint declares
 hard request limits and stable retry keys:
+
+Endpoint `ctx.files.delete(fileReference)` remains available alongside
+`claim`, `inspection`, `status`, and—when declared—`attachment`. Deletion is a
+normal user-scoped File operation; it does not consume an ingress lease or
+inherit multipart or attachment authority.
 
 ```ts
 const upload = endpoint({

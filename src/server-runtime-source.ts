@@ -144,9 +144,10 @@ import {
   revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode, trackPendingAclWrite,
 } from "./acl-runtime.js";
 import {
-  checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, createFileStorageTables,
+  bindCurrentUserFileDeleteState, checkRuntimeFileStorage, commitPendingCurrentUserFileByteDeletes, completePendingFileUpload, contentTypeForFile, createFileStorageTables,
   createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter,
-  createStructuredFileError, deletePrivateFile, fileMetadataFromRow,
+  createCurrentUserFileApi, createStructuredFileError, deletePrivateFile, drainCurrentUserFileOperations, fileMetadataFromRow,
+  dropPendingCurrentUserFileByteDeletes, revokeCurrentUserFileApi,
   getPrivateFileUrl, isAbsoluteFilePath, normalizeAbsoluteFilePath, resolvePrivilegedLiveFileReference,
   revokePublicFileUrl,
 } from "./file-storage-runtime.js";
@@ -1105,7 +1106,8 @@ export async function openDevDatabase(
       if (!await initializeClamavRuntime(database)) throw commandError("Required File inspection is unavailable.", "Check ClamAV signatures and the local daemon socket.", "FILE_INSPECTION_UNAVAILABLE");
       if (database.lifecycleHooks.init !== undefined) {
         if (typeof database.lifecycleHooks.init !== "function") throw commandError("Invalid Capsule init hook.", "Declare hooks.init as a function.");
-        await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false }));
+        const context = createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false });
+        await runLifecycleHook(database.lifecycleHooks.init, context);
       }
       if (database.teamBillingDefinition) {
         await repairTeamBillingDesiredStateAtStartup(database);
@@ -1190,7 +1192,8 @@ export async function openDevDatabase(
       if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== undefined) {
         try {
           if (typeof database.lifecycleHooks.shutdown !== "function") throw commandError("Invalid Capsule shutdown hook.", "Declare hooks.shutdown as a function.");
-          await database.lifecycleHooks.shutdown(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false }));
+          const context = createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false });
+          await runLifecycleHook(database.lifecycleHooks.shutdown, context);
         } catch (error) { failures.push(error); }
       }
       try { await shutdownClamavRuntime(database); }
@@ -3693,7 +3696,10 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
               credential: accessKeyAdmission?.credential,
               accessKeyGrants: accessKeyAdmission?.grants,
             });
-            const endpointIngressApi = createEndpointIngressApi(transactionDatabase, endpoint as LooseRecord, endpointRequest, context);
+            const endpointIngressApi = Object.freeze({
+              ...context.files,
+              ...createEndpointIngressApi(transactionDatabase, endpoint as LooseRecord, endpointRequest, context),
+            });
             context.files = endpointIngressApi;
             if ((endpoint as LooseRecord).runtimeOwnedStripeCallback) {
               Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
@@ -3727,6 +3733,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
     }
     finalizeEndpointIngressClaims(context ?? {}, true);
     await runIngressAuditOutboxDrain(database);
+    await commitPendingCurrentUserFileByteDeletes(context);
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
@@ -3737,6 +3744,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
       try { await database.log.emit({ category: "platform", event: "file.ingress.failed", level: "warn", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "failed", code: "INGRESS_ROLLBACK" } }); } catch {}
     }
     finalizeEndpointIngressClaims(context ?? {}, false);
+    dropPendingCurrentUserFileByteDeletes(context);
     dropPendingJobCancellationAborts(context);
     dropAccessKeyLifecycleAuditEvents(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
@@ -4031,6 +4039,9 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
   const holder = createContextHolder(context);
   registerHandlerContextMapping(database, holder);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
+  context.files = createCurrentUserFileApi(database, () => holder.current, {
+    requireLiveActor: options.requireLiveFileActor === true,
+  });
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
   context.mail = {
@@ -4149,6 +4160,8 @@ async function cleanupTransactionHandler(
 ) {
   let cleanupFailed = false;
   try {
+    revokeCurrentUserFileApi(context);
+    await drainCurrentUserFileOperations(context);
     if (context) await drainPendingAclWrites(context);
     await drainPendingLogWrites(database);
   } catch (error) {
@@ -4158,8 +4171,26 @@ async function cleanupTransactionHandler(
     try {
       if (clearCache || cleanupFailed) database.rowCache.clear();
     } finally {
+      revokeCurrentUserFileApi(context);
       releaseHandlerContextMapping(database);
     }
+  }
+}
+
+async function runLifecycleHook(hook: Function, context: LooseRecord) {
+  let hookFailed = false;
+  try {
+    await hook(context);
+  } catch (error) {
+    hookFailed = true;
+    throw error;
+  } finally {
+    revokeCurrentUserFileApi(context);
+    try {
+      await drainCurrentUserFileOperations(context);
+      await drainPendingAclWrites(context);
+    }
+    catch (error) { if (!hookFailed) throw error; }
   }
 }
 
@@ -4238,6 +4269,7 @@ async function applyContextMiddleware(database: LooseRecord, baseContext: LooseR
     kind,
   };
   bindPendingAclWrites(context, baseContext);
+  bindCurrentUserFileDeleteState(context, baseContext);
   bindMutationSecretState(context, baseContext);
   transferAccessKeyRuntimeState(baseContext, context);
   const holder = baseContext.__sporadesContextHolder ?? createContextHolder(context);
@@ -4275,6 +4307,7 @@ async function applyContextMiddleware(database: LooseRecord, baseContext: LooseR
       });
     }
     bindPendingAclWrites(context, previousContext);
+    bindCurrentUserFileDeleteState(context, previousContext);
     bindMutationSecretState(context, previousContext);
     transferAccessKeyRuntimeState(previousContext, context);
   }
@@ -6240,6 +6273,10 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
   const customHandler = database.queries.find((candidate: { name: any; }) => candidate.name === queryName);
   const queryHandler = customHandler ? materializeHandler(customHandler) : null;
   let context;
+  let result;
+  let primaryError;
+  try {
+  result = await (async () => {
   try {
     context = createMutationContext(database, auth, { sessionToken: options.sessionToken });
     if (queryHandler) admitCredentialHandler(queryHandler, context, "query");
@@ -6295,6 +6332,37 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
 
   const rows = await filterRowsByReadAcl(database, table, database.rowCache.get(cacheKey), context);
   return { rows, error: null };
+  })();
+  } catch (error) {
+    primaryError = error;
+    throw error;
+  } finally {
+    revokeCurrentUserFileApi(context);
+    try {
+      await drainCurrentUserFileOperations(context);
+    } catch (error: any) {
+      if (!primaryError && !result?.error) {
+        if (error?.sporadesAuthDenialLogData) {
+          emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+        }
+        result = {
+          rows: null as any,
+          data: null as any,
+          error: {
+            ...(error?.code ? { code: error.code } : {}),
+            message: error?.message || "Query handler failed.",
+            hint: error?.hint ?? "Check the Capsule query handler and retry the query.",
+          },
+        };
+      }
+    } finally {
+      const finalContext = context as LooseRecord | undefined;
+      const holder = finalContext?.__sporadesContextHolder;
+      if (holder?.current === finalContext) holder.current = null;
+      revokeCurrentUserFileApi(finalContext);
+    }
+  }
+  return result;
 }
 
 async function runCustomQuery(database: LooseRecord, context: any, queryName: any, args: readonly unknown[], resolvedHandler: Function | null = null) {
@@ -6320,9 +6388,6 @@ async function runCustomQuery(database: LooseRecord, context: any, queryName: an
         hint: error?.hint ?? "Check the Capsule query handler and retry the query.",
       },
     };
-  } finally {
-    const holder = context?.__sporadesContextHolder;
-    if (holder?.current === context) holder.current = null;
   }
 }
 
@@ -6453,6 +6518,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
         }
       });
     });
+    await commitPendingCurrentUserFileByteDeletes(context);
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
@@ -6463,6 +6529,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
     }
     return committed;
   } catch (error: any) {
+    dropPendingCurrentUserFileByteDeletes(context);
     dropPendingJobCancellationAborts(context);
     dropAccessKeyLifecycleAuditEvents(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
@@ -6561,12 +6628,14 @@ export async function runAppMessage(database: LooseRecord, auth: any, messageNam
         await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
       }
     });
+    await commitPendingCurrentUserFileByteDeletes(context);
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     return response;
   } catch (error: any) {
+    dropPendingCurrentUserFileByteDeletes(context);
     dropPendingJobCancellationAborts(context);
     dropAccessKeyLifecycleAuditEvents(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
@@ -6670,6 +6739,9 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
   const holder = createContextHolder(context);
   registerHandlerContextMapping(database, holder);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
+  context.files = createCurrentUserFileApi(database, () => holder.current, {
+    requireLiveActor: options.requireLiveFileActor === true,
+  });
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
   context.mail = {
@@ -7248,11 +7320,23 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
             await relinquishUnstartedJobClaim(database, row.id, claimToken);
             return;
           }
-          const context = createMutationContext(database, auth, { credential }); context.signal = abortController.signal;
+          const context = createMutationContext(database, auth, {
+            credential,
+            requireLiveFileActor: true,
+          }); context.signal = abortController.signal;
           handlerStarted = true;
           database.__runtimeJobAttempts.set(context, Number(row.attempts) + 1);
+          let handlerFailed = false;
           try { result = await handler.handler(context, jobPayload); }
-          finally { database.__runtimeJobAttempts.delete(context); }
+          catch (error) { handlerFailed = true; throw error; }
+          finally {
+            revokeCurrentUserFileApi(context);
+            try { await drainCurrentUserFileOperations(context); }
+            catch (error) { if (!handlerFailed) throw error; }
+            finally {
+              database.__runtimeJobAttempts.delete(context);
+            }
+          }
         }
         const resultJson = boundedJobJson(result ?? null, 64 * 1024, "JOB_RESULT_TOO_LARGE", "Job result");
         const completedAt = database.clock.now().toISOString();

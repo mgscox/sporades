@@ -235,7 +235,8 @@ The repository currently includes:
   schema.
 - File storage through the `sporades/client` `files` SDK, including uploads,
   private URLs, downloads, delete, replacement with file versions, public URL
-  creation, and revocation.
+  creation, and revocation, plus user-scoped server deletion through
+  `ctx.files.delete(fileReference)`.
 - App messages over the existing client transport through SDK-level send and
   subscribe/filter APIs.
 - Built-in Team management through browser `teams` and trusted `ctx.teams`:
@@ -706,7 +707,8 @@ Implemented file behavior includes:
 - upload progress and completion callbacks,
 - absolute File path metadata and File references by ID or path,
 - private file URLs and downloads,
-- owner-scoped delete,
+- owner-scoped browser and server delete, with `files.acl.delete` as the only
+  Capsule-declared widening path,
 - replacement with stable file IDs and new file versions,
 - explicit public URL records with `ttlSeconds`, `expiresAt`, or `noExpiry`,
 - revocation of public file URLs,
@@ -717,6 +719,15 @@ a Capsule-scoped Sporades address, not a filesystem path, object key, Object
 bucket, generated runtime read URL, or backend storage location. File
 operations that identify an existing file accept a File reference: either a
 File ID or an absolute File path that resolves to exactly one live file.
+
+Trusted server handlers delete as their current Auth and Credential actor with
+`ctx.files.delete(fileReference)`. The Promise resolves to the deleted File
+metadata directly. Missing, deleted, ambiguous, and unauthorized references
+fail opaquely as File not found. In mutations, App messages, and Custom
+endpoints, metadata deletion and public-URL revocation share the handler
+transaction; stored-byte removal is deferred until commit and remains
+best-effort. Endpoint deletion coexists with multipart ingress and declared
+attachment-response methods without borrowing either authority boundary.
 
 Uploads can pass an explicit absolute File path. Uploads that omit `path` use
 the uploaded file name in the Default File bucket, falling back to an
@@ -939,6 +950,13 @@ App message, context middleware, and supported mutation hook contexts. The
 callback receives a derived `privilegedCtx` with the familiar server DB API, a
 narrow approved File API, `privilegedCtx.signal`, and
 `privilegedCtx.auth.userId === "__privileged__"`.
+
+`privilegedCtx.files.delete(fileReference)` is the explicit audited path for
+trusted userless deletion. It can resolve any exact live Capsule File and does
+not apply current-user ownership or `files.acl.delete`; ordinary application
+work must use user-scoped `ctx.files.delete(fileReference)` instead. Privileged
+deletion returns the normal structured privileged result with deleted metadata
+at `result.data.file` when `result.ok` is true.
 
 Use the current user identity when work should be authorized as the live
 Sporades user represented by `ctx.auth`. The Job Queue uses a captured bounded

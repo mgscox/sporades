@@ -506,6 +506,12 @@ const app = capsule({
         if (publicFileUrl.ok) {
           publicFileUrl.data.publicUrl.fileId.toUpperCase();
         }
+        const privilegedDeletedFile = await privilegedCtx.files.delete("/reports/obsolete.txt");
+        if (privilegedDeletedFile.ok) {
+          privilegedDeletedFile.data.file.id.toUpperCase();
+          // @ts-expect-error Privileged deletion returns its File inside the structured data envelope.
+          privilegedDeletedFile.data.id.toUpperCase();
+        }
         return privilegedCtx.db.todos.all();
       });
       return rows.length;
@@ -551,6 +557,9 @@ const app = capsule({
         textBody: text,
         provider: { trace: "types" },
       });
+      const deletedFile = await ctx.files.delete("/reports/obsolete.txt");
+      deletedFile.id.toUpperCase();
+      deletedFile.bucket.toUpperCase();
       return ctx.db.todos.insert({
         text: text.trim(),
         ownerId: ctx.auth.userId,
@@ -564,6 +573,7 @@ const app = capsule({
     ping: endpoint({ method: "GET", path: "/ping" }, async (ctx) => {
       await Promise.resolve();
       await ctx.mail.send({ to: "recipient@example.com", subject: "Ping", htmlBody: "<p>Ping</p>" });
+      (await ctx.files.delete("/reports/obsolete.txt")).version.toUpperCase();
       const bodyBytes = ctx.request.bodyBytes;
       const bodyCopy: Uint8Array = bodyBytes.toUint8Array();
       bodyBytes.byteLength satisfies number;
@@ -585,8 +595,10 @@ const app = capsule({
       status: 200,
       body: ctx.request.method + ":" + ctx.credential.kind,
     }))),
-    attachment: endpoint({ method: "GET", path: "/attachment", response: { fileAttachment: true } }, (ctx) =>
-      ctx.files.attachment({ id: "file-id", version: "exact-version" }, { filename: "report.pdf" })),
+    attachment: endpoint({ method: "GET", path: "/attachment", response: { fileAttachment: true } }, async (ctx) => {
+      await ctx.files.delete("/reports/obsolete.txt");
+      return ctx.files.attachment({ id: "file-id", version: "exact-version" }, { filename: "report.pdf" });
+    }),
     undeclaredAttachment: endpoint({ method: "GET", path: "/undeclared-attachment" }, (ctx) => {
       // @ts-expect-error attachment responses require the explicit endpoint response declaration.
       return ctx.files.attachment({ id: "file-id", version: "exact-version" }, { filename: "report.pdf" });
@@ -621,9 +633,13 @@ const app = capsule({
     ],
     init: async (ctx) => {
       await ctx.mail.send({ to: "recipient@example.com", subject: "Init", textBody: "Init" });
+      // @ts-expect-error userless lifecycle hooks have no user-scoped File authority.
+      ctx.files.delete("file-id");
     },
     shutdown: async (ctx) => {
       await ctx.mail.send({ to: "recipient@example.com", subject: "Shutdown", textBody: "Shutdown" });
+      // @ts-expect-error userless lifecycle hooks have no user-scoped File authority.
+      ctx.files.delete("file-id");
     },
   },
 });

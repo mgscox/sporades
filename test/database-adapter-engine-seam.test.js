@@ -585,6 +585,22 @@ test("SQLite is an engine like the others, not the set the others borrow from", 
   });
 });
 
+test("Postgres locks a current-user File actor through the surrounding transaction", async () => {
+  const statements = [];
+  const adapter = {
+    ...createSharedDatabaseAdapterMethods(postgresDatabaseDialect()),
+    prepare(statement) {
+      statements.push(statement);
+      return {
+        get: async () => ({ id: "actor-1", userKind: "human", lifecycleStatus: "active" }),
+      };
+    },
+  };
+  const actor = await adapter.lockAuthUserFileAuthority("actor-1");
+  assert.equal(actor.id, "actor-1");
+  assert.match(statements[0], /FOR UPDATE$/);
+});
+
 // An engine that cannot ask a statement for its result shape has to embed the statement in more
 // SQL, and embedding is where a trailing terminator or comment stops being decoration. The
 // conformance specification asserts that the engines agree about such a query; this asserts the
