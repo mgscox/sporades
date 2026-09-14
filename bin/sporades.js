@@ -93916,8 +93916,9 @@ function normalizeMailMessage(input, defaultFrom, vendor = "generic") {
   if (to.length + cc.length + bcc.length > 100) invalid("Use at most 100 recipients in one mail message.");
   const replyTo = normalizeMailAddresses(input.replyTo, "replyTo", false);
   if (replyTo.length > 1) invalid("Pass at most one `replyTo` address.");
-  if (typeof input.subject !== "string" || input.subject.length < 1 || input.subject.length > 998 || /[\x00-\x1f\x7f]/.test(input.subject)) {
-    invalid("Pass a non-empty subject of at most 998 characters without prohibited control characters.");
+  const subject = typeof input.subject === "string" ? input.subject.trim().replace(/\s+/gu, " ") : "";
+  if (subject.length < 1 || subject.length > 998 || /[\x00-\x08\x0e-\x1f\x7f]/.test(subject)) {
+    invalid("Pass a non-empty subject that normalizes to at most 998 characters without prohibited control characters.");
   }
   if (input.textBody === void 0 && input.htmlBody === void 0) invalid("Pass at least one of `textBody` or `htmlBody`.");
   for (const field of ["textBody", "htmlBody"]) {
@@ -93947,7 +93948,7 @@ function normalizeMailMessage(input, defaultFrom, vendor = "generic") {
     cc,
     bcc,
     ...replyTo[0] ? { replyTo: replyTo[0] } : {},
-    subject: input.subject,
+    subject,
     ...input.textBody !== void 0 ? { textBody: input.textBody } : {},
     ...input.htmlBody !== void 0 ? { htmlBody: input.htmlBody } : {},
     ...providerHeaders?.length ? { providerHeaders } : {},

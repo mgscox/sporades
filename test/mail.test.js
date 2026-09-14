@@ -1177,6 +1177,26 @@ test("SMTP transport failures use stable safe mail errors", async () => {
   }
 });
 
+test("mail subjects trim and squash whitespace before transport", async () => {
+  const captured = [];
+  const transport = {
+    async send(message) {
+      captured.push(message);
+      return { messageId: "<normalized-subject@example.com>", accepted: ["to@example.com"], rejected: [] };
+    },
+    close() {},
+  };
+  await withDatabase(smtpConfig, {
+    mutations: { send: mutation((ctx, subject) => ctx.mail.send({ to: "to@example.com", subject, textBody: "body" })) },
+  }, { mailTransportFactory: () => transport }, async (database) => {
+    const result = await runMutation(database, user, "send", ["  Quarterly\t\n update \r\n ready  "]);
+    assert.equal(result.ok, true);
+  });
+
+  assert.equal(captured.length, 1);
+  assert.equal(captured[0].subject, "Quarterly update ready");
+});
+
 test("mail headers reject every prohibited C0 control and internationalized envelopes before transport", async () => {
   let sends = 0;
   const transport = {
