@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { connect } from "node:net";
 
-import { createWebSocketHub, openDevDatabase, prepareHttpSecurity, routeRuntimeHealth } from "../dist/server-runtime-source.js";
+import { createWebSocketHub, openDevDatabase, prepareHttpSecurity, routeConnectionToken, routeRuntimeHealth } from "../dist/server-runtime-source.js";
 import { CLIENT_CAPABILITIES, CLIENT_TEMPLATES } from "../dist/client-capabilities.js";
 import { validateReleaseArchive } from "../dist/cli/host-helper-archive.js";
 import { createHostLifecycleRequest, createHostReleaseRequest } from "../dist/cli/host-request-builders.js";
@@ -115,6 +115,28 @@ async function withHostedRuntimeTransportServer(dir, config, fn) {
     database.close();
   }
 }
+
+test("connection-token refresh route returns a fresh no-store browser gate", async () => {
+  let issued = 0;
+  await withHttpServer((request, response) => {
+    if (routeConnectionToken(request, response, () => `connection-token-${++issued}`)) return;
+    response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+    response.end("Not found");
+  }, async (port) => {
+    const baseUrl = `http://[::1]:${port}`;
+    const first = await fetch(new URL("/__sporades/connection-token", baseUrl));
+    assert.equal(first.status, 200);
+    assert.equal(first.headers.get("cache-control"), "no-store");
+    assert.equal(first.headers.get("pragma"), "no-cache");
+    assert.deepEqual(await first.json(), { token: "connection-token-1" });
+
+    const second = await fetch(new URL("/__sporades/connection-token", baseUrl));
+    assert.deepEqual(await second.json(), { token: "connection-token-2" });
+
+    const wrongMethod = await fetch(new URL("/__sporades/connection-token", baseUrl), { method: "POST" });
+    assert.equal(wrongMethod.status, 404);
+  });
+});
 
 async function reserveUnusedPort() {
   let port;

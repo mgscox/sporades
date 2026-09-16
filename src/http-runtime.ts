@@ -356,6 +356,22 @@ export function injectPageConnectionToken(html: string, token: string) {
   return `${script}\n${html}`;
 }
 
+export function routeConnectionToken(
+  request: Pick<IncomingMessage, "method" | "url">,
+  response: Pick<ServerResponse, "writeHead" | "end">,
+  createConnectionToken: () => string,
+) {
+  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+  if (request.method !== "GET" || requestUrl.pathname !== "/__sporades/connection-token") return false;
+  response.writeHead(200, {
+    "cache-control": "no-store",
+    "content-type": "application/json; charset=utf-8",
+    pragma: "no-cache",
+  });
+  response.end(JSON.stringify({ token: createConnectionToken() }));
+  return true;
+}
+
 function requestOriginAllowed(policy: RuntimeSecurityPolicy, request: RuntimeRequestLike) {
   const origin = request.headers.origin;
   if (!origin) {

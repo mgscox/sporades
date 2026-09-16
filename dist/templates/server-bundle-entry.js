@@ -18,7 +18,7 @@ import { lstatSync, readFileSync } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
-import { createRuntimeInspectionAdapter, createWebSocketHub, handleFileHttpRoute, injectPageConnectionToken, inspectRuntimeJobs, inspectRuntimeSchedules, openDevDatabase, prepareHttpSecurity, runRuntimeAccessKeyOperatorAction, routeEndpoint, routeRuntimeHealth, routeSporadesAuth, shutdownAndCloseDatabase, shutdownHttpServerAndRuntime, writeUnhandledHttpError, } from "../server-runtime-source.js";
+import { createRuntimeInspectionAdapter, createWebSocketHub, handleFileHttpRoute, injectPageConnectionToken, inspectRuntimeJobs, inspectRuntimeSchedules, openDevDatabase, prepareHttpSecurity, runRuntimeAccessKeyOperatorAction, routeConnectionToken, routeEndpoint, routeRuntimeHealth, routeSporadesAuth, shutdownAndCloseDatabase, shutdownHttpServerAndRuntime, writeUnhandledHttpError, } from "../server-runtime-source.js";
 import { publicTreePathFromRequest } from "../public-tree-contract.js";
 import { publicAccessKeyManagementError } from "../access-keys-runtime.js";
 import { ACCESS_KEY_OPERATOR_ACTIONS, validateAccessKeyOperatorActionInput } from "../cli/access-key-operator-envelope.js";
@@ -132,6 +132,9 @@ const server = createServer(async (request, response) => {
         if (prepareHttpSecurity(database, request, response)) {
             return;
         }
+        if (routeConnectionToken(request, response, () => websocketHub.createConnectionToken())) {
+            return;
+        }
         if (await routeRuntimeHealth(database, request, response)) {
             return;
         }
@@ -223,7 +226,10 @@ async function routePublicAsset(request, response, publicRoot, hub) {
         return false;
     const body = await readFile(filePath);
     const html = relativePath === "index.html";
-    response.writeHead(200, { "content-type": publicContentType(relativePath) });
+    response.writeHead(200, {
+        "content-type": publicContentType(relativePath),
+        ...(html ? { "cache-control": "no-store", pragma: "no-cache" } : {}),
+    });
     response.end(html ? injectPageConnectionToken(body.toString("utf8"), hub.createConnectionToken()) : body);
     return true;
 }

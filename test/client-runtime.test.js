@@ -1232,6 +1232,15 @@ function installBrowserFakes(auth, options = {}) {
   const sent = [];
   const handlers = options.handlers ?? {};
   const windowListeners = new Map();
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const originalRandom = Math.random;
+
+  if (options.fetch) globalThis.fetch = options.fetch;
+  if (options.setTimeout) globalThis.setTimeout = options.setTimeout;
+  if (options.clearTimeout) globalThis.clearTimeout = options.clearTimeout;
+  if (options.random) Math.random = options.random;
 
   globalThis.localStorage = {
     getItem(key) {
@@ -1396,6 +1405,10 @@ function installBrowserFakes(auth, options = {}) {
       delete globalThis.localStorage;
       delete globalThis.window;
       delete globalThis.WebSocket;
+      globalThis.fetch = originalFetch;
+      globalThis.setTimeout = originalSetTimeout;
+      globalThis.clearTimeout = originalClearTimeout;
+      Math.random = originalRandom;
     },
   };
 }
@@ -1409,6 +1422,36 @@ const anonymousAuth = {
   isGuest: true,
   provider: "anonymous",
 };
+
+function createDeterministicTimers() {
+  const timers = [];
+  let nextId = 1;
+  return {
+    setTimeout(callback, delay) {
+      const timer = { id: nextId++, callback, delay, cancelled: false };
+      timers.push(timer);
+      return timer.id;
+    },
+    clearTimeout(id) {
+      const timer = timers.find((candidate) => candidate.id === id);
+      if (timer) timer.cancelled = true;
+    },
+    pending() {
+      return timers.filter((timer) => !timer.cancelled);
+    },
+    runNext() {
+      const index = timers.findIndex((timer) => !timer.cancelled);
+      assert.notEqual(index, -1, "a timer must be pending");
+      const [timer] = timers.splice(index, 1);
+      timer.callback();
+      return timer;
+    },
+  };
+}
+
+async function settleMicrotasks() {
+  for (let index = 0; index < 8; index += 1) await Promise.resolve();
+}
 
 test("framework-neutral query mutation and auth primitives share reconnecting state", async () => {
   let queryVersion = 0;
@@ -1535,8 +1578,242 @@ test("client WebSocket URL does not include the stored session token", async () 
     assert.equal(browser.sockets.length, 1);
     const url = new URL(browser.sockets[0].url);
     assert.equal(url.pathname, "/__sporades/ws");
+    assert.equal(url.searchParams.get("connectionToken"), "fake-page-connection-token");
     assert.equal(url.searchParams.has("sessionToken"), false);
     assert.equal(String(browser.sockets[0].url).includes("stored-session-token"), false);
+  } finally {
+    browser.cleanup();
+  }
+});
+
+test("rejected TTL-expired page connection token refreshes and connects without reloading", async () => {
+  const timers = createDeterministicTimers();
+  const tokenRequests = [];
+  const browser = installBrowserFakes(anonymousAuth, {
+    autoOpen: false,
+    connectionToken: "stale-page-token",
+    fetch: async (url, options) => {
+      tokenRequests.push({ url: String(url), options });
+      return { ok: true, async json() { return { token: "fresh-page-token" }; } };
+    },
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+    random: () => 0.5,
+  });
+  let reloads = 0;
+  globalThis.window.location.reload = () => { reloads += 1; };
+  try {
+    const runtime = await importClientRuntime();
+    const authStates = [];
+    const subscription = runtime.auth.subscribe((state) => authStates.push(state));
+    const rejected = browser.sockets[0];
+    rejected.readyState = 3;
+    rejected.emit("close", {});
+    await settleMicrotasks();
+
+    assert.equal(tokenRequests.length, 1);
+    assert.equal(new URL(tokenRequests[0].url).pathname, "/__sporades/connection-token");
+    assert.equal(tokenRequests[0].options.cache, "no-store");
+    assert.equal(tokenRequests[0].options.credentials, "same-origin");
+    assert.ok(tokenRequests[0].options.signal instanceof AbortSignal);
+    assert.deepEqual(timers.pending().map(({ delay }) => delay), [275]);
+    timers.runNext();
+
+    assert.equal(browser.sockets.length, 2);
+    assert.equal(new URL(browser.sockets[1].url).searchParams.get("connectionToken"), "fresh-page-token");
+    browser.sockets[1].readyState = globalThis.WebSocket.OPEN;
+    browser.sockets[1].emit("open", {});
+    await settleMicrotasks();
+
+    assert.equal(authStates.at(-1).loading, false);
+    assert.equal(authStates.at(-1).error, null);
+    assert.equal(reloads, 0);
+    subscription.unsubscribe();
+  } finally {
+    browser.cleanup();
+  }
+});
+
+test("runtime restart invalidating an open page token recovers without wedging the shell", async () => {
+  const timers = createDeterministicTimers();
+  let tokenRequests = 0;
+  const browser = installBrowserFakes(anonymousAuth, {
+    autoOpen: false,
+    connectionToken: "pre-restart-page-token",
+    fetch: async () => {
+      tokenRequests += 1;
+      return { ok: true, async json() { return { token: "post-restart-page-token" }; } };
+    },
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+    random: () => 0.5,
+  });
+  try {
+    const runtime = await importClientRuntime();
+    const authStates = [];
+    runtime.auth.subscribe((state) => authStates.push(state));
+    const established = browser.sockets[0];
+    established.readyState = globalThis.WebSocket.OPEN;
+    established.emit("open", {});
+    await settleMicrotasks();
+
+    established.readyState = 3;
+    established.emit("close", {});
+    assert.equal(tokenRequests, 0, "an ordinary disconnect first retries the token that already worked");
+    assert.deepEqual(timers.pending().map(({ delay }) => delay), [275]);
+    timers.runNext();
+    const invalidated = browser.sockets[1];
+    assert.equal(new URL(invalidated.url).searchParams.get("connectionToken"), "pre-restart-page-token");
+    invalidated.readyState = 3;
+    invalidated.emit("close", {});
+    await settleMicrotasks();
+
+    assert.equal(tokenRequests, 1);
+    assert.deepEqual(timers.pending().map(({ delay }) => delay), [275]);
+    timers.runNext();
+    const recovered = browser.sockets[2];
+    assert.equal(new URL(recovered.url).searchParams.get("connectionToken"), "post-restart-page-token");
+    recovered.readyState = globalThis.WebSocket.OPEN;
+    recovered.emit("open", {});
+    await settleMicrotasks();
+    assert.equal(authStates.at(-1).loading, false);
+    assert.equal(authStates.at(-1).error, null);
+  } finally {
+    browser.cleanup();
+  }
+});
+
+test("repeated connection rejection stops after four attempts and renders a manual retry", async () => {
+  const timers = createDeterministicTimers();
+  let refreshedTokens = 0;
+  const elements = new Map();
+  const createElement = (tagName) => ({
+    tagName: tagName.toUpperCase(),
+    children: [],
+    listeners: new Map(),
+    style: {},
+    textContent: "",
+    append(...children) { this.children.push(...children); },
+    addEventListener(type, listener) { this.listeners.set(type, listener); },
+    click() { this.listeners.get("click")?.(); },
+    remove() { if (this.id) elements.delete(this.id); },
+  });
+  globalThis.document = {
+    body: { append(element) { if (element.id) elements.set(element.id, element); } },
+    createElement,
+    getElementById(id) { return elements.get(id) ?? null; },
+  };
+  const browser = installBrowserFakes(anonymousAuth, {
+    autoOpen: false,
+    connectionToken: "expired-page-token",
+    fetch: async () => ({ ok: true, async json() { return { token: `refreshed-token-${++refreshedTokens}` }; } }),
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+    random: () => 0.5,
+  });
+  try {
+    const runtime = await importClientRuntime();
+    const authStates = [];
+    runtime.auth.subscribe((state) => authStates.push(state));
+
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      const rejected = browser.sockets[attempt - 1];
+      rejected.readyState = 3;
+      rejected.emit("close", {});
+      await settleMicrotasks();
+      if (attempt < 4) {
+        assert.deepEqual(timers.pending().map(({ delay }) => delay), [[275, 550, 1_100][attempt - 1]]);
+        timers.runNext();
+      }
+    }
+
+    assert.equal(browser.sockets.length, 4, "automatic recovery is bounded to four WebSocket attempts");
+    assert.equal(timers.pending().length, 0, "terminal failure leaves no reconnect timer behind");
+    assert.equal(refreshedTokens, 3, "only the three retry attempts mint replacement tokens");
+    assert.equal(authStates.at(-1).loading, false);
+    assert.equal(authStates.at(-1).error.code, "CONNECTION_UNAVAILABLE");
+    const errorPanel = elements.get("sporades-connection-error");
+    assert.match(errorPanel.textContent, /could not connect/i);
+    const retryButton = errorPanel.children.find((child) => child.tagName === "BUTTON");
+    assert.equal(retryButton.textContent, "Try again");
+    await runtime.auth.get();
+    assert.equal(browser.sockets.length, 4, "ordinary app activity cannot bypass the terminal manual-retry gate");
+
+    retryButton.click();
+    await settleMicrotasks();
+    assert.deepEqual(timers.pending().map(({ delay }) => delay), [275]);
+    timers.runNext();
+    const recovered = browser.sockets[4];
+    recovered.readyState = globalThis.WebSocket.OPEN;
+    recovered.emit("open", {});
+    await settleMicrotasks();
+    assert.equal(authStates.at(-1).error, null);
+    assert.equal(elements.has("sporades-connection-error"), false);
+  } finally {
+    delete globalThis.document;
+    browser.cleanup();
+  }
+});
+
+test("a stalled connection-token refresh times out instead of wedging recovery", async () => {
+  const timers = createDeterministicTimers();
+  const browser = installBrowserFakes(anonymousAuth, {
+    autoOpen: false,
+    connectionToken: "stale-page-token",
+    fetch: async () => await new Promise(() => {}),
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+    random: () => 0.5,
+  });
+  try {
+    const runtime = await importClientRuntime();
+    runtime.auth.subscribe(() => {});
+    browser.sockets[0].readyState = 3;
+    browser.sockets[0].emit("close", {});
+    await Promise.resolve();
+
+    assert.deepEqual(timers.pending().map(({ delay }) => delay), [2_000]);
+    timers.runNext();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepEqual(timers.pending().map(({ delay }) => delay), [275]);
+    timers.runNext();
+    assert.equal(browser.sockets.length, 2, "a timed-out refresh still advances the bounded retry episode");
+  } finally {
+    browser.cleanup();
+  }
+});
+
+test("open-then-close failures stay bounded until a useful server response", async () => {
+  const timers = createDeterministicTimers();
+  const browser = installBrowserFakes(anonymousAuth, {
+    autoOpen: false,
+    handlers: { "auth.get": async () => await new Promise(() => {}) },
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+    random: () => 0.5,
+  });
+  try {
+    const runtime = await importClientRuntime();
+    runtime.auth.subscribe(() => {});
+
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      const openedWithoutResponse = browser.sockets[attempt - 1];
+      openedWithoutResponse.readyState = globalThis.WebSocket.OPEN;
+      openedWithoutResponse.emit("open", {});
+      openedWithoutResponse.readyState = 3;
+      openedWithoutResponse.emit("close", {});
+      if (attempt < 4) {
+        assert.deepEqual(timers.pending().map(({ delay }) => delay), [[275, 550, 1_100][attempt - 1]]);
+        timers.runNext();
+      }
+    }
+
+    assert.equal(browser.sockets.length, 4);
+    assert.equal(timers.pending().length, 0);
+    const terminal = await runtime.auth.get();
+    assert.equal(terminal.error.code, "CONNECTION_UNAVAILABLE");
+    assert.equal(browser.sockets.length, 4, "a terminal episode can only be restarted by the visible manual action");
   } finally {
     browser.cleanup();
   }

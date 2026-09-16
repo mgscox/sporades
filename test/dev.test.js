@@ -2667,9 +2667,16 @@ test("sporades dev builds and safely serves the normalized public tree", async (
       assert.equal(await readFile(path.join(publicDir, "index.html"), "utf8"), sourceHtml);
       assert.equal(await readFile(path.join(publicDir, "client.js"), "utf8"), await readFile(path.join(projectDir, ".sporades", "build", "client.js"), "utf8"));
 
-      const servedHtml = await (await fetch(started.data.url)).text();
+      const servedResponse = await fetch(started.data.url);
+      assert.equal(servedResponse.headers.get("cache-control"), "no-store");
+      const servedHtml = await servedResponse.text();
       assert.match(servedHtml, /window\.__SPORADES_CONNECTION_TOKEN=/);
       assert.doesNotMatch(sourceHtml, /__SPORADES_CONNECTION_TOKEN/);
+      const pageToken = /window\.__SPORADES_CONNECTION_TOKEN="([^"]+)"/.exec(servedHtml)?.[1];
+      const refreshedTokenResponse = await fetch(new URL("/__sporades/connection-token", started.data.url));
+      assert.equal(refreshedTokenResponse.headers.get("cache-control"), "no-store");
+      const refreshedToken = (await refreshedTokenResponse.json()).token;
+      assert.notEqual(refreshedToken, pageToken);
 
       await writeFile(path.join(projectDir, "outside.css"), "body { color: red; }\n");
       await rm(path.join(publicDir, "client.js"));

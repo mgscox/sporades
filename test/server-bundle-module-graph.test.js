@@ -884,6 +884,32 @@ test("the server bundle builds from a module graph and imports nothing but Node 
   assert.match(source, /import\("node:tls"\)/, "bundle lost the SMTP TLS import");
 });
 
+test("a generated server bundle serves no-store HTML and fresh connection tokens", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-connection-token-"));
+  let booted;
+  try {
+    const source = await buildBundle({ config: capsuleConfig(), serverEnv: {}, serverSource: CAPSULE_SOURCE });
+    await writePublicTree(root, "<!doctype html><html><head></head><body></body></html>");
+    booted = await bootBundle({ source, dir: root });
+
+    const page = await fetch(booted.baseUrl);
+    assert.equal(page.headers.get("cache-control"), "no-store");
+    const html = await page.text();
+    const pageToken = /window\.__SPORADES_CONNECTION_TOKEN="([^"]+)"/.exec(html)?.[1];
+    assert.ok(pageToken);
+
+    const refreshed = await fetch(new URL("/__sporades/connection-token", booted.baseUrl));
+    assert.equal(refreshed.status, 200);
+    assert.equal(refreshed.headers.get("cache-control"), "no-store");
+    const refreshedToken = (await refreshed.json()).token;
+    assert.match(refreshedToken, /^[A-Za-z0-9_-]{40,}$/);
+    assert.notEqual(refreshedToken, pageToken);
+  } finally {
+    await booted?.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a generated server bundle loads PDF support only for PDF inspection", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-pdf-lazy-"));
   let booted;

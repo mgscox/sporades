@@ -333,6 +333,10 @@ _Avoid_: global user role, Team admin, Privileged server role
 
 Sporades is client-framework-agnostic at its internal transport seam, which owns the WebSocket connection, query subscriptions, mutation sending, auth state, and current-user preferences. The public `sporades/client` surface currently exposes that query and mutation behavior through `createHooks`, a React/Preact adapter that takes compatible primitives (`useState`, `useEffect`) and returns ready-to-use hooks (`useQuery`, `useMutation`, `useAuth`). Direct framework-neutral query subscriptions are not yet public. Frameworks with different reactivity models require native adapters over the internal transport seam rather than emulating React hooks.
 
+**Page connection token**:
+An opaque, expiring, runtime-minted value injected into each no-store HTML document solely to gate its WebSocket upgrade. It is not a Session credential and grants no Capsule authority. A rejected token is replaced through the same-origin no-store runtime route during a bounded four-attempt reconnect episode; exhaustion renders a runtime-owned manual retry state.
+_Avoid_: Session token, auth token, permanent socket credential
+
 **createHooks**:
 A React/Preact adapter factory exported by `sporades/client`. Accepts React/Preact-compatible `{ useState, useEffect }` primitives and returns Sporades hooks bound to that lifecycle model. It is not the framework-neutral transport interface and does not model SolidJS signals, Vue composables, Svelte stores, or other native reactivity systems.
 _Avoid_: useQuery (that's what it produces, not what it is), hooks provider

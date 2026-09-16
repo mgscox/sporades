@@ -6,6 +6,7 @@ Changes since v0.9.21.
 
 ### 🐛 Bug Fixes
 
+- Recover stale page connection tokens with bounded reconnects and a visible retry state (#47).
 - Require registration recovery before teardown (2f0e709d).
 - Preserve committed routes on lock cleanup failure (e8872989).
 - Require helper confirmation of requested aliases (93e44b7d).
@@ -115,7 +116,6 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
-
 
 
 
