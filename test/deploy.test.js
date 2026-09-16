@@ -1,8 +1,9 @@
+import { preservedDeployFilePath } from "../dist/deploy-files.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { Buffer } from "node:buffer";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -121,6 +122,12 @@ if (call.args[0] === "inspect" && missingInspectIds.has(call.args.at(-1))) {
   const subject = process.env.FAKE_DOCKER_MISSING_INSPECT_SUBJECT || "container";
   process.stderr.write("Error response from daemon: No such " + subject + ": " + call.args.at(-1) + "\\n");
   process.exit(1);
+}
+if (call.args[0] === "run" && call.args.some((arg) => arg.endsWith(":/file:rw"))) {
+  const target = call.args.find((arg) => arg.endsWith(":/file:rw")).slice(0, -":/file:rw".length);
+  const info = require("node:fs").statSync(target);
+  process.stdout.write(JSON.stringify({ dev: info.dev, ino: info.ino, uid: info.uid, gid: info.gid, mode: info.mode & 0o777 }));
+  process.exit(0);
 }
 if (call.args[0] === "ps") {
   process.stdout.write(process.env.FAKE_DOCKER_CONTAINER_ID + "\\n");
@@ -4977,3 +4984,431 @@ function waitForSocketMessage(socket, predicate) {
     socket.addEventListener("error", onError);
   });
 }
+
+
+test("local Container deploy.files snapshots replacements and retains editable files", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "file-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "file-island"));
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.deploy.files = [{ path: "settings.json", update: "preserve" }, { path: "defaults.json" }];
+    await writeFile(configPath, JSON.stringify(config));
+    await writeFile(path.join(projectDir, "settings.json"), "seed");
+    await writeFile(path.join(projectDir, "defaults.json"), "original");
+    const docker = await installFakeDocker(dir, "container-files");
+    const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(deployed.code, 0, deployed.stdout + deployed.stderr);
+    const calls = await docker.calls();
+    const run = calls.find((call) => call.args[0] === "run");
+    const replacement = run.args.find((arg) => arg.endsWith(":/app/defaults.json:ro")).slice(0, -":/app/defaults.json:ro".length);
+    await writeFile(path.join(projectDir, "defaults.json"), "new local bytes");
+    assert.equal(await readFile(replacement, "utf8"), "original");
+    const preserved = preservedDeployFilePath(path.join(projectDir, ".sporades/preserved-files"), "settings.json");
+    assert(run.args.includes(`${preserved}:/app/settings.json:rw`));
+    await writeFile(preserved, "server edit");
+    const preload = path.join(dir, "fail-snapshot.mjs");
+    await writeFile(preload, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const original = fs.promises.writeFile; let writes = 0;
+fs.promises.writeFile = async function(file, ...args) {
+  if (String(file).includes('/.sporades/deploy-files/') && ++writes === 2) throw Object.assign(new Error('injected snapshot quota failure'), { code: 'ENOSPC' });
+  return original.call(this, file, ...args);
+}; syncBuiltinESMExports();`);
+    const snapshots = path.join(projectDir, ".sporades/deploy-files");
+    assert.equal((await stat(snapshots)).mode & 0o777, 0o700);
+    assert.equal((await stat(path.dirname(preserved))).mode & 0o777, 0o700);
+    const before = (await readdir(snapshots)).sort();
+    const snapshotFailure = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...docker.env, NODE_OPTIONS: `--import=${preload}` } });
+    assert.notEqual(snapshotFailure.code, 0, snapshotFailure.stdout);
+    assert.match(snapshotFailure.stdout + snapshotFailure.stderr, /injected snapshot quota failure/);
+    assert.deepEqual((await readdir(snapshots)).sort(), before);
+    await rm(path.join(projectDir, "settings.json"));
+    const countBefore = (await docker.calls()).filter((call) => ["stop", "rm", "run"].includes(call.args[0])).length;
+    const failed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.notEqual(failed.code, 0);
+    assert.match(failed.stdout + failed.stderr, /settings.json/);
+    assert.equal((await docker.calls()).filter((call) => ["stop", "rm", "run"].includes(call.args[0])).length, countBefore);
+    assert.equal(await readFile(preserved, "utf8"), "server edit");
+    await writeFile(path.join(projectDir, "settings.json"), "new seed");
+    config.ssh = { authorizedKeys: [{ key: TEST_PUBLIC_KEY }] };
+    await writeFile(configPath, JSON.stringify(config));
+    // Preserved copies stay owner-only like `.sporades/data`: SSH toggles never
+    // change ownership, never spawn a privileged Docker helper, and a loosened
+    // mode is tightened back to 0600 before the Container starts.
+    const ownerOnly = async () => {
+      const info = await stat(preserved);
+      assert.equal(info.mode & 0o777, 0o600);
+      assert.equal(info.uid, process.getuid());
+      assert.equal((await docker.calls()).filter((call) => call.args[0] === "run" && call.args.some((arg) => arg.endsWith(":/file:rw"))).length, 0, "no privileged file helper may run");
+    };
+    await chmod(preserved, 0o664);
+    const deniedDeploy = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...docker.env, SPORADES_TEST_CONTAINER_REPLACEMENT_FAULT: "consumer" } });
+    assert.notEqual(deniedDeploy.code, 0);
+    await ownerOnly();
+    const sshDeploy = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(sshDeploy.code, 0, sshDeploy.stdout + sshDeploy.stderr);
+    assert((await docker.calls()).filter((call) => call.args[0] === "run").at(-1).args.includes("10001:10001"), "SSH Container runs as the base image user");
+    await ownerOnly();
+    assert.equal(await readFile(preserved, "utf8"), "server edit");
+    delete config.ssh;
+    await writeFile(configPath, JSON.stringify(config));
+    await chmod(preserved, 0o660);
+    const ordinaryDeploy = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(ordinaryDeploy.code, 0, ordinaryDeploy.stdout + ordinaryDeploy.stderr);
+    await ownerOnly();
+    for (const policy of ["replace", "remove"]) {
+      config.ssh = { authorizedKeys: [{ key: TEST_PUBLIC_KEY }] };
+      config.deploy.files = [{ path: "settings.json", update: "preserve" }, { path: "defaults.json" }];
+      await writeFile(configPath, JSON.stringify(config));
+      const enabled = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+      assert.equal(enabled.code, 0, enabled.stdout + enabled.stderr);
+      config.deploy.files = policy === "replace" ? [{ path: "settings.json" }, { path: "defaults.json" }] : [{ path: "defaults.json" }];
+      if (policy === "remove") delete config.ssh;
+      await writeFile(configPath, JSON.stringify(config));
+      const inactive = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+      assert.equal(inactive.code, 0, inactive.stdout + inactive.stderr);
+      await ownerOnly();
+      assert.equal(await readFile(preserved, "utf8"), "server edit");
+    }
+    let binding = JSON.parse(await readFile(path.join(projectDir, ".sporades/binding.json"), "utf8"));
+    assert.equal(await readFile(path.join(binding.deployFilesRoot, "defaults.json"), "utf8"), "new local bytes");
+    config.ssh = { authorizedKeys: [{ key: TEST_PUBLIC_KEY }] };
+    config.deploy.files = [{ path: "settings.json", update: "preserve" }, { path: "defaults.json" }];
+    await writeFile(configPath, JSON.stringify(config));
+    const finalDeploy = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(finalDeploy.code, 0, finalDeploy.stdout + finalDeploy.stderr);
+    binding = JSON.parse(await readFile(path.join(projectDir, ".sporades/binding.json"), "utf8"));
+    const failRemoval = path.join(dir, "fail-snapshot-removal.mjs");
+    await writeFile(failRemoval, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const original = fs.promises.rm;
+fs.promises.rm = async function(file, ...args) {
+  if (String(file).includes('/.sporades/deploy-files/')) throw Object.assign(new Error('injected snapshot removal denial'), { code: 'EACCES' });
+  return original.call(this, file, ...args);
+}; syncBuiltinESMExports();`);
+    const priorSnapshot = binding.deployFilesRoot;
+    const cleanupFailure = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...docker.env, NODE_OPTIONS: `--import=${failRemoval}` } });
+    assert.notEqual(cleanupFailure.code, 0);
+    assert.match(cleanupFailure.stdout + cleanupFailure.stderr, /injected snapshot removal denial/);
+    binding = JSON.parse(await readFile(path.join(projectDir, ".sporades/binding.json"), "utf8"));
+    assert(binding.pendingDeployFileCleanup.includes(priorSnapshot));
+    assert.notEqual(binding.deployFilesRoot, priorSnapshot);
+    const removalFailure = await runCli(["deploy", "remove", "--json"], { cwd: projectDir, env: { ...docker.env, NODE_OPTIONS: `--import=${failRemoval}` } });
+    assert.notEqual(removalFailure.code, 0);
+    assert.match(removalFailure.stdout + removalFailure.stderr, /injected snapshot removal denial/);
+    const removed = await runCli(["deploy", "remove", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(removed.code, 0, removed.stdout + removed.stderr);
+    await ownerOnly();
+    await assert.rejects(stat(binding.deployFilesRoot), { code: "ENOENT" });
+    await assert.rejects(stat(priorSnapshot), { code: "ENOENT" });
+    assert.equal(await readFile(preserved, "utf8"), "server edit");
+  });
+});
+
+
+test("local deploy.files cleans failed seeds despite unrelated rollback errors and retains live candidate files", async () => {
+  for (const retained of [false, true]) await withTempDir(async (dir) => {
+    const created = await runCli(["create", "seed-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "seed-island"));
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.deploy.files = [{ path: "settings.json", update: "preserve" }];
+    await writeFile(configPath, JSON.stringify(config));
+    await writeFile(path.join(projectDir, "settings.json"), "failed seed");
+    const docker = await installFakeDocker(dir, "seed-candidate", retained ? { failOnceActions: ["rm"] } : {});
+    const preload = path.join(dir, "fail-public-cleanup.mjs");
+    await writeFile(preload, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const original = fs.promises.rm;
+fs.promises.rm = async function(file, ...args) {
+  if (String(file).includes('/.public-trees/') && /\\/[0-9]+-[0-9]+-[a-f0-9]+$/.test(String(file))) throw Object.assign(new Error('injected public cleanup denial'), { code: 'EACCES' });
+  return original.call(this, file, ...args);
+}; syncBuiltinESMExports();`);
+    const failed = await runCli(["deploy", "--json"], { cwd: projectDir, env: {
+      ...docker.env, SPORADES_TEST_CONTAINER_REPLACEMENT_FAULT: "consumer",
+      ...(retained ? {} : { NODE_OPTIONS: `--import=${preload}` }),
+    } });
+    assert.notEqual(failed.code, 0, failed.stdout);
+    const details = JSON.parse(failed.stdout).error.diagnostics;
+    assert(details?.failures.includes(retained ? "candidate-container" : "candidate-public-tree"), failed.stdout);
+    const stored = preservedDeployFilePath(path.join(projectDir, ".sporades/preserved-files"), "settings.json");
+    const snapshots = path.join(projectDir, ".sporades/deploy-files");
+    if (retained) {
+      assert.equal(await readFile(stored, "utf8"), "failed seed");
+      assert.equal((await readdir(snapshots)).length, 1);
+    } else {
+      await assert.rejects(stat(stored), { code: "ENOENT" });
+      assert.deepEqual(await readdir(snapshots), []);
+      await writeFile(path.join(projectDir, "settings.json"), "successful seed");
+      const retry = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+      assert.equal(retry.code, 0, retry.stdout + retry.stderr);
+      assert.equal(await readFile(stored, "utf8"), "successful seed");
+    }
+  });
+});
+
+test("local deploy.files journals replacement-only snapshots across process exit and cleanup failure", async () => {
+  for (const failure of ["exit", "cleanup"]) await withTempDir(async (dir) => {
+    const created = await runCli(["create", "snapshot-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "snapshot-island"));
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.deploy.files = [{ path: "settings.json" }];
+    await writeFile(configPath, JSON.stringify(config));
+    await writeFile(path.join(projectDir, "settings.json"), "snapshot bytes");
+    const docker = await installFakeDocker(dir, "snapshot-candidate");
+    const preload = path.join(dir, "exit-snapshot.mjs");
+    await writeFile(preload, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const original = fs.promises.writeFile;
+fs.promises.writeFile = async function(file, ...args) {
+  const result = await original.call(this, file, ...args);
+  if (String(file).includes('/.sporades/deploy-files/')) ${failure === "exit" ? "process.exit(17)" : "throw Object.assign(new Error('injected snapshot write failure'), { code: 'ENOSPC' })"};
+  return result;
+};
+const remove = fs.promises.rm;
+fs.promises.rm = async function(file, ...args) {
+  if (${failure === "cleanup"} && String(file).includes('/.sporades/deploy-files/')) throw Object.assign(new Error('injected snapshot cleanup failure'), { code: 'EACCES' });
+  return remove.call(this, file, ...args);
+}; syncBuiltinESMExports();`);
+    const failed = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...docker.env, NODE_OPTIONS: `--import=${preload}` } });
+    if (failure === "exit") assert.equal(failed.code, 17);
+    else assert.notEqual(failed.code, 0);
+    const journal = path.join(projectDir, ".sporades/deploy-file-attempt.jsonl");
+    const record = JSON.parse((await readFile(journal, "utf8")).trim());
+    assert.equal(await readFile(path.join(record.release, "settings.json"), "utf8"), "snapshot bytes");
+    const before = await readdir(path.join(projectDir, ".sporades/deploy-files"));
+    const retry = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.notEqual(retry.code, 0);
+    assert.match(retry.stdout + retry.stderr, /requires recovery/);
+    assert.deepEqual(await readdir(path.join(projectDir, ".sporades/deploy-files")), before);
+  });
+});
+
+test("local deploy.files switches historical ancestor and descendant paths without losing edits", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "shape-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "shape-island"));
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    const docker = await installFakeDocker(dir, "shape-candidate");
+    const root = path.join(projectDir, ".sporades/preserved-files");
+    for (const [index, relative] of ["config", "config/settings.json", "config"].entries()) {
+      await rm(path.join(projectDir, "config"), { force: true, recursive: true });
+      await mkdir(path.dirname(path.join(projectDir, relative)), { recursive: true });
+      await writeFile(path.join(projectDir, relative), `seed-${index}`);
+      config.deploy.files = [{ path: relative, update: "preserve" }];
+      await writeFile(configPath, JSON.stringify(config));
+      const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+      assert.equal(deployed.code, 0, deployed.stdout + deployed.stderr);
+      const stored = preservedDeployFilePath(root, relative);
+      const run = (await docker.calls()).filter((call) => call.args[0] === "run" && call.args.includes("--detach")).at(-1);
+      assert(run.args.includes(`${stored}:/app/${relative}:rw`));
+      if (index < 2) await writeFile(stored, `edit-${index}`);
+    }
+    assert.equal(await readFile(preservedDeployFilePath(root, "config"), "utf8"), "edit-0");
+    assert.equal(await readFile(preservedDeployFilePath(root, "config/settings.json"), "utf8"), "edit-1");
+  });
+});
+
+test("local deploy.files reconciles Unicode-equivalent preserved identities once", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "unicode-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "unicode-island"));
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.ssh = { authorizedKeys: [{ key: TEST_PUBLIC_KEY }] };
+    const docker = await installFakeDocker(dir, "unicode-candidate");
+    const preservedRoot = path.join(projectDir, ".sporades/preserved-files");
+    const stored = preservedDeployFilePath(preservedRoot, "\u00e9.json");
+    for (const [index, relative] of ["e\u0301.json", "\u00e9.json"].entries()) {
+      await writeFile(path.join(projectDir, relative), `seed-${index}`);
+      config.deploy.files = [{ path: relative, update: "preserve" }];
+      await writeFile(configPath, JSON.stringify(config));
+      const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+      assert.equal(deployed.code, 0, deployed.stdout + deployed.stderr);
+      const run = (await docker.calls()).filter((call) => call.args[0] === "run").at(-1);
+      assert(run.args.includes(`${stored}:/app/${relative}:rw`), "both spellings mount the one stored copy");
+      if (index === 0) await writeFile(stored, "server edit");
+    }
+    assert.equal(await readFile(stored, "utf8"), "server edit");
+    assert.deepEqual((await readdir(preservedRoot)).filter((entry) => entry.endsWith(".file")), [path.basename(stored)], "equivalent spellings share one stored file");
+  });
+});
+
+test("local deploy.files restart repairs atomic-save access and rejects unsafe or pending storage", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "restart-files", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "restart-files"));
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.ssh = { authorizedKeys: [{ key: TEST_PUBLIC_KEY }] };
+    config.deploy.files = [{ path: "settings.json", update: "preserve" }];
+    await writeFile(configPath, JSON.stringify(config));
+    await writeFile(path.join(projectDir, "settings.json"), "seed");
+    const docker = await installFakeDocker(dir, "restart-files-candidate");
+    const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(deployed.code, 0, deployed.stdout + deployed.stderr);
+    const stopped = await runCli(["deploy", "stop", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(stopped.code, 0, stopped.stdout + stopped.stderr);
+    const stored = preservedDeployFilePath(path.join(projectDir, ".sporades/preserved-files"), "settings.json");
+    await writeFile(path.join(projectDir, "replacement"), "atomic edit", { mode: 0o664 });
+    await rename(path.join(projectDir, "replacement"), stored);
+    const before = (await docker.calls()).length;
+    const restarted = await runCli(["deploy", "restart", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(restarted.code, 0, restarted.stdout + restarted.stderr);
+    const calls = (await docker.calls()).slice(before);
+    assert.deepEqual(calls.map((call) => call.args[0]).filter((action) => action === "run"), [], "restart never spawns a file access helper");
+    assert((await stat(stored)).mode & 0o777, 0o600);
+    assert.equal((await stat(stored)).uid, process.getuid());
+    assert.equal(await readFile(stored, "utf8"), "atomic edit");
+    await runCli(["deploy", "stop", "--json"], { cwd: projectDir, env: docker.env });
+    for (const failure of ["missing", "symlink", "journal"]) {
+      await rm(stored, { force: true });
+      if (failure === "symlink") await symlink(path.join(projectDir, "settings.json"), stored);
+      if (failure === "journal") {
+        await writeFile(stored, "uncommitted seed");
+        await writeFile(path.join(projectDir, ".sporades/deploy-file-attempt.jsonl"), "pending");
+      }
+      const count = (await docker.calls()).length;
+      const failed = await runCli(["deploy", "restart", "--json"], { cwd: projectDir, env: docker.env });
+      assert.notEqual(failed.code, 0, failed.stdout);
+      assert.equal((await docker.calls()).length, count);
+    }
+  });
+});
+
+test("local deploy.files stop and remove preserve binding and candidate state while an attempt survives", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "remove-pending", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "remove-pending"));
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.deploy.files = [{ path: "settings.json" }];
+    await writeFile(configPath, JSON.stringify(config));
+    await writeFile(path.join(projectDir, "settings.json"), "snapshot");
+    const docker = await installFakeDocker(dir, "pending-candidate");
+    const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(deployed.code, 0, deployed.stdout + deployed.stderr);
+    const bindingPath = path.join(projectDir, ".sporades/binding.json");
+    const beforeBinding = await readFile(bindingPath, "utf8");
+    const snapshot = path.join(JSON.parse(beforeBinding).deployFilesRoot, "settings.json");
+    const preload = path.join(dir, "exit-candidate.mjs");
+    await writeFile(preload, `import cp from 'node:child_process'; import { syncBuiltinESMExports } from 'node:module';
+const spawn = cp.spawnSync;
+cp.spawnSync = function(command, args, ...rest) {
+  const result = spawn.call(this, command, args, ...rest);
+  if (command === 'docker' && args[0] === 'run' && args.includes('--detach') && result.status === 0) process.exit(17);
+  return result;
+}; syncBuiltinESMExports();`);
+    const interrupted = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...docker.env, NODE_OPTIONS: `--import=${preload}` } });
+    assert.equal(interrupted.code, 17, interrupted.stdout + interrupted.stderr);
+    const journal = path.join(projectDir, ".sporades/deploy-file-attempt.jsonl");
+    const beforeJournal = await readFile(journal, "utf8");
+    const calls = (await docker.calls()).length;
+    for (const action of ["stop", "remove"]) {
+      const result = await runCli(["deploy", action, "--json"], { cwd: projectDir, env: docker.env });
+      assert.notEqual(result.code, 0);
+      assert.match(result.stdout + result.stderr, /requires recovery/);
+      assert.equal((await docker.calls()).length, calls);
+    }
+    assert.equal(await readFile(bindingPath, "utf8"), beforeBinding);
+    assert.equal(await readFile(journal, "utf8"), beforeJournal);
+    assert.equal(await readFile(snapshot, "utf8"), "snapshot");
+
+    // Reconciliation settles the journal without touching the bound Container:
+    // the candidate is removed by its transaction label and its snapshot dropped.
+    const records = beforeJournal.trim().split("\n").map(JSON.parse);
+    const candidate = records.find((record) => record.candidate).candidate;
+    assert.match(candidate.transaction, /^[a-f0-9]{32}$/);
+    const reconciled = await runCli(["deploy", "reconcile", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(reconciled.code, 0, reconciled.stdout + reconciled.stderr);
+    const outcome = JSON.parse(reconciled.stdout).data;
+    assert.equal(outcome.status, "reconciled");
+    assert.equal(outcome.committed, false);
+    assert.deepEqual(outcome.actions, ["candidate-container-removed", "candidate-snapshot-removed", "bound-files-prepared", "journal-removed"]);
+    const reconcileCalls = (await docker.calls()).slice(calls);
+    // The fake Docker reuses one container ID, so the bound Container is inspected
+    // for its staged name; no rename, stop, or start is issued.
+    assert.deepEqual(reconcileCalls.map((call) => call.args[0]), ["ps", "rm", "inspect"]);
+    assert.deepEqual(reconcileCalls[0].args.slice(0, 3), ["ps", "--all", "--quiet"]);
+    assert(reconcileCalls[0].args.includes(`label=com.sporades.container-transaction=${candidate.transaction}`));
+    assert.equal(reconcileCalls[1].args[1], "-f");
+    await assert.rejects(readFile(journal), { code: "ENOENT" });
+    assert.notEqual(records[0].release, JSON.parse(beforeBinding).deployFilesRoot);
+    await assert.rejects(stat(records[0].release), { code: "ENOENT" });
+    assert.equal(await readFile(bindingPath, "utf8"), beforeBinding);
+    assert.equal(await readFile(snapshot, "utf8"), "snapshot");
+    const clean = await runCli(["deploy", "reconcile", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(JSON.parse(clean.stdout).data.status, "clean");
+    const stopped = await runCli(["deploy", "stop", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(stopped.code, 0, stopped.stdout + stopped.stderr);
+  });
+});
+
+test("local deploy.files rollback prepares raced replacement storage before restoring the previous runtime", async () => {
+  for (const repairFails of [false, true]) await withTempDir(async (dir) => {
+    const created = await runCli(["create", "rollback-save", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "rollback-save"));
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.ssh = { authorizedKeys: [{ key: TEST_PUBLIC_KEY }] };
+    config.deploy.files = [{ path: "settings.json", update: "preserve" }];
+    await writeFile(configPath, JSON.stringify(config));
+    await writeFile(path.join(projectDir, "settings.json"), "seed");
+    const docker = await installFakeDocker(dir, "rollback-save-candidate");
+    const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(deployed.code, 0, deployed.stdout + deployed.stderr);
+    delete config.ssh;
+    await writeFile(configPath, JSON.stringify(config));
+    const stored = preservedDeployFilePath(path.join(projectDir, ".sporades/preserved-files"), "settings.json");
+    const preload = path.join(dir, "save-during-candidate.mjs");
+    await writeFile(preload, `import fs from 'node:fs'; import cp from 'node:child_process'; import { syncBuiltinESMExports } from 'node:module';
+const target = ${JSON.stringify(stored)}; let replaced = false;
+const spawn = cp.spawnSync;
+cp.spawnSync = function(command, args, ...rest) {
+  const result = spawn.call(this, command, args, ...rest);
+  if (command === 'docker' && args[0] === 'run' && args.includes('--detach') && result.status === 0) {
+    fs.writeFileSync(target + '.edit', 'concurrent save', { mode: 0o664 }); fs.renameSync(target + '.edit', target); replaced = true;
+  }
+  return result;
+};
+const open = fs.promises.open;
+fs.promises.open = async function(file, ...rest) {
+  const handle = await open.call(this, file, ...rest);
+  if (${repairFails} && replaced && String(file) === target) {
+    handle.chmod = async () => { throw Object.assign(new Error('injected repair failure'), { code: 'EACCES' }); };
+  }
+  return handle;
+}; syncBuiltinESMExports();`);
+    const before = (await docker.calls()).length;
+    const failed = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...docker.env, NODE_OPTIONS: `--import=${preload}`, SPORADES_TEST_CONTAINER_REPLACEMENT_FAULT: "consumer" } });
+    assert.notEqual(failed.code, 0);
+    const calls = (await docker.calls()).slice(before);
+    const start = calls.findIndex((call) => call.args[0] === "start");
+    const info = await stat(stored);
+    if (repairFails) {
+      assert.equal(start, -1, "the previous runtime must not start with unprepared preserved storage");
+      assert.match(failed.stdout, /preserved-files/);
+      assert.notEqual(info.mode & 0o777, 0o600, "the failed repair leaves the editor's mode untouched");
+    } else {
+      assert(start >= 0, JSON.stringify(calls));
+      assert.equal(info.mode & 0o777, 0o600, "the raced replacement is owner-only before the previous runtime restarts");
+    }
+    assert.equal(info.uid, process.getuid());
+    assert.equal(await readFile(stored, "utf8"), "concurrent save");
+  });
+});

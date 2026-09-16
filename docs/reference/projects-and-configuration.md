@@ -590,3 +590,138 @@ See the [structured log payload cap contract](../guide/configuration.md#structur
 for `logs.payloadMaxBytes`, its `logging` alias, the identity-aware minimum,
 and the `INVALID_LOG_CONFIG` error. The default is 4096 bytes; validation
 never silently increases a configured cap.
+
+
+## Additional deployment files
+
+Use `deploy.files` to ship exact files from the project root to the same relative
+location under `/app` in local Container sessions and Hosted Capsules:
+
+```json
+{
+  "deploy": {
+    "files": [
+      { "path": "config/settings.json", "update": "preserve" },
+      { "path": "resources/defaults.json" }
+    ]
+  }
+}
+```
+
+`update` defaults to `"replace"`: the build snapshots the local bytes, and each
+release supplies a read-only file. `"preserve"` seeds the file only if no stored
+copy exists and mounts that copy writable. Server edits survive redeployment,
+restart, and rollback. Replaced files roll back with their release; preserved
+files do not roll back their contents. Failed installation attempts remove
+only newly seeded files whose identity and contents are unchanged from their
+active paths; existing preserved files and intervening edits are retained.
+Rollback atomically moves seeds to `.rollback-<id>` recovery files under
+`preserved-files/`, retaining those bytes because an editor may still have an
+open file handle. If an atomic save races with rollback, Sporades restores the
+captured replacement without overwriting a newer save, or retains it in recovery
+storage. Recovery files can be removed manually after confirming they are no
+longer needed.
+
+Removing a preserved entry stops mounting it without deleting its stored copy.
+Switching to `replace` also retains the inactive copy; switching back to
+`preserve` reuses it. On a Host server these copies live under the Capsule's
+`preserved-files/` directory; locally they live in `.sporades/preserved-files/`.
+Each stored file uses `<SHA-256 of the NFC-normalized relative path>.file`, while
+its Container mount remains `/app/<relative-path>`. This flat storage lets an
+inactive `config` file coexist with a later `config/settings.json` declaration,
+and switching back reuses the original stored bytes. The seed journal records
+both the logical path and physical `storagePath`.
+Local preserved copies stay owned by the invoking user with mode `0600`,
+exactly like `.sporades/data`. Sporades never changes their ownership and runs
+no privileged helper; SSH-enabled Container sessions reach them the same way
+they reach `/app/data`. Before a Container starts, restarts, or is restored
+after a failed replacement, each active preserved file is proven to be a
+regular single-link file and tightened back to owner-only if an editor
+loosened it. Removing a local Container removes its replacement snapshot while
+preserving stored edits.
+
+Every local or Hosted deployment that declares `deploy.files` is recorded before publication in `deploy-file-attempt.jsonl`
+under the local `.sporades/` directory or the Hosted Capsule directory. The
+journal names the attempted release, the candidate and previous Containers, every
+temporary `.seed-*` path before it is created, and each seeded file's inode and
+content hash. Successful installation or completed rollback removes the journal.
+If the deployment process exits unexpectedly or recovery is incomplete, later
+commands stop with the journal path instead of silently adopting uncommitted seed
+bytes: locally `sporades deploy`, `deploy stop`, `deploy restart` and
+`deploy remove`; on a Host, start, restart, rollback and verification fallback.
+The install currently creating the journal may complete its own runtime start; a
+later command cannot claim that exception.
+
+Recovery is one explicit command rather than a manual procedure:
+
+```sh
+sporades deploy reconcile --json
+sporades host reconcile <subname> --host <alias> --json
+```
+
+Reconciliation reads the journal and settles exactly what it recorded. When the
+attempt never committed (the local binding does not name the journaled snapshot,
+or the Host registry never recorded the release), it removes the untracked
+candidate Container by its transaction label, restores the previous Container's
+name, rolls back only seeds whose inode and bytes are unchanged (moving them to
+`.rollback-<id>` recovery files), drops the candidate snapshot or release
+directory and its private key, restores the Host `current` pointer to the
+recorded release, and restores the bound runtime's file access. When the attempt
+did commit, everything stays installed and only the journal and its recorded
+temporary files are cleared. Edited seeds are always retained. The command
+reports the actions it took and is safe to repeat; with no journal it reports a
+clean state. Retry the deployment after it succeeds.
+
+Local Container snapshots and Hosted archives have different size contracts.
+The shared build checks paths, file types and source availability, but does not
+apply Hosted archive quotas. The Host helper enforces these limits on the **whole
+release archive**, including Sporades-managed files and directories:
+
+- 247 UTF-8 bytes per archive path.
+- 64 MiB per file.
+- 128 MiB total uncompressed file bytes and 128 MiB compressed archive bytes.
+- 2,048 archive entries, including directories.
+
+A file set can therefore build or run in a local Container yet exceed Hosted
+limits and be rejected during Host installation. Keep additional files within
+the remaining archive budget; local build success does not establish that budget.
+
+Preserved storage roots, local snapshot roots and Host-push staging roots are
+owner-only. Additional staged
+files and archives are private; the Host helper grants its runtime read access
+to additional release files after validated extraction.
+
+Local bindings retain pending snapshot cleanup paths until deletion succeeds.
+A later deployment or Container removal retries that cleanup.
+
+Preserved storage must have a single link so ownership and rollback operations
+cannot affect an unrelated pathname.
+
+Source snapshots reject symlink substitution during a build on every platform.
+Linux and macOS read through descriptors that never follow symlinks; other
+platforms open the validated path and then prove the opened inode is still the
+one a symlink-free walk names before reading it.
+
+Edit the file contents in place when editing a bind-mounted file. Replacing its
+inode with an editor's atomic-save operation requires restarting the container
+to refresh the bind mount. Locally, use `sporades deploy stop` followed by
+`sporades deploy restart`; Hosted Capsules use `sporades host restart`. These
+paths validate preserved files and restore the bound runtime's file access before
+starting it. A surviving local attempt journal also blocks stop, restart, and removal until `sporades deploy reconcile` settles the candidate. Failed replacement restores access for the prior binding even when an editor has replaced the file inode; if that repair fails, the old runtime stays stopped and recovery is reported as incomplete.
+
+Paths are normalized using Node path resolution. They must stay under the
+project root and cannot collide with `.sporades/`, `public/`, `data/`, the server
+or legacy client bundles, `index.html`, `sporades.json`, or Server env. These
+reserved names are matched without case sensitivity on every platform, so
+`.SPORADES/` and `Public/` are also excluded. Only
+regular source files (including hard links) are accepted: directories, symlinks (including parent symlinks),
+conflicting paths, and paths incompatible with the archive or
+container mount format are rejected. Every declared source must exist at local
+build time, including preserved seeds; failure names the file before upload.
+Omitting `deploy.files` keeps the existing payload unchanged.
+
+These files are server-side resources, not public assets. A Dev session reads
+the original project files directly: `sporades dev` never snapshots, validates,
+or mounts `deploy.files`, so a missing or symlinked declaration only fails
+`sporades deploy` and `sporades host push`. Application code owns reading and reloading them;
+Sporades does not watch or reload configuration for the application.

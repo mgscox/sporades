@@ -93,19 +93,20 @@ test("sporades command --help prints command-specific help", async () => {
     ["security", /^Usage: sporades security \[options\]/, /--session <name>/],
     ["doctor", /^Usage: sporades doctor \[options\]/, /--strict/],
     ["env", /^Usage: sporades env <command> \[options\]/, /reencrypt/],
-    ["deploy", /^Usage: sporades deploy \[status\|stop\|restart\|remove\|reset\|ssh\] \[options\]/, /deploy ssh/],
-    ["host", /^Usage: sporades host <command> \[options\]/, /github workflow write/],
+    ["deploy", /^Usage: sporades deploy \[status\|stop\|restart\|reconcile\|remove\|reset\|ssh\] \[options\]/, /deploy ssh/, /deploy reconcile/],
+    ["host", /^Usage: sporades host <command> \[options\]/, /github workflow write/, /reconcile <subname>/],
     ["logs", /^Usage: sporades logs \[tail\] \[options\]/, /logs tail/],
     ["db", /^Usage: sporades db <command> \[options\]/, /query <sql>/],
   ];
 
   await withTempDir(async (dir) => {
-    for (const [command, usage, detail] of cases) {
+    for (const [command, usage, detail, additionalDetail] of cases) {
       const result = await runCli([command, "--help"], { cwd: dir });
 
       assert.equal(result.code, 0, result.stderr);
       assert.equal(result.stderr, "");
       assert.match(result.stdout, usage);
+      if (additionalDetail) assert.match(result.stdout, additionalDetail);
       assert.match(result.stdout, detail);
     }
   });

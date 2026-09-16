@@ -1295,7 +1295,7 @@ function createConnection() {
         channelsForName.set(args.identity, subscription);
         subscriptions.set(id, subscription);
         const activeSocket = open();
-        if (activeSocket.readyState === WebSocket.OPEN) send({ id, type: "query.subscribe", query: name, args: args.snapshot });
+        if (activeSocket && activeSocket.readyState === WebSocket.OPEN) send({ id, type: "query.subscribe", query: name, args: args.snapshot });
       }
       subscription.listeners.add(listener);
       listener(subscription.latest ?? { data: null, error: null, loading: true });
@@ -1366,7 +1366,7 @@ function createConnection() {
       const subscription = { id, listener, started: false, states: new Map() };
       journeySubscriptions.set(id, subscription);
       const activeSocket = open();
-      if (activeSocket.readyState === WebSocket.OPEN) send({ id, type: "journey.subscribe" });
+      if (activeSocket && activeSocket.readyState === WebSocket.OPEN) send({ id, type: "journey.subscribe" });
       return { unsubscribe() { if (journeySubscriptions.delete(id)) send({ id: nextId++, type: "journey.unsubscribe", subscriptionId: id }); } };
     },
     journeyDisable() { return request("journey.disable").then((result) => { if (!result.error) { stopJourneyCapture(); journeyCapture = null; journeyConsentOptions = null; journeyEnabledUserId = null; } return result; }); },

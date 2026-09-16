@@ -1739,6 +1739,18 @@ test("repeated connection rejection stops after four attempts and renders a manu
     await runtime.auth.get();
     assert.equal(browser.sockets.length, 4, "ordinary app activity cannot bypass the terminal manual-retry gate");
 
+    let querySubscription;
+    let journeySubscription;
+    assert.doesNotThrow(() => {
+      querySubscription = runtime.queries.subscribe("terminal-safe", () => {});
+      journeySubscription = runtime.journey.subscribe(() => {});
+    }, "new subscriptions tolerate the terminal connection state");
+    assert.equal(typeof querySubscription.unsubscribe, "function");
+    assert.equal(typeof journeySubscription.unsubscribe, "function");
+    querySubscription.unsubscribe();
+    journeySubscription.unsubscribe();
+    assert.equal(browser.sockets.length, 4, "subscriptions cannot bypass the terminal manual-retry gate");
+
     retryButton.click();
     await settleMicrotasks();
     assert.deepEqual(timers.pending().map(({ delay }) => delay), [275]);
