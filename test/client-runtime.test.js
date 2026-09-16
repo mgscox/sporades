@@ -1619,6 +1619,8 @@ test("rejected TTL-expired page connection token refreshes and connects without 
     assert.equal(tokenRequests[0].options.credentials, "same-origin");
     assert.deepEqual(tokenRequests[0].options.headers, { "x-sporades-connection-token-request": "1" });
     assert.ok(tokenRequests[0].options.signal instanceof AbortSignal);
+    assert.deepEqual(timers.pending().map(({ delay }) => delay), [275]);
+    timers.runNext();
     assert.equal(browser.sockets.length, 2);
     assert.equal(new URL(browser.sockets[1].url).searchParams.get("connectionToken"), "fresh-page-token");
     browser.sockets[1].readyState = globalThis.WebSocket.OPEN;
@@ -1661,6 +1663,9 @@ test("app calls during connection recovery wait for the scheduled fresh-token so
     assert.equal((await rejectedAuth).error.code, "TRANSPORT_CLOSED");
     await settleMicrotasks();
 
+    assert.equal(browser.sockets.length, 1, "app activity cannot bypass the scheduled backoff");
+    assert.deepEqual(timers.pending().map(({ delay }) => delay), [275]);
+    timers.runNext();
     assert.equal(browser.sockets.length, 2, "the scheduled retry creates exactly one replacement socket");
     const recovered = browser.sockets[1];
     assert.equal(new URL(recovered.url).searchParams.get("connectionToken"), "fresh-page-token");
@@ -1712,6 +1717,8 @@ test("runtime restart invalidating an open page token recovers without wedging t
     await settleMicrotasks();
 
     assert.equal(tokenRequests, 1);
+    assert.deepEqual(timers.pending().map(({ delay }) => delay), [275]);
+    timers.runNext();
     const recovered = browser.sockets[2];
     assert.equal(new URL(recovered.url).searchParams.get("connectionToken"), "post-restart-page-token");
     recovered.readyState = globalThis.WebSocket.OPEN;
@@ -1728,6 +1735,7 @@ test("repeated connection rejection stops after four attempts and renders a manu
   const timers = createDeterministicTimers();
   let refreshedTokens = 0;
   const elements = new Map();
+  const appOwnedConnectionError = { id: "sporades-connection-error" };
   const createElement = (tagName) => ({
     tagName: tagName.toUpperCase(),
     children: [],
@@ -1743,7 +1751,7 @@ test("repeated connection rejection stops after four attempts and renders a manu
     body: null,
     documentElement: { append(element) { if (element.id) elements.set(element.id, element); } },
     createElement,
-    getElementById(id) { return elements.get(id) ?? null; },
+    getElementById(id) { return id === "sporades-connection-error" ? appOwnedConnectionError : elements.get(id) ?? null; },
   };
   const browser = installBrowserFakes(anonymousAuth, {
     autoOpen: false,
@@ -1765,6 +1773,10 @@ test("repeated connection rejection stops after four attempts and renders a manu
       rejected.emit("close", {});
       if (attempt === 1) queuedAuth = runtime.auth.get();
       await settleMicrotasks();
+      if (attempt < 4) {
+        assert.deepEqual(timers.pending().map(({ delay }) => delay), [[275, 550, 1_100][attempt - 1]]);
+        timers.runNext();
+      }
     }
 
     assert.equal(browser.sockets.length, 4, "automatic recovery is bounded to four WebSocket attempts");
@@ -1774,6 +1786,7 @@ test("repeated connection rejection stops after four attempts and renders a manu
     assert.equal(authStates.at(-1).error.code, "CONNECTION_UNAVAILABLE");
     assert.equal((await queuedAuth).error.code, "CONNECTION_UNAVAILABLE", "a request queued during recovery resolves when the episode goes terminal");
     const errorPanel = elements.get("sporades-connection-error");
+    assert.notEqual(errorPanel, appOwnedConnectionError, "an app-owned matching id cannot suppress the runtime retry panel");
     assert.match(errorPanel.textContent, /could not connect/i);
     const retryButton = errorPanel.children.find((child) => child.tagName === "BUTTON");
     assert.equal(retryButton.textContent, "Try again");
@@ -1797,6 +1810,8 @@ test("repeated connection rejection stops after four attempts and renders a manu
 
     retryButton.click();
     await settleMicrotasks();
+    assert.deepEqual(timers.pending().map(({ delay }) => delay), [275]);
+    timers.runNext();
     const recovered = browser.sockets[4];
     recovered.readyState = globalThis.WebSocket.OPEN;
     recovered.emit("open", {});
