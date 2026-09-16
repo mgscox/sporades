@@ -1617,6 +1617,7 @@ test("rejected TTL-expired page connection token refreshes and connects without 
     assert.equal(new URL(tokenRequests[0].url).pathname, "/__sporades/connection-token");
     assert.equal(tokenRequests[0].options.cache, "no-store");
     assert.equal(tokenRequests[0].options.credentials, "same-origin");
+    assert.deepEqual(tokenRequests[0].options.headers, { "x-sporades-connection-token-request": "1" });
     assert.ok(tokenRequests[0].options.signal instanceof AbortSignal);
     assert.equal(browser.sockets.length, 2);
     assert.equal(new URL(browser.sockets[1].url).searchParams.get("connectionToken"), "fresh-page-token");

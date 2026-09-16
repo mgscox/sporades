@@ -364,7 +364,7 @@ export function routeConnectionToken(
   const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
   if (request.method !== "GET" || requestUrl.pathname !== "/__sporades/connection-token") return false;
   const origin = request.headers.origin;
-  if (origin && !isSameOriginRequest(request, origin)) {
+  if (request.headers["x-sporades-connection-token-request"] !== "1" || (origin && !isSameOriginRequest(request, origin))) {
     response.writeHead(403, {
       "cache-control": "no-store",
       "content-type": "application/json; charset=utf-8",

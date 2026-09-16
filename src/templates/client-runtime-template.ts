@@ -880,6 +880,7 @@ function createConnection() {
         const refreshOptions = {
           cache: "no-store",
           credentials: "same-origin",
+          headers: { "x-sporades-connection-token-request": "1" },
         };
         if (controller) refreshOptions.signal = controller.signal;
         const timeout = new Promise((_, reject) => {

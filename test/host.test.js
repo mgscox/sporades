@@ -126,7 +126,8 @@ test("connection-token refresh route returns a fresh no-store browser gate", asy
     response.end("Not found");
   }, async (port) => {
     const baseUrl = `http://[::1]:${port}`;
-    const first = await fetch(new URL("/__sporades/connection-token", baseUrl));
+    const refreshHeaders = { "x-sporades-connection-token-request": "1" };
+    const first = await fetch(new URL("/__sporades/connection-token", baseUrl), { headers: refreshHeaders });
     assert.equal(first.status, 200);
     assert.equal(first.headers.get("cache-control"), "no-store");
     assert.equal(first.headers.get("pragma"), "no-cache");
@@ -135,19 +136,23 @@ test("connection-token refresh route returns a fresh no-store browser gate", asy
     assert.ok(first.headers.get("content-security-policy-report-only"));
     assert.deepEqual(await first.json(), { token: "connection-token-1" });
 
-    const second = await fetch(new URL("/__sporades/connection-token", baseUrl));
+    const second = await fetch(new URL("/__sporades/connection-token", baseUrl), { headers: refreshHeaders });
     assert.deepEqual(await second.json(), { token: "connection-token-2" });
 
     const wrongMethod = await fetch(new URL("/__sporades/connection-token", baseUrl), { method: "POST" });
     assert.equal(wrongMethod.status, 404);
 
     const crossOrigin = await fetch(new URL("/__sporades/connection-token", baseUrl), {
-      headers: { origin: "https://evil.example.test" },
+      headers: { ...refreshHeaders, origin: "https://evil.example.test" },
     });
     assert.equal(crossOrigin.status, 403);
     assert.equal(crossOrigin.headers.get("cross-origin-resource-policy"), "same-origin");
     assert.equal(crossOrigin.headers.get("access-control-allow-origin"), null);
     assert.equal(issued, 2, "cross-origin requests do not mint connection tokens");
+
+    const crossSiteSubresource = await fetch(new URL("/__sporades/connection-token?cache-bust=1", baseUrl));
+    assert.equal(crossSiteSubresource.status, 403);
+    assert.equal(issued, 2, "requests without the runtime-only header do not mint connection tokens");
   });
 });
 
