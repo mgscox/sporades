@@ -90,7 +90,7 @@ test("framework-neutral Access-key management uses request results without retai
   } finally { browser.cleanup(); }
 });
 
-test("a stale socket close cannot fail an Access-key request on its replacement", async () => {
+test("an Access-key request queued behind a closing socket survives onto its replacement", async () => {
   const summary = {
     id: "key-replacement", name: "replacement", grants: ["*"], effectiveScopes: ["requests:read"], status: "active",
     createdAt: "2026-08-20T12:00:00.000Z", expiresAt: null, rotatedAt: null, revokedAt: null,
@@ -107,12 +107,13 @@ test("a stale socket close cannot fail an Access-key request on its replacement"
     const runtime = await importClientRuntime();
     assert.equal((await runtime.accessKeys.list()).error, null);
     const staleSocket = browser.sockets.at(-1);
-    staleSocket.readyState = 2;
+    staleSocket.readyState = globalThis.WebSocket.CLOSING;
     const replacementRequest = runtime.accessKeys.list();
-    assert.notEqual(browser.sockets.at(-1), staleSocket);
+    assert.equal(browser.sockets.at(-1), staleSocket, "app activity waits for the close event instead of bypassing recovery");
     staleSocket.readyState = 3;
     staleSocket.emit("close", {});
     const result = await replacementRequest;
+    assert.notEqual(browser.sockets.at(-1), staleSocket);
     assert.equal(result.error, null);
     assert.equal(result.data.accessKeys[0].id, summary.id);
   } finally { browser.cleanup(); }
@@ -1270,6 +1271,7 @@ function installBrowserFakes(auth, options = {}) {
   globalThis.WebSocket = class FakeWebSocket {
     static CONNECTING = 0;
     static OPEN = 1;
+    static CLOSING = 2;
 
     readyState = FakeWebSocket.CONNECTING;
     listeners = new Map();
@@ -1616,9 +1618,6 @@ test("rejected TTL-expired page connection token refreshes and connects without 
     assert.equal(tokenRequests[0].options.cache, "no-store");
     assert.equal(tokenRequests[0].options.credentials, "same-origin");
     assert.ok(tokenRequests[0].options.signal instanceof AbortSignal);
-    assert.deepEqual(timers.pending().map(({ delay }) => delay), [275]);
-    timers.runNext();
-
     assert.equal(browser.sockets.length, 2);
     assert.equal(new URL(browser.sockets[1].url).searchParams.get("connectionToken"), "fresh-page-token");
     browser.sockets[1].readyState = globalThis.WebSocket.OPEN;
@@ -1651,19 +1650,15 @@ test("app calls during connection recovery wait for the scheduled fresh-token so
     const runtime = await importClientRuntime();
     const rejectedAuth = runtime.auth.get();
     const rejected = browser.sockets[0];
-    rejected.readyState = 3;
-    rejected.emit("close", {});
-
+    rejected.readyState = globalThis.WebSocket.CLOSING;
     const queuedAuth = runtime.auth.get();
     const queryStates = [];
     const subscription = runtime.queries.subscribe("during-recovery", (state) => queryStates.push(state));
-    assert.equal(browser.sockets.length, 1, "app activity cannot bypass the in-flight token refresh");
+    assert.equal(browser.sockets.length, 1, "app activity cannot bypass a socket waiting for its close event");
+    rejected.readyState = 3;
+    rejected.emit("close", {});
     assert.equal((await rejectedAuth).error.code, "TRANSPORT_CLOSED");
     await settleMicrotasks();
-
-    assert.equal(browser.sockets.length, 1, "app activity cannot bypass the scheduled backoff");
-    assert.deepEqual(timers.pending().map(({ delay }) => delay), [275]);
-    timers.runNext();
 
     assert.equal(browser.sockets.length, 2, "the scheduled retry creates exactly one replacement socket");
     const recovered = browser.sockets[1];
@@ -1716,8 +1711,6 @@ test("runtime restart invalidating an open page token recovers without wedging t
     await settleMicrotasks();
 
     assert.equal(tokenRequests, 1);
-    assert.deepEqual(timers.pending().map(({ delay }) => delay), [275]);
-    timers.runNext();
     const recovered = browser.sockets[2];
     assert.equal(new URL(recovered.url).searchParams.get("connectionToken"), "post-restart-page-token");
     recovered.readyState = globalThis.WebSocket.OPEN;
@@ -1746,7 +1739,8 @@ test("repeated connection rejection stops after four attempts and renders a manu
     remove() { if (this.id) elements.delete(this.id); },
   });
   globalThis.document = {
-    body: { append(element) { if (element.id) elements.set(element.id, element); } },
+    body: null,
+    documentElement: { append(element) { if (element.id) elements.set(element.id, element); } },
     createElement,
     getElementById(id) { return elements.get(id) ?? null; },
   };
@@ -1770,10 +1764,6 @@ test("repeated connection rejection stops after four attempts and renders a manu
       rejected.emit("close", {});
       if (attempt === 1) queuedAuth = runtime.auth.get();
       await settleMicrotasks();
-      if (attempt < 4) {
-        assert.deepEqual(timers.pending().map(({ delay }) => delay), [[275, 550, 1_100][attempt - 1]]);
-        timers.runNext();
-      }
     }
 
     assert.equal(browser.sockets.length, 4, "automatic recovery is bounded to four WebSocket attempts");
@@ -1806,8 +1796,6 @@ test("repeated connection rejection stops after four attempts and renders a manu
 
     retryButton.click();
     await settleMicrotasks();
-    assert.deepEqual(timers.pending().map(({ delay }) => delay), [275]);
-    timers.runNext();
     const recovered = browser.sockets[4];
     recovered.readyState = globalThis.WebSocket.OPEN;
     recovered.emit("open", {});
@@ -1847,6 +1835,58 @@ test("a stalled connection-token refresh times out instead of wedging recovery",
     assert.deepEqual(timers.pending().map(({ delay }) => delay), [275]);
     timers.runNext();
     assert.equal(browser.sockets.length, 2, "a timed-out refresh still advances the bounded retry episode");
+  } finally {
+    browser.cleanup();
+  }
+});
+
+test("a rejected connection-token refresh retries the old token after backoff", async () => {
+  const timers = createDeterministicTimers();
+  const browser = installBrowserFakes(anonymousAuth, {
+    autoOpen: false,
+    connectionToken: "stale-page-token",
+    fetch: async () => ({ ok: false, async json() { throw new Error("must not parse a rejected response"); } }),
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+    random: () => 0.5,
+  });
+  try {
+    const runtime = await importClientRuntime();
+    runtime.auth.subscribe(() => {});
+    browser.sockets[0].readyState = 3;
+    browser.sockets[0].emit("close", {});
+    await settleMicrotasks();
+
+    assert.deepEqual(timers.pending().map(({ delay }) => delay), [275]);
+    timers.runNext();
+    assert.equal(browser.sockets.length, 2);
+    assert.equal(new URL(browser.sockets[1].url).searchParams.get("connectionToken"), "stale-page-token");
+  } finally {
+    browser.cleanup();
+  }
+});
+
+test("page retirement during connection-token refresh cancels recovery", async () => {
+  const timers = createDeterministicTimers();
+  let finishRefresh;
+  const browser = installBrowserFakes(anonymousAuth, {
+    autoOpen: false,
+    fetch: async () => await new Promise((resolve) => { finishRefresh = resolve; }),
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+  });
+  try {
+    const runtime = await importClientRuntime();
+    runtime.auth.subscribe(() => {});
+    browser.sockets[0].readyState = 3;
+    browser.sockets[0].emit("close", {});
+    await Promise.resolve();
+    browser.emitWindow("pagehide", {});
+    finishRefresh({ ok: true, async json() { return { token: "unused-fresh-token" }; } });
+    await settleMicrotasks();
+
+    assert.equal(browser.sockets.length, 1);
+    assert.equal(timers.pending().length, 0);
   } finally {
     browser.cleanup();
   }

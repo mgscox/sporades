@@ -59665,7 +59665,7 @@ function createConnection() {
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
       return socket;
     }
-    if (retryInFlight) return null;
+    if (retryInFlight || socket?.readyState === WebSocket.CLOSING) return null;
 
     syncSessionTokenFromStorage();
     const url = new URL(websocketPath, window.location.href);
@@ -59782,6 +59782,7 @@ function createConnection() {
   async function scheduleConnectionRetry(refreshToken) {
     if (pageRetired || retryInFlight) return;
     retryInFlight = true;
+    let refreshedConnectionToken = false;
     if (refreshToken) {
       const controller = typeof AbortController === "undefined" ? null : new AbortController();
       let timeoutId;
@@ -59804,6 +59805,7 @@ function createConnection() {
         ]);
         if (typeof result?.token === "string" && result.token.length > 0) {
           window.__SPORADES_CONNECTION_TOKEN = result.token;
+          refreshedConnectionToken = true;
         }
       } catch {} finally {
         if (timeoutId !== undefined) clearTimeout(timeoutId);
@@ -59811,6 +59813,11 @@ function createConnection() {
     }
     if (pageRetired) {
       retryInFlight = false;
+      return;
+    }
+    if (refreshedConnectionToken) {
+      retryInFlight = false;
+      open();
       return;
     }
     const baseDelay = Math.min(2_000, 250 * (2 ** Math.max(0, automaticConnectionAttempts - 1)));
@@ -59839,7 +59846,9 @@ function createConnection() {
       subscription.latest = { data: null, error, loading: false };
       for (const listener of subscription.listeners) listener(subscription.latest);
     }
-    if (typeof document === "undefined" || !document.body || document.getElementById?.("sporades-connection-error")) return;
+    if (typeof document === "undefined" || document.getElementById?.("sporades-connection-error")) return;
+    const errorRoot = document.body ?? document.documentElement;
+    if (!errorRoot) return;
     const panel = document.createElement("div");
     panel.id = "sporades-connection-error";
     panel.setAttribute?.("role", "alert");
@@ -59856,7 +59865,7 @@ function createConnection() {
       scheduleConnectionRetry(true);
     }, { once: true });
     panel.append(retry);
-    document.body.append(panel);
+    errorRoot.append(panel);
   }
 
   function send(message, onSocket = null) {
@@ -59864,7 +59873,9 @@ function createConnection() {
     const activeSocket = open();
     onSocket?.(activeSocket);
     if (!activeSocket) {
-      if (retryInFlight && !terminalConnectionError && !pageRetired) retryQueue.push({ message, onSocket });
+      if ((retryInFlight || socket?.readyState === WebSocket.CLOSING) && !terminalConnectionError && !pageRetired) {
+        retryQueue.push({ message, onSocket });
+      }
       return;
     }
     const outboundMessage = currentSessionToken

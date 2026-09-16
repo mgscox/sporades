@@ -120,6 +120,7 @@ async function withHostedRuntimeTransportServer(dir, config, fn) {
 test("connection-token refresh route returns a fresh no-store browser gate", async () => {
   let issued = 0;
   await withHttpServer((request, response) => {
+    if (prepareHttpSecurity({}, request, response)) return;
     if (routeConnectionToken(request, response, () => `connection-token-${++issued}`)) return;
     response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
     response.end("Not found");
@@ -130,6 +131,8 @@ test("connection-token refresh route returns a fresh no-store browser gate", asy
     assert.equal(first.headers.get("cache-control"), "no-store");
     assert.equal(first.headers.get("pragma"), "no-cache");
     assert.equal(first.headers.get("cross-origin-resource-policy"), "same-origin");
+    assert.equal(first.headers.get("x-content-type-options"), "nosniff");
+    assert.ok(first.headers.get("content-security-policy-report-only"));
     assert.deepEqual(await first.json(), { token: "connection-token-1" });
 
     const second = await fetch(new URL("/__sporades/connection-token", baseUrl));
@@ -143,6 +146,7 @@ test("connection-token refresh route returns a fresh no-store browser gate", asy
     });
     assert.equal(crossOrigin.status, 403);
     assert.equal(crossOrigin.headers.get("cross-origin-resource-policy"), "same-origin");
+    assert.equal(crossOrigin.headers.get("access-control-allow-origin"), null);
     assert.equal(issued, 2, "cross-origin requests do not mint connection tokens");
   });
 });
