@@ -538,9 +538,10 @@ served with `Cache-Control: no-store`. The token gates the WebSocket upgrade; it
 is not a Session credential and grants no app authority. If a restart or expiry
 invalidates it, the client obtains one fresh token from the same-origin
 `/__sporades/connection-token` route and retries with exponential backoff and
-jitter. Automatic recovery stops after four WebSocket attempts and renders a
-runtime-owned manual retry state rather than leaving the Capsule shell loading
-or reconnecting indefinitely.
+jitter. Brief restarts can recover automatically within that bounded episode;
+longer outages stop after four WebSocket attempts and render a runtime-owned
+manual retry state rather than leaving the Capsule shell loading or reconnecting
+indefinitely.
 
 The scaffold hides raw transport details behind `sporades/client`:
 
