@@ -58,6 +58,7 @@ import {
   dumpDatabase,
   handleFileHttpRoute,
   injectPageConnectionToken,
+  isDocumentNavigationRequest,
   listDatabaseTables,
   openDevDatabase,
   prepareHttpSecurity,
@@ -2333,7 +2334,7 @@ async function startDevSession(options: LooseRecord) {
           "content-type": publicAsset.contentType,
           ...(publicAsset.html ? { "cache-control": "no-store", pragma: "no-cache" } : {}),
         });
-        response.end(publicAsset.html
+        response.end(publicAsset.html && isDocumentNavigationRequest(request)
           ? injectPageConnectionToken(publicAsset.body.toString("utf8"), websocketHub.createConnectionToken())
           : publicAsset.body);
         return;

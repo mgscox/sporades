@@ -89244,6 +89244,9 @@ ${script}`);
   return `${script}
 ${html}`;
 }
+function isDocumentNavigationRequest(request) {
+  return request.headers["sec-fetch-dest"] === "document";
+}
 function routeConnectionToken(request, response, createConnectionToken) {
   const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
   if (request.method !== "GET" || requestUrl.pathname !== "/__sporades/connection-token") return false;
@@ -113998,7 +114001,7 @@ async function startDevSession(options) {
           "content-type": publicAsset2.contentType,
           ...publicAsset2.html ? { "cache-control": "no-store", pragma: "no-cache" } : {}
         });
-        response.end(publicAsset2.html ? injectPageConnectionToken(publicAsset2.body.toString("utf8"), websocketHub.createConnectionToken()) : publicAsset2.body);
+        response.end(publicAsset2.html && isDocumentNavigationRequest(request) ? injectPageConnectionToken(publicAsset2.body.toString("utf8"), websocketHub.createConnectionToken()) : publicAsset2.body);
         return;
       }
       response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });

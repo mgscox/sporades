@@ -298,6 +298,9 @@ export function injectPageConnectionToken(html, token) {
     }
     return `${script}\n${html}`;
 }
+export function isDocumentNavigationRequest(request) {
+    return request.headers["sec-fetch-dest"] === "document";
+}
 export function routeConnectionToken(request, response, createConnectionToken) {
     const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
     if (request.method !== "GET" || requestUrl.pathname !== "/__sporades/connection-token")

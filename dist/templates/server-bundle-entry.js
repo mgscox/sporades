@@ -18,7 +18,7 @@ import { lstatSync, readFileSync } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
-import { createRuntimeInspectionAdapter, createWebSocketHub, handleFileHttpRoute, injectPageConnectionToken, inspectRuntimeJobs, inspectRuntimeSchedules, openDevDatabase, prepareHttpSecurity, runRuntimeAccessKeyOperatorAction, routeConnectionToken, routeEndpoint, routeRuntimeHealth, routeSporadesAuth, shutdownAndCloseDatabase, shutdownHttpServerAndRuntime, writeUnhandledHttpError, } from "../server-runtime-source.js";
+import { createRuntimeInspectionAdapter, createWebSocketHub, handleFileHttpRoute, injectPageConnectionToken, isDocumentNavigationRequest, inspectRuntimeJobs, inspectRuntimeSchedules, openDevDatabase, prepareHttpSecurity, runRuntimeAccessKeyOperatorAction, routeConnectionToken, routeEndpoint, routeRuntimeHealth, routeSporadesAuth, shutdownAndCloseDatabase, shutdownHttpServerAndRuntime, writeUnhandledHttpError, } from "../server-runtime-source.js";
 import { publicTreePathFromRequest } from "../public-tree-contract.js";
 import { publicAccessKeyManagementError } from "../access-keys-runtime.js";
 import { ACCESS_KEY_OPERATOR_ACTIONS, validateAccessKeyOperatorActionInput } from "../cli/access-key-operator-envelope.js";
@@ -230,7 +230,9 @@ async function routePublicAsset(request, response, publicRoot, hub) {
         "content-type": publicContentType(relativePath),
         ...(html ? { "cache-control": "no-store", pragma: "no-cache" } : {}),
     });
-    response.end(html ? injectPageConnectionToken(body.toString("utf8"), hub.createConnectionToken()) : body);
+    response.end(html && isDocumentNavigationRequest(request)
+        ? injectPageConnectionToken(body.toString("utf8"), hub.createConnectionToken())
+        : body);
     return true;
 }
 function publicContentType(relativePath) {

@@ -24,6 +24,7 @@ import {
   createWebSocketHub,
   handleFileHttpRoute,
   injectPageConnectionToken,
+  isDocumentNavigationRequest,
   inspectRuntimeJobs,
   inspectRuntimeSchedules,
   openDevDatabase,
@@ -253,7 +254,9 @@ async function routePublicAsset(request: IncomingMessage, response: ServerRespon
     "content-type": publicContentType(relativePath),
     ...(html ? { "cache-control": "no-store", pragma: "no-cache" } : {}),
   });
-  response.end(html ? injectPageConnectionToken(body.toString("utf8"), hub.createConnectionToken()) : body);
+  response.end(html && isDocumentNavigationRequest(request)
+    ? injectPageConnectionToken(body.toString("utf8"), hub.createConnectionToken())
+    : body);
   return true;
 }
 

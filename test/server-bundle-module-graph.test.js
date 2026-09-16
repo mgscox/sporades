@@ -578,7 +578,7 @@ function decodeWebSocketFrames(buffer) {
 }
 
 async function readConnectionToken(baseUrl) {
-  const response = await fetch(baseUrl);
+  const response = await fetch(baseUrl, { headers: { "sec-fetch-dest": "document" } });
   const html = await response.text();
   const match = /window\.__SPORADES_CONNECTION_TOKEN="([^"]+)"/.exec(html);
   assert.ok(match, `Expected the served page to carry a connection token, got: ${html.slice(0, 200)}`);
@@ -892,13 +892,18 @@ test("a generated server bundle serves no-store HTML and fresh connection tokens
     await writePublicTree(root, "<!doctype html><html><head></head><body></body></html>");
     booted = await bootBundle({ source, dir: root });
 
-    const page = await fetch(booted.baseUrl);
+    const subresource = await fetch(booted.baseUrl);
+    assert.doesNotMatch(await subresource.text(), /__SPORADES_CONNECTION_TOKEN/);
+
+    const page = await fetch(booted.baseUrl, { headers: { "sec-fetch-dest": "document" } });
     assert.equal(page.headers.get("cache-control"), "no-store");
     const html = await page.text();
     const pageToken = /window\.__SPORADES_CONNECTION_TOKEN="([^"]+)"/.exec(html)?.[1];
     assert.ok(pageToken);
 
-    const refreshed = await fetch(new URL("/__sporades/connection-token", booted.baseUrl));
+    const refreshed = await fetch(new URL("/__sporades/connection-token", booted.baseUrl), {
+      headers: { "x-sporades-connection-token-request": "1" },
+    });
     assert.equal(refreshed.status, 200);
     assert.equal(refreshed.headers.get("cache-control"), "no-store");
     const refreshedToken = (await refreshed.json()).token;

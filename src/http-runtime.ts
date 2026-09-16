@@ -356,6 +356,10 @@ export function injectPageConnectionToken(html: string, token: string) {
   return `${script}\n${html}`;
 }
 
+export function isDocumentNavigationRequest(request: Pick<IncomingMessage, "headers">) {
+  return request.headers["sec-fetch-dest"] === "document";
+}
+
 export function routeConnectionToken(
   request: Pick<IncomingMessage, "method" | "url" | "headers" | "socket">,
   response: Pick<ServerResponse, "writeHead" | "end">,
