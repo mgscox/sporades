@@ -60201,7 +60201,15 @@ function createConnection() {
       let subscription = channelsForName.get(args.identity);
       if (!subscription) {
         const id = nextId++;
-        subscription = { id, name, args, listeners: new Set(), latest: null };
+        subscription = {
+          id,
+          name,
+          args,
+          listeners: new Set(),
+          latest: terminalConnectionError
+            ? { data: null, error: terminalConnectionError, loading: false }
+            : null,
+        };
         channelsForName.set(args.identity, subscription);
         subscriptions.set(id, subscription);
         const activeSocket = open();

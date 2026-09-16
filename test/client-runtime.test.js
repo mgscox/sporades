@@ -1741,15 +1741,18 @@ test("repeated connection rejection stops after four attempts and renders a manu
 
     let querySubscription;
     let journeySubscription;
+    const lateQueryStates = [];
     assert.doesNotThrow(() => {
-      querySubscription = runtime.queries.subscribe("terminal-safe", () => {});
+      querySubscription = runtime.queries.subscribe("terminal-safe", (state) => lateQueryStates.push(state));
       journeySubscription = runtime.journey.subscribe(() => {});
     }, "new subscriptions tolerate the terminal connection state");
+    assert.equal(lateQueryStates.length, 1);
+    assert.equal(lateQueryStates[0].loading, false);
+    assert.equal(lateQueryStates[0].error.code, "CONNECTION_UNAVAILABLE");
     assert.equal(typeof querySubscription.unsubscribe, "function");
     assert.equal(typeof journeySubscription.unsubscribe, "function");
-    querySubscription.unsubscribe();
-    journeySubscription.unsubscribe();
     assert.equal(browser.sockets.length, 4, "subscriptions cannot bypass the terminal manual-retry gate");
+    assert.equal(browser.sent.some((message) => message.type === "query.subscribe" && message.query === "terminal-safe"), false);
 
     retryButton.click();
     await settleMicrotasks();
@@ -1759,6 +1762,9 @@ test("repeated connection rejection stops after four attempts and renders a manu
     recovered.readyState = globalThis.WebSocket.OPEN;
     recovered.emit("open", {});
     await settleMicrotasks();
+    assert.equal(browser.sent.some((message) => message.type === "query.subscribe" && message.query === "terminal-safe"), true);
+    querySubscription.unsubscribe();
+    journeySubscription.unsubscribe();
     assert.equal(authStates.at(-1).error, null);
     assert.equal(elements.has("sporades-connection-error"), false);
   } finally {
