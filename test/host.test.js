@@ -129,6 +129,7 @@ test("connection-token refresh route returns a fresh no-store browser gate", asy
     assert.equal(first.status, 200);
     assert.equal(first.headers.get("cache-control"), "no-store");
     assert.equal(first.headers.get("pragma"), "no-cache");
+    assert.equal(first.headers.get("cross-origin-resource-policy"), "same-origin");
     assert.deepEqual(await first.json(), { token: "connection-token-1" });
 
     const second = await fetch(new URL("/__sporades/connection-token", baseUrl));
@@ -136,6 +137,13 @@ test("connection-token refresh route returns a fresh no-store browser gate", asy
 
     const wrongMethod = await fetch(new URL("/__sporades/connection-token", baseUrl), { method: "POST" });
     assert.equal(wrongMethod.status, 404);
+
+    const crossOrigin = await fetch(new URL("/__sporades/connection-token", baseUrl), {
+      headers: { origin: "https://evil.example.test" },
+    });
+    assert.equal(crossOrigin.status, 403);
+    assert.equal(crossOrigin.headers.get("cross-origin-resource-policy"), "same-origin");
+    assert.equal(issued, 2, "cross-origin requests do not mint connection tokens");
   });
 });
 
@@ -263,6 +271,23 @@ test("Hosted Capsule WebSocket upgrades reject missing and cross-site origins be
         origin: "https://team-notes.capsules.example.dev",
       }, createConnectionToken());
       assert.match(publicOrigin, /^HTTP\/1\.1 101/m);
+    });
+  });
+});
+
+test("Hosted Capsule connection-token inventory evicts its oldest browser gates at the fixed cap", async () => {
+  await withTempDir(async (dir) => {
+    await withHostedRuntimeTransportServer(dir, {}, async (baseUrl, createConnectionToken) => {
+      const oldest = createConnectionToken();
+      let newest;
+      for (let index = 0; index < 4_096; index += 1) newest = createConnectionToken();
+      const headers = { origin: "https://team-notes.capsules.example.dev" };
+
+      const evicted = await openRawWebSocketHandshake(baseUrl, headers, oldest);
+      assert.doesNotMatch(evicted, /^HTTP\/1\.1 101/m);
+
+      const retained = await openRawWebSocketHandshake(baseUrl, headers, newest);
+      assert.match(retained, /^HTTP\/1\.1 101/m);
     });
   });
 });

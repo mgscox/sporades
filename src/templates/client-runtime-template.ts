@@ -717,6 +717,7 @@ function createConnection() {
   let nextId = 1;
   let sessionToken = localStorage.getItem("sporades.sessionToken");
   const pending = new Map();
+  const retryQueue = [];
   const subscriptions = new Map();
   const queryChannels = new Map();
   const appMessageListeners = new Set();
@@ -754,6 +755,7 @@ function createConnection() {
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
       return socket;
     }
+    if (retryInFlight) return null;
 
     syncSessionTokenFromStorage();
     const url = new URL(websocketPath, window.location.href);
@@ -785,11 +787,11 @@ function createConnection() {
           args: subscription.args.snapshot,
         });
       }
+      for (const queued of retryQueue.splice(0)) send(queued.message, queued.onSocket);
     });
     openedSocket.addEventListener("message", (event) => {
       automaticConnectionAttempts = 0;
       terminalConnectionError = null;
-      if (typeof document !== "undefined") document.getElementById?.("sporades-connection-error")?.remove?.();
       const message = JSON.parse(event.data);
       ${options.devRefresh ? `if (message.type === "refresh" && message.data?.mode === "full-page") {
         const refreshSequence = message.data.sequence;
@@ -916,6 +918,11 @@ function createConnection() {
       hint: "Check the connection, then try again.",
     };
     terminalConnectionError = error;
+    retryQueue.length = 0;
+    for (const [id, entry] of pending) {
+      entry.resolve({ id, type: "error", data: null, error });
+      pending.delete(id);
+    }
     latestAuthMessage = { id: null, type: "auth.result", data: null, error };
     notifyAuthStateListeners(latestAuthMessage);
     for (const subscription of subscriptions.values()) {
@@ -946,7 +953,10 @@ function createConnection() {
     const currentSessionToken = syncSessionTokenFromStorage();
     const activeSocket = open();
     onSocket?.(activeSocket);
-    if (!activeSocket) return;
+    if (!activeSocket) {
+      if (retryInFlight && !terminalConnectionError && !pageRetired) retryQueue.push({ message, onSocket });
+      return;
+    }
     const outboundMessage = currentSessionToken
       ? { ...message, sessionToken: currentSessionToken }
       : message;

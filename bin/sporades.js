@@ -59627,6 +59627,7 @@ function createConnection() {
   let nextId = 1;
   let sessionToken = localStorage.getItem("sporades.sessionToken");
   const pending = new Map();
+  const retryQueue = [];
   const subscriptions = new Map();
   const queryChannels = new Map();
   const appMessageListeners = new Set();
@@ -59664,6 +59665,7 @@ function createConnection() {
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
       return socket;
     }
+    if (retryInFlight) return null;
 
     syncSessionTokenFromStorage();
     const url = new URL(websocketPath, window.location.href);
@@ -59695,11 +59697,11 @@ function createConnection() {
           args: subscription.args.snapshot,
         });
       }
+      for (const queued of retryQueue.splice(0)) send(queued.message, queued.onSocket);
     });
     openedSocket.addEventListener("message", (event) => {
       automaticConnectionAttempts = 0;
       terminalConnectionError = null;
-      if (typeof document !== "undefined") document.getElementById?.("sporades-connection-error")?.remove?.();
       const message = JSON.parse(event.data);
       ${options.devRefresh ? `if (message.type === "refresh" && message.data?.mode === "full-page") {
         const refreshSequence = message.data.sequence;
@@ -59826,6 +59828,11 @@ function createConnection() {
       hint: "Check the connection, then try again.",
     };
     terminalConnectionError = error;
+    retryQueue.length = 0;
+    for (const [id, entry] of pending) {
+      entry.resolve({ id, type: "error", data: null, error });
+      pending.delete(id);
+    }
     latestAuthMessage = { id: null, type: "auth.result", data: null, error };
     notifyAuthStateListeners(latestAuthMessage);
     for (const subscription of subscriptions.values()) {
@@ -59856,7 +59863,10 @@ function createConnection() {
     const currentSessionToken = syncSessionTokenFromStorage();
     const activeSocket = open();
     onSocket?.(activeSocket);
-    if (!activeSocket) return;
+    if (!activeSocket) {
+      if (retryInFlight && !terminalConnectionError && !pageRetired) retryQueue.push({ message, onSocket });
+      return;
+    }
     const outboundMessage = currentSessionToken
       ? { ...message, sessionToken: currentSessionToken }
       : message;
@@ -89225,9 +89235,21 @@ ${html}`;
 function routeConnectionToken(request, response, createConnectionToken) {
   const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
   if (request.method !== "GET" || requestUrl.pathname !== "/__sporades/connection-token") return false;
+  const origin = request.headers.origin;
+  if (origin && !isSameOriginRequest(request, origin)) {
+    response.writeHead(403, {
+      "cache-control": "no-store",
+      "content-type": "application/json; charset=utf-8",
+      "cross-origin-resource-policy": "same-origin",
+      pragma: "no-cache"
+    });
+    response.end(JSON.stringify({ error: "Forbidden" }));
+    return true;
+  }
   response.writeHead(200, {
     "cache-control": "no-store",
     "content-type": "application/json; charset=utf-8",
+    "cross-origin-resource-policy": "same-origin",
     pragma: "no-cache"
   });
   response.end(JSON.stringify({ token: createConnectionToken() }));
@@ -102996,11 +103018,16 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
   const connectionTokens = /* @__PURE__ */ new Map();
   let nextClientId = 1;
   const connectionTokenTtlMs = 4 * 60 * 60 * 1e3;
+  const maxConnectionTokens = 4096;
   let journeyExpiryTimer = null;
   let journeyDisableRequests = 0;
   return {
     createConnectionToken() {
-      pruneConnectionTokens();
+      while (connectionTokens.size >= maxConnectionTokens) {
+        const oldestToken = connectionTokens.keys().next().value;
+        if (typeof oldestToken !== "string") break;
+        connectionTokens.delete(oldestToken);
+      }
       const token = randomBytes5(32).toString("base64url");
       connectionTokens.set(token, Date.now() + connectionTokenTtlMs);
       return token;
@@ -103124,14 +103151,6 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       };
     }
   };
-  function pruneConnectionTokens() {
-    const now2 = Date.now();
-    for (const [token, expiresAt] of connectionTokens) {
-      if (expiresAt <= now2) {
-        connectionTokens.delete(token);
-      }
-    }
-  }
   function retireJourney(client) {
     if (!client.journey) return;
     const removed = [...client.journey.sessionIds ?? []].map((sessionId) => journeys.get(sessionId)).filter(Boolean);
@@ -103175,12 +103194,15 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     }
   }
   function validateConnectionToken(token) {
-    pruneConnectionTokens();
     if (!token) {
       return false;
     }
     const expiresAt = connectionTokens.get(token);
-    return Boolean(expiresAt && expiresAt > Date.now());
+    if (!expiresAt || expiresAt <= Date.now()) {
+      connectionTokens.delete(token);
+      return false;
+    }
+    return true;
   }
   function createPendingWebSocketSession() {
     return {

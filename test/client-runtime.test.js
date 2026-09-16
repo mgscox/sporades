@@ -1634,6 +1634,53 @@ test("rejected TTL-expired page connection token refreshes and connects without 
   }
 });
 
+test("app calls during connection recovery wait for the scheduled fresh-token socket", async () => {
+  const timers = createDeterministicTimers();
+  const browser = installBrowserFakes(anonymousAuth, {
+    autoOpen: false,
+    connectionToken: "stale-page-token",
+    fetch: async () => ({ ok: true, async json() { return { token: "fresh-page-token" }; } }),
+    handlers: {
+      "query.subscribe": async () => ({ type: "query.result", data: [{ id: 1 }], error: null }),
+    },
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+    random: () => 0.5,
+  });
+  try {
+    const runtime = await importClientRuntime();
+    const rejectedAuth = runtime.auth.get();
+    const rejected = browser.sockets[0];
+    rejected.readyState = 3;
+    rejected.emit("close", {});
+
+    const queuedAuth = runtime.auth.get();
+    const queryStates = [];
+    const subscription = runtime.queries.subscribe("during-recovery", (state) => queryStates.push(state));
+    assert.equal(browser.sockets.length, 1, "app activity cannot bypass the in-flight token refresh");
+    assert.equal((await rejectedAuth).error.code, "TRANSPORT_CLOSED");
+    await settleMicrotasks();
+
+    assert.equal(browser.sockets.length, 1, "app activity cannot bypass the scheduled backoff");
+    assert.deepEqual(timers.pending().map(({ delay }) => delay), [275]);
+    timers.runNext();
+
+    assert.equal(browser.sockets.length, 2, "the scheduled retry creates exactly one replacement socket");
+    const recovered = browser.sockets[1];
+    assert.equal(new URL(recovered.url).searchParams.get("connectionToken"), "fresh-page-token");
+    recovered.readyState = globalThis.WebSocket.OPEN;
+    recovered.emit("open", {});
+    await settleMicrotasks();
+
+    assert.deepEqual(await queuedAuth, { data: { auth: anonymousAuth, providers: {} }, error: null });
+    assert.deepEqual(queryStates.at(-1), { data: [{ id: 1 }], error: null, loading: false });
+    assert.equal(browser.sockets.length, 2);
+    subscription.unsubscribe();
+  } finally {
+    browser.cleanup();
+  }
+});
+
 test("runtime restart invalidating an open page token recovers without wedging the shell", async () => {
   const timers = createDeterministicTimers();
   let tokenRequests = 0;
@@ -1715,11 +1762,13 @@ test("repeated connection rejection stops after four attempts and renders a manu
     const runtime = await importClientRuntime();
     const authStates = [];
     runtime.auth.subscribe((state) => authStates.push(state));
+    let queuedAuth;
 
     for (let attempt = 1; attempt <= 4; attempt += 1) {
       const rejected = browser.sockets[attempt - 1];
       rejected.readyState = 3;
       rejected.emit("close", {});
+      if (attempt === 1) queuedAuth = runtime.auth.get();
       await settleMicrotasks();
       if (attempt < 4) {
         assert.deepEqual(timers.pending().map(({ delay }) => delay), [[275, 550, 1_100][attempt - 1]]);
@@ -1732,6 +1781,7 @@ test("repeated connection rejection stops after four attempts and renders a manu
     assert.equal(refreshedTokens, 3, "only the three retry attempts mint replacement tokens");
     assert.equal(authStates.at(-1).loading, false);
     assert.equal(authStates.at(-1).error.code, "CONNECTION_UNAVAILABLE");
+    assert.equal((await queuedAuth).error.code, "CONNECTION_UNAVAILABLE", "a request queued during recovery resolves when the episode goes terminal");
     const errorPanel = elements.get("sporades-connection-error");
     assert.match(errorPanel.textContent, /could not connect/i);
     const retryButton = errorPanel.children.find((child) => child.tagName === "BUTTON");

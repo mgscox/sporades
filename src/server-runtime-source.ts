@@ -4894,12 +4894,17 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
   const connectionTokens = new Map<string, number>();
   let nextClientId = 1;
   const connectionTokenTtlMs = 4 * 60 * 60 * 1000;
+  const maxConnectionTokens = 4_096;
   let journeyExpiryTimer: any = null;
   let journeyDisableRequests = 0;
 
   return {
     createConnectionToken() {
-      pruneConnectionTokens();
+      while (connectionTokens.size >= maxConnectionTokens) {
+        const oldestToken = connectionTokens.keys().next().value;
+        if (typeof oldestToken !== "string") break;
+        connectionTokens.delete(oldestToken);
+      }
       const token = randomBytes(32).toString("base64url");
       connectionTokens.set(token, Date.now() + connectionTokenTtlMs);
       return token;
@@ -5024,15 +5029,6 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
     },
   };
 
-  function pruneConnectionTokens() {
-    const now = Date.now();
-    for (const [token, expiresAt] of connectionTokens) {
-      if (expiresAt <= now) {
-        connectionTokens.delete(token);
-      }
-    }
-  }
-
   function retireJourney(client: LooseRecord) {
     if (!client.journey) return;
     const removed = [...(client.journey.sessionIds ?? [])].map((sessionId) => journeys.get(sessionId)).filter(Boolean);
@@ -5083,12 +5079,15 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
   }
 
   function validateConnectionToken(token: string | null) {
-    pruneConnectionTokens();
     if (!token) {
       return false;
     }
     const expiresAt = connectionTokens.get(token);
-    return Boolean(expiresAt && expiresAt > Date.now());
+    if (!expiresAt || expiresAt <= Date.now()) {
+      connectionTokens.delete(token);
+      return false;
+    }
+    return true;
   }
 
   function createPendingWebSocketSession() {
