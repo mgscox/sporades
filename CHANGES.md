@@ -2,7 +2,7 @@
 
 ## Unreleased - 2026-09-17
 
-Changes since v0.9.22.
+Changes since v0.9.23.
 
 ### 🚀 Features
 
