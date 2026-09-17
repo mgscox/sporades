@@ -214,7 +214,7 @@ const app = capsule({
         stripe: { sandbox: { productId: "prod_test_studio", priceId: "price_test_studio", portalConfigurationId: "bpc_test_studio" }, live: { productId: "prod_live_studio", priceId: "price_live_studio", portalConfigurationId: "bpc_live_studio" } },
       },
       agency: {
-        quantity: { kind: "team-members" },
+        quantity: { kind: "team-members", minimum: 5 },
         stripe: { sandbox: { productId: "prod_test_agency", priceId: "price_test_agency", portalConfigurationId: "bpc_test_agency" }, live: { productId: "prod_live_agency", priceId: "price_live_agency", portalConfigurationId: "bpc_live_agency" } },
       },
     },

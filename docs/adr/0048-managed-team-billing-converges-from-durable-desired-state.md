@@ -2,9 +2,10 @@
 
 Customer Portal configuration may safely expose Plan switches only when source
 and target share one quantity policy. Sporades therefore keeps compatible
-fixed-to-fixed and Team-counted-to-Team-counted switches in the explicitly
+fixed-to-fixed and identically floored Team-counted switches in the explicitly
 attested Portal, while `teamBilling.requestPlanTransition(...)` owns switches
-between fixed and accepted-Team-member quantity. The Capsule keeps the
+between fixed and accepted-Team-member quantity or between different Team-member
+floors. The Capsule keeps the
 authorization and downgrade decision; Sporades owns the provider mechanics and
 returns only provider-free operation state for app-owned rendering.
 
@@ -14,7 +15,9 @@ only privileged Team inspection exposed there: it lets the app revalidate a
 seat-sensitive downgrade against the same provider-call-time transaction while
 remaining unable to enumerate identities or inspect another Team.
 Sporades acquires the exact Team lifecycle lock before it reads the actor's
-current administrator role or invokes that callback. Billing Holder, app
+current administrator role or invokes that callback. A Team-member policy may
+declare a positive integer `minimum`, making the desired quantity the greater
+of that floor and the accepted-member count. Billing Holder, app
 usage, and accepted-seat reads therefore follow any concurrent lifecycle
 writer's commit. The callback's exact-member count reuses the transaction-owned
 lock, so it neither opens a second authority window nor deadlocks.
@@ -32,9 +35,9 @@ invoice. Payment action required fails safely for app-owned recovery.
 Accepted-Team membership transactions never wait for Stripe. After a Join,
 removal, or leave commits, the runtime best-effort stages a seat desired tuple.
 New membership counts replace stale intent. Startup repair independently
-compares every accepted Team-counted Subscription with its exact Team count and
-reconstructs missing or failed work, so staging failure and provider outage do
-not roll back collaboration state.
+compares every accepted Team-counted Subscription with its billable Team count
+after applying any declared floor and reconstructs missing or failed work, so
+staging failure and provider outage do not roll back collaboration state.
 
 Provider calls remain outside database transactions. A durable per-Team claim
 lane serializes them across independent SQLite, libSQL, and Postgres runtimes;

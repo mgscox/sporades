@@ -80,6 +80,7 @@
       "src/team-billing-erasure.ts",
       "src/team-billing-import.ts",
       "src/team-billing-management.ts",
+      "src/team-billing-quantity.ts",
       "src/team-billing-runtime.ts",
       "src/team-billing-subscription-semantics.ts",
       "src/teams-runtime.ts",
@@ -97,7 +98,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "05952f453f4a11735006a3c55bfed5c7f84f60ed530c950891913a2ac4e7c8ca"
+    "digest": "1f081b136f6988cc13f5857f4dcb4f43e8caa7b6d7ec2cbc09814a33102998f8"
   },
   "outputs": {
     "files": [
@@ -391,6 +392,10 @@
       "dist/team-billing-management.d.ts.map",
       "dist/team-billing-management.js",
       "dist/team-billing-management.js.map",
+      "dist/team-billing-quantity.d.ts",
+      "dist/team-billing-quantity.d.ts.map",
+      "dist/team-billing-quantity.js",
+      "dist/team-billing-quantity.js.map",
       "dist/team-billing-runtime.d.ts",
       "dist/team-billing-runtime.d.ts.map",
       "dist/team-billing-runtime.js",
@@ -424,6 +429,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "c5b9b695b1ff0b96f4694133ee7c1d1a3a5cf8013fa570413ec1718fba62b52e"
+    "digest": "a662cae0a6cfa394f2be14839be39a4ef5554a3812b0217c2ffaae473351c76b"
   }
 }

@@ -3,6 +3,7 @@
 // declared product keys and closed, provider-free projections.
 import { createHash, randomUUID } from "node:crypto";
 import { teamBillingStoredSubscriptionSemantics } from "./team-billing-subscription-semantics.js";
+import { billableTeamMemberQuantity, teamBillingQuantityPolicyFingerprint } from "./team-billing-quantity.js";
 
 import { requireAuth } from "./auth-runtime.js";
 import { chainMaybePromise } from "./maybe-promise.js";
@@ -153,7 +154,7 @@ function normalizePortalDefinition(value: any, catalogue: LooseRecord) {
   const configurationPolicies = new Map<string, string>();
   const configurationModes = new Map<string, string>();
   for (const product of Object.values(catalogue) as LooseRecord[]) {
-    const policy = quantityPolicyFingerprint(product.quantity);
+    const policy = teamBillingQuantityPolicyFingerprint(product.quantity);
     for (const mode of ["sandbox", "live"]) {
       const binding = product.stripe[mode];
       if (!binding.productId || !binding.portalConfigurationId) throw invalidDeclaration();
@@ -181,7 +182,11 @@ function normalizeCheckoutDefinition(value: any) {
 
 function normalizeQuantity(value: any) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw invalidDeclaration();
-  if (value.kind === "team-members" && Object.keys(value).length === 1) return Object.freeze({ kind: "team-members" as const });
+  if (value.kind === "team-members" && Object.keys(value).every((key) => key === "kind" || key === "minimum")
+    && (value.minimum === undefined || Number.isSafeInteger(value.minimum)
+      && value.minimum >= 1 && value.minimum <= FIXED_QUANTITY_MAX)) {
+    return Object.freeze({ kind: "team-members" as const, ...(value.minimum === undefined ? {} : { minimum: value.minimum }) });
+  }
   if (value.kind === "fixed" && Object.keys(value).sort().join(",") === "kind,value"
     && Number.isSafeInteger(value.value) && value.value >= 1 && value.value <= FIXED_QUANTITY_MAX) {
     return Object.freeze({ kind: "fixed" as const, value: value.value });
@@ -198,14 +203,10 @@ function normalizeModeBinding(value: any) {
   return Object.freeze({ priceId: value.priceId, ...(value.productId ? { productId: value.productId } : {}), ...(value.portalConfigurationId ? { portalConfigurationId: value.portalConfigurationId } : {}) });
 }
 
-function quantityPolicyFingerprint(value: LooseRecord) {
-  return value.kind === "team-members" ? "team-members" : `fixed:${value.value}`;
-}
-
 function invalidDeclaration() {
   return commandError(
     "Invalid Team Billing declaration.",
-    "Declare 1-32 lowercase products with exact sandbox/live Stripe Price bindings, a fixed or Team-member quantity policy, and an authorize policy.",
+    "Declare 1-32 lowercase products with exact sandbox/live Stripe Price bindings, a fixed or optionally floored Team-member quantity policy, and an authorize policy.",
     "INVALID_TEAM_BILLING_DECLARATION",
   );
 }
@@ -749,7 +750,8 @@ export async function safeTeamBillingProjection(transaction: LooseRecord, defini
   const quantity = typeof row.quantity === "number" && Number.isSafeInteger(row.quantity) && row.quantity >= 1
     ? row.quantity : null;
   if (!product || !binding || row.providerPriceId !== binding.priceId
-    || quantity === null || (product.quantity.kind === "fixed" && quantity !== product.quantity.value)) {
+    || quantity === null || (product.quantity.kind === "fixed" && quantity !== product.quantity.value)
+    || (product.quantity.kind === "team-members" && quantity < (product.quantity.minimum ?? 1))) {
     return Object.freeze({ state: "attention-required" as const, teamId, reason: "catalogue-mismatch" as const });
   }
   if (row.cancelAtPeriodEnd !== 0 && row.cancelAtPeriodEnd !== 1) {
@@ -858,9 +860,9 @@ async function checkoutDesiredState(database: LooseRecord, transaction: LooseRec
   const mode = database.paymentsConfig.stripe.livemode ? "live" : "sandbox";
   const quantity = product.quantity.kind === "fixed"
     ? product.quantity.value
-    : Number((await transaction.prepare(transaction.dialect.sql(
+    : billableTeamMemberQuantity(product.quantity, Number((await transaction.prepare(transaction.dialect.sql(
       "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?",
-    )).get(teamId))?.count ?? 0);
+    )).get(teamId))?.count ?? 0));
   if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > FIXED_QUANTITY_MAX) throw checkoutUnavailable();
   return { mode, quantity, priceId: product.stripe[mode].priceId };
 }
@@ -880,7 +882,9 @@ async function portalDesiredState(database: LooseRecord, transaction: LooseRecor
   const binding = product?.stripe?.[mode];
   const expectedQuantity = product?.quantity?.kind === "fixed"
     ? product.quantity.value
-    : Number((await transaction.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(teamId))?.count ?? 0);
+    : billableTeamMemberQuantity(product?.quantity, Number((await transaction.prepare(sql(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?",
+    )).get(teamId))?.count ?? 0));
   if (!customer || customer.mode !== mode || !/^cus_[A-Za-z0-9_]{1,120}$/.test(String(customer.providerCustomerId ?? ""))
     || !subscription || subscription.mode !== mode || !["active", "cancelling", "past-due"].includes(subscription.state)
     || !binding?.productId || !binding?.portalConfigurationId || subscription.providerPriceId !== binding.priceId

@@ -38,6 +38,15 @@ test("Team Billing declaration is dormant when omitted and validates an exact tw
     assert.equal(definition.authorize, authorize);
     assert.ok(Object.isFrozen(definition));
     assert.ok(Object.isFrozen(definition.catalogue.agency.stripe));
+    assert.deepEqual(definition.catalogue.agency.quantity, { kind: "team-members" });
+    for (const minimum of [1, 999_999]) {
+      const withMinimum = normalizeTeamBillingDefinition({
+        catalogue: { agency: { quantity: { kind: "team-members", minimum }, stripe: {
+          sandbox: { priceId: `price_test_agency_${minimum}` }, live: { priceId: `price_live_agency_${minimum}` },
+        } } }, authorize,
+      });
+      assert.deepEqual(withMinimum.catalogue.agency.quantity, { kind: "team-members", minimum });
+    }
     const portalDefinition = normalizeTeamBillingDefinition({
       catalogue: {
         studio: { quantity: { kind: "fixed", value: 1 }, stripe: {
@@ -73,6 +82,18 @@ test("Team Billing declaration is dormant when omitted and validates an exact tw
         } },
       }, portal: { returnPath: "/billing" }, authorize,
     }), (error) => error?.code === "INVALID_TEAM_BILLING_DECLARATION");
+    assert.throws(() => normalizeTeamBillingDefinition({
+      catalogue: {
+        standard: { quantity: { kind: "team-members" }, stripe: {
+          sandbox: { productId: "prod_test_standard", priceId: "price_test_standard", portalConfigurationId: "bpc_test_minimum" },
+          live: { productId: "prod_live_standard", priceId: "price_live_standard", portalConfigurationId: "bpc_live_standard" },
+        } },
+        agency: { quantity: { kind: "team-members", minimum: 1 }, stripe: {
+          sandbox: { productId: "prod_test_agency", priceId: "price_test_agency", portalConfigurationId: "bpc_test_minimum" },
+          live: { productId: "prod_live_agency", priceId: "price_live_agency", portalConfigurationId: "bpc_live_agency" },
+        } },
+      }, portal: { returnPath: "/billing" }, authorize,
+    }), (error) => error?.code === "INVALID_TEAM_BILLING_DECLARATION");
 
     const declared = await openDevDatabase(databasePath, "", {}, { name: "declared" }, {
       name: "declared",
@@ -90,6 +111,10 @@ test("Team Billing declaration is dormant when omitted and validates an exact tw
       { catalogue: { Studio: { quantity: { kind: "fixed", value: 1 }, stripe: { sandbox: { priceId: "price_a" }, live: { priceId: "price_b" } } } }, authorize },
       { catalogue: { studio: { quantity: { kind: "fixed", value: 0 }, stripe: { sandbox: { priceId: "price_a" }, live: { priceId: "price_b" } } } }, authorize },
       { catalogue: { studio: { quantity: { kind: "fixed", value: 1_000_000 }, stripe: { sandbox: { priceId: "price_a" }, live: { priceId: "price_b" } } } }, authorize },
+      ...[0, -1, 1.5, 1_000_000, "5"].map((minimum) => ({ catalogue: {
+        agency: { quantity: { kind: "team-members", minimum }, stripe: { sandbox: { priceId: "price_a" }, live: { priceId: "price_b" } } },
+      }, authorize })),
+      { catalogue: { agency: { quantity: { kind: "team-members", minimum: 5, extra: true }, stripe: { sandbox: { priceId: "price_a" }, live: { priceId: "price_b" } } } }, authorize },
       { catalogue: { studio: { quantity: { kind: "fixed", value: 1 }, stripe: { sandbox: { priceId: "price_same" }, live: { priceId: "price_same" } } } }, authorize },
       { catalogue: {
         studio: { quantity: { kind: "fixed", value: 1 }, stripe: { sandbox: { priceId: "price_shared" }, live: { priceId: "price_studio_live" } } },

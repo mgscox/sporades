@@ -290,6 +290,79 @@ test("startup repair discovers accepted Agency quantity drift without needing a 
   } finally { fixture.close(); }
 });
 
+test("member-derived management targets honor a floor below it and exact membership above it", async () => {
+  const membership = openFixture({ minimum: 5, quantity: 2 });
+  try {
+    membership.setMembers(1);
+    await stageTeamBillingMembershipChange(membership.database, teamId, 1_787_952_100);
+    assert.equal(membership.desired().targetQuantity, 5);
+    membership.setMembers(6);
+    await stageTeamBillingMembershipChange(membership.database, teamId, 1_787_952_200);
+    assert.equal(membership.desired().targetQuantity, 6);
+  } finally { membership.close(); }
+
+  for (const memberCount of [1, 6]) {
+    const transition = openFixture({ productKey: "studio", quantity: 1, minimum: 5 });
+    try {
+      transition.setMembers(memberCount);
+      await requestTeamBillingPlanTransition(
+        transition.database, actor, teamId, memberCount === 1
+          ? "11111111-1111-4111-8111-111111111111"
+          : "66666666-6666-4666-8666-666666666666", "agency",
+      );
+      assert.equal(transition.desired().targetQuantity, memberCount === 1 ? 5 : 6);
+    } finally { transition.close(); }
+  }
+
+  for (const memberCount of [1, 6]) {
+    const expectedQuantity = memberCount === 1 ? 5 : 6;
+    const active = openFixture({ minimum: 5, quantity: 2 });
+    try {
+      active.setMembers(memberCount);
+      const staged = await stageTeamBillingMembershipChange(active.database, teamId, 1_787_952_300 + memberCount);
+      active.adapter.prepare(
+        "UPDATE [sporades_team_billing_desired_state] SET [targetQuantity] = 1 WHERE [teamId] = ?",
+      ).run(teamId);
+      assert.deepEqual(await performTeamBillingSeatConvergence(active.database, {}, generationPayload(staged)), {
+        superseded: true,
+      });
+      assert.equal(active.desired().targetQuantity, expectedQuantity);
+    } finally { active.close(); }
+
+    const settled = openFixture({ minimum: 5, quantity: 2 });
+    try {
+      settled.setMembers(memberCount);
+      await stageTeamBillingMembershipChange(settled.database, teamId, 1_787_952_400 + memberCount);
+      settled.adapter.prepare(
+        "UPDATE [sporades_team_billing_subscriptions] SET [quantity] = ? WHERE [teamId] = ?",
+      ).run(expectedQuantity, teamId);
+      assert.deepEqual(await settleVerifiedTeamBillingTarget(settled.database, {
+        teamId, productKey: "agency", quantity: expectedQuantity, subscriptionId: "sub_test", occurredAt: "2026-08-23T12:10:00.000Z",
+      }), { settled: true });
+      assert.equal(settled.desired(), undefined);
+    } finally { settled.close(); }
+
+    const repair = openFixture({ minimum: 5, quantity: 2 });
+    try {
+      repair.setMembers(memberCount);
+      assert.deepEqual(await repairTeamBillingDesiredState(repair.database), { queued: 1 });
+      assert.equal(repair.desired().targetQuantity, expectedQuantity);
+    } finally { repair.close(); }
+  }
+});
+
+test("plan transitions distinguish team-member policies that differ only by minimum", async () => {
+  const fixture = openFixture({ minimum: 5, quantity: 5, agencyProMinimum: 7 });
+  try {
+    fixture.setMembers(1);
+    await requestTeamBillingPlanTransition(
+      fixture.database, actor, teamId, "77777777-7777-4777-8777-777777777777", "agency-pro",
+    );
+    assert.equal(fixture.desired().targetProductKey, "agency-pro");
+    assert.equal(fixture.desired().targetQuantity, 7);
+  } finally { fixture.close(); }
+});
+
 test("real runtime Job repair uses fresh queue generations while provider idempotency stays stable", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-billing-repair-jobs-"));
   const databasePath = path.join(dir, "data.db");
@@ -714,7 +787,11 @@ function openFixture(options = {}) {
     .run(teamId, options.productKey === "studio" ? "price_studio" : "price_agency", options.productKey ?? "agency", options.quantity ?? 2, now, now);
   const definition = { catalogue: {
     studio: { quantity: { kind: "fixed", value: 1 }, stripe: { sandbox: { priceId: "price_studio" }, live: { priceId: "price_live_studio" } } },
-    agency: { quantity: { kind: "team-members" }, stripe: { sandbox: { priceId: "price_agency" }, live: { priceId: "price_live_agency" } } },
+    agency: { quantity: { kind: "team-members", ...(options.minimum === undefined ? {} : { minimum: options.minimum }) }, stripe: { sandbox: { priceId: "price_agency" }, live: { priceId: "price_live_agency" } } },
+    ...(options.agencyProMinimum === undefined ? {} : { "agency-pro": {
+      quantity: { kind: "team-members", minimum: options.agencyProMinimum },
+      stripe: { sandbox: { priceId: "price_agency_pro" }, live: { priceId: "price_live_agency_pro" } },
+    } }),
   } };
   const enqueued = [];
   const providerCalls = [];
