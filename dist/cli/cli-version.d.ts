@@ -1,2 +1,2 @@
-export declare const CLI_VERSION = "0.9.24";
+export declare const CLI_VERSION = "0.9.25";
 //# sourceMappingURL=cli-version.d.ts.map

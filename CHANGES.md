@@ -2,21 +2,9 @@
 
 ## Unreleased - 2026-09-17
 
-Changes since v0.9.23.
+Changes since v0.9.24.
 
-### 🚀 Features
-
-- Add user-scoped server file deletion (#46) (5629928f).
-- Support an optional billable-seat floor for Team-member quantity policies (#50).
-
-### 🐛 Bug Fixes
-
-- Fix stale runtime connection-token recovery (#48) (51193284).
-- Normalize subject whitespace (f7f2f6d9).
-
-### 📝 Documentation
-
-- Support additional deployment files with preserve and replace policies (#45) (9cc5bdef).
+No changes detected.
 
 ## v0.9.11 - 2026-09-02
 
@@ -105,6 +93,7 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
+
 
 
 
