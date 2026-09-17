@@ -717,6 +717,7 @@ function createConnection() {
   let nextId = 1;
   let sessionToken = localStorage.getItem("sporades.sessionToken");
   const pending = new Map();
+  const retryQueue = [];
   const subscriptions = new Map();
   const queryChannels = new Map();
   const appMessageListeners = new Set();
@@ -729,6 +730,11 @@ function createConnection() {
   const journeySubscriptions = new Map();
   let latestAuthUserId = null;
   let pageRetired = false;
+  const maxAutomaticConnectionAttempts = 4;
+  let automaticConnectionAttempts = 0;
+  let retryInFlight = false;
+  let terminalConnectionError = null;
+  let connectionErrorPanel = null;
   ${options.devRefresh ? "let latestDevRefreshSequence = 0;" : ""}
   let journeyRetireOwner = null;
   window.addEventListener?.("pagehide", () => {
@@ -746,9 +752,11 @@ function createConnection() {
   }
 
   function open() {
+    if (terminalConnectionError) return null;
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
       return socket;
     }
+    if (retryInFlight || socket?.readyState === WebSocket.CLOSING) return null;
 
     syncSessionTokenFromStorage();
     const url = new URL(websocketPath, window.location.href);
@@ -757,9 +765,13 @@ function createConnection() {
     if (typeof connectionToken === "string" && connectionToken.length > 0) {
       url.searchParams.set("connectionToken", connectionToken);
     }
+    automaticConnectionAttempts += 1;
     const openedSocket = new WebSocket(url);
+    let opened = false;
     socket = openedSocket;
     openedSocket.addEventListener("open", () => {
+      opened = true;
+      retryInFlight = false;
       ${options.devRefresh ? 'request("dev.refresh.subscribe");' : ""}
       request("auth.get");
       if (journeyConsentOptions) {
@@ -776,8 +788,11 @@ function createConnection() {
           args: subscription.args.snapshot,
         });
       }
+      for (const queued of retryQueue.splice(0)) send(queued.message, queued.onSocket);
     });
     openedSocket.addEventListener("message", (event) => {
+      automaticConnectionAttempts = 0;
+      terminalConnectionError = null;
       const message = JSON.parse(event.data);
       ${options.devRefresh ? `if (message.type === "refresh" && message.data?.mode === "full-page") {
         const refreshSequence = message.data.sequence;
@@ -829,7 +844,7 @@ function createConnection() {
         pending.delete(message.id);
       }
     });
-    openedSocket.addEventListener("close", () => {
+    openedSocket.addEventListener("close", async () => {
       stopJourneyCapture();
       for (const [id, entry] of pending) {
         if (entry.socket !== openedSocket) continue;
@@ -845,15 +860,111 @@ function createConnection() {
         });
         pending.delete(id);
       }
-      if (!pageRetired) setTimeout(() => { if (!pageRetired) open(); }, 500);
+      if (socket !== openedSocket || pageRetired) return;
+      if (automaticConnectionAttempts >= maxAutomaticConnectionAttempts) {
+        showTerminalConnectionError();
+        return;
+      }
+      scheduleConnectionRetry(!opened);
     });
     return openedSocket;
+  }
+
+  async function scheduleConnectionRetry(refreshToken) {
+    if (pageRetired || retryInFlight) return;
+    retryInFlight = true;
+    if (refreshToken) {
+      const controller = typeof AbortController === "undefined" ? null : new AbortController();
+      let timeoutId;
+      try {
+        const refreshOptions = {
+          cache: "no-store",
+          credentials: "same-origin",
+          headers: { "x-sporades-connection-token-request": "1" },
+        };
+        if (controller) refreshOptions.signal = controller.signal;
+        const timeout = new Promise((_, reject) => {
+          timeoutId = setTimeout(() => {
+            controller?.abort();
+            reject(new Error("Connection-token refresh timed out."));
+          }, 2_000);
+        });
+        const result = await Promise.race([
+          fetch(new URL("/__sporades/connection-token", window.location.href), refreshOptions)
+            .then(async (response) => response.ok ? await response.json() : null),
+          timeout,
+        ]);
+        if (typeof result?.token === "string" && result.token.length > 0) {
+          window.__SPORADES_CONNECTION_TOKEN = result.token;
+        }
+      } catch {} finally {
+        if (timeoutId !== undefined) clearTimeout(timeoutId);
+      }
+    }
+    if (pageRetired) {
+      retryInFlight = false;
+      return;
+    }
+    const baseDelay = Math.min(2_000, 250 * (2 ** Math.max(0, automaticConnectionAttempts - 1)));
+    const delay = baseDelay + Math.floor(Math.random() * Math.max(1, baseDelay * 0.2));
+    setTimeout(() => {
+      retryInFlight = false;
+      if (!pageRetired) open();
+    }, delay);
+  }
+
+  function showTerminalConnectionError() {
+    const error = {
+      code: "CONNECTION_UNAVAILABLE",
+      message: "Sporades could not connect to this workspace.",
+      hint: "Check the connection, then try again.",
+    };
+    terminalConnectionError = error;
+    retryQueue.length = 0;
+    for (const [id, entry] of pending) {
+      entry.resolve({ id, type: "error", data: null, error });
+      pending.delete(id);
+    }
+    latestAuthMessage = { id: null, type: "auth.result", data: null, error };
+    notifyAuthStateListeners(latestAuthMessage);
+    for (const subscription of subscriptions.values()) {
+      subscription.latest = { data: null, error, loading: false };
+      for (const listener of subscription.listeners) listener(subscription.latest);
+    }
+    if (typeof document === "undefined" || (connectionErrorPanel && connectionErrorPanel.isConnected !== false)) return;
+    const errorRoot = document.body ?? document.documentElement;
+    if (!errorRoot) return;
+    const panel = document.createElement("div");
+    connectionErrorPanel = panel;
+    panel.id = "sporades-connection-error";
+    panel.setAttribute?.("role", "alert");
+    panel.style.cssText = "position:fixed;inset:0;z-index:2147483647;display:grid;place-content:center;gap:1rem;padding:2rem;text-align:center;background:#fff;color:#111;font:16px/1.5 system-ui,sans-serif";
+    panel.textContent = "Sporades could not connect to this workspace. Check your connection and try again.";
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.textContent = "Try again";
+    retry.addEventListener("click", () => {
+      panel.remove();
+      connectionErrorPanel = null;
+      automaticConnectionAttempts = 0;
+      retryInFlight = false;
+      terminalConnectionError = null;
+      scheduleConnectionRetry(true);
+    }, { once: true });
+    panel.append(retry);
+    errorRoot.append(panel);
   }
 
   function send(message, onSocket = null) {
     const currentSessionToken = syncSessionTokenFromStorage();
     const activeSocket = open();
     onSocket?.(activeSocket);
+    if (!activeSocket) {
+      if ((retryInFlight || socket?.readyState === WebSocket.CLOSING) && !terminalConnectionError && !pageRetired) {
+        retryQueue.push({ message, onSocket });
+      }
+      return;
+    }
     const outboundMessage = currentSessionToken
       ? { ...message, sessionToken: currentSessionToken }
       : message;
@@ -884,6 +995,9 @@ function createConnection() {
 
   function request(type, fields = {}) {
     const id = nextId++;
+    if (terminalConnectionError) {
+      return Promise.resolve({ id, type: "error", data: null, error: terminalConnectionError });
+    }
     return new Promise((resolve) => {
       const entry = { resolve, socket: null };
       pending.set(id, entry);
@@ -1195,11 +1309,19 @@ function createConnection() {
       let subscription = channelsForName.get(args.identity);
       if (!subscription) {
         const id = nextId++;
-        subscription = { id, name, args, listeners: new Set(), latest: null };
+        subscription = {
+          id,
+          name,
+          args,
+          listeners: new Set(),
+          latest: terminalConnectionError
+            ? { data: null, error: terminalConnectionError, loading: false }
+            : null,
+        };
         channelsForName.set(args.identity, subscription);
         subscriptions.set(id, subscription);
         const activeSocket = open();
-        if (activeSocket.readyState === WebSocket.OPEN) send({ id, type: "query.subscribe", query: name, args: args.snapshot });
+        if (activeSocket && activeSocket.readyState === WebSocket.OPEN) send({ id, type: "query.subscribe", query: name, args: args.snapshot });
       }
       subscription.listeners.add(listener);
       listener(subscription.latest ?? { data: null, error: null, loading: true });
@@ -1270,7 +1392,7 @@ function createConnection() {
       const subscription = { id, listener, started: false, states: new Map() };
       journeySubscriptions.set(id, subscription);
       const activeSocket = open();
-      if (activeSocket.readyState === WebSocket.OPEN) send({ id, type: "journey.subscribe" });
+      if (activeSocket && activeSocket.readyState === WebSocket.OPEN) send({ id, type: "journey.subscribe" });
       return { unsubscribe() { if (journeySubscriptions.delete(id)) send({ id: nextId++, type: "journey.unsubscribe", subscriptionId: id }); } };
     },
     journeyDisable() { return request("journey.disable").then((result) => { if (!result.error) { stopJourneyCapture(); journeyCapture = null; journeyConsentOptions = null; journeyEnabledUserId = null; } return result; }); },

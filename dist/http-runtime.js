@@ -298,6 +298,33 @@ export function injectPageConnectionToken(html, token) {
     }
     return `${script}\n${html}`;
 }
+export function isDocumentNavigationRequest(request) {
+    return request.headers["sec-fetch-dest"] === "document";
+}
+export function routeConnectionToken(request, response, createConnectionToken) {
+    const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+    if (request.method !== "GET" || requestUrl.pathname !== "/__sporades/connection-token")
+        return false;
+    const origin = request.headers.origin;
+    if (request.headers["x-sporades-connection-token-request"] !== "1" || (origin && !isSameOriginRequest(request, origin))) {
+        response.writeHead(403, {
+            "cache-control": "no-store",
+            "content-type": "application/json; charset=utf-8",
+            "cross-origin-resource-policy": "same-origin",
+            pragma: "no-cache",
+        });
+        response.end(JSON.stringify({ error: "Forbidden" }));
+        return true;
+    }
+    response.writeHead(200, {
+        "cache-control": "no-store",
+        "content-type": "application/json; charset=utf-8",
+        "cross-origin-resource-policy": "same-origin",
+        pragma: "no-cache",
+    });
+    response.end(JSON.stringify({ token: createConnectionToken() }));
+    return true;
+}
 function requestOriginAllowed(policy, request) {
     const origin = request.headers.origin;
     if (!origin) {

@@ -4611,11 +4611,17 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
     const connectionTokens = new Map();
     let nextClientId = 1;
     const connectionTokenTtlMs = 4 * 60 * 60 * 1000;
+    const maxConnectionTokens = 4_096;
     let journeyExpiryTimer = null;
     let journeyDisableRequests = 0;
     return {
         createConnectionToken() {
-            pruneConnectionTokens();
+            while (connectionTokens.size >= maxConnectionTokens) {
+                const oldestToken = connectionTokens.keys().next().value;
+                if (typeof oldestToken !== "string")
+                    break;
+                connectionTokens.delete(oldestToken);
+            }
             const token = randomBytes(32).toString("base64url");
             connectionTokens.set(token, Date.now() + connectionTokenTtlMs);
             return token;
@@ -4736,14 +4742,6 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
             };
         },
     };
-    function pruneConnectionTokens() {
-        const now = Date.now();
-        for (const [token, expiresAt] of connectionTokens) {
-            if (expiresAt <= now) {
-                connectionTokens.delete(token);
-            }
-        }
-    }
     function retireJourney(client) {
         if (!client.journey)
             return;
@@ -4796,12 +4794,15 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
         }
     }
     function validateConnectionToken(token) {
-        pruneConnectionTokens();
         if (!token) {
             return false;
         }
         const expiresAt = connectionTokens.get(token);
-        return Boolean(expiresAt && expiresAt > Date.now());
+        if (!expiresAt || expiresAt <= Date.now()) {
+            connectionTokens.delete(token);
+            return false;
+        }
+        return true;
     }
     function createPendingWebSocketSession() {
         return {

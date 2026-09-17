@@ -538,6 +538,14 @@ carries:
 - App messages,
 - development refresh signals.
 
+The runtime injects an opaque, expiring connection token into each no-store
+HTML document to gate the WebSocket upgrade. A client whose token is rejected
+obtains a fresh token from the same-origin runtime and retries with bounded
+exponential backoff and jitter. Four failed WebSocket attempts end in a visible
+runtime-owned error with a manual retry; the client never reconnects forever or
+leaves the Capsule shell in an indefinite loading state. This connection token
+is not a Session credential and grants no application authority.
+
 The SDK hides raw WebSocket frames from app code. Client-origin App messages
 must be mediated by declared server message handlers; Sporades does not relay
 arbitrary client packets directly to other clients.

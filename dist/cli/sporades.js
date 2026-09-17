@@ -16,7 +16,7 @@ import { discardPublicTree, getProcessStartIdentity, readPublicAsset, readPublic
 import { SPORADES_BASE_IMAGE, baseImageLabels, baseImageRuntimeUser, } from "../base-image.js";
 import { ensureSealedServerEnvKeyPair, envelopeSummary, exportedEnvelope, readKeyPair, readSealedServerEnv, sealServerEnv, sealedServerEnvPaths, unsealServerEnv, withSealedServerEnvMutationLock, writeSealedServerEnv, } from "../sealed-server-env.js";
 import { restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-policy.js";
-import { createSqliteDatabaseAdapter, createLogEnvelope, createPrivilegedAuditLogInput, createPostgresConnection, createWebSocketHub, dumpDatabase, handleFileHttpRoute, injectPageConnectionToken, listDatabaseTables, openDevDatabase, prepareHttpSecurity, readJsonRequest, routeEndpoint, routeRuntimeHealth, routeSporadesAuth, runReadOnlyQuery, shutdownHttpServerAndRuntime, simulateLocalIdentitySession, readJsonlLogEvents, replacePreparedRuntimeDatabase, shutdownAndCloseDatabase, validateReadOnlyInspectionSql, writeUnhandledHttpError, } from "../server-runtime-source.js";
+import { createSqliteDatabaseAdapter, createLogEnvelope, createPrivilegedAuditLogInput, createPostgresConnection, createWebSocketHub, dumpDatabase, handleFileHttpRoute, injectPageConnectionToken, isDocumentNavigationRequest, listDatabaseTables, openDevDatabase, prepareHttpSecurity, readJsonRequest, routeConnectionToken, routeEndpoint, routeRuntimeHealth, routeSporadesAuth, runReadOnlyQuery, shutdownHttpServerAndRuntime, simulateLocalIdentitySession, readJsonlLogEvents, replacePreparedRuntimeDatabase, shutdownAndCloseDatabase, validateReadOnlyInspectionSql, writeUnhandledHttpError, } from "../server-runtime-source.js";
 import { scaffoldFiles } from "../templates/scaffold-template.js";
 import { resolveSporadesPackageRoot } from "../package-root.js";
 import { attachRequiredDevClamavSidecar, releaseDevClamavSidecar, retireDevClamavSidecarIfUnused, startDevClamavSidecar } from "../dev-clamav-sidecar.js";
@@ -1878,6 +1878,9 @@ async function startDevSession(options) {
             if (prepareHttpSecurity(runtime.database, request, response)) {
                 return;
             }
+            if (routeConnectionToken(request, response, () => websocketHub.createConnectionToken())) {
+                return;
+            }
             switch (`${request.method}:${requestUrl.pathname}`) {
                 case "POST:/__sporades/debug/ctx-log":
                     if (!requireDevInspectionToken(request, response, inspectionToken)) {
@@ -1997,8 +2000,11 @@ async function startDevSession(options) {
             const rawPublicPathname = (request.url ?? "/").split("?", 1)[0];
             const publicAsset = await readPublicAsset(bundle.staticFiles.publicTree, rawPublicPathname);
             if (publicAsset) {
-                response.writeHead(200, { "content-type": publicAsset.contentType });
-                response.end(publicAsset.html
+                response.writeHead(200, {
+                    "content-type": publicAsset.contentType,
+                    ...(publicAsset.html ? { "cache-control": "no-store", pragma: "no-cache" } : {}),
+                });
+                response.end(publicAsset.html && isDocumentNavigationRequest(request)
                     ? injectPageConnectionToken(publicAsset.body.toString("utf8"), websocketHub.createConnectionToken())
                     : publicAsset.body);
                 return;

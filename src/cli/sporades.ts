@@ -58,10 +58,12 @@ import {
   dumpDatabase,
   handleFileHttpRoute,
   injectPageConnectionToken,
+  isDocumentNavigationRequest,
   listDatabaseTables,
   openDevDatabase,
   prepareHttpSecurity,
   readJsonRequest,
+  routeConnectionToken,
   routeEndpoint,
   routeRuntimeHealth,
   routeSporadesAuth,
@@ -2193,6 +2195,10 @@ async function startDevSession(options: LooseRecord) {
         return;
       }
 
+      if (routeConnectionToken(request, response, () => websocketHub.createConnectionToken())) {
+        return;
+      }
+
       switch (`${request.method}:${requestUrl.pathname}`) {
         case "POST:/__sporades/debug/ctx-log":
           if (!requireDevInspectionToken(request, response, inspectionToken)) {
@@ -2324,8 +2330,11 @@ async function startDevSession(options: LooseRecord) {
       const rawPublicPathname = (request.url ?? "/").split("?", 1)[0];
       const publicAsset = await readPublicAsset(bundle.staticFiles.publicTree, rawPublicPathname);
       if (publicAsset) {
-        response.writeHead(200, { "content-type": publicAsset.contentType });
-        response.end(publicAsset.html
+        response.writeHead(200, {
+          "content-type": publicAsset.contentType,
+          ...(publicAsset.html ? { "cache-control": "no-store", pragma: "no-cache" } : {}),
+        });
+        response.end(publicAsset.html && isDocumentNavigationRequest(request)
           ? injectPageConnectionToken(publicAsset.body.toString("utf8"), websocketHub.createConnectionToken())
           : publicAsset.body);
         return;

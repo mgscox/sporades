@@ -24,11 +24,13 @@ import {
   createWebSocketHub,
   handleFileHttpRoute,
   injectPageConnectionToken,
+  isDocumentNavigationRequest,
   inspectRuntimeJobs,
   inspectRuntimeSchedules,
   openDevDatabase,
   prepareHttpSecurity,
   runRuntimeAccessKeyOperatorAction,
+  routeConnectionToken,
   routeEndpoint,
   routeRuntimeHealth,
   routeSporadesAuth,
@@ -153,6 +155,10 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (routeConnectionToken(request, response, () => websocketHub.createConnectionToken())) {
+      return;
+    }
+
     if (await routeRuntimeHealth(database, request as any, response)) {
       return;
     }
@@ -244,8 +250,13 @@ async function routePublicAsset(request: IncomingMessage, response: ServerRespon
   if (!stats?.isFile() || stats.isSymbolicLink()) return false;
   const body = await readFile(filePath);
   const html = relativePath === "index.html";
-  response.writeHead(200, { "content-type": publicContentType(relativePath) });
-  response.end(html ? injectPageConnectionToken(body.toString("utf8"), hub.createConnectionToken()) : body);
+  response.writeHead(200, {
+    "content-type": publicContentType(relativePath),
+    ...(html ? { "cache-control": "no-store", pragma: "no-cache" } : {}),
+  });
+  response.end(html && isDocumentNavigationRequest(request)
+    ? injectPageConnectionToken(body.toString("utf8"), hub.createConnectionToken())
+    : body);
   return true;
 }
 

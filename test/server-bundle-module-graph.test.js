@@ -578,7 +578,7 @@ function decodeWebSocketFrames(buffer) {
 }
 
 async function readConnectionToken(baseUrl) {
-  const response = await fetch(baseUrl);
+  const response = await fetch(baseUrl, { headers: { "sec-fetch-dest": "document" } });
   const html = await response.text();
   const match = /window\.__SPORADES_CONNECTION_TOKEN="([^"]+)"/.exec(html);
   assert.ok(match, `Expected the served page to carry a connection token, got: ${html.slice(0, 200)}`);
@@ -882,6 +882,37 @@ test("the server bundle builds from a module graph and imports nothing but Node 
   }
   // The domain's sockets are opened through a dynamic import of a builtin (ADR-0042).
   assert.match(source, /import\("node:tls"\)/, "bundle lost the SMTP TLS import");
+});
+
+test("a generated server bundle serves no-store HTML and fresh connection tokens", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-connection-token-"));
+  let booted;
+  try {
+    const source = await buildBundle({ config: capsuleConfig(), serverEnv: {}, serverSource: CAPSULE_SOURCE });
+    await writePublicTree(root, "<!doctype html><html><head></head><body></body></html>");
+    booted = await bootBundle({ source, dir: root });
+
+    const subresource = await fetch(booted.baseUrl);
+    assert.doesNotMatch(await subresource.text(), /__SPORADES_CONNECTION_TOKEN/);
+
+    const page = await fetch(booted.baseUrl, { headers: { "sec-fetch-dest": "document" } });
+    assert.equal(page.headers.get("cache-control"), "no-store");
+    const html = await page.text();
+    const pageToken = /window\.__SPORADES_CONNECTION_TOKEN="([^"]+)"/.exec(html)?.[1];
+    assert.ok(pageToken);
+
+    const refreshed = await fetch(new URL("/__sporades/connection-token", booted.baseUrl), {
+      headers: { "x-sporades-connection-token-request": "1" },
+    });
+    assert.equal(refreshed.status, 200);
+    assert.equal(refreshed.headers.get("cache-control"), "no-store");
+    const refreshedToken = (await refreshed.json()).token;
+    assert.match(refreshedToken, /^[A-Za-z0-9_-]{40,}$/);
+    assert.notEqual(refreshedToken, pageToken);
+  } finally {
+    await booted?.stop();
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("a generated server bundle loads PDF support only for PDF inspection", async () => {

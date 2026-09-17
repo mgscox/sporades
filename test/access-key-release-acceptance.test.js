@@ -134,7 +134,7 @@ async function readConnectionToken(baseUrl) {
   let lastError;
   while (Date.now() < deadline) {
     try {
-      response = await fetch(baseUrl);
+      response = await fetch(baseUrl, { headers: { "sec-fetch-dest": "document" } });
       break;
     } catch (error) {
       lastError = error;

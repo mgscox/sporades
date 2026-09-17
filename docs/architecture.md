@@ -497,6 +497,8 @@ The Capsule HTTP server handles:
 - `/__sporades/files/private/<id>`: serves private file reads.
 - `/__sporades/files/public/<id>`: serves public file URL reads.
 - custom Capsule endpoints declared with `endpoint()`.
+- `/__sporades/connection-token`: mints a fresh no-store page connection token
+  for bounded client transport recovery.
 - `/__sporades/ws`: upgrades to the WebSocket transport.
 
 Custom endpoints are the HTTP escape hatch for integrations such as webhooks.
@@ -530,6 +532,16 @@ The WebSocket transport carries the application control plane:
 - public file URL creation and revocation,
 - app messages,
 - development refresh signals.
+
+Each served HTML document carries an opaque, expiring connection token and is
+served with `Cache-Control: no-store`. The token gates the WebSocket upgrade; it
+is not a Session credential and grants no app authority. If a restart or expiry
+invalidates it, the client obtains one fresh token from the same-origin
+`/__sporades/connection-token` route and retries with exponential backoff and
+jitter. Brief restarts can recover automatically within that bounded episode;
+longer outages stop after four WebSocket attempts and render a runtime-owned
+manual retry state rather than leaving the Capsule shell loading or reconnecting
+indefinitely.
 
 The scaffold hides raw transport details behind `sporades/client`:
 

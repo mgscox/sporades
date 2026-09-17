@@ -476,7 +476,7 @@ async function openSocket(baseUrl, sessionToken = null) {
 }
 
 async function readPageConnectionToken(baseUrl) {
-  const response = await fetch(new URL("/", baseUrl));
+  const response = await fetch(new URL("/", baseUrl), { headers: { "sec-fetch-dest": "document" } });
   assert.equal(response.status, 200);
   const html = await response.text();
   const match = /window\.__SPORADES_CONNECTION_TOKEN="([^"]+)"/.exec(html);

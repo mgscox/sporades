@@ -10,7 +10,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { connect } from "node:net";
 
-import { createWebSocketHub, openDevDatabase, prepareHttpSecurity, routeRuntimeHealth } from "../dist/server-runtime-source.js";
+import { createWebSocketHub, openDevDatabase, prepareHttpSecurity, routeConnectionToken, routeRuntimeHealth } from "../dist/server-runtime-source.js";
 import { CLIENT_CAPABILITIES, CLIENT_TEMPLATES } from "../dist/client-capabilities.js";
 import { validateReleaseArchive } from "../dist/cli/host-helper-archive.js";
 import { createHostLifecycleRequest, createHostReleaseRequest } from "../dist/cli/host-request-builders.js";
@@ -116,6 +116,45 @@ async function withHostedRuntimeTransportServer(dir, config, fn) {
     database.close();
   }
 }
+
+test("connection-token refresh route returns a fresh no-store browser gate", async () => {
+  let issued = 0;
+  await withHttpServer((request, response) => {
+    if (prepareHttpSecurity({}, request, response)) return;
+    if (routeConnectionToken(request, response, () => `connection-token-${++issued}`)) return;
+    response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+    response.end("Not found");
+  }, async (port) => {
+    const baseUrl = `http://[::1]:${port}`;
+    const refreshHeaders = { "x-sporades-connection-token-request": "1" };
+    const first = await fetch(new URL("/__sporades/connection-token", baseUrl), { headers: refreshHeaders });
+    assert.equal(first.status, 200);
+    assert.equal(first.headers.get("cache-control"), "no-store");
+    assert.equal(first.headers.get("pragma"), "no-cache");
+    assert.equal(first.headers.get("cross-origin-resource-policy"), "same-origin");
+    assert.equal(first.headers.get("x-content-type-options"), "nosniff");
+    assert.ok(first.headers.get("content-security-policy-report-only"));
+    assert.deepEqual(await first.json(), { token: "connection-token-1" });
+
+    const second = await fetch(new URL("/__sporades/connection-token", baseUrl), { headers: refreshHeaders });
+    assert.deepEqual(await second.json(), { token: "connection-token-2" });
+
+    const wrongMethod = await fetch(new URL("/__sporades/connection-token", baseUrl), { method: "POST" });
+    assert.equal(wrongMethod.status, 404);
+
+    const crossOrigin = await fetch(new URL("/__sporades/connection-token", baseUrl), {
+      headers: { ...refreshHeaders, origin: "https://evil.example.test" },
+    });
+    assert.equal(crossOrigin.status, 403);
+    assert.equal(crossOrigin.headers.get("cross-origin-resource-policy"), "same-origin");
+    assert.equal(crossOrigin.headers.get("access-control-allow-origin"), null);
+    assert.equal(issued, 2, "cross-origin requests do not mint connection tokens");
+
+    const crossSiteSubresource = await fetch(new URL("/__sporades/connection-token?cache-bust=1", baseUrl));
+    assert.equal(crossSiteSubresource.status, 403);
+    assert.equal(issued, 2, "requests without the runtime-only header do not mint connection tokens");
+  });
+});
 
 async function reserveUnusedPort() {
   let port;
@@ -241,6 +280,23 @@ test("Hosted Capsule WebSocket upgrades reject missing and cross-site origins be
         origin: "https://team-notes.capsules.example.dev",
       }, createConnectionToken());
       assert.match(publicOrigin, /^HTTP\/1\.1 101/m);
+    });
+  });
+});
+
+test("Hosted Capsule connection-token inventory evicts its oldest browser gates at the fixed cap", async () => {
+  await withTempDir(async (dir) => {
+    await withHostedRuntimeTransportServer(dir, {}, async (baseUrl, createConnectionToken) => {
+      const oldest = createConnectionToken();
+      let newest;
+      for (let index = 0; index < 4_096; index += 1) newest = createConnectionToken();
+      const headers = { origin: "https://team-notes.capsules.example.dev" };
+
+      const evicted = await openRawWebSocketHandshake(baseUrl, headers, oldest);
+      assert.doesNotMatch(evicted, /^HTTP\/1\.1 101/m);
+
+      const retained = await openRawWebSocketHandshake(baseUrl, headers, newest);
+      assert.match(retained, /^HTTP\/1\.1 101/m);
     });
   });
 });
