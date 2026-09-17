@@ -7,6 +7,7 @@ Changes since v0.9.22.
 ### 🚀 Features
 
 - Add user-scoped server file deletion (#46) (5629928f).
+- Support an optional billable-seat floor for Team-member quantity policies (#50).
 
 ### 🐛 Bug Fixes
 
@@ -104,7 +105,6 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
-
 
 
 

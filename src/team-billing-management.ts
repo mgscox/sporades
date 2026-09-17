@@ -5,6 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { countAcceptedTeamMembers, lockTeamLifecycle } from "./teams-runtime.js";
 import { assertTeamBillingErasureInactive } from "./team-billing-runtime.js";
+import { billableTeamMemberQuantity, teamBillingQuantityPolicyFingerprint } from "./team-billing-quantity.js";
 
 type LooseRecord = Record<string, any>;
 
@@ -75,7 +76,7 @@ export async function stageTeamBillingMembershipChange(database: LooseRecord, te
     if (!subscription) return Object.freeze({ staged: false as const });
     const product = database.teamBillingDefinition?.catalogue?.[subscription.productKey];
     if (product?.quantity?.kind !== "team-members") return Object.freeze({ staged: false as const });
-    const quantity = await countAcceptedTeamMembers(transaction, teamId, denied);
+    const quantity = billableTeamMemberQuantity(product.quantity, await countAcceptedTeamMembers(transaction, teamId, denied));
     const existing = await desiredForTeam(transaction, teamId);
     if (existing?.kind === "plan-transition") return Object.freeze({ staged: false as const, reason: "plan-transition-active" as const });
     if (!existing && subscription.quantity === quantity) return Object.freeze({ staged: false as const });
@@ -121,23 +122,26 @@ async function performDesired(database: LooseRecord, _context: LooseRecord, payl
       const auth = await database.readTeamBillingActorAuth?.(transaction, await actorForOperation(transaction, desired.operationId));
       const admission = await tryAdmitPlanTransition(database, transaction, auth, desired.teamId, desired.targetProductKey);
       if (!admission) return attention(transaction, database, desired, "AUTHORITY_CHANGED", true);
-      const exact = await targetQuantity(transaction, desired.teamId, product);
-      if (exact !== Number(desired.targetQuantity)) {
+      const billableQuantity = await targetQuantity(transaction, desired.teamId, product);
+      if (billableQuantity !== Number(desired.targetQuantity)) {
         const replacement = await stageDesired(transaction, database, {
           teamId: desired.teamId, kind, operationId: desired.operationId, targetProductKey: desired.targetProductKey,
-          targetQuantity: exact, effectiveAt: nowSeconds(database),
+          targetQuantity: billableQuantity, effectiveAt: nowSeconds(database),
         });
         await enqueueIntent(database, transaction, replacement);
         return { superseded: true, dispatch: true };
       }
     } else {
-      const exact = await countAcceptedTeamMembers(transaction, desired.teamId, denied);
-      if (exact !== Number(desired.targetQuantity) || subscription.productKey !== desired.targetProductKey) {
-        const targetProductKey = subscription.productKey;
-        const currentProduct = database.teamBillingDefinition?.catalogue?.[targetProductKey];
-        if (currentProduct?.quantity?.kind !== "team-members") return { superseded: true };
+      const targetProductKey = subscription.productKey;
+      const currentProduct = database.teamBillingDefinition?.catalogue?.[targetProductKey];
+      if (currentProduct?.quantity?.kind !== "team-members") return { superseded: true };
+      const billableQuantity = billableTeamMemberQuantity(
+        currentProduct.quantity,
+        await countAcceptedTeamMembers(transaction, desired.teamId, denied),
+      );
+      if (billableQuantity !== Number(desired.targetQuantity) || subscription.productKey !== desired.targetProductKey) {
         const replacement = await stageDesired(transaction, database, {
-          teamId: desired.teamId, kind, operationId: null, targetProductKey, targetQuantity: exact, effectiveAt: nowSeconds(database),
+          teamId: desired.teamId, kind, operationId: null, targetProductKey, targetQuantity: billableQuantity, effectiveAt: nowSeconds(database),
         });
         await enqueueIntent(database, transaction, replacement);
         return { superseded: true, dispatch: true };
@@ -226,14 +230,17 @@ export async function settleVerifiedTeamBillingTarget(database: LooseRecord, acc
     if (desired.targetProductKey === accepted.productKey && Number(desired.targetQuantity) === accepted.quantity) {
       const product = database.teamBillingDefinition?.catalogue?.[accepted.productKey];
       if (product?.quantity?.kind === "team-members") {
-        const exact = await countAcceptedTeamMembers(transaction, accepted.teamId, denied);
-        if (exact !== accepted.quantity) {
+        const billableQuantity = billableTeamMemberQuantity(
+          product.quantity,
+          await countAcceptedTeamMembers(transaction, accepted.teamId, denied),
+        );
+        if (billableQuantity !== accepted.quantity) {
           if (desired.operationId) await transaction.prepare(sql(
             "UPDATE [sporades_team_billing_operations] SET [status] = 'completed', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [id] = ?",
           )).run(accepted.occurredAt ?? nowIso(database), desired.operationId);
           const replacement = await stageDesired(transaction, database, {
             teamId: accepted.teamId, kind: "seat-convergence", operationId: null,
-            targetProductKey: accepted.productKey, targetQuantity: exact, effectiveAt: nowSeconds(database),
+            targetProductKey: accepted.productKey, targetQuantity: billableQuantity, effectiveAt: nowSeconds(database),
           });
           await enqueueIntent(database, transaction, replacement);
           enqueued = true;
@@ -276,11 +283,14 @@ export async function repairTeamBillingDesiredState(database: LooseRecord) {
         if (desired.targetProductKey === subscription.productKey && Number(desired.targetQuantity) === Number(subscription.quantity)) {
           const product = database.teamBillingDefinition?.catalogue?.[subscription.productKey];
           if (product?.quantity?.kind === "team-members") {
-            const exact = await countAcceptedTeamMembers(transaction, subscription.teamId, denied);
-            if (exact !== Number(subscription.quantity)) {
+            const billableQuantity = billableTeamMemberQuantity(
+              product.quantity,
+              await countAcceptedTeamMembers(transaction, subscription.teamId, denied),
+            );
+            if (billableQuantity !== Number(subscription.quantity)) {
               const replacement = await stageDesired(transaction, database, {
                 teamId: subscription.teamId, kind: "seat-convergence", operationId: null,
-                targetProductKey: subscription.productKey, targetQuantity: exact, effectiveAt: nowSeconds(database),
+                targetProductKey: subscription.productKey, targetQuantity: billableQuantity, effectiveAt: nowSeconds(database),
               });
               await enqueueIntent(database, transaction, replacement);
               queued += 1;
@@ -302,11 +312,14 @@ export async function repairTeamBillingDesiredState(database: LooseRecord) {
       }
       const product = database.teamBillingDefinition?.catalogue?.[subscription.productKey];
       if (product?.quantity?.kind !== "team-members") continue;
-      const exact = await countAcceptedTeamMembers(transaction, subscription.teamId, denied);
-      if (exact === Number(subscription.quantity)) continue;
+      const billableQuantity = billableTeamMemberQuantity(
+        product.quantity,
+        await countAcceptedTeamMembers(transaction, subscription.teamId, denied),
+      );
+      if (billableQuantity === Number(subscription.quantity)) continue;
       const staged = await stageDesired(transaction, database, {
         teamId: subscription.teamId, kind: "seat-convergence", operationId: null,
-        targetProductKey: subscription.productKey, targetQuantity: exact, effectiveAt: nowSeconds(database),
+        targetProductKey: subscription.productKey, targetQuantity: billableQuantity, effectiveAt: nowSeconds(database),
       });
       await enqueueIntent(database, transaction, staged);
       queued += 1;
@@ -440,7 +453,7 @@ async function actorForOperation(transaction: LooseRecord, operationId: any) {
 
 async function targetQuantity(transaction: LooseRecord, teamId: string, product: LooseRecord) {
   return product.quantity.kind === "team-members"
-    ? countAcceptedTeamMembers(transaction, teamId, denied)
+    ? billableTeamMemberQuantity(product.quantity, await countAcceptedTeamMembers(transaction, teamId, denied))
     : Number(product.quantity.value);
 }
 
@@ -537,7 +550,7 @@ function assertCurrentModeAndCatalogue(database: LooseRecord, subscription: Loos
 }
 
 function sameQuantityPolicy(left: LooseRecord, right: LooseRecord) {
-  return left?.kind === right?.kind && (left?.kind !== "fixed" || left.value === right.value);
+  return left?.kind === right?.kind && teamBillingQuantityPolicyFingerprint(left) === teamBillingQuantityPolicyFingerprint(right);
 }
 
 function intentIdempotency(database: LooseRecord, teamId: string, intentId: string) {

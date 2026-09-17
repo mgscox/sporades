@@ -584,7 +584,7 @@ export type TeamJoinAdmissionContext<Schema extends SchemaDefinition = SchemaDef
 };
 export type TeamBillingQuantityPolicy =
   | { kind: "fixed"; value: number }
-  | { kind: "team-members" };
+  | { kind: "team-members"; minimum?: number };
 export type TeamBillingProductDeclaration = {
   quantity: TeamBillingQuantityPolicy;
   stripe: {

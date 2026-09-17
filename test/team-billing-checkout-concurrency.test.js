@@ -42,6 +42,19 @@ const capsule = {
       ? { allow: true } : { allow: false },
   },
 };
+const minimumCapsule = {
+  ...capsule,
+  name: "team-checkout-minimum",
+  teamBilling: {
+    ...capsule.teamBilling,
+    catalogue: {
+      agency: {
+        ...capsule.teamBilling.catalogue.agency,
+        quantity: { kind: "team-members", minimum: 5 },
+      },
+    },
+  },
+};
 
 const engines = [
   {
@@ -131,6 +144,48 @@ for (const engine of engines) {
   });
 }
 
+test("Team Checkout and Portal apply a declared member floor below it and exact membership above it", async () => {
+  for (const memberCount of [1, 6]) {
+    const dir = await mkdtemp(path.join(tmpdir(), `sporades-team-minimum-${memberCount}-`));
+    const database = await open(path.join(dir, "data.db"), baseEnv, {}, undefined, minimumCapsule);
+    try {
+      const sql = database.adapter.dialect.sql;
+      const now = new Date().toISOString();
+      await seedTeam(database, sql, now);
+      for (let index = 1; index < memberCount; index += 1) {
+        await database.adapter.prepare(sql(
+          "INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)",
+        )).run(teamId, `minimum-member-${index}`, now);
+      }
+      const expectedQuantity = memberCount === 1 ? 5 : 6;
+      const checkoutRequestId = memberCount === 1
+        ? "11111111-1111-4111-8111-111111111111"
+        : "66666666-6666-4666-8666-666666666666";
+      assert.equal((await startTeamBillingCheckout(database, auth, teamId, checkoutRequestId, "agency")).state, "pending");
+      assert.equal((await database.adapter.prepare(sql(
+        "SELECT [quantity] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?",
+      )).get(teamId, checkoutRequestId)).quantity, expectedQuantity);
+
+      await database.adapter.prepare(sql(
+        "INSERT INTO [sporades_team_billing_customers] ([teamId], [mode], [providerCustomerId], [createdAt], [updatedAt]) VALUES (?, 'sandbox', ?, ?, ?)",
+      )).run(teamId, `cus_minimum_${memberCount}`, now, now);
+      await database.adapter.prepare(sql(
+        "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [observedAt], [updatedAt]) VALUES (?, ?, 'sandbox', ?, 'price_test_agency', 'agency', ?, 'active', 0, NULL, ?, ?)",
+      )).run(`minimum-subscription-${memberCount}`, teamId, `sub_minimum_${memberCount}`, expectedQuantity, now, now);
+      const portalRequestId = memberCount === 1
+        ? "22222222-2222-4222-8222-222222222222"
+        : "77777777-7777-4777-8777-777777777777";
+      assert.equal((await startTeamBillingPortal(database, auth, teamId, portalRequestId)).state, "pending");
+      assert.equal((await database.adapter.prepare(sql(
+        "SELECT [quantity] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?",
+      )).get(teamId, portalRequestId)).quantity, expectedQuantity);
+    } finally {
+      await database.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
 test("Team Portal retries transient SQLite locks at both provider transaction boundaries", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-portal-locks-"));
   const portalUrl = `https://billing.stripe.com/p/session?secret=${"a".repeat(89)}`;
@@ -199,8 +254,8 @@ async function seedTeam(database, sql, now) {
   await database.adapter.prepare(sql("INSERT INTO [billingHolders] ([id], [createdAt], [updatedAt], [teamId], [userId]) VALUES ('holder', ?, ?, ?, ?)")).run(now, now, teamId, userId);
 }
 
-function open(databasePath, env, serviceConfig, providerFactory = () => ({ create: async () => { throw new Error("provider must not run before init"); } })) {
-  return openDevDatabase(databasePath, "", env, { name: capsule.name, payments, ...serviceConfig }, capsule, {
+function open(databasePath, env, serviceConfig, providerFactory = () => ({ create: async () => { throw new Error("provider must not run before init"); } }), selectedCapsule = capsule) {
+  return openDevDatabase(databasePath, "", env, { name: selectedCapsule.name, payments, ...serviceConfig }, selectedCapsule, {
     serviceEnv: env,
     createStripeCallbackEndpoint,
     createStripeTeamBillingProvider: providerFactory,

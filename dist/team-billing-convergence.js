@@ -4,6 +4,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { settleVerifiedTeamBillingTarget } from "./team-billing-management.js";
 import { teamBillingSubscriptionSemantics } from "./team-billing-subscription-semantics.js";
+import { billableTeamMemberQuantity } from "./team-billing-quantity.js";
 const SUPPORTED = new Set([
     "checkout.session.completed",
     "checkout.session.expired",
@@ -207,8 +208,12 @@ function normalizeSubscription(definition, object, operation, mode, eventType, t
         throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
     if (product.quantity.kind === "fixed" && product.quantity.value !== item.quantity)
         throw new Quarantine("catalogue-mismatch", teamId, 50, object.id);
+    if (product.quantity.kind === "team-members" && item.quantity < (product.quantity.minimum ?? 1)) {
+        throw new Quarantine("catalogue-mismatch", teamId, 50, object.id);
+    }
     if (product.quantity.kind === "team-members" && desiredTeamQuantity !== null
-        && (!Number.isSafeInteger(desiredTeamQuantity) || desiredTeamQuantity < 1 || desiredTeamQuantity !== item.quantity)) {
+        && (!Number.isSafeInteger(desiredTeamQuantity) || desiredTeamQuantity < 1
+            || billableTeamMemberQuantity(product.quantity, desiredTeamQuantity) !== item.quantity)) {
         throw new Quarantine("catalogue-mismatch", teamId, 50, object.id);
     }
     const periodStart = unixTimestamp(item.current_period_start);

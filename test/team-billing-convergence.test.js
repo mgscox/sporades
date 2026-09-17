@@ -145,6 +145,58 @@ test("malformed, catalogue-conflicting, multi-item, and association-conflicting 
   }
 });
 
+test("below-minimum provider quantities quarantine while quantities above the floor converge", async () => {
+  const below = await openFixture({ minimum: 5, memberCount: 1, operationQuantity: 4 });
+  try {
+    assert.deepEqual(await applyVerifiedTeamBillingObservation(
+      below.database,
+      subscriptionEvent("evt_converge_below_minimum", "customer.subscription.created", { operationId, quantity: 4 }),
+    ), { applied: false, quarantined: true });
+    assert.deepEqual(await safeTeamBillingProjection(below.adapter, below.definition, teamId), {
+      state: "attention-required", teamId, reason: "catalogue-mismatch",
+    });
+  } finally { below.close(); }
+
+  const above = await openFixture({ minimum: 5, memberCount: 6, operationQuantity: 6 });
+  try {
+    assert.deepEqual(await applyVerifiedTeamBillingObservation(
+      above.database,
+      subscriptionEvent("evt_converge_above_minimum", "customer.subscription.created", { operationId, quantity: 6 }),
+    ), { applied: true });
+    assert.equal(above.getSubscription().quantity, 6);
+  } finally { above.close(); }
+
+  const deleted = await openFixture({ minimum: 5, memberCount: 1, operationQuantity: 5 });
+  try {
+    assert.deepEqual(await applyVerifiedTeamBillingObservation(
+      deleted.database,
+      subscriptionEvent("evt_converge_before_deleted_below_minimum", "customer.subscription.created", {
+        operationId, quantity: 5,
+      }),
+    ), { applied: true });
+    assert.deepEqual(await applyVerifiedTeamBillingObservation(
+      deleted.database,
+      subscriptionEvent("evt_converge_deleted_below_minimum", "customer.subscription.deleted", {
+        quantity: 4, status: "canceled", occurred: periodStart + 20,
+      }),
+    ), { applied: false, quarantined: true });
+  } finally { deleted.close(); }
+});
+
+test("safe Team Billing projection rejects retained provider state below the declared floor", async () => {
+  const fixture = await openFixture({ minimum: 5, memberCount: 1 });
+  try {
+    fixture.adapter.prepare("DELETE FROM [sporades_team_billing_operations]").run();
+    fixture.adapter.prepare(
+      "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodStart], [currentPeriodEnd], [observedAt], [updatedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch]) VALUES ('below-floor', ?, 'sandbox', 'sub_below_floor', 'price_converge', 'si_below_floor', 'agency', 4, 'active', 0, ?, ?, ?, ?, ?, 'active', 20, 0)",
+    ).run(teamId, new Date(periodStart * 1000).toISOString(), new Date(periodEnd * 1000).toISOString(),
+      new Date(periodStart * 1000).toISOString(), new Date(periodStart * 1000).toISOString(), new Date(periodStart * 1000).toISOString());
+    assert.deepEqual(await safeTeamBillingProjection(fixture.adapter, fixture.definition, teamId), {
+      state: "attention-required", teamId, reason: "catalogue-mismatch",
+    });
+  } finally { fixture.close(); }
+});
+
 test("multiple current licensed subscriptions and newest team quarantine fail the provider-free projection closed", async () => {
   const fixture = await openFixture();
   try {
@@ -341,7 +393,7 @@ test("two independent PostgreSQL runtimes serialize Team billing convergence", {
   }
 });
 
-async function openFixture() {
+async function openFixture(options = {}) {
   const sqlite = new DatabaseSync(":memory:");
   const adapter = {
     dialect: {
@@ -356,10 +408,13 @@ async function openFixture() {
   };
   await createTeamBillingTables(adapter);
   sqlite.exec("CREATE TABLE [sporades_team_memberships] ([teamId] TEXT NOT NULL, [userId] TEXT NOT NULL)");
-  adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId]) VALUES (?, ?), (?, ?)").run(teamId, "member-1", teamId, "member-2");
+  const memberCount = options.memberCount ?? 2;
+  for (let index = 1; index <= memberCount; index += 1) {
+    adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId]) VALUES (?, ?)").run(teamId, `member-${index}`);
+  }
   const definition = {
     catalogue: {
-      agency: { quantity: { kind: "team-members" }, stripe: {
+      agency: { quantity: { kind: "team-members", ...(options.minimum === undefined ? {} : { minimum: options.minimum }) }, stripe: {
         sandbox: { priceId: "price_converge", productId: "prod_converge" },
         live: { priceId: "price_live_converge", productId: "prod_live_converge" },
       } },
@@ -372,8 +427,8 @@ async function openFixture() {
   const database = { adapter, teamBillingDefinition: definition, paymentsConfig: { stripe: { livemode: false } }, clock: { now: () => new Date("2026-08-23T12:00:00.000Z") } };
   const insertOperation = (id = operationId) => adapter.prepare(
     "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity]) " +
-    "VALUES (?, ?, ?, 'actor', 'checkout', 'agency', 'ready', NULL, ?, NULL, ?, ?, 'sandbox', 2)",
-  ).run(id, id, teamId, `idem-${id}`, new Date().toISOString(), new Date().toISOString());
+    "VALUES (?, ?, ?, 'actor', 'checkout', 'agency', 'ready', NULL, ?, NULL, ?, ?, 'sandbox', ?)",
+  ).run(id, id, teamId, `idem-${id}`, new Date().toISOString(), new Date().toISOString(), options.operationQuantity ?? 2);
   insertOperation();
   return {
     adapter, database, definition, insertOperation,

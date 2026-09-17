@@ -153,7 +153,7 @@ capsule({
         },
       },
       agency: {
-        quantity: { kind: "team-members" },
+        quantity: { kind: "team-members", minimum: 5 },
         stripe: {
           sandbox: { productId: "prod_test_agency", priceId: "price_test_agency", portalConfigurationId: "bpc_test_agency" },
           live: { productId: "prod_live_agency", priceId: "price_live_agency", portalConfigurationId: "bpc_live_agency" },
@@ -172,8 +172,11 @@ capsule({
 
 Product keys are lowercase stable application identities. Each product binds
 one exact sandbox Price and one different live Price and declares either a
-positive fixed quantity or `team-members`. The declaration is server-only; the
-browser cannot select a mode or Price.
+positive fixed quantity or `team-members`. A `team-members` policy may declare
+an optional positive integer `minimum`; Sporades then bills the greater of the
+accepted-member count and that floor. Omitting `minimum` preserves the existing
+one-seat minimum. The declaration is server-only; the browser cannot select a
+mode or Price.
 
 Every operation re-reads the exact Team membership inside its transaction. A
 current linked Team administrator reaches the Capsule policy for every
@@ -264,9 +267,10 @@ mode, with payment-method updates and invoice history enabled, cancellation at
 period end, quantity editing disabled, and an exact Product-to-Price allow-list.
 Products sharing a configuration must share the same quantity policy: fixed
 quantities match only the same fixed value, while Team-member quantities match
-only Team-member quantities. The session always names the reviewed
-configuration explicitly, so changing Stripe's mutable Dashboard default has
-no effect. Configuration drift fails closed.
+only the same declared `minimum` (including whether it was omitted). The
+session always names the reviewed configuration explicitly, so changing
+Stripe's mutable Dashboard default has no effect. Configuration drift fails
+closed.
 
 `teamBilling.openPortal` is durable and idempotent by Team and request. It
 rechecks the original actor, Capsule policy, Customer, Subscription, mode,
@@ -297,9 +301,9 @@ business-policy seam, including whether a downgrade is allowed.
 
 Admission and the desired-state Job commit together. Before each provider
 attempt Sporades reauthorizes the original linked Team administrator, re-reads
-the current Subscription and catalogue, and derives the exact accepted-member
-count when the target uses `team-members`. It updates the one attested
-Subscription item Price and quantity together using Stripe
+the current Subscription and catalogue, and derives the accepted-member count,
+floored by the target's declared `minimum` when it uses `team-members`. It
+updates the one attested Subscription item Price and quantity together using Stripe
 `create_prorations`, the desired intent's stable `proration_date`, and
 `pending_if_incomplete`; it does not create an immediate standalone invoice.
 Payment action required becomes a safe failed state for app-owned recovery.
@@ -310,9 +314,9 @@ seat convergence after the membership transaction. Staging or provider outage
 cannot roll that membership change back. New counts supersede stale queued or
 in-flight intent, and a durable per-Team lane permits only one provider write
 at a time across runtime instances. Startup repair compares accepted
-Subscription quantity with the exact Team count and reconstructs absent,
-failed, or drifted work. This is eventual provider convergence, not a database
-transaction held across Stripe I/O.
+Subscription quantity with the billable Team count after applying any floor
+and reconstructs absent, failed, or drifted work. This is eventual provider
+convergence, not a database transaction held across Stripe I/O.
 
 A successful Stripe update is only acknowledgement: public state remains
 pending. Exact verified `customer.subscription.*` evidence settles the desired
