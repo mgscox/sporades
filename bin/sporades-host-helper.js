@@ -42956,7 +42956,7 @@ var MutationExecutionStorage = process.getBuiltinModule("node:async_hooks").Asyn
 var mutationExecution = new MutationExecutionStorage();
 
 // src/cli/cli-version.ts
-var CLI_VERSION = "0.9.22";
+var CLI_VERSION = "0.9.23";
 
 // src/cli/schedule-inspection-envelope.ts
 var SCHEDULE_DIAGNOSTIC_FIELDS = /* @__PURE__ */ new Set([

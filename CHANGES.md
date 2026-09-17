@@ -1,33 +1,21 @@
 # Changes
 
-## Unreleased - 2026-09-12
+## Unreleased - 2026-09-17
 
-Changes since v0.9.21.
+Changes since v0.9.22.
+
+### 🚀 Features
+
+- Add user-scoped server file deletion (#46) (5629928f).
 
 ### 🐛 Bug Fixes
 
-- Recover stale page connection tokens with bounded reconnects and a visible retry state (#47).
-- Require registration recovery before teardown (2f0e709d).
-- Preserve committed routes on lock cleanup failure (e8872989).
-- Require helper confirmation of requested aliases (93e44b7d).
+- Fix stale runtime connection-token recovery (#48) (51193284).
+- Normalize subject whitespace (f7f2f6d9).
 
 ### 📝 Documentation
 
-- Preserve hostname ownership through failed registration recovery (9031d7fc).
-- Support custom domain aliases for Hosted Capsules (#40) (1d4d8dfd).
-- Resolve the cap ticket's contradictory criteria (674e2d6a).
-- Make the cap ticket decidable and evidence the reload one (60e524fa).
-- Correct the cap ticket's premise and status vocabulary (15e228ea).
-- File the unusable log payload cap (9ccc44d0).
-
-### 🧪 Tests
-
-- Finalize custom domain validation and contract expectations (4b722ed2).
-- Update registration contract expectations for alias metadata (da5ea9ee).
-
-### 📦 Packaging
-
-- Cover alias release failures, health repair, and revocation (8186b586).
+- Support additional deployment files with preserve and replace policies (#45) (9cc5bdef).
 
 ## v0.9.11 - 2026-09-02
 
@@ -116,6 +104,7 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
+
 
 
 
