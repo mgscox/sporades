@@ -1240,3 +1240,39 @@ test('an unawaited unsupported notification poisons and rolls back the resource 
     assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sqlite_schema WHERE name='sporades_resource_receipts'").get().n, 0);
   } finally { await f.close(); }
 });
+
+test('outer mutation and endpoint unawaited notification acceptance rolls back without an unhandled rejection', async () => {
+  const unhandled = [];
+  const observeUnhandled = reason => unhandled.push(reason);
+  process.on('unhandledRejection', observeUnhandled);
+  const f = await fixture(() => null, {
+    mutations: {
+      unawaitedNotification: mutation(ctx => ctx.resources.run({ ...options(), operationId: 'outer-notification-mutation' }, async scope => {
+        await scope.db.writes.insert({ value: 'outer-notification-mutation' });
+        scope.notifications.accept({});
+        return true;
+      })),
+    },
+    endpoints: {
+      unawaitedNotification: endpoint({ method: 'POST', path: '/outer-notification' }, ctx => ctx.resources.run({ ...options(), operationId: 'outer-notification-endpoint' }, async scope => {
+        await scope.db.writes.insert({ value: 'outer-notification-endpoint' });
+        scope.notifications.accept({});
+        return true;
+      })),
+    },
+  });
+  const request = { method: 'POST', headers: {}, async *[Symbol.asyncIterator]() {} };
+  try {
+    const mutationResult = await runMutation(f.database, actor, 'unawaitedNotification', []);
+    assert.equal(mutationResult.ok, false);
+    assert.equal(mutationResult.error.code, 'RESOURCE_EFFECT_UNSUPPORTED');
+    await assert.rejects(runEndpoint(f.database, f.database.endpoints.find(item => item.name === 'unawaitedNotification'), new URL('http://capsule.test/outer-notification'), request), { code: 'RESOURCE_EFFECT_UNSUPPORTED' });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(unhandled.length, 0);
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM writes WHERE value LIKE 'outer-notification-%'").get().n, 0);
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sqlite_schema WHERE name='sporades_resource_receipts'").get().n, 0);
+  } finally {
+    process.removeListener('unhandledRejection', observeUnhandled);
+    await f.close();
+  }
+});
