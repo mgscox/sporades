@@ -1318,6 +1318,8 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     if (!options.readOnly)
         nodeFsModule.mkdirSync(path.dirname(String(databasePath)), { recursive: true });
     let connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
+    let resourceConnectionQuarantined = false;
+    let resourceConnectionDisposed = false;
     const dialect = sqliteDatabaseDialect();
     const connectionGate = createConnectionTransactionGate();
     const runDirectly = (operation) => operation();
@@ -1326,30 +1328,42 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         // Never return that connection to ordinary root work: replace it only after
         // its transaction-scoped adapter has been revoked and the native handle is
         // closed. Existing closures still point at the revoked scoped adapter.
-        connection.close();
+        const uncertainConnection = connection;
+        resourceConnectionQuarantined = true;
+        uncertainConnection.close();
+        resourceConnectionDisposed = true;
         connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
+        resourceConnectionDisposed = false;
+        resourceConnectionQuarantined = false;
     };
-    const createOperations = (run) => ({
-        exec(sql) {
-            return run(() => connection.exec(sql));
-        },
-        prepare(sql) {
-            return {
-                all(...params) {
-                    return run(() => connection.prepare(sql).all(...params));
-                },
-                get(...params) {
-                    return run(() => connection.prepare(sql).get(...params));
-                },
-                run(...params) {
-                    return run(() => connection.prepare(sql).run(...params));
-                },
-                columns() {
-                    return run(() => connection.prepare(sql).columns());
-                },
-            };
-        },
-    });
+    const createOperations = (run) => {
+        const useConnection = (operation) => {
+            if (resourceConnectionQuarantined)
+                throw resourceError("RESOURCE_COMMIT_UNKNOWN");
+            return operation();
+        };
+        return {
+            exec(sql) {
+                return run(() => useConnection(() => connection.exec(sql)));
+            },
+            prepare(sql) {
+                return {
+                    all(...params) {
+                        return run(() => useConnection(() => connection.prepare(sql).all(...params)));
+                    },
+                    get(...params) {
+                        return run(() => useConnection(() => connection.prepare(sql).get(...params)));
+                    },
+                    run(...params) {
+                        return run(() => useConnection(() => connection.prepare(sql).run(...params)));
+                    },
+                    columns() {
+                        return run(() => useConnection(() => connection.prepare(sql).columns()));
+                    },
+                };
+            },
+        };
+    };
     // SQLite is an engine like the others now, not the thing the others borrow from: what it supplies
     // below its own name is a connection, statement primitives and transaction session mechanics.
     const adapter = {
@@ -1452,7 +1466,7 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
                             discardUncertainResourceConnection();
                         }
                         catch {
-                            throw resourceError("RESOURCE_STORAGE_ERROR");
+                            throw resourceError("RESOURCE_COMMIT_UNKNOWN");
                         }
                         throw resourceError("RESOURCE_COMMIT_UNKNOWN");
                     }
@@ -1491,6 +1505,13 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
             });
         },
         close() {
+            if (resourceConnectionQuarantined) {
+                if (resourceConnectionDisposed)
+                    return;
+                connection.close();
+                resourceConnectionDisposed = true;
+                return;
+            }
             return connection.close();
         },
     };

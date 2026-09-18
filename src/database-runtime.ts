@@ -1720,6 +1720,8 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
   const path = await import("node:path");
   if (!options.readOnly) nodeFsModule.mkdirSync(path.dirname(String(databasePath)), { recursive: true });
   let connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
+  let resourceConnectionQuarantined = false;
+  let resourceConnectionDisposed = false;
   const dialect = sqliteDatabaseDialect();
   const connectionGate = createConnectionTransactionGate();
   const runDirectly = (operation: () => any) => operation();
@@ -1728,31 +1730,42 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
     // Never return that connection to ordinary root work: replace it only after
     // its transaction-scoped adapter has been revoked and the native handle is
     // closed. Existing closures still point at the revoked scoped adapter.
-    connection.close();
+    const uncertainConnection = connection;
+    resourceConnectionQuarantined = true;
+    uncertainConnection.close();
+    resourceConnectionDisposed = true;
     connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
+    resourceConnectionDisposed = false;
+    resourceConnectionQuarantined = false;
   };
 
-  const createOperations = (run: (operation: () => any) => any) => ({
+  const createOperations = (run: (operation: () => any) => any) => {
+    const useConnection = <T>(operation: () => T): T => {
+      if (resourceConnectionQuarantined) throw resourceError("RESOURCE_COMMIT_UNKNOWN");
+      return operation();
+    };
+    return {
     exec(sql: string) {
-      return run(() => connection.exec(sql));
+      return run(() => useConnection(() => connection.exec(sql)));
     },
     prepare(sql: string) {
       return {
         all(...params: any[]) {
-          return run(() => connection.prepare(sql).all(...params));
+          return run(() => useConnection(() => connection.prepare(sql).all(...params)));
         },
         get(...params: any[]) {
-          return run(() => connection.prepare(sql).get(...params));
+          return run(() => useConnection(() => connection.prepare(sql).get(...params)));
         },
         run(...params: string[]) {
-          return run(() => connection.prepare(sql).run(...params));
+          return run(() => useConnection(() => connection.prepare(sql).run(...params)));
         },
         columns() {
-          return run(() => connection.prepare(sql).columns());
+          return run(() => useConnection(() => connection.prepare(sql).columns()));
         },
       };
     },
-  });
+  };
+  };
 
   // SQLite is an engine like the others now, not the thing the others borrow from: what it supplies
   // below its own name is a connection, statement primitives and transaction session mechanics.
@@ -1831,7 +1844,7 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
           if (!resourceCommitIssued) await transactionExec("ROLLBACK");
           if (resourceCommitIssued) {
             try { discardUncertainResourceConnection(); }
-            catch { throw resourceError("RESOURCE_STORAGE_ERROR"); }
+            catch { throw resourceError("RESOURCE_COMMIT_UNKNOWN"); }
             throw resourceError("RESOURCE_COMMIT_UNKNOWN");
           }
           throw error;
@@ -1852,6 +1865,12 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
       });
     },
     close() {
+      if (resourceConnectionQuarantined) {
+        if (resourceConnectionDisposed) return;
+        connection.close();
+        resourceConnectionDisposed = true;
+        return;
+      }
       return connection.close();
     },
   };

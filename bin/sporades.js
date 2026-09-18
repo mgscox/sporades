@@ -98413,34 +98413,47 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
   const path14 = await import("node:path");
   if (!options.readOnly) nodeFsModule.mkdirSync(path14.dirname(String(databasePath)), { recursive: true });
   let connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
+  let resourceConnectionQuarantined = false;
+  let resourceConnectionDisposed = false;
   const dialect = sqliteDatabaseDialect();
   const connectionGate = createConnectionTransactionGate();
   const runDirectly = (operation) => operation();
   const discardUncertainResourceConnection = () => {
-    connection.close();
+    const uncertainConnection = connection;
+    resourceConnectionQuarantined = true;
+    uncertainConnection.close();
+    resourceConnectionDisposed = true;
     connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
+    resourceConnectionDisposed = false;
+    resourceConnectionQuarantined = false;
   };
-  const createOperations = (run2) => ({
-    exec(sql) {
-      return run2(() => connection.exec(sql));
-    },
-    prepare(sql) {
-      return {
-        all(...params) {
-          return run2(() => connection.prepare(sql).all(...params));
-        },
-        get(...params) {
-          return run2(() => connection.prepare(sql).get(...params));
-        },
-        run(...params) {
-          return run2(() => connection.prepare(sql).run(...params));
-        },
-        columns() {
-          return run2(() => connection.prepare(sql).columns());
-        }
-      };
-    }
-  });
+  const createOperations = (run2) => {
+    const useConnection = (operation) => {
+      if (resourceConnectionQuarantined) throw resourceError("RESOURCE_COMMIT_UNKNOWN");
+      return operation();
+    };
+    return {
+      exec(sql) {
+        return run2(() => useConnection(() => connection.exec(sql)));
+      },
+      prepare(sql) {
+        return {
+          all(...params) {
+            return run2(() => useConnection(() => connection.prepare(sql).all(...params)));
+          },
+          get(...params) {
+            return run2(() => useConnection(() => connection.prepare(sql).get(...params)));
+          },
+          run(...params) {
+            return run2(() => useConnection(() => connection.prepare(sql).run(...params)));
+          },
+          columns() {
+            return run2(() => useConnection(() => connection.prepare(sql).columns()));
+          }
+        };
+      }
+    };
+  };
   const adapter = {
     ...createSharedDatabaseAdapterMethods(dialect),
     ...createOperations(connectionGate.runOperation),
@@ -98521,7 +98534,7 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
             try {
               discardUncertainResourceConnection();
             } catch {
-              throw resourceError("RESOURCE_STORAGE_ERROR");
+              throw resourceError("RESOURCE_COMMIT_UNKNOWN");
             }
             throw resourceError("RESOURCE_COMMIT_UNKNOWN");
           }
@@ -98554,6 +98567,12 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
       });
     },
     close() {
+      if (resourceConnectionQuarantined) {
+        if (resourceConnectionDisposed) return;
+        connection.close();
+        resourceConnectionDisposed = true;
+        return;
+      }
       return connection.close();
     }
   };

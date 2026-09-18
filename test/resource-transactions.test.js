@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { openDevDatabase, runMutation, runEndpoint, runCurrentUserJobWorker, createControllableRuntimeClock } from '../dist/server-runtime-source.js';
@@ -605,6 +605,76 @@ test('an outer unknown commit outcome reconciles by receipt without replaying it
     }
     assert.equal(globalThis.__outerResourceCallbacks, 2);
   } finally { delete globalThis.__outerResourceCallbacks; delete globalThis.__outerResourceHandles; await f.close(); }
+});
+
+test('an outer resource COMMIT with a failed native close quarantines root and cached SQLite statements', async () => {
+  const f = await fixture(() => null, { mutations: { closeUnknown: mutation(ctx => ctx.resources.run({ ...options(), operationId: 'outer-close-unknown' }, async scope => {
+    await scope.db.writes.insert({ value: 'close-unknown' }); return true;
+  })) } });
+  const transactionOperations = Symbol.for('sporades.database.transactionOperations');
+  const operationsFactory = f.database.adapter[transactionOperations];
+  const uncertainAdapter = Object.create(f.database.adapter);
+  const cachedRootStatement = f.database.adapter.prepare('SELECT count(*) n FROM writes');
+  Object.defineProperty(uncertainAdapter, transactionOperations, { value: () => {
+    const operations = operationsFactory(); let receipt = false;
+    return { ...operations, prepare(sql) { const statement = operations.prepare(sql); return Object.assign(Object.create(statement), { run(...args) { const value = statement.run(...args); if (sql.includes('INSERT INTO sporades_resource_receipts')) receipt = true; return value; } }); }, exec(sql) {
+      const value = operations.exec(sql); if (sql === 'COMMIT' && receipt) throw Object.assign(new Error('lost COMMIT reply'), { code: 'ECONNRESET' }); return value;
+    } };
+  } });
+  const { DatabaseSync } = await import('node:sqlite');
+  const originalClose = DatabaseSync.prototype.close;
+  let failDiscardClose = true;
+  DatabaseSync.prototype.close = function() { if (failDiscardClose) { failDiscardClose = false; throw new Error('native close failed'); } return originalClose.call(this); };
+  try {
+    const result = await runMutation({ ...f.database, adapter: uncertainAdapter }, actor, 'closeUnknown', []);
+    assert.equal(result.error.code, 'RESOURCE_COMMIT_UNKNOWN');
+    assert.throws(() => f.database.adapter.exec('SELECT 1'), { code: 'RESOURCE_COMMIT_UNKNOWN' });
+    assert.throws(() => f.database.adapter.prepare('SELECT 1').get(), { code: 'RESOURCE_COMMIT_UNKNOWN' });
+    assert.throws(() => cachedRootStatement.get(), { code: 'RESOURCE_COMMIT_UNKNOWN' });
+    assert.equal(String(result.error.message).includes(f.file), false);
+    const independent = await createSqliteDatabaseAdapter(f.file);
+    try {
+      assert.equal(independent.prepare("SELECT count(*) n FROM sporades_resource_receipts WHERE operationId='outer-close-unknown'").get().n, 1);
+      assert.equal(independent.prepare("SELECT count(*) n FROM writes WHERE value='close-unknown'").get().n, 1);
+    } finally { await independent.close(); }
+  } finally { DatabaseSync.prototype.close = originalClose; await f.close(); }
+});
+
+test('an outer resource COMMIT with a failed SQLite replacement quarantines root and cached statements', async () => {
+  const f = await fixture(() => null, { mutations: { reopenUnknown: mutation(ctx => ctx.resources.run({ ...options(), operationId: 'outer-reopen-unknown' }, async scope => {
+    await scope.db.writes.insert({ value: 'reopen-unknown' }); return true;
+  })) } });
+  const transactionOperations = Symbol.for('sporades.database.transactionOperations');
+  const operationsFactory = f.database.adapter[transactionOperations];
+  const uncertainAdapter = Object.create(f.database.adapter);
+  const cachedRootStatement = f.database.adapter.prepare('SELECT count(*) n FROM writes');
+  const movedPath = `${f.file}.reopen-fault`;
+  let pathReplaced = false;
+  Object.defineProperty(uncertainAdapter, transactionOperations, { value: () => {
+    const operations = operationsFactory(); let receipt = false;
+    return { ...operations, prepare(sql) { const statement = operations.prepare(sql); return Object.assign(Object.create(statement), { run(...args) { const value = statement.run(...args); if (sql.includes('INSERT INTO sporades_resource_receipts')) receipt = true; return value; } }); }, exec(sql) {
+      const value = operations.exec(sql);
+      if (sql === 'COMMIT' && receipt) { renameSync(f.file, movedPath); mkdirSync(f.file); pathReplaced = true; throw Object.assign(new Error('lost COMMIT reply'), { code: 'ECONNRESET' }); }
+      return value;
+    } };
+  } });
+  try {
+    const result = await runMutation({ ...f.database, adapter: uncertainAdapter }, actor, 'reopenUnknown', []);
+    assert.equal(result.error.code, 'RESOURCE_COMMIT_UNKNOWN');
+    assert.throws(() => f.database.adapter.exec('SELECT 1'), { code: 'RESOURCE_COMMIT_UNKNOWN' });
+    assert.throws(() => f.database.adapter.prepare('SELECT 1').get(), { code: 'RESOURCE_COMMIT_UNKNOWN' });
+    assert.throws(() => cachedRootStatement.get(), { code: 'RESOURCE_COMMIT_UNKNOWN' });
+    assert.equal(String(result.error.message).includes(f.file), false);
+    await rm(f.file, { recursive: true, force: true }); renameSync(movedPath, f.file); pathReplaced = false;
+    const independent = await createSqliteDatabaseAdapter(f.file);
+    try {
+      assert.equal(independent.prepare("SELECT count(*) n FROM sporades_resource_receipts WHERE operationId='outer-reopen-unknown'").get().n, 1);
+      assert.equal(independent.prepare("SELECT count(*) n FROM writes WHERE value='reopen-unknown'").get().n, 1);
+    } finally { await independent.close(); }
+  } finally {
+    if (pathReplaced) { await rm(f.file, { recursive: true, force: true }); renameSync(movedPath, f.file); }
+    await f.close();
+  }
 });
 
 test('an outer resource COMMIT throw before engine completion leaves no receipt for fresh authority', async () => {
