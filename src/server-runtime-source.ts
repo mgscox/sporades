@@ -6587,7 +6587,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
         context = await applyContextMiddleware(transactionDatabase, context, "mutation");
 
         for (const hookSource of database.mutationHooks.beforeMutation) {
-          await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
+          await revokeOuterResources?.race(runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context));
         }
 
         const mutationRun = runCustomMutation(transactionDatabase, context, mutationName, args, mutationHandler);
@@ -6598,13 +6598,13 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
             ? await runUpdateMutation(transactionDatabase, context, mutationName, args)
             : await runInsertMutation(transactionDatabase, context, mutationName, args);
         }
-        await drainPendingAclWrites(context);
+        await revokeOuterResources?.race(drainPendingAclWrites(context));
 
         if (result.ok) {
           for (const hookSource of database.mutationHooks.afterMutation) {
-            await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context, result }, context);
+            await revokeOuterResources?.race(runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context, result }, context));
           }
-          await drainPendingAclWrites(context);
+          await revokeOuterResources?.race(drainPendingAclWrites(context));
           assertMutationSecretsReturned(context, result);
         }
 

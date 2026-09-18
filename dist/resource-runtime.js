@@ -247,6 +247,7 @@ export function bindOuterResources(database, context, hooks) {
             throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
     };
     release.aborted = () => outerAborted;
+    release.race = (operation) => Promise.race([operation, outerAborted]);
     release.guardCapability = guardCapability;
     return release;
 }

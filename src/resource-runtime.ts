@@ -201,6 +201,7 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
     if (outerDeadline && database.clock.now().getTime() >= outerDeadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
   };
   release.aborted = () => outerAborted;
+  release.race = <Value>(operation: Promise<Value>) => Promise.race([operation, outerAborted]);
   release.guardCapability = guardCapability;
   return release;
 }
