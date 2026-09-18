@@ -105,7 +105,7 @@ test('Postgres Job backend loss after its final claim check rolls back write and
     assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='must-rollback-after-backend-loss'").get()).n), 0);
     assert.equal((await database.adapter.prepare("SELECT to_regclass('sporades_resource_receipts') AS receipt_table").get()).receipt_table, null);
     assert.throws(() => parent.insert({ value: 'parent-after-loss' }), { code: 'RESOURCE_SCOPE_INACTIVE' });
-    assert.throws(() => retained.insert({ value: 'retained-after-loss' }), /Transaction-scoped database access is no longer active/);
+    assert.throws(() => retained.insert({ value: 'retained-after-loss' }), { code: 'RESOURCE_SCOPE_INACTIVE' });
   } finally { release?.(); await database.shutdown(); await database.close(); }
 });
 
