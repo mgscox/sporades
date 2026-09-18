@@ -4,7 +4,7 @@
 
 **Blocked by:** None — ticket 01 evidence and explicit M1 approval are recorded.
 
-**Status:** implemented — draft review pending
+**Status:** done — merged
 
 **Parent:** https://github.com/mgscox/sporades/issues/52
 
