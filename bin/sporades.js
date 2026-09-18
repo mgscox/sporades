@@ -102557,8 +102557,12 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
             }
           }
         });
-        if (database.log?.path) for (const event of committedResourceLogEvents) appendFileSync(database.log.path, `${JSON.stringify(event)}
+        try {
+          if (database.log?.path) for (const event of committedResourceLogEvents) appendFileSync(database.log.path, `${JSON.stringify(event)}
 `);
+        } catch {
+          throw resourceError("RESOURCE_STORAGE_ERROR");
+        }
         break;
       } catch (error) {
         if (ingressFenceAcquired || database.adapter.engine !== "sqlite" || transactionAttempt >= 100 || !String(error?.message ?? "").includes("database is locked")) throw error;
@@ -105201,8 +105205,12 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
         }
       });
     });
-    if (database.log?.path) for (const event of committedResourceLogEvents) appendFileSync(database.log.path, `${JSON.stringify(event)}
+    try {
+      if (database.log?.path) for (const event of committedResourceLogEvents) appendFileSync(database.log.path, `${JSON.stringify(event)}
 `);
+    } catch {
+      throw resourceError("RESOURCE_STORAGE_ERROR");
+    }
     await commitPendingCurrentUserFileByteDeletes(context);
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);

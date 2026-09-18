@@ -3754,7 +3754,8 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
             finally { revokeOuterResources?.(); }
           }
         });
-        if (database.log?.path) for (const event of committedResourceLogEvents) appendFileSync(database.log.path, `${JSON.stringify(event)}\n`);
+        try { if (database.log?.path) for (const event of committedResourceLogEvents) appendFileSync(database.log.path, `${JSON.stringify(event)}\n`); }
+        catch { throw resourceError("RESOURCE_STORAGE_ERROR"); }
         break;
       } catch (error: any) {
         if (ingressFenceAcquired || database.adapter.engine !== "sqlite" || transactionAttempt >= 100 || !String(error?.message ?? "").includes("database is locked")) throw error;
@@ -6633,7 +6634,8 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
         }
       });
     });
-    if (database.log?.path) for (const event of committedResourceLogEvents) appendFileSync(database.log.path, `${JSON.stringify(event)}\n`);
+    try { if (database.log?.path) for (const event of committedResourceLogEvents) appendFileSync(database.log.path, `${JSON.stringify(event)}\n`); }
+    catch { throw resourceError("RESOURCE_STORAGE_ERROR"); }
     await commitPendingCurrentUserFileByteDeletes(context);
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);

@@ -1,4 +1,4 @@
-import { bindJobResources, bindOuterResources, isResourceAbortError, unsupportedResources } from "./resource-runtime.js";
+import { bindJobResources, bindOuterResources, isResourceAbortError, resourceError, unsupportedResources } from "./resource-runtime.js";
 // `createHmac` left this line with the S3 signing path in batch 6: `s3Hmac` was its only remaining
 // consumer, and it reaches the builtin through `process.getBuiltinModule` in `file-storage-runtime.ts`
 // now (ADR-0042). The rest of this list has been wider than what this file binds since batch 3 —
@@ -3564,9 +3564,14 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                         }
                     }
                 });
-                if (database.log?.path)
-                    for (const event of committedResourceLogEvents)
-                        appendFileSync(database.log.path, `${JSON.stringify(event)}\n`);
+                try {
+                    if (database.log?.path)
+                        for (const event of committedResourceLogEvents)
+                            appendFileSync(database.log.path, `${JSON.stringify(event)}\n`);
+                }
+                catch {
+                    throw resourceError("RESOURCE_STORAGE_ERROR");
+                }
                 break;
             }
             catch (error) {
@@ -6339,9 +6344,14 @@ export async function runMutation(database, auth, mutationName, args, options = 
                 }
             });
         });
-        if (database.log?.path)
-            for (const event of committedResourceLogEvents)
-                appendFileSync(database.log.path, `${JSON.stringify(event)}\n`);
+        try {
+            if (database.log?.path)
+                for (const event of committedResourceLogEvents)
+                    appendFileSync(database.log.path, `${JSON.stringify(event)}\n`);
+        }
+        catch {
+            throw resourceError("RESOURCE_STORAGE_ERROR");
+        }
         await commitPendingCurrentUserFileByteDeletes(context);
         commitPendingJobCancellationAborts(context);
         await flushAccessKeyLifecycleAuditEvents(database, context);

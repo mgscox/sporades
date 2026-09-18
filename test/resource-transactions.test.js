@@ -1283,3 +1283,34 @@ test('outer mutation and endpoint unawaited notification acceptance rolls back w
     await f.close();
   }
 });
+
+test('postcommit resource JSONL failure is redacted while mutation and endpoint receipts remain committed', async () => {
+  let callbacks = 0;
+  const f = await fixture(() => null, {
+    mutations: { jsonlFailure: mutation(ctx => ctx.resources.run({ ...options(), operationId: 'jsonl-mutation' }, async scope => { callbacks++; scope.log.info('diagnostic'); await scope.db.writes.insert({ value: 'jsonl-mutation' }); return { committed: true }; })) },
+    endpoints: { jsonlFailure: endpoint({ method: 'POST', path: '/jsonl-failure' }, ctx => ctx.resources.run({ ...options(), operationId: 'jsonl-endpoint' }, async scope => { callbacks++; scope.log.info('diagnostic'); await scope.db.writes.insert({ value: 'jsonl-endpoint' }); return { committed: true }; })) },
+  });
+  const originalPath = f.database.log.path;
+  f.database.log.path = path.dirname(f.file);
+  const endpointAuth = { userId: 'jsonl-endpoint-actor', displayName: 'JSONL endpoint actor', email: 'jsonl-endpoint@example.com', picture: null, isAuthenticated: true, isGuest: false, provider: 'email' };
+  const endpointToken = 'jsonl-endpoint-session';
+  await f.database.adapter.insertAuthUser({ id: endpointAuth.userId, createdAt: f.clock.now().toISOString(), displayName: endpointAuth.displayName, email: endpointAuth.email, picture: null, isAuthenticated: 1, isGuest: 0, provider: endpointAuth.provider });
+  await f.database.adapter.insertAuthSession({ token: endpointToken, userId: endpointAuth.userId, provider: endpointAuth.provider, createdAt: f.clock.now().toISOString(), expiresAt: '2099-01-01T00:00:00.000Z' });
+  const request = { method: 'POST', headers: { 'x-sporades-session-token': endpointToken }, async *[Symbol.asyncIterator]() {} };
+  try {
+    const mutationResult = await runMutation(f.database, actor, 'jsonlFailure', []);
+    assert.equal(mutationResult.ok, false); assert.equal(mutationResult.error.code, 'RESOURCE_STORAGE_ERROR');
+    const endpointError = await runEndpoint(f.database, f.database.endpoints.find(item => item.name === 'jsonlFailure'), new URL('http://capsule.test/jsonl-failure'), request).then(() => null, error => error);
+    assert.equal(endpointError.code, 'RESOURCE_STORAGE_ERROR');
+    assert.equal(String(mutationResult.error.message).includes(f.database.log.path), false);
+    assert.equal(String(endpointError.message).includes(f.database.log.path), false);
+    for (const mode of ['mutation', 'endpoint']) {
+      assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM writes WHERE value=?').get(`jsonl-${mode}`).n, 1);
+      assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts WHERE operationId=?').get(`jsonl-${mode}`).n, 1);
+    }
+    f.database.log.path = originalPath;
+    assert.equal((await runMutation(f.database, actor, 'jsonlFailure', [])).ok, true);
+    assert.deepEqual(await runEndpoint(f.database, f.database.endpoints.find(item => item.name === 'jsonlFailure'), new URL('http://capsule.test/jsonl-failure'), request), { committed: true });
+    assert.equal(callbacks, 2);
+  } finally { f.database.log.path = originalPath; await f.close(); }
+});
