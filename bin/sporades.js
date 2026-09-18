@@ -94147,6 +94147,7 @@ function bindOuterResources(database, context, hooks) {
     used = true;
     scopeActive = true;
     admission = true;
+    hooks.resourceEntered?.();
     (database[Symbol.for("sporades.database.outerTransactionAdapter")] ?? database.adapter)[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
     const deadline = hooks.startedAt + 3e4;
     outerDeadline = deadline;
@@ -98397,10 +98398,7 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
   const connectionGate = createConnectionTransactionGate();
   const runDirectly = (operation) => operation();
   const discardUncertainResourceConnection = () => {
-    try {
-      connection.close();
-    } catch {
-    }
+    connection.close();
     connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
   };
   const createOperations = (run2) => ({
@@ -98492,7 +98490,7 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
           try {
             result = await fn(transactionAdapter);
             await runTransactionBeforeCommitChecks(transactionAdapter);
-            resourceCommitIssued = Boolean(transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")]) || Array.isArray(transactionAdapter[transactionBeforeCommitChecks2]) && transactionAdapter[transactionBeforeCommitChecks2].length > 0;
+            resourceCommitIssued = Boolean(transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")]);
           } finally {
             revokeTransactionScopedAdapter(transactionAdapter);
           }
@@ -102489,6 +102487,9 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
             });
             revokeOuterResources = bindOuterResources(transactionDatabase, context, {
               startedAt: outerStartedAt,
+              resourceEntered() {
+                transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
+              },
               async authorize(_context, db, identity) {
                 const anchor = await db[identity.table].where("id", identity.id).get();
                 if (!anchor) throw commandError2("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
@@ -105123,6 +105124,9 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
           });
           revokeOuterResources = bindOuterResources(transactionDatabase, context, {
             startedAt: outerStartedAt,
+            resourceEntered() {
+              transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
+            },
             async authorize(_context, db, identity) {
               const anchor = await db[identity.table].where("id", identity.id).get();
               if (!anchor) throw commandError2("Denied.", "The current user is not allowed to perform this operation.", "DENIED");

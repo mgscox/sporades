@@ -122,6 +122,7 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
     if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
     if (!database.schema.tables.some((table: any) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
     used = true; scopeActive = true; admission = true;
+    hooks.resourceEntered?.();
     // Mark only this opt-in outer transaction for resource-aware COMMIT outcome
     // handling. Ordinary mutations retain their historical transaction semantics.
     ((database as any)[Symbol.for("sporades.database.outerTransactionAdapter")] ?? database.adapter as any)[Symbol.for("sporades.database.resourceOuterTransaction")] = true;

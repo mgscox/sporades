@@ -3709,6 +3709,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
             });
             revokeOuterResources = bindOuterResources(transactionDatabase, context, {
               startedAt: outerStartedAt,
+              resourceEntered() { (transactionAdapter as any)[Symbol.for("sporades.database.resourceOuterTransaction")] = true; },
               async authorize(_context: LooseRecord, db: LooseRecord, identity: LooseRecord) {
                 const anchor = await db[identity.table].where("id", identity.id).get();
                 if (!anchor) throw commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
@@ -6572,6 +6573,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
         });
         revokeOuterResources = bindOuterResources(transactionDatabase, context, {
           startedAt: outerStartedAt,
+          resourceEntered() { (transactionAdapter as any)[Symbol.for("sporades.database.resourceOuterTransaction")] = true; },
           async authorize(_context: LooseRecord, db: LooseRecord, identity: LooseRecord) {
             const anchor = await db[identity.table].where("id", identity.id).get();
             if (!anchor) throw commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");

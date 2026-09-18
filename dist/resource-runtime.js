@@ -139,6 +139,7 @@ export function bindOuterResources(database, context, hooks) {
         used = true;
         scopeActive = true;
         admission = true;
+        hooks.resourceEntered?.();
         // Mark only this opt-in outer transaction for resource-aware COMMIT outcome
         // handling. Ordinary mutations retain their historical transaction semantics.
         (database[Symbol.for("sporades.database.outerTransactionAdapter")] ?? database.adapter)[Symbol.for("sporades.database.resourceOuterTransaction")] = true;

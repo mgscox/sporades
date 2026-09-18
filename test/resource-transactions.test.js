@@ -473,17 +473,29 @@ test('an outer unknown commit outcome reconciles by receipt without replaying it
       globalThis.__outerResourceCallbacks++; await scope.db.writes.insert({ value: 'outer-once-endpoint' }); return { once: true };
     })) },
   });
-  const request = { method: 'POST', headers: {}, async *[Symbol.asyncIterator]() {} };
+  const endpointAuth = { userId: 'outer-endpoint-actor', displayName: 'Endpoint actor', email: 'endpoint@example.com', picture: null, isAuthenticated: true, isGuest: false, provider: 'email' };
+  const endpointSessionToken = 'outer-endpoint-session';
+  await f.database.adapter.insertAuthUser({ id: endpointAuth.userId, createdAt: f.clock.now().toISOString(), displayName: endpointAuth.displayName, email: endpointAuth.email, picture: null, isAuthenticated: 1, isGuest: 0, provider: endpointAuth.provider });
+  await f.database.adapter.insertAuthSession({ token: endpointSessionToken, userId: endpointAuth.userId, provider: endpointAuth.provider, createdAt: f.clock.now().toISOString(), expiresAt: '2099-01-01T00:00:00.000Z' });
+  const request = { method: 'POST', headers: { 'x-sporades-session-token': endpointSessionToken }, async *[Symbol.asyncIterator]() {} };
   try {
-    for (const mode of ['mutation', 'endpoint']) {
+    for (const mode of ['endpoint', 'mutation']) {
       const transactionOperations = Symbol.for('sporades.database.transactionOperations');
       const originalOperations = f.database.adapter[transactionOperations];
       const uncertainAdapter = Object.create(f.database.adapter);
       Object.defineProperty(uncertainAdapter, transactionOperations, { value: () => {
         const operations = originalOperations();
-        return { ...operations, exec(sql) {
+        let resourceReceiptInserted = false;
+        return { ...operations, prepare(sql) {
+          const statement = operations.prepare(sql);
+          return Object.assign(Object.create(statement), { run(...args) {
+            const value = statement.run(...args);
+            if (sql.includes('INSERT INTO sporades_resource_receipts')) resourceReceiptInserted = true;
+            return value;
+          } });
+        }, exec(sql) {
           const value = operations.exec(sql);
-          if (sql === 'COMMIT') throw Object.assign(new Error('lost COMMIT reply'), { code: 'ECONNRESET' });
+          if (sql === 'COMMIT' && resourceReceiptInserted) throw Object.assign(new Error('lost COMMIT reply'), { code: 'ECONNRESET' });
           return value;
         } };
       } });
@@ -492,7 +504,7 @@ test('an outer unknown commit outcome reconciles by receipt without replaying it
         ? await runMutation(uncertainDatabase, actor, 'unknownOuterCommit', [])
         : await runEndpoint(uncertainDatabase, f.database.endpoints.find(item => item.name === 'unknownOuterCommit'), new URL('http://capsule.test/outer-unknown'), request).then(() => null, error => error);
       const code = mode === 'mutation' ? first.error?.code : first.code;
-      assert.equal(code, 'RESOURCE_COMMIT_UNKNOWN', JSON.stringify(first));
+      assert.equal(code, 'RESOURCE_COMMIT_UNKNOWN', `${mode}: ${JSON.stringify(first)}`);
       const replay = mode === 'mutation'
         ? await runMutation(f.database, actor, 'unknownOuterCommit', [])
         : await runEndpoint(f.database, f.database.endpoints.find(item => item.name === 'unknownOuterCommit'), new URL('http://capsule.test/outer-unknown'), request);

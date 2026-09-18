@@ -1728,7 +1728,7 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
     // Never return that connection to ordinary root work: replace it only after
     // its transaction-scoped adapter has been revoked and the native handle is
     // closed. Existing closures still point at the revoked scoped adapter.
-    try { connection.close(); } catch { }
+    connection.close();
     connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
   };
 
@@ -1819,9 +1819,7 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
           try {
             result = await fn(transactionAdapter);
             await runTransactionBeforeCommitChecks(transactionAdapter);
-            resourceCommitIssued = Boolean((transactionAdapter as any)[Symbol.for("sporades.database.resourceOuterTransaction")])
-              || Array.isArray((transactionAdapter as any)[transactionBeforeCommitChecks])
-                && (transactionAdapter as any)[transactionBeforeCommitChecks].length > 0;
+            resourceCommitIssued = Boolean((transactionAdapter as any)[Symbol.for("sporades.database.resourceOuterTransaction")]);
           }
           finally { revokeTransactionScopedAdapter(transactionAdapter); }
           await transactionExec("COMMIT");

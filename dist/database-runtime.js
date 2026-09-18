@@ -1326,10 +1326,7 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         // Never return that connection to ordinary root work: replace it only after
         // its transaction-scoped adapter has been revoked and the native handle is
         // closed. Existing closures still point at the revoked scoped adapter.
-        try {
-            connection.close();
-        }
-        catch { }
+        connection.close();
         connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
     };
     const createOperations = (run) => ({
@@ -1436,9 +1433,7 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
                     try {
                         result = await fn(transactionAdapter);
                         await runTransactionBeforeCommitChecks(transactionAdapter);
-                        resourceCommitIssued = Boolean(transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")])
-                            || Array.isArray(transactionAdapter[transactionBeforeCommitChecks])
-                                && transactionAdapter[transactionBeforeCommitChecks].length > 0;
+                        resourceCommitIssued = Boolean(transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")]);
                     }
                     finally {
                         revokeTransactionScopedAdapter(transactionAdapter);

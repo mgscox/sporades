@@ -3511,6 +3511,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                         });
                         revokeOuterResources = bindOuterResources(transactionDatabase, context, {
                             startedAt: outerStartedAt,
+                            resourceEntered() { transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")] = true; },
                             async authorize(_context, db, identity) {
                                 const anchor = await db[identity.table].where("id", identity.id).get();
                                 if (!anchor)
@@ -6273,6 +6274,7 @@ export async function runMutation(database, auth, mutationName, args, options = 
                     });
                     revokeOuterResources = bindOuterResources(transactionDatabase, context, {
                         startedAt: outerStartedAt,
+                        resourceEntered() { transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")] = true; },
                         async authorize(_context, db, identity) {
                             const anchor = await db[identity.table].where("id", identity.id).get();
                             if (!anchor)
