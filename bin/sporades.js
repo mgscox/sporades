@@ -94180,7 +94180,7 @@ function bindOuterResources(database, context, hooks) {
   const execute = async (options, callback, status) => {
     if (!invocationActive) throw resourceError("RESOURCE_SCOPE_INACTIVE");
     if (used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-    if (database.adapter.engine !== "sqlite" || database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true) throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+    if (!["sqlite", "postgres"].includes(database.adapter.engine) || database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true) throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
     const identity = optionsSnapshot(options, status);
     if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
     if (!database.schema.tables.some((table) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
@@ -94365,7 +94365,7 @@ function bindJobResources(database, context, claim, hooks) {
   }
   const execute = async (options, callback, status) => {
     if (!invocationActive || used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-    if (database.adapter.engine !== "sqlite" || typeof database.adapter.withResourceTransaction !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+    if (!["sqlite", "postgres"].includes(database.adapter.engine) || typeof database.adapter.withResourceTransaction !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
     const identity = optionsSnapshot(options, status);
     if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
     if (!database.schema.tables.some((table) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
@@ -94405,7 +94405,7 @@ function bindJobResources(database, context, claim, hooks) {
     const watchdog = database.clock.setTimer(() => revoke(resourceError("RESOURCE_DEADLINE_EXCEEDED")), Math.max(0, deadline - database.clock.now().getTime()));
     const checkClaim = async (adapter, entry = false) => {
       assertLive(entry);
-      const row = await adapter.prepare("SELECT status, claimToken, leaseExpiresAt, cancelRequestedAt FROM sporades_jobs WHERE id=?").get(claim.id);
+      const row = await adapter.prepare(`SELECT status, claimToken, leaseExpiresAt, cancelRequestedAt FROM sporades_jobs WHERE id=?${database.adapter.engine === "postgres" ? " FOR UPDATE" : ""}`).get(claim.id);
       if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
       if (row.cancelRequestedAt) throw resourceAbortError();
       assertLive(entry);
@@ -94487,13 +94487,19 @@ function bindJobResources(database, context, claim, hooks) {
         await checkClaim(guarded);
         active = false;
         return JSON.parse(resultJson);
-      }, (adapter) => {
+      }, database.adapter.engine === "postgres" ? async (adapter) => {
+        if (context.signal?.aborted || database.__jobStopped) throw resourceAbortError();
+        if (database.clock.now().getTime() >= deadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+        const row = await adapter.prepare("SELECT status, claimToken, leaseExpiresAt, cancelRequestedAt FROM sporades_jobs WHERE id=? FOR UPDATE").get(claim.id);
+        if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
+        if (row.cancelRequestedAt) throw resourceAbortError();
+      } : (adapter) => {
         if (context.signal?.aborted || database.__jobStopped) throw resourceAbortError();
         if (database.clock.now().getTime() >= deadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
         const row = adapter.prepare("SELECT status, claimToken, leaseExpiresAt, cancelRequestedAt FROM sporades_jobs WHERE id=?").get(claim.id);
         if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
         if (row.cancelRequestedAt) throw resourceAbortError();
-      });
+      }, { table: identity.table, id: identity.id });
       engineCommitted = true;
       active = false;
       await hooks.committed(scopeContext, logs);
@@ -98699,8 +98705,69 @@ async function createPostgresDatabaseAdapter(options) {
     ...createSharedDatabaseAdapterMethods(dialect),
     ...createOperations(connectionGate.runOperation),
     engine: "postgres",
+    [Symbol.for("sporades.database.resourceTransactionEligible")]: true,
     dialect,
     normalization,
+    // A resource scope owns an independent READ COMMITTED backend.  Closing it
+    // on every exit also quarantines a connection whose COMMIT acknowledgement
+    // was lost; ordinary work can never reuse that backend.
+    async withResourceTransaction(fn, beforeCommit, resource) {
+      if (!resource || typeof resource.table !== "string" || typeof resource.id !== "string") throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_STORAGE_ERROR" });
+      let dedicated;
+      let begun = false;
+      let commitIssued = false;
+      try {
+        dedicated = await createPostgresConnection(url);
+        const query = async (statement, params = []) => await dedicated.query(postgresInterpolate(statement, params));
+        const operations = {
+          exec: async (statement) => {
+            await query(statement);
+          },
+          prepare: (statement) => ({
+            all: async (...params) => postgresRowsFromResult(normalization, await query(statement, params)),
+            get: async (...params) => postgresRowsFromResult(normalization, await query(statement, params))[0] ?? null,
+            run: async (...params) => {
+              const result = await query(statement, params);
+              return { changes: Number(result.rowCount ?? 0), lastInsertRowid: void 0 };
+            },
+            columns: async () => (await query(`SELECT * FROM (${sqlWithoutTrailingTerminator(statement)}) AS __sporades_columns LIMIT 0`)).fields.map((field) => ({ name: normalization.columnName(field.name) }))
+          })
+        };
+        await query("BEGIN ISOLATION LEVEL READ COMMITTED");
+        begun = true;
+        await query("SET LOCAL lock_timeout = '100ms'");
+        await query("CREATE TABLE IF NOT EXISTS sporades_resource_locks (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId))");
+        await query("INSERT INTO sporades_resource_locks (resourceTable, resourceId) VALUES (?, ?) ON CONFLICT (resourceTable, resourceId) DO NOTHING", [resource.table, resource.id]);
+        await query("SELECT resourceTable FROM sporades_resource_locks WHERE resourceTable=? AND resourceId=? FOR UPDATE NOWAIT", [resource.table, resource.id]);
+        const transaction = createTransactionScopedAdapter(adapter, operations, adapter, "transaction");
+        try {
+          const result = await fn(transaction);
+          await beforeCommit?.(transaction);
+          revokeTransactionScopedAdapter(transaction);
+          commitIssued = true;
+          await query("COMMIT");
+          begun = false;
+          return result;
+        } catch (error) {
+          revokeTransactionScopedAdapter(transaction);
+          if (begun && !commitIssued) {
+            try {
+              await query("ROLLBACK");
+            } catch {
+            }
+          }
+          if (commitIssued) throw Object.assign(new Error("Resource commit outcome is unknown."), { code: "RESOURCE_COMMIT_UNKNOWN" });
+          if (error?.code === "55P03" || error?.code === "57014") throw Object.assign(new Error("Resource is busy."), { code: "RESOURCE_BUSY", retryable: true });
+          throw error;
+        }
+      } catch (error) {
+        if (error?.code === "55P03" || error?.code === "57014") throw Object.assign(new Error("Resource is busy."), { code: "RESOURCE_BUSY", retryable: true });
+        throw error;
+      } finally {
+        if (dedicated) await dedicated.close().catch(() => {
+        });
+      }
+    },
     // Postgres has no way to ask a statement for its result shape without running something,
     // so the statement is wrapped and bounded to no rows. Wrapping is not syntax-transparent,
     // and that is a trap rather than a detail: a trailing `;` becomes a syntax error inside

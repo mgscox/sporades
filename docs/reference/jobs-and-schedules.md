@@ -439,9 +439,9 @@ renderer, filters, pagination, or offline inspection.
 
 <a id="sqlite-resource-transactions-ticket-02"></a>
 
-## SQLite resource transactions (ticket 03)
+## SQLite and PostgreSQL resource transactions (tickets 03–04)
 
-An ordinary SQLite Job can call the server-only `ctx.resources.run` once, as
+An ordinary SQLite or PostgreSQL Job can call the server-only `ctx.resources.run` once, as
 its first application database or framework provider operation. It uses a
 pre-existing app row as the authorization anchor:
 

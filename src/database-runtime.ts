@@ -1959,8 +1959,52 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     ...createSharedDatabaseAdapterMethods(dialect),
     ...createOperations(connectionGate.runOperation),
     engine: "postgres",
+    [Symbol.for("sporades.database.resourceTransactionEligible")]: true,
     dialect,
     normalization,
+    // A resource scope owns an independent READ COMMITTED backend.  Closing it
+    // on every exit also quarantines a connection whose COMMIT acknowledgement
+    // was lost; ordinary work can never reuse that backend.
+    async withResourceTransaction(fn: (transactionAdapter: LooseRecord) => any, beforeCommit?: (adapter: LooseRecord) => any, resource?: { table: string; id: string }) {
+      if (!resource || typeof resource.table !== "string" || typeof resource.id !== "string") throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_STORAGE_ERROR" });
+      let dedicated: any; let begun = false; let commitIssued = false;
+      try {
+        dedicated = await createPostgresConnection(url);
+        const query = async (statement: string, params: any[] = []) => await dedicated.query(postgresInterpolate(statement, params));
+        const operations = {
+          exec: async (statement: string) => { await query(statement); },
+          prepare: (statement: string) => ({
+            all: async (...params: any[]) => postgresRowsFromResult(normalization, await query(statement, params)),
+            get: async (...params: any[]) => (postgresRowsFromResult(normalization, await query(statement, params))[0] ?? null),
+            run: async (...params: any[]) => { const result = await query(statement, params); return { changes: Number(result.rowCount ?? 0), lastInsertRowid: undefined as any }; },
+            columns: async () => (await query(`SELECT * FROM (${sqlWithoutTrailingTerminator(statement)}) AS __sporades_columns LIMIT 0`)).fields.map((field: any) => ({ name: normalization.columnName(field.name) })),
+          }),
+        };
+        await query("BEGIN ISOLATION LEVEL READ COMMITTED"); begun = true;
+        await query("SET LOCAL lock_timeout = '100ms'");
+        await query("CREATE TABLE IF NOT EXISTS sporades_resource_locks (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId))");
+        await query("INSERT INTO sporades_resource_locks (resourceTable, resourceId) VALUES (?, ?) ON CONFLICT (resourceTable, resourceId) DO NOTHING", [resource.table, resource.id]);
+        await query("SELECT resourceTable FROM sporades_resource_locks WHERE resourceTable=? AND resourceId=? FOR UPDATE NOWAIT", [resource.table, resource.id]);
+        const transaction = createTransactionScopedAdapter(adapter, operations, adapter, "transaction");
+        try {
+          const result = await fn(transaction);
+          await beforeCommit?.(transaction);
+          revokeTransactionScopedAdapter(transaction);
+          commitIssued = true;
+          await query("COMMIT"); begun = false;
+          return result;
+        } catch (error: any) {
+          revokeTransactionScopedAdapter(transaction);
+          if (begun && !commitIssued) { try { await query("ROLLBACK"); } catch {} }
+          if (commitIssued) throw Object.assign(new Error("Resource commit outcome is unknown."), { code: "RESOURCE_COMMIT_UNKNOWN" });
+          if (error?.code === "55P03" || error?.code === "57014") throw Object.assign(new Error("Resource is busy."), { code: "RESOURCE_BUSY", retryable: true });
+          throw error;
+        }
+      } catch (error: any) {
+        if (error?.code === "55P03" || error?.code === "57014") throw Object.assign(new Error("Resource is busy."), { code: "RESOURCE_BUSY", retryable: true });
+        throw error;
+      } finally { if (dedicated) await dedicated.close().catch(() => {}); }
+    },
     // Postgres has no way to ask a statement for its result shape without running something,
         // so the statement is wrapped and bounded to no rows. Wrapping is not syntax-transparent,
         // and that is a trap rather than a detail: a trailing `;` becomes a syntax error inside

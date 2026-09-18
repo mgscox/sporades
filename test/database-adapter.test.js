@@ -77,6 +77,34 @@ async function captureErrorCode(fn) {
   }
 }
 
+test("Postgres resource transactions use a dedicated NOWAIT lock and release it after rollback", { skip: POSTGRES_SKIP_REASON }, async () => {
+  await withPostgresAdapter(async (adapter, controls) => {
+    assert.equal(typeof adapter.withResourceTransaction, "function");
+    let release;
+    let markEntered;
+    const entered = new Promise((resolve) => { markEntered = resolve; });
+    const held = new Promise((resolve) => { release = resolve; });
+    const first = adapter.withResourceTransaction(async () => {
+      markEntered();
+      await held;
+      throw new Error("rollback fixture");
+    }, undefined, { table: "grants", id: "grant-1" });
+    await Promise.race([entered, new Promise((_, reject) => setTimeout(() => reject(new Error("first resource owner did not acquire")), 2_000))]);
+    const competing = await controls.connect();
+    try {
+      await assert.rejects(
+        competing.withResourceTransaction(() => assert.fail("NOWAIT loser entered"), undefined, { table: "grants", id: "grant-1" }),
+        { code: "RESOURCE_BUSY" },
+      );
+    } finally {
+      await competing.close();
+    }
+    release();
+    await assert.rejects(first, /rollback fixture/);
+    await adapter.withResourceTransaction(async () => null, undefined, { table: "grants", id: "grant-1" });
+  }, { appTableNames: [] });
+});
+
 test("endpoint source extraction excludes a trailing handler argument comma", () => {
   const [endpoint] = extractEndpoints(`
     export default capsule({

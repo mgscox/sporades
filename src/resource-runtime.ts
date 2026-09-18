@@ -136,7 +136,7 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
   const execute = async (options: any, callback: any, status: boolean) => {
     if (!invocationActive) throw resourceError("RESOURCE_SCOPE_INACTIVE");
     if (used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-    if (database.adapter.engine !== "sqlite" || database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true) throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+    if (!(["sqlite", "postgres"].includes(database.adapter.engine)) || database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true) throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
     const identity = optionsSnapshot(options, status);
     if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
     if (!database.schema.tables.some((table: any) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
@@ -316,7 +316,7 @@ export function bindJobResources(database: RecordValue, context: RecordValue, cl
 
   const execute = async (options: any, callback: any, status: boolean) => {
     if (!invocationActive || used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-    if (database.adapter.engine !== "sqlite" || typeof database.adapter.withResourceTransaction !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+    if (!(["sqlite", "postgres"].includes(database.adapter.engine)) || typeof database.adapter.withResourceTransaction !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
     const identity = optionsSnapshot(options, status);
     if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
     if (!database.schema.tables.some((table: any) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
@@ -351,7 +351,7 @@ export function bindJobResources(database: RecordValue, context: RecordValue, cl
     const watchdog = database.clock.setTimer(() => revoke(resourceError("RESOURCE_DEADLINE_EXCEEDED")), Math.max(0, deadline - database.clock.now().getTime()));
     const checkClaim = async (adapter: RecordValue, entry = false) => {
       assertLive(entry);
-      const row = await adapter.prepare("SELECT status, claimToken, leaseExpiresAt, cancelRequestedAt FROM sporades_jobs WHERE id=?").get(claim.id);
+      const row = await adapter.prepare(`SELECT status, claimToken, leaseExpiresAt, cancelRequestedAt FROM sporades_jobs WHERE id=?${database.adapter.engine === "postgres" ? " FOR UPDATE" : ""}`).get(claim.id);
       if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
       if (row.cancelRequestedAt) throw resourceAbortError();
       assertLive(entry);
@@ -417,7 +417,13 @@ export function bindJobResources(database: RecordValue, context: RecordValue, cl
         await checkClaim(guarded);
         active = false;
         return JSON.parse(resultJson);
-      }, (adapter: RecordValue) => {
+      }, database.adapter.engine === "postgres" ? async (adapter: RecordValue) => {
+        if (context.signal?.aborted || database.__jobStopped) throw resourceAbortError();
+        if (database.clock.now().getTime() >= deadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+        const row = await adapter.prepare("SELECT status, claimToken, leaseExpiresAt, cancelRequestedAt FROM sporades_jobs WHERE id=? FOR UPDATE").get(claim.id);
+        if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
+        if (row.cancelRequestedAt) throw resourceAbortError();
+      } : (adapter: RecordValue) => {
         // SQLite statements and COMMIT are synchronous on this connection: this
         // final check and the commit decision have no JavaScript await gap.
         if (context.signal?.aborted || database.__jobStopped) throw resourceAbortError();
@@ -425,7 +431,7 @@ export function bindJobResources(database: RecordValue, context: RecordValue, cl
         const row = adapter.prepare("SELECT status, claimToken, leaseExpiresAt, cancelRequestedAt FROM sporades_jobs WHERE id=?").get(claim.id);
         if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
         if (row.cancelRequestedAt) throw resourceAbortError();
-      });
+      }, { table: identity.table, id: identity.id });
       engineCommitted = true;
       active = false;
       await hooks.committed(scopeContext, logs);

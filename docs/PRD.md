@@ -1368,6 +1368,6 @@ before it happens; an interrupted attempt blocks further lifecycle commands unti
 `sporades deploy reconcile` or `sporades host reconcile` settles it, rolling back
 only unchanged seeds and always retaining edits.
 
-### SQLite resource transactions
+### SQLite and PostgreSQL resource transactions
 
 Ordinary Jobs, Custom mutations, and Custom endpoints may opt into one first-operation resource scope with current anchor authorization and durable actor/input-bound replay receipts. Jobs use a dedicated SQLite writer transaction with exact Job-claim ownership. Mutations and endpoints join their existing outer transaction, retain the resource lock through outer commit or rollback, and expose a provisional result while it remains unsettled. Non-Job scopes use a 30-second outer-transaction budget with a one-second admission reserve. Scope handles expire, unsupported effects fail closed, and an uncertain commit is reconciled only after reacquiring engine authority. Notification intents remain downstream work; PostgreSQL/libSQL conformance is not established by this slice. [Contract and bounds](reference/jobs-and-schedules.md#sqlite-resource-transactions-ticket-03).
