@@ -6,6 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { createControllableRuntimeClock, createWebSocketHub, openDevDatabase } from "../dist/server-runtime-source.js";
+import { routeConnectionToken } from "../dist/http-runtime.js";
 import { createClientRuntimeSource } from "../dist/templates/client-runtime-template.js";
 
 test("Journey state expires and can be renewed under the enabled session using runtime time", async () => {
@@ -119,7 +120,7 @@ test("server runtime restart clears buffered state and requires a fresh session"
 
 test("browser SDK automatic reconnect preserves consent but publishes under a new server session", async () => {
   const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
-  await withJourneyRuntime(clock, async ({ browserUrl, connectionToken, journeyDiagnostics }) => {
+  await withJourneyRuntime(clock, async ({ browserUrl, connectionToken, journeyDiagnostics, connectionTokenChecks }) => {
     const NativeWebSocket = globalThis.WebSocket; const sockets = [];
     class TrackingWebSocket extends NativeWebSocket { constructor(url, protocols) { super(url, protocols); sockets.push(this); } }
     const storage = new Map();
@@ -133,11 +134,14 @@ test("browser SDK automatic reconnect preserves consent but publishes under a ne
       await runtime.journey.enable({ capture: { navigation: false, focus: false, interactions: false } });
       const first = await runtime.journey.set({ status: "first", ttlSeconds: 300 });
       sockets[0].close(); await new Promise((resolve) => setTimeout(resolve, 600)); await eventually(() => sockets.length === 2 && sockets[1].readyState === NativeWebSocket.OPEN);
+      assert.equal(connectionTokenChecks(), 1, "reconnect checks the token through the real HTTP route");
+      assert.equal(window.__SPORADES_CONNECTION_TOKEN, connectionToken, "a live token is retained");
       const fresh = await runtime.journey.set({ status: "fresh", ttlSeconds: 300 });
       assert.notEqual(fresh.data.journey.sessionId, first.data.journey.sessionId);
       await new Promise((resolve) => setTimeout(resolve, 50));
       assert.equal((await runtime.journey.set({ status: "still-enabled" })).error, null, "same-runtime reconnect must not asynchronously disable restored consent");
       sockets[1].close(); await new Promise((resolve) => setTimeout(resolve, 600)); await eventually(() => sockets.length === 3 && sockets[2].readyState === NativeWebSocket.OPEN);
+      assert.equal(connectionTokenChecks(), 2, "each reconnect checks its current token");
       assert.equal((await runtime.journey.set({ status: "second-reconnect" })).error, null, "narrowed consent survives a second reconnect");
       assert.equal(journeyDiagnostics().disableRequests, 0, "same-runtime reconnect never sends journey.disable");
       assert.equal(typeof window[Symbol.for("sporades.journey.capture.teardown")], "function");
@@ -147,6 +151,7 @@ test("browser SDK automatic reconnect preserves consent but publishes under a ne
       assert.equal(window[Symbol.for("sporades.journey.capture.teardown")], undefined, "page retirement clears local ownership");
       await new Promise((resolve) => setTimeout(resolve, 600));
       assert.equal(sockets.length, 3, "page retirement does not reconnect");
+      assert.equal(connectionTokenChecks(), 2, "page retirement does not check a connection token");
     } finally { globalThis.WebSocket = NativeWebSocket; delete globalThis.window; delete globalThis.localStorage; }
   });
 });
@@ -211,12 +216,20 @@ async function withJourneyRuntime(clock, fn, config = {}) {
     name: "journey-expiry", schema: {}, queries: {}, mutations: {}, endpoints: {}, messages: {}, journey: { enabled: true, ttlSeconds: 30 },
   }, { clock });
   let hub = createWebSocketHub(() => database);
-  const server = createServer();
+  let tokenChecks = 0;
+  const server = createServer((request, response) => {
+    // Mirror the HTTP route the browser now uses before every automatic reconnect.
+    if (routeConnectionToken(request, response, (currentToken) => {
+      tokenChecks += 1;
+      return hub.createConnectionToken(currentToken);
+    })) return;
+    response.writeHead(404).end();
+  });
   server.on("upgrade", (request, socket) => hub.accept(request, socket));
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();
   try {
-    await fn({ database, browserUrl: `http://127.0.0.1:${port}/`, connectionToken: hub.createConnectionToken(), journeyDiagnostics: () => hub.journeyDiagnostics(), restartHub: () => { hub.disconnectAll(); hub = createWebSocketHub(() => database); }, open: () => new Promise((resolve, reject) => {
+    await fn({ database, connectionTokenChecks: () => tokenChecks, browserUrl: `http://127.0.0.1:${port}/`, connectionToken: hub.createConnectionToken(), journeyDiagnostics: () => hub.journeyDiagnostics(), restartHub: () => { hub.disconnectAll(); hub = createWebSocketHub(() => database); }, open: () => new Promise((resolve, reject) => {
       const ws = new WebSocket(`ws://127.0.0.1:${port}/?connectionToken=${hub.createConnectionToken()}`);
       ws.addEventListener("open", () => resolve(ws), { once: true });
       ws.addEventListener("error", reject, { once: true });
