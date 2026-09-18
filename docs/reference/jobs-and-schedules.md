@@ -437,7 +437,9 @@ correlation. They omit payloads and secrets, do not evaluate or advance a
 Schedule, and return `schedules: []` when no schedules exist. V1 has no human
 renderer, filters, pagination, or offline inspection.
 
-## SQLite resource transactions (ticket 02)
+<a id="sqlite-resource-transactions-ticket-02"></a>
+
+## SQLite resource transactions (ticket 03)
 
 An ordinary SQLite Job can call the server-only `ctx.resources.run` once, as
 its first application database or framework provider operation. It uses a
@@ -539,8 +541,13 @@ Other fixed resource errors are `RESOURCE_INVALID_INPUT`,
 existing Job cancellation outcome; authorization keeps opaque ACL errors.
 
 This slice supports ordinary Jobs, including the existing audited Privileged
-Job path, on file-backed SQLite only. Mutation/Custom endpoint transaction joining
-belongs to ticket 03 and currently fails closed. PostgreSQL and libSQL fail
+Job path, plus Custom mutations and Custom endpoints on file-backed SQLite.
+Mutations/endpoints may call once as their first application database operation;
+they join the enclosing transaction, hold its SQLite writer authority after the
+scope callback returns, and return provisional data which becomes visible only
+when the outer transaction commits. An outer rollback removes the receipt and
+protected writes. Their outer transaction receives the same 30-second budget and
+one-second admission reserve as an ordinary Job claim. PostgreSQL and libSQL fail
 closed before callback execution; their tickets are 04 and 05. The
 `notifications.accept({id, to, subject, text, html?})` signature is reserved and
 always rejects `RESOURCE_EFFECT_UNSUPPORTED` until ticket 06; this slice stages

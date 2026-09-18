@@ -3,8 +3,8 @@ import { test } from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { openDevDatabase, runMutation, runCurrentUserJobWorker, createControllableRuntimeClock } from '../dist/server-runtime-source.js';
-import { table, String as Text, job, mutation, schedule } from '../dist/server.js';
+import { openDevDatabase, runMutation, runEndpoint, runCurrentUserJobWorker, createControllableRuntimeClock } from '../dist/server-runtime-source.js';
+import { table, String as Text, endpoint, job, mutation, schedule } from '../dist/server.js';
 import { createSqliteDatabaseAdapter } from '../dist/database-runtime.js';
 import { resourceCanonicalJson, bindJobResources } from '../dist/resource-runtime.js';
 
@@ -85,6 +85,44 @@ test('a Custom mutation outer rollback removes its resource receipt and staged w
     assert.equal(result.ok, false);
     assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='mutation-rolled-back'").get().n, 0);
     assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sqlite_schema WHERE name='sporades_resource_receipts'").get().n, 0);
+  } finally { await f.close(); }
+});
+
+test('a mutation resource scope invalidates parent and escaped database handles after its callback', async () => {
+  let escaped;
+  const f = await fixture(() => null, {
+    mutations: {
+      resourceLifetime: mutation(async ctx => {
+        await ctx.resources.run(options(), async scope => {
+          escaped = scope.db.writes;
+          await scope.db.writes.insert({ value: 'lifetime-committed' });
+          return null;
+        });
+        assert.throws(() => ctx.db.writes.all(), { code: 'RESOURCE_SCOPE_INACTIVE' });
+        assert.throws(() => escaped.all(), { code: 'RESOURCE_SCOPE_INACTIVE' });
+        return { done: true };
+      }),
+    },
+  });
+  try {
+    const result = await runMutation(f.database, actor, 'resourceLifetime', []);
+    assert.equal(result.ok, true, JSON.stringify(result));
+  } finally { await f.close(); }
+});
+
+test('a Custom endpoint joins its outer transaction for a first resource scope', async () => {
+  const f = await fixture(() => null, {
+    endpoints: {
+      resourceWrite: endpoint({ method: 'POST', path: '/resource-write' }, async ctx => ctx.resources.run(options(), async scope => {
+        await scope.db.writes.insert({ value: 'endpoint-committed' });
+        return { committed: true };
+      })),
+    },
+  });
+  try {
+    const result = await runEndpoint(f.database, f.database.endpoints[0], new URL('http://capsule.test/resource-write'), { method: 'POST', headers: {}, async *[Symbol.asyncIterator]() {} });
+    assert.deepEqual(result, { committed: true });
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='endpoint-committed'").get().n, 1);
   } finally { await f.close(); }
 });
 
