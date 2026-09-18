@@ -656,9 +656,13 @@ test('the outer watchdog aborts the real pending-log cleanup phase after a compl
   const drainStarted = new Promise(resolve => { draining = resolve; });
   const cleanupPending = new Promise(() => {});
   const f = await fixture(() => null, { mutations: { cleanupDeadline: mutation(async ctx => {
-    await ctx.resources.run({ ...options(), operationId: 'cleanup-deadline' }, () => true);
-    ctx.log.info('post-scope outcome');
-    entered();
+    await ctx.resources.run({ ...options(), operationId: 'cleanup-deadline' }, scope => {
+      // This is the runtime-owned staged diagnostic. Parent ctx.log is
+      // intentionally unavailable after resource entry, so the watchdog must
+      // prove real transactional log cleanup rather than an escaped parent log.
+      scope.log.info('resource diagnostic');
+      return true;
+    });
     return { returned: true };
   }) } });
   const withTransaction = f.database.adapter.withTransaction.bind(f.database.adapter);
@@ -669,7 +673,10 @@ test('the outer watchdog aborts the real pending-log cleanup phase after a compl
       const splice = pending.splice.bind(pending);
       pending.splice = (...args) => { draining(); return splice(...args); };
       entered();
-      return cleanupPending;
+      // Match the runtime sink's asynchronous index work: staging itself is
+      // complete, while cleanup owns the retained promise in this transaction.
+      pending.push(cleanupPending);
+      return undefined;
     };
     return await callback(adapter);
   });
