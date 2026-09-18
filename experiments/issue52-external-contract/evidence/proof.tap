@@ -1,0 +1,106 @@
+TAP version 13
+# Subtest: sqlite: independent transaction winner/loser and no partial state
+ok 1 - sqlite: independent transaction winner/loser and no partial state
+  ---
+  duration_ms: 198.578875
+  type: 'test'
+  ...
+# Subtest: sqlite: process death releases transaction; new process recovers
+ok 2 - sqlite: process death releases transaction; new process recovers
+  ---
+  duration_ms: 295.075167
+  type: 'test'
+  ...
+# Subtest: sqlite: live SIGSTOP owner outlives lease; conditional DB write fenced, SMTP not fenced
+ok 3 - sqlite: live SIGSTOP owner outlives lease; conditional DB write fenced, SMTP not fenced
+  ---
+  duration_ms: 191.151791
+  type: 'test'
+  ...
+# Subtest: sqlite: restart retains durable lease until expiry
+ok 4 - sqlite: restart retains durable lease until expiry
+  ---
+  duration_ms: 287.275875
+  type: 'test'
+  ...
+# Subtest: sqlite: held transaction cannot honor a new 30-second lease takeover
+ok 5 - sqlite: held transaction cannot honor a new 30-second lease takeover
+  ---
+  duration_ms: 195.21475
+  type: 'test'
+  ...
+# Subtest: sqlite: accepted message survives rollback and lost acknowledgement repeats acceptance
+ok 6 - sqlite: accepted message survives rollback and lost acknowledgement repeats acceptance
+  ---
+  duration_ms: 191.706125
+  type: 'test'
+  ...
+# Subtest: sqlite: no acceptance produces the same unknown sender outcome
+ok 7 - sqlite: no acceptance produces the same unknown sender outcome
+  ---
+  duration_ms: 190.126333
+  type: 'test'
+  ...
+# Subtest: postgres: independent transaction winner/loser and no partial state
+ok 8 - postgres: independent transaction winner/loser and no partial state
+  ---
+  duration_ms: 240.727375
+  type: 'test'
+  ...
+# Subtest: postgres: process death releases transaction; new process recovers
+ok 9 - postgres: process death releases transaction; new process recovers
+  ---
+  duration_ms: 319.272458
+  type: 'test'
+  ...
+# Subtest: postgres: live SIGSTOP owner outlives lease; conditional DB write fenced, SMTP not fenced
+ok 10 - postgres: live SIGSTOP owner outlives lease; conditional DB write fenced, SMTP not fenced
+  ---
+  duration_ms: 232.403916
+  type: 'test'
+  ...
+# Subtest: postgres: restart retains durable lease until expiry
+ok 11 - postgres: restart retains durable lease until expiry
+  ---
+  duration_ms: 317.884458
+  type: 'test'
+  ...
+# Subtest: postgres: held transaction cannot honor a new 30-second lease takeover
+ok 12 - postgres: held transaction cannot honor a new 30-second lease takeover
+  ---
+  duration_ms: 216.727792
+  type: 'test'
+  ...
+# Subtest: postgres: accepted message survives rollback and lost acknowledgement repeats acceptance
+ok 13 - postgres: accepted message survives rollback and lost acknowledgement repeats acceptance
+  ---
+  duration_ms: 223.671458
+  type: 'test'
+  ...
+# Subtest: postgres: no acceptance produces the same unknown sender outcome
+ok 14 - postgres: no acceptance produces the same unknown sender outcome
+  ---
+  duration_ms: 243.05075
+  type: 'test'
+  ...
+# Subtest: postgres: live barrier-paused callback sends after database connection loss and B takeover
+ok 15 - postgres: live barrier-paused callback sends after database connection loss and B takeover
+  ---
+  duration_ms: 221.770208
+  type: 'test'
+  ...
+# Subtest: postgres: OS-paused callback sends after database connection loss and B takeover
+ok 16 - postgres: OS-paused callback sends after database connection loss and B takeover
+  ---
+  duration_ms: 227.955708
+  type: 'test'
+  ...
+1..16
+# tests 16
+# suites 0
+# pass 16
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 3962.343416

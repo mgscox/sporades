@@ -1,0 +1,58 @@
+
+> sporades@0.9.25 test:docs
+> node --test --test-concurrency=1 test/docs.test.js test/docs-llms.test.js
+
+✔ LLM documentation publishes the split feature reference as focused sources (0.615ms)
+✔ LLM documentation publishes a curated manifest and release-local Markdown sources (6.505834ms)
+✔ documentation validation stays separate from the full regression suite (3.225417ms)
+✔ Registration Admission docs cover policy choice, atomicity, limits, OAuth custody, and recovery (1.880625ms)
+✔ the feature reference is split by lookup intent behind a compatible index (92.267167ms)
+✔ canonical endpoint docs preserve exact bounded request bytes without exposing mutable runtime storage (1.559ms)
+✔ the idempotent insert example awaits both asynchronous database paths (0.996333ms)
+✔ canonical database docs scope additive unique migration errors and rollback (4.4605ms)
+✔ README documentation links resolve from the npm package page (1.214042ms)
+✔ Built-in Teams is discoverable without overstating its authorization model (3.427083ms)
+✔ headless Team Billing docs preserve the platform-mechanics and app-rendering boundary (4.535084ms)
+✔ canonical docs describe the implemented platform scope (3.272542ms)
+✔ published docs and API reference describe the admitted SolidJS client contract (1.776875ms)
+✔ published docs and API reference describe the admitted Lit controller contract (1.865208ms)
+✔ published docs and API reference describe the admitted Inferno lifecycle contract (1.796542ms)
+✔ canonical docs publish the implemented client capability matrix and ADR succession (1.576917ms)
+✔ docs publish the implemented User journey tracker contract (5.091667ms)
+✔ published docs and API describe production SMTP mail parity (1.525417ms)
+✔ the Mail guide documents provider delivery events without claiming registration tooling (0.678875ms)
+✔ the Mail guide documents secure SMTP2GO provider-event setup and semantics (0.58275ms)
+✔ the Mail guide documents secure Postmark provider-event setup and semantics (0.692ms)
+✔ the Mail guide documents signed Mailgun provider-event setup and semantics (0.739084ms)
+✔ published docs describe the complete Job scheduling contract (5.105084ms)
+✔ Hetzner provisioning script reuses an existing SSH key with the local fingerprint (591.109875ms)
+✔ Host provisioning shared install script enables fail2ban for sshd (0.772417ms)
+✔ Host installation docs keep Fail2ban hardening separate from SSH audit truth (1.071ms)
+✔ SSH daemon session-log scanner spike records the parser and cursor decision (1.687459ms)
+✔ canonical docs describe Host stats without introducing host status (2.459666ms)
+✔ docs describe implemented preferences and Container SSH access (3.994542ms)
+✔ docs describe the implemented Privileged audit event contract (3.562958ms)
+✔ docs describe the implemented Privileged server role and Job Queue contracts (6.293667ms)
+✔ canonical, feature, and reference Job docs describe transaction-bound enqueue lifecycle (3.052959ms)
+✔ canonical Job and architecture docs describe settled runtime shutdown (7.680167ms)
+✔ roadmap records delivered explicit-Team ACL decisions without claiming automatic data partitioning (0.410375ms)
+✔ canonical role docs reserve Team application roles for Team membership (0.688167ms)
+✔ docs describe doctor diagnostics as read-only coordination (3.335417ms)
+✔ user guide documents Capsule service reset without blanket Runtime deletion (0.939292ms)
+✔ canonical docs describe deferred Hosted Capsule service orchestration contract (1.0425ms)
+✔ docs describe MinIO storage services and File reference boundaries (3.375166ms)
+✔ public docs distinguish user-scoped and privileged server File deletion (1.376292ms)
+✔ File reference docs define the trusted multipart ingress contract and operations (1.436666ms)
+✔ docs describe Host-generated Sealed Server env custody and lost-key recovery (1.965125ms)
+✔ Host deploy smoke docs import legacy Server env before pushing (2.961208ms)
+✔ canonical docs publish the bounded Access-key operator surface (2.424708ms)
+✔ canonical docs publish first-class Service Users without weakening application authority (1.25225ms)
+✔ public docs agree on narrow Checkout, Customer Portal, callback admission, and Stripe event policy interfaces (2.85525ms)
+ℹ tests 46
+ℹ suites 0
+ℹ pass 46
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1474.354583
