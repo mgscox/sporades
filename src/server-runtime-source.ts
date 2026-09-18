@@ -3728,7 +3728,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
             }
             if (!runtimeOwnedProviderCallback) {
               if (!accessKeyAdmission) admitCredentialHandler(handler, context, "endpoint");
-              context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
+              context = await revokeOuterResources.race(applyContextMiddleware(transactionDatabase, context, "endpoint")) as LooseRecord;
             }
             const attachmentResponse = createEndpointFileResponseApi(
               endpointIngressApi,
@@ -6584,7 +6584,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
           const consumed = typeof options.sessionToken === "string" && await transactionAdapter.consumeReauthenticationProof({ sessionToken: options.sessionToken, userId: auth.userId, purpose: reauthenticationPurpose, now: database.clock.now().toISOString() });
           if (!consumed) throw commandError("Reauthentication required.", "Verify the current Session for this purpose and retry.", "REAUTHENTICATION_REQUIRED");
         }
-        context = await applyContextMiddleware(transactionDatabase, context, "mutation");
+        context = await revokeOuterResources.race(applyContextMiddleware(transactionDatabase, context, "mutation")) as LooseRecord;
 
         for (const hookSource of database.mutationHooks.beforeMutation) {
           await revokeOuterResources?.race(runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context));

@@ -94149,6 +94149,12 @@ function bindOuterResources(database, context, hooks) {
     admission = true;
     const deadline = hooks.startedAt + 3e4;
     outerDeadline = deadline;
+    const beforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
+    const checks = database.adapter[beforeCommitChecks] ?? (database.adapter[beforeCommitChecks] = []);
+    checks.push(() => {
+      if (terminalError) throw terminalError;
+      if (database.clock.now().getTime() >= deadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+    });
     const controller = new AbortController();
     const revoke = (error) => {
       terminalError ??= error;
@@ -102484,7 +102490,7 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
             }
             if (!runtimeOwnedProviderCallback) {
               if (!accessKeyAdmission) admitCredentialHandler(handler, context, "endpoint");
-              context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
+              context = await revokeOuterResources.race(applyContextMiddleware(transactionDatabase, context, "endpoint"));
             }
             const attachmentResponse = createEndpointFileResponseApi(
               endpointIngressApi,
@@ -105110,7 +105116,7 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
             const consumed = typeof options.sessionToken === "string" && await transactionAdapter.consumeReauthenticationProof({ sessionToken: options.sessionToken, userId: auth.userId, purpose: reauthenticationPurpose, now: database.clock.now().toISOString() });
             if (!consumed) throw commandError2("Reauthentication required.", "Verify the current Session for this purpose and retry.", "REAUTHENTICATION_REQUIRED");
           }
-          context = await applyContextMiddleware(transactionDatabase, context, "mutation");
+          context = await revokeOuterResources.race(applyContextMiddleware(transactionDatabase, context, "mutation"));
           for (const hookSource of database.mutationHooks.beforeMutation) {
             await revokeOuterResources?.race(runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context));
           }

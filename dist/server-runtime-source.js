@@ -3533,7 +3533,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                         if (!runtimeOwnedProviderCallback) {
                             if (!accessKeyAdmission)
                                 admitCredentialHandler(handler, context, "endpoint");
-                            context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
+                            context = await revokeOuterResources.race(applyContextMiddleware(transactionDatabase, context, "endpoint"));
                         }
                         const attachmentResponse = createEndpointFileResponseApi(endpointIngressApi, endpoint.options?.response?.fileAttachment === true);
                         context.files = revokeOuterResources.guardCapability("files", attachmentResponse.files);
@@ -6287,7 +6287,7 @@ export async function runMutation(database, auth, mutationName, args, options = 
                         if (!consumed)
                             throw commandError("Reauthentication required.", "Verify the current Session for this purpose and retry.", "REAUTHENTICATION_REQUIRED");
                     }
-                    context = await applyContextMiddleware(transactionDatabase, context, "mutation");
+                    context = await revokeOuterResources.race(applyContextMiddleware(transactionDatabase, context, "mutation"));
                     for (const hookSource of database.mutationHooks.beforeMutation) {
                         await revokeOuterResources?.race(runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context));
                     }

@@ -384,6 +384,84 @@ test('the outer watchdog aborts a stalled after-mutation hook after a completed 
   } finally { delete globalThis.__resourceHookEntered; await f.close(); }
 });
 
+test('the outer watchdog races resource-aware middleware and releases its SQLite writer', async () => {
+  const definition = {
+    middleware: [async ctx => {
+      await ctx.resources.run({ resource: { table: 'anchors', id: 'anchor' }, operationId: ctx.kind === 'endpoint' ? 'middleware-endpoint' : 'middleware-mutation', input: { a: 1, b: 2 } }, async scope => {
+        await scope.db.writes.insert({ value: ctx.kind });
+        return true;
+      });
+      globalThis.__resourceMiddlewareEntered();
+      await globalThis.__resourceMiddlewareBarrier;
+      return ctx;
+    }],
+    mutations: { middlewareDeadline: mutation(() => ({ unexpected: true })) },
+    endpoints: { middlewareDeadline: endpoint({ method: 'POST', path: '/middleware-deadline' }, () => ({ unexpected: true })) },
+  };
+  const request = { method: 'POST', headers: {}, async *[Symbol.asyncIterator]() {} };
+  try {
+    for (const mode of ['mutation', 'endpoint']) {
+      let entered;
+      let release;
+      const stalled = new Promise(resolve => { entered = resolve; });
+      const barrier = new Promise(resolve => { release = resolve; });
+      globalThis.__resourceMiddlewareEntered = entered;
+      globalThis.__resourceMiddlewareBarrier = barrier;
+      const f = await fixture(() => null, definition);
+      try {
+      const before = new Set(f.clock.pendingTimerIds());
+      const running = mode === 'mutation'
+        ? runMutation(f.database, actor, 'middlewareDeadline', [])
+        : runEndpoint(f.database, f.database.endpoints.find(item => item.name === 'middlewareDeadline'), new URL('http://capsule.test/middleware-deadline'), request);
+      const reached = await Promise.race([
+        stalled.then(() => 'entered'),
+        running.then(value => value?.error?.code ?? 'settled', error => error),
+        new Promise(resolve => setTimeout(() => resolve('timed out'), 100)),
+      ]);
+      assert.equal(reached, 'entered', `resource middleware did not reach its barrier: ${reached?.code ?? reached}`);
+      const [watchdog] = f.clock.pendingTimerIds().filter(id => !before.has(id));
+      f.clock.advanceBy(30_000); await f.clock.runTimer(watchdog);
+      const settled = await Promise.race([
+        running.then(() => true, () => true),
+        new Promise(resolve => setTimeout(() => resolve(false), 100)),
+      ]);
+      assert.equal(settled, true, `${mode} middleware remained live after its resource watchdog fired`);
+      if (mode === 'mutation') assert.equal((await running).error.code, 'RESOURCE_DEADLINE_EXCEEDED');
+      else await assert.rejects(running, { code: 'RESOURCE_DEADLINE_EXCEEDED' });
+      assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM writes WHERE value=?").get(mode).n, 0);
+      const independent = await createSqliteDatabaseAdapter(f.file);
+      try { assert.doesNotThrow(() => independent.prepare("UPDATE anchors SET value=? WHERE id='anchor'").run(`released-${mode}`)); }
+      finally { await independent.close(); }
+      } finally { release?.(); await f.close(); }
+    }
+  } finally {
+    delete globalThis.__resourceMiddlewareEntered; delete globalThis.__resourceMiddlewareBarrier;
+  }
+});
+
+test('outer resource commit checks the deadline at the actual transaction commit', async () => {
+  const f = await fixture(() => null, {
+    mutations: { delayedCommit: mutation(ctx => ctx.resources.run({ ...options(), operationId: 'actual-commit-deadline' }, async scope => {
+      await scope.db.writes.insert({ value: 'must-rollback-at-commit' });
+      return true;
+    })) },
+  });
+  const withTransaction = f.database.adapter.withTransaction.bind(f.database.adapter);
+  f.database.adapter.withTransaction = callback => withTransaction(async adapter => {
+    const result = await callback(adapter);
+    // Deliberately do not run the watchdog: this is the JavaScript gap after
+    // cleanup/revocation and immediately before the adapter issues COMMIT.
+    f.clock.advanceBy(30_000);
+    return result;
+  });
+  try {
+    const result = await runMutation(f.database, actor, 'delayedCommit', []);
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, 'RESOURCE_DEADLINE_EXCEEDED');
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='must-rollback-at-commit'").get().n, 0);
+  } finally { f.database.adapter.withTransaction = withTransaction; await f.close(); }
+});
+
 test('the outer watchdog aborts the real pending-log cleanup phase after a completed resource scope', async () => {
   let entered;
   const inserted = new Promise(resolve => { entered = resolve; });

@@ -124,6 +124,15 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
     used = true; scopeActive = true; admission = true;
     const deadline = hooks.startedAt + 30_000;
     outerDeadline = deadline;
+    // The outer lifecycle tears down its watchdog during async cleanup, before
+    // the database adapter reaches COMMIT. Keep the resource deadline as an
+    // adapter-owned pre-commit check so that gap cannot admit stale writes.
+    const beforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
+    const checks = (database.adapter as any)[beforeCommitChecks] ?? ((database.adapter as any)[beforeCommitChecks] = []);
+    checks.push(() => {
+      if (terminalError) throw terminalError;
+      if (database.clock.now().getTime() >= deadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+    });
     const controller = new AbortController();
     const revoke = (error: any) => {
       terminalError ??= error;
