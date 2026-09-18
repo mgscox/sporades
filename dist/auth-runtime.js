@@ -235,7 +235,7 @@ export async function simulateLocalIdentitySession(database, options = {}) {
         const identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
         const userId = identity?.userId ?? nodeCryptoModule.randomUUID();
         if (identity) {
-            await tx.updateAuthUserProfile({ id: userId, displayName, picture, isAuthenticated: 1, isGuest: 0 });
+            await tx.updateAuthUserProfile({ id: userId, displayName, picture, isAuthenticated: 1, isGuest: 0, provider });
             await tx.updateAuthIdentity({
                 id: identity.id,
                 subject,
@@ -257,7 +257,7 @@ export async function simulateLocalIdentitySession(database, options = {}) {
                 picture,
                 isAuthenticated: 1,
                 isGuest: 0,
-                provider: "anonymous",
+                provider,
             });
             await tx.insertAuthIdentity({
                 id: nodeCryptoModule.randomUUID(),
@@ -2018,7 +2018,7 @@ export async function unlinkCurrentAuthUser(database, context) {
         await tx.deletePasswordResetCodesForUser(auth.userId);
         await tx.prepare(tx.dialect.sql("DELETE FROM [sporades_auth_email_credentials] WHERE [userId] = ?")).run(auth.userId);
         await tx.prepare(tx.dialect.sql("DELETE FROM [sporades_auth_identities] WHERE [userId] = ?")).run(auth.userId);
-        await tx.prepare(tx.dialect.sql("UPDATE [sporades_auth_users] SET [email] = NULL, [isAuthenticated] = ?, [isGuest] = ?, [provider] = ? WHERE [id] = ?")).run(0, 1, "guest", auth.userId);
+        await tx.prepare(tx.dialect.sql("UPDATE [sporades_auth_users] SET [email] = NULL, [isAuthenticated] = ?, [isGuest] = ?, [provider] = ? WHERE [id] = ?")).run(0, 1, "anonymous", auth.userId);
     });
 }
 export async function deleteCurrentAuthUser(database, context) {
@@ -2673,11 +2673,12 @@ export async function signInWithEmail(database, session, credentials) {
         isGuest: Boolean(row.isGuest),
         provider: "email",
     };
-    return await withAuthTransaction(database, async (tx) => ({
-        ok: true,
-        sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"),
-        auth,
-    }));
+    return await withAuthTransaction(database, async (tx) => {
+        // Only the summary label changes. Do not replay profile/authority values read
+        // before this transaction over a concurrent unlink or profile update.
+        await tx.prepare(tx.dialect.sql("UPDATE [sporades_auth_users] SET [provider] = 'email' WHERE [id] = ? AND [isAuthenticated] = 1 AND [isGuest] = 0")).run(auth.userId);
+        return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
+    });
 }
 export async function linkProviderIdentity(database, session, provider, profile, sealedRegistration) {
     const subject = normalizeSimulatedText(profile.subject ?? profile.sub);
@@ -3399,6 +3400,7 @@ export function createAnonymousAuthTables(sqlite, _authConfig = null) {
         () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_auth_reauthentication_throttle] ([key] TEXT PRIMARY KEY, [count] INTEGER NOT NULL, [resetAt] TEXT NOT NULL)")),
         () => sqlite.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [expiresAt] <= ? OR NOT EXISTS (SELECT 1 FROM [sporades_auth_sessions] [s] WHERE [s].[token] = [sporades_auth_reauthentication_proofs].[sessionToken])")).run(new Date().toISOString()),
         () => createProviderIdentityTables(sqlite),
+        () => migrateAuthUserProviderLabels(sqlite),
         () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_auth_email_credentials] (" +
             "[email] TEXT PRIMARY KEY, " +
             "[userId] TEXT NOT NULL, " +
@@ -3472,6 +3474,10 @@ function createProviderIdentityTables(sqlite) {
             "[updatedAt] TEXT NOT NULL, " +
             "UNIQUE([provider], [subject])" +
             ")")),
+        // Both legacy identity backfill and provider-label repair look up identities by user.
+        // Create this portable index before either migration, including on existing Capsules.
+        () => sqlite.exec(sql("CREATE INDEX IF NOT EXISTS [sporades_auth_identities_user_id] " +
+            "ON [sporades_auth_identities] ([userId])")),
         () => sqlite.exec(sql("INSERT INTO [sporades_auth_identities] " +
             "([id], [userId], [provider], [subject], [email], [displayName], [picture], [createdAt], [updatedAt]) " +
             "SELECT 'legacy:' || [id], [id], [provider], 'legacy:' || [id], [email], [displayName], [picture], " +
@@ -3501,5 +3507,20 @@ function ensureSessionProvenanceColumn(sqlite) {
             "WHERE [id] = [sporades_auth_sessions].[userId]), 'anonymous') " +
             "WHERE [provider] IS NULL")),
     ]);
+}
+// A user label summarizes authentication writes; Session provenance remains independent.
+// Historical identities establish a method only when all recorded methods agree. Never infer
+// a method from an email address, credentials, timestamps, or another Session. Missing or
+// ambiguous evidence is explicitly unknown. One atomic UPDATE is portable and idempotent.
+function migrateAuthUserProviderLabels(sqlite) {
+    return sqlite.exec(sqlite.dialect.sql("UPDATE [sporades_auth_users] SET [provider] = CASE " +
+        "WHEN [isAuthenticated] = 1 THEN COALESCE((" +
+        "SELECT MIN([i].[provider]) FROM [sporades_auth_identities] [i] " +
+        "WHERE [i].[userId] = [sporades_auth_users].[id] " +
+        "HAVING COUNT(DISTINCT [i].[provider]) = 1 " +
+        "AND MIN([i].[provider]) IN ('email', 'google', 'microsoft', 'apple', 'facebook')" +
+        "), 'unknown') ELSE 'anonymous' END " +
+        "WHERE ([isAuthenticated] = 1 AND [provider] IN ('anonymous', 'guest')) " +
+        "OR ([isAuthenticated] = 0 AND [isGuest] = 1 AND [provider] = 'guest')"));
 }
 //# sourceMappingURL=auth-runtime.js.map

@@ -1878,7 +1878,7 @@ async function startDevSession(options) {
             if (prepareHttpSecurity(runtime.database, request, response)) {
                 return;
             }
-            if (routeConnectionToken(request, response, () => websocketHub.createConnectionToken())) {
+            if (routeConnectionToken(request, response, (currentToken) => websocketHub.createConnectionToken(currentToken))) {
                 return;
             }
             switch (`${request.method}:${requestUrl.pathname}`) {

@@ -306,6 +306,10 @@ _Avoid_: reset token, oobCode, magic link (it authorizes a password change, not 
 The authentication provider recorded on one Session. It reports how that Session authenticated independently of other Sessions or Provider identities linked to the same Sporades user.
 _Avoid_: user provider, account type, current linked provider
 
+**User provider label**:
+The user-level summary of the most recent authentication write. `anonymous` denotes an unauthenticated guest, including after unlink; `unknown` denotes missing or ambiguous historical identity evidence after label repair. Authenticated users cannot carry `anonymous` or the historical `guest` alias. This summary grants no authority and never replaces Session provenance or the `isAuthenticated` / `isGuest` flags.
+_Avoid_: session provider, authentication authority
+
 **Auth transaction**:
 The Transaction boundary for one user-visible auth action that touches multiple runtime-owned auth records. Sign-up, sign-in, provider linking, OAuth callback handling, and session rotation should leave auth storage in a known outcome; for example, a failed sign-up must not leave a created user behind, failed session rotation keeps the old Session token valid, and a failed OAuth callback spends its OAuth state so the user restarts the local OAuth flow.
 _Avoid_: partial sign-up, orphaned auth row, best-effort auth update
@@ -334,7 +338,7 @@ _Avoid_: global user role, Team admin, Privileged server role
 Sporades is client-framework-agnostic at its internal transport seam, which owns the WebSocket connection, query subscriptions, mutation sending, auth state, and current-user preferences. The public `sporades/client` surface currently exposes that query and mutation behavior through `createHooks`, a React/Preact adapter that takes compatible primitives (`useState`, `useEffect`) and returns ready-to-use hooks (`useQuery`, `useMutation`, `useAuth`). Direct framework-neutral query subscriptions are not yet public. Frameworks with different reactivity models require native adapters over the internal transport seam rather than emulating React hooks.
 
 **Page connection token**:
-An opaque, expiring, runtime-minted value injected into each no-store HTML document solely to gate its WebSocket upgrade. It is not a Session credential and grants no Capsule authority. A rejected token is replaced through the same-origin no-store runtime route during a bounded four-attempt reconnect episode; exhaustion renders a runtime-owned manual retry state.
+An opaque, expiring, runtime-minted value injected into each no-store HTML document solely to gate its WebSocket upgrade. It is not a Session credential and grants no Capsule authority. After a socket closes, the same-origin no-store runtime route checks its token: a valid token is retained without extending its TTL, and an invalid token is replaced before reconnecting. Four connection attempts exhaust the automatic recovery budget even if brief connections receive messages; five continuous healthy minutes rearm that budget. Exhaustion notifies live-query consumers and renders a runtime-owned manual retry state.
 _Avoid_: Session token, auth token, permanent socket credential
 
 **createHooks**:

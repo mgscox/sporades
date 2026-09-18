@@ -593,6 +593,14 @@ export function postgresDatabaseDialect() {
   });
 }
 
+function assertAuthUserProvider(row: LooseRecord) {
+  if (Number(row.isAuthenticated) === 1 &&
+      (typeof row.provider !== "string" || !row.provider.trim() || ["anonymous", "guest"].includes(row.provider))) {
+    throw commandError("Authenticated users require a non-anonymous provider label.",
+      "Supply the authentication method used; historical missing evidence is labelled unknown.", "INVALID_AUTH_USER_PROVIDER");
+  }
+}
+
 // The engine-agnostic Database adapter method set, defined once. Composed into every engine's
 // adapter by spreading, so each method is an own enumerable property and the conformance coverage
 // gate's enumeration sees the same names on every engine.
@@ -1281,6 +1289,7 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
     },
     insertAuthUser(row: { id: any; createdAt: any; displayName: any; email: any; picture: any; isAuthenticated: any; isGuest: any; provider: any; userKind?: any; lifecycleStatus?: any; disabledAt?: any; }) {
       assertNotReservedAuthUserId(row.id);
+      assertAuthUserProvider(row);
       return this.prepare(
         sql(
           "INSERT INTO [sporades_auth_users] " +
@@ -1306,22 +1315,24 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
         () => this.prepare(select).get(userId) ?? null,
       );
     },
-    updateAuthUserProfile(row: { displayName: any; picture: any; isAuthenticated: any; isGuest: any; id: any; }) {
+    updateAuthUserProfile(row: { displayName: any; picture: any; isAuthenticated: any; isGuest: any; provider: any; id: any; }) {
       assertNotReservedAuthUserId(row.id);
+      assertAuthUserProvider(row);
       return this.prepare(
         sql(
-          "UPDATE [sporades_auth_users] SET [displayName] = ?, [picture] = ?, [isAuthenticated] = ?, [isGuest] = ? WHERE [id] = ?",
+          "UPDATE [sporades_auth_users] SET [displayName] = ?, [picture] = ?, [isAuthenticated] = ?, [isGuest] = ?, [provider] = ? WHERE [id] = ?",
         ),
-      ).run(row.displayName, row.picture, row.isAuthenticated, row.isGuest, row.id);
+      ).run(row.displayName, row.picture, row.isAuthenticated, row.isGuest, row.provider, row.id);
     },
     linkAuthUser(row: { displayName: any; email: any; picture: any; isAuthenticated: any; isGuest: any; provider: any; id: any; }) {
       assertNotReservedAuthUserId(row.id);
+      assertAuthUserProvider(row);
       return this.prepare(
         sql(
           "UPDATE [sporades_auth_users] SET [displayName] = ?, [email] = ?, [picture] = ?, [isAuthenticated] = ?, " +
-          "[isGuest] = ? WHERE [id] = ?",
+          "[isGuest] = ?, [provider] = ? WHERE [id] = ?",
         ),
-      ).run(row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.id);
+      ).run(row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider, row.id);
     },
     insertAuthSession(row: { token: any; userId: any; provider: any; createdAt: any; expiresAt: any; }) {
       assertNotReservedAuthUserId(row.userId);

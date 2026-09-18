@@ -2195,7 +2195,7 @@ async function startDevSession(options: LooseRecord) {
         return;
       }
 
-      if (routeConnectionToken(request, response, () => websocketHub.createConnectionToken())) {
+      if (routeConnectionToken(request, response, (currentToken) => websocketHub.createConnectionToken(currentToken))) {
         return;
       }
 

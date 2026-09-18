@@ -155,7 +155,7 @@ const server = createServer(async (request, response) => {
       return;
     }
 
-    if (routeConnectionToken(request, response, () => websocketHub.createConnectionToken())) {
+    if (routeConnectionToken(request, response, (currentToken) => websocketHub.createConnectionToken(currentToken))) {
       return;
     }
 

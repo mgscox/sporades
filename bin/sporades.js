@@ -59646,6 +59646,7 @@ function createConnection() {
   let pageRetired = false;
   const maxAutomaticConnectionAttempts = 4;
   let automaticConnectionAttempts = 0;
+  const stableConnectionMs = 5 * 60 * 1000;
   let retryInFlight = false;
   let terminalConnectionError = null;
   let connectionErrorPanel = null;
@@ -59681,10 +59682,11 @@ function createConnection() {
     }
     automaticConnectionAttempts += 1;
     const openedSocket = new WebSocket(url);
-    let opened = false;
+    let openedAt = null;
+    let receivedMessage = false;
     socket = openedSocket;
     openedSocket.addEventListener("open", () => {
-      opened = true;
+      openedAt = Date.now();
       retryInFlight = false;
       ${options.devRefresh ? 'request("dev.refresh.subscribe");' : ""}
       request("auth.get");
@@ -59705,8 +59707,7 @@ function createConnection() {
       for (const queued of retryQueue.splice(0)) send(queued.message, queued.onSocket);
     });
     openedSocket.addEventListener("message", (event) => {
-      automaticConnectionAttempts = 0;
-      terminalConnectionError = null;
+      receivedMessage = true;
       const message = JSON.parse(event.data);
       ${options.devRefresh ? `if (message.type === "refresh" && message.data?.mode === "full-page") {
         const refreshSequence = message.data.sequence;
@@ -59775,16 +59776,23 @@ function createConnection() {
         pending.delete(id);
       }
       if (socket !== openedSocket || pageRetired) return;
+      // A response alone is not recovery: flapping sockets may answer then die.
+      // Only a continuously healthy five-minute connection rearms the budget.
+      if (openedAt !== null && receivedMessage && Date.now() - openedAt >= stableConnectionMs) {
+        automaticConnectionAttempts = 0;
+      }
       if (automaticConnectionAttempts >= maxAutomaticConnectionAttempts) {
         showTerminalConnectionError();
         return;
       }
-      scheduleConnectionRetry(!opened);
+      // Upgrade HTTP failures have no distinguishable browser close code. Ask
+      // the same-origin runtime to retain a valid gate or replace an expired one.
+      scheduleConnectionRetry(true, connectionToken);
     });
     return openedSocket;
   }
 
-  async function scheduleConnectionRetry(refreshToken) {
+  async function scheduleConnectionRetry(refreshToken, currentToken = null) {
     if (pageRetired || retryInFlight) return;
     retryInFlight = true;
     if (refreshToken) {
@@ -59796,6 +59804,9 @@ function createConnection() {
           credentials: "same-origin",
           headers: { "x-sporades-connection-token-request": "1" },
         };
+        if (typeof currentToken === "string" && currentToken.length > 0) {
+          refreshOptions.headers["x-sporades-connection-token"] = currentToken;
+        }
         if (controller) refreshOptions.signal = controller.signal;
         const timeout = new Promise((_, reject) => {
           timeoutId = setTimeout(() => {
@@ -89313,7 +89324,8 @@ function routeConnectionToken(request, response, createConnectionToken) {
     "cross-origin-resource-policy": "same-origin",
     pragma: "no-cache"
   });
-  response.end(JSON.stringify({ token: createConnectionToken() }));
+  const currentToken = request.headers["x-sporades-connection-token"];
+  response.end(JSON.stringify({ token: createConnectionToken(typeof currentToken === "string" ? currentToken : void 0) }));
   return true;
 }
 function requestOriginAllowed(policy, request) {
@@ -91020,7 +91032,7 @@ async function simulateLocalIdentitySession(database, options = {}) {
     const identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
     const userId = identity?.userId ?? nodeCryptoModule3.randomUUID();
     if (identity) {
-      await tx.updateAuthUserProfile({ id: userId, displayName, picture, isAuthenticated: 1, isGuest: 0 });
+      await tx.updateAuthUserProfile({ id: userId, displayName, picture, isAuthenticated: 1, isGuest: 0, provider });
       await tx.updateAuthIdentity({
         id: identity.id,
         subject,
@@ -91040,7 +91052,7 @@ async function simulateLocalIdentitySession(database, options = {}) {
         picture,
         isAuthenticated: 1,
         isGuest: 0,
-        provider: "anonymous"
+        provider
       });
       await tx.insertAuthIdentity({
         id: nodeCryptoModule3.randomUUID(),
@@ -93253,11 +93265,12 @@ async function signInWithEmail(database, session, credentials) {
     isGuest: Boolean(row.isGuest),
     provider: "email"
   };
-  return await withAuthTransaction(database, async (tx) => ({
-    ok: true,
-    sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"),
-    auth
-  }));
+  return await withAuthTransaction(database, async (tx) => {
+    await tx.prepare(tx.dialect.sql(
+      "UPDATE [sporades_auth_users] SET [provider] = 'email' WHERE [id] = ? AND [isAuthenticated] = 1 AND [isGuest] = 0"
+    )).run(auth.userId);
+    return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
+  });
 }
 async function linkProviderIdentity(database, session, provider, profile, sealedRegistration) {
   const subject = normalizeSimulatedText(profile.subject ?? profile.sub);
@@ -93853,6 +93866,7 @@ function createAnonymousAuthTables(sqlite, _authConfig = null) {
     () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_auth_reauthentication_throttle] ([key] TEXT PRIMARY KEY, [count] INTEGER NOT NULL, [resetAt] TEXT NOT NULL)")),
     () => sqlite.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [expiresAt] <= ? OR NOT EXISTS (SELECT 1 FROM [sporades_auth_sessions] [s] WHERE [s].[token] = [sporades_auth_reauthentication_proofs].[sessionToken])")).run((/* @__PURE__ */ new Date()).toISOString()),
     () => createProviderIdentityTables(sqlite),
+    () => migrateAuthUserProviderLabels(sqlite),
     () => sqlite.exec(
       sql(
         "CREATE TABLE IF NOT EXISTS [sporades_auth_email_credentials] ([email] TEXT PRIMARY KEY, [userId] TEXT NOT NULL, [passwordHash] TEXT NOT NULL, [passwordSalt] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
@@ -93905,6 +93919,11 @@ function createProviderIdentityTables(sqlite) {
         "CREATE TABLE IF NOT EXISTS [sporades_auth_identities] ([id] TEXT PRIMARY KEY, [userId] TEXT NOT NULL, [provider] TEXT NOT NULL, [subject] TEXT NOT NULL, [email] TEXT, [displayName] TEXT, [picture] TEXT, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, UNIQUE([provider], [subject]))"
       )
     ),
+    // Both legacy identity backfill and provider-label repair look up identities by user.
+    // Create this portable index before either migration, including on existing Capsules.
+    () => sqlite.exec(sql(
+      "CREATE INDEX IF NOT EXISTS [sporades_auth_identities_user_id] ON [sporades_auth_identities] ([userId])"
+    )),
     () => sqlite.exec(
       sql(
         "INSERT INTO [sporades_auth_identities] ([id], [userId], [provider], [subject], [email], [displayName], [picture], [createdAt], [updatedAt]) SELECT 'legacy:' || [id], [id], [provider], 'legacy:' || [id], [email], [displayName], [picture], [createdAt], [createdAt] FROM [sporades_auth_users] [u] WHERE [provider] = 'google' AND [id] != '__privileged__' AND NOT EXISTS (SELECT 1 FROM [sporades_auth_identities] [i] WHERE [i].[userId] = [u].[id] AND [i].[provider] = [u].[provider])"
@@ -93927,6 +93946,11 @@ function ensureSessionProvenanceColumn(sqlite) {
       )
     )
   ]);
+}
+function migrateAuthUserProviderLabels(sqlite) {
+  return sqlite.exec(sqlite.dialect.sql(
+    "UPDATE [sporades_auth_users] SET [provider] = CASE WHEN [isAuthenticated] = 1 THEN COALESCE((SELECT MIN([i].[provider]) FROM [sporades_auth_identities] [i] WHERE [i].[userId] = [sporades_auth_users].[id] HAVING COUNT(DISTINCT [i].[provider]) = 1 AND MIN([i].[provider]) IN ('email', 'google', 'microsoft', 'apple', 'facebook')), 'unknown') ELSE 'anonymous' END WHERE ([isAuthenticated] = 1 AND [provider] IN ('anonymous', 'guest')) OR ([isAuthenticated] = 0 AND [isGuest] = 1 AND [provider] = 'guest')"
+  ));
 }
 
 // src/base-image.ts
@@ -97406,6 +97430,15 @@ function postgresDatabaseDialect() {
     )
   });
 }
+function assertAuthUserProvider(row) {
+  if (Number(row.isAuthenticated) === 1 && (typeof row.provider !== "string" || !row.provider.trim() || ["anonymous", "guest"].includes(row.provider))) {
+    throw commandError2(
+      "Authenticated users require a non-anonymous provider label.",
+      "Supply the authentication method used; historical missing evidence is labelled unknown.",
+      "INVALID_AUTH_USER_PROVIDER"
+    );
+  }
+}
 function createSharedDatabaseAdapterMethods(dialect) {
   const sql = dialect.sql;
   const eligibleAccessKeyOwnerSessionSql = sql(
@@ -98035,6 +98068,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
     },
     insertAuthUser(row) {
       assertNotReservedAuthUserId(row.id);
+      assertAuthUserProvider(row);
       return this.prepare(
         sql(
           "INSERT INTO [sporades_auth_users] ([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind], [lifecycleStatus], [disabledAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
@@ -98060,19 +98094,21 @@ function createSharedDatabaseAdapterMethods(dialect) {
     },
     updateAuthUserProfile(row) {
       assertNotReservedAuthUserId(row.id);
+      assertAuthUserProvider(row);
       return this.prepare(
         sql(
-          "UPDATE [sporades_auth_users] SET [displayName] = ?, [picture] = ?, [isAuthenticated] = ?, [isGuest] = ? WHERE [id] = ?"
+          "UPDATE [sporades_auth_users] SET [displayName] = ?, [picture] = ?, [isAuthenticated] = ?, [isGuest] = ?, [provider] = ? WHERE [id] = ?"
         )
-      ).run(row.displayName, row.picture, row.isAuthenticated, row.isGuest, row.id);
+      ).run(row.displayName, row.picture, row.isAuthenticated, row.isGuest, row.provider, row.id);
     },
     linkAuthUser(row) {
       assertNotReservedAuthUserId(row.id);
+      assertAuthUserProvider(row);
       return this.prepare(
         sql(
-          "UPDATE [sporades_auth_users] SET [displayName] = ?, [email] = ?, [picture] = ?, [isAuthenticated] = ?, [isGuest] = ? WHERE [id] = ?"
+          "UPDATE [sporades_auth_users] SET [displayName] = ?, [email] = ?, [picture] = ?, [isAuthenticated] = ?, [isGuest] = ?, [provider] = ? WHERE [id] = ?"
         )
-      ).run(row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.id);
+      ).run(row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider, row.id);
     },
     insertAuthSession(row) {
       assertNotReservedAuthUserId(row.userId);
@@ -103732,7 +103768,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
   let journeyExpiryTimer = null;
   let journeyDisableRequests = 0;
   return {
-    createConnectionToken() {
+    createConnectionToken(currentToken) {
+      if (currentToken && validateConnectionToken(currentToken)) return currentToken;
       while (connectionTokens.size >= maxConnectionTokens) {
         const oldestToken = connectionTokens.keys().next().value;
         if (typeof oldestToken !== "string") break;
@@ -114617,7 +114654,7 @@ async function startDevSession(options) {
       if (prepareHttpSecurity(runtime.database, request, response)) {
         return;
       }
-      if (routeConnectionToken(request, response, () => websocketHub.createConnectionToken())) {
+      if (routeConnectionToken(request, response, (currentToken) => websocketHub.createConnectionToken(currentToken))) {
         return;
       }
       switch (`${request.method}:${requestUrl.pathname}`) {

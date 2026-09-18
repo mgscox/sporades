@@ -322,7 +322,8 @@ export function routeConnectionToken(request, response, createConnectionToken) {
         "cross-origin-resource-policy": "same-origin",
         pragma: "no-cache",
     });
-    response.end(JSON.stringify({ token: createConnectionToken() }));
+    const currentToken = request.headers["x-sporades-connection-token"];
+    response.end(JSON.stringify({ token: createConnectionToken(typeof currentToken === "string" ? currentToken : undefined) }));
     return true;
 }
 function requestOriginAllowed(policy, request) {

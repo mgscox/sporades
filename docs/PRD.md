@@ -540,11 +540,19 @@ carries:
 - development refresh signals.
 
 The runtime injects an opaque, expiring connection token into each no-store
-HTML document to gate the WebSocket upgrade. A client whose token is rejected
-obtains a fresh token from the same-origin runtime and retries with bounded
-exponential backoff and jitter. Four failed WebSocket attempts end in a visible
-runtime-owned error with a manual retry; the client never reconnects forever or
-leaves the Capsule shell in an indefinite loading state. This connection token
+HTML document to gate the WebSocket upgrade. After a socket closes, the client
+checks its token through the same-origin runtime route: a valid token is retained
+without extending its TTL; an expired or evicted token is replaced before retrying.
+An upgrade rejection is an HTTP 403, not a distinguishable WebSocket close code,
+so the client does not infer authorization failure from an opaque close event.
+Checks keep the runtime-only request marker, no-store and same-origin authority.
+An unavailable check falls back to the existing token within the same bounded
+exponential backoff and jitter policy. Four connection attempts end in a visible
+runtime-owned error with a manual retry, including notification to existing and
+late live-query subscribers. Brief successful connections and individual messages
+do not reset the budget: only five continuous healthy minutes rearm it. Manual
+retry explicitly starts a new budget and obtains a fresh token. The client never
+reconnects forever or leaves the Capsule shell in an indefinite loading state. This connection token
 is not a Session credential and grants no application authority.
 
 The SDK hides raw WebSocket frames from app code. Client-origin App messages
@@ -680,9 +688,14 @@ non-string, malformed, or unsupported version is not treated as absent and
 leaves the provider configured/runtime unavailable.
 
 Provider identity authority is the stored `(provider, subject)` identity and
-authentication provenance belongs to each Session. The legacy provider column
-on a user row is migration data only: linking another provider may update the
-shared profile but cannot rewrite the provider reported by another Session.
+authentication provenance belongs to each Session. The user row's provider label
+summarizes its most recent authentication write; linking another provider cannot
+rewrite the provider reported by another Session. `anonymous` denotes an
+unauthenticated guest (including after unlink); authenticated rows cannot carry
+that label. Startup repairs historical labels from unambiguous Provider identity
+methods, using `unknown` for missing or ambiguous evidence, without changing
+flags, email, or Session validity. `isAuthenticated` / `isGuest` remain authority;
+the summary label alone never grants trust. See ADR 0015 for migration policy.
 Legacy Google configuration and status fields normalize immediately into the
 provider-neutral runtime contract. Production provider endpoints are fixed;
 process-only endpoint overrides are admitted solely by explicit loopback test
