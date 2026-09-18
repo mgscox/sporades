@@ -69,6 +69,22 @@ test("sporades api bindings compile representative strict TypeScript app code", 
       path.join(dir, "app.ts"),
       `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, requireUserAuth, schedule, stripeEvent, table, type TableApi, type TableDefinition } from "sporades/server";
 import * as publicServerApi from "sporades/server";
+async function resourceContract(ctx: publicServerApi.CapsuleContext) {
+  const answer = await ctx.resources.run({ resource: { table: "anchors", id: "existing" }, operationId: "stable", input: null }, async scope => {
+    await scope.jobs.enqueue("child", null);
+    // @ts-expect-error no provider authority in a resource scope.
+    scope.mail.send({});
+    // @ts-expect-error no nested privileged authority.
+    scope.privileged.run({}, () => null);
+    return { committed: true };
+  });
+  const checked: boolean = answer.committed;
+  await ctx.resources.status({ resource: { table: "anchors", id: "existing" }, operationId: "stable" });
+  // @ts-expect-error resource callbacks must return JSON.
+  ctx.resources.run({ resource: { table: "anchors", id: "existing" }, operationId: "stable", input: null }, () => new Date());
+  return checked;
+}
+
 const principalFieldsOnly: publicServerApi.FileIngressAdmissionDecision = { allow: true, principal: { namespace: "application", key: "integration" }, allowFiles: false };
 const principalUndefinedFiles: publicServerApi.FileIngressAdmissionDecision = { allow: true, principal: { namespace: "application", key: "integration" }, allowFiles: undefined };
 // @ts-expect-error principal admission file permission must be a boolean.

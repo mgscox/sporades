@@ -1,3 +1,4 @@
+import { bindJobResources, isResourceAbortError, unsupportedResources } from "./resource-runtime.js";
 // `createHmac` left this line with the S3 signing path in batch 6: `s3Hmac` was its only remaining
 // consumer, and it reaches the builtin through `process.getBuiltinModule` in `file-storage-runtime.ts`
 // now (ADR-0042). The rest of this list has been wider than what this file binds since batch 3 —
@@ -2676,6 +2677,9 @@ function normalizeUniqueConstraints(tableName, fields, declarations) {
     }).sort((left, right) => [...left].sort().join("\u0000").localeCompare([...right].sort().join("\u0000")));
 }
 function assertNotReservedTeamTableName(name) {
+    if (name.toLowerCase().startsWith("sporades_resource_")) {
+        throw commandError(`Reserved runtime table name: ${name}`, "Choose a Capsule table name outside the sporades_resource_ runtime namespace.", "RESERVED_TABLE_NAME");
+    }
     if (name.toLowerCase().startsWith("sporades_team")) {
         throw commandError(`Reserved runtime table name: ${name}`, "Choose a Capsule table name outside the sporades_team runtime namespace.", "RESERVED_TABLE_NAME");
     }
@@ -3652,6 +3656,71 @@ async function acquireAtomicStripeConsequenceFence(adapter) {
         throw error;
     }
 }
+function bindOrdinaryJobResourceContext(database, context, claim, privileged = false) {
+    const scopeDatabases = new WeakMap();
+    const scopeLogEvents = new WeakMap();
+    return bindJobResources(database, context, claim, {
+        privileged,
+        createContext(adapter, signal) {
+            const scopedDatabase = createTransactionDatabase(database, adapter);
+            // Do not let ACL denials or app logs write outside the owning transaction.
+            scopedDatabase.log = { emit() { } };
+            const scoped = createMutationContext(scopedDatabase, context.auth, {
+                ...(context.credential ? { credential: context.credential } : { ordinaryCredential: false }),
+            });
+            scoped.signal = signal;
+            scoped.__jobEnqueuedBy = context.__jobEnqueuedBy;
+            if (privileged) {
+                scoped.__privilegedRunActive = true;
+                grantPrivilegedDbAccess(scoped);
+                scoped.jobs = createPrivilegedJobApi(scopedDatabase, () => scoped);
+            }
+            bindPendingAclWrites(scoped);
+            scopeDatabases.set(scoped, scopedDatabase);
+            return scoped;
+        },
+        async authorize(scoped, identity) {
+            const scopedDatabase = scopeDatabases.get(scoped);
+            const table = database.schema.tables.find((candidate) => candidate.name === identity.table);
+            const stored = await scopedDatabase.adapter.selectAppRowById(table, identity.id);
+            const row = stored ? deserializeRow(table, stored) : null;
+            if (!row || !await applyReadAcl(scopedDatabase, table, row, scoped)) {
+                throw commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+            }
+            await runTableWriteWithAcl(scopedDatabase, table, "update", row, row, () => scoped, () => undefined);
+        },
+        async drain(scoped) {
+            await drainPendingAclWrites(scoped);
+            await drainPendingLogWrites(scopeDatabases.get(scoped));
+        },
+        async stageLogs(scoped, levels) {
+            const scopedDatabase = scopeDatabases.get(scoped);
+            const events = levels.map((level) => uncappedLogEnvelope({ config: database.config, category: "resource", event: "resource.log", level, message: "Resource transaction committed.", data: null }));
+            for (const event of events)
+                await scopedDatabase.adapter.insertLogIndexEvent(event);
+            scopeLogEvents.set(scoped, events);
+        },
+        async committed(scoped) {
+            database.rowCache.clear();
+            await dispatchPendingJobs(scoped);
+            // Deliberately bounded, payload-free diagnostics; no input/result/actor IDs.
+            if (scoped && database.log?.path)
+                for (const event of scopeLogEvents.get(scoped) ?? [])
+                    appendFileSync(database.log.path, `${JSON.stringify(event)}\n`);
+        },
+        rolledBack(scoped) {
+            database.rowCache.clear();
+            dropPendingJobDispatch(scoped);
+        },
+        release(scoped) {
+            if (!scoped)
+                return;
+            scoped.__privilegedRunActive = false;
+            revokePrivilegedDbAccess(scoped);
+            releaseHandlerContextMapping(scopeDatabases.get(scoped));
+        },
+    });
+}
 function createAtomicStripeConsequenceContext(database, parent) {
     const context = {
         auth: parent.auth,
@@ -3892,6 +3961,7 @@ function protectContextIdentity(value) {
     });
 }
 function createContextHolder(context) {
+    context.resources = unsupportedResources;
     const holder = { current: context };
     Object.defineProperty(context, "__sporadesContextHolder", {
         value: holder,
@@ -7045,10 +7115,12 @@ export async function runCurrentUserJobWorker(database) {
                     result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...(row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {}) } }, async (privilegedCtx) => {
                         handlerStarted = true;
                         database.__runtimeJobAttempts.set(privilegedCtx, Number(row.attempts) + 1);
+                        const releaseResources = bindOrdinaryJobResourceContext(database, privilegedCtx, { id: row.id, claimToken, leaseExpiresAt }, true);
                         try {
                             return await handler.handler(privilegedCtx, jobPayload);
                         }
                         finally {
+                            releaseResources();
                             database.__runtimeJobAttempts.delete(privilegedCtx);
                         }
                     });
@@ -7068,6 +7140,7 @@ export async function runCurrentUserJobWorker(database) {
                     handlerStarted = true;
                     database.__runtimeJobAttempts.set(context, Number(row.attempts) + 1);
                     let handlerFailed = false;
+                    const releaseResources = bindOrdinaryJobResourceContext(database, context, { id: row.id, claimToken, leaseExpiresAt });
                     try {
                         result = await handler.handler(context, jobPayload);
                     }
@@ -7076,6 +7149,7 @@ export async function runCurrentUserJobWorker(database) {
                         throw error;
                     }
                     finally {
+                        releaseResources();
                         revokeCurrentUserFileApi(context);
                         try {
                             await drainCurrentUserFileOperations(context);
@@ -7126,7 +7200,8 @@ export async function runCurrentUserJobWorker(database) {
                 const history = JSON.parse(row.attemptHistory || "[]");
                 const retry = parsePersistedJobRetry(row.retryJson);
                 const abortError = error?.cause ?? error;
-                const abortShaped = abortController.signal.aborted && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR");
+                const abortShaped = (abortController.signal.aborted || isResourceAbortError(abortError))
+                    && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR");
                 const cancellation = abortShaped
                     ? await database.adapter.prepare(sql("SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?")).get(row.id, claimToken)
                     : null;

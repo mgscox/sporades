@@ -1,3 +1,4 @@
+import { bindJobResources, isResourceAbortError, resourceError, unsupportedResources } from "./resource-runtime.js";
 import type { IncomingMessage, ServerResponse, IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
 import { WithImplicitCoercion } from "buffer";
 import { BinaryLike, KeyObject } from "node:crypto";
@@ -2797,6 +2798,13 @@ function normalizeUniqueConstraints(tableName: string, fields: Record<string, un
 }
 
 function assertNotReservedTeamTableName(name: string) {
+  if (name.toLowerCase().startsWith("sporades_resource_")) {
+    throw commandError(
+      `Reserved runtime table name: ${name}`,
+      "Choose a Capsule table name outside the sporades_resource_ runtime namespace.",
+      "RESERVED_TABLE_NAME",
+    );
+  }
   if (name.toLowerCase().startsWith("sporades_team")) {
     throw commandError(
       `Reserved runtime table name: ${name}`,
@@ -3854,6 +3862,67 @@ async function acquireAtomicStripeConsequenceFence(adapter: LooseRecord) {
   }
 }
 
+function bindOrdinaryJobResourceContext(database: LooseRecord, context: LooseRecord, claim: LooseRecord, privileged = false) {
+  const scopeDatabases = new WeakMap<object, LooseRecord>();
+  const scopeLogEvents = new WeakMap<object, LooseRecord[]>();
+  return bindJobResources(database, context, claim, {
+    privileged,
+    createContext(adapter: LooseRecord, signal: AbortSignal) {
+      const scopedDatabase = createTransactionDatabase(database, adapter);
+      // Do not let ACL denials or app logs write outside the owning transaction.
+      scopedDatabase.log = { emit() {} };
+      const scoped = createMutationContext(scopedDatabase, context.auth, {
+        ...(context.credential ? { credential: context.credential } : { ordinaryCredential: false }),
+      });
+      scoped.signal = signal;
+      scoped.__jobEnqueuedBy = context.__jobEnqueuedBy;
+      if (privileged) {
+        scoped.__privilegedRunActive = true;
+        grantPrivilegedDbAccess(scoped);
+        scoped.jobs = createPrivilegedJobApi(scopedDatabase, () => scoped);
+      }
+      bindPendingAclWrites(scoped);
+      scopeDatabases.set(scoped, scopedDatabase);
+      return scoped;
+    },
+    async authorize(scoped: LooseRecord, identity: LooseRecord) {
+      const scopedDatabase = scopeDatabases.get(scoped)!;
+      const table = database.schema.tables.find((candidate: LooseRecord) => candidate.name === identity.table);
+      const stored = await scopedDatabase.adapter.selectAppRowById(table, identity.id);
+      const row = stored ? deserializeRow(table, stored) : null;
+      if (!row || !await applyReadAcl(scopedDatabase, table, row, scoped)) {
+        throw commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+      }
+      await runTableWriteWithAcl(scopedDatabase, table, "update", row, row, () => scoped, () => undefined);
+    },
+    async drain(scoped: LooseRecord) {
+      await drainPendingAclWrites(scoped);
+      await drainPendingLogWrites(scopeDatabases.get(scoped)!);
+    },
+    async stageLogs(scoped: LooseRecord, levels: string[]) {
+      const scopedDatabase = scopeDatabases.get(scoped)!;
+      const events = levels.map((level) => uncappedLogEnvelope({ config: database.config, category: "resource", event: "resource.log", level, message: "Resource transaction committed.", data: null }));
+      for (const event of events) await scopedDatabase.adapter.insertLogIndexEvent(event);
+      scopeLogEvents.set(scoped, events);
+    },
+    async committed(scoped: LooseRecord | undefined) {
+      database.rowCache.clear();
+      await dispatchPendingJobs(scoped);
+      // Deliberately bounded, payload-free diagnostics; no input/result/actor IDs.
+      if (scoped && database.log?.path) for (const event of scopeLogEvents.get(scoped) ?? []) appendFileSync(database.log.path, `${JSON.stringify(event)}\n`);
+    },
+    rolledBack(scoped: LooseRecord | undefined) {
+      database.rowCache.clear(); dropPendingJobDispatch(scoped);
+    },
+    release(scoped: LooseRecord | undefined) {
+      if (!scoped) return;
+      scoped.__privilegedRunActive = false;
+      revokePrivilegedDbAccess(scoped);
+      releaseHandlerContextMapping(scopeDatabases.get(scoped)!);
+    },
+  });
+}
+
 function createAtomicStripeConsequenceContext(database: LooseRecord, parent: LooseRecord) {
   const context: LooseRecord = {
     auth: parent.auth,
@@ -4117,6 +4186,7 @@ function protectContextIdentity(value: LooseRecord) {
 }
 
 function createContextHolder(context: LooseRecord) {
+  context.resources = unsupportedResources;
   const holder = { current: context };
   Object.defineProperty(context, "__sporadesContextHolder", {
     value: holder,
@@ -7309,8 +7379,9 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
           result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...(row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {}) } }, async (privilegedCtx: any) => {
             handlerStarted = true;
             database.__runtimeJobAttempts.set(privilegedCtx, Number(row.attempts) + 1);
+            const releaseResources = bindOrdinaryJobResourceContext(database, privilegedCtx, { id: row.id, claimToken, leaseExpiresAt }, true);
             try { return await handler.handler(privilegedCtx, jobPayload); }
-            finally { database.__runtimeJobAttempts.delete(privilegedCtx); }
+            finally { releaseResources(); database.__runtimeJobAttempts.delete(privilegedCtx); }
           });
         } else {
           const auth = readJobAuthSnapshot(row);
@@ -7326,9 +7397,11 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
           handlerStarted = true;
           database.__runtimeJobAttempts.set(context, Number(row.attempts) + 1);
           let handlerFailed = false;
+          const releaseResources = bindOrdinaryJobResourceContext(database, context, { id: row.id, claimToken, leaseExpiresAt });
           try { result = await handler.handler(context, jobPayload); }
           catch (error) { handlerFailed = true; throw error; }
           finally {
+            releaseResources();
             revokeCurrentUserFileApi(context);
             try { await drainCurrentUserFileOperations(context); }
             catch (error) { if (!handlerFailed) throw error; }
@@ -7376,7 +7449,8 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
         const history = JSON.parse(row.attemptHistory || "[]");
         const retry = parsePersistedJobRetry(row.retryJson);
         const abortError = error?.cause ?? error;
-        const abortShaped = abortController.signal.aborted && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR");
+        const abortShaped = (abortController.signal.aborted || isResourceAbortError(abortError))
+          && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR");
         const cancellation = abortShaped
           ? await database.adapter.prepare(sql(
             "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?",
