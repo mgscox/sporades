@@ -26830,6 +26830,7 @@ function validatePublicTreeFileSet(files) {
 }
 
 // src/resource-runtime.ts
+var resourceAbort = Symbol("resourceAbort");
 function resourceError(code) {
   return Object.assign(new Error(code === "RESOURCE_BUSY" ? "Resource transaction is busy." : "Resource operation could not complete."), {
     code,

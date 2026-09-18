@@ -94035,6 +94035,13 @@ function restartPolicyStatus(mode, overrides2 = {}) {
 
 // src/resource-runtime.ts
 import { createHash as createHash8 } from "node:crypto";
+var resourceAbort = Symbol("resourceAbort");
+function resourceAbortError() {
+  return Object.assign(new Error("Job aborted."), { name: "AbortError", code: "ABORTED", [resourceAbort]: true });
+}
+function isResourceAbortError(error) {
+  return error?.[resourceAbort] === true;
+}
 function resourceError(code) {
   return Object.assign(new Error(code === "RESOURCE_BUSY" ? "Resource transaction is busy." : "Resource operation could not complete."), {
     code,
@@ -94164,17 +94171,17 @@ function bindJobResources(database, context, claim, hooks) {
     const assertLive = (admit = false) => {
       if (!active || admit && !admission) throw resourceError("RESOURCE_SCOPE_INACTIVE");
       if (terminalError) throw terminalError;
-      if (context.signal?.aborted || database.__jobStopped) throw Object.assign(new Error("Job aborted."), { code: "ABORTED" });
+      if (context.signal?.aborted || database.__jobStopped) throw resourceAbortError();
       if (database.clock.now().getTime() >= deadline - (admit ? 1e3 : 0)) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
     };
-    const abort = () => revoke(Object.assign(new Error("Job aborted."), { code: "ABORTED" }));
+    const abort = () => revoke(resourceAbortError());
     context.signal?.addEventListener("abort", abort, { once: true });
     const watchdog = database.clock.setTimer(() => revoke(resourceError("RESOURCE_DEADLINE_EXCEEDED")), Math.max(0, deadline - database.clock.now().getTime()));
     const checkClaim = async (adapter, entry = false) => {
       assertLive(entry);
       const row = await adapter.prepare("SELECT status, claimToken, leaseExpiresAt, cancelRequestedAt FROM sporades_jobs WHERE id=?").get(claim.id);
       if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
-      if (row.cancelRequestedAt) throw Object.assign(new Error("Job aborted."), { code: "ABORTED" });
+      if (row.cancelRequestedAt) throw resourceAbortError();
       assertLive(entry);
     };
     const track = (operation) => {
@@ -94241,7 +94248,7 @@ function bindJobResources(database, context, claim, hooks) {
             if (logs.length >= 100) throw resourceError("RESOURCE_INVALID_INPUT");
             logs.push(level);
           }]))),
-          notifications: Object.freeze({ accept: async () => rejectEffect() })
+          notifications: Object.freeze({ accept: () => track(rejectEffect) })
         });
         const value = await Promise.race([Promise.resolve().then(() => callback(scope)), aborted]);
         admission = false;
@@ -94255,11 +94262,11 @@ function bindJobResources(database, context, claim, hooks) {
         active = false;
         return JSON.parse(resultJson);
       }, (adapter) => {
-        if (context.signal?.aborted || database.__jobStopped) throw Object.assign(new Error("Job aborted."), { code: "ABORTED" });
+        if (context.signal?.aborted || database.__jobStopped) throw resourceAbortError();
         if (database.clock.now().getTime() >= deadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
         const row = adapter.prepare("SELECT status, claimToken, leaseExpiresAt, cancelRequestedAt FROM sporades_jobs WHERE id=?").get(claim.id);
         if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
-        if (row.cancelRequestedAt) throw Object.assign(new Error("Job aborted."), { code: "ABORTED" });
+        if (row.cancelRequestedAt) throw resourceAbortError();
       });
       engineCommitted = true;
       active = false;
@@ -98259,7 +98266,12 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
       if (options.readOnly || String(databasePath) === ":memory:") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
       if (connectionGate.isBusy()) throw resourceError("RESOURCE_BUSY");
       return connectionGate.runTransaction(async () => {
-        const dedicated = new DatabaseSync(databasePath);
+        let dedicated;
+        try {
+          dedicated = new DatabaseSync(databasePath);
+        } catch {
+          throw resourceError("RESOURCE_STORAGE_ERROR");
+        }
         let begun = false;
         let commitIssued = false;
         const operations = {
@@ -105796,7 +105808,7 @@ async function runCurrentUserJobWorker(database) {
         const history = JSON.parse(row.attemptHistory || "[]");
         const retry = parsePersistedJobRetry(row.retryJson);
         const abortError = error?.cause ?? error;
-        const abortShaped = abortController.signal.aborted && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR");
+        const abortShaped = (abortController.signal.aborted || isResourceAbortError(abortError)) && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR");
         const cancellation = abortShaped ? await database.adapter.prepare(sql(
           "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?"
         )).get(row.id, claimToken) : null;
