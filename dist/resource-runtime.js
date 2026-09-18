@@ -426,7 +426,9 @@ export function bindJobResources(database, context, claim, hooks) {
         const watchdog = database.clock.setTimer(() => revoke(resourceError("RESOURCE_DEADLINE_EXCEEDED")), Math.max(0, deadline - database.clock.now().getTime()));
         const checkClaim = async (adapter, entry = false) => {
             assertLive(entry);
-            const row = await adapter.prepare(`SELECT status, claimToken, leaseExpiresAt, cancelRequestedAt FROM sporades_jobs WHERE id=?${database.adapter.engine === "postgres" ? " FOR UPDATE" : ""}`).get(claim.id);
+            const row = await adapter.prepare(database.adapter.engine === "postgres"
+                ? "SELECT status, \"claimToken\", \"leaseExpiresAt\", \"cancelRequestedAt\" FROM sporades_jobs WHERE id=? FOR UPDATE"
+                : "SELECT status, claimToken, leaseExpiresAt, cancelRequestedAt FROM sporades_jobs WHERE id=?").get(claim.id);
             if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt)
                 throw resourceError("RESOURCE_CLAIM_LOST");
             if (row.cancelRequestedAt)
@@ -508,7 +510,7 @@ export function bindJobResources(database, context, claim, hooks) {
                     throw resourceAbortError();
                 if (database.clock.now().getTime() >= deadline)
                     throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
-                const row = await adapter.prepare("SELECT status, claimToken, leaseExpiresAt, cancelRequestedAt FROM sporades_jobs WHERE id=? FOR UPDATE").get(claim.id);
+                const row = await adapter.prepare("SELECT status, \"claimToken\", \"leaseExpiresAt\", \"cancelRequestedAt\" FROM sporades_jobs WHERE id=? FOR UPDATE").get(claim.id);
                 if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt)
                     throw resourceError("RESOURCE_CLAIM_LOST");
                 if (row.cancelRequestedAt)

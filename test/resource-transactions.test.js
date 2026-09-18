@@ -35,11 +35,12 @@ async function fixture(handler, extra = {}) {
 
 test('Postgres Job resource scope commits a canonical receipt through its dedicated resource connection', { skip: POSTGRES_SKIP_REASON }, async () => {
   const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
-  await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.close();
+  await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
   const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  let resourceFailure;
   const database = await openDevDatabase('postgres-resource-test', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-resource', services: { database: { engine: 'postgres' } } }, {
     schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
-    jobs: { work: job(ctx => ctx.resources.run(options(), async scope => { await scope.db.writes.insert({ value: 'postgres' }); return { committed: true }; })) },
+    jobs: { work: job(async ctx => { try { return await ctx.resources.run(options(), async scope => { await scope.db.writes.insert({ value: 'postgres' }); return { committed: true }; }); } catch (error) { resourceFailure = `${error.code}:${error.message}`; return { failed: error.code }; } }) },
     mutations: { enqueue: mutation(ctx => ctx.jobs.enqueue('work', null)) },
   }, { clock });
   try {
@@ -48,10 +49,64 @@ test('Postgres Job resource scope commits a canonical receipt through its dedica
     const queued = await runMutation(database, actor, 'enqueue', []);
     assert.equal(queued.ok, true);
     await runCurrentUserJobWorker(database);
-    assert.equal((await database.adapter.prepare("SELECT status FROM sporades_jobs WHERE id=?").get(queued.data.id)).status, 'succeeded');
+    const settled = await database.adapter.prepare("SELECT status,failure FROM sporades_jobs WHERE id=?").get(queued.data.id);
+    assert.equal(settled.status, 'succeeded', settled.failure);
+    assert.equal(resourceFailure, undefined, resourceFailure);
     assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM writes').get()).n), 1);
     assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 1);
   } finally { await database.shutdown(); await database.close(); }
+});
+
+test('Postgres Job backend loss after its final claim check rolls back write and receipt before another owner acquires', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  let retained;
+  let parent;
+  const database = await openDevDatabase('postgres-resource-loss-test', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-resource-loss', services: { database: { engine: 'postgres' } } }, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+    jobs: { work: job(ctx => {
+      parent = ctx.db.writes;
+      return ctx.resources.run(options(), async scope => {
+        retained = scope.db.writes;
+        await scope.db.writes.insert({ value: 'must-rollback-after-backend-loss' });
+        return { committed: true };
+      });
+    }) },
+    mutations: { enqueue: mutation(ctx => ctx.jobs.enqueue('work', null, { retry: { maxAttempts: 1, delayMs: 0 } })) },
+  }, { clock });
+  let release;
+  let markFinal;
+  const finalChecked = new Promise((resolve) => { markFinal = resolve; });
+  const releaseCommit = new Promise((resolve) => { release = resolve; });
+  let backendId;
+  try {
+    await database.init();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'postgres');
+    const original = database.adapter.withResourceTransaction.bind(database.adapter);
+    database.adapter.withResourceTransaction = async (callback, beforeCommit, resource) => await original(callback, async transaction => {
+      await beforeCommit(transaction);
+      backendId = Number((await transaction.prepare('SELECT pg_backend_pid() AS pid').get()).pid);
+      markFinal();
+      await releaseCommit;
+    }, resource);
+    const queued = await runMutation(database, actor, 'enqueue', []);
+    const worker = runCurrentUserJobWorker(database);
+    await Promise.race([finalChecked, new Promise((_, reject) => setTimeout(() => reject(new Error('Job did not reach final PostgreSQL claim check')), 2_000))]);
+    const controller = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    const successor = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    try {
+      assert.equal((await controller.prepare('SELECT pg_terminate_backend(?) AS terminated').get(backendId)).terminated, true);
+      await successor.withResourceTransaction(async () => null, undefined, { table: 'anchors', id: 'anchor' });
+    } finally { await controller.close(); await successor.close(); }
+    release();
+    await worker;
+    assert.equal((await database.adapter.prepare('SELECT status FROM sporades_jobs WHERE id=?').get(queued.data.id)).status, 'failed');
+    assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='must-rollback-after-backend-loss'").get()).n), 0);
+    assert.equal((await database.adapter.prepare("SELECT to_regclass('sporades_resource_receipts') AS receipt_table").get()).receipt_table, null);
+    assert.throws(() => parent.insert({ value: 'parent-after-loss' }), { code: 'RESOURCE_CONTEXT_UNSUPPORTED' });
+    assert.throws(() => retained.insert({ value: 'retained-after-loss' }), /Transaction-scoped database access is no longer active/);
+  } finally { release?.(); await database.shutdown(); await database.close(); }
 });
 
 test('SQLite commits writes, enqueues and a canonical replay receipt exactly once', async () => {
