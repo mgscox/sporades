@@ -3681,6 +3681,9 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
     if (requirements) delete endpointRequest.headers.authorization;
   }
   let context: LooseRecord | undefined;
+  let outerCommitted = false;
+  let resourceAttempted = false;
+  let resourceLogPublicationError: any;
   try {
     let result: any; let transactionAttempt = 0;
     let committedResourceLogEvents: LooseRecord[] = [];
@@ -3709,7 +3712,14 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
             });
             revokeOuterResources = bindOuterResources(transactionDatabase, context, {
               startedAt: outerStartedAt,
-              resourceEntered() { (transactionAdapter as any)[Symbol.for("sporades.database.resourceOuterTransaction")] = true; },
+              resourceEntered() {
+                resourceAttempted = true;
+                (transactionAdapter as any)[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
+                // A resource attempt has a deliberately payload-free diagnostic
+                // channel. Its authorization checks must not escape through the
+                // ordinary transaction logger before the resource settles.
+                transactionDatabase.log = { emit() {} };
+              },
               async authorize(_context: LooseRecord, db: LooseRecord, identity: LooseRecord) {
                 const anchor = await db[identity.table].where("id", identity.id).get();
                 if (!anchor) throw commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
@@ -3754,8 +3764,9 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
             finally { revokeOuterResources?.(); }
           }
         });
+        outerCommitted = resourceAttempted;
         try { if (database.log?.path) for (const event of committedResourceLogEvents) appendFileSync(database.log.path, `${JSON.stringify(event)}\n`); }
-        catch { throw resourceError("RESOURCE_STORAGE_ERROR"); }
+        catch { resourceLogPublicationError = resourceError("RESOURCE_STORAGE_ERROR"); }
         break;
       } catch (error: any) {
         if (ingressFenceAcquired || database.adapter.engine !== "sqlite" || transactionAttempt >= 100 || !String(error?.message ?? "").includes("database is locked")) throw error;
@@ -3770,8 +3781,10 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
+    if (resourceLogPublicationError) throw resourceLogPublicationError;
     return sealCommittedAttachmentResult(result);
   } catch (error) {
+    if (outerCommitted) throw error;
     if ((endpointRequest as LooseRecord).multipart) {
       try { await database.log.emit({ category: "platform", event: "file.ingress.failed", level: "warn", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "failed", code: "INGRESS_ROLLBACK" } }); } catch {}
     }
@@ -6551,6 +6564,9 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
   let context: LooseRecord | undefined;
   let result;
   let committedResourceLogEvents: LooseRecord[] = [];
+  let outerCommitted = false;
+  let resourceAttempted = false;
+  let resourceLogPublicationError: any;
   const writeState = { didWrite: false };
   try {
     const declaredHandler = database.mutations.find((candidate: { name: any; }) => candidate.name === mutationName);
@@ -6574,7 +6590,13 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
         });
         revokeOuterResources = bindOuterResources(transactionDatabase, context, {
           startedAt: outerStartedAt,
-          resourceEntered() { (transactionAdapter as any)[Symbol.for("sporades.database.resourceOuterTransaction")] = true; },
+          resourceEntered() {
+            resourceAttempted = true;
+            (transactionAdapter as any)[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
+            // An outer resource has its own bounded, payload-free diagnostics.
+            // Suppress ordinary ACL/app logging for its full attempted lifetime.
+            transactionDatabase.log = { emit() {} };
+          },
           async authorize(_context: LooseRecord, db: LooseRecord, identity: LooseRecord) {
             const anchor = await db[identity.table].where("id", identity.id).get();
             if (!anchor) throw commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
@@ -6634,8 +6656,9 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
         }
       });
     });
+    outerCommitted = resourceAttempted;
     try { if (database.log?.path) for (const event of committedResourceLogEvents) appendFileSync(database.log.path, `${JSON.stringify(event)}\n`); }
-    catch { throw resourceError("RESOURCE_STORAGE_ERROR"); }
+    catch { resourceLogPublicationError = resourceError("RESOURCE_STORAGE_ERROR"); }
     await commitPendingCurrentUserFileByteDeletes(context);
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
@@ -6645,8 +6668,10 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
       database.rowCache.clear();
       mutationResultsWithWrites.add(committed);
     }
+    if (resourceLogPublicationError) throw resourceLogPublicationError;
     return committed;
   } catch (error: any) {
+    if (outerCommitted) return createHookErrorResult(error);
     dropPendingCurrentUserFileByteDeletes(context);
     dropPendingJobCancellationAborts(context);
     dropAccessKeyLifecycleAuditEvents(context);
@@ -6654,7 +6679,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
     dropPendingJobDispatch(context);
     database.rowCache.clear();
     await reindexPrivilegedAuditEventsAfterRollback(database, context);
-    if (error?.sporadesAclDenialLogData) {
+    if (!resourceAttempted && error?.sporadesAclDenialLogData) {
       emitAclDeniedLog(database, { data: error.sporadesAclDenialLogData });
     }
     if (error?.sporadesAuthDenialLogData) {

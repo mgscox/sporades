@@ -1405,3 +1405,75 @@ test('postcommit resource JSONL failure is redacted while mutation and endpoint 
     assert.equal(callbacks, 2);
   } finally { f.database.log.path = originalPath; await f.close(); }
 });
+
+test('resource attempts suppress ACL denial diagnostics from initial authorization and scoped work', async () => {
+  const f = await fixture(() => null, {
+    schema: {
+      anchors: table({ value: Text() }).acl({ read: ({ row }) => row?.value === 'permitted', write: () => true }),
+      writes: table({ value: Text() }).acl({ read: () => false, write: () => false }),
+    },
+    mutations: {
+      initialAclDenied: mutation(ctx => ctx.resources.run({ ...options(), operationId: 'initial-acl-mutation' }, () => ({ impossible: true }))),
+      scopedAclDenied: mutation(async ctx => {
+        try { await ctx.resources.run({ ...options(), operationId: 'scoped-acl-mutation' }, async scope => {
+          try { await scope.db.writes.insert({ value: 'sensitive-mutation' }); } catch {}
+          void scope.db.writes.insert({ value: 'sensitive-unawaited-mutation' }).catch(() => {});
+          await scope.db.writes.where('value', 'sensitive-read-mutation').get();
+          return { impossible: true };
+        }); } catch {}
+        return { impossible: true };
+      }),
+    },
+    endpoints: {
+      initialAclDenied: endpoint({ method: 'POST', path: '/initial-acl' }, ctx => ctx.resources.run({ ...options(), operationId: 'initial-acl-endpoint' }, () => ({ impossible: true }))),
+      scopedAclDenied: endpoint({ method: 'POST', path: '/scoped-acl' }, async ctx => {
+        try { await ctx.resources.run({ ...options(), operationId: 'scoped-acl-endpoint' }, async scope => {
+          try { await scope.db.writes.insert({ value: 'sensitive-endpoint' }); } catch {}
+          void scope.db.writes.insert({ value: 'sensitive-unawaited-endpoint' }).catch(() => {});
+          await scope.db.writes.where('value', 'sensitive-read-endpoint').get();
+          return { impossible: true };
+        }); } catch {}
+        return { impossible: true };
+      }),
+    },
+  });
+  const request = { method: 'POST', headers: {}, async *[Symbol.asyncIterator]() {} };
+  try {
+    f.database.adapter.prepare("UPDATE anchors SET value='denied' WHERE id='anchor'").run();
+    assert.equal((await runMutation(f.database, actor, 'initialAclDenied', [])).ok, false);
+    await assert.rejects(runEndpoint(f.database, f.database.endpoints.find(item => item.name === 'initialAclDenied'), new URL('http://capsule.test/initial-acl'), request), { code: 'DENIED' });
+    f.database.adapter.prepare("UPDATE anchors SET value='permitted' WHERE id='anchor'").run();
+    assert.equal((await runMutation(f.database, actor, 'scopedAclDenied', [])).ok, false);
+    await assert.rejects(runEndpoint(f.database, f.database.endpoints.find(item => item.name === 'scopedAclDenied'), new URL('http://capsule.test/scoped-acl'), request));
+    await new Promise(resolve => setImmediate(resolve));
+    const indexed = await f.database.adapter.readRecentLogEvents(100);
+    const jsonl = existsSync(f.database.log.path) ? readFileSync(f.database.log.path, 'utf8') : '';
+    assert.equal(indexed.some(event => event.event === 'acl.denied'), false);
+    assert.equal(jsonl.includes('acl.denied'), false);
+    assert.equal(jsonl.includes('sensitive-'), false);
+  } finally { await f.close(); }
+});
+
+test('postcommit JSONL publication failure still dispatches committed resource children', async () => {
+  let childRuns = 0;
+  const f = await fixture(() => null, {
+    jobs: { work: job(() => null), child: job(() => { childRuns++; }) },
+    mutations: { jsonlDispatch: mutation(ctx => ctx.resources.run({ ...options(), operationId: 'jsonl-dispatch-mutation' }, async scope => { scope.log.info('diagnostic'); await scope.jobs.enqueue('child', { source: 'mutation' }); return { committed: true }; })) },
+    endpoints: { jsonlDispatch: endpoint({ method: 'POST', path: '/jsonl-dispatch' }, ctx => ctx.resources.run({ ...options(), operationId: 'jsonl-dispatch-endpoint' }, async scope => { scope.log.info('diagnostic'); await scope.jobs.enqueue('child', { source: 'endpoint' }); return { committed: true }; })) },
+  });
+  const originalPath = f.database.log.path;
+  f.database.log.path = path.dirname(f.file);
+  const request = { method: 'POST', headers: {}, async *[Symbol.asyncIterator]() {} };
+  try {
+    const mutationResult = await runMutation(f.database, actor, 'jsonlDispatch', []);
+    assert.equal(mutationResult.error.code, 'RESOURCE_STORAGE_ERROR');
+    const endpointError = await runEndpoint(f.database, f.database.endpoints.find(item => item.name === 'jsonlDispatch'), new URL('http://capsule.test/jsonl-dispatch'), request).then(() => null, error => error);
+    assert.equal(endpointError.code, 'RESOURCE_STORAGE_ERROR');
+    // Advance only the dispatch timer created by this committed operation; do
+    // not call the worker directly as an unrelated later queue kick.
+    for (let attempts = 0; childRuns !== 2 && attempts < 10; attempts++) await f.clock.runDueTimers();
+    assert.equal(childRuns, 2, 'committed children must run without an unrelated queue kick');
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sporades_jobs WHERE handler='child' AND status='succeeded'").get().n, 2);
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sporades_resource_receipts WHERE operationId LIKE 'jsonl-dispatch-%'").get().n, 2);
+  } finally { f.database.log.path = originalPath; await f.close(); }
+});

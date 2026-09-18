@@ -102504,6 +102504,9 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
     if (requirements) delete endpointRequest.headers.authorization;
   }
   let context;
+  let outerCommitted = false;
+  let resourceAttempted = false;
+  let resourceLogPublicationError;
   try {
     let result;
     let transactionAttempt = 0;
@@ -102531,7 +102534,10 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
             revokeOuterResources = bindOuterResources(transactionDatabase, context, {
               startedAt: outerStartedAt,
               resourceEntered() {
+                resourceAttempted = true;
                 transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
+                transactionDatabase.log = { emit() {
+                } };
               },
               async authorize(_context, db, identity) {
                 const anchor = await db[identity.table].where("id", identity.id).get();
@@ -102581,11 +102587,12 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
             }
           }
         });
+        outerCommitted = resourceAttempted;
         try {
           if (database.log?.path) for (const event of committedResourceLogEvents) appendFileSync(database.log.path, `${JSON.stringify(event)}
 `);
         } catch {
-          throw resourceError("RESOURCE_STORAGE_ERROR");
+          resourceLogPublicationError = resourceError("RESOURCE_STORAGE_ERROR");
         }
         break;
       } catch (error) {
@@ -102601,8 +102608,10 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
+    if (resourceLogPublicationError) throw resourceLogPublicationError;
     return sealCommittedAttachmentResult(result);
   } catch (error) {
+    if (outerCommitted) throw error;
     if (endpointRequest.multipart) {
       try {
         await database.log.emit({ category: "platform", event: "file.ingress.failed", level: "warn", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "failed", code: "INGRESS_ROLLBACK" } });
@@ -105149,6 +105158,9 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
   let context;
   let result;
   let committedResourceLogEvents = [];
+  let outerCommitted = false;
+  let resourceAttempted = false;
+  let resourceLogPublicationError;
   const writeState = { didWrite: false };
   try {
     const declaredHandler = database.mutations.find((candidate) => candidate.name === mutationName);
@@ -105173,7 +105185,10 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
           revokeOuterResources = bindOuterResources(transactionDatabase, context, {
             startedAt: outerStartedAt,
             resourceEntered() {
+              resourceAttempted = true;
               transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
+              transactionDatabase.log = { emit() {
+              } };
             },
             async authorize(_context, db, identity) {
               const anchor = await db[identity.table].where("id", identity.id).get();
@@ -105229,11 +105244,12 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
         }
       });
     });
+    outerCommitted = resourceAttempted;
     try {
       if (database.log?.path) for (const event of committedResourceLogEvents) appendFileSync(database.log.path, `${JSON.stringify(event)}
 `);
     } catch {
-      throw resourceError("RESOURCE_STORAGE_ERROR");
+      resourceLogPublicationError = resourceError("RESOURCE_STORAGE_ERROR");
     }
     await commitPendingCurrentUserFileByteDeletes(context);
     commitPendingJobCancellationAborts(context);
@@ -105244,8 +105260,10 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
       database.rowCache.clear();
       mutationResultsWithWrites.add(committed);
     }
+    if (resourceLogPublicationError) throw resourceLogPublicationError;
     return committed;
   } catch (error) {
+    if (outerCommitted) return createHookErrorResult(error);
     dropPendingCurrentUserFileByteDeletes(context);
     dropPendingJobCancellationAborts(context);
     dropAccessKeyLifecycleAuditEvents(context);
@@ -105253,7 +105271,7 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
     dropPendingJobDispatch(context);
     database.rowCache.clear();
     await reindexPrivilegedAuditEventsAfterRollback(database, context);
-    if (error?.sporadesAclDenialLogData) {
+    if (!resourceAttempted && error?.sporadesAclDenialLogData) {
       emitAclDeniedLog(database, { data: error.sporadesAclDenialLogData });
     }
     if (error?.sporadesAuthDenialLogData) {
