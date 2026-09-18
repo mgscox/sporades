@@ -88,6 +88,91 @@ test('a Custom mutation outer rollback removes its resource receipt and staged w
   } finally { await f.close(); }
 });
 
+test('a Custom mutation holds its SQLite writer through outer settlement after the scope returns', async () => {
+  let scopeReturned, releaseOuter;
+  const afterScope = new Promise(resolve => { scopeReturned = resolve; });
+  const waitForOuter = new Promise(resolve => { releaseOuter = resolve; });
+  const f = await fixture(() => null, {
+    mutations: {
+      holdOuterWriter: mutation(async ctx => {
+        await ctx.resources.run(options(), async scope => {
+          await scope.db.writes.insert({ value: 'held-through-outer-settlement' });
+          return null;
+        });
+        scopeReturned();
+        await waitForOuter;
+        return { committed: true };
+      }),
+    },
+  });
+  try {
+    const running = runMutation(f.database, actor, 'holdOuterWriter', []);
+    await afterScope;
+    const competing = await createSqliteDatabaseAdapter(f.file);
+    try {
+      assert.throws(() => competing.prepare("UPDATE anchors SET value='competing' WHERE id='anchor'").run(), error => error.errcode === 5 || error.errcode === 6);
+    } finally { await competing.close(); }
+    releaseOuter();
+    assert.equal((await running).ok, true);
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='held-through-outer-settlement'").get().n, 1);
+  } finally { releaseOuter?.(); await f.close(); }
+});
+
+test('a non-Job scope reserves its final second and status replays only after current authorization', async () => {
+  let allow = true;
+  const f = await fixture(() => null, {
+    schema: { anchors: table({ value: Text() }).acl({ read: () => allow, write: () => allow }), writes: table({ value: Text() }) },
+    mutations: {
+      reserve: mutation(async ctx => {
+        f.clock.advanceBy(29_000);
+        await assert.rejects(ctx.resources.run(options(), () => ({ unexpected: true })), { code: 'RESOURCE_DEADLINE_EXCEEDED' });
+        return { reserved: true };
+      }),
+      record: mutation(ctx => ctx.resources.run(options(), () => ({ committed: true }))),
+      inspect: mutation(ctx => ctx.resources.status({ resource: options().resource, operationId: 'operation' })),
+    },
+  });
+  try {
+    assert.deepEqual(await runMutation(f.database, actor, 'reserve', []), { ok: true, data: { reserved: true }, error: null });
+    assert.deepEqual(await runMutation(f.database, actor, 'record', []), { ok: true, data: { committed: true }, error: null });
+    assert.deepEqual(await runMutation(f.database, actor, 'inspect', []), { ok: true, data: { state: 'committed', result: { committed: true }, intentIds: [] }, error: null });
+    allow = false;
+    const denied = await runMutation(f.database, actor, 'inspect', []);
+    assert.equal(denied.ok, false);
+    assert.equal(denied.error.code, 'DENIED');
+  } finally { await f.close(); }
+});
+
+test('a child enqueued inside a mutation resource scope becomes visible only after outer commit', async () => {
+  let scopeReturned, releaseOuter;
+  const afterScope = new Promise(resolve => { scopeReturned = resolve; });
+  const waitForOuter = new Promise(resolve => { releaseOuter = resolve; });
+  const f = await fixture(() => null, {
+    mutations: {
+      enqueueAfterCommit: mutation(async ctx => {
+        await ctx.resources.run(options(), async scope => {
+          await scope.jobs.enqueue('child', { source: 'outer' }, { availableAt: '2031-01-01T00:00:00.000Z' });
+          return null;
+        });
+        scopeReturned();
+        await waitForOuter;
+        return { committed: true };
+      }),
+    },
+  });
+  try {
+    const running = runMutation(f.database, actor, 'enqueueAfterCommit', []);
+    await afterScope;
+    const observer = await createSqliteDatabaseAdapter(f.file, { readOnly: true });
+    try {
+      assert.equal(observer.prepare("SELECT count(*) n FROM sporades_jobs WHERE handler='child'").get().n, 0);
+    } finally { await observer.close(); }
+    releaseOuter();
+    assert.equal((await running).ok, true);
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sporades_jobs WHERE handler='child'").get().n, 1);
+  } finally { releaseOuter?.(); await f.close(); }
+});
+
 test('a mutation resource scope invalidates parent and escaped database handles after its callback', async () => {
   let escaped;
   const f = await fixture(() => null, {
