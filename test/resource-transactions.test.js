@@ -374,6 +374,27 @@ test('a Custom endpoint has the same outer deadline and authorized status semant
   } finally { await f.close(); }
 });
 
+test('outer mutation and endpoint resource logs commit payload-free, roll back, and enforce the 100-call cap', async () => {
+  const f = await fixture(() => null, {
+    mutations: {
+      logCommit: mutation(ctx => ctx.resources.run(options(), scope => { scope.log.info('secret', { body: 'secret' }); return true; })),
+      logRollback: mutation(async ctx => { await ctx.resources.run({ ...options(), operationId: 'log-rollback' }, scope => { scope.log.warn('secret'); return true; }); throw new Error('outer'); }),
+      logCap: mutation(ctx => ctx.resources.run({ ...options(), operationId: 'log-cap' }, scope => { for (let i = 0; i < 101; i++) scope.log.error('secret'); return true; })),
+    },
+    endpoints: { logCommit: endpoint({ method: 'POST', path: '/resource-log' }, ctx => ctx.resources.run({ ...options(), operationId: 'endpoint-log' }, scope => { scope.log.info('secret'); return true; })) },
+  });
+  const request = { method: 'POST', headers: {}, async *[Symbol.asyncIterator]() {} };
+  try {
+    assert.equal((await runMutation(f.database, actor, 'logCommit', [])).ok, true);
+    assert.equal((await runMutation(f.database, actor, 'logRollback', [])).ok, false);
+    assert.equal((await runMutation(f.database, actor, 'logCap', [])).ok, false);
+    assert.equal(await runEndpoint(f.database, f.database.endpoints.find(item => item.name === 'logCommit'), new URL('http://capsule.test/resource-log'), request), true);
+    const events = (await f.database.adapter.readRecentLogEvents(100)).filter(event => event.category === 'resource');
+    assert.equal(events.length, 2);
+    assert.equal(JSON.stringify(events).includes('secret'), false);
+  } finally { await f.close(); }
+});
+
 test('rollback removes app writes and receipt; escaped handles reject after callback', async () => {
   let escaped;
   const f = await fixture(async ctx => ctx.resources.run(options(), async scope => {
