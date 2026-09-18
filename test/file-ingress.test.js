@@ -1404,6 +1404,41 @@ function ingressRequest(requestKey = "claim-request") {
   return { method: "POST", headers, async *[Symbol.asyncIterator]() { yield multipart("claim", 'Content-Disposition: form-data; name="file"; filename="claim.txt"\r\nContent-Type: text/plain\r\nContent-ID: stable-claim', "claim-bytes"); } };
 }
 
+test("multipart endpoint Files remain resource-guarded after ingress and attachment APIs are installed", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-resource-endpoint-files-")); let database; let escaped;
+  const resource = { resource: { table: "anchors", id: "anchor" }, operationId: "endpoint-files", input: null };
+  try {
+    const definition = capsule({ name: "resource-endpoint-files", schema: { anchors: table({ value: StringField() }), effects: table({ value: StringField() }) }, endpoints: {
+      priorClaim: endpoint({ method: "POST", path: "/prior-claim", body: { multipart: ingressPolicy() } }, requireAuth(async (ctx) => {
+        await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/prior-claim.txt" });
+        try { await ctx.resources.run({ ...resource, operationId: "prior-claim" }, () => null); } catch (error) { return error.code; }
+      })),
+      priorAttachment: endpoint({ method: "POST", path: "/prior-attachment", response: { fileAttachment: true }, body: { multipart: ingressPolicy() } }, requireAuth(async (ctx) => {
+        ctx.files.attachment({ id: "file", version: "version" }, { filename: "prior.txt" });
+        try { await ctx.resources.run({ ...resource, operationId: "prior-attachment" }, () => null); } catch (error) { return error.code; }
+      })),
+      insideScope: endpoint({ method: "POST", path: "/inside-scope", body: { multipart: ingressPolicy() } }, requireAuth(async (ctx) => {
+        return await ctx.resources.run({ ...resource, operationId: "inside-scope" }, async () => await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/inside.txt" }));
+      })),
+      afterScope: endpoint({ method: "POST", path: "/after-scope", response: { fileAttachment: true }, body: { multipart: ingressPolicy() } }, requireAuth(async (ctx) => {
+        await ctx.resources.run({ ...resource, operationId: "after-scope" }, async scope => { await scope.db.effects.insert({ value: "committed" }); return null; });
+        escaped = ctx.files;
+        try { await ctx.files.attachment({ id: "file", version: "version" }, { filename: "after.txt" }); } catch (error) { return error.code; }
+      })),
+    } });
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "resource-endpoint-files", files: { storagePath: path.join(dir, "files") } }, definition);
+    await seedIngressUser(database);
+    await database.adapter.prepare("INSERT INTO [anchors] ([id], [createdAt], [updatedAt], [value]) VALUES (?, ?, ?, ?)").run("anchor", "2030-01-01T00:00:00.000Z", "2030-01-01T00:00:00.000Z", "present");
+    assert.equal(await runEndpoint(database, database.endpoints.find((item) => item.name === "priorClaim"), new URL("http://capsule.test/prior-claim"), ingressRequest("resource-prior-claim")), "RESOURCE_CONTEXT_UNSUPPORTED");
+    assert.equal(await runEndpoint(database, database.endpoints.find((item) => item.name === "priorAttachment"), new URL("http://capsule.test/prior-attachment"), ingressRequest("resource-prior-attachment")), "RESOURCE_CONTEXT_UNSUPPORTED");
+    await assert.rejects(runEndpoint(database, database.endpoints.find((item) => item.name === "insideScope"), new URL("http://capsule.test/inside-scope"), ingressRequest("resource-inside")), { code: "RESOURCE_EFFECT_UNSUPPORTED" });
+    assert.equal(await runEndpoint(database, database.endpoints.find((item) => item.name === "afterScope"), new URL("http://capsule.test/after-scope"), ingressRequest("resource-after")), "RESOURCE_SCOPE_INACTIVE");
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [effects] WHERE [value] = 'committed'").get()).count), 1);
+    assert.throws(() => escaped.claim({}), { code: "RESOURCE_SCOPE_INACTIVE" });
+    assert.throws(() => escaped.attachment({ id: "file", version: "version" }, { filename: "late.txt" }), { code: "RESOURCE_SCOPE_INACTIVE" });
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 async function seedIngressAccessKey(database, ownerUserId = "service-owner") {
   await database.adapter.insertAuthUser({ id: ownerUserId, createdAt: new Date().toISOString(), displayName: "service owner", email: null, picture: null, isAuthenticated: 1, isGuest: 0, provider: "service" });
   const secret = createAccessKeySecret();
