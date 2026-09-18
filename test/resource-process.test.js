@@ -116,6 +116,7 @@ test('independent Grant revocation before Job acquisition denies current authori
   try {
     f.b.send('grant-change', { action: 'revoke' });
     assert.deepEqual(await f.b.wait('grant-change'), { kind: 'grant-change', code: 'COMMITTED', action: 'revoke' });
+    assert.equal(f.read.prepare("SELECT count(*) n FROM sporades_resource_receipts WHERE operationId='grant-revoke'").get().n, 1);
     f.a.send('acquire');
     assert.equal((await f.a.wait('outcome')).code, 'DENIED');
     assert.equal(f.read.prepare('SELECT count(*) n FROM writes').get().n, 0);
@@ -128,6 +129,7 @@ test('independent Grant rotation before Job acquisition is observed before prote
   try {
     f.b.send('grant-change', { action: 'rotate' });
     assert.equal((await f.b.wait('grant-change')).code, 'COMMITTED');
+    assert.equal(f.read.prepare("SELECT count(*) n FROM sporades_resource_receipts WHERE operationId='grant-rotate'").get().n, 1);
     assert.equal(f.read.prepare("SELECT value FROM anchors WHERE id='anchor'").get().value, 'rotated');
     f.a.send('acquire'); await f.a.wait('entered');
     f.a.send('release');
@@ -154,12 +156,13 @@ for (const action of ['rotate', 'revoke']) test(`independent Grant ${action} aft
   try {
     f.a.send('acquire'); await f.a.wait('entered');
     f.b.send('grant-change', { action });
-    assert.equal((await f.b.wait('grant-change')).code, 'SQLITE_BUSY');
+    assert.equal((await f.b.wait('grant-change')).code, 'RESOURCE_BUSY');
     assert.equal(f.read.prepare('SELECT count(*) n FROM writes').get().n, 0);
     f.a.send('release');
     assert.equal((await f.a.wait('outcome')).code, 'COMMITTED');
     f.b.send('grant-change', { action });
     assert.equal((await f.b.wait('grant-change')).code, 'COMMITTED');
+    assert.equal(f.read.prepare('SELECT count(*) n FROM sporades_resource_receipts WHERE operationId=?').get(`grant-${action}`).n, 1);
     assert.equal(f.read.prepare('SELECT count(*) n FROM writes').get().n, 1);
     if (action === 'revoke') assert.equal(f.read.prepare("SELECT count(*) n FROM anchors WHERE id='anchor'").get().n, 0);
     else assert.equal(f.read.prepare("SELECT value FROM anchors WHERE id='anchor'").get().value, 'rotated');

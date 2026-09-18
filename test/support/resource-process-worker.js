@@ -1,5 +1,5 @@
-import { openDevDatabase, createControllableRuntimeClock, recoverExpiredJobLeases } from '../../dist/server-runtime-source.js';
-import { table, String as Text, job } from '../../dist/server.js';
+import { openDevDatabase, createControllableRuntimeClock, recoverExpiredJobLeases, runMutation } from '../../dist/server-runtime-source.js';
+import { table, String as Text, job, mutation } from '../../dist/server.js';
 const teamId = '11111111-1111-4111-8111-111111111111';
 const messages = new Map();
 const pending = new Map();
@@ -32,8 +32,10 @@ process.on('message', async message => {
   } else if (message.kind === 'grant-change') {
     try {
       if (message.action === 'membership-revoke') database.adapter.prepare('DELETE FROM sporades_team_memberships WHERE teamId=? AND userId=?').run(teamId, 'actor');
-      else if (message.action === 'revoke') database.adapter.prepare("DELETE FROM anchors WHERE id='anchor'").run();
-      else database.adapter.prepare("UPDATE anchors SET value='rotated' WHERE id='anchor'").run();
+      else {
+        const outcome = await runMutation(database, { userId: 'actor', displayName: 'Actor', email: null, picture: null, isAuthenticated: true, isGuest: false, provider: 'email' }, 'changeGrant', [message.action]);
+        if (!outcome.ok) throw Object.assign(new Error('Grant change failed.'), { code: outcome.error?.code });
+      }
       send('grant-change', { code: 'COMMITTED', action: message.action });
     } catch (error) {
       send('grant-change', { code: error.errcode === 5 || error.errcode === 6 ? 'SQLITE_BUSY' : error.code, action: message.action });
@@ -52,6 +54,11 @@ const definition = {
     read: ({ ctx }) => ctx.acl.teams.isMember(teamId),
     write: ({ ctx }) => ctx.acl.teams.isMember(teamId),
   }), writes: table({ value: Text() }) },
+  mutations: { changeGrant: mutation(async (ctx, action) => ctx.resources.run({ resource: { table: 'anchors', id: 'anchor' }, operationId: `grant-${action}`, input: null }, async scope => {
+    if (action === 'revoke') await scope.db.anchors.delete('anchor');
+    else await scope.db.anchors.update('anchor', { value: 'rotated' });
+    return { changed: action };
+  })) },
   jobs: { work: job(async (ctx, payload) => {
     send('claimed');
     const command = await wait('acquire');
