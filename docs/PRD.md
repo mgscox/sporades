@@ -688,9 +688,14 @@ non-string, malformed, or unsupported version is not treated as absent and
 leaves the provider configured/runtime unavailable.
 
 Provider identity authority is the stored `(provider, subject)` identity and
-authentication provenance belongs to each Session. The legacy provider column
-on a user row is migration data only: linking another provider may update the
-shared profile but cannot rewrite the provider reported by another Session.
+authentication provenance belongs to each Session. The user row's provider label
+summarizes its most recent authentication write; linking another provider cannot
+rewrite the provider reported by another Session. `anonymous` denotes an
+unauthenticated guest (including after unlink); authenticated rows cannot carry
+that label. Startup repairs historical labels from unambiguous Provider identity
+methods, using `unknown` for missing or ambiguous evidence, without changing
+flags, email, or Session validity. `isAuthenticated` / `isGuest` remain authority;
+the summary label alone never grants trust. See ADR 0015 for migration policy.
 Legacy Google configuration and status fields normalize immediately into the
 provider-neutral runtime contract. Production provider endpoints are fixed;
 process-only endpoint overrides are admitted solely by explicit loopback test

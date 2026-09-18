@@ -649,10 +649,11 @@ test("new simulated identities bootstrap transactionally while existing simulate
 
       const now = new Date().toISOString();
       await database.adapter.withTransaction(async (tx) => {
-        await tx.insertAuthUser({
-          id: "legacy-simulated-user", createdAt: now, displayName: "Legacy Simulated", email: "legacy-simulated@example.com",
-          picture: null, isAuthenticated: 1, isGuest: 0, provider: "anonymous",
-        });
+        // Seed historical corruption directly; new auth writers reject this shape.
+        await tx.prepare(tx.dialect.sql(
+          "INSERT INTO [sporades_auth_users] ([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider]) " +
+          "VALUES (?, ?, ?, ?, NULL, 1, 0, 'anonymous')",
+        )).run("legacy-simulated-user", now, "Legacy Simulated", "legacy-simulated@example.com");
         await tx.insertAuthIdentity({
           id: "legacy-simulated-identity", userId: "legacy-simulated-user", provider: "email", subject: "local:legacy-simulated@example.com",
           email: "legacy-simulated@example.com", displayName: "Legacy Simulated", picture: null, createdAt: now, updatedAt: now,
@@ -663,6 +664,7 @@ test("new simulated identities bootstrap transactionally while existing simulate
       });
       assert.equal(legacy.ok, true);
       assert.equal(legacy.data.auth.userId, "legacy-simulated-user");
+      assert.equal(database.adapter.prepare("SELECT provider FROM sporades_auth_users WHERE id = ?").get(legacy.data.auth.userId).provider, "email");
       assert.equal(teamCountForUser(database, legacy.data.auth.userId), 0);
       assert.equal((await listCurrentUserTeams(database, legacy.data.auth)).teams.length, 1);
     } finally {

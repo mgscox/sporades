@@ -89,15 +89,34 @@ Authentication provenance belongs to the Session rather than the shared user.
 Each authenticated Session records the provider used for that Session, so
 linking another Provider identity cannot rewrite the provider reported by
 already-authenticated Sessions for the same user. Existing Session tokens and
-Sporades user IDs survive the additive storage migration. The historical
-`sporades_auth_users.provider` value remains only as migration input for old
-databases; new linking and profile updates do not mutate it, and runtime
-identity or Session decisions never read it after Session provenance has been
-backfilled. New user rows write the constant `anonymous` migration marker
-required by the legacy non-null schema; selected provider values live only on
-Provider identities, Sessions, and other provenance-bearing records. The
-runtime adapter no longer exposes a provider-and-email user lookup, and email
-credential reads exclude the legacy column. Legacy Google rows
+Sporades user IDs survive the additive storage migration.
+
+Issue #56 supersedes the previous decision to leave the shared user provider
+column as a constant migration marker. `sporades_auth_users.provider` now records
+the method on the most recent successful authentication write (`email`,
+`google`, `microsoft`, `apple`, or `facebook`). It is a user-level summary, not the
+provenance of every Session. `isAuthenticated` / `isGuest` remain authentication
+authority; a provider string alone never grants trust. Writers reject an
+authenticated row carrying `anonymous` or the historical `guest` alias.
+`anonymous` is the canonical unauthenticated guest label, including after unlink.
+Service Users retain their separate `service` label.
+
+Startup repairs authenticated `anonymous` / `guest` labels from
+`sporades_auth_identities` only when its recorded methods agree on one supported
+method. Missing identities, unsupported evidence, or multiple distinct methods
+produce `unknown`: this explicitly means historical method evidence is missing
+or ambiguous, and grants no authority. In particular, historical email-password
+users may have credentials but no Provider identity; their method is not guessed
+from credentials or email. A later successful sign-in records the actual method.
+Already-correct labels (including interim hand-patches) remain unchanged.
+Historical unauthenticated `guest` labels normalize to `anonymous`.
+The repair is one atomic, idempotent, label-only UPDATE: no flags, profile fields,
+identities, credentials, or Sessions change, and no sign-out is forced. It runs
+after the pre-existing Session-provenance backfill, so it cannot rewrite an older
+Session's provenance. The user summary is never read as Session authority.
+
+The runtime adapter no longer exposes a provider-and-email user lookup, and email
+credential reads exclude the user provider column. Legacy Google rows
 are claimed by the next verified Google subject during a compatibility window
 only when Google reports the matching email as verified and exactly one
 eligible legacy identity matches it. Unverified or ambiguous legacy matches

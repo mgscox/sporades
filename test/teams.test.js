@@ -432,8 +432,8 @@ test("Team membership lists are safe, bounded, and scoped to the current admin t
     await runtime.database.adapter.withTransaction(async (tx) => {
       const now = new Date().toISOString();
       const memberCreatedAt = new Date(Date.now() - 1_000).toISOString();
-      await tx.updateAuthUserProfile({ id: ownerSignUp.data.auth.userId, displayName: "Owner", picture: "https://example.com/owner.png", isAuthenticated: 1, isGuest: 0 });
-      await tx.updateAuthUserProfile({ id: memberSignUp.data.auth.userId, displayName: "Member", picture: "https://example.com/member.png", isAuthenticated: 1, isGuest: 0 });
+      await tx.updateAuthUserProfile({ id: ownerSignUp.data.auth.userId, displayName: "Owner", picture: "https://example.com/owner.png", isAuthenticated: 1, isGuest: 0, provider: "email" });
+      await tx.updateAuthUserProfile({ id: memberSignUp.data.auth.userId, displayName: "Member", picture: "https://example.com/member.png", isAuthenticated: 1, isGuest: 0, provider: "email" });
       await tx.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)").run(teamA, memberSignUp.data.auth.userId, memberCreatedAt);
       await tx.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)").run(teamB, memberSignUp.data.auth.userId, memberCreatedAt);
       for (let index = 0; index < 110; index += 1) {

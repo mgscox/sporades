@@ -306,6 +306,10 @@ _Avoid_: reset token, oobCode, magic link (it authorizes a password change, not 
 The authentication provider recorded on one Session. It reports how that Session authenticated independently of other Sessions or Provider identities linked to the same Sporades user.
 _Avoid_: user provider, account type, current linked provider
 
+**User provider label**:
+The user-level summary of the most recent authentication write. `anonymous` denotes an unauthenticated guest, including after unlink; `unknown` denotes missing or ambiguous historical identity evidence after label repair. Authenticated users cannot carry `anonymous` or the historical `guest` alias. This summary grants no authority and never replaces Session provenance or the `isAuthenticated` / `isGuest` flags.
+_Avoid_: session provider, authentication authority
+
 **Auth transaction**:
 The Transaction boundary for one user-visible auth action that touches multiple runtime-owned auth records. Sign-up, sign-in, provider linking, OAuth callback handling, and session rotation should leave auth storage in a known outcome; for example, a failed sign-up must not leave a created user behind, failed session rotation keeps the old Session token valid, and a failed OAuth callback spends its OAuth state so the user restarts the local OAuth flow.
 _Avoid_: partial sign-up, orphaned auth row, best-effort auth update

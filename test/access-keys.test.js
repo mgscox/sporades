@@ -694,6 +694,7 @@ test("a guarded endpoint admits, attributes, scopes, and revokes a Bearer Access
       picture: null,
       isAuthenticated: 1,
       isGuest: 1,
+      provider: "email",
     });
     const ineligibleOwner = await requestEndpoint(database, "/requests", {
       headers: { authorization: `Bearer ${issued.data.token}` },
@@ -705,6 +706,7 @@ test("a guarded endpoint admits, attributes, scopes, and revokes a Bearer Access
       picture: null,
       isAuthenticated: 1,
       isGuest: 0,
+      provider: "email",
     });
 
     const unknown = createAccessKeySecret();
