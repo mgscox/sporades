@@ -1,20 +1,22 @@
-# 06 — Support the proven external handoff boundary
+# 06 — Accept durable notification intents and expose delivery uncertainty
 
-**What to build:** A Capsule performs an external handoff while coordinating a named resource using the concrete protocol proven in ticket 01, with explicit ownership, cancellation, retry, and uncertain-acceptance behavior.
+**What to build:** Implement M1 intent acceptance in the resource transaction, then an independent SMTP delivery worker. The original strict external-handoff fence is unnecessary under M1 and remains unsolved.
 
-**Blocked by:** 02 — Run ordinary Jobs inside a resource transaction on SQLite.
+**Blocked by:** M1 approval and 02. Integration against PostgreSQL also requires 04 before 07 can pass.
 
-**Status:** ready-for-agent
+**Status:** blocked — amendment-awaiting-approval
 
 **Parent:** https://github.com/mgscox/sporades/issues/52
 
-- [ ] Implement the precise external acceptance boundary and recovery protocol established by ticket 01. If that gate has not produced an implementable contract, keep this ticket blocked rather than inventing weaker semantics.
-- [ ] Expose only the runtime-owned scoped capability required by that contract, preserving actor/resource authorization and preventing retained or Privileged aliases from outliving their authority.
-- [ ] Reject unsupported destinations or protocols before submission. An ownership check immediately before a send, an AbortSignal, or socket destruction alone does not prove strict stale-send prevention.
-- [ ] Using a controlled receiver and independent workers, pause the old owner after its final local check, revoke or lose its authority, permit takeover, and resume it. Prove the agreed result at external acceptance as well as in the database.
-- [ ] Test cancellation, execution-budget exhaustion, process death, database connection loss, receiver stalls, acknowledgement loss after acceptance, and commit failure after acceptance. Record outcomes and retry eligibility without treating an unknown outcome as a confirmed failure.
-- [ ] Do not roll back, erase, or misreport an already accepted external effect. Preserve documented at-least-once behavior unless the participating destination provides and tests a stronger guarantee.
-- [ ] Keep ordinary SMTP outside any strict fencing promise unless the protocol actually proves that promise. An unsupported-SMTP error by itself does not satisfy the parent issue or this ticket's required supported handoff.
-- [ ] Ship supported public types, generated runtime behavior, bounded redacted diagnostics, canonical documentation, and focused compatibility tests together.
+**Contract:** [ADR-0054 M1](../../../docs/adr/0054-ordinary-job-authority-does-not-fence-smtp-acceptance.md). Proposed, not approved. These criteria supersede this ticket's original scope only if M1 is explicitly approved; they do not weaken the unchanged parent today.
 
-**Validation prerequisites:** Follow the shared environment instructions for adapter-backed tests, including the already-approved local PostgreSQL Docker instance. Install dependencies directly in the worktree; tests will not pass with symlinked `node_modules`.
+- [ ] Implement the exact scoped notifications.accept shape, size/address/permission validation and immutable (resource, operationId, notification id) identity. Same payload deduplicates; changed payload conflicts. Return staged only until the owning engine commit; commit receipt, writes and intent atomically.
+- [ ] Prove no SMTP submission before commit and no surviving intent on rollback, in ordinary Jobs and outer mutation/endpoint transactions. Scan retained accepted intents after restart; do not depend on a volatile post-commit wakeup.
+- [ ] Implement accepted -> submitting -> acknowledged/rejected/unknown with a persisted attempt token committed before I/O, one attempt per intent, no transport auto-retry, and token-conditional outcome updates. Job retry/cancel and resource revocation never erase committed acceptance.
+- [ ] Expose persisted states via resources.status; after restart/30 seconds treat unresolved submitting as unknown without takeover. Allow the same attempt token to report a late definitive outcome. Unknown/rejected/submitting are not automatically resent and no resend API is shipped.
+- [ ] With independent workers and a controlled receiver, prove deterministic intent acceptance races, replay after unknown DB commit, and crash before/after submitting commit. Pause a sender and show a later stale SMTP acceptance is possible and explicitly outside M1; do not label this strict-fence success.
+- [ ] Prove accepted-with-lost-reply and no-acceptance twins remain unknown; DB persistence failure after final reply cannot be called rollback or trigger blind resend. SMTP acknowledgement is not delivery. Test restart retains uncertainty and receipt remains committed in every delivery outcome.
+- [ ] Record that this new implementation conformance must be run when 06 is dispatched; do not rerun the historical ticket-01 experiment as part of this decision task.
+- [ ] Ship types, generated behavior, bounded redacted diagnostics and docs stating possible post-revocation send, possible unsent notification after crash, and no exactly-once or unconditional at-least-once promise. Do not claim original #52 is satisfied.
+
+**Validation prerequisites:** Follow the shared plan: real worktree-installed dependencies via `npm ci`, never symlinked `node_modules`; approved disposable local PostgreSQL and dedicated test harness when PostgreSQL is tested.

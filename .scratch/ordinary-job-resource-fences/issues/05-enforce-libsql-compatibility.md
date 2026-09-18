@@ -1,18 +1,19 @@
-# 05 — Define and enforce libSQL compatibility
+# 05 — Fail closed for libSQL in v1
 
-**What to build:** A Capsule using libSQL either receives a proven resource transaction contract or an explicit capability error before any protected work begins. It never unknowingly receives weaker authority under the same API.
+**What to build:** Implement an explicit unsupported-adapter gate for the proposed resource API. The original optional libSQL support investigation is unnecessary in this implementation plan.
 
-**Blocked by:** 02 — Run ordinary Jobs inside a resource transaction on SQLite.
+**Blocked by:** M1 approval and 02.
 
-**Status:** ready-for-agent
+**Status:** blocked — amendment-awaiting-approval
 
 **Parent:** https://github.com/mgscox/sporades/issues/52
 
-- [ ] Evaluate the actual libSQL transport and deployment behavior for transaction expiry, idle expiry, connection loss, and resumed owners while external work is pending.
-- [ ] If support is demonstrable, run the shared conformance contract against a real representative service and record its relevant limits; a service fake alone is insufficient evidence of remote expiry guarantees.
-- [ ] If those guarantees cannot be demonstrated, reject the opt-in scope before invoking its callback or performing application writes or external sends. Return a stable, bounded capability error.
-- [ ] Do not silently downgrade to an in-process mutex, an unfenced lease, or ordinary autocommit execution. Never execute the protected callback to discover that support is absent.
-- [ ] Document the exact supported or unsupported behavior, relevant deployment constraints, and public failure contract. Ensure declaration types and generated runtime behavior agree.
-- [ ] Test the support gate, callback non-execution on rejection, and continued ordinary Job operation for Capsules that omit the new API.
+**Contract:** [ADR-0054 M1](../../../docs/adr/0054-ordinary-job-authority-does-not-fence-smtp-acceptance.md). Proposed, not approved. These criteria supersede this ticket's original scope only if M1 is explicitly approved; they do not weaken the unchanged parent today.
 
-**Validation prerequisites:** Install dependencies directly in the implementation worktree; tests will not pass with symlinked `node_modules`.
+- [ ] Return RESOURCE_ADAPTER_UNSUPPORTED for run and status before callback, receipt lookup, application writes or network submission on every libSQL path, including remote and local libSQL configurations.
+- [ ] Test callback non-execution, zero application/receipt/intent writes, stable redacted errors, and no fallback to mutex, autocommit, SQLite-like guesses or expiring claims.
+- [ ] Keep existing non-opt-in libSQL Job behavior unchanged; test it separately from scope rejection.
+- [ ] Publish explicit SQLite/PostgreSQL support and libSQL unsupported declarations consistently in types, generated behavior and canonical docs.
+- [ ] Record that future libSQL support requires a separate approved proposal and real representative remote expiry/connection-loss/restart conformance. No fake service test or this rejection gate certifies support.
+
+**Validation prerequisites:** Follow the shared plan: real worktree-installed dependencies via `npm ci`, never symlinked `node_modules`; approved disposable local PostgreSQL and dedicated test harness when PostgreSQL is tested.

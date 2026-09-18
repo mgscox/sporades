@@ -1,10 +1,10 @@
 # Ordinary Job authority does not fence SMTP acceptance
 
-Date: 2026-09-18. Status: **negative feasibility decision; implementation gate blocked**.
+Date: 2026-09-18. Status: **amendment proposed, NOT approved; implementation gate blocked**.
 Part of [#52](https://github.com/mgscox/sporades/issues/52),
 [ticket 01](https://github.com/mgscox/sporades/blob/codex/issue-52-resource-fence-tickets/.scratch/ordinary-job-resource-fences/issues/01-prove-external-side-effect-contract.md).
 
-## Decision
+## Ticket 01 decision (retained evidence)
 
 Do not expose the proposed general resource transaction with an ordinary SMTP
 handoff guarantee. Neither a transaction held around the call nor a durable
@@ -18,7 +18,7 @@ changes in this decision.
 
 This is an impossibility result for the stated failure model and nonparticipating
 ordinary SMTP destination, not a claim that all distributed handoff designs are
-impossible. See the [experiment and evidence](../../experiments/issue52-external-contract/README.md).
+impossible. See the [pinned experiment and evidence](https://github.com/mgscox/sporades/blob/38b6103b3830ac6293f620eee9677152c3c84b9e/experiments/issue52-external-contract/README.md). The experiment remains in draft PR #54; this planning branch does not copy or rerun it.
 
 ## Vocabulary and distinct boundaries
 
@@ -83,13 +83,14 @@ The prototype uses **actual SQL predicates and affected-row counts**, not the
 public `table.where(...).update(...)` read-then-write behavior. Production would
 need a supported runtime primitive. A generation must remain bound to every
 protected mutation; reconnecting and writing by ID would bypass that fence.
-The two shapes are rejected as complete external contracts; neither is selected
-for downstream implementation. A future DB-only scope may favor runtime-owned
-transactions, but that is not permission to start ticket 02 now.
+The two shapes are rejected as complete external contracts; neither was selected
+by ticket 01 for downstream implementation. The proposal below selects a
+runtime-owned transaction only under an explicit amendment; it does not authorize
+starting ticket 02 now.
 
 ## Recorded contract and state transitions
 
-There is **no implementable public API selected** that meets all requirements for
+There is **no implementable public API** that meets all unchanged requirements for
 ordinary SMTP. Accordingly this is a blocked contract, not a signature that 02 or
 06 may fill in with guessed semantics. The experimental RPC operations (`begin`,
 `lease`, `check`, `submit`, `mutate`, `commit`, `rollback`) are defined in
@@ -181,3 +182,244 @@ Protocol reference: [RFC 5321 §§4.2.5 and 6.1](https://www.rfc-editor.org/rfc/
 describes receiver responsibility after DATA and duplicate-message risks when
 responses are lost. The runtime observations above are local experimental evidence,
 not inferred from the RFC.
+
+
+## Decision proposal after ticket 01
+
+**Recommend A: a runtime-owned resource transaction plus durable notification
+intent, conditional on approval of amendment M1 below. Neither A nor B satisfies
+the unchanged ordinary-SMTP case.** A keeps multi-row writes, ACL work, Job enqueues,
+intent acceptance and retry receipts in one engine commit. B is useful for a
+single-row optimistic revision/claim, but would leave each Capsule to implement
+multi-row recovery and still cannot fence SMTP. Do not add public CAS in this plan.
+This is an implementable specification, not an implementation or new proof.
+
+All source locations in this matrix refer to base `6570a7ba`, not installed 0.9.22.
+The evidence refers to commit `38b6103b3830ac6293f620eee9677152c3c84b9e`.
+
+| Question / deciding evidence | A: transaction / locking scope | B: first-class CAS / conditional update |
+| --- | --- | --- |
+| Ordinary handler directly awaited at `src/server-runtime-source.ts:7324–7339`; `privileged.run` directly awaits callback at `:2432` without a transaction | Adds the missing engine boundary; Privileged execution alone is no substitute | Adds an atomic statement, not a transaction around the callback; Privileged execution adds neither |
+| `RUNTIME_CLAIM_LEASE_MS = 30_000` at `:2207`, fixed claim at `:7264–7277`, no renewal loop at `:7324–7339` | Use remaining original lease for admission; engine lock, not timer, governs transfer; paused transaction can delay recovery | Expiring generation permits takeover, but paused sender remains live; permanent claim instead prevents guaranteed recovery |
+| Settlement token predicate at `:7354` | Protects Job settlement only; transaction must separately bind scoped DB capabilities | Every protected DB mutation needs the exact generation predicate; settlement check is insufficient |
+| Table `update` selects by ID at `:4604` then calls `updateAppRow` at `:4592`; `.where` only builds a query at `:4629–4630` | Bind table operations to the transaction; filtered public update is not a fence | Would require a new atomic predicate + affected-row-count contract, not a wrapper around existing update |
+| PG trace sequences 233–247: A checked, backend terminated, B accepted at 240, resumed A accepted at 245, A DB write rejected at 247 | Refutes SMTP fencing even with a held engine transaction | Expiry traces: SQLite B/A accepted at sequences 42/46, stale write rejected at 48; PG 148/152/154 shows the same failure |
+| Ticket-01 accepted/lost-reply and no-acceptance twins; same Message-ID retry accepted twice | Rollback cannot undo acceptance or disambiguate it | An idempotency row in our DB cannot deduplicate acceptance at a nonparticipating receiver |
+| Narrower supported use | Serialize same-resource multi-row database work and durably accept an intent in that commit; preferred under M1 | Optimistic single-row revision, atomic claim/release with generation, or a destination that actually participates; not selected here |
+
+### M1 — explicit parent amendment for maintainer approval
+
+**Proposed; approval: absent. #52 remains unchanged and open.** Replace its first
+two acceptance criteria, for this implementation, with:
+
+> An ordinary Job can acquire exclusive database authority before its protected
+> writes and hold it through atomic commit of those writes and a durable
+> notification intent. Recovery must reject stale database writes and stale intent
+> acceptance. Later SMTP submission/acceptance is outside this resource authority;
+> revocation after intent commit need not prevent the accepted intent being sent.
+> Restart must recover engine authority without a permanent application claim.
+> Ambiguous commit and delivery outcomes remain durable and are not called rollback.
+
+The remaining parent criteria (deterministic competition, documented adapters,
+Job lifecycle interaction, non-opt-in compatibility) remain requirements, applied
+to this amended boundary. This explicitly drops **no stale SMTP send after loss**
+and **authority until the external side effect completes**. Intent acceptance is
+not SMTP acceptance. It cannot be used to claim the original criteria passed.
+
+Trade-off: useful atomic notification preparation and retry deduplication become
+possible without a participating SMTP receiver, but an already accepted intent may
+send after Grant rotation/revocation. Message contents may therefore disclose old
+information. The Grant application must validate current authority on link use;
+that does not retract a message or cure disclosure. Lost delivery replies may
+require manual resolution and can leave a notification unsent. There is no
+exactly-once delivery or unconditional at-least-once delivery promise.
+
+Approval must be an explicit maintainer statement accepting M1 and these losses,
+linked here and in the planning README before dispatch. An agent completing this
+draft, a green docs check, or approval of the original seven-ticket plan is not
+approval of M1. If declined, leave 02–07 blocked; the original acceptance boundary
+requires a separate participating-destination/quiescence design. No such design
+is claimed by this PR.
+
+### Proposed API and eligibility (effective only after M1 approval)
+
+Server-only proposed API, not a declaration of an existing exported surface:
+
+```ts
+const result = await ctx.resources.run({
+  resource: { table: "CustomerAccessGrant", id: grantId },
+  operationId: payload.operationId,
+  input: payload,
+}, async (scope) => {
+  const grant = await scope.db.CustomerAccessGrant.where("id", grantId).get();
+  // Read and validate current Grant state here; naming a row grants no authority.
+  await scope.db.CustomerAccessGrant.update(grantId, preparedChanges);
+  await scope.notifications.accept({
+    id: "link", to: [recipient], subject: "Your access link", text: body,
+  });
+  return { prepared: true };
+});
+```
+
+- `run<T extends JsonValue>(options, callback): Promise<T>`; required options are
+  `resource: {table: string, id: string}`, `operationId: string`, `input: JsonValue`.
+  Table must be a declared app table, ID an existing anchor row. Canonical identity
+  is `(Capsule database identity, table, id)`, never actor-specific. Table/ID and
+  operation ID are nonempty UTF-8 strings, at most 128 bytes each; input/result
+  at most 64 KiB canonical JSON each. No caller-controlled lease, actor or token.
+  Resource creation needs a pre-existing anchor; multi-resource scopes are out of
+  v1. Do not log identifiers, inputs, results, recipients or bodies.
+- Ordinary Jobs may call `run` once, before any application DB or provider operation
+  in that invocation; enforce at runtime. Mutations/Custom endpoints may call once
+  as their first application DB operation and join their existing transaction.
+  No nested scopes, nested dispatch, nested `privileged.run`, Files, provider calls,
+  publish/messages, arbitrary network operations or lifecycle transitions are
+  supported in a scope. Existing Privileged Job execution may enter with its
+  existing audited actor; the scope cannot create Privileged authority.
+- Scope exposes transaction-bound DB operations with normal current ACL/Team
+  checks, transactional Job enqueue, buffered transaction logs, `signal`, and
+  `notifications.accept`. Notification shape is `{id, to, subject, text, html?}`:
+  ID 1–128 UTF-8 bytes, 1–100 validated recipient addresses, total canonical JSON
+  at most 64 KiB, at least one nonempty text/html body. Use configured mail sender
+  and existing mail permission/address validation; no arbitrary transport/credentials.
+- `accept` stages an immutable intent and returns `{id, state: "staged"}`; no socket
+  opens here. Stable intent identity is `(resource, operationId, notification id)`.
+  Duplicate identical payload in the same operation returns the same staged ID;
+  differing payload fails `RESOURCE_OPERATION_CONFLICT`. The intent only becomes
+  `accepted` on the owning engine commit. Outer rollback removes it.
+- Parent/retained context DB handles, Privileged projections and detached tasks
+  must check invocation/scope lifetime and use only the bound transaction connection
+  while active; reject reentry through a root adapter. Drain admitted DB/ACL/log
+  work, close admission when callback returns, then commit. Late handles reject
+  `RESOURCE_SCOPE_INACTIVE`, including after connection loss; never reconnect them.
+  Nontransactional provider APIs reject `RESOURCE_EFFECT_UNSUPPORTED` in this scope.
+  Arbitrary JS I/O cannot be sandboxed by this API and has no fencing guarantee.
+- On entry, check current read/write authorization on the anchor under the captured
+  execution actor/credential (not enqueue actor), then retain current per-operation
+  ACL checks. Denied/missing anchor uses existing opaque authorization errors.
+  A receipt belongs to that actor and Privileged mode; another actor cannot read or
+  reuse it. Application authority transitions must use the same named resource.
+  Runtime authorization rows used to grant access must be read under locks that
+  conflict with their update/deletion through commit (SQLite writer lock; PG row
+  locks). Check again after lock acquisition; no cached pre-acquisition authorization.
+
+### Isolation, receipt, and recovery algorithm
+
+1. Fail unsupported adapter/context/shape before callback or application writes.
+   Acquire engine transaction authority and the canonical resource lock, then
+   lock/check the exact Job row if in a Job. PG lock order is resource, Job row,
+   authorization rows, then application writes; no second resource is allowed.
+   Lock conflict is immediate `RESOURCE_BUSY` (no callback, no partial commit);
+   callers use existing Job retry/backoff, not a hidden callback replay.
+2. On entry and precommit require the same running Job ID/claim token, no committed
+   cancellation, and time strictly before its stored deadline. No renewal. Use the
+   existing runtime clock for the original 30,000ms claim; do not allocate a fresh
+   lease on resource acquisition. At entry reserve 1,000ms for drain/precommit:
+   refuse entry when remaining time is at most 1,000ms; stop admitting DB operations
+   at `leaseExpiresAt - 1,000ms`. Drain and recheck before commit. This reserve is
+   operational headroom, not proof of a maximum OS pause or commit duration.
+3. In that transaction, read runtime-owned receipt keyed by
+   `(Capsule, resource, operationId)`. Bind canonical input digest (SHA-256), actor,
+   Privileged mode, JSON result and intent IDs. Same key and same binding returns
+   recorded result without callback; mismatch fails `RESOURCE_OPERATION_CONFLICT`.
+   Current authorization and claim checks still apply on replay. Write receipt,
+   intents and protected application changes atomically on first execution.
+   Retain receipt and deduplication tombstones indefinitely in v1; no automatic
+   pruning or deleting the resource lock row. Payload retention can be reduced
+   without deleting identity/digest/result needed for replay. This is a storage cost.
+4. SQLite uses a dedicated `BEGIN IMMEDIATE` transaction and immediate busy failure;
+   it serializes writers across the entire database, not just this resource. PG
+   uses a dedicated connection at READ COMMITTED, a runtime-owned unique resource
+   row locked `FOR UPDATE NOWAIT`, and the Job row `FOR UPDATE NOWAIT`. Initial lock
+   row creation must handle unique-key contention without waiting (bounded server
+   lock timeout, reported as `RESOURCE_BUSY`). All protected reads follow acquisition.
+   Only writers using this protocol receive same-resource serial ordering; existing
+   ordinary table updates do not magically participate. No global serializable
+   snapshot or parallel throughput promise is added. Constraint/deadlock/connection
+   errors roll back; never automatically rerun a callback.
+5. Engine commit/rollback or engine-confirmed connection/process death releases
+   authority. There is no durable resource lease to expire or reset on restart.
+   Receipt rows are outcomes, not locks. PG backend loss invalidates all old scoped
+   handles; SQLite process death releases its writer. A timer alone never releases
+   an engine lock. A live stopped SQLite process may delay recovery until resumed
+   or terminated; no bounded recovery from arbitrary OS suspension is promised.
+6. Job lease recovery/cancel updates conflict on the locked Job row (SQLite writer
+   exclusion supplies the equivalent). If recovery/cancel commits first, scope
+   entry/precommit fails; if scope's commit decision wins, recovery/cancel waits
+   for engine release and cannot undo the committed intent. Expiry is eligibility
+   for recovery, not evidence the engine lock disappeared. An admitted COMMIT may
+   finish after the deadline; takeover remains excluded until its engine outcome.
+   Runtime must not release a connection to a pool with COMMIT in flight.
+7. At the deadline a runtime watchdog closes admission, invalidates handles and
+   requests engine rollback even if the callback has not settled; an OS-stopped
+   process cannot run this watchdog, so it is not a bounded recovery proof. On
+   callback failure or cancellation observed before commit, do the same. On graceful shutdown drain or
+   roll back; on hard death use engine recovery. On unknown COMMIT acknowledgement,
+   invalidate the connection and report `RESOURCE_COMMIT_UNKNOWN`; do not claim
+   rollback. A new attempt acquires the same lock and checks the receipt. A present
+   receipt means committed; absence **after acquisition** proves no old transaction
+   can still commit. Retry uses the same operation ID/input and a new Job claim.
+   The outer handler may fail after a successful scope; receipt replay prevents
+   duplicate protected writes/intent on retry. Job success alone is not mail success.
+8. For mutations/endpoints the receipt, intent and all protected writes join the
+   outer transaction. The callback result is provisional until outer commit; the
+   resource lock remains held after callback return. Close scoped handles then,
+   and reject further application DB/provider calls outside the scope in that
+   invocation. Outer rollback removes staged state. For non-Job contexts apply a
+   30,000ms budget from outer transaction start with the same 1,000ms admission
+   reserve. `resources.status({resource, operationId})` performs an authorized
+   receipt read through the resource lock, returning committed result/intent IDs
+   or `absent`; busy/denied remain errors. It does not run an application callback.
+
+libSQL is **unsupported in v1**: return `RESOURCE_ADAPTER_UNSUPPORTED` before scope
+callback/status work. No local mutex, autocommit or lease fallback. A future support
+proposal needs real remote transaction-expiry/connection-loss conformance; it is
+not an optional implementation choice for ticket 05. Non-opt-in APIs keep existing
+semantics on all adapters. No public CAS or lease-renewal API is required. Lock/deadlock failure is
+`RESOURCE_BUSY`; insufficient/exhausted budget is `RESOURCE_DEADLINE_EXCEEDED`;
+lost/superseded Job ownership is `RESOURCE_CLAIM_LOST`. Committed cancellation
+uses the existing Job cancellation outcome; unsupported context/nesting/entry
+is `RESOURCE_CONTEXT_UNSUPPORTED`. All errors are bounded and omit resource values.
+
+### Durable intent delivery contract for revised ticket 06
+
+The acceptance authority is now the same engine commit as application state.
+This deliberately solves only M1. A post-commit worker delivers accepted intents
+through configured SMTP **outside** the resource transaction. Polling retained
+accepted rows is authoritative; a post-commit wakeup is only an optimization.
+
+Runtime-owned states: `accepted -> submitting -> acknowledged | rejected | unknown`.
+A short engine transaction changes `accepted` to `submitting`, writing a random
+attempt token and start time; commit before any SMTP I/O. Only a confirmed
+reservation commit permits that worker to submit; an unknown reservation outcome
+permits no send and is reconciled to retained uncertainty, not retried. One submission attempt
+per intent in v1, with transport auto-retries disabled. A positive final DATA reply
+records `acknowledged` (not delivered); definitive rejection records `rejected`;
+missing reply, timeout or any uncertain transport/commit result records `unknown`.
+No automatic resend from `submitting`, `unknown` or `rejected`. After restart or
+30 seconds without an outcome, expose a `submitting` row as `unknown` without
+allocating another sender; a late outcome from that same attempt token may refine
+it to acknowledged/rejected. This deadline is observation, not sender revocation.
+A stopped sender may still send later; M1 explicitly accepts this limitation.
+
+Job cancellation, Grant revocation or source Job retry does not retract a committed
+intent. `resources.status` includes persisted intent states; receipts remain
+`committed` irrespective of SMTP outcome. No API reports an intent as rolled back
+after commit. Unknown/rejected outcomes are operator-visible and retained; no
+resend/reconciliation API ships in v1. A later explicitly authorized new operation
+may send again with documented duplicate/disclosure risk. A crash after recording
+`submitting` but before sending can therefore lose notification delivery. This
+conservative policy is chosen explicitly over blind retry, not described as
+exactly-once or guaranteed at-least-once SMTP.
+
+### Revised dispatch gate
+
+See the [revised plan](../../.scratch/ordinary-job-resource-fences/README.md).
+M1 approval is a new explicit prerequisite in addition to ticket 01's retained
+negative evidence. **Nothing in 02–07 can be dispatched now.** With approval,
+02 is first, 03–06 follow 02, and 07 follows all four. 02–05 can then implement
+and verify the amended DB boundary without solving ordinary SMTP fencing; 06
+implements durable intent delivery with the stated uncertainty, not that missing
+fence. The original strict SMTP handoff implementation and public CAS work become
+unnecessary under M1. All original requirements remain visibly unmet if approval
+is withheld; no box is checked merely by writing this proposal.

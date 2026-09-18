@@ -2,7 +2,7 @@
 
 **What to build:** A deterministic experiment and recorded contract showing what a Capsule can safely promise when a Job coordinates database changes and an external side effect with another worker. Select a concrete implementable recovery and handoff design before downstream implementation begins.
 
-**Blocked by:** None — can start immediately.
+**Blocked by:** No evidence work remains to dispatch; the downstream gate awaits a proven unchanged contract or explicit M1 approval.
 
 **Status:** experiment-complete; feasibility-gate-blocked
 
@@ -50,3 +50,14 @@ acceptance criteria or a database-only substitute.
   execution and draining must use the remaining original claim budget; no bounded
   watchdog makes an arbitrary pause or uncertain SMTP acceptance safe.
 - Parent #52 and ticket files 02-07 are unchanged.
+
+## Decision proposal — 2026-09-18
+
+[ADR-0054](../../../docs/adr/0054-ordinary-job-authority-does-not-fence-smtp-acceptance.md)
+now specifies option A for an amended database/intent boundary, API, isolation,
+recovery, Job lifecycle and delivery uncertainty. It does **not** supply an API
+meeting the unchanged parent. Both original unchecked criteria therefore remain
+unchecked pending explicit maintainer M1 approval (or a new proven design).
+Tickets 02–07 now contain proposed replacement scopes and testable criteria,
+all blocked. The earlier result above is historical evidence, not current dispatch
+authorization. Do not rerun ticket 01 to obtain approval by repetition.

@@ -1,19 +1,21 @@
-# 04 — Support resource transactions on PostgreSQL
+# 04 — Implement PostgreSQL resource transactions and receipt conformance
 
-**What to build:** A Capsule using PostgreSQL receives the same supported named-resource authority and recovery contract as SQLite, verified against a real local database with independently connected workers.
+**What to build:** Implement the same amended transaction/receipt API on real PostgreSQL, including connection-loss and uncertain-commit behavior.
 
-**Blocked by:** 02 — Run ordinary Jobs inside a resource transaction on SQLite.
+**Blocked by:** M1 approval and 02.
 
-**Status:** ready-for-agent
+**Status:** blocked — amendment-awaiting-approval
 
 **Parent:** https://github.com/mgscox/sporades/issues/52
 
-- [ ] Start the already-approved disposable local PostgreSQL Docker instance and configure the repository's dedicated PostgreSQL test harness. Do not accept a skipped PostgreSQL suite as validation.
-- [ ] Acquire the runtime-owned resource row using PostgreSQL transaction locking before protected application work. Preserve the public API and exact Job-claim ownership rules.
-- [ ] Run the shared resource-scope conformance scenarios with independent database connections and workers, including deterministic contention, rollback, process death, paused-owner resumption, connection termination, and recovery.
-- [ ] Prove that stale owners cannot publish protected database changes or overwrite the newer Job attempt's lifecycle state, and that surviving workers can recover under the documented rule.
-- [ ] Define bounded lock waiting and deadlock behavior. Do not transparently replay a callback that may already have initiated an external effect.
-- [ ] Document PostgreSQL's locking granularity and the runtime's connection-serialization limits separately from SQLite's writer contention. Do not promise independent-resource throughput that the current connection model cannot provide.
-- [ ] Update shared adapter conformance coverage, generated runtime artifacts, and canonical documentation together. Keep SQLite coverage green and record the actual PostgreSQL version and executed checks.
+**Contract:** [ADR-0054 M1](../../../docs/adr/0054-ordinary-job-authority-does-not-fence-smtp-acceptance.md). Proposed, not approved. These criteria supersede this ticket's original scope only if M1 is explicitly approved; they do not weaken the unchanged parent today.
 
-**Validation prerequisites:** Matt has explicitly approved spinning up a local Docker PostgreSQL instance for this work. Follow the shared test-environment instructions for the dedicated database. Install dependencies in this worktree with `npm ci`; tests will not pass with symlinked `node_modules`.
+- [ ] Start the approved disposable local PostgreSQL container using the dedicated harness. Record engine version and exact counts; skipped PostgreSQL checks do not establish support.
+- [ ] Use a dedicated READ COMMITTED connection, unique runtime resource row and FOR UPDATE NOWAIT, followed by exact Job row and authorization locks in ADR order. Bound initial row-creation conflicts with server lock timeout and return RESOURCE_BUSY; never wait indefinitely or replay a callback automatically.
+- [ ] Prove deterministic first-row creation contention and existing-row contention using independent workers/connections. Every protected read follows acquisition; document participation requirements, row-lock granularity and current connection serialization without promising independent-resource throughput.
+- [ ] Terminate only A backend after its final check, permit B to acquire, then resume A. Prove A cannot write, create a receipt or accept an intent via old, parent, retained or newly reconnected scoped handles. This is a DB assertion, not a claim about ordinary SMTP.
+- [ ] Prove process death/restart, live pause at expiry, cancellation/recovery row conflicts, rollback, exact claim settlement, and lost COMMIT response with authoritative receipt lookup after lock acquisition. Do not return a connection to the pool while its commit outcome is unresolved.
+- [ ] Run shared SQLite/PG conformance for receipt replay, input/actor conflicts, current ACL/Team authorization, deadline reserve and unknown commit. 06 adds delivery integration after these primitive tests; a fake is not PostgreSQL proof.
+- [ ] Ship adapter code, generated artifacts and canonical docs together; retain SQLite/non-opt-in compatibility tests.
+
+**Validation prerequisites:** Follow the shared plan: real worktree-installed dependencies via `npm ci`, never symlinked `node_modules`; approved disposable local PostgreSQL and dedicated test harness when PostgreSQL is tested.

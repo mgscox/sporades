@@ -1,20 +1,22 @@
-# 07 — Verify the complete Grant coordination workflow
+# 07 — Verify the amended Grant workflow and map remaining original gaps
 
-**What to build:** An executable reference Capsule scenario demonstrates that exchange, rotation, revocation, legacy migration, and notification handoff coordinate one Customer Access Grant through the supported resource contract, with evidence that maps directly to issue #52.
+**What to build:** Validate the complete reference Capsule against explicitly approved M1, preserving a visible mapping of original #52 guarantees that were dropped.
 
-**Blocked by:** 03 — Coordinate Jobs with mutations and endpoints; 04 — Support resource transactions on PostgreSQL; 05 — Define and enforce libSQL compatibility; 06 — Support the proven external handoff boundary.
+**Blocked by:** M1 approval and 03, 04, 05, 06.
 
-**Status:** ready-for-agent
+**Status:** blocked — amendment-awaiting-approval
 
 **Parent:** https://github.com/mgscox/sporades/issues/52
 
-- [ ] Exercise all five operations against the same named resource, with authority-sensitive reads performed after acquisition and the expected current actor/resource authorization preserved.
-- [ ] Demonstrate notification winning and authority change winning under controlled schedules. Prove one active owner, a clean waiting or rejected contender under the documented policy, and no interleaved partial database state.
-- [ ] Kill a worker mid-run, restart against retained storage, and prove eventual recovery without a permanently stranded resource. Separately resume an old paused owner after takeover and verify both protected-write and external-handoff outcomes.
-- [ ] Exercise retry, cancellation, lease recovery, shutdown, acknowledgement uncertainty, and an external acceptance followed by commit failure through the reference Capsule, not only internal unit seams.
-- [ ] Run the supported scenarios on independent SQLite connections and the approved local Docker PostgreSQL instance. Verify libSQL's declared support or rejection behavior; label skipped or unavailable evidence explicitly.
-- [ ] Record an acceptance matrix for every parent criterion, distinguishing database guarantees, external destination participation, proven process/receiver behavior, and any explicit approved amendment. An unmet original criterion remains visibly open.
-- [ ] Run typechecking, the full existing test suite, documentation checks, generated-artifact validation, and the real PostgreSQL checks with actual worktree-installed dependencies. Existing Capsules that omit the API retain their behavior.
-- [ ] Publish the reference walkthrough and bounded evidence without credentials, customer links, payload secrets, or unsupported claims of exactly-once SMTP delivery. Do not modify or close the parent issue automatically.
+**Contract:** [ADR-0054 M1](../../../docs/adr/0054-ordinary-job-authority-does-not-fence-smtp-acceptance.md). Proposed, not approved. These criteria supersede this ticket's original scope only if M1 is explicitly approved; they do not weaken the unchanged parent today.
 
-**Validation prerequisites:** Matt has approved spinning up a local Docker PostgreSQL instance; it is required for PostgreSQL evidence. Tests will not pass with symlinked `node_modules`; use a real dependency installation in the implementation worktree and verify it before running the suite.
+- [ ] Link the actual maintainer M1 approval before execution. Map each original parent criterion to unchanged, amended, or unmet; never mark strict stale-SMTP prevention or authority-through-SMTP-completion proved by intent acceptance.
+- [ ] Exercise exchange, rotation, revocation, legacy migration and notification preparation against the same existing Grant anchor with historical execution actor, current ACL/Team checks and post-acquisition reads.
+- [ ] Prove both intent-before-revocation and revocation-before-intent schedules with deterministic independent workers and no partial DB state. Demonstrate that committed intent can still send later and that current Grant checks reject use of revoked links; distinguish message disclosure from link-use authorization.
+- [ ] Kill/restart an owner, separately pause/resume it after connection loss/takeover, and verify DB/intent rejection. Exercise scope success then handler failure/retry, current-actor receipt access, cancellation ordering, expiry, shutdown and unknown commit recovery through the Capsule API.
+- [ ] Exercise delivery acknowledgement loss and not-accepted twin, crash before send, retained unknown outcome, no automatic resend and late same-attempt report. Do not count a durable intent as receiver acceptance.
+- [ ] Run real independent SQLite and approved local Docker PostgreSQL scenarios plus libSQL fail-closed behavior. Record exact engines/counts and distinguish source checks, process evidence and actual controlled receiver observations.
+- [ ] Run typechecking, full existing suite, docs checks, generated-artifact validation and real PostgreSQL checks with real worktree-installed dependencies. Existing non-opt-in behavior must stay green; do not weaken/delete/skip tests.
+- [ ] Publish a walkthrough and redacted evidence with the accepted amendment and remaining limits. Do not modify or close #52 automatically.
+
+**Validation prerequisites:** Follow the shared plan: real worktree-installed dependencies via `npm ci`, never symlinked `node_modules`; approved disposable local PostgreSQL and dedicated test harness when PostgreSQL is tested.
