@@ -43,7 +43,10 @@ async function setup(fail = false, sameOperation = false) {
   const database = await openDevDatabase(file, '', {}, { name: 'resource-process' }, { schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) } });
   const time = '2030-01-01T00:00:00.000Z';
   database.adapter.prepare('INSERT INTO anchors VALUES (?,?,?,?)').run('anchor', time, time, 'original');
-  database.adapter.prepare('INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)').run('actor', time, 'Actor', null, null, 0, 1, 'anonymous');
+  database.adapter.prepare('INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)').run('actor', time, 'Actor', null, null, 1, 0, 'email');
+  const teamId = '11111111-1111-4111-8111-111111111111';
+  database.adapter.prepare('INSERT INTO sporades_teams (id,name,createdAt,createdByUserId) VALUES (?,?,?,?)').run(teamId, 'Fixture', time, 'actor');
+  database.adapter.prepare('INSERT INTO sporades_team_memberships (teamId,userId,role,createdAt) VALUES (?,?,?,?)').run(teamId, 'actor', 'member', time);
   for (const id of ['a', 'b']) database.adapter.prepare("INSERT INTO sporades_jobs (id,handler,enqueuedByUserId,actorUserId,payload,status,availableAt,attempts,createdAt,retryJson,attemptHistory) VALUES (?,'work','actor','actor',?,'queued',?,0,?,?, '[]')").run(id, JSON.stringify({ operation: sameOperation ? 'shared' : id, fail: id === 'a' && fail }), time, time, '{"maxAttempts":2,"delayMs":0}');
   await database.close();
   const a = worker(file); await a.wait('ready');
@@ -134,6 +137,18 @@ test('independent Grant rotation before Job acquisition is observed before prote
   } finally { await f.close(); }
 });
 
+test('independent Team-membership ACL revocation before Job acquisition denies current authority', async () => {
+  const f = await setup();
+  try {
+    f.b.send('grant-change', { action: 'membership-revoke' });
+    assert.equal((await f.b.wait('grant-change')).code, 'COMMITTED');
+    f.a.send('acquire');
+    assert.equal((await f.a.wait('outcome')).code, 'DENIED');
+    assert.equal(f.read.prepare('SELECT count(*) n FROM writes').get().n, 0);
+    f.a.send('settle'); await f.a.wait('settled');
+  } finally { await f.close(); }
+});
+
 for (const action of ['rotate', 'revoke']) test(`independent Grant ${action} after Job acquisition serializes until the resource commit`, async () => {
   const f = await setup();
   try {
@@ -148,6 +163,20 @@ for (const action of ['rotate', 'revoke']) test(`independent Grant ${action} aft
     assert.equal(f.read.prepare('SELECT count(*) n FROM writes').get().n, 1);
     if (action === 'revoke') assert.equal(f.read.prepare("SELECT count(*) n FROM anchors WHERE id='anchor'").get().n, 0);
     else assert.equal(f.read.prepare("SELECT value FROM anchors WHERE id='anchor'").get().value, 'rotated');
+    f.a.send('settle'); await f.a.wait('settled');
+  } finally { await f.close(); }
+});
+
+test('independent Team-membership ACL revocation after Job acquisition serializes until commit', async () => {
+  const f = await setup();
+  try {
+    f.a.send('acquire'); await f.a.wait('entered');
+    f.b.send('grant-change', { action: 'membership-revoke' });
+    assert.equal((await f.b.wait('grant-change')).code, 'SQLITE_BUSY');
+    f.a.send('release'); assert.equal((await f.a.wait('outcome')).code, 'COMMITTED');
+    f.b.send('grant-change', { action: 'membership-revoke' });
+    assert.equal((await f.b.wait('grant-change')).code, 'COMMITTED');
+    assert.equal(f.read.prepare("SELECT count(*) n FROM sporades_team_memberships WHERE userId='actor'").get().n, 0);
     f.a.send('settle'); await f.a.wait('settled');
   } finally { await f.close(); }
 });

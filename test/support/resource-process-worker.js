@@ -1,5 +1,6 @@
 import { openDevDatabase, createControllableRuntimeClock, recoverExpiredJobLeases } from '../../dist/server-runtime-source.js';
 import { table, String as Text, job } from '../../dist/server.js';
+const teamId = '11111111-1111-4111-8111-111111111111';
 const messages = new Map();
 const pending = new Map();
 function wait(key) {
@@ -30,7 +31,8 @@ process.on('message', async message => {
     await database.shutdown(); send('shutdown');
   } else if (message.kind === 'grant-change') {
     try {
-      if (message.action === 'revoke') database.adapter.prepare("DELETE FROM anchors WHERE id='anchor'").run();
+      if (message.action === 'membership-revoke') database.adapter.prepare('DELETE FROM sporades_team_memberships WHERE teamId=? AND userId=?').run(teamId, 'actor');
+      else if (message.action === 'revoke') database.adapter.prepare("DELETE FROM anchors WHERE id='anchor'").run();
       else database.adapter.prepare("UPDATE anchors SET value='rotated' WHERE id='anchor'").run();
       send('grant-change', { code: 'COMMITTED', action: message.action });
     } catch (error) {
@@ -46,7 +48,10 @@ process.on('message', async message => {
   } else messages.set(message.kind, message);
 });
 const definition = {
-  schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+  schema: { anchors: table({ value: Text() }).acl({
+    read: ({ ctx }) => ctx.acl.teams.isMember(teamId),
+    write: ({ ctx }) => ctx.acl.teams.isMember(teamId),
+  }), writes: table({ value: Text() }) },
   jobs: { work: job(async (ctx, payload) => {
     send('claimed');
     const command = await wait('acquire');
