@@ -607,6 +607,27 @@ test('an outer unknown commit outcome reconciles by receipt without replaying it
   } finally { delete globalThis.__outerResourceCallbacks; delete globalThis.__outerResourceHandles; await f.close(); }
 });
 
+test('caught and unawaited outer receipt insertion failures poison mutation and endpoint settlement', async () => {
+  const f = await fixture(() => null, { mutations: {
+    caughtReceipt: mutation(async ctx => { try { await ctx.resources.run({ ...options(), operationId: 'caught-mutation-receipt' }, async scope => { await scope.db.writes.insert({ value: 'caught-mutation-receipt' }); return true; }); } catch {} return { caught: true }; }),
+    unawaitedReceipt: mutation(ctx => { void ctx.resources.run({ ...options(), operationId: 'unawaited-mutation-receipt' }, async scope => { await scope.db.writes.insert({ value: 'unawaited-mutation-receipt' }); return true; }); return { returned: true }; }),
+  }, endpoints: {
+    caughtReceipt: endpoint({ method: 'POST', path: '/caught-receipt' }, async ctx => { try { await ctx.resources.run({ ...options(), operationId: 'caught-endpoint-receipt' }, async scope => { await scope.db.writes.insert({ value: 'caught-endpoint-receipt' }); return true; }); } catch {} return { caught: true }; }),
+    unawaitedReceipt: endpoint({ method: 'POST', path: '/unawaited-receipt' }, ctx => { void ctx.resources.run({ ...options(), operationId: 'unawaited-endpoint-receipt' }, async scope => { await scope.db.writes.insert({ value: 'unawaited-endpoint-receipt' }); return true; }); return { returned: true }; }),
+  } });
+  const symbol = Symbol.for('sporades.database.transactionOperations'), original = f.database.adapter[symbol], adapter = Object.create(f.database.adapter);
+  Object.defineProperty(adapter, symbol, { value: () => { const operations = original(); return { ...operations, prepare(sql) { const statement = operations.prepare(sql); return Object.assign(Object.create(statement), { run(...args) { if (sql.includes('INSERT INTO sporades_resource_receipts')) throw new Error('receipt insert failed'); return statement.run(...args); } }); } }; } });
+  const request = { method: 'POST', headers: {}, async *[Symbol.asyncIterator]() {} };
+  try {
+    for (const name of ['caughtReceipt', 'unawaitedReceipt']) {
+      assert.equal((await runMutation({ ...f.database, adapter }, actor, name, [])).ok, false, `mutation ${name}`);
+      await assert.rejects(runEndpoint({ ...f.database, adapter }, f.database.endpoints.find(item => item.name === name), new URL(`http://capsule.test/${name}`), request), /receipt insert failed/, `endpoint ${name}`);
+    }
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM writes WHERE value LIKE '%receipt'").get().n, 0);
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sqlite_schema WHERE name='sporades_resource_receipts'").get().n, 0);
+  } finally { await f.close(); }
+});
+
 test('an outer resource COMMIT with a failed native close quarantines root and cached SQLite statements', async () => {
   const f = await fixture(() => null, { mutations: { closeUnknown: mutation(ctx => ctx.resources.run({ ...options(), operationId: 'outer-close-unknown' }, async scope => {
     await scope.db.writes.insert({ value: 'close-unknown' }); return true;

@@ -113,17 +113,22 @@ export function bindOuterResources(database, context, hooks) {
         void promise.catch((error) => { terminalError ??= error; });
         return promise;
     };
-    const trackExecution = (operation) => {
+    const trackExecution = (operation, poison = true) => {
         let value;
         try {
             value = operation();
         }
         catch (error) {
-            terminalError ??= error;
+            if (poison)
+                terminalError ??= error;
             throw error;
         }
         const promise = Promise.resolve(value);
         executions.add(promise);
+        // `run` and `status` cover acquisition, authorization, replay, callback,
+        // canonicalization, receipt, log staging and cleanup. Once entry has been
+        // admitted, every rejected execution must poison outer settlement even if
+        // its caller catches it or never awaits it.
         void promise.catch(() => { });
         return promise;
     };
@@ -188,6 +193,7 @@ export function bindOuterResources(database, context, hooks) {
                 throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
         };
         watchdog ??= database.clock.setTimer(() => revoke(resourceError("RESOURCE_DEADLINE_EXCEEDED")), Math.max(0, deadline - database.clock.now().getTime()));
+        let acquired = false;
         try {
             assertLive(true);
             // The surrounding mutation/endpoint starts deferred. Promote it to an
@@ -203,6 +209,7 @@ export function bindOuterResources(database, context, hooks) {
                     throw resourceError("RESOURCE_BUSY");
                 throw error;
             }
+            acquired = true;
             assertLive(true);
             await hooks.authorize(context, parentDb, identity);
             assertLive(true);
@@ -261,13 +268,18 @@ export function bindOuterResources(database, context, hooks) {
             assertLive();
             return JSON.parse(resultJson);
         }
+        catch (error) {
+            if (acquired)
+                terminalError ??= error;
+            throw error;
+        }
         finally {
             scopeActive = false;
             admission = false;
             controller.abort();
         }
     };
-    context.resources = Object.freeze({ run: (options, callback) => trackExecution(() => execute(options, callback, false)), status: (options) => trackExecution(() => execute(options, undefined, true)) });
+    context.resources = Object.freeze({ run: (options, callback) => trackExecution(() => execute(options, callback, false)), status: (options) => trackExecution(() => execute(options, undefined, true), false) });
     const release = () => { invocationActive = false; if (watchdog !== undefined)
         database.clock.clearTimer(watchdog); };
     release.assertOuterLive = () => {

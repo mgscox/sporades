@@ -94129,12 +94129,12 @@ function bindOuterResources(database, context, hooks) {
     });
     return promise;
   };
-  const trackExecution = (operation) => {
+  const trackExecution = (operation, poison = true) => {
     let value;
     try {
       value = operation();
     } catch (error) {
-      terminalError ??= error;
+      if (poison) terminalError ??= error;
       throw error;
     }
     const promise = Promise.resolve(value);
@@ -94186,6 +94186,7 @@ function bindOuterResources(database, context, hooks) {
       if (database.clock.now().getTime() >= deadline - (admission ? 1e3 : 0)) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
     };
     watchdog ??= database.clock.setTimer(() => revoke(resourceError("RESOURCE_DEADLINE_EXCEEDED")), Math.max(0, deadline - database.clock.now().getTime()));
+    let acquired = false;
     try {
       assertLive(true);
       try {
@@ -94196,6 +94197,7 @@ function bindOuterResources(database, context, hooks) {
         if (error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY") throw resourceError("RESOURCE_BUSY");
         throw error;
       }
+      acquired = true;
       assertLive(true);
       await hooks.authorize(context, parentDb, identity);
       assertLive(true);
@@ -94249,13 +94251,16 @@ function bindOuterResources(database, context, hooks) {
       await database.adapter.prepare("INSERT INTO sporades_resource_receipts VALUES (?,?,?,?,?,?,?,?)").run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
       assertLive();
       return JSON.parse(resultJson);
+    } catch (error) {
+      if (acquired) terminalError ??= error;
+      throw error;
     } finally {
       scopeActive = false;
       admission = false;
       controller.abort();
     }
   };
-  context.resources = Object.freeze({ run: (options, callback) => trackExecution(() => execute(options, callback, false)), status: (options) => trackExecution(() => execute(options, void 0, true)) });
+  context.resources = Object.freeze({ run: (options, callback) => trackExecution(() => execute(options, callback, false)), status: (options) => trackExecution(() => execute(options, void 0, true), false) });
   const release = () => {
     invocationActive = false;
     if (watchdog !== void 0) database.clock.clearTimer(watchdog);
