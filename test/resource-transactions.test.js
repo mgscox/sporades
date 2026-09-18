@@ -516,6 +516,33 @@ test('an outer unknown commit outcome reconciles by receipt without replaying it
   } finally { delete globalThis.__outerResourceCallbacks; await f.close(); }
 });
 
+test('an outer resource COMMIT throw before engine completion leaves no receipt for fresh authority', async () => {
+  let callbacks = 0;
+  const f = await fixture(() => null, { mutations: { beforeCommit: mutation(ctx => ctx.resources.run({ resource: { table: 'anchors', id: 'anchor' }, operationId: 'outer-before-commit', input: { a: 1 } }, async scope => {
+    callbacks++; await scope.db.writes.insert({ value: 'before-commit' }); return true;
+  })) } });
+  const transactionOperations = Symbol.for('sporades.database.transactionOperations');
+  const originalOperations = f.database.adapter[transactionOperations];
+  const uncertainAdapter = Object.create(f.database.adapter);
+  Object.defineProperty(uncertainAdapter, transactionOperations, { value: () => {
+    const operations = originalOperations(); let receipt = false;
+    return { ...operations, prepare(sql) { const statement = operations.prepare(sql); return Object.assign(Object.create(statement), { run(...args) { const value = statement.run(...args); if (sql.includes('INSERT INTO sporades_resource_receipts')) receipt = true; return value; } }); }, exec(sql) {
+      if (sql === 'COMMIT' && receipt) throw Object.assign(new Error('connection died before COMMIT'), { code: 'ECONNRESET' });
+      return operations.exec(sql);
+    } };
+  } });
+  try {
+    const first = await runMutation({ ...f.database, adapter: uncertainAdapter }, actor, 'beforeCommit', []);
+    assert.equal(first.error.code, 'RESOURCE_COMMIT_UNKNOWN');
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sqlite_schema WHERE name='sporades_resource_receipts'").get().n, 0);
+    const independent = await createSqliteDatabaseAdapter(f.file);
+    try { assert.doesNotThrow(() => independent.prepare("UPDATE anchors SET value='fresh' WHERE id='anchor'").run()); }
+    finally { await independent.close(); }
+    assert.deepEqual(await runMutation(f.database, actor, 'beforeCommit', []), { ok: true, data: true, error: null });
+    assert.equal(callbacks, 2);
+  } finally { await f.close(); }
+});
+
 test('the outer watchdog aborts the real pending-log cleanup phase after a completed resource scope', async () => {
   let entered;
   const inserted = new Promise(resolve => { entered = resolve; });
