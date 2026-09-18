@@ -465,11 +465,14 @@ test('outer resource commit checks the deadline at the actual transaction commit
 
 test('an outer unknown commit outcome reconciles by receipt without replaying its callback', async () => {
   globalThis.__outerResourceCallbacks = 0;
+  globalThis.__outerResourceHandles = [];
   const f = await fixture(() => null, {
     mutations: { unknownOuterCommit: mutation(ctx => ctx.resources.run({ resource: { table: 'anchors', id: 'anchor' }, operationId: 'outer-unknown-mutation', input: { a: 1, b: 2 } }, async scope => {
+      globalThis.__outerResourceHandles.push([ctx.db.writes, scope.db.writes]);
       globalThis.__outerResourceCallbacks++; await scope.db.writes.insert({ value: 'outer-once-mutation' }); return { once: true };
     })) },
     endpoints: { unknownOuterCommit: endpoint({ method: 'POST', path: '/outer-unknown' }, ctx => ctx.resources.run({ resource: { table: 'anchors', id: 'anchor' }, operationId: 'outer-unknown-endpoint', input: { a: 1, b: 2 } }, async scope => {
+      globalThis.__outerResourceHandles.push([ctx.db.writes, scope.db.writes]);
       globalThis.__outerResourceCallbacks++; await scope.db.writes.insert({ value: 'outer-once-endpoint' }); return { once: true };
     })) },
   });
@@ -505,6 +508,9 @@ test('an outer unknown commit outcome reconciles by receipt without replaying it
         : await runEndpoint(uncertainDatabase, f.database.endpoints.find(item => item.name === 'unknownOuterCommit'), new URL('http://capsule.test/outer-unknown'), request).then(() => null, error => error);
       const code = mode === 'mutation' ? first.error?.code : first.code;
       assert.equal(code, 'RESOURCE_COMMIT_UNKNOWN', `${mode}: ${JSON.stringify(first)}`);
+      const [parentTable, scopedTable] = globalThis.__outerResourceHandles.at(-1);
+      assert.throws(() => parentTable.all(), { code: 'RESOURCE_SCOPE_INACTIVE' });
+      assert.throws(() => scopedTable.all(), { code: 'RESOURCE_SCOPE_INACTIVE' });
       const replay = mode === 'mutation'
         ? await runMutation(f.database, actor, 'unknownOuterCommit', [])
         : await runEndpoint(f.database, f.database.endpoints.find(item => item.name === 'unknownOuterCommit'), new URL('http://capsule.test/outer-unknown'), request);
@@ -513,7 +519,7 @@ test('an outer unknown commit outcome reconciles by receipt without replaying it
       assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM writes WHERE value=?').get(`outer-once-${mode}`).n, 1);
     }
     assert.equal(globalThis.__outerResourceCallbacks, 2);
-  } finally { delete globalThis.__outerResourceCallbacks; await f.close(); }
+  } finally { delete globalThis.__outerResourceCallbacks; delete globalThis.__outerResourceHandles; await f.close(); }
 });
 
 test('an outer resource COMMIT throw before engine completion leaves no receipt for fresh authority', async () => {
@@ -540,6 +546,21 @@ test('an outer resource COMMIT throw before engine completion leaves no receipt 
     finally { await independent.close(); }
     assert.deepEqual(await runMutation(f.database, actor, 'beforeCommit', []), { ok: true, data: true, error: null });
     assert.equal(callbacks, 2);
+  } finally { await f.close(); }
+});
+
+test('an endpoint resource COMMIT throw before engine completion leaves no receipt for fresh authority', async () => {
+  let callbacks = 0;
+  const f = await fixture(() => null, { endpoints: { beforeCommit: endpoint({ method: 'POST', path: '/before-commit' }, ctx => ctx.resources.run({ resource: { table: 'anchors', id: 'anchor' }, operationId: 'outer-before-endpoint', input: { a: 1 } }, async scope => { callbacks++; await scope.db.writes.insert({ value: 'before-endpoint' }); return true; })) } });
+  const auth = { userId: 'before-endpoint', displayName: 'Before endpoint', email: 'before-endpoint@example.com', picture: null, isAuthenticated: true, isGuest: false, provider: 'email' }; const token = 'before-endpoint-token';
+  await f.database.adapter.insertAuthUser({ id: auth.userId, createdAt: f.clock.now().toISOString(), displayName: auth.displayName, email: auth.email, picture: null, isAuthenticated: 1, isGuest: 0, provider: auth.provider }); await f.database.adapter.insertAuthSession({ token, userId: auth.userId, provider: auth.provider, createdAt: f.clock.now().toISOString(), expiresAt: '2099-01-01T00:00:00.000Z' });
+  const symbol = Symbol.for('sporades.database.transactionOperations'), operationsFactory = f.database.adapter[symbol], adapter = Object.create(f.database.adapter);
+  Object.defineProperty(adapter, symbol, { value: () => { const operations = operationsFactory(); let receipt = false; return { ...operations, prepare(sql) { const statement = operations.prepare(sql); return Object.assign(Object.create(statement), { run(...args) { const value = statement.run(...args); if (sql.includes('INSERT INTO sporades_resource_receipts')) receipt = true; return value; } }); }, exec(sql) { if (sql === 'COMMIT' && receipt) throw Object.assign(new Error('endpoint before commit'), { code: 'ECONNRESET' }); return operations.exec(sql); } }; } });
+  const request = { method: 'POST', headers: { 'x-sporades-session-token': token }, async *[Symbol.asyncIterator]() {} }; const route = f.database.endpoints.find(item => item.name === 'beforeCommit');
+  try {
+    const error = await runEndpoint({ ...f.database, adapter }, route, new URL('http://capsule.test/before-commit'), request).then(() => null, value => value); assert.equal(error.code, 'RESOURCE_COMMIT_UNKNOWN');
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sqlite_schema WHERE name='sporades_resource_receipts'").get().n, 0);
+    assert.equal(await runEndpoint(f.database, route, new URL('http://capsule.test/before-commit'), request), true); assert.equal(callbacks, 2);
   } finally { await f.close(); }
 });
 
