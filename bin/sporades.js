@@ -94270,7 +94270,7 @@ function wrapCapability(value, before, path14 = [], cache = /* @__PURE__ */ new 
         functions.set(key, wrapped);
         return wrapped;
       }
-      return wrapCapability(member, before, [...path14, key], cache);
+      return wrapCapability(member, before, [...path14, key], cache, afterCall);
     }
   });
   cache.set(value, proxy);

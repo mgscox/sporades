@@ -111,6 +111,23 @@ test('a caught outer scope callback or canonical-result failure poisons the encl
   } finally { await f.close(); }
 });
 
+test('a caught invalid table write through a resource scope poisons the outer mutation', async () => {
+  const f = await fixture(() => null, { mutations: { invalidTableWrite: mutation(async ctx => {
+    try { await ctx.resources.run({ ...options(), operationId: 'invalid-table-write' }, async scope => {
+      await scope.db.writes.insert({ value: 'must-rollback' });
+      try { scope.db.writes.insertOrIgnore({ value: 'invalid' }); } catch {}
+      return { returned: true };
+    }); } catch {}
+    return { unexpectedlyCommitted: true };
+  }) } });
+  try {
+    const result = await runMutation(f.database, actor, 'invalidTableWrite', []);
+    assert.equal(result.ok, false);
+    assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM writes').get().n, 0);
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sqlite_schema WHERE name='sporades_resource_receipts'").get().n, 0);
+  } finally { await f.close(); }
+});
+
 test('a caught or unawaited invalid child enqueue poisons outer mutation and endpoint resource scopes', async () => {
   const f = await fixture(() => null, {
     mutations: {

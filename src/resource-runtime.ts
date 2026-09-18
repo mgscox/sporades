@@ -232,7 +232,7 @@ function wrapCapability(value: any, before: (path: string[]) => void, path: stri
         functions.set(key, wrapped);
         return wrapped;
       }
-      return wrapCapability(member, before, [...path, key], cache);
+      return wrapCapability(member, before, [...path, key], cache, afterCall);
     },
   });
   cache.set(value, proxy);

@@ -281,7 +281,7 @@ function wrapCapability(value, before, path = [], cache = new WeakMap(), afterCa
                 functions.set(key, wrapped);
                 return wrapped;
             }
-            return wrapCapability(member, before, [...path, key], cache);
+            return wrapCapability(member, before, [...path, key], cache, afterCall);
         },
     });
     cache.set(value, proxy);
