@@ -106,12 +106,13 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
     return promise;
   };
   const actorDigest = createHash("sha256").update(resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged: false })).digest("hex");
-  for (const name of ["db", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
-    if (!context[name]) continue;
-    context[name] = wrapCapability(context[name], (path) => {
+  const guardCapability = (name: string, value: any) => wrapCapability(value, (path) => {
       if (used) throw resourceError(!invocationActive || !scopeActive || !admission ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
       if (!["where", "orderBy", "limit"].includes(path.at(-1)!)) touched = true;
     });
+  for (const name of ["db", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
+    if (!context[name]) continue;
+    context[name] = guardCapability(name, context[name]);
   }
   const execute = async (options: any, callback: any, status: boolean) => {
     if (!invocationActive) throw resourceError("RESOURCE_SCOPE_INACTIVE");
@@ -200,6 +201,7 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
     if (outerDeadline && database.clock.now().getTime() >= outerDeadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
   };
   release.aborted = () => outerAborted;
+  release.guardCapability = guardCapability;
   return release;
 }
 

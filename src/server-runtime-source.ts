@@ -3722,7 +3722,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
               ...context.files,
               ...createEndpointIngressApi(transactionDatabase, endpoint as LooseRecord, endpointRequest, context),
             });
-            context.files = endpointIngressApi;
+            context.files = revokeOuterResources.guardCapability("files", endpointIngressApi);
             if ((endpoint as LooseRecord).runtimeOwnedStripeCallback) {
               Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
             }
@@ -3734,7 +3734,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
               endpointIngressApi,
               (endpoint as LooseRecord).options?.response?.fileAttachment === true,
             );
-            context.files = attachmentResponse.files;
+            context.files = revokeOuterResources.guardCapability("files", attachmentResponse.files);
             sealCommittedAttachmentResult = attachmentResponse.sealCommittedResult;
             const handlerRun = Promise.resolve().then(() => handler(context));
             const outerAbort = revokeOuterResources?.aborted();

@@ -3526,7 +3526,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                             ...context.files,
                             ...createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context),
                         });
-                        context.files = endpointIngressApi;
+                        context.files = revokeOuterResources.guardCapability("files", endpointIngressApi);
                         if (endpoint.runtimeOwnedStripeCallback) {
                             Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
                         }
@@ -3536,7 +3536,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                             context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
                         }
                         const attachmentResponse = createEndpointFileResponseApi(endpointIngressApi, endpoint.options?.response?.fileAttachment === true);
-                        context.files = attachmentResponse.files;
+                        context.files = revokeOuterResources.guardCapability("files", attachmentResponse.files);
                         sealCommittedAttachmentResult = attachmentResponse.sealCommittedResult;
                         const handlerRun = Promise.resolve().then(() => handler(context));
                         const outerAbort = revokeOuterResources?.aborted();

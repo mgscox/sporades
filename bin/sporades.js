@@ -94129,12 +94129,13 @@ function bindOuterResources(database, context, hooks) {
     return promise;
   };
   const actorDigest = createHash8("sha256").update(resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged: false })).digest("hex");
+  const guardCapability = (name2, value) => wrapCapability(value, (path14) => {
+    if (used) throw resourceError(!invocationActive || !scopeActive || !admission ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
+    if (!["where", "orderBy", "limit"].includes(path14.at(-1))) touched = true;
+  });
   for (const name2 of ["db", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
     if (!context[name2]) continue;
-    context[name2] = wrapCapability(context[name2], (path14) => {
-      if (used) throw resourceError(!invocationActive || !scopeActive || !admission ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
-      if (!["where", "orderBy", "limit"].includes(path14.at(-1))) touched = true;
-    });
+    context[name2] = guardCapability(name2, context[name2]);
   }
   const execute = async (options, callback, status) => {
     if (!invocationActive) throw resourceError("RESOURCE_SCOPE_INACTIVE");
@@ -94241,6 +94242,7 @@ function bindOuterResources(database, context, hooks) {
     if (outerDeadline && database.clock.now().getTime() >= outerDeadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
   };
   release.aborted = () => outerAborted;
+  release.guardCapability = guardCapability;
   return release;
 }
 function wrapCapability(value, before, path14 = [], cache = /* @__PURE__ */ new WeakMap(), afterCall) {
@@ -102475,7 +102477,7 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
               ...context.files,
               ...createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context)
             });
-            context.files = endpointIngressApi;
+            context.files = revokeOuterResources.guardCapability("files", endpointIngressApi);
             if (endpoint.runtimeOwnedStripeCallback) {
               Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
             }
@@ -102487,7 +102489,7 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
               endpointIngressApi,
               endpoint.options?.response?.fileAttachment === true
             );
-            context.files = attachmentResponse.files;
+            context.files = revokeOuterResources.guardCapability("files", attachmentResponse.files);
             sealCommittedAttachmentResult = attachmentResponse.sealCommittedResult;
             const handlerRun = Promise.resolve().then(() => handler(context));
             const outerAbort = revokeOuterResources?.aborted();
