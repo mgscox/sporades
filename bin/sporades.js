@@ -94173,7 +94173,7 @@ function bindOuterResources(database, context, hooks) {
         }, warn() {
         }, error() {
         } }),
-        signal: new AbortController().signal,
+        signal: controller.signal,
         notifications: Object.freeze({ accept: async () => {
           terminalError ??= resourceError("RESOURCE_EFFECT_UNSUPPORTED");
           throw terminalError;

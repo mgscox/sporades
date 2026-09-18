@@ -64,7 +64,9 @@ export declare function createControllableRuntimeClock(initialInstant: string | 
     advanceBy(delayMs: number): void;
     setTimer(callback: () => any, delayMs: number): number;
     clearTimer(id: number): void;
-    runDueTimers(): Promise<void>;
+    pendingTimerIds(): number[];
+    runTimer(id: number): Promise<boolean>;
+    runDueTimers(maxTimers?: number): Promise<void>;
 };
 export declare function runtimeOwnedJobHandlers(runtime: {
     prepareEmailPasswordResetDelivery: (context: LooseRecord, payload: LooseRecord) => Promise<LooseRecord | null>;

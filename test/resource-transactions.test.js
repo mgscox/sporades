@@ -123,15 +123,20 @@ test('an unused mutation resource entry cannot escape its settled outer transact
 
 test('a non-Job resource watchdog rejects a noncooperative callback at the outer deadline', async () => {
   let entered;
+  let signal;
   const enteredPromise = new Promise(resolve => { entered = resolve; });
   const f = await fixture(() => null, {
-    mutations: { stalls: mutation(ctx => ctx.resources.run(options(), async () => { entered(); await new Promise(() => {}); return null; })) },
+    mutations: { stalls: mutation(ctx => ctx.resources.run(options(), async scope => { signal = scope.signal; entered(); await new Promise(() => {}); return null; })) },
   });
   try {
+    const timersBefore = new Set(f.clock.pendingTimerIds());
     const running = runMutation(f.database, actor, 'stalls', []);
     assert.equal(await Promise.race([enteredPromise.then(() => true), new Promise(resolve => setTimeout(() => resolve(false), 100))]), true);
+    const [watchdog] = f.clock.pendingTimerIds().filter(id => !timersBefore.has(id));
+    assert.equal(typeof watchdog, 'number');
     f.clock.advanceBy(30_000);
-    await f.clock.runDueTimers();
+    await f.clock.runTimer(watchdog);
+    assert.equal(signal.aborted, true);
     const result = await running;
     assert.equal(result.ok, false);
     assert.equal(result.error.code, 'RESOURCE_DEADLINE_EXCEEDED');

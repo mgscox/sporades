@@ -149,7 +149,7 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
         db: scopeDb,
         jobs: Object.freeze({ enqueue: (...args: any[]) => { assertLive(true); return parentJobs.enqueue(...args); } }),
         log: Object.freeze({ info() {}, warn() {}, error() {} }),
-        signal: new AbortController().signal,
+        signal: controller.signal,
         notifications: Object.freeze({ accept: async () => {
           terminalError ??= resourceError("RESOURCE_EFFECT_UNSUPPORTED");
           throw terminalError;
