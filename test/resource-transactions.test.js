@@ -352,7 +352,8 @@ test('the outer watchdog aborts a stalled after-mutation hook after a completed 
   let entered;
   const stalled = new Promise(resolve => { entered = resolve; });
   const f = await fixture(() => null, { mutations: { hookDeadline: mutation(ctx => ctx.resources.run(options(), () => true)) } });
-  f.database.mutationHooks.afterMutation = [async () => { entered(); await new Promise(() => {}); }];
+  globalThis.__resourceHookEntered = entered;
+  f.database.mutationHooks.afterMutation = ['async () => { globalThis.__resourceHookEntered(); await new Promise(() => {}); }'];
   try {
     const before = new Set(f.clock.pendingTimerIds());
     const running = runMutation(f.database, actor, 'hookDeadline', []);
@@ -362,8 +363,8 @@ test('the outer watchdog aborts a stalled after-mutation hook after a completed 
     const result = await running;
     assert.equal(result.ok, false);
     assert.equal(result.error.code, 'RESOURCE_DEADLINE_EXCEEDED');
-    assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get().n, 0);
-  } finally { await f.close(); }
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sqlite_schema WHERE name='sporades_resource_receipts'").get().n, 0);
+  } finally { delete globalThis.__resourceHookEntered; await f.close(); }
 });
 
 test('the outer watchdog aborts the real pending-log cleanup phase after a completed resource scope', async () => {
