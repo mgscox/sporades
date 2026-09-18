@@ -28,6 +28,14 @@ process.on('message', async message => {
     send('advanced');
   } else if (message.kind === 'shutdown') {
     await database.shutdown(); send('shutdown');
+  } else if (message.kind === 'grant-change') {
+    try {
+      if (message.action === 'revoke') database.adapter.prepare("DELETE FROM anchors WHERE id='anchor'").run();
+      else database.adapter.prepare("UPDATE anchors SET value='rotated' WHERE id='anchor'").run();
+      send('grant-change', { code: 'COMMITTED', action: message.action });
+    } catch (error) {
+      send('grant-change', { code: error.errcode === 5 || error.errcode === 6 ? 'SQLITE_BUSY' : error.code, action: message.action });
+    }
   } else if (message.kind === 'late') {
     try { await escaped.insert({ value: 'late' }); send('late', { code: 'UNEXPECTED_SUCCESS' }); }
     catch (error) { send('late', { code: error.code }); }

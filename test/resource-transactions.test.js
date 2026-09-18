@@ -6,7 +6,7 @@ import path from 'node:path';
 import { openDevDatabase, runMutation, runEndpoint, runCurrentUserJobWorker, createControllableRuntimeClock } from '../dist/server-runtime-source.js';
 import { table, String as Text, endpoint, job, mutation, schedule } from '../dist/server.js';
 import { createSqliteDatabaseAdapter } from '../dist/database-runtime.js';
-import { resourceCanonicalJson, bindJobResources } from '../dist/resource-runtime.js';
+import { resourceCanonicalJson, bindJobResources, bindOuterResources } from '../dist/resource-runtime.js';
 
 const actor = { userId: 'actor', displayName: 'Actor', email: null, picture: null, isAuthenticated: false, isGuest: true, provider: 'anonymous' };
 const options = (input = { b: 2, a: 1 }) => ({ resource: { table: 'anchors', id: 'anchor' }, operationId: 'operation', input });
@@ -171,6 +171,44 @@ test('a child enqueued inside a mutation resource scope becomes visible only aft
     assert.equal((await running).ok, true);
     assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sporades_jobs WHERE handler='child'").get().n, 1);
   } finally { releaseOuter?.(); await f.close(); }
+});
+
+test('a test-owned runtime intent fixture joins outer rollback while public notification acceptance remains unsupported', async () => {
+  const f = await fixture(() => null);
+  try {
+    await assert.rejects(f.database.adapter.withTransaction(async transactionAdapter => {
+      const database = { ...f.database, adapter: transactionAdapter };
+      const context = {
+        auth: actor,
+        db: {
+          anchors: {
+            where: (_field, id) => ({ get: async () => transactionAdapter.prepare('SELECT * FROM anchors WHERE id=?').get(id) }),
+            update: async () => null,
+          },
+        },
+        jobs: { enqueue: () => null },
+        stageRuntimeIntentFixture: async () => {
+          await transactionAdapter.exec('CREATE TABLE IF NOT EXISTS sporades_resource_intent_fixture (id TEXT PRIMARY KEY)');
+          await transactionAdapter.prepare("INSERT INTO sporades_resource_intent_fixture VALUES ('staged')").run();
+        },
+      };
+      const release = bindOuterResources(database, context, {
+        startedAt: f.clock.now().getTime(),
+        authorize: async () => null,
+        drain: async candidate => candidate.stageRuntimeIntentFixture(),
+      });
+      try {
+        await context.resources.run(options(), async scope => {
+          // The fixture stands in for Ticket 06's runtime-owned staging only;
+          // it is deliberately admitted by the test hook, never by accept().
+          return { staged: true };
+        });
+        throw new Error('outer rollback');
+      } finally { release(); }
+    }), /outer rollback/);
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sqlite_schema WHERE name='sporades_resource_intent_fixture'").get().n, 0);
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sqlite_schema WHERE name='sporades_resource_receipts'").get().n, 0);
+  } finally { await f.close(); }
 });
 
 test('a mutation resource scope invalidates parent and escaped database handles after its callback', async () => {

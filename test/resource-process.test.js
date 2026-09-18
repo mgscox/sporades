@@ -108,6 +108,50 @@ test('cancellation committed before acquisition prevents callback entry', async 
   } finally { await f.close(); }
 });
 
+test('independent Grant revocation before Job acquisition denies current authority without callback work', async () => {
+  const f = await setup();
+  try {
+    f.b.send('grant-change', { action: 'revoke' });
+    assert.deepEqual(await f.b.wait('grant-change'), { kind: 'grant-change', code: 'COMMITTED', action: 'revoke' });
+    f.a.send('acquire');
+    assert.equal((await f.a.wait('outcome')).code, 'DENIED');
+    assert.equal(f.read.prepare('SELECT count(*) n FROM writes').get().n, 0);
+    f.a.send('settle'); await f.a.wait('settled');
+  } finally { await f.close(); }
+});
+
+test('independent Grant rotation before Job acquisition is observed before protected work begins', async () => {
+  const f = await setup();
+  try {
+    f.b.send('grant-change', { action: 'rotate' });
+    assert.equal((await f.b.wait('grant-change')).code, 'COMMITTED');
+    assert.equal(f.read.prepare("SELECT value FROM anchors WHERE id='anchor'").get().value, 'rotated');
+    f.a.send('acquire'); await f.a.wait('entered');
+    f.a.send('release');
+    assert.equal((await f.a.wait('outcome')).code, 'COMMITTED');
+    assert.equal(f.read.prepare('SELECT count(*) n FROM writes').get().n, 1);
+    f.a.send('settle'); await f.a.wait('settled');
+  } finally { await f.close(); }
+});
+
+for (const action of ['rotate', 'revoke']) test(`independent Grant ${action} after Job acquisition serializes until the resource commit`, async () => {
+  const f = await setup();
+  try {
+    f.a.send('acquire'); await f.a.wait('entered');
+    f.b.send('grant-change', { action });
+    assert.equal((await f.b.wait('grant-change')).code, 'SQLITE_BUSY');
+    assert.equal(f.read.prepare('SELECT count(*) n FROM writes').get().n, 0);
+    f.a.send('release');
+    assert.equal((await f.a.wait('outcome')).code, 'COMMITTED');
+    f.b.send('grant-change', { action });
+    assert.equal((await f.b.wait('grant-change')).code, 'COMMITTED');
+    assert.equal(f.read.prepare('SELECT count(*) n FROM writes').get().n, 1);
+    if (action === 'revoke') assert.equal(f.read.prepare("SELECT count(*) n FROM anchors WHERE id='anchor'").get().n, 0);
+    else assert.equal(f.read.prepare("SELECT value FROM anchors WHERE id='anchor'").get().value, 'rotated');
+    f.a.send('settle'); await f.a.wait('settled');
+  } finally { await f.close(); }
+});
+
 test('graceful shutdown rolls back an unsettled scope and rejects its late handle', async () => {
   const f = await setup();
   try {
