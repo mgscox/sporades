@@ -371,7 +371,7 @@ test("real runtime Job repair uses fresh queue generations while provider idempo
   const payments = { stripe: {
     enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
     publicOrigin: "https://repair.example.test", callbackPath: "/stripe/webhook",
-    apiVersion: "2026-07-29.dahlia", livemode: false, requestTimeoutMs: 10_000,
+    apiVersion: "2026-08-26.dahlia", livemode: false, requestTimeoutMs: 10_000,
   } };
   const capsule = { name: "team-billing-repair-jobs", schema: {}, teamBilling: {
     catalogue: { agency: { quantity: { kind: "team-members" }, stripe: {
@@ -447,7 +447,7 @@ test("crashed provider lane converges after TTL from normal exhaustion and lease
   const payments = { stripe: {
     enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
     publicOrigin: "https://crashed-lane.example.test", callbackPath: "/stripe/webhook",
-    apiVersion: "2026-07-29.dahlia", livemode: false, requestTimeoutMs: 10_000,
+    apiVersion: "2026-08-26.dahlia", livemode: false, requestTimeoutMs: 10_000,
   } };
   const capsule = { name: "team-billing-crashed-lane", schema: {}, teamBilling: {
     catalogue: { agency: { quantity: { kind: "team-members" }, stripe: {

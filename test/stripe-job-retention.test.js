@@ -26,7 +26,7 @@ const serverEnv = { STRIPE_SECRET_KEY: "sk_test_retention_fixture", STRIPE_WEBHO
 const stripe = {
   enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
   publicOrigin: "https://payments.example.test", callbackPath: "/stripe/webhook",
-  apiVersion: "2026-07-29.dahlia", livemode: false, requestTimeoutMs: 10_000,
+  apiVersion: "2026-08-26.dahlia", livemode: false, requestTimeoutMs: 10_000,
 };
 
 function responseCapture() {
@@ -37,7 +37,7 @@ function responseCapture() {
 
 function stripeEvent(providerEventId) {
   return JSON.stringify({
-    id: providerEventId, object: "event", api_version: "2026-07-29.dahlia", created: 1_893_456_000,
+    id: providerEventId, object: "event", api_version: "2026-08-26.dahlia", created: 1_893_456_000,
     data: { object: { id: "cs_retention_secret", object: "checkout.session" } }, livemode: false,
     pending_webhooks: 1, request: null, type: "checkout.session.completed",
   });

@@ -1,5 +1,5 @@
 type LooseRecord = Record<string, any>;
-export declare const STRIPE_API_VERSION: "2026-07-29.dahlia";
+export declare const STRIPE_API_VERSION: "2026-08-26.dahlia";
 export type DormantStripePaymentsConfig = Readonly<{
     enabled: false;
 }>;

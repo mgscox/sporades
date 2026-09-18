@@ -211,7 +211,7 @@ no provider authority. Activation is all-or-nothing:
       "webhookSecretEnv": "STRIPE_WEBHOOK_SECRET",
       "publicOrigin": "https://capsule.example",
       "callbackPath": "/stripe/webhook",
-      "apiVersion": "2026-07-29.dahlia",
+      "apiVersion": "2026-08-26.dahlia",
       "livemode": false,
       "requestTimeoutMs": 10000
     }

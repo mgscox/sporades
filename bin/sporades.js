@@ -62700,7 +62700,7 @@ function publicTreeError(message, hint, diagnostics) {
 }
 
 // src/stripe-payment-config.ts
-var STRIPE_API_VERSION = "2026-07-29.dahlia";
+var STRIPE_API_VERSION = "2026-08-26.dahlia";
 var ENABLED_KEYS = [
   "enabled",
   "secretKeyEnv",
