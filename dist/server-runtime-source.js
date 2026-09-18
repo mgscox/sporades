@@ -1,4 +1,4 @@
-import { bindJobResources, unsupportedResources } from "./resource-runtime.js";
+import { bindJobResources, isResourceAbortError, unsupportedResources } from "./resource-runtime.js";
 // `createHmac` left this line with the S3 signing path in batch 6: `s3Hmac` was its only remaining
 // consumer, and it reaches the builtin through `process.getBuiltinModule` in `file-storage-runtime.ts`
 // now (ADR-0042). The rest of this list has been wider than what this file binds since batch 3 —
@@ -7200,7 +7200,8 @@ export async function runCurrentUserJobWorker(database) {
                 const history = JSON.parse(row.attemptHistory || "[]");
                 const retry = parsePersistedJobRetry(row.retryJson);
                 const abortError = error?.cause ?? error;
-                const abortShaped = abortController.signal.aborted && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR");
+                const abortShaped = (abortController.signal.aborted || isResourceAbortError(abortError))
+                    && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR");
                 const cancellation = abortShaped
                     ? await database.adapter.prepare(sql("SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?")).get(row.id, claimToken)
                     : null;

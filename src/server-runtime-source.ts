@@ -1,4 +1,4 @@
-import { bindJobResources, resourceError, unsupportedResources } from "./resource-runtime.js";
+import { bindJobResources, isResourceAbortError, resourceError, unsupportedResources } from "./resource-runtime.js";
 import type { IncomingMessage, ServerResponse, IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
 import { WithImplicitCoercion } from "buffer";
 import { BinaryLike, KeyObject } from "node:crypto";
@@ -7449,7 +7449,8 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
         const history = JSON.parse(row.attemptHistory || "[]");
         const retry = parsePersistedJobRetry(row.retryJson);
         const abortError = error?.cause ?? error;
-        const abortShaped = abortController.signal.aborted && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR");
+        const abortShaped = (abortController.signal.aborted || isResourceAbortError(abortError))
+          && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR");
         const cancellation = abortShaped
           ? await database.adapter.prepare(sql(
             "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?",

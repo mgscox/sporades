@@ -27,7 +27,7 @@ async function fixture(handler, extra = {}) {
     await runCurrentUserJobWorker(database);
     return database.adapter.prepare('SELECT * FROM sporades_jobs WHERE id=?').get(result.data.id);
   };
-  return { database, clock, enqueue, close: async () => { await database.shutdown(); await database.close(); await rm(dir, { recursive: true, force: true }); } };
+  return { database, clock, enqueue, file: path.join(dir, 'data.db'), close: async () => { await database.shutdown(); await database.close(); await rm(dir, { recursive: true, force: true }); } };
 }
 
 test('SQLite commits writes, enqueues and a canonical replay receipt exactly once', async () => {
@@ -486,7 +486,7 @@ test('dedicated connection acquisition failure is redacted and releases the runt
   } finally { await adapter.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
-for (const privileged of [false, true]) test(`resource cancellation settles the ${privileged ? 'Privileged' : 'ordinary'} Job as cancelled without consuming retries`, async () => {
+for (const remote of [false, true]) for (const privileged of [false, true]) test(`${remote ? 'cross-runtime' : 'local'} resource cancellation settles the ${privileged ? 'Privileged' : 'ordinary'} Job as cancelled without consuming retries`, async () => {
   let entered, resume;
   const ready = new Promise(resolve => { entered = resolve; });
   const proceed = new Promise(resolve => { resume = resolve; });
@@ -506,8 +506,15 @@ for (const privileged of [false, true]) test(`resource cancellation settles the 
     const completion = f.enqueue(null, { maxAttempts: 3, delayMs: 0 });
     await ready;
     const running = f.database.adapter.prepare("SELECT id FROM sporades_jobs WHERE status='running'").get();
-    const cancelled = await runMutation(f.database, actor, 'cancel', [running.id]);
-    assert.equal(cancelled.ok, true);
+    if (remote) {
+      const other = await createSqliteDatabaseAdapter(f.file);
+      try {
+        other.prepare("UPDATE sporades_jobs SET cancelRequestedAt=? WHERE id=? AND status='running'").run(f.clock.now().toISOString(), running.id);
+      } finally { await other.close(); }
+    } else {
+      const cancelled = await runMutation(f.database, actor, 'cancel', [running.id]);
+      assert.equal(cancelled.ok, true);
+    }
     resume();
     const settled = await completion;
     assert.equal(settled.status, 'cancelled', settled.failure);

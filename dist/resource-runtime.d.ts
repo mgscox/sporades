@@ -1,4 +1,6 @@
 type RecordValue = Record<string, any>;
+/** Internal signal: settlement must also verify the exact claim's durable cancellation marker. */
+export declare function isResourceAbortError(error: any): boolean;
 /** Public errors never include caller data or engine diagnostics. */
 export declare function resourceError(code: string): Error & {
     retryable?: boolean | undefined;
