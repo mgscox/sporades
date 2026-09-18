@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
+import net from "node:net";
 import test from "node:test";
 
 import {
@@ -46,6 +47,7 @@ import { mutation } from "../dist/server.js";
 import {
   POSTGRES_SKIP_REASON,
   postgresTestUrl,
+  resetPostgresSchema,
   withLibsqlAdapter,
   withPostgresAdapter,
   withSqliteAdapter,
@@ -160,6 +162,47 @@ test("terminating only the owning Postgres backend revokes its scoped connection
       assert.throws(() => retained.prepare("SELECT 1"), /Transaction-scoped database access is no longer active/);
     } finally { release?.(); }
   }, { appTableNames: [] });
+});
+
+test("Postgres reports an unknown resource COMMIT after a real server commit loses its acknowledgement", { skip: POSTGRES_SKIP_REASON }, async () => {
+  const direct = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(direct, []);
+  const target = new URL(postgresTestUrl());
+  const sockets = new Set();
+  const proxy = net.createServer((client) => {
+    const upstream = net.createConnection({ host: target.hostname, port: Number(target.port) });
+    sockets.add(client); sockets.add(upstream);
+    const remove = () => { sockets.delete(client); sockets.delete(upstream); };
+    client.once('close', remove); upstream.once('close', remove);
+    let commitForwarded = false;
+    client.on('data', chunk => {
+      if (chunk.includes(Buffer.from('COMMIT\0'))) commitForwarded = true;
+      upstream.write(chunk);
+    });
+    upstream.on('data', chunk => {
+      if (commitForwarded) { client.destroy(); upstream.destroy(); return; }
+      client.write(chunk);
+    });
+    client.on('error', () => {}); upstream.on('error', () => {});
+  });
+  await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
+  const port = proxy.address().port;
+  const proxiedUrl = new URL(postgresTestUrl()); proxiedUrl.port = String(port);
+  const proxied = await createPostgresDatabaseAdapter({ url: proxiedUrl.toString() });
+  try {
+    await assert.rejects(
+      proxied.withResourceTransaction(async transaction => {
+        await transaction.exec('CREATE TABLE commit_ack_drop_rows (id TEXT PRIMARY KEY)');
+        await transaction.prepare('INSERT INTO commit_ack_drop_rows (id) VALUES (?)').run('committed');
+      }, undefined, { table: 'grants', id: 'ack-drop' }),
+      { code: 'RESOURCE_COMMIT_UNKNOWN' },
+    );
+    assert.equal(Number((await direct.prepare('SELECT count(*) n FROM commit_ack_drop_rows').get()).n), 1);
+  } finally {
+    await proxied.close().catch(() => {}); await direct.close();
+    for (const socket of sockets) socket.destroy();
+    await new Promise(resolve => proxy.close(resolve));
+  }
 });
 
 test("endpoint source extraction excludes a trailing handler argument comma", () => {
