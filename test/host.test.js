@@ -90,6 +90,7 @@ async function withHostedRuntimeTransportServer(dir, config, fn) {
     if (prepareHttpSecurity(database, request, response)) {
       return;
     }
+    if (routeConnectionToken(request, response, (current) => websocketHub.createConnectionToken(current))) return;
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ ok: true }));
   });
@@ -154,6 +155,41 @@ test("connection-token refresh route returns a fresh no-store browser gate", asy
     assert.equal(crossSiteSubresource.status, 403);
     assert.equal(issued, 2, "requests without the runtime-only header do not mint connection tokens");
   });
+});
+
+
+test("conditional token checks preserve live gates and TTL while enforcing refresh authority", async () => {
+  const originalNow = Date.now;
+  let now = originalNow();
+  Date.now = () => now;
+  const hub = createWebSocketHub(() => { throw new Error("No database authority is needed"); });
+  const token = hub.createConnectionToken();
+  let calls = 0;
+  try {
+    await withHttpServer((request, response) => {
+      if (routeConnectionToken(request, response, (current) => { calls += 1; return hub.createConnectionToken(current); })) return;
+      response.writeHead(404); response.end();
+    }, async (port) => {
+      const url = `http://[::1]:${port}/__sporades/connection-token`;
+      const headers = { "x-sporades-connection-token-request": "1", "x-sporades-connection-token": token };
+      now += 3 * 60 * 60 * 1000;
+      const valid = await fetch(url, { headers });
+      assert.equal(valid.status, 200);
+      assert.equal(valid.headers.get("cache-control"), "no-store");
+      assert.equal(valid.headers.get("cross-origin-resource-policy"), "same-origin");
+      assert.equal((await valid.json()).token === token, true, "checking a live token must not mint another");
+      const denied = await fetch(url, { headers: { ...headers, origin: "https://evil.example.test" } });
+      assert.equal(denied.status, 403);
+      const unmarked = await fetch(url, { headers: { "x-sporades-connection-token": token } });
+      assert.equal(unmarked.status, 403);
+      assert.equal(calls, 1, "authority is checked before even validating a supplied token");
+      now += 60 * 60 * 1000;
+      const expired = await fetch(url, { headers });
+      assert.equal((await expired.json()).token !== token, true, "checks do not extend the original four-hour TTL");
+      const forced = await fetch(url, { headers: { "x-sporades-connection-token-request": "1" } });
+      assert.equal((await forced.json()).token !== token, true, "manual refresh still mints a fresh token");
+    });
+  } finally { Date.now = originalNow; }
 });
 
 async function reserveUnusedPort() {
@@ -299,6 +335,35 @@ test("Hosted Capsule connection-token inventory evicts its oldest browser gates 
       assert.match(retained, /^HTTP\/1\.1 101/m);
     });
   });
+});
+
+
+test("Hosted Capsule connection-token expiry rejects the old gate and accepts its conditional replacement", async () => {
+  const originalNow = Date.now;
+  let now = originalNow();
+  Date.now = () => now;
+  try {
+    await withTempDir(async (dir) => {
+      await withHostedRuntimeTransportServer(dir, {}, async (baseUrl, createConnectionToken) => {
+        const token = createConnectionToken();
+        const upgradeHeaders = { origin: "https://team-notes.capsules.example.dev" };
+        assert.match(await openRawWebSocketHandshake(baseUrl, upgradeHeaders, token), /^HTTP\/1\.1 101/m);
+        const headers = { "x-sporades-connection-token-request": "1", "x-sporades-connection-token": token };
+        const url = new URL("/__sporades/connection-token", baseUrl);
+        const healthy = await fetch(url, { headers });
+        assert.equal((await healthy.json()).token === token, true, "a transport blip does not consume a fresh gate");
+        now += 4 * 60 * 60 * 1000 + 1;
+        const rejected = await openRawWebSocketHandshake(baseUrl, upgradeHeaders, token);
+        assert.match(rejected, /^HTTP\/1\.1 403 Forbidden/m);
+        assert.doesNotMatch(rejected, /Sec-WebSocket-Accept/i, "auth rejection happens before WebSocket upgrade");
+        const replacement = await fetch(url, { headers });
+        const fresh = (await replacement.json()).token;
+        assert.equal(fresh !== token, true);
+        assert.match(await openRawWebSocketHandshake(baseUrl, upgradeHeaders, fresh), /^HTTP\/1\.1 101/m);
+        assert.match(await openRawWebSocketHandshake(baseUrl, upgradeHeaders, token), /^HTTP\/1\.1 403 Forbidden/m);
+      });
+    });
+  } finally { Date.now = originalNow; }
 });
 
 function runCli(args, options = {}) {

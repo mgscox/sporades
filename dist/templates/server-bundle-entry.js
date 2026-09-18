@@ -132,7 +132,7 @@ const server = createServer(async (request, response) => {
         if (prepareHttpSecurity(database, request, response)) {
             return;
         }
-        if (routeConnectionToken(request, response, () => websocketHub.createConnectionToken())) {
+        if (routeConnectionToken(request, response, (currentToken) => websocketHub.createConnectionToken(currentToken))) {
             return;
         }
         if (await routeRuntimeHealth(database, request, response)) {

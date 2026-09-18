@@ -7,7 +7,7 @@ import { runInNewContext } from "node:vm";
 
 import { capsule } from "../dist/server.js";
 import { createClientRuntimeSource } from "../dist/templates/client-runtime-template.js";
-import { normalizeJourneyPolicy, normalizeJourneyState, openDevDatabase, runClientAccessKeyOperation } from "../dist/server-runtime-source.js";
+import { createWebSocketHub, routeConnectionToken, normalizeJourneyPolicy, normalizeJourneyState, openDevDatabase, runClientAccessKeyOperation } from "../dist/server-runtime-source.js";
 
 async function importClientRuntime(options = {}) {
   const source = createClientRuntimeSource(options);
@@ -1333,7 +1333,10 @@ function installBrowserFakes(auth, options = {}) {
   const originalClearTimeout = globalThis.clearTimeout;
   const originalRandom = Math.random;
 
-  if (options.fetch) globalThis.fetch = options.fetch;
+  globalThis.fetch = options.fetch ?? (async (_url, request) => ({
+    ok: true,
+    async json() { return { token: request.headers["x-sporades-connection-token"] ?? "fake-page-connection-token" }; },
+  }));
   if (options.setTimeout) globalThis.setTimeout = options.setTimeout;
   if (options.clearTimeout) globalThis.clearTimeout = options.clearTimeout;
   if (options.random) Math.random = options.random;
@@ -1551,12 +1554,13 @@ async function settleMicrotasks() {
 }
 
 test("framework-neutral query mutation and auth primitives share reconnecting state", async () => {
+  const timers = createDeterministicTimers();
   let queryVersion = 0;
   const queryCalls = [];
   const unsubscribeCalls = [];
   const authCalls = [];
   const mutationCalls = [];
-  const browser = installBrowserFakes(anonymousAuth, { handlers: {
+  const browser = installBrowserFakes(anonymousAuth, { setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout, handlers: {
     "query.subscribe": async (message) => {
       queryCalls.push(message);
       queryVersion += 1;
@@ -1590,7 +1594,7 @@ test("framework-neutral query mutation and auth primitives share reconnecting st
     const querySubscription = runtime.queries.subscribe("notes", (state) => queryStates.push(state));
     const authStates = [];
     const authSubscription = runtime.auth.subscribe((state) => authStates.push(state));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await settleMicrotasks();
 
     assert.deepEqual(queryStates, [
       { data: null, error: null, loading: true },
@@ -1620,34 +1624,40 @@ test("framework-neutral query mutation and auth primitives share reconnecting st
 
     browser.sockets[0].readyState = 3;
     browser.sockets[0].emit("close", {});
-    await new Promise((resolve) => setTimeout(resolve, 550));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await settleMicrotasks();
+    timers.runNext();
+    await settleMicrotasks();
+    await settleMicrotasks();
     assert.equal(queryCalls.length, 2);
     assert.deepEqual(queryStates.at(-1), { data: [{ id: 2, text: "note 2" }], error: null, loading: false });
 
     querySubscription.unsubscribe(); querySubscription.unsubscribe();
     assert.equal(unsubscribeCalls.length, 0, "the shared wire subscription remains while one listener is active");
     secondQuery.unsubscribe(); secondQuery.unsubscribe();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await settleMicrotasks();
     assert.equal(unsubscribeCalls.length, 1, "last-listener teardown sends one idempotent wire unsubscribe");
     assert.equal(unsubscribeCalls[0].subscriptionId, queryCalls[0].id);
     authSubscription.unsubscribe(); authSubscription.unsubscribe();
     secondAuth.unsubscribe(); secondAuth.unsubscribe();
     browser.sockets.at(-1).readyState = 3;
     browser.sockets.at(-1).emit("close", {});
-    await new Promise((resolve) => setTimeout(resolve, 550));
+    await settleMicrotasks();
+    timers.runNext();
+    await settleMicrotasks();
     assert.equal(queryCalls.length, 2, "unsubscribed queries do not resubscribe");
     assert.doesNotMatch(JSON.stringify(authStates), /secret-|transportCredential|sessionToken/);
 
     const disconnectedStates = [];
     const disconnected = runtime.queries.subscribe("disconnected", (state) => disconnectedStates.push(state));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await settleMicrotasks();
     const latestSocket = browser.sockets.at(-1);
     latestSocket.send = () => { throw new Error("transport closed during unsubscribe"); };
     disconnected.unsubscribe(); disconnected.unsubscribe();
     latestSocket.readyState = 3;
     latestSocket.emit("close", {});
-    await new Promise((resolve) => setTimeout(resolve, 550));
+    await settleMicrotasks();
+    timers.runNext();
+    await settleMicrotasks();
     assert.equal(queryCalls.filter((message) => message.query === "disconnected").length, 1, "failed best-effort unsubscribe cannot resurrect on reconnect");
   } finally { browser.cleanup(); }
 });
@@ -1712,7 +1722,7 @@ test("rejected TTL-expired page connection token refreshes and connects without 
     assert.equal(new URL(tokenRequests[0].url).pathname, "/__sporades/connection-token");
     assert.equal(tokenRequests[0].options.cache, "no-store");
     assert.equal(tokenRequests[0].options.credentials, "same-origin");
-    assert.deepEqual(tokenRequests[0].options.headers, { "x-sporades-connection-token-request": "1" });
+    assert.deepEqual(tokenRequests[0].options.headers, { "x-sporades-connection-token-request": "1", "x-sporades-connection-token": "stale-page-token" });
     assert.ok(tokenRequests[0].options.signal instanceof AbortSignal);
     assert.deepEqual(timers.pending().map(({ delay }) => delay), [275]);
     timers.runNext();
@@ -1785,7 +1795,7 @@ test("runtime restart invalidating an open page token recovers without wedging t
     connectionToken: "pre-restart-page-token",
     fetch: async () => {
       tokenRequests += 1;
-      return { ok: true, async json() { return { token: "post-restart-page-token" }; } };
+      return { ok: true, async json() { return { token: tokenRequests === 1 ? "pre-restart-page-token" : "post-restart-page-token" }; } };
     },
     setTimeout: timers.setTimeout,
     clearTimeout: timers.clearTimeout,
@@ -1802,7 +1812,8 @@ test("runtime restart invalidating an open page token recovers without wedging t
 
     established.readyState = 3;
     established.emit("close", {});
-    assert.equal(tokenRequests, 0, "an ordinary disconnect first retries the token that already worked");
+    await settleMicrotasks();
+    assert.equal(tokenRequests, 1, "an ordinary disconnect checks the token that already worked without rotating it");
     assert.deepEqual(timers.pending().map(({ delay }) => delay), [275]);
     timers.runNext();
     const invalidated = browser.sockets[1];
@@ -1811,8 +1822,8 @@ test("runtime restart invalidating an open page token recovers without wedging t
     invalidated.emit("close", {});
     await settleMicrotasks();
 
-    assert.equal(tokenRequests, 1);
-    assert.deepEqual(timers.pending().map(({ delay }) => delay), [275]);
+    assert.equal(tokenRequests, 2);
+    assert.deepEqual(timers.pending().map(({ delay }) => delay), [550]);
     timers.runNext();
     const recovered = browser.sockets[2];
     assert.equal(new URL(recovered.url).searchParams.get("connectionToken"), "post-restart-page-token");
@@ -2022,6 +2033,7 @@ test("open-then-close failures stay bounded until a useful server response", asy
       openedWithoutResponse.emit("open", {});
       openedWithoutResponse.readyState = 3;
       openedWithoutResponse.emit("close", {});
+      await settleMicrotasks();
       if (attempt < 4) {
         assert.deepEqual(timers.pending().map(({ delay }) => delay), [[275, 550, 1_100][attempt - 1]]);
         timers.runNext();
@@ -2869,4 +2881,230 @@ test("client files.publicUrl sends expires using the server wire contract", asyn
   } finally {
     browser.cleanup();
   }
+});
+
+
+// Exercise the generated browser runtime against the real token route and inventory.
+function installRecoveryHarness() {
+  const timers = createDeterministicTimers();
+  const originalNow = Date.now;
+  let now = originalNow();
+  Date.now = () => now;
+  const hub = createWebSocketHub(() => { throw new Error("Token checks do not need database authority"); });
+  const initialToken = hub.createConnectionToken();
+  let checks = 0;
+  let minted = 0;
+  let releaseCheck = null;
+  const panels = [];
+  const previousDocument = globalThis.document;
+  globalThis.document = {
+    body: { append(panel) { panels.push(panel); } },
+    createElement(tag) {
+      return { tagName: tag, style: {}, children: [], listeners: {},
+        append(child) { this.children.push(child); },
+        setAttribute() {},
+        addEventListener(type, listener) { this.listeners[type] = listener; },
+        remove() { panels.splice(panels.indexOf(this), 1); },
+      };
+    },
+  };
+  const browser = installBrowserFakes(anonymousAuth, {
+    autoOpen: false,
+    connectionToken: initialToken,
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+    random: () => 0.5,
+    handlers: { "query.subscribe": async () => ({ type: "query.result", data: [{ live: true }], error: null }) },
+    fetch: async (url, options) => {
+      checks += 1;
+      if (releaseCheck) await new Promise((resolve) => { releaseCheck = resolve; });
+      let status, payload;
+      assert.equal(options.cache, "no-store");
+      assert.equal(options.credentials, "same-origin");
+      routeConnectionToken({ method: "GET", url: String(url), headers: { host: "localhost:4000", ...options.headers }, socket: {} }, {
+        writeHead(code, headers) {
+          status = code;
+          assert.equal(headers["cache-control"], "no-store");
+          assert.equal(headers["cross-origin-resource-policy"], "same-origin");
+        },
+        end(body) { payload = JSON.parse(body); },
+      }, (current) => {
+        const next = hub.createConnectionToken(current);
+        if (next !== current) minted += 1;
+        return next;
+      });
+      return { ok: status === 200, async json() { return payload; } };
+    },
+  });
+  return {
+    ...browser, timers, panels, initialToken,
+    get checks() { return checks; }, get minted() { return minted; },
+    advance(ms) { now += ms; },
+    holdCheck() { releaseCheck = true; },
+    releaseCheck() { const release = releaseCheck; releaseCheck = null; release(); },
+    async openLatest() {
+      const socket = browser.sockets.at(-1);
+      socket.readyState = WebSocket.OPEN;
+      socket.emit("open", {});
+      await settleMicrotasks();
+    },
+    async dropLatest() {
+      browser.sockets.at(-1).close();
+      await settleMicrotasks();
+    },
+    cleanup() { browser.cleanup(); Date.now = originalNow; globalThis.document = previousDocument; },
+  };
+}
+
+test("established expired token is replaced before the next socket and live queries resume", async () => {
+  const h = installRecoveryHarness();
+  try {
+    const runtime = await importClientRuntime();
+    const states = [];
+    runtime.queries.subscribe("live-after-expiry", (state) => states.push(state));
+    await h.openLatest();
+    assert.equal(states.at(-1).data[0].live, true);
+    assert.equal(h.checks, 0, "healthy connection performs no token requests");
+    h.advance(4 * 60 * 60 * 1000 + 1);
+    await h.dropLatest();
+    assert.equal(h.minted, 1, "expiry replaces the token before reconnecting");
+    h.timers.runNext();
+    assert.equal(new URL(h.sockets.at(-1).url).searchParams.get("connectionToken") !== h.initialToken, true);
+    await h.openLatest();
+    assert.equal(states.at(-1).error, null);
+    assert.equal(states.at(-1).data[0].live, true);
+    assert.equal(h.sent.filter((message) => message.type === "query.subscribe").length, 2);
+    assert.equal(h.storage.has("assignedLocation"), false);
+  } finally { h.cleanup(); }
+});
+
+test("transport blips including failed upgrades check validity without minting a token", async () => {
+  const h = installRecoveryHarness();
+  try {
+    const runtime = await importClientRuntime();
+    runtime.auth.subscribe(() => {});
+    await h.openLatest();
+    assert.equal(h.checks, 0);
+    await h.dropLatest();
+    h.timers.runNext();
+    // A browser reports an opaque close for both a transport failure and HTTP 403.
+    await h.dropLatest();
+    assert.equal(h.minted, 0, "a valid token must not be refreshed even when the upgrade failed");
+    assert.equal(h.checks, 2);
+    h.timers.runNext();
+    assert.equal(new URL(h.sockets.at(-1).url).searchParams.get("connectionToken") === h.initialToken, true);
+    await h.openLatest();
+    assert.equal(h.minted, 0);
+  } finally { h.cleanup(); }
+});
+
+test("message-bearing reconnects terminate and notify existing and late live queries", async () => {
+  const h = installRecoveryHarness();
+  try {
+    const runtime = await importClientRuntime();
+    const states = [];
+    runtime.queries.subscribe("bounded-live", (state) => states.push(state));
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      await h.openLatest();
+      assert.equal(states.at(-1).error, null);
+      h.advance(60_000);
+      await h.dropLatest();
+      if (attempt < 3) h.timers.runNext();
+    }
+    assert.equal(h.timers.pending().length, 0, "useful messages do not forgive unstable reconnects");
+    assert.equal(states.at(-1).error.code, "CONNECTION_UNAVAILABLE");
+    assert.equal(states.at(-1).loading, false);
+    assert.match(h.panels[0].textContent, /could not connect/i);
+    const late = [];
+    runtime.queries.subscribe("late-live", (state) => late.push(state));
+    assert.equal(late.at(-1).error.code, "CONNECTION_UNAVAILABLE");
+    assert.equal((await runtime.auth.get()).error.code, "CONNECTION_UNAVAILABLE");
+    h.advance(24 * 60 * 60 * 1000);
+    assert.equal((await runtime.auth.get()).error.code, "CONNECTION_UNAVAILABLE");
+    assert.equal(h.sockets.length, 4, "time and app activity cannot bypass manual retry");
+    h.panels[0].children[0].listeners.click();
+    await settleMicrotasks();
+    h.timers.runNext();
+    await h.openLatest();
+    assert.equal(states.at(-1).error, null);
+    assert.equal(late.at(-1).error, null);
+    assert.equal(h.panels.length, 0);
+  } finally { h.cleanup(); }
+});
+
+test("app activity stays serialized behind an expired established-token check", async () => {
+  const h = installRecoveryHarness();
+  try {
+    const runtime = await importClientRuntime();
+    runtime.auth.subscribe(() => {});
+    await h.openLatest();
+    h.advance(4 * 60 * 60 * 1000 + 1);
+    h.holdCheck();
+    await h.dropLatest();
+    const pending = runtime.auth.get();
+    runtime.queries.subscribe("during-expiry", () => {});
+    assert.equal(h.checks, 1, "one shared in-flight token check");
+    assert.equal(h.sockets.length, 1);
+    h.releaseCheck();
+    await settleMicrotasks();
+    h.timers.runNext();
+    assert.equal(new URL(h.sockets.at(-1).url).searchParams.get("connectionToken") !== h.initialToken, true);
+    await h.openLatest();
+    assert.equal((await pending).error, null);
+    assert.equal(h.sockets.length, 2);
+  } finally { h.cleanup(); }
+});
+
+test("a continuously healthy connection rearms recovery but brief successes do not", async () => {
+  const h = installRecoveryHarness();
+  try {
+    const runtime = await importClientRuntime();
+    runtime.auth.subscribe(() => {});
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await h.openLatest();
+      await h.dropLatest();
+      h.timers.runNext();
+    }
+    await h.openLatest();
+    h.advance(5 * 60 * 1000);
+    await h.dropLatest();
+    assert.equal(h.panels.length, 0, "sustained health restores the automatic recovery budget");
+    h.timers.runNext();
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      await h.openLatest();
+      await h.dropLatest();
+      if (attempt < 3) h.timers.runNext();
+    }
+    assert.equal(h.timers.pending().length, 0);
+    assert.equal(h.panels.length, 1);
+  } finally { h.cleanup(); }
+});
+
+test("expired established sessions that cannot reauthenticate stop after four recovery attempts", async () => {
+  const h = installRecoveryHarness();
+  try {
+    const runtime = await importClientRuntime();
+    const states = [];
+    runtime.queries.subscribe("unrecoverable-live", (state) => states.push(state));
+    await h.openLatest();
+    h.advance(4 * 60 * 60 * 1000 + 1);
+    await h.dropLatest();
+    assert.equal(h.minted, 1);
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      h.timers.runNext();
+      assert.equal(new URL(h.sockets.at(-1).url).searchParams.get("connectionToken") !== h.initialToken, true);
+      await h.dropLatest(); // No accepted upgrade, even with a valid replacement gate.
+    }
+    assert.equal(h.sockets.length, 5, "one established session plus four recovery attempts");
+    assert.equal(h.timers.pending().length, 0);
+    assert.equal(states.at(-1).error.code, "CONNECTION_UNAVAILABLE");
+    assert.equal(h.panels.length, 1);
+    for (let activity = 0; activity < 10; activity += 1) {
+      h.advance(60_000);
+      assert.equal((await runtime.auth.get()).error.code, "CONNECTION_UNAVAILABLE");
+    }
+    assert.equal(h.sockets.length, 5);
+    assert.equal(h.minted, 1, "non-token rejection cannot churn the token inventory");
+    assert.equal(h.timers.pending().length, 0);
+  } finally { h.cleanup(); }
 });
