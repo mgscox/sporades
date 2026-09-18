@@ -333,20 +333,19 @@ test('a non-Job outer handler cannot commit a completed resource scope after its
 });
 
 test('the outer watchdog aborts a stalled after-mutation hook after a completed resource scope', async () => {
-  let entered;
-  const stalled = new Promise(resolve => { entered = resolve; });
   const f = await fixture(() => null, { mutations: { hookDeadline: mutation(ctx => ctx.resources.run(options(), () => true)) } });
-  f.database.mutationHooks.afterMutation = [async () => { entered(); await new Promise(() => {}); }];
+  f.database.mutationHooks.afterMutation = ['async () => { await new Promise(() => {}); }'];
   try {
     const before = new Set(f.clock.pendingTimerIds());
     const running = runMutation(f.database, actor, 'hookDeadline', []);
-    await stalled;
+    await new Promise(resolve => setImmediate(resolve));
     const [watchdog] = f.clock.pendingTimerIds().filter(id => !before.has(id));
+    assert.equal(typeof watchdog, 'number');
     f.clock.advanceBy(30_000); await f.clock.runTimer(watchdog);
     const result = await running;
     assert.equal(result.ok, false);
     assert.equal(result.error.code, 'RESOURCE_DEADLINE_EXCEEDED');
-    assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get().n, 0);
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sqlite_schema WHERE name='sporades_resource_receipts'").get().n, 0);
   } finally { await f.close(); }
 });
 
