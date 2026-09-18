@@ -2,9 +2,9 @@
 
 **What to build:** A deterministic experiment and recorded contract showing what a Capsule can safely promise when a Job coordinates database changes and an external side effect with another worker. Select a concrete implementable recovery and handoff design before downstream implementation begins.
 
-**Blocked by:** No evidence work remains to dispatch; the downstream gate awaits a proven unchanged contract or explicit M1 approval.
+**Blocked by:** None — negative evidence complete and M1 explicitly approved.
 
-**Status:** experiment-complete; feasibility-gate-blocked
+**Status:** complete — approved-amendment gate cleared; original SMTP guarantee disproved
 
 **Parent:** https://github.com/mgscox/sporades/issues/52
 
@@ -14,18 +14,18 @@
 - [x] Record a precise authority acquisition point, ownership-loss rule, recovery rule, external acceptance boundary, and retry/uncertainty policy. State whether the external destination must participate in fencing and what deployments can support that contract.
 - [x] Compare the proposed transaction scope with a durable conditional-update protocol and explain the selected shape. Do not infer a conditional write guarantee from ordinary filtered table updates.
 - [x] Capture the decision and relevant domain vocabulary in an ADR, respecting the existing distinction between database consequences and provider calls.
-- [ ] Produce a concrete API and state-transition contract sufficient for tickets 02 and 06 to implement, including time bounds, operation eligibility, actor authorization, and escaped-capability behavior. Prototype code, if needed, remains clearly experimental and does not expose an unproven production promise.
-- [ ] Clear this blocking edge only with a proven implementable design meeting the parent, or an explicitly approved contract amendment recorded with its rationale. If proof fails, record the unresolved requirement and keep dependent tickets blocked; do not silently substitute database-only fencing or close the parent.
+- [x] Produce a concrete API and state-transition contract sufficient for tickets 02 and 06 to implement, including time bounds, operation eligibility, actor authorization, and escaped-capability behavior. Prototype code, if needed, remains clearly experimental and does not expose an unproven production promise.
+- [x] Clear this blocking edge only with a proven implementable design meeting the parent, or an explicitly approved contract amendment recorded with its rationale. If proof fails, record the unresolved requirement and keep dependent tickets blocked; do not silently substitute database-only fencing or close the parent.
 
 **Validation prerequisites:** Follow the shared test-environment instructions. PostgreSQL experiments require the already-approved local Docker instance. Install dependencies in the worktree; symlinked `node_modules` cannot be used.
 
-## Ticket 01 result — 2026-09-18
+## Historical ticket 01 result — before M1 approval
 
 The deterministic experiment and ADR are complete, but the proposed external
 contract is disproved for ordinary SMTP under recoverable ownership loss.
-**The proof gate is not cleared. Tickets 02-07 remain blocked.** The two unchecked
-items above are deliberate; no API satisfying the parent has been selected and no
-contract amendment is approved. This negative result does not authorize weaker
+**At this historical point the proof gate was not cleared and tickets 02-07
+remained blocked.** The two gate items were deliberately left unchecked then;
+no API satisfying the parent had been selected and no amendment was yet approved. This negative result does not authorize weaker
 acceptance criteria or a database-only substitute.
 
 - Draft evidence PR: https://github.com/mgscox/sporades/pull/54 (head `38b6103b3830ac6293f620eee9677152c3c84b9e`).
@@ -51,13 +51,23 @@ acceptance criteria or a database-only substitute.
   watchdog makes an arbitrary pause or uncertain SMTP acceptance safe.
 - Parent #52 and ticket files 02-07 are unchanged.
 
-## Decision proposal — 2026-09-18
+## Historical decision proposal — before maintainer response
 
 [ADR-0054](../../../docs/adr/0054-ordinary-job-authority-does-not-fence-smtp-acceptance.md)
 now specifies option A for an amended database/intent boundary, API, isolation,
 recovery, Job lifecycle and delivery uncertainty. It does **not** supply an API
-meeting the unchanged parent. Both original unchecked criteria therefore remain
-unchecked pending explicit maintainer M1 approval (or a new proven design).
-Tickets 02–07 now contain proposed replacement scopes and testable criteria,
-all blocked. The earlier result above is historical evidence, not current dispatch
+meeting the unchanged parent. At this proposal stage both original gate criteria
+remained unchecked pending explicit M1 approval (or a new proven design).
+Tickets 02–07 received proposed replacement scopes and testable criteria,
+all blocked at that time. The earlier result above is historical evidence, not current dispatch
 authorization. Do not rerun ticket 01 to obtain approval by repetition.
+
+## Approved amended contract — 2026-09-18
+
+Matt accepted M1 and explicitly requested automatic resend of uncertain email,
+accepting duplicates rather than possible omission. See the
+[approval record](../maintainer-approval.md) and ADR-0054. The API and amended-contract
+gate checkboxes above are now complete under that approval, not because the
+unchanged SMTP guarantee was proved. Historical blocked-state statements above
+remain evidence of the earlier decision point. Ticket 02 is ready; 03–07 retain
+implementation dependencies. No runtime implementation or experiment rerun occurred.

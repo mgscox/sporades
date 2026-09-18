@@ -1,4 +1,4 @@
-# Ordinary Job resource fences — decision pending
+# Ordinary Job resource fences — M1 approved
 
 Parent: https://github.com/mgscox/sporades/issues/52
 
@@ -10,46 +10,46 @@ ownership loss. Its evidence remains in [draft PR #54](https://github.com/mgscox
 The original plan remains in [draft PR #53](https://github.com/mgscox/sporades/pull/53).
 
 **Recommendation: A, runtime-owned resource transactions with durable notification
-intent acceptance, ONLY under proposed amendment M1.** Neither A nor CAS solves
+intent acceptance under approved amendment M1.** Neither A nor CAS solves
 the unchanged SMTP requirement. A groups multi-row state and intent acceptance in
 one commit; CAS alone would leave recovery to each Capsule. See the
 [decision matrix, API and recovery contract](../../docs/adr/0054-ordinary-job-authority-does-not-fence-smtp-acceptance.md).
 
-**M1 approval: absent. Nothing in 02–07 is dispatchable now.** This draft is a
-proposal, not authorization. Record an explicit maintainer approval URL and date
-here and in ADR-0054 before changing the frontier. Original SMTP criteria stay
-unmet unless the maintainer explicitly accepts the changed requirement. If M1 is
-declined, keep this whole frontier blocked pending a participating-destination or
-quiescence design. Do not close or silently rewrite #52.
+**M1 approved by Matt on 2026-09-18**, including automatic resend of uncertain
+email attempts with accepted duplicate risk. See the [approval record](maintainer-approval.md)
+for the conversation quotation and scope. Ticket 01's amendment gate is cleared;
+**ticket 02 is ready**. This update does not start implementation or close #52.
+Original strict SMTP criteria remain disproved; the explicitly accepted amendment
+is the implementation contract, not a retroactive proof of those criteria.
 
 M1 trades authority through SMTP completion for atomic database/intent commit.
-Later SMTP can occur after resource revocation; unknown delivery is retained and
-not automatically retried, so an intent can remain unsent. See ADR for the full
-trade-off and proposed replacement wording. Grant link-use validation does not
-prevent message disclosure.
+Later SMTP can occur after resource revocation. Retry uncertain/transient outcomes
+with durable capped exponential backoff; a resumed sender or lost reply can cause
+duplicates. Permanent rejection stays visible for correction. Jobs retain actor
+provenance, not a frozen world view: current Grant checks still occur on acquisition.
 
 ## Revised tickets and frontier
 
 The filenames are retained for stable links; the current titles/scopes below
-supersede their old contents only on M1 approval. All remain blocked today.
+now supersede their old contents under approved M1. No implementation is completed.
 
-| Ticket | Proposed responsibility | Gate after M1 approval |
+| Ticket | Approved responsibility | Remaining gate |
 | --- | --- | --- |
-| [01](issues/01-prove-external-side-effect-contract.md) | Completed negative evidence; unchanged-parent proof remains open | Record M1 approval; no experiment rerun |
-| [02](issues/02-run-resource-transactions-on-sqlite.md) | SQLite scope, exact Job ownership, receipt replay/recovery | First implementation frontier after 01 evidence + M1 approval |
+| [01](issues/01-prove-external-side-effect-contract.md) | Completed negative evidence and approved amended contract | Complete; no experiment rerun |
+| [02](issues/02-run-resource-transactions-on-sqlite.md) | SQLite scope, exact Job ownership, receipt replay/recovery | Ready; 01 evidence and M1 approval recorded |
 | [03](issues/03-coordinate-jobs-mutations-and-endpoints.md) | Shared outer transaction and current authority ordering | 02 |
 | [04](issues/04-support-resource-transactions-on-postgresql.md) | Real PG locks, connection loss, receipt conformance | 02 |
 | [05](issues/05-enforce-libsql-compatibility.md) | Explicit libSQL unsupported gate, no exploratory support branch | 02 |
-| [06](issues/06-support-proven-external-handoff.md) | Durable intent acceptance, one SMTP attempt, retained uncertainty | 02; PG integration also waits for 04 |
+| [06](issues/06-support-proven-external-handoff.md) | Durable intent acceptance, automatic retry, accepted duplicates | 02; PG integration also waits for 04 |
 | [07](issues/07-verify-grant-coordination-workflow.md) | Complete amended workflow and original-requirement gap map | 03, 04, 05, 06 |
 
-After explicit approval, 02–05 can proceed without solving ordinary SMTP fencing;
-06 implements the *different* intent boundary and delivery policy. Until approval,
-none may be dispatched as a supposedly independent DB-only fix. No ticket is
-removed: 05 and 06 are repurposed. The original strict-SMTP implementation, public
-CAS API, lease renewal and optional libSQL support are unnecessary under M1.
-No test is deleted or weakened; future acceptance checks must show which boundary
-they prove. Each slice owns its public types, generated surfaces, docs and tests.
+02–05 can proceed through their dependencies without solving ordinary SMTP
+fencing; 06 implements the different intent boundary and automatic delivery retry.
+No ticket is removed: 05 and 06 are repurposed. Original strict SMTP implementation,
+public CAS API, Job lease renewal and optional libSQL support are unnecessary under
+M1. The delivery worker's attempt recovery is separate from source Job renewal.
+No test is deleted or weakened. Every slice owns its public types, generated
+surfaces, documentation and tests; future checks must identify the boundary proved.
 
 ## Approved test environment
 

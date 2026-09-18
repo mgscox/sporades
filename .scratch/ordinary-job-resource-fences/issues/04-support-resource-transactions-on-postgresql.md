@@ -2,13 +2,13 @@
 
 **What to build:** Implement the same amended transaction/receipt API on real PostgreSQL, including connection-loss and uncertain-commit behavior.
 
-**Blocked by:** M1 approval and 02.
+**Blocked by:** 02.
 
-**Status:** blocked — amendment-awaiting-approval
+**Status:** blocked — implementation-dependencies
 
 **Parent:** https://github.com/mgscox/sporades/issues/52
 
-**Contract:** [ADR-0054 M1](../../../docs/adr/0054-ordinary-job-authority-does-not-fence-smtp-acceptance.md). Proposed, not approved. These criteria supersede this ticket's original scope only if M1 is explicitly approved; they do not weaken the unchanged parent today.
+**Contract:** [ADR-0054 M1](../../../docs/adr/0054-ordinary-job-authority-does-not-fence-smtp-acceptance.md). Approved by Matt on 2026-09-18; see [approval record](../maintainer-approval.md). These criteria implement the explicit amendment, not the disproved original SMTP guarantee.
 
 - [ ] Start the approved disposable local PostgreSQL container using the dedicated harness. Record engine version and exact counts; skipped PostgreSQL checks do not establish support.
 - [ ] Use a dedicated READ COMMITTED connection, unique runtime resource row and FOR UPDATE NOWAIT, followed by exact Job row and authorization locks in ADR order. Bound initial row-creation conflicts with server lock timeout and return RESOURCE_BUSY; never wait indefinitely or replay a callback automatically.

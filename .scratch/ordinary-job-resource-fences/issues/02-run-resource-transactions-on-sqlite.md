@@ -2,13 +2,13 @@
 
 **What to build:** A server-only resources.run/status API implementing ADR-0054 M1: same-resource database serialization, exact Job ownership, and durable operation receipts. No SMTP handoff guarantee.
 
-**Blocked by:** 01 evidence plus explicit maintainer approval of M1. Neither is replaced by this proposal.
+**Blocked by:** None — ticket 01 evidence and explicit M1 approval are recorded.
 
-**Status:** blocked — amendment-awaiting-approval
+**Status:** ready-for-agent
 
 **Parent:** https://github.com/mgscox/sporades/issues/52
 
-**Contract:** [ADR-0054 M1](../../../docs/adr/0054-ordinary-job-authority-does-not-fence-smtp-acceptance.md). Proposed, not approved. These criteria supersede this ticket's original scope only if M1 is explicitly approved; they do not weaken the unchanged parent today.
+**Contract:** [ADR-0054 M1](../../../docs/adr/0054-ordinary-job-authority-does-not-fence-smtp-acceptance.md). Approved by Matt on 2026-09-18; see [approval record](../maintainer-approval.md). These criteria implement the explicit amendment, not the disproved original SMTP guarantee.
 
 - [ ] Implement the exact ADR API, bounds, existing anchor identity, canonical input digest, actor binding and stable error codes; reject unsupported contexts/adapters/nesting before callback or writes. Enforce one scope as the first application DB/provider operation of the invocation.
 - [ ] Use a real dedicated SQLite BEGIN IMMEDIATE transaction with immediate RESOURCE_BUSY. Hold writer authority through commit/rollback; document database-wide writer contention. Do not reset a durable claim on restart or release an engine lock just because a timer expires.

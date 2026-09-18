@@ -1,18 +1,22 @@
 # Ordinary Job authority does not fence SMTP acceptance
 
-Date: 2026-09-18. Status: **amendment proposed, NOT approved; implementation gate blocked**.
+Date: 2026-09-18. Status: **M1 approved by maintainer; ticket 02 ready; implementation not started**.
 Part of [#52](https://github.com/mgscox/sporades/issues/52),
 [ticket 01](https://github.com/mgscox/sporades/blob/codex/issue-52-resource-fence-tickets/.scratch/ordinary-job-resource-fences/issues/01-prove-external-side-effect-contract.md).
 
-## Ticket 01 decision (retained evidence)
+## Ticket 01 decision (retained historical evidence)
+
+The following finding and blocked-state contract record ticket 01 before M1
+approval. The approved decision below supersedes its dispatch gate and delivery
+policy, not its negative SMTP evidence.
 
 Do not expose the proposed general resource transaction with an ordinary SMTP
 handoff guarantee. Neither a transaction held around the call nor a durable
 conditional-update lease satisfies the parent contract under recoverable
 ownership loss and a resumable owner. The experiment demonstrates counterexamples
 on real SQLite and PostgreSQL storage with independent child processes and a
-controlled loopback SMTP receiver. **Tickets 02–07 remain blocked.** No contract
-amendment has been approved, and database-only fencing or rejecting SMTP does not
+controlled loopback SMTP receiver. **At that point tickets 02–07 remained blocked.**
+No contract amendment had then been approved, and database-only fencing or rejecting SMTP does not
 complete the parent. No production API, generated contract, or runtime behavior
 changes in this decision.
 
@@ -85,8 +89,8 @@ need a supported runtime primitive. A generation must remain bound to every
 protected mutation; reconnecting and writing by ID would bypass that fence.
 The two shapes are rejected as complete external contracts; neither was selected
 by ticket 01 for downstream implementation. The proposal below selects a
-runtime-owned transaction only under an explicit amendment; it does not authorize
-starting ticket 02 now.
+runtime-owned transaction under the subsequently approved explicit amendment;
+ticket 01 evidence alone did not authorize starting ticket 02.
 
 ## Recorded contract and state transitions
 
@@ -168,7 +172,7 @@ different boundary from downstream SMTP acceptance. Selecting that boundary woul
 need explicit approval if it changes the parent promise. This task has not built,
 proven, or approved such a service. libSQL support is also not established here.
 
-## Gate and follow-up
+## Historical gate before M1 approval
 
 Unresolved requirement: recover resource authority without permanent deadlock
 while ensuring a live stale owner cannot submit after loss, across ordinary SMTP
@@ -184,10 +188,10 @@ responses are lost. The runtime observations above are local experimental eviden
 not inferred from the RFC.
 
 
-## Decision proposal after ticket 01
+## Approved decision after ticket 01
 
-**Recommend A: a runtime-owned resource transaction plus durable notification
-intent, conditional on approval of amendment M1 below. Neither A nor B satisfies
+**Select A: a runtime-owned resource transaction plus durable notification
+intent under maintainer-approved amendment M1 below. Neither A nor B satisfies
 the unchanged ordinary-SMTP case.** A keeps multi-row writes, ACL work, Job enqueues,
 intent acceptance and retry receipts in one engine commit. B is useful for a
 single-row optimistic revision/claim, but would leave each Capsule to implement
@@ -207,10 +211,13 @@ The evidence refers to commit `38b6103b3830ac6293f620eee9677152c3c84b9e`.
 | Ticket-01 accepted/lost-reply and no-acceptance twins; same Message-ID retry accepted twice | Rollback cannot undo acceptance or disambiguate it | An idempotency row in our DB cannot deduplicate acceptance at a nonparticipating receiver |
 | Narrower supported use | Serialize same-resource multi-row database work and durably accept an intent in that commit; preferred under M1 | Optimistic single-row revision, atomic claim/release with generation, or a destination that actually participates; not selected here |
 
-### M1 — explicit parent amendment for maintainer approval
+### M1 — explicit parent amendment approved on 2026-09-18
 
-**Proposed; approval: absent. #52 remains unchanged and open.** Replace its first
-two acceptance criteria, for this implementation, with:
+**Approved by Matt on 2026-09-18**, with automatic retry of uncertain email
+submission and acceptance of duplicate/stale email risk. See the
+[maintainer approval record](../../.scratch/ordinary-job-resource-fences/maintainer-approval.md).
+The GitHub issue text remains unchanged and open; this explicitly recorded
+amendment replaces its first two acceptance criteria for this implementation:
 
 > An ordinary Job can acquire exclusive database authority before its protected
 > writes and hold it through atomic commit of those writes and a durable
@@ -219,6 +226,8 @@ two acceptance criteria, for this implementation, with:
 > revocation after intent commit need not prevent the accepted intent being sent.
 > Restart must recover engine authority without a permanent application claim.
 > Ambiguous commit and delivery outcomes remain durable and are not called rollback.
+> Retry uncertain SMTP submissions automatically, accepting duplicate emails rather
+> than suppressing a potentially unsent notification.
 
 The remaining parent criteria (deterministic competition, documented adapters,
 Job lifecycle interaction, non-opt-in compatibility) remain requirements, applied
@@ -230,18 +239,22 @@ Trade-off: useful atomic notification preparation and retry deduplication become
 possible without a participating SMTP receiver, but an already accepted intent may
 send after Grant rotation/revocation. Message contents may therefore disclose old
 information. The Grant application must validate current authority on link use;
-that does not retract a message or cure disclosure. Lost delivery replies may
-require manual resolution and can leave a notification unsent. There is no
-exactly-once delivery or unconditional at-least-once delivery promise.
+that does not retract a message or cure disclosure. Uncertain or transient SMTP
+outcomes are retried automatically; the receiver may accept the same email more
+than once, including from an old paused sender. This is an at-least-once retry
+policy, not exactly-once delivery or a guarantee that an unavailable/rejecting
+provider will eventually deliver. Known permanent rejection remains visible and
+requires correction; uncertainty alone never permanently suppresses retry.
 
-Approval must be an explicit maintainer statement accepting M1 and these losses,
-linked here and in the planning README before dispatch. An agent completing this
-draft, a green docs check, or approval of the original seven-ticket plan is not
-approval of M1. If declined, leave 02–07 blocked; the original acceptance boundary
-requires a separate participating-destination/quiescence design. No such design
-is claimed by this PR.
+The maintainer accepted the outbox boundary and clarified that Jobs retain their
+historical actor/credential provenance, not a frozen database snapshot. Current
+Grant/ACL checks still occur at resource acquisition. On 2026-09-18 he explicitly
+requested resend on uncertainty; the approval record quotes that instruction.
+This replaces the draft's no-automatic-resend policy. Ticket 01's amendment gate
+is now cleared; the unchanged SMTP guarantee is still disproved. Approval does
+not implement the feature, merge this PR, or close #52.
 
-### Proposed API and eligibility (effective only after M1 approval)
+### API and eligibility under approved M1
 
 Server-only proposed API, not a declaration of an existing exported surface:
 
@@ -383,43 +396,81 @@ is `RESOURCE_CONTEXT_UNSUPPORTED`. All errors are bounded and omit resource valu
 
 ### Durable intent delivery contract for revised ticket 06
 
-The acceptance authority is now the same engine commit as application state.
-This deliberately solves only M1. A post-commit worker delivers accepted intents
-through configured SMTP **outside** the resource transaction. Polling retained
-accepted rows is authoritative; a post-commit wakeup is only an optimization.
+The acceptance authority is the same engine commit as application state. A
+post-commit worker sends accepted intents through configured SMTP **outside** the
+resource transaction. Durable scanning is authoritative; wakeups are optimizations.
+Source Job retry/cancel and Grant revocation do not retract committed intent.
+The source operation receipt remains `committed` regardless of delivery outcome.
 
-Runtime-owned states: `accepted -> submitting -> acknowledged | rejected | unknown`.
-A short engine transaction changes `accepted` to `submitting`, writing a random
-attempt token and start time; commit before any SMTP I/O. Only a confirmed
-reservation commit permits that worker to submit; an unknown reservation outcome
-permits no send and is reconciled to retained uncertainty, not retried. One submission attempt
-per intent in v1, with transport auto-retries disabled. A positive final DATA reply
-records `acknowledged` (not delivered); definitive rejection records `rejected`;
-missing reply, timeout or any uncertain transport/commit result records `unknown`.
-No automatic resend from `submitting`, `unknown` or `rejected`. After restart or
-30 seconds without an outcome, expose a `submitting` row as `unknown` without
-allocating another sender; a late outcome from that same attempt token may refine
-it to acknowledged/rejected. This deadline is observation, not sender revocation.
-A stopped sender may still send later; M1 explicitly accepts this limitation.
+**Automatically retry uncertainty, accepting duplicates.** Keep the original
+immutable intent, payload and stable Message-ID across attempts. Deduplicating
+intent creation prevents repeated preparation; it does not deduplicate SMTP.
+The runtime owns retry scheduling; disable hidden transport auto-retries so every
+attempt has a durable record. No new source Job operation or current Grant
+reauthorization is needed to deliver an already accepted intent.
 
-Job cancellation, Grant revocation or source Job retry does not retract a committed
-intent. `resources.status` includes persisted intent states; receipts remain
-`committed` irrespective of SMTP outcome. No API reports an intent as rolled back
-after commit. Unknown/rejected outcomes are operator-visible and retained; no
-resend/reconciliation API ships in v1. A later explicitly authorized new operation
-may send again with documented duplicate/disclosure risk. A crash after recording
-`submitting` but before sending can therefore lose notification delivery. This
-conservative policy is chosen explicitly over blind retry, not described as
-exactly-once or guaranteed at-least-once SMTP.
+1. Track each recipient separately and use one SMTP envelope per recipient in v1.
+   This makes partial-recipient rejection explicit; do not resend to a recipient
+   already acknowledged merely because another recipient failed. Each recipient
+   has `accepted`, `submitting`, `unknown`, `retry-wait`, `acknowledged` or `rejected`
+   state, attempt count, current attempt token/deadline and next-attempt timestamp.
+   Preserve bounded outcome records for each attempt (token, sequence, times,
+   outcome/error class), never credentials or raw SMTP replies in diagnostics.
+2. A short engine transaction reserves one due recipient and persists a fresh
+   random token, incremented sequence and fixed 30,000ms deadline before I/O.
+   Only confirmed reservation commit permits that worker to submit. If its commit
+   acknowledgement is lost, that worker sends nothing; recovery reads stored
+   state and schedules an attempt after any extant reservation expires. Concurrent
+   reservations require an atomic state/token predicate and affected-row count.
+3. Positive final DATA reply means `acknowledged` (not delivered). SMTP 4xx,
+   connection failure, lost reply, timeout, or failed persistence of an observed
+   outcome is retryable. Record ambiguous attempts as `unknown`, never `not-sent`.
+   A definitive SMTP 5xx or invalid configuration/address is `rejected`, retained
+   for operator attention rather than retried unchanged forever. Retain original
+   intent/receipt; correction uses an explicitly authorized new operation.
+4. On restart, scan pending recipients, preserve live reservations until their
+   deadline, and conditionally recover expired reservations as unknown. Schedule
+   retry with delay `min(30_000 * 2^(min(n - 1, 7)), 3_600_000)` milliseconds after
+   the failure/expiry time, where n is the completed/expired attempt number.
+   Persist `nextAttemptAt`; no busy-loop, finite retry-count cutoff, or payload
+   cleanup may discard retryable work. Poll due rows by nextAttemptAt then stable
+   ID and reserve conditionally so multiple workers cannot allocate the same
+   generation. Backoff caps at one hour; retryable work survives arbitrary restarts.
+5. A late **positive** acknowledgement from any durably recorded attempt token
+   for that exact immutable recipient/intent marks the recipient acknowledged and
+   suppresses future reservations. Positive acknowledgement is monotonic. Late
+   negative/unknown outcomes may append attempt evidence but cannot overwrite a
+   newer attempt's state or regress acknowledgement. Current-token predicates
+   govern failure/retry transitions. Only runtime-owned sender reports are trusted.
+6. Expiry permits a new sender; it cannot revoke an old sender or its in-flight
+   SMTP bytes. Try cooperative abort and perform a current-reservation check
+   before I/O, but do not call either a fence. A resumed sender or lost reply can
+   cause duplicate acceptance. If a late acknowledgement arrives after another
+   submission has begun, that second email may still arrive. This is an accepted
+   consequence of prioritizing resend over possible omission.
+7. `resources.status` exposes per-recipient state, attempt count, nextAttemptAt
+   and redacted last-outcome category, plus aggregate intent state: `pending` while
+   any recipient is retryable/submitting, `acknowledged` when all are acknowledged,
+   otherwise `rejected` when all are terminal and at least one was rejected.
+   Permanent recipient failures remain visible even while others are pending.
+   A process crash after reserving but before sending recovers into retry, not a
+   permanently unsent intent. A crash after SMTP acceptance can produce a duplicate.
+
+SQLite and PostgreSQL must implement this same reservation/recovery contract.
+Delivery retries use their own durable schedule and are not exhausted by the
+source Job's retry limit. Keep unresolved payloads and attempt identities for
+recovery; no retention rule may remove pending work. Successful delivery policy
+means acknowledged SMTP submission, not inbox receipt or message reading. No
+claim of exactly-once or unconditional eventual delivery is made.
 
 ### Revised dispatch gate
 
-See the [revised plan](../../.scratch/ordinary-job-resource-fences/README.md).
-M1 approval is a new explicit prerequisite in addition to ticket 01's retained
-negative evidence. **Nothing in 02–07 can be dispatched now.** With approval,
-02 is first, 03–06 follow 02, and 07 follows all four. 02–05 can then implement
-and verify the amended DB boundary without solving ordinary SMTP fencing; 06
-implements durable intent delivery with the stated uncertainty, not that missing
-fence. The original strict SMTP handoff implementation and public CAS work become
-unnecessary under M1. All original requirements remain visibly unmet if approval
-is withheld; no box is checked merely by writing this proposal.
+See the [revised plan](../../.scratch/ordinary-job-resource-fences/README.md) and
+[approval record](../../.scratch/ordinary-job-resource-fences/maintainer-approval.md).
+**M1 is approved; ticket 01's amended-contract gate is cleared and ticket 02 is
+ready for implementation.** Tickets 03–06 depend on 02, and 07 on all four.
+The implementation is not started by this planning update. 02–05 can implement
+the amended DB boundary without solving ordinary SMTP fencing; 06 implements
+durable intent delivery with automatic retry and accepted duplicates. Strict SMTP
+fencing and public CAS remain outside this approved plan. #52 stays open until
+implementation and validation against the amended contract are complete.

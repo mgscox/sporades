@@ -2,13 +2,13 @@
 
 **What to build:** Implement an explicit unsupported-adapter gate for the proposed resource API. The original optional libSQL support investigation is unnecessary in this implementation plan.
 
-**Blocked by:** M1 approval and 02.
+**Blocked by:** 02.
 
-**Status:** blocked — amendment-awaiting-approval
+**Status:** blocked — implementation-dependencies
 
 **Parent:** https://github.com/mgscox/sporades/issues/52
 
-**Contract:** [ADR-0054 M1](../../../docs/adr/0054-ordinary-job-authority-does-not-fence-smtp-acceptance.md). Proposed, not approved. These criteria supersede this ticket's original scope only if M1 is explicitly approved; they do not weaken the unchanged parent today.
+**Contract:** [ADR-0054 M1](../../../docs/adr/0054-ordinary-job-authority-does-not-fence-smtp-acceptance.md). Approved by Matt on 2026-09-18; see [approval record](../maintainer-approval.md). These criteria implement the explicit amendment, not the disproved original SMTP guarantee.
 
 - [ ] Return RESOURCE_ADAPTER_UNSUPPORTED for run and status before callback, receipt lookup, application writes or network submission on every libSQL path, including remote and local libSQL configurations.
 - [ ] Test callback non-execution, zero application/receipt/intent writes, stable redacted errors, and no fallback to mutex, autocommit, SQLite-like guesses or expiring claims.

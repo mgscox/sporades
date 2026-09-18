@@ -2,13 +2,13 @@
 
 **What to build:** Join existing mutation/Custom endpoint transactions to the same resource and receipt protocol, ordering Grant exchange, rotation, revocation, migration and notification preparation.
 
-**Blocked by:** M1 approval and 02.
+**Blocked by:** 02.
 
-**Status:** blocked — amendment-awaiting-approval
+**Status:** blocked — implementation-dependencies
 
 **Parent:** https://github.com/mgscox/sporades/issues/52
 
-**Contract:** [ADR-0054 M1](../../../docs/adr/0054-ordinary-job-authority-does-not-fence-smtp-acceptance.md). Proposed, not approved. These criteria supersede this ticket's original scope only if M1 is explicitly approved; they do not weaken the unchanged parent today.
+**Contract:** [ADR-0054 M1](../../../docs/adr/0054-ordinary-job-authority-does-not-fence-smtp-acceptance.md). Approved by Matt on 2026-09-18; see [approval record](../maintainer-approval.md). These criteria implement the explicit amendment, not the disproved original SMTP guarantee.
 
 - [ ] Enforce first-application-operation entry, one existing anchor, and no nested/multiple resource acquisition. Reuse the outer transaction; hold its lock until outer commit/rollback even after scope callback returns. Treat returned data as provisional before outer commit.
 - [ ] Use the identical Capsule/table/ID identity across Jobs, mutations, endpoints and permitted existing Privileged execution. Re-read current authority after acquisition and preserve current ACL/Team checks; naming a resource must never grant access.
