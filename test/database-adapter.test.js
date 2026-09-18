@@ -105,6 +105,63 @@ test("Postgres resource transactions use a dedicated NOWAIT lock and release it 
   }, { appTableNames: [] });
 });
 
+test("Postgres resource locks contend deterministically for both first and existing rows on independent connections", { skip: POSTGRES_SKIP_REASON }, async () => {
+  await withPostgresAdapter(async (adapter, controls) => {
+    for (const phase of ["first-row", "existing-row"]) {
+      let release;
+      let markEntered;
+      const entered = new Promise((resolve) => { markEntered = resolve; });
+      const held = new Promise((resolve) => { release = resolve; });
+      const owner = adapter.withResourceTransaction(async () => {
+        markEntered();
+        await held;
+        return phase;
+      }, undefined, { table: "grants", id: "same-grant" });
+      try {
+        await Promise.race([entered, new Promise((_, reject) => setTimeout(() => reject(new Error(`${phase} owner did not acquire`)), 2_000))]);
+        const contender = await controls.connect();
+        try {
+          await assert.rejects(
+            contender.withResourceTransaction(() => assert.fail(`${phase} loser entered`), undefined, { table: "grants", id: "same-grant" }),
+            { code: "RESOURCE_BUSY" },
+          );
+        } finally { await contender.close(); }
+      } finally { release?.(); }
+      assert.equal(await owner, phase);
+    }
+  }, { appTableNames: [] });
+});
+
+test("terminating only the owning Postgres backend revokes its scoped connection before another owner acquires", { skip: POSTGRES_SKIP_REASON }, async () => {
+  await withPostgresAdapter(async (adapter, controls) => {
+    let release;
+    let markEntered;
+    let backendId;
+    let retained;
+    const entered = new Promise((resolve) => { markEntered = resolve; });
+    const resume = new Promise((resolve) => { release = resolve; });
+    const owner = adapter.withResourceTransaction(async (scope) => {
+      retained = scope;
+      backendId = Number((await scope.prepare("SELECT pg_backend_pid() AS pid").get()).pid);
+      markEntered();
+      await resume;
+      await scope.prepare("CREATE TABLE should_not_write_after_termination (id TEXT PRIMARY KEY)").run();
+      return "impossible";
+    }, undefined, { table: "grants", id: "terminated-grant" });
+    try {
+      await Promise.race([entered, new Promise((_, reject) => setTimeout(() => reject(new Error("owner did not expose its backend")), 2_000))]);
+      const controller = await controls.connect();
+      try {
+        assert.equal((await controller.prepare("SELECT pg_terminate_backend(?) AS terminated").get(backendId)).terminated, true);
+        await controller.withResourceTransaction(async () => null, undefined, { table: "grants", id: "terminated-grant" });
+      } finally { await controller.close(); }
+      release();
+      await assert.rejects(owner);
+      assert.throws(() => retained.prepare("SELECT 1"), /Transaction-scoped database access is no longer active/);
+    } finally { release?.(); }
+  }, { appTableNames: [] });
+});
+
 test("endpoint source extraction excludes a trailing handler argument comma", () => {
   const [endpoint] = extractEndpoints(`
     export default capsule({

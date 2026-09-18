@@ -1,0 +1,12 @@
+# Ticket 04 PostgreSQL evidence index
+
+| Criterion | Real-engine proof | Result |
+| --- | --- | --- |
+| Disposable engine | `04-postgres-version.log` | PostgreSQL 17.11 in `sporades-task009-postgres`; dedicated harness targets `127.0.0.1:55432/sporades_w17`. |
+| First and existing resource-row contention | `04-red-pg-contention-termination.log` followed by the next green run | `test/database-adapter.test.js` holds A through a barrier while B opens an independent adapter. B gets `RESOURCE_BUSY` for first creation and an existing row. |
+| Terminated owner and stale scope | same logs | A exposes `pg_backend_pid()` only after its final scoped check; controller terminates that backend, B acquires the same row, resumed A cannot execute SQL and retained scope is inactive. |
+| SQLite compatibility | `04-resource-sqlite-repair-2.log` | 167 focused resource checks pass without PostgreSQL substitution. |
+| Shared adapter/transaction gate | `04-final-pg-gate-repair.log` | 167 checks, zero skips, passed before the added backend-termination seam. |
+
+The backend-termination test is a database assertion. It makes no SMTP claim;
+`notifications.accept` remains unsupported until ticket 06.
