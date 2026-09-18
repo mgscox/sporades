@@ -278,6 +278,22 @@ test('a mutation resource scope invalidates parent and escaped database handles 
   } finally { await f.close(); }
 });
 
+test('late-added endpoint File claim and attachment capabilities are guarded as resource operations', async () => {
+  const f = await fixture(() => null);
+  try {
+    await f.database.adapter.withTransaction(async adapter => {
+      const database = { ...f.database, adapter };
+      const context = { auth: actor, db: { anchors: { where: (_field, id) => ({ get: async () => adapter.prepare('SELECT * FROM anchors WHERE id=?').get(id) }), update: async () => null } }, jobs: { enqueue() {} } };
+      const release = bindOuterResources(database, context, { startedAt: f.clock.now().getTime(), authorize: async () => null, drain: async () => null });
+      const files = release.guardCapability('files', { claim() {}, attachment() {} });
+      try {
+        assert.doesNotThrow(() => files.claim());
+        await assert.rejects(context.resources.run(options(), () => null), { code: 'RESOURCE_CONTEXT_UNSUPPORTED' });
+      } finally { release(); }
+    });
+  } finally { await f.close(); }
+});
+
 test('an unused mutation resource entry cannot escape its settled outer transaction', async () => {
   let escapedResources;
   const f = await fixture(() => null, {
