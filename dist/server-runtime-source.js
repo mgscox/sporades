@@ -1,4 +1,4 @@
-import { bindJobResources, isResourceAbortError, unsupportedResources } from "./resource-runtime.js";
+import { bindJobResources, bindOuterResources, isResourceAbortError, unsupportedResources } from "./resource-runtime.js";
 // `createHmac` left this line with the S3 signing path in batch 6: `s3Hmac` was its only remaining
 // consumer, and it reaches the builtin through `process.getBuiltinModule` in `file-storage-runtime.ts`
 // now (ADR-0042). The rest of this list has been wider than what this file binds since batch 3 —
@@ -3506,6 +3506,16 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                             credential: accessKeyAdmission?.credential,
                             accessKeyGrants: accessKeyAdmission?.grants,
                         });
+                        bindOuterResources(transactionDatabase, context, {
+                            startedAt: database.clock.now().getTime(),
+                            async authorize(_context, db, identity) {
+                                const anchor = await db[identity.table].where("id", identity.id).get();
+                                if (!anchor)
+                                    throw commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+                                await db[identity.table].update(identity.id, {});
+                            },
+                            drain: drainPendingAclWrites,
+                        });
                         const endpointIngressApi = Object.freeze({
                             ...context.files,
                             ...createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context),
@@ -6236,6 +6246,16 @@ export async function runMutation(database, auth, mutationName, args, options = 
                         sessionToken: options.sessionToken,
                         serviceUserMutationAuthority,
                         mutationInvocation,
+                    });
+                    bindOuterResources(transactionDatabase, context, {
+                        startedAt: database.clock.now().getTime(),
+                        async authorize(_context, db, identity) {
+                            const anchor = await db[identity.table].where("id", identity.id).get();
+                            if (!anchor)
+                                throw commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+                            await db[identity.table].update(identity.id, {});
+                        },
+                        drain: drainPendingAclWrites,
                     });
                     const customHandler = transactionDatabase.mutations.find((candidate) => candidate.name === mutationName);
                     const mutationHandler = customHandler ? materializeHandler(customHandler) : null;

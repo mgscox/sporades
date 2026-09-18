@@ -75,6 +75,92 @@ export const unsupportedResources = Object.freeze({
     async run() { throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED"); },
     async status() { throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED"); },
 });
+/**
+ * Binds the same receipt protocol to a transaction which was opened by a
+ * mutation or Custom endpoint.  It deliberately does not open another writer:
+ * the enclosing handler owns commit/rollback, so a returned value is provisional
+ * until that handler's transaction commits.
+ */
+export function bindOuterResources(database, context, hooks) {
+    let invocationActive = true;
+    let used = false;
+    let scopeActive = false;
+    let touched = false;
+    let terminalError;
+    const parentDb = context.db;
+    const parentJobs = context.jobs;
+    const actorDigest = createHash("sha256").update(resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged: false })).digest("hex");
+    for (const name of ["db", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
+        if (!context[name])
+            continue;
+        context[name] = wrapCapability(context[name], (path) => {
+            if (used)
+                throw resourceError(!invocationActive || !scopeActive ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
+            if (!["where", "orderBy", "limit"].includes(path.at(-1)))
+                touched = true;
+        });
+    }
+    const execute = async (options, callback, status) => {
+        if (!invocationActive || used || touched)
+            throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
+        if (database.adapter.engine !== "sqlite")
+            throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+        const identity = optionsSnapshot(options, status);
+        if (!status && typeof callback !== "function")
+            throw resourceError("RESOURCE_INVALID_INPUT");
+        if (!database.schema.tables.some((table) => table.name === identity.table))
+            throw resourceError("RESOURCE_INVALID_INPUT");
+        used = true;
+        scopeActive = true;
+        const deadline = hooks.startedAt + 30_000;
+        const assertLive = (admission = false) => {
+            if (!invocationActive || !scopeActive)
+                throw resourceError("RESOURCE_SCOPE_INACTIVE");
+            if (terminalError)
+                throw terminalError;
+            if (database.clock.now().getTime() >= deadline - (admission ? 1000 : 0))
+                throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+        };
+        try {
+            assertLive(true);
+            await hooks.authorize(context, parentDb, identity);
+            assertLive(true);
+            await database.adapter.exec("CREATE TABLE IF NOT EXISTS sporades_resource_receipts (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, operationId TEXT NOT NULL, inputDigest TEXT NOT NULL, actorDigest TEXT NOT NULL, resultJson TEXT NOT NULL, intentIdsJson TEXT NOT NULL, committedAt TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId, operationId))");
+            const receipt = await database.adapter.prepare("SELECT * FROM sporades_resource_receipts WHERE resourceTable=? AND resourceId=? AND operationId=?").get(identity.table, identity.id, identity.operationId);
+            if (receipt) {
+                if (receipt.actorDigest !== actorDigest || !status && receipt.inputDigest !== identity.digest)
+                    throw resourceError("RESOURCE_OPERATION_CONFLICT");
+                return status ? { state: "committed", result: JSON.parse(receipt.resultJson), intentIds: JSON.parse(receipt.intentIdsJson) } : JSON.parse(receipt.resultJson);
+            }
+            if (status)
+                return { state: "absent" };
+            const scopeDb = wrapCapability(parentDb, () => assertLive(true));
+            const scope = Object.freeze({
+                db: scopeDb,
+                jobs: Object.freeze({ enqueue: (...args) => { assertLive(true); return parentJobs.enqueue(...args); } }),
+                log: Object.freeze({ info() { }, warn() { }, error() { } }),
+                signal: new AbortController().signal,
+                notifications: Object.freeze({ accept: async () => {
+                        terminalError ??= resourceError("RESOURCE_EFFECT_UNSUPPORTED");
+                        throw terminalError;
+                    } }),
+            });
+            const result = await callback(scope);
+            if (terminalError)
+                throw terminalError;
+            scopeActive = false;
+            const resultJson = resourceCanonicalJson(result);
+            await hooks.drain(context);
+            await database.adapter.prepare("INSERT INTO sporades_resource_receipts VALUES (?,?,?,?,?,?,?,?)").run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
+            return JSON.parse(resultJson);
+        }
+        finally {
+            scopeActive = false;
+        }
+    };
+    context.resources = Object.freeze({ run: (options, callback) => execute(options, callback, false), status: (options) => execute(options, undefined, true) });
+    return () => { invocationActive = false; };
+}
 // An invocation owns its eligibility in a closure; public context fields cannot
 // forge a Job claim. Proxies preserve synchronous non-opt-in DB return values.
 function wrapCapability(value, before, path = [], cache = new WeakMap()) {

@@ -1,4 +1,4 @@
-import { bindJobResources, isResourceAbortError, resourceError, unsupportedResources } from "./resource-runtime.js";
+import { bindJobResources, bindOuterResources, isResourceAbortError, resourceError, unsupportedResources } from "./resource-runtime.js";
 import type { IncomingMessage, ServerResponse, IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
 import { WithImplicitCoercion } from "buffer";
 import { BinaryLike, KeyObject } from "node:crypto";
@@ -3704,6 +3704,15 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
               credential: accessKeyAdmission?.credential,
               accessKeyGrants: accessKeyAdmission?.grants,
             });
+            bindOuterResources(transactionDatabase, context, {
+              startedAt: database.clock.now().getTime(),
+              async authorize(_context: LooseRecord, db: LooseRecord, identity: LooseRecord) {
+                const anchor = await db[identity.table].where("id", identity.id).get();
+                if (!anchor) throw commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+                await db[identity.table].update(identity.id, {});
+              },
+              drain: drainPendingAclWrites,
+            });
             const endpointIngressApi = Object.freeze({
               ...context.files,
               ...createEndpointIngressApi(transactionDatabase, endpoint as LooseRecord, endpointRequest, context),
@@ -6543,6 +6552,15 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
           sessionToken: options.sessionToken,
           serviceUserMutationAuthority,
           mutationInvocation,
+        });
+        bindOuterResources(transactionDatabase, context, {
+          startedAt: database.clock.now().getTime(),
+          async authorize(_context: LooseRecord, db: LooseRecord, identity: LooseRecord) {
+            const anchor = await db[identity.table].where("id", identity.id).get();
+            if (!anchor) throw commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+            await db[identity.table].update(identity.id, {});
+          },
+          drain: drainPendingAclWrites,
         });
         const customHandler = transactionDatabase.mutations.find((candidate: { name: any; }) => candidate.name === mutationName);
         const mutationHandler = customHandler ? materializeHandler(customHandler) : null;

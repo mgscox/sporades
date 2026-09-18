@@ -94093,6 +94093,80 @@ var unsupportedResources = Object.freeze({
     throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
   }
 });
+function bindOuterResources(database, context, hooks) {
+  let invocationActive = true;
+  let used = false;
+  let scopeActive = false;
+  let touched = false;
+  let terminalError;
+  const parentDb = context.db;
+  const parentJobs = context.jobs;
+  const actorDigest = createHash8("sha256").update(resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged: false })).digest("hex");
+  for (const name2 of ["db", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
+    if (!context[name2]) continue;
+    context[name2] = wrapCapability(context[name2], (path14) => {
+      if (used) throw resourceError(!invocationActive || !scopeActive ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
+      if (!["where", "orderBy", "limit"].includes(path14.at(-1))) touched = true;
+    });
+  }
+  const execute = async (options, callback, status) => {
+    if (!invocationActive || used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
+    if (database.adapter.engine !== "sqlite") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+    const identity = optionsSnapshot(options, status);
+    if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
+    if (!database.schema.tables.some((table) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
+    used = true;
+    scopeActive = true;
+    const deadline = hooks.startedAt + 3e4;
+    const assertLive = (admission = false) => {
+      if (!invocationActive || !scopeActive) throw resourceError("RESOURCE_SCOPE_INACTIVE");
+      if (terminalError) throw terminalError;
+      if (database.clock.now().getTime() >= deadline - (admission ? 1e3 : 0)) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+    };
+    try {
+      assertLive(true);
+      await hooks.authorize(context, parentDb, identity);
+      assertLive(true);
+      await database.adapter.exec("CREATE TABLE IF NOT EXISTS sporades_resource_receipts (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, operationId TEXT NOT NULL, inputDigest TEXT NOT NULL, actorDigest TEXT NOT NULL, resultJson TEXT NOT NULL, intentIdsJson TEXT NOT NULL, committedAt TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId, operationId))");
+      const receipt2 = await database.adapter.prepare("SELECT * FROM sporades_resource_receipts WHERE resourceTable=? AND resourceId=? AND operationId=?").get(identity.table, identity.id, identity.operationId);
+      if (receipt2) {
+        if (receipt2.actorDigest !== actorDigest || !status && receipt2.inputDigest !== identity.digest) throw resourceError("RESOURCE_OPERATION_CONFLICT");
+        return status ? { state: "committed", result: JSON.parse(receipt2.resultJson), intentIds: JSON.parse(receipt2.intentIdsJson) } : JSON.parse(receipt2.resultJson);
+      }
+      if (status) return { state: "absent" };
+      const scopeDb = wrapCapability(parentDb, () => assertLive(true));
+      const scope = Object.freeze({
+        db: scopeDb,
+        jobs: Object.freeze({ enqueue: (...args) => {
+          assertLive(true);
+          return parentJobs.enqueue(...args);
+        } }),
+        log: Object.freeze({ info() {
+        }, warn() {
+        }, error() {
+        } }),
+        signal: new AbortController().signal,
+        notifications: Object.freeze({ accept: async () => {
+          terminalError ??= resourceError("RESOURCE_EFFECT_UNSUPPORTED");
+          throw terminalError;
+        } })
+      });
+      const result = await callback(scope);
+      if (terminalError) throw terminalError;
+      scopeActive = false;
+      const resultJson = resourceCanonicalJson(result);
+      await hooks.drain(context);
+      await database.adapter.prepare("INSERT INTO sporades_resource_receipts VALUES (?,?,?,?,?,?,?,?)").run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
+      return JSON.parse(resultJson);
+    } finally {
+      scopeActive = false;
+    }
+  };
+  context.resources = Object.freeze({ run: (options, callback) => execute(options, callback, false), status: (options) => execute(options, void 0, true) });
+  return () => {
+    invocationActive = false;
+  };
+}
 function wrapCapability(value, before, path14 = [], cache = /* @__PURE__ */ new WeakMap()) {
   if (!value || typeof value !== "object") return value;
   if (cache.has(value)) return cache.get(value);
@@ -102306,6 +102380,15 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
               credential: accessKeyAdmission?.credential,
               accessKeyGrants: accessKeyAdmission?.grants
             });
+            bindOuterResources(transactionDatabase, context, {
+              startedAt: database.clock.now().getTime(),
+              async authorize(_context, db, identity) {
+                const anchor = await db[identity.table].where("id", identity.id).get();
+                if (!anchor) throw commandError2("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+                await db[identity.table].update(identity.id, {});
+              },
+              drain: drainPendingAclWrites
+            });
             const endpointIngressApi = Object.freeze({
               ...context.files,
               ...createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context)
@@ -104912,6 +104995,15 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
             sessionToken: options.sessionToken,
             serviceUserMutationAuthority,
             mutationInvocation
+          });
+          bindOuterResources(transactionDatabase, context, {
+            startedAt: database.clock.now().getTime(),
+            async authorize(_context, db, identity) {
+              const anchor = await db[identity.table].where("id", identity.id).get();
+              if (!anchor) throw commandError2("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+              await db[identity.table].update(identity.id, {});
+            },
+            drain: drainPendingAclWrites
           });
           const customHandler = transactionDatabase.mutations.find((candidate) => candidate.name === mutationName);
           const mutationHandler = customHandler ? materializeHandler(customHandler) : null;

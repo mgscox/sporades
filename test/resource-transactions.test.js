@@ -51,6 +51,43 @@ test('SQLite commits writes, enqueues and a canonical replay receipt exactly onc
   } finally { await f.close(); }
 });
 
+test('a Custom mutation joins its outer transaction for a first resource scope', async () => {
+  const f = await fixture(() => null, {
+    mutations: {
+      resourceWrite: mutation(async (ctx) => ctx.resources.run(options(), async scope => {
+        await scope.db.writes.insert({ value: 'mutation-committed' });
+        return { committed: true };
+      })),
+    },
+  });
+  try {
+    const result = await runMutation(f.database, actor, 'resourceWrite', []);
+    assert.deepEqual(result, { ok: true, data: { committed: true }, error: null });
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='mutation-committed'").get().n, 1);
+    assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get().n, 1);
+  } finally { await f.close(); }
+});
+
+test('a Custom mutation outer rollback removes its resource receipt and staged write', async () => {
+  const f = await fixture(() => null, {
+    mutations: {
+      resourceRollback: mutation(async (ctx) => {
+        await ctx.resources.run(options(), async scope => {
+          await scope.db.writes.insert({ value: 'mutation-rolled-back' });
+          return { provisional: true };
+        });
+        throw new Error('outer mutation failure');
+      }),
+    },
+  });
+  try {
+    const result = await runMutation(f.database, actor, 'resourceRollback', []);
+    assert.equal(result.ok, false);
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='mutation-rolled-back'").get().n, 0);
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sqlite_schema WHERE name='sporades_resource_receipts'").get().n, 0);
+  } finally { await f.close(); }
+});
+
 test('rollback removes app writes and receipt; escaped handles reject after callback', async () => {
   let escaped;
   const f = await fixture(async ctx => ctx.resources.run(options(), async scope => {
@@ -93,8 +130,8 @@ test('entry is first and once; parent aliases, nested privilege and notification
     const row = await f.enqueue('scope');
     assert.equal(row.status, 'succeeded', row.failure);
     assert.deepEqual(seen, ['callback']);
-    const unsupported = await runMutation(f.database, actor, 'unsupported', []);
-    assert.equal(unsupported.ok, false);
+    const supportedMutation = await runMutation(f.database, actor, 'unsupported', []);
+    assert.equal(supportedMutation.ok, true);
   } finally { await f.close(); }
 });
 
