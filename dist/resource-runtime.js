@@ -382,7 +382,7 @@ export function bindJobResources(database, context, claim, hooks) {
     const execute = async (options, callback, status) => {
         if (!invocationActive || used || touched)
             throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-        if (!(["sqlite", "postgres"].includes(database.adapter.engine)) || typeof database.adapter.withResourceTransaction !== "function")
+        if (!(["sqlite", "postgres"].includes(database.adapter.engine)) || (database.adapter.engine === "postgres" && database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true) || typeof database.adapter.withResourceTransaction !== "function")
             throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
         const identity = optionsSnapshot(options, status);
         if (!status && typeof callback !== "function")

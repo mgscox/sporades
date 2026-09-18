@@ -316,7 +316,7 @@ export function bindJobResources(database: RecordValue, context: RecordValue, cl
 
   const execute = async (options: any, callback: any, status: boolean) => {
     if (!invocationActive || used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-    if (!(["sqlite", "postgres"].includes(database.adapter.engine)) || typeof database.adapter.withResourceTransaction !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+    if (!(["sqlite", "postgres"].includes(database.adapter.engine)) || (database.adapter.engine === "postgres" && database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true) || typeof database.adapter.withResourceTransaction !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
     const identity = optionsSnapshot(options, status);
     if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
     if (!database.schema.tables.some((table: any) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
