@@ -2,7 +2,9 @@
 
 **What to build:** Implement M1 intent acceptance in the resource transaction, then an independent SMTP delivery worker. The original strict external-handoff fence is unnecessary under M1 and remains unsolved.
 
-**Blocked by:** 02. Integration against PostgreSQL also requires 04 before 07 can pass.
+**Blocked by:** 02, 04.
+
+Integration against PostgreSQL also requires 04 before 07 can pass.
 
 **Status:** blocked — implementation-dependencies
 
