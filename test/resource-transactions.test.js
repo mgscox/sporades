@@ -1465,13 +1465,23 @@ test('postcommit JSONL publication failure still dispatches committed resource c
   f.database.log.path = path.dirname(f.file);
   const request = { method: 'POST', headers: {}, async *[Symbol.asyncIterator]() {} };
   try {
-    const mutationResult = await runMutation(f.database, actor, 'jsonlDispatch', []);
+    // The fixture starts its idle worker on a controllable zero-delay timer.
+    // Drain only timers that existed before this test's operation; there are no
+    // children yet, so this cannot be a later queue kick for the assertion.
+    for (const timer of f.clock.pendingTimerIds()) await f.clock.runTimer(timer);
+    assert.equal(childRuns, 0);
+    const runOnlyNewDispatchTimer = async (operation) => {
+      const before = new Set(f.clock.pendingTimerIds());
+      const result = await operation();
+      const dispatchTimers = f.clock.pendingTimerIds().filter(timer => !before.has(timer));
+      assert.equal(dispatchTimers.length, 1, 'the committed operation must schedule exactly one worker timer');
+      assert.equal(await f.clock.runTimer(dispatchTimers[0]), true);
+      return result;
+    };
+    const mutationResult = await runOnlyNewDispatchTimer(() => runMutation(f.database, actor, 'jsonlDispatch', []));
     assert.equal(mutationResult.error.code, 'RESOURCE_STORAGE_ERROR');
-    const endpointError = await runEndpoint(f.database, f.database.endpoints.find(item => item.name === 'jsonlDispatch'), new URL('http://capsule.test/jsonl-dispatch'), request).then(() => null, error => error);
+    const endpointError = await runOnlyNewDispatchTimer(() => runEndpoint(f.database, f.database.endpoints.find(item => item.name === 'jsonlDispatch'), new URL('http://capsule.test/jsonl-dispatch'), request).then(() => null, error => error));
     assert.equal(endpointError.code, 'RESOURCE_STORAGE_ERROR');
-    // Advance only the dispatch timer created by this committed operation; do
-    // not call the worker directly as an unrelated later queue kick.
-    for (let attempts = 0; childRuns !== 2 && attempts < 10; attempts++) await f.clock.runDueTimers();
     assert.equal(childRuns, 2, 'committed children must run without an unrelated queue kick');
     assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sporades_jobs WHERE handler='child' AND status='succeeded'").get().n, 2);
     assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sporades_resource_receipts WHERE operationId LIKE 'jsonl-dispatch-%'").get().n, 2);
