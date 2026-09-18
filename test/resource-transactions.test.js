@@ -143,6 +143,27 @@ test('a non-Job resource watchdog rejects a noncooperative callback at the outer
   } finally { await f.close(); }
 });
 
+test('a non-Job outer handler cannot commit a completed resource scope after its budget expires', async () => {
+  let entered;
+  const enteredPromise = new Promise(resolve => { entered = resolve; });
+  const f = await fixture(() => null, {
+    mutations: { stallsAfterScope: mutation(async ctx => {
+      await ctx.resources.run(options(), async scope => { await scope.db.writes.insert({ value: 'outer-deadline' }); return null; });
+      entered(); await new Promise(() => {});
+    }) },
+  });
+  try {
+    const timersBefore = new Set(f.clock.pendingTimerIds());
+    const running = runMutation(f.database, actor, 'stallsAfterScope', []);
+    await enteredPromise;
+    const [watchdog] = f.clock.pendingTimerIds().filter(id => !timersBefore.has(id));
+    f.clock.advanceBy(30_000); await f.clock.runTimer(watchdog);
+    const result = await running;
+    assert.equal(result.error.code, 'RESOURCE_DEADLINE_EXCEEDED');
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='outer-deadline'").get().n, 0);
+  } finally { await f.close(); }
+});
+
 test('a Custom endpoint joins its outer transaction for a first resource scope', async () => {
   const f = await fixture(() => null, {
     endpoints: {

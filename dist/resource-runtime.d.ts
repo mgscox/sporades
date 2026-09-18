@@ -17,7 +17,7 @@ export declare const unsupportedResources: Readonly<{
  * the enclosing handler owns commit/rollback, so a returned value is provisional
  * until that handler's transaction commits.
  */
-export declare function bindOuterResources(database: RecordValue, context: RecordValue, hooks: RecordValue): () => void;
+export declare function bindOuterResources(database: RecordValue, context: RecordValue, hooks: RecordValue): any;
 export declare function bindJobResources(database: RecordValue, context: RecordValue, claim: RecordValue, hooks: RecordValue): () => void;
 export {};
 //# sourceMappingURL=resource-runtime.d.ts.map

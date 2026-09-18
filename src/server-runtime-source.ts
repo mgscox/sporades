@@ -3698,7 +3698,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
           ingressFenceAcquired = true;
           const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
           let handlerFailed = false;
-          let revokeOuterResources: (() => void) | undefined;
+          let revokeOuterResources: any;
           try {
             const resolvedSession = (accessKeyAdmission ?? session) as LooseRecord;
             context = createEndpointContext(transactionDatabase, endpointRequest, resolvedSession, {
@@ -3733,7 +3733,8 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
             );
             context.files = attachmentResponse.files;
             sealCommittedAttachmentResult = attachmentResponse.sealCommittedResult;
-            const result = await handler(context);
+            const result = await Promise.race([Promise.resolve().then(() => handler(context)), revokeOuterResources?.aborted()]);
+            revokeOuterResources?.assertOuterLive();
             if (accessKeySecretWasDisclosed(context)) (request as LooseRecord).__sporadesSecretDisclosed = true;
             return result;
           } catch (error) {
@@ -6551,7 +6552,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
       const mutationInvocation = { active: true };
       return mutationExecution.run(mutationInvocation, async () => {
         let handlerFailed = false;
-        let revokeOuterResources: (() => void) | undefined;
+        let revokeOuterResources: any;
         try {
         context = createMutationContext(transactionDatabase, auth, {
           sessionToken: options.sessionToken,
@@ -6581,7 +6582,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
           await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
         }
 
-        result = await runCustomMutation(transactionDatabase, context, mutationName, args, mutationHandler);
+        result = await Promise.race([runCustomMutation(transactionDatabase, context, mutationName, args, mutationHandler), revokeOuterResources?.aborted()]);
         if (!result) {
           result = mutationName.startsWith("update")
             ? await runUpdateMutation(transactionDatabase, context, mutationName, args)
@@ -6596,6 +6597,8 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
           await drainPendingAclWrites(context);
           assertMutationSecretsReturned(context, result);
         }
+
+        revokeOuterResources?.assertOuterLive();
 
         return result;
         } catch (error) {

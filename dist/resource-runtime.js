@@ -88,6 +88,9 @@ export function bindOuterResources(database, context, hooks) {
     let admission = false;
     let touched = false;
     let terminalError;
+    let outerDeadline = 0;
+    let watchdog;
+    let outerAborted;
     const parentDb = context.db;
     const parentJobs = context.jobs;
     const actorDigest = createHash("sha256").update(resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged: false })).digest("hex");
@@ -117,9 +120,11 @@ export function bindOuterResources(database, context, hooks) {
         scopeActive = true;
         admission = true;
         const deadline = hooks.startedAt + 30_000;
+        outerDeadline = deadline;
         const controller = new AbortController();
         let rejectAborted = () => { };
         const aborted = new Promise((_, reject) => { rejectAborted = reject; });
+        outerAborted = aborted;
         void aborted.catch(() => { });
         const revoke = (error) => {
             terminalError ??= error;
@@ -136,7 +141,7 @@ export function bindOuterResources(database, context, hooks) {
             if (database.clock.now().getTime() >= deadline - (admission ? 1000 : 0))
                 throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
         };
-        const watchdog = database.clock.setTimer(() => revoke(resourceError("RESOURCE_DEADLINE_EXCEEDED")), Math.max(0, deadline - database.clock.now().getTime()));
+        watchdog ??= database.clock.setTimer(() => revoke(resourceError("RESOURCE_DEADLINE_EXCEEDED")), Math.max(0, deadline - database.clock.now().getTime()));
         try {
             assertLive(true);
             // The surrounding mutation/endpoint starts deferred. Promote it to an
@@ -190,11 +195,19 @@ export function bindOuterResources(database, context, hooks) {
             scopeActive = false;
             admission = false;
             controller.abort();
-            database.clock.clearTimer(watchdog);
         }
     };
     context.resources = Object.freeze({ run: (options, callback) => execute(options, callback, false), status: (options) => execute(options, undefined, true) });
-    return () => { invocationActive = false; };
+    const release = () => { invocationActive = false; if (watchdog !== undefined)
+        database.clock.clearTimer(watchdog); };
+    release.assertOuterLive = () => {
+        if (terminalError)
+            throw terminalError;
+        if (outerDeadline && database.clock.now().getTime() >= outerDeadline)
+            throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+    };
+    release.aborted = () => outerAborted;
+    return release;
 }
 // An invocation owns its eligibility in a closure; public context fields cannot
 // forge a Job claim. Proxies preserve synchronous non-opt-in DB return values.
