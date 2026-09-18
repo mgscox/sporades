@@ -3733,7 +3733,9 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
             );
             context.files = attachmentResponse.files;
             sealCommittedAttachmentResult = attachmentResponse.sealCommittedResult;
-            const result = await Promise.race([Promise.resolve().then(() => handler(context)), revokeOuterResources?.aborted()]);
+            const handlerRun = Promise.resolve().then(() => handler(context));
+            const outerAbort = revokeOuterResources?.aborted();
+            const result = await (outerAbort ? Promise.race([handlerRun, outerAbort]) : handlerRun);
             revokeOuterResources?.assertOuterLive();
             if (accessKeySecretWasDisclosed(context)) (request as LooseRecord).__sporadesSecretDisclosed = true;
             return result;
@@ -6582,7 +6584,9 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
           await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
         }
 
-        result = await Promise.race([runCustomMutation(transactionDatabase, context, mutationName, args, mutationHandler), revokeOuterResources?.aborted()]);
+        const mutationRun = runCustomMutation(transactionDatabase, context, mutationName, args, mutationHandler);
+        const outerAbort = revokeOuterResources?.aborted();
+        result = await (outerAbort ? Promise.race([mutationRun, outerAbort]) : mutationRun);
         if (!result) {
           result = mutationName.startsWith("update")
             ? await runUpdateMutation(transactionDatabase, context, mutationName, args)

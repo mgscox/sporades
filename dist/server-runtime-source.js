@@ -3534,7 +3534,9 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                         const attachmentResponse = createEndpointFileResponseApi(endpointIngressApi, endpoint.options?.response?.fileAttachment === true);
                         context.files = attachmentResponse.files;
                         sealCommittedAttachmentResult = attachmentResponse.sealCommittedResult;
-                        const result = await Promise.race([Promise.resolve().then(() => handler(context)), revokeOuterResources?.aborted()]);
+                        const handlerRun = Promise.resolve().then(() => handler(context));
+                        const outerAbort = revokeOuterResources?.aborted();
+                        const result = await (outerAbort ? Promise.race([handlerRun, outerAbort]) : handlerRun);
                         revokeOuterResources?.assertOuterLive();
                         if (accessKeySecretWasDisclosed(context))
                             request.__sporadesSecretDisclosed = true;
@@ -6281,7 +6283,9 @@ export async function runMutation(database, auth, mutationName, args, options = 
                     for (const hookSource of database.mutationHooks.beforeMutation) {
                         await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
                     }
-                    result = await Promise.race([runCustomMutation(transactionDatabase, context, mutationName, args, mutationHandler), revokeOuterResources?.aborted()]);
+                    const mutationRun = runCustomMutation(transactionDatabase, context, mutationName, args, mutationHandler);
+                    const outerAbort = revokeOuterResources?.aborted();
+                    result = await (outerAbort ? Promise.race([mutationRun, outerAbort]) : mutationRun);
                     if (!result) {
                         result = mutationName.startsWith("update")
                             ? await runUpdateMutation(transactionDatabase, context, mutationName, args)

@@ -90,7 +90,9 @@ export function bindOuterResources(database, context, hooks) {
     let terminalError;
     let outerDeadline = 0;
     let watchdog;
-    let outerAborted;
+    let rejectOuterAbort = () => { };
+    const outerAborted = new Promise((_, reject) => { rejectOuterAbort = reject; });
+    void outerAborted.catch(() => { });
     const parentDb = context.db;
     const parentJobs = context.jobs;
     const actorDigest = createHash("sha256").update(resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged: false })).digest("hex");
@@ -122,16 +124,12 @@ export function bindOuterResources(database, context, hooks) {
         const deadline = hooks.startedAt + 30_000;
         outerDeadline = deadline;
         const controller = new AbortController();
-        let rejectAborted = () => { };
-        const aborted = new Promise((_, reject) => { rejectAborted = reject; });
-        outerAborted = aborted;
-        void aborted.catch(() => { });
         const revoke = (error) => {
             terminalError ??= error;
             scopeActive = false;
             admission = false;
             controller.abort();
-            rejectAborted(terminalError);
+            rejectOuterAbort(terminalError);
         };
         const assertLive = (requireAdmission = false) => {
             if (!invocationActive || !scopeActive || requireAdmission && !admission)
@@ -180,7 +178,7 @@ export function bindOuterResources(database, context, hooks) {
                         throw terminalError;
                     } }),
             });
-            const result = await Promise.race([Promise.resolve().then(() => callback(scope)), aborted]);
+            const result = await Promise.race([Promise.resolve().then(() => callback(scope)), outerAborted]);
             if (terminalError)
                 throw terminalError;
             admission = false;

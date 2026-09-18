@@ -94102,7 +94102,13 @@ function bindOuterResources(database, context, hooks) {
   let terminalError;
   let outerDeadline = 0;
   let watchdog;
-  let outerAborted;
+  let rejectOuterAbort = () => {
+  };
+  const outerAborted = new Promise((_, reject) => {
+    rejectOuterAbort = reject;
+  });
+  void outerAborted.catch(() => {
+  });
   const parentDb = context.db;
   const parentJobs = context.jobs;
   const actorDigest = createHash8("sha256").update(resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged: false })).digest("hex");
@@ -94126,20 +94132,12 @@ function bindOuterResources(database, context, hooks) {
     const deadline = hooks.startedAt + 3e4;
     outerDeadline = deadline;
     const controller = new AbortController();
-    let rejectAborted = () => {
-    };
-    const aborted = new Promise((_, reject) => {
-      rejectAborted = reject;
-    });
-    outerAborted = aborted;
-    void aborted.catch(() => {
-    });
     const revoke = (error) => {
       terminalError ??= error;
       scopeActive = false;
       admission = false;
       controller.abort();
-      rejectAborted(terminalError);
+      rejectOuterAbort(terminalError);
     };
     const assertLive = (requireAdmission = false) => {
       if (!invocationActive || !scopeActive || requireAdmission && !admission) throw resourceError("RESOURCE_SCOPE_INACTIVE");
@@ -94184,7 +94182,7 @@ function bindOuterResources(database, context, hooks) {
           throw terminalError;
         } })
       });
-      const result = await Promise.race([Promise.resolve().then(() => callback(scope)), aborted]);
+      const result = await Promise.race([Promise.resolve().then(() => callback(scope)), outerAborted]);
       if (terminalError) throw terminalError;
       admission = false;
       const resultJson = resourceCanonicalJson(result);
@@ -102453,7 +102451,9 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
             );
             context.files = attachmentResponse.files;
             sealCommittedAttachmentResult = attachmentResponse.sealCommittedResult;
-            const result2 = await Promise.race([Promise.resolve().then(() => handler(context)), revokeOuterResources?.aborted()]);
+            const handlerRun = Promise.resolve().then(() => handler(context));
+            const outerAbort = revokeOuterResources?.aborted();
+            const result2 = await (outerAbort ? Promise.race([handlerRun, outerAbort]) : handlerRun);
             revokeOuterResources?.assertOuterLive();
             if (accessKeySecretWasDisclosed(context)) request.__sporadesSecretDisclosed = true;
             return result2;
@@ -105070,7 +105070,9 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
           for (const hookSource of database.mutationHooks.beforeMutation) {
             await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
           }
-          result = await Promise.race([runCustomMutation(transactionDatabase, context, mutationName, args, mutationHandler), revokeOuterResources?.aborted()]);
+          const mutationRun = runCustomMutation(transactionDatabase, context, mutationName, args, mutationHandler);
+          const outerAbort = revokeOuterResources?.aborted();
+          result = await (outerAbort ? Promise.race([mutationRun, outerAbort]) : mutationRun);
           if (!result) {
             result = mutationName.startsWith("update") ? await runUpdateMutation(transactionDatabase, context, mutationName, args) : await runInsertMutation(transactionDatabase, context, mutationName, args);
           }
