@@ -94117,7 +94117,208 @@ var unsupportedResources = Object.freeze({
     throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
   }
 });
-function wrapCapability(value, before, path14 = [], cache = /* @__PURE__ */ new WeakMap()) {
+function bindOuterResources(database, context, hooks) {
+  let invocationActive = true;
+  let used = false;
+  let scopeActive = false;
+  let admission = false;
+  let touched = false;
+  let terminalError;
+  let outerDeadline = 0;
+  let watchdog;
+  let rejectOuterAbort = () => {
+  };
+  const outerAborted = new Promise((_, reject) => {
+    rejectOuterAbort = reject;
+  });
+  void outerAborted.catch(() => {
+  });
+  const parentDb = context.db;
+  const parentJobs = context.jobs;
+  const pending = /* @__PURE__ */ new Set();
+  const executions = /* @__PURE__ */ new Set();
+  const normalizeStorageError = (error) => error?.code === "RESOURCE_BUSY" || error?.code === "SQLITE_BUSY" || error?.errcode === 5 || error?.errcode === 6 ? resourceError("RESOURCE_BUSY") : error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== void 0 ? resourceError("RESOURCE_STORAGE_ERROR") : error;
+  const track = (operation) => {
+    let value;
+    try {
+      value = operation();
+    } catch (error) {
+      terminalError ??= normalizeStorageError(error);
+      throw error;
+    }
+    if (!value || typeof value.then !== "function") return value;
+    const promise = Promise.resolve(value);
+    pending.add(promise);
+    void promise.catch((error) => {
+      terminalError ??= normalizeStorageError(error);
+    });
+    return promise;
+  };
+  const trackExecution = (operation, poison = true) => {
+    let value;
+    try {
+      value = operation();
+    } catch (error) {
+      if (poison) terminalError ??= error;
+      throw error;
+    }
+    const promise = Promise.resolve(value);
+    executions.add(promise);
+    void promise.catch(() => {
+    });
+    return promise;
+  };
+  const actorDigest = createHash8("sha256").update(resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged: false })).digest("hex");
+  const guardCapability = (name2, value) => wrapCapability(value, (path14) => {
+    if (used) throw resourceError(!invocationActive || !scopeActive || !admission ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
+    if (!["where", "orderBy", "limit"].includes(path14.at(-1))) touched = true;
+  });
+  for (const name2 of ["db", "log", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
+    if (!context[name2]) continue;
+    context[name2] = guardCapability(name2, context[name2]);
+  }
+  const execute = async (options, callback, status) => {
+    if (!invocationActive) throw resourceError("RESOURCE_SCOPE_INACTIVE");
+    if (used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
+    if (database.adapter.engine !== "sqlite" || database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true) throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+    const identity = optionsSnapshot(options, status);
+    if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
+    if (!database.schema.tables.some((table) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
+    used = true;
+    scopeActive = true;
+    admission = true;
+    hooks.resourceEntered?.();
+    (database[Symbol.for("sporades.database.outerTransactionAdapter")] ?? database.adapter)[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
+    const deadline = hooks.startedAt + 3e4;
+    outerDeadline = deadline;
+    const beforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
+    const checks = database.adapter[beforeCommitChecks] ?? (database.adapter[beforeCommitChecks] = []);
+    checks.push(() => {
+      if (terminalError) throw terminalError;
+      if (database.clock.now().getTime() >= deadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+    });
+    const controller = new AbortController();
+    const revoke = (error) => {
+      terminalError ??= error;
+      scopeActive = false;
+      admission = false;
+      controller.abort();
+      rejectOuterAbort(terminalError);
+    };
+    const assertLive = (requireAdmission = false) => {
+      if (!invocationActive || !scopeActive || requireAdmission && !admission) throw resourceError("RESOURCE_SCOPE_INACTIVE");
+      if (terminalError) throw terminalError;
+      if (database.clock.now().getTime() >= deadline - (admission ? 1e3 : 0)) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+    };
+    watchdog ??= database.clock.setTimer(() => revoke(resourceError("RESOURCE_DEADLINE_EXCEEDED")), Math.max(0, deadline - database.clock.now().getTime()));
+    let acquired = false;
+    try {
+      assertLive(true);
+      try {
+        await database.adapter.exec("CREATE TABLE IF NOT EXISTS sporades_resource_outer_fence (id INTEGER PRIMARY KEY, epoch INTEGER NOT NULL)");
+        await database.adapter.prepare("INSERT OR IGNORE INTO sporades_resource_outer_fence (id, epoch) VALUES (1, 0)").run();
+        await database.adapter.prepare("UPDATE sporades_resource_outer_fence SET epoch=epoch+1 WHERE id=1").run();
+      } catch (error) {
+        if (error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY") throw resourceError("RESOURCE_BUSY");
+        throw resourceError("RESOURCE_STORAGE_ERROR");
+      }
+      acquired = true;
+      assertLive(true);
+      await hooks.authorize(context, parentDb, identity);
+      assertLive(true);
+      let receipt2;
+      try {
+        await database.adapter.exec("CREATE TABLE IF NOT EXISTS sporades_resource_receipts (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, operationId TEXT NOT NULL, inputDigest TEXT NOT NULL, actorDigest TEXT NOT NULL, resultJson TEXT NOT NULL, intentIdsJson TEXT NOT NULL, committedAt TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId, operationId))");
+        receipt2 = await database.adapter.prepare("SELECT * FROM sporades_resource_receipts WHERE resourceTable=? AND resourceId=? AND operationId=?").get(identity.table, identity.id, identity.operationId);
+      } catch (error) {
+        if (error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== void 0) throw resourceError("RESOURCE_STORAGE_ERROR");
+        throw error;
+      }
+      if (receipt2) {
+        if (receipt2.actorDigest !== actorDigest || !status && receipt2.inputDigest !== identity.digest) throw resourceError("RESOURCE_OPERATION_CONFLICT");
+        return status ? { state: "committed", result: JSON.parse(receipt2.resultJson), intentIds: JSON.parse(receipt2.intentIdsJson) } : JSON.parse(receipt2.resultJson);
+      }
+      if (status) return { state: "absent" };
+      const scopeDb = wrapCapability(parentDb, () => assertLive(true), [], /* @__PURE__ */ new WeakMap(), track);
+      const logs = [];
+      const scope = Object.freeze({
+        db: scopeDb,
+        jobs: Object.freeze({ enqueue: (...args) => track(() => {
+          assertLive(true);
+          return parentJobs.enqueue(...args);
+        }) }),
+        log: Object.freeze(Object.fromEntries(["info", "warn", "error"].map((level) => [level, () => {
+          assertLive(true);
+          if (logs.length >= 100) throw resourceError("RESOURCE_INVALID_INPUT");
+          logs.push(level);
+        }]))),
+        signal: controller.signal,
+        notifications: Object.freeze({ accept: () => {
+          assertLive(true);
+          return track(() => Promise.resolve().then(() => {
+            terminalError ??= resourceError("RESOURCE_EFFECT_UNSUPPORTED");
+            throw terminalError;
+          }));
+        } })
+      });
+      let result;
+      try {
+        result = await Promise.race([Promise.resolve().then(() => callback(scope)), outerAborted]);
+      } catch (error) {
+        terminalError ??= error;
+        throw error;
+      }
+      if (terminalError) throw terminalError;
+      admission = false;
+      let resultJson;
+      try {
+        resultJson = resourceCanonicalJson(result);
+        await Promise.all([...pending]);
+        if (terminalError) throw terminalError;
+        await hooks.drain(context);
+        await hooks.stageLogs?.(logs);
+      } catch (error) {
+        terminalError ??= error;
+        throw error;
+      }
+      assertLive();
+      try {
+        await database.adapter.prepare("INSERT INTO sporades_resource_receipts VALUES (?,?,?,?,?,?,?,?)").run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
+      } catch (error) {
+        if (error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== void 0) throw resourceError("RESOURCE_STORAGE_ERROR");
+        throw error;
+      }
+      assertLive();
+      return JSON.parse(resultJson);
+    } catch (error) {
+      const normalized = normalizeStorageError(error);
+      if (acquired || normalized?.code === "RESOURCE_STORAGE_ERROR") terminalError ??= normalized;
+      throw normalized;
+    } finally {
+      scopeActive = false;
+      admission = false;
+      controller.abort();
+    }
+  };
+  context.resources = Object.freeze({ run: (options, callback) => trackExecution(() => execute(options, callback, false)), status: (options) => trackExecution(() => execute(options, void 0, true), false) });
+  const release = () => {
+    invocationActive = false;
+    if (watchdog !== void 0) database.clock.clearTimer(watchdog);
+  };
+  release.assertOuterLive = () => {
+    if (terminalError) throw terminalError;
+    if (outerDeadline && database.clock.now().getTime() >= outerDeadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+  };
+  release.aborted = () => outerAborted;
+  release.drain = async () => {
+    await Promise.allSettled([...executions]);
+    if (terminalError) throw terminalError;
+  };
+  release.race = (operation) => Promise.race([operation, outerAborted]);
+  release.guardCapability = guardCapability;
+  return release;
+}
+function wrapCapability(value, before, path14 = [], cache = /* @__PURE__ */ new WeakMap(), afterCall) {
   if (!value || typeof value !== "object") return value;
   if (cache.has(value)) return cache.get(value);
   const functions = /* @__PURE__ */ new Map();
@@ -94134,13 +94335,14 @@ function wrapCapability(value, before, path14 = [], cache = /* @__PURE__ */ new 
         const wrapped = (...args) => {
           const next = [...path14, key];
           before(next);
-          const result = Reflect.apply(member, value, args);
-          return ["where", "orderBy", "limit"].includes(key) ? wrapCapability(result, before, path14, cache) : result;
+          const invoke = () => Reflect.apply(member, value, args);
+          const result = afterCall && !["where", "orderBy", "limit"].includes(key) ? afterCall(invoke) : invoke();
+          return ["where", "orderBy", "limit"].includes(key) ? wrapCapability(result, before, path14, cache, afterCall) : result;
         };
         functions.set(key, wrapped);
         return wrapped;
       }
-      return wrapCapability(member, before, [...path14, key], cache);
+      return wrapCapability(member, before, [...path14, key], cache, afterCall);
     }
   });
   cache.set(value, proxy);
@@ -98267,35 +98469,56 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
   const { DatabaseSync } = await import("node:sqlite");
   const path14 = await import("node:path");
   if (!options.readOnly) nodeFsModule.mkdirSync(path14.dirname(String(databasePath)), { recursive: true });
-  const connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
+  let connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
+  let resourceConnectionQuarantined = false;
+  let resourceConnectionDisposed = false;
   const dialect = sqliteDatabaseDialect();
   const connectionGate = createConnectionTransactionGate();
   const runDirectly = (operation) => operation();
-  const createOperations = (run2) => ({
-    exec(sql) {
-      return run2(() => connection.exec(sql));
-    },
-    prepare(sql) {
-      return {
-        all(...params) {
-          return run2(() => connection.prepare(sql).all(...params));
-        },
-        get(...params) {
-          return run2(() => connection.prepare(sql).get(...params));
-        },
-        run(...params) {
-          return run2(() => connection.prepare(sql).run(...params));
-        },
-        columns() {
-          return run2(() => connection.prepare(sql).columns());
-        }
-      };
-    }
-  });
+  const discardUncertainResourceConnection = () => {
+    const uncertainConnection = connection;
+    resourceConnectionQuarantined = true;
+    uncertainConnection.close();
+    resourceConnectionDisposed = true;
+    connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
+    resourceConnectionDisposed = false;
+    resourceConnectionQuarantined = false;
+  };
+  const createOperations = (run2) => {
+    const useConnection = (operation) => {
+      if (resourceConnectionQuarantined) throw resourceError("RESOURCE_COMMIT_UNKNOWN");
+      return operation();
+    };
+    return {
+      exec(sql) {
+        return run2(() => useConnection(() => connection.exec(sql)));
+      },
+      prepare(sql) {
+        return {
+          all(...params) {
+            return run2(() => useConnection(() => connection.prepare(sql).all(...params)));
+          },
+          get(...params) {
+            return run2(() => useConnection(() => connection.prepare(sql).get(...params)));
+          },
+          run(...params) {
+            return run2(() => useConnection(() => connection.prepare(sql).run(...params)));
+          },
+          columns() {
+            return run2(() => useConnection(() => connection.prepare(sql).columns()));
+          }
+        };
+      }
+    };
+  };
   const adapter = {
     ...createSharedDatabaseAdapterMethods(dialect),
     ...createOperations(connectionGate.runOperation),
     engine: "sqlite",
+    // Outer resources must be able to open one independent durable SQLite
+    // connection. This runtime-owned marker propagates through transaction
+    // adapters; callers cannot opt an in-memory or read-only adapter in.
+    [Symbol.for("sporades.database.resourceTransactionEligible")]: !options.readOnly && String(databasePath) !== ":memory:",
     dialect,
     normalization: sqliteRowNormalization(),
     async withResourceTransaction(fn, beforeCommit) {
@@ -98353,19 +98576,29 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         const ownerOperations = typeof this[transactionOperations] === "function" ? this[transactionOperations]() : { exec: this.exec.bind(this), prepare: this.prepare.bind(this) };
         const transactionAdapter = createTransactionScopedAdapter(this, ownerOperations, this, "transaction");
         const transactionExec = ownerOperations.exec;
+        let resourceCommitIssued = false;
         await transactionExec("BEGIN");
         try {
           let result;
           try {
             result = await fn(transactionAdapter);
             await runTransactionBeforeCommitChecks(transactionAdapter);
+            resourceCommitIssued = Boolean(transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")]);
           } finally {
             revokeTransactionScopedAdapter(transactionAdapter);
           }
           await transactionExec("COMMIT");
           return result;
         } catch (error) {
-          await transactionExec("ROLLBACK");
+          if (!resourceCommitIssued) await transactionExec("ROLLBACK");
+          if (resourceCommitIssued) {
+            try {
+              discardUncertainResourceConnection();
+            } catch {
+              throw resourceError("RESOURCE_COMMIT_UNKNOWN");
+            }
+            throw resourceError("RESOURCE_COMMIT_UNKNOWN");
+          }
           throw error;
         }
       }, options2);
@@ -98395,6 +98628,12 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
       });
     },
     close() {
+      if (resourceConnectionQuarantined) {
+        if (resourceConnectionDisposed) return;
+        connection.close();
+        resourceConnectionDisposed = true;
+        return;
+      }
       return connection.close();
     }
   };
@@ -102321,20 +102560,26 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
     if (requirements) delete endpointRequest.headers.authorization;
   }
   let context;
+  let outerCommitted = false;
+  let resourceAttempted = false;
+  let resourceLogPublicationError;
   try {
     let result;
     let transactionAttempt = 0;
+    let committedResourceLogEvents = [];
     let sealCommittedAttachmentResult = (value) => value;
     while (true) {
       let ingressFenceAcquired = false;
       try {
         context = void 0;
+        const outerStartedAt = database.clock.now().getTime();
         result = await database.adapter.withTransaction(async (transactionAdapter) => {
           const ingressLeaseIds = (endpointRequest.multipart?.files ?? []).map((lease) => String(lease.leaseId));
           if (ingressLeaseIds.length > 0) await transactionAdapter.lockIngressReceipts(ingressLeaseIds);
           ingressFenceAcquired = true;
           const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
           let handlerFailed = false;
+          let revokeOuterResources;
           try {
             const resolvedSession = accessKeyAdmission ?? session;
             context = createEndpointContext(transactionDatabase, endpointRequest, resolvedSession, {
@@ -102342,34 +102587,69 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
               credential: accessKeyAdmission?.credential,
               accessKeyGrants: accessKeyAdmission?.grants
             });
+            revokeOuterResources = bindOuterResources(transactionDatabase, context, {
+              startedAt: outerStartedAt,
+              resourceEntered() {
+                resourceAttempted = true;
+                transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
+                transactionDatabase.log = { emit() {
+                } };
+              },
+              async authorize(_context, db, identity) {
+                const anchor = await db[identity.table].where("id", identity.id).get();
+                if (!anchor) throw commandError2("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+                await db[identity.table].update(identity.id, {});
+              },
+              drain: drainPendingAclWrites,
+              async stageLogs(levels) {
+                const events = levels.map((level) => uncappedLogEnvelope({ config: database.config, category: "resource", event: "resource.log", level, message: "Resource transaction committed.", data: null }));
+                for (const event of events) await transactionDatabase.adapter.insertLogIndexEvent(event);
+                committedResourceLogEvents = events;
+              }
+            });
             const endpointIngressApi = Object.freeze({
               ...context.files,
               ...createEndpointIngressApi(transactionDatabase, endpoint, endpointRequest, context)
             });
-            context.files = endpointIngressApi;
+            context.files = revokeOuterResources.guardCapability("files", endpointIngressApi);
             if (endpoint.runtimeOwnedStripeCallback) {
               Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
             }
             if (!runtimeOwnedProviderCallback) {
               if (!accessKeyAdmission) admitCredentialHandler(handler, context, "endpoint");
-              context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
+              context = await revokeOuterResources.race(applyContextMiddleware(transactionDatabase, context, "endpoint"));
             }
             const attachmentResponse = createEndpointFileResponseApi(
               endpointIngressApi,
               endpoint.options?.response?.fileAttachment === true
             );
-            context.files = attachmentResponse.files;
+            context.files = revokeOuterResources.guardCapability("files", attachmentResponse.files);
             sealCommittedAttachmentResult = attachmentResponse.sealCommittedResult;
-            const result2 = await handler(context);
+            const handlerRun = Promise.resolve().then(() => handler(context));
+            const outerAbort = revokeOuterResources?.aborted();
+            const result2 = await (outerAbort ? Promise.race([handlerRun, outerAbort]) : handlerRun);
+            revokeOuterResources?.assertOuterLive();
             if (accessKeySecretWasDisclosed(context)) request.__sporadesSecretDisclosed = true;
             return result2;
           } catch (error) {
             handlerFailed = true;
             throw error;
           } finally {
-            await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
+            try {
+              await revokeOuterResources?.race(revokeOuterResources.drain());
+              await revokeOuterResources?.race(cleanupTransactionHandler(transactionDatabase, context, handlerFailed));
+            } finally {
+              revokeOuterResources?.();
+            }
           }
         });
+        outerCommitted = resourceAttempted;
+        try {
+          if (database.log?.path) for (const event of committedResourceLogEvents) appendFileSync(database.log.path, `${JSON.stringify(event)}
+`);
+        } catch {
+          resourceLogPublicationError = resourceError("RESOURCE_STORAGE_ERROR");
+        }
         break;
       } catch (error) {
         if (ingressFenceAcquired || database.adapter.engine !== "sqlite" || transactionAttempt >= 100 || !String(error?.message ?? "").includes("database is locked")) throw error;
@@ -102384,8 +102664,10 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
+    if (resourceLogPublicationError) throw resourceLogPublicationError;
     return sealCommittedAttachmentResult(result);
   } catch (error) {
+    if (outerCommitted) throw error;
     if (endpointRequest.multipart) {
       try {
         await database.log.emit({ category: "platform", event: "file.ingress.failed", level: "warn", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "failed", code: "INGRESS_ROLLBACK" } });
@@ -102445,6 +102727,7 @@ function createTransactionDatabase(database, transactionAdapter, writeState) {
     __transactionActive: true,
     [trustedReadTransactionAdapter]: transactionAdapter,
     __rootDatabase: database.__rootDatabase ?? database,
+    [Symbol.for("sporades.database.outerTransactionAdapter")]: transactionAdapter,
     __pendingLogWrites: pendingLogWrites
   };
   transactionDatabase.stageTeamBillingMembershipChange = (teamId) => stageTeamBillingMembershipChange(transactionDatabase, teamId);
@@ -104931,6 +105214,10 @@ function normalizeQueryArgumentValue(value, ancestors) {
 async function runMutation(database, auth, mutationName, args, options = {}) {
   let context;
   let result;
+  let committedResourceLogEvents = [];
+  let outerCommitted = false;
+  let resourceAttempted = false;
+  let resourceLogPublicationError;
   const writeState = { didWrite: false };
   try {
     const declaredHandler = database.mutations.find((candidate) => candidate.name === mutationName);
@@ -104939,16 +105226,38 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
       const maintenanceNow = database.clock.now().toISOString();
       await database.adapter.withTransaction((maintenanceAdapter) => maintenanceAdapter.deleteExpiredReauthenticationProofs(maintenanceNow));
     }
+    const outerStartedAt = database.clock.now().getTime();
     const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
       const mutationInvocation = { active: true };
       return mutationExecution.run(mutationInvocation, async () => {
         let handlerFailed = false;
+        let revokeOuterResources;
         try {
           context = createMutationContext(transactionDatabase, auth, {
             sessionToken: options.sessionToken,
             serviceUserMutationAuthority,
             mutationInvocation
+          });
+          revokeOuterResources = bindOuterResources(transactionDatabase, context, {
+            startedAt: outerStartedAt,
+            resourceEntered() {
+              resourceAttempted = true;
+              transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
+              transactionDatabase.log = { emit() {
+              } };
+            },
+            async authorize(_context, db, identity) {
+              const anchor = await db[identity.table].where("id", identity.id).get();
+              if (!anchor) throw commandError2("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+              await db[identity.table].update(identity.id, {});
+            },
+            drain: drainPendingAclWrites,
+            async stageLogs(levels) {
+              const events = levels.map((level) => uncappedLogEnvelope({ config: database.config, category: "resource", event: "resource.log", level, message: "Resource transaction committed.", data: null }));
+              for (const event of events) await transactionDatabase.adapter.insertLogIndexEvent(event);
+              committedResourceLogEvents = events;
+            }
           });
           const customHandler = transactionDatabase.mutations.find((candidate) => candidate.name === mutationName);
           const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
@@ -104958,35 +105267,47 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
             const consumed = typeof options.sessionToken === "string" && await transactionAdapter.consumeReauthenticationProof({ sessionToken: options.sessionToken, userId: auth.userId, purpose: reauthenticationPurpose, now: database.clock.now().toISOString() });
             if (!consumed) throw commandError2("Reauthentication required.", "Verify the current Session for this purpose and retry.", "REAUTHENTICATION_REQUIRED");
           }
-          context = await applyContextMiddleware(transactionDatabase, context, "mutation");
+          context = await revokeOuterResources.race(applyContextMiddleware(transactionDatabase, context, "mutation"));
           for (const hookSource of database.mutationHooks.beforeMutation) {
-            await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
+            await revokeOuterResources?.race(runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context));
           }
-          result = await runCustomMutation(transactionDatabase, context, mutationName, args, mutationHandler);
+          const mutationRun = runCustomMutation(transactionDatabase, context, mutationName, args, mutationHandler);
+          const outerAbort = revokeOuterResources?.aborted();
+          result = await (outerAbort ? Promise.race([mutationRun, outerAbort]) : mutationRun);
           if (!result) {
             result = mutationName.startsWith("update") ? await runUpdateMutation(transactionDatabase, context, mutationName, args) : await runInsertMutation(transactionDatabase, context, mutationName, args);
           }
-          await drainPendingAclWrites(context);
+          await revokeOuterResources?.race(drainPendingAclWrites(context));
           if (result.ok) {
             for (const hookSource of database.mutationHooks.afterMutation) {
-              await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context, result }, context);
+              await revokeOuterResources?.race(runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context, result }, context));
             }
-            await drainPendingAclWrites(context);
+            await revokeOuterResources?.race(drainPendingAclWrites(context));
             assertMutationSecretsReturned(context, result);
           }
+          revokeOuterResources?.assertOuterLive();
           return result;
         } catch (error) {
           handlerFailed = true;
           throw error;
         } finally {
           try {
-            await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed);
+            await revokeOuterResources?.race(revokeOuterResources.drain());
+            await revokeOuterResources?.race(cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed));
           } finally {
+            revokeOuterResources?.();
             mutationInvocation.active = false;
           }
         }
       });
     });
+    outerCommitted = resourceAttempted;
+    try {
+      if (database.log?.path) for (const event of committedResourceLogEvents) appendFileSync(database.log.path, `${JSON.stringify(event)}
+`);
+    } catch {
+      resourceLogPublicationError = resourceError("RESOURCE_STORAGE_ERROR");
+    }
     await commitPendingCurrentUserFileByteDeletes(context);
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
@@ -104996,8 +105317,10 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
       database.rowCache.clear();
       mutationResultsWithWrites.add(committed);
     }
+    if (resourceLogPublicationError) throw resourceLogPublicationError;
     return committed;
   } catch (error) {
+    if (outerCommitted) return createHookErrorResult(error);
     dropPendingCurrentUserFileByteDeletes(context);
     dropPendingJobCancellationAborts(context);
     dropAccessKeyLifecycleAuditEvents(context);
@@ -105005,7 +105328,7 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
     dropPendingJobDispatch(context);
     database.rowCache.clear();
     await reindexPrivilegedAuditEventsAfterRollback(database, context);
-    if (error?.sporadesAclDenialLogData) {
+    if (!resourceAttempted && error?.sporadesAclDenialLogData) {
       emitAclDeniedLog(database, { data: error.sporadesAclDenialLogData });
     }
     if (error?.sporadesAuthDenialLogData) {

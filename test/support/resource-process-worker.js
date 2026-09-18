@@ -1,5 +1,6 @@
-import { openDevDatabase, createControllableRuntimeClock, recoverExpiredJobLeases } from '../../dist/server-runtime-source.js';
-import { table, String as Text, job } from '../../dist/server.js';
+import { openDevDatabase, createControllableRuntimeClock, recoverExpiredJobLeases, runMutation } from '../../dist/server-runtime-source.js';
+import { table, String as Text, job, mutation } from '../../dist/server.js';
+const teamId = '11111111-1111-4111-8111-111111111111';
 const messages = new Map();
 const pending = new Map();
 function wait(key) {
@@ -28,6 +29,17 @@ process.on('message', async message => {
     send('advanced');
   } else if (message.kind === 'shutdown') {
     await database.shutdown(); send('shutdown');
+  } else if (message.kind === 'grant-change') {
+    try {
+      if (message.action === 'membership-revoke') database.adapter.prepare('DELETE FROM sporades_team_memberships WHERE teamId=? AND userId=?').run(teamId, 'actor');
+      else {
+        const outcome = await runMutation(database, { userId: 'actor', displayName: 'Actor', email: null, picture: null, isAuthenticated: true, isGuest: false, provider: 'email' }, 'changeGrant', [message.action]);
+        if (!outcome.ok) throw Object.assign(new Error('Grant change failed.'), { code: outcome.error?.code });
+      }
+      send('grant-change', { code: 'COMMITTED', action: message.action });
+    } catch (error) {
+      send('grant-change', { code: error.errcode === 5 || error.errcode === 6 ? 'SQLITE_BUSY' : error.code, action: message.action });
+    }
   } else if (message.kind === 'late') {
     try { await escaped.insert({ value: 'late' }); send('late', { code: 'UNEXPECTED_SUCCESS' }); }
     catch (error) { send('late', { code: error.code }); }
@@ -38,7 +50,15 @@ process.on('message', async message => {
   } else messages.set(message.kind, message);
 });
 const definition = {
-  schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+  schema: { anchors: table({ value: Text() }).acl({
+    read: ({ ctx }) => ctx.acl.teams.isMember(teamId),
+    write: ({ ctx }) => ctx.acl.teams.isMember(teamId),
+  }), writes: table({ value: Text() }) },
+  mutations: { changeGrant: mutation(async (ctx, action) => ctx.resources.run({ resource: { table: 'anchors', id: 'anchor' }, operationId: `grant-${action}`, input: null }, async scope => {
+    if (action === 'revoke') await scope.db.anchors.delete('anchor');
+    else await scope.db.anchors.update('anchor', { value: 'rotated' });
+    return { changed: action };
+  })) },
   jobs: { work: job(async (ctx, payload) => {
     send('claimed');
     const command = await wait('acquire');
@@ -52,6 +72,8 @@ const definition = {
     try {
       const value = await ctx.resources.run({ resource: { table: 'anchors', id: 'anchor' }, operationId: payload.operation, input: null }, async scope => {
         escaped = scope.db.writes;
+        const anchor = await scope.db.anchors.where('id', 'anchor').get();
+        send('observed', { value: anchor?.value ?? null });
         await scope.db.writes.insert({ value: 'protected' });
         send('entered');
         await wait('release');

@@ -1,4 +1,4 @@
-import { bindJobResources, isResourceAbortError, resourceError, unsupportedResources } from "./resource-runtime.js";
+import { bindJobResources, bindOuterResources, isResourceAbortError, resourceError, unsupportedResources } from "./resource-runtime.js";
 import type { IncomingMessage, ServerResponse, IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
 import { WithImplicitCoercion } from "buffer";
 import { BinaryLike, KeyObject } from "node:crypto";
@@ -3681,13 +3681,18 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
     if (requirements) delete endpointRequest.headers.authorization;
   }
   let context: LooseRecord | undefined;
+  let outerCommitted = false;
+  let resourceAttempted = false;
+  let resourceLogPublicationError: any;
   try {
     let result: any; let transactionAttempt = 0;
+    let committedResourceLogEvents: LooseRecord[] = [];
     let sealCommittedAttachmentResult = (value: unknown) => value;
     while (true) {
       let ingressFenceAcquired = false;
       try {
         context = undefined;
+        const outerStartedAt = database.clock.now().getTime();
         result = await database.adapter.withTransaction(async (transactionAdapter: any) => {
           // This conditional no-op UPDATE is deliberately the first endpoint SQL. It gives every
           // runtime connection the same sorted receipt lock order before middleware or app code
@@ -3697,6 +3702,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
           ingressFenceAcquired = true;
           const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
           let handlerFailed = false;
+          let revokeOuterResources: any;
           try {
             const resolvedSession = (accessKeyAdmission ?? session) as LooseRecord;
             context = createEndpointContext(transactionDatabase, endpointRequest, resolvedSession, {
@@ -3704,34 +3710,63 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
               credential: accessKeyAdmission?.credential,
               accessKeyGrants: accessKeyAdmission?.grants,
             });
+            revokeOuterResources = bindOuterResources(transactionDatabase, context, {
+              startedAt: outerStartedAt,
+              resourceEntered() {
+                resourceAttempted = true;
+                (transactionAdapter as any)[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
+                // A resource attempt has a deliberately payload-free diagnostic
+                // channel. Its authorization checks must not escape through the
+                // ordinary transaction logger before the resource settles.
+                transactionDatabase.log = { emit() {} };
+              },
+              async authorize(_context: LooseRecord, db: LooseRecord, identity: LooseRecord) {
+                const anchor = await db[identity.table].where("id", identity.id).get();
+                if (!anchor) throw commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+                await db[identity.table].update(identity.id, {});
+              },
+              drain: drainPendingAclWrites,
+              async stageLogs(levels: string[]) {
+                const events = levels.map((level) => uncappedLogEnvelope({ config: database.config, category: "resource", event: "resource.log", level, message: "Resource transaction committed.", data: null }));
+                for (const event of events) await transactionDatabase.adapter.insertLogIndexEvent(event);
+                committedResourceLogEvents = events;
+              },
+            });
             const endpointIngressApi = Object.freeze({
               ...context.files,
               ...createEndpointIngressApi(transactionDatabase, endpoint as LooseRecord, endpointRequest, context),
             });
-            context.files = endpointIngressApi;
+            context.files = revokeOuterResources.guardCapability("files", endpointIngressApi);
             if ((endpoint as LooseRecord).runtimeOwnedStripeCallback) {
               Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
             }
             if (!runtimeOwnedProviderCallback) {
               if (!accessKeyAdmission) admitCredentialHandler(handler, context, "endpoint");
-              context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
+              context = await revokeOuterResources.race(applyContextMiddleware(transactionDatabase, context, "endpoint")) as LooseRecord;
             }
             const attachmentResponse = createEndpointFileResponseApi(
               endpointIngressApi,
               (endpoint as LooseRecord).options?.response?.fileAttachment === true,
             );
-            context.files = attachmentResponse.files;
+            context.files = revokeOuterResources.guardCapability("files", attachmentResponse.files);
             sealCommittedAttachmentResult = attachmentResponse.sealCommittedResult;
-            const result = await handler(context);
+            const handlerRun = Promise.resolve().then(() => handler(context));
+            const outerAbort = revokeOuterResources?.aborted();
+            const result = await (outerAbort ? Promise.race([handlerRun, outerAbort]) : handlerRun);
+            revokeOuterResources?.assertOuterLive();
             if (accessKeySecretWasDisclosed(context)) (request as LooseRecord).__sporadesSecretDisclosed = true;
             return result;
           } catch (error) {
             handlerFailed = true;
             throw error;
           } finally {
-            await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
+            try { await revokeOuterResources?.race(revokeOuterResources.drain()); await revokeOuterResources?.race(cleanupTransactionHandler(transactionDatabase, context, handlerFailed)); }
+            finally { revokeOuterResources?.(); }
           }
         });
+        outerCommitted = resourceAttempted;
+        try { if (database.log?.path) for (const event of committedResourceLogEvents) appendFileSync(database.log.path, `${JSON.stringify(event)}\n`); }
+        catch { resourceLogPublicationError = resourceError("RESOURCE_STORAGE_ERROR"); }
         break;
       } catch (error: any) {
         if (ingressFenceAcquired || database.adapter.engine !== "sqlite" || transactionAttempt >= 100 || !String(error?.message ?? "").includes("database is locked")) throw error;
@@ -3746,8 +3781,10 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
+    if (resourceLogPublicationError) throw resourceLogPublicationError;
     return sealCommittedAttachmentResult(result);
   } catch (error) {
+    if (outerCommitted) throw error;
     if ((endpointRequest as LooseRecord).multipart) {
       try { await database.log.emit({ category: "platform", event: "file.ingress.failed", level: "warn", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "failed", code: "INGRESS_ROLLBACK" } }); } catch {}
     }
@@ -3803,6 +3840,7 @@ function createTransactionDatabase(database: LooseRecord, transactionAdapter: an
     __transactionActive: true,
     [trustedReadTransactionAdapter]: transactionAdapter,
     __rootDatabase: database.__rootDatabase ?? database,
+    [Symbol.for("sporades.database.outerTransactionAdapter")]: transactionAdapter,
     __pendingLogWrites: pendingLogWrites,
   };
   transactionDatabase.stageTeamBillingMembershipChange = (teamId: string) =>
@@ -6527,6 +6565,10 @@ function normalizeQueryArgumentValue(value: unknown, ancestors: Set<object>): un
 export async function runMutation(database: LooseRecord, auth: any, mutationName: string, args: any, options: LooseRecord = {}) {
   let context: LooseRecord | undefined;
   let result;
+  let committedResourceLogEvents: LooseRecord[] = [];
+  let outerCommitted = false;
+  let resourceAttempted = false;
+  let resourceLogPublicationError: any;
   const writeState = { didWrite: false };
   try {
     const declaredHandler = database.mutations.find((candidate: { name: any; }) => candidate.name === mutationName);
@@ -6535,16 +6577,39 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
       const maintenanceNow = database.clock.now().toISOString();
       await database.adapter.withTransaction((maintenanceAdapter: LooseRecord) => maintenanceAdapter.deleteExpiredReauthenticationProofs(maintenanceNow));
     }
+    const outerStartedAt = database.clock.now().getTime();
     const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter: any) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
       const mutationInvocation = { active: true };
       return mutationExecution.run(mutationInvocation, async () => {
         let handlerFailed = false;
+        let revokeOuterResources: any;
         try {
         context = createMutationContext(transactionDatabase, auth, {
           sessionToken: options.sessionToken,
           serviceUserMutationAuthority,
           mutationInvocation,
+        });
+        revokeOuterResources = bindOuterResources(transactionDatabase, context, {
+          startedAt: outerStartedAt,
+          resourceEntered() {
+            resourceAttempted = true;
+            (transactionAdapter as any)[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
+            // An outer resource has its own bounded, payload-free diagnostics.
+            // Suppress ordinary ACL/app logging for its full attempted lifetime.
+            transactionDatabase.log = { emit() {} };
+          },
+          async authorize(_context: LooseRecord, db: LooseRecord, identity: LooseRecord) {
+            const anchor = await db[identity.table].where("id", identity.id).get();
+            if (!anchor) throw commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+            await db[identity.table].update(identity.id, {});
+          },
+          drain: drainPendingAclWrites,
+          async stageLogs(levels: string[]) {
+            const events = levels.map((level) => uncappedLogEnvelope({ config: database.config, category: "resource", event: "resource.log", level, message: "Resource transaction committed.", data: null }));
+            for (const event of events) await transactionDatabase.adapter.insertLogIndexEvent(event);
+            committedResourceLogEvents = events;
+          },
         });
         const customHandler = transactionDatabase.mutations.find((candidate: { name: any; }) => candidate.name === mutationName);
         const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
@@ -6554,41 +6619,48 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
           const consumed = typeof options.sessionToken === "string" && await transactionAdapter.consumeReauthenticationProof({ sessionToken: options.sessionToken, userId: auth.userId, purpose: reauthenticationPurpose, now: database.clock.now().toISOString() });
           if (!consumed) throw commandError("Reauthentication required.", "Verify the current Session for this purpose and retry.", "REAUTHENTICATION_REQUIRED");
         }
-        context = await applyContextMiddleware(transactionDatabase, context, "mutation");
+        context = await revokeOuterResources.race(applyContextMiddleware(transactionDatabase, context, "mutation")) as LooseRecord;
 
         for (const hookSource of database.mutationHooks.beforeMutation) {
-          await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
+          await revokeOuterResources?.race(runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context));
         }
 
-        result = await runCustomMutation(transactionDatabase, context, mutationName, args, mutationHandler);
+        const mutationRun = runCustomMutation(transactionDatabase, context, mutationName, args, mutationHandler);
+        const outerAbort = revokeOuterResources?.aborted();
+        result = await (outerAbort ? Promise.race([mutationRun, outerAbort]) : mutationRun);
         if (!result) {
           result = mutationName.startsWith("update")
             ? await runUpdateMutation(transactionDatabase, context, mutationName, args)
             : await runInsertMutation(transactionDatabase, context, mutationName, args);
         }
-        await drainPendingAclWrites(context);
+        await revokeOuterResources?.race(drainPendingAclWrites(context));
 
         if (result.ok) {
           for (const hookSource of database.mutationHooks.afterMutation) {
-            await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context, result }, context);
+            await revokeOuterResources?.race(runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context, result }, context));
           }
-          await drainPendingAclWrites(context);
+          await revokeOuterResources?.race(drainPendingAclWrites(context));
           assertMutationSecretsReturned(context, result);
         }
+
+        revokeOuterResources?.assertOuterLive();
 
         return result;
         } catch (error) {
           handlerFailed = true;
           throw error;
         } finally {
-          try {
-            await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed);
-          } finally {
+          try { await revokeOuterResources?.race(revokeOuterResources.drain()); await revokeOuterResources?.race(cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed)); }
+          finally {
+            revokeOuterResources?.();
             mutationInvocation.active = false;
           }
         }
       });
     });
+    outerCommitted = resourceAttempted;
+    try { if (database.log?.path) for (const event of committedResourceLogEvents) appendFileSync(database.log.path, `${JSON.stringify(event)}\n`); }
+    catch { resourceLogPublicationError = resourceError("RESOURCE_STORAGE_ERROR"); }
     await commitPendingCurrentUserFileByteDeletes(context);
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
@@ -6598,8 +6670,10 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
       database.rowCache.clear();
       mutationResultsWithWrites.add(committed);
     }
+    if (resourceLogPublicationError) throw resourceLogPublicationError;
     return committed;
   } catch (error: any) {
+    if (outerCommitted) return createHookErrorResult(error);
     dropPendingCurrentUserFileByteDeletes(context);
     dropPendingJobCancellationAborts(context);
     dropAccessKeyLifecycleAuditEvents(context);
@@ -6607,7 +6681,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
     dropPendingJobDispatch(context);
     database.rowCache.clear();
     await reindexPrivilegedAuditEventsAfterRollback(database, context);
-    if (error?.sporadesAclDenialLogData) {
+    if (!resourceAttempted && error?.sporadesAclDenialLogData) {
       emitAclDeniedLog(database, { data: error.sporadesAclDenialLogData });
     }
     if (error?.sporadesAuthDenialLogData) {

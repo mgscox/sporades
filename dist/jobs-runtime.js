@@ -824,14 +824,27 @@ export function createControllableRuntimeClock(initialInstant) {
             return id;
         },
         clearTimer(id) { timers.delete(id); },
-        async runDueTimers() {
+        pendingTimerIds() { return [...timers.keys()]; },
+        async runTimer(id) {
+            const timer = timers.get(id);
+            if (!timer)
+                return false;
+            timers.delete(id);
+            await timer.callback();
+            return true;
+        },
+        async runDueTimers(maxTimers = Infinity) {
+            let ran = 0;
             while (true) {
+                if (ran >= maxTimers)
+                    return;
                 const due = [...timers.values()].filter((timer) => timer.dueAt <= nowMs)
                     .sort((left, right) => left.dueAt - right.dueAt || left.id - right.id)[0];
                 if (!due)
                     return;
                 timers.delete(due.id);
                 await due.callback();
+                ran += 1;
             }
         },
     };

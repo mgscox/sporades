@@ -878,7 +878,7 @@ export type ResourceScope<Schema extends SchemaDefinition = SchemaDefinition> = 
   notifications: { accept(input: ResourceNotification): Promise<{ id: string; state: "staged" }> };
 }>;
 export type ResourceStatus = { state: "absent" } | { state: "committed"; result: JsonValue; intentIds: string[] };
-/** SQLite ordinary Jobs only in this slice. One call, before application DB/provider work. */
+/** SQLite ordinary Jobs, Custom mutations, and Custom endpoints. One call, before application DB/provider work. */
 export type ResourcesApi<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{
   run<Result extends JsonValue>(options: ResourceRunOptions, callback: (scope: ResourceScope<Schema>) => MaybePromise<Result>): Promise<Result>;
   status(options: ResourceStatusOptions): Promise<ResourceStatus>;

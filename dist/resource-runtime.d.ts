@@ -11,6 +11,13 @@ export declare const unsupportedResources: Readonly<{
     run(): Promise<never>;
     status(): Promise<never>;
 }>;
+/**
+ * Binds the same receipt protocol to a transaction which was opened by a
+ * mutation or Custom endpoint.  It deliberately does not open another writer:
+ * the enclosing handler owns commit/rollback, so a returned value is provisional
+ * until that handler's transaction commits.
+ */
+export declare function bindOuterResources(database: RecordValue, context: RecordValue, hooks: RecordValue): any;
 export declare function bindJobResources(database: RecordValue, context: RecordValue, claim: RecordValue, hooks: RecordValue): () => void;
 export {};
 //# sourceMappingURL=resource-runtime.d.ts.map

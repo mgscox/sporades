@@ -74,9 +74,200 @@ export const unsupportedResources = Object.freeze({
   async status(): Promise<never> { throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED"); },
 });
 
+/**
+ * Binds the same receipt protocol to a transaction which was opened by a
+ * mutation or Custom endpoint.  It deliberately does not open another writer:
+ * the enclosing handler owns commit/rollback, so a returned value is provisional
+ * until that handler's transaction commits.
+ */
+export function bindOuterResources(database: RecordValue, context: RecordValue, hooks: RecordValue) {
+  let invocationActive = true;
+  let used = false;
+  let scopeActive = false;
+  let admission = false;
+  let touched = false;
+  let terminalError: any;
+  let outerDeadline = 0;
+  let watchdog: any;
+  let rejectOuterAbort: (error: any) => void = () => {};
+  const outerAborted = new Promise<never>((_, reject) => { rejectOuterAbort = reject; });
+  void outerAborted.catch(() => {});
+  const parentDb = context.db;
+  const parentJobs = context.jobs;
+  const pending = new Set<Promise<any>>();
+  const executions = new Set<Promise<any>>();
+  const normalizeStorageError = (error: any) => error?.code === "RESOURCE_BUSY" || error?.code === "SQLITE_BUSY" || error?.errcode === 5 || error?.errcode === 6
+    ? resourceError("RESOURCE_BUSY")
+    : error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== undefined
+      ? resourceError("RESOURCE_STORAGE_ERROR")
+      : error;
+  const track = (operation: () => any) => {
+    let value: any;
+    try { value = operation(); }
+    catch (error) { terminalError ??= normalizeStorageError(error); throw error; }
+    if (!value || typeof value.then !== "function") return value;
+    const promise = Promise.resolve(value);
+    pending.add(promise);
+    void promise.catch((error) => { terminalError ??= normalizeStorageError(error); });
+    return promise;
+  };
+  const trackExecution = (operation: () => any, poison = true) => {
+    let value: any;
+    try { value = operation(); }
+    catch (error) { if (poison) terminalError ??= error; throw error; }
+    const promise = Promise.resolve(value);
+    executions.add(promise);
+    // `run` and `status` cover acquisition, authorization, replay, callback,
+    // canonicalization, receipt, log staging and cleanup. Once entry has been
+    // admitted, every rejected execution must poison outer settlement even if
+    // its caller catches it or never awaits it.
+    void promise.catch(() => {});
+    return promise;
+  };
+  const actorDigest = createHash("sha256").update(resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged: false })).digest("hex");
+  const guardCapability = (name: string, value: any) => wrapCapability(value, (path) => {
+      if (used) throw resourceError(!invocationActive || !scopeActive || !admission ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
+      if (!["where", "orderBy", "limit"].includes(path.at(-1)!)) touched = true;
+    });
+  for (const name of ["db", "log", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
+    if (!context[name]) continue;
+    context[name] = guardCapability(name, context[name]);
+  }
+  const execute = async (options: any, callback: any, status: boolean) => {
+    if (!invocationActive) throw resourceError("RESOURCE_SCOPE_INACTIVE");
+    if (used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
+    if (database.adapter.engine !== "sqlite" || database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true) throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+    const identity = optionsSnapshot(options, status);
+    if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
+    if (!database.schema.tables.some((table: any) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
+    used = true; scopeActive = true; admission = true;
+    hooks.resourceEntered?.();
+    // Mark only this opt-in outer transaction for resource-aware COMMIT outcome
+    // handling. Ordinary mutations retain their historical transaction semantics.
+    ((database as any)[Symbol.for("sporades.database.outerTransactionAdapter")] ?? database.adapter as any)[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
+    const deadline = hooks.startedAt + 30_000;
+    outerDeadline = deadline;
+    // The outer lifecycle tears down its watchdog during async cleanup, before
+    // the database adapter reaches COMMIT. Keep the resource deadline as an
+    // adapter-owned pre-commit check so that gap cannot admit stale writes.
+    const beforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
+    const checks = (database.adapter as any)[beforeCommitChecks] ?? ((database.adapter as any)[beforeCommitChecks] = []);
+    checks.push(() => {
+      if (terminalError) throw terminalError;
+      if (database.clock.now().getTime() >= deadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+    });
+    const controller = new AbortController();
+    const revoke = (error: any) => {
+      terminalError ??= error;
+      scopeActive = false; admission = false;
+      controller.abort(); rejectOuterAbort(terminalError);
+    };
+    const assertLive = (requireAdmission = false) => {
+      if (!invocationActive || !scopeActive || requireAdmission && !admission) throw resourceError("RESOURCE_SCOPE_INACTIVE");
+      if (terminalError) throw terminalError;
+      if (database.clock.now().getTime() >= deadline - (admission ? 1000 : 0)) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+    };
+    watchdog ??= database.clock.setTimer(() => revoke(resourceError("RESOURCE_DEADLINE_EXCEEDED")), Math.max(0, deadline - database.clock.now().getTime()));
+    let acquired = false;
+    try {
+      assertLive(true);
+      // The surrounding mutation/endpoint starts deferred. Promote it to an
+      // actual SQLite writer before reading authorization so Grant, ACL and Team
+      // transitions cannot slip between the recheck and the outer commit.
+      try {
+        await database.adapter.exec("CREATE TABLE IF NOT EXISTS sporades_resource_outer_fence (id INTEGER PRIMARY KEY, epoch INTEGER NOT NULL)");
+        await database.adapter.prepare("INSERT OR IGNORE INTO sporades_resource_outer_fence (id, epoch) VALUES (1, 0)").run();
+        await database.adapter.prepare("UPDATE sporades_resource_outer_fence SET epoch=epoch+1 WHERE id=1").run();
+      } catch (error: any) {
+        if (error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY") throw resourceError("RESOURCE_BUSY");
+        throw resourceError("RESOURCE_STORAGE_ERROR");
+      }
+      acquired = true;
+      assertLive(true);
+      await hooks.authorize(context, parentDb, identity);
+      assertLive(true);
+      let receipt: any;
+      try {
+        await database.adapter.exec("CREATE TABLE IF NOT EXISTS sporades_resource_receipts (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, operationId TEXT NOT NULL, inputDigest TEXT NOT NULL, actorDigest TEXT NOT NULL, resultJson TEXT NOT NULL, intentIdsJson TEXT NOT NULL, committedAt TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId, operationId))");
+        receipt = await database.adapter.prepare("SELECT * FROM sporades_resource_receipts WHERE resourceTable=? AND resourceId=? AND operationId=?").get(identity.table, identity.id, identity.operationId);
+      } catch (error: any) {
+        if (error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== undefined) throw resourceError("RESOURCE_STORAGE_ERROR");
+        throw error;
+      }
+      if (receipt) {
+        if (receipt.actorDigest !== actorDigest || !status && receipt.inputDigest !== identity.digest) throw resourceError("RESOURCE_OPERATION_CONFLICT");
+        return status ? { state: "committed", result: JSON.parse(receipt.resultJson), intentIds: JSON.parse(receipt.intentIdsJson) } : JSON.parse(receipt.resultJson);
+      }
+      if (status) return { state: "absent" };
+      const scopeDb = wrapCapability(parentDb, () => assertLive(true), [], new WeakMap<object, any>(), track);
+      const logs: string[] = [];
+      const scope = Object.freeze({
+        db: scopeDb,
+        jobs: Object.freeze({ enqueue: (...args: any[]) => track(() => { assertLive(true); return parentJobs.enqueue(...args); }) }),
+        log: Object.freeze(Object.fromEntries(["info", "warn", "error"].map((level) => [level, () => {
+          assertLive(true); if (logs.length >= 100) throw resourceError("RESOURCE_INVALID_INPUT"); logs.push(level);
+        }]))),
+        signal: controller.signal,
+        notifications: Object.freeze({ accept: () => {
+          assertLive(true);
+          return track(() => Promise.resolve().then(() => {
+          terminalError ??= resourceError("RESOURCE_EFFECT_UNSUPPORTED");
+          throw terminalError;
+          }));
+        } }),
+      });
+      let result: any;
+      try { result = await Promise.race([Promise.resolve().then(() => callback(scope)), outerAborted]); }
+      catch (error) { terminalError ??= error; throw error; }
+      if (terminalError) throw terminalError;
+      admission = false;
+      let resultJson: string;
+      try {
+        resultJson = resourceCanonicalJson(result);
+        await Promise.all([...pending]);
+        if (terminalError) throw terminalError;
+        await hooks.drain(context);
+        await hooks.stageLogs?.(logs);
+      } catch (error) { terminalError ??= error; throw error; }
+      assertLive();
+      try {
+        await database.adapter.prepare("INSERT INTO sporades_resource_receipts VALUES (?,?,?,?,?,?,?,?)").run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
+      } catch (error: any) {
+        if (error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== undefined) throw resourceError("RESOURCE_STORAGE_ERROR");
+        throw error;
+      }
+      assertLive();
+      return JSON.parse(resultJson);
+    } catch (error) {
+      const normalized = normalizeStorageError(error);
+      // Pre-entry deadline and contract errors retain their existing catchable
+      // outer semantics. Once SQLite work has begun, or setup itself failed as
+      // storage, an unawaited execution must still poison settlement.
+      if (acquired || normalized?.code === "RESOURCE_STORAGE_ERROR") terminalError ??= normalized;
+      throw normalized;
+    } finally {
+      scopeActive = false; admission = false; controller.abort();
+    }
+  };
+  context.resources = Object.freeze({ run: (options: any, callback: any) => trackExecution(() => execute(options, callback, false)), status: (options: any) => trackExecution(() => execute(options, undefined, true), false) });
+  const release: any = () => { invocationActive = false; if (watchdog !== undefined) database.clock.clearTimer(watchdog); };
+  release.assertOuterLive = () => {
+    if (terminalError) throw terminalError;
+    if (outerDeadline && database.clock.now().getTime() >= outerDeadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+  };
+  release.aborted = () => outerAborted;
+  release.drain = async () => {
+    await Promise.allSettled([...executions]);
+    if (terminalError) throw terminalError;
+  };
+  release.race = <Value>(operation: Promise<Value>) => Promise.race([operation, outerAborted]);
+  release.guardCapability = guardCapability;
+  return release;
+}
+
 // An invocation owns its eligibility in a closure; public context fields cannot
 // forge a Job claim. Proxies preserve synchronous non-opt-in DB return values.
-function wrapCapability(value: any, before: (path: string[]) => void, path: string[] = [], cache = new WeakMap<object, any>()): any {
+function wrapCapability(value: any, before: (path: string[]) => void, path: string[] = [], cache = new WeakMap<object, any>(), afterCall?: (operation: () => any) => any): any {
   if (!value || typeof value !== "object") return value;
   if (cache.has(value)) return cache.get(value);
   const functions = new Map<string, Function>();
@@ -93,13 +284,14 @@ function wrapCapability(value: any, before: (path: string[]) => void, path: stri
         const wrapped = (...args: any[]) => {
         const next = [...path, key];
         before(next);
-        const result = Reflect.apply(member, value, args);
-        return ["where", "orderBy", "limit"].includes(key) ? wrapCapability(result, before, path, cache) : result;
+        const invoke = () => Reflect.apply(member, value, args);
+        const result = afterCall && !["where", "orderBy", "limit"].includes(key) ? afterCall(invoke) : invoke();
+        return ["where", "orderBy", "limit"].includes(key) ? wrapCapability(result, before, path, cache, afterCall) : result;
         };
         functions.set(key, wrapped);
         return wrapped;
       }
-      return wrapCapability(member, before, [...path, key], cache);
+      return wrapCapability(member, before, [...path, key], cache, afterCall);
     },
   });
   cache.set(value, proxy);
