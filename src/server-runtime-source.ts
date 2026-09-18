@@ -3746,7 +3746,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
             handlerFailed = true;
             throw error;
           } finally {
-            try { await cleanupTransactionHandler(transactionDatabase, context, handlerFailed); }
+            try { await revokeOuterResources?.race(cleanupTransactionHandler(transactionDatabase, context, handlerFailed)); }
             finally { revokeOuterResources?.(); }
           }
         });
@@ -6615,7 +6615,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
           handlerFailed = true;
           throw error;
         } finally {
-          try { await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed); }
+          try { await revokeOuterResources?.race(cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed)); }
           finally {
             revokeOuterResources?.();
             mutationInvocation.active = false;

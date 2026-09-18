@@ -102503,7 +102503,7 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
             throw error;
           } finally {
             try {
-              await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
+              await revokeOuterResources?.race(cleanupTransactionHandler(transactionDatabase, context, handlerFailed));
             } finally {
               revokeOuterResources?.();
             }
@@ -105135,7 +105135,7 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
           throw error;
         } finally {
           try {
-            await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed);
+            await revokeOuterResources?.race(cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed));
           } finally {
             revokeOuterResources?.();
             mutationInvocation.active = false;
