@@ -1379,6 +1379,10 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         ...createSharedDatabaseAdapterMethods(dialect),
         ...createOperations(connectionGate.runOperation),
         engine: "sqlite",
+        // Outer resources must be able to open one independent durable SQLite
+        // connection. This runtime-owned marker propagates through transaction
+        // adapters; callers cannot opt an in-memory or read-only adapter in.
+        [Symbol.for("sporades.database.resourceTransactionEligible")]: !options.readOnly && String(databasePath) !== ":memory:",
         dialect,
         normalization: sqliteRowNormalization(),
         async withResourceTransaction(fn, beforeCommit) {

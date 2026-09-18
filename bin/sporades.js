@@ -94137,19 +94137,20 @@ function bindOuterResources(database, context, hooks) {
   const parentJobs = context.jobs;
   const pending = /* @__PURE__ */ new Set();
   const executions = /* @__PURE__ */ new Set();
+  const normalizeStorageError = (error) => error?.code === "RESOURCE_BUSY" || error?.code === "SQLITE_BUSY" || error?.errcode === 5 || error?.errcode === 6 ? resourceError("RESOURCE_BUSY") : error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== void 0 ? resourceError("RESOURCE_STORAGE_ERROR") : error;
   const track = (operation) => {
     let value;
     try {
       value = operation();
     } catch (error) {
-      terminalError ??= error;
+      terminalError ??= normalizeStorageError(error);
       throw error;
     }
     if (!value || typeof value.then !== "function") return value;
     const promise = Promise.resolve(value);
     pending.add(promise);
     void promise.catch((error) => {
-      terminalError ??= error;
+      terminalError ??= normalizeStorageError(error);
     });
     return promise;
   };
@@ -94179,7 +94180,7 @@ function bindOuterResources(database, context, hooks) {
   const execute = async (options, callback, status) => {
     if (!invocationActive) throw resourceError("RESOURCE_SCOPE_INACTIVE");
     if (used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-    if (database.adapter.engine !== "sqlite") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+    if (database.adapter.engine !== "sqlite" || database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true) throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
     const identity = optionsSnapshot(options, status);
     if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
     if (!database.schema.tables.some((table) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
@@ -94219,14 +94220,20 @@ function bindOuterResources(database, context, hooks) {
         await database.adapter.prepare("UPDATE sporades_resource_outer_fence SET epoch=epoch+1 WHERE id=1").run();
       } catch (error) {
         if (error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY") throw resourceError("RESOURCE_BUSY");
-        throw error;
+        throw resourceError("RESOURCE_STORAGE_ERROR");
       }
       acquired = true;
       assertLive(true);
       await hooks.authorize(context, parentDb, identity);
       assertLive(true);
-      await database.adapter.exec("CREATE TABLE IF NOT EXISTS sporades_resource_receipts (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, operationId TEXT NOT NULL, inputDigest TEXT NOT NULL, actorDigest TEXT NOT NULL, resultJson TEXT NOT NULL, intentIdsJson TEXT NOT NULL, committedAt TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId, operationId))");
-      const receipt2 = await database.adapter.prepare("SELECT * FROM sporades_resource_receipts WHERE resourceTable=? AND resourceId=? AND operationId=?").get(identity.table, identity.id, identity.operationId);
+      let receipt2;
+      try {
+        await database.adapter.exec("CREATE TABLE IF NOT EXISTS sporades_resource_receipts (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, operationId TEXT NOT NULL, inputDigest TEXT NOT NULL, actorDigest TEXT NOT NULL, resultJson TEXT NOT NULL, intentIdsJson TEXT NOT NULL, committedAt TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId, operationId))");
+        receipt2 = await database.adapter.prepare("SELECT * FROM sporades_resource_receipts WHERE resourceTable=? AND resourceId=? AND operationId=?").get(identity.table, identity.id, identity.operationId);
+      } catch (error) {
+        if (error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== void 0) throw resourceError("RESOURCE_STORAGE_ERROR");
+        throw error;
+      }
       if (receipt2) {
         if (receipt2.actorDigest !== actorDigest || !status && receipt2.inputDigest !== identity.digest) throw resourceError("RESOURCE_OPERATION_CONFLICT");
         return status ? { state: "committed", result: JSON.parse(receipt2.resultJson), intentIds: JSON.parse(receipt2.intentIdsJson) } : JSON.parse(receipt2.resultJson);
@@ -94246,10 +94253,13 @@ function bindOuterResources(database, context, hooks) {
           logs.push(level);
         }]))),
         signal: controller.signal,
-        notifications: Object.freeze({ accept: () => track(() => Promise.resolve().then(() => {
-          terminalError ??= resourceError("RESOURCE_EFFECT_UNSUPPORTED");
-          throw terminalError;
-        })) })
+        notifications: Object.freeze({ accept: () => {
+          assertLive(true);
+          return track(() => Promise.resolve().then(() => {
+            terminalError ??= resourceError("RESOURCE_EFFECT_UNSUPPORTED");
+            throw terminalError;
+          }));
+        } })
       });
       let result;
       try {
@@ -94272,12 +94282,18 @@ function bindOuterResources(database, context, hooks) {
         throw error;
       }
       assertLive();
-      await database.adapter.prepare("INSERT INTO sporades_resource_receipts VALUES (?,?,?,?,?,?,?,?)").run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
+      try {
+        await database.adapter.prepare("INSERT INTO sporades_resource_receipts VALUES (?,?,?,?,?,?,?,?)").run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
+      } catch (error) {
+        if (error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== void 0) throw resourceError("RESOURCE_STORAGE_ERROR");
+        throw error;
+      }
       assertLive();
       return JSON.parse(resultJson);
     } catch (error) {
-      if (acquired) terminalError ??= error;
-      throw error;
+      const normalized = normalizeStorageError(error);
+      if (acquired || normalized?.code === "RESOURCE_STORAGE_ERROR") terminalError ??= normalized;
+      throw normalized;
     } finally {
       scopeActive = false;
       admission = false;
@@ -98499,6 +98515,10 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     ...createSharedDatabaseAdapterMethods(dialect),
     ...createOperations(connectionGate.runOperation),
     engine: "sqlite",
+    // Outer resources must be able to open one independent durable SQLite
+    // connection. This runtime-owned marker propagates through transaction
+    // adapters; callers cannot opt an in-memory or read-only adapter in.
+    [Symbol.for("sporades.database.resourceTransactionEligible")]: !options.readOnly && String(databasePath) !== ":memory:",
     dialect,
     normalization: sqliteRowNormalization(),
     async withResourceTransaction(fn, beforeCommit) {

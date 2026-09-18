@@ -1487,3 +1487,93 @@ test('postcommit JSONL publication failure still dispatches committed resource c
     assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sporades_resource_receipts WHERE operationId LIKE 'jsonl-dispatch-%'").get().n, 2);
   } finally { f.database.log.path = originalPath; await f.close(); }
 });
+
+test('outer resource SQLite setup failures are redacted and poison caught and unawaited mutation and endpoint work', async () => {
+  const f = await fixture(() => null, {
+    mutations: {
+      caughtStorage: mutation(async ctx => { try { await ctx.resources.run({ ...options(), operationId: 'caught-storage-mutation' }, () => true); } catch {} return { impossible: true }; }),
+      unawaitedStorage: mutation(ctx => { void ctx.resources.run({ ...options(), operationId: 'unawaited-storage-mutation' }, () => true).catch(() => {}); return { impossible: true }; }),
+    },
+    endpoints: {
+      caughtStorage: endpoint({ method: 'POST', path: '/caught-storage' }, async ctx => { try { await ctx.resources.run({ ...options(), operationId: 'caught-storage-endpoint' }, () => true); } catch {} return { impossible: true }; }),
+      unawaitedStorage: endpoint({ method: 'POST', path: '/unawaited-storage' }, ctx => { void ctx.resources.run({ ...options(), operationId: 'unawaited-storage-endpoint' }, () => true).catch(() => {}); return { impossible: true }; }),
+    },
+  });
+  const original = f.database.adapter.withTransaction.bind(f.database.adapter);
+  f.database.adapter.withTransaction = async callback => original(async adapter => {
+    const exec = adapter.exec.bind(adapter); let failed = false;
+    adapter.exec = async sql => {
+      if (!failed && sql.includes('sporades_resource_outer_fence')) { failed = true; throw Object.assign(new Error('private SQLite schema diagnostic'), { code: 'ERR_SQLITE_ERROR' }); }
+      return exec(sql);
+    };
+    return callback(adapter);
+  });
+  const request = { method: 'POST', headers: {}, async *[Symbol.asyncIterator]() {} };
+  try {
+    for (const name of ['caughtStorage', 'unawaitedStorage']) {
+      const mutationResult = await runMutation(f.database, actor, name, []);
+      assert.equal(mutationResult.ok, false); assert.equal(mutationResult.error.code, 'RESOURCE_STORAGE_ERROR'); assert.equal(mutationResult.error.message, 'Resource operation could not complete.');
+      const endpointError = await runEndpoint(f.database, f.database.endpoints.find(item => item.name === name), new URL(`http://capsule.test/${name}`), request).then(() => null, error => error);
+      assert.deepEqual({ code: endpointError.code, message: endpointError.message }, { code: 'RESOURCE_STORAGE_ERROR', message: 'Resource operation could not complete.' });
+    }
+  } finally { f.database.adapter.withTransaction = original; await f.close(); }
+});
+
+test('admitted outer resource constraint failures are redacted and poison caught and unawaited mutation and endpoint work', async () => {
+  const f = await fixture(() => null, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }).unique('value') },
+    mutations: {
+      caughtConstraint: mutation(async ctx => ctx.resources.run({ ...options(), operationId: 'caught-constraint-mutation' }, async scope => { await scope.db.writes.insert({ value: 'caught-mutation' }); try { await scope.db.writes.insert({ value: 'caught-mutation' }); } catch {} return { impossible: true }; })),
+      unawaitedConstraint: mutation(ctx => ctx.resources.run({ ...options(), operationId: 'unawaited-constraint-mutation' }, async scope => { await scope.db.writes.insert({ value: 'unawaited-mutation' }); void scope.db.writes.insert({ value: 'unawaited-mutation' }).catch(() => {}); return { impossible: true }; })),
+    },
+    endpoints: {
+      caughtConstraint: endpoint({ method: 'POST', path: '/caught-constraint' }, ctx => ctx.resources.run({ ...options(), operationId: 'caught-constraint-endpoint' }, async scope => { await scope.db.writes.insert({ value: 'caught-endpoint' }); try { await scope.db.writes.insert({ value: 'caught-endpoint' }); } catch {} return { impossible: true }; })),
+      unawaitedConstraint: endpoint({ method: 'POST', path: '/unawaited-constraint' }, ctx => ctx.resources.run({ ...options(), operationId: 'unawaited-constraint-endpoint' }, async scope => { await scope.db.writes.insert({ value: 'unawaited-endpoint' }); void scope.db.writes.insert({ value: 'unawaited-endpoint' }).catch(() => {}); return { impossible: true }; })),
+    },
+  });
+  const request = { method: 'POST', headers: {}, async *[Symbol.asyncIterator]() {} };
+  try {
+    for (const name of ['caughtConstraint', 'unawaitedConstraint']) {
+      const mutationResult = await runMutation(f.database, actor, name, []);
+      assert.equal(mutationResult.ok, false); assert.equal(mutationResult.error.code, 'RESOURCE_STORAGE_ERROR'); assert.equal(mutationResult.error.message, 'Resource operation could not complete.');
+      const endpointError = await runEndpoint(f.database, f.database.endpoints.find(item => item.name === name), new URL(`http://capsule.test/${name}`), request).then(() => null, error => error);
+      assert.equal(endpointError.code, 'RESOURCE_STORAGE_ERROR'); assert.equal(endpointError.message, 'Resource operation could not complete.');
+    }
+    assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM writes').get().n, 0);
+  } finally { await f.close(); }
+});
+
+test('memory SQLite rejects outer resource run and status before callbacks in mutations and endpoints', async () => {
+  let callbacks = 0;
+  const database = await openDevDatabase(':memory:', '', {}, { name: 'memory-resource' }, {
+    schema: { anchors: table({ value: Text() }) },
+    mutations: { run: mutation(ctx => ctx.resources.run(options(), () => { callbacks++; return true; })), status: mutation(ctx => ctx.resources.status({ resource: options().resource, operationId: 'memory-status-mutation' })) },
+    endpoints: { run: endpoint({ method: 'POST', path: '/run' }, ctx => ctx.resources.run({ ...options(), operationId: 'memory-run-endpoint' }, () => { callbacks++; return true; })), status: endpoint({ method: 'POST', path: '/status' }, ctx => ctx.resources.status({ resource: options().resource, operationId: 'memory-status-endpoint' })) },
+  });
+  const request = { method: 'POST', headers: {}, async *[Symbol.asyncIterator]() {} };
+  try {
+    database.adapter.prepare("INSERT INTO anchors (id,createdAt,updatedAt,value) VALUES ('anchor','2030-01-01T00:00:00.000Z','2030-01-01T00:00:00.000Z','memory')").run();
+    for (const name of ['run', 'status']) {
+      const mutationResult = await runMutation(database, actor, name, []);
+      assert.equal(mutationResult.error.code, 'RESOURCE_ADAPTER_UNSUPPORTED');
+      await assert.rejects(runEndpoint(database, database.endpoints.find(item => item.name === name), new URL(`http://capsule.test/${name}`), request), { code: 'RESOURCE_ADAPTER_UNSUPPORTED' });
+    }
+    assert.equal(callbacks, 0);
+  } finally { await database.shutdown(); await database.close(); }
+});
+
+test('retained outer notifications reject inactive without poisoning committed mutation and endpoint receipts', async () => {
+  let retainedMutation, retainedEndpoint;
+  const f = await fixture(() => null, {
+    mutations: { retainNotification: mutation(async ctx => ctx.resources.run({ ...options(), operationId: 'retained-notification-mutation' }, async scope => { retainedMutation = scope.notifications; await scope.db.writes.insert({ value: 'retained-notification-mutation' }); return { committed: true }; })) },
+    endpoints: { retainNotification: endpoint({ method: 'POST', path: '/retain-notification' }, async ctx => ctx.resources.run({ ...options(), operationId: 'retained-notification-endpoint' }, async scope => { retainedEndpoint = scope.notifications; await scope.db.writes.insert({ value: 'retained-notification-endpoint' }); return { committed: true }; })) },
+  });
+  const request = { method: 'POST', headers: {}, async *[Symbol.asyncIterator]() {} };
+  try {
+    assert.equal((await runMutation(f.database, actor, 'retainNotification', [])).ok, true);
+    assert.deepEqual(await runEndpoint(f.database, f.database.endpoints.find(item => item.name === 'retainNotification'), new URL('http://capsule.test/retain-notification'), request), { committed: true });
+    for (const retained of [retainedMutation, retainedEndpoint]) assert.throws(() => retained.accept({}), { code: 'RESOURCE_SCOPE_INACTIVE' });
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM writes WHERE value LIKE 'retained-notification-%'").get().n, 2);
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sporades_resource_receipts WHERE operationId LIKE 'retained-notification-%'").get().n, 2);
+  } finally { await f.close(); }
+});

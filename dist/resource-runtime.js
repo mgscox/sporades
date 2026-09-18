@@ -97,20 +97,25 @@ export function bindOuterResources(database, context, hooks) {
     const parentJobs = context.jobs;
     const pending = new Set();
     const executions = new Set();
+    const normalizeStorageError = (error) => error?.code === "RESOURCE_BUSY" || error?.code === "SQLITE_BUSY" || error?.errcode === 5 || error?.errcode === 6
+        ? resourceError("RESOURCE_BUSY")
+        : error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== undefined
+            ? resourceError("RESOURCE_STORAGE_ERROR")
+            : error;
     const track = (operation) => {
         let value;
         try {
             value = operation();
         }
         catch (error) {
-            terminalError ??= error;
+            terminalError ??= normalizeStorageError(error);
             throw error;
         }
         if (!value || typeof value.then !== "function")
             return value;
         const promise = Promise.resolve(value);
         pending.add(promise);
-        void promise.catch((error) => { terminalError ??= error; });
+        void promise.catch((error) => { terminalError ??= normalizeStorageError(error); });
         return promise;
     };
     const trackExecution = (operation, poison = true) => {
@@ -149,7 +154,7 @@ export function bindOuterResources(database, context, hooks) {
             throw resourceError("RESOURCE_SCOPE_INACTIVE");
         if (used || touched)
             throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-        if (database.adapter.engine !== "sqlite")
+        if (database.adapter.engine !== "sqlite" || database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true)
             throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
         const identity = optionsSnapshot(options, status);
         if (!status && typeof callback !== "function")
@@ -207,14 +212,22 @@ export function bindOuterResources(database, context, hooks) {
             catch (error) {
                 if (error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY")
                     throw resourceError("RESOURCE_BUSY");
-                throw error;
+                throw resourceError("RESOURCE_STORAGE_ERROR");
             }
             acquired = true;
             assertLive(true);
             await hooks.authorize(context, parentDb, identity);
             assertLive(true);
-            await database.adapter.exec("CREATE TABLE IF NOT EXISTS sporades_resource_receipts (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, operationId TEXT NOT NULL, inputDigest TEXT NOT NULL, actorDigest TEXT NOT NULL, resultJson TEXT NOT NULL, intentIdsJson TEXT NOT NULL, committedAt TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId, operationId))");
-            const receipt = await database.adapter.prepare("SELECT * FROM sporades_resource_receipts WHERE resourceTable=? AND resourceId=? AND operationId=?").get(identity.table, identity.id, identity.operationId);
+            let receipt;
+            try {
+                await database.adapter.exec("CREATE TABLE IF NOT EXISTS sporades_resource_receipts (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, operationId TEXT NOT NULL, inputDigest TEXT NOT NULL, actorDigest TEXT NOT NULL, resultJson TEXT NOT NULL, intentIdsJson TEXT NOT NULL, committedAt TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId, operationId))");
+                receipt = await database.adapter.prepare("SELECT * FROM sporades_resource_receipts WHERE resourceTable=? AND resourceId=? AND operationId=?").get(identity.table, identity.id, identity.operationId);
+            }
+            catch (error) {
+                if (error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== undefined)
+                    throw resourceError("RESOURCE_STORAGE_ERROR");
+                throw error;
+            }
             if (receipt) {
                 if (receipt.actorDigest !== actorDigest || !status && receipt.inputDigest !== identity.digest)
                     throw resourceError("RESOURCE_OPERATION_CONFLICT");
@@ -234,10 +247,13 @@ export function bindOuterResources(database, context, hooks) {
                         logs.push(level);
                     }]))),
                 signal: controller.signal,
-                notifications: Object.freeze({ accept: () => track(() => Promise.resolve().then(() => {
-                        terminalError ??= resourceError("RESOURCE_EFFECT_UNSUPPORTED");
-                        throw terminalError;
-                    })) }),
+                notifications: Object.freeze({ accept: () => {
+                        assertLive(true);
+                        return track(() => Promise.resolve().then(() => {
+                            terminalError ??= resourceError("RESOURCE_EFFECT_UNSUPPORTED");
+                            throw terminalError;
+                        }));
+                    } }),
             });
             let result;
             try {
@@ -264,14 +280,25 @@ export function bindOuterResources(database, context, hooks) {
                 throw error;
             }
             assertLive();
-            await database.adapter.prepare("INSERT INTO sporades_resource_receipts VALUES (?,?,?,?,?,?,?,?)").run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
+            try {
+                await database.adapter.prepare("INSERT INTO sporades_resource_receipts VALUES (?,?,?,?,?,?,?,?)").run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
+            }
+            catch (error) {
+                if (error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== undefined)
+                    throw resourceError("RESOURCE_STORAGE_ERROR");
+                throw error;
+            }
             assertLive();
             return JSON.parse(resultJson);
         }
         catch (error) {
-            if (acquired)
-                terminalError ??= error;
-            throw error;
+            const normalized = normalizeStorageError(error);
+            // Pre-entry deadline and contract errors retain their existing catchable
+            // outer semantics. Once SQLite work has begun, or setup itself failed as
+            // storage, an unawaited execution must still poison settlement.
+            if (acquired || normalized?.code === "RESOURCE_STORAGE_ERROR")
+                terminalError ??= normalized;
+            throw normalized;
         }
         finally {
             scopeActive = false;
