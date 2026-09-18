@@ -18,8 +18,8 @@ one commit; CAS alone would leave recovery to each Capsule. See the
 **M1 approved by Matt on 2026-09-18**, including automatic resend of uncertain
 email attempts with accepted duplicate risk. See the [approval record](maintainer-approval.md)
 for the conversation quotation and scope. Ticket 01's amendment gate is cleared;
-**ticket 02 is implemented on its dedicated branch, pending draft review/integration**.
-This slice does not start downstream tickets or close #52.
+**tickets 02 and 03 are merged and their integration gates have passed**.
+Tickets 04–07 remain pending; parent #52 stays open.
 Original strict SMTP criteria remain disproved; the explicitly accepted amendment
 is the implementation contract, not a retroactive proof of those criteria.
 
@@ -32,15 +32,15 @@ provenance, not a frozen world view: current Grant checks still occur on acquisi
 ## Revised tickets and frontier
 
 The filenames are retained for stable links; the current titles/scopes below
-now supersede their old contents under approved M1. Ticket 02 is implemented on its dedicated branch and awaits draft review/integration; downstream implementations remain pending.
+now supersede their old contents under approved M1. Tickets 02 and 03 are complete. Tickets 04 and 05 are ready; 06 still requires 04 for PostgreSQL integration, and 07 requires the remaining implementation slices.
 
 | Ticket | Approved responsibility | Remaining gate |
 | --- | --- | --- |
 | [01](issues/01-prove-external-side-effect-contract.md) | Completed negative evidence and approved amended contract | Complete; no experiment rerun |
-| [02](issues/02-run-resource-transactions-on-sqlite.md) | SQLite scope, exact Job ownership, receipt replay/recovery | Implemented; draft review/integration pending |
-| [03](issues/03-coordinate-jobs-mutations-and-endpoints.md) | Shared outer transaction and current authority ordering | 02 |
-| [04](issues/04-support-resource-transactions-on-postgresql.md) | Real PG locks, connection loss, receipt conformance | 02 |
-| [05](issues/05-enforce-libsql-compatibility.md) | Explicit libSQL unsupported gate, no exploratory support branch | 02 |
+| [02](issues/02-run-resource-transactions-on-sqlite.md) | SQLite scope, exact Job ownership, receipt replay/recovery | Complete: [PR #61](https://github.com/mgscox/sporades/pull/61) |
+| [03](issues/03-coordinate-jobs-mutations-and-endpoints.md) | Shared outer transaction and current authority ordering | Complete: [PR #63](https://github.com/mgscox/sporades/pull/63) |
+| [04](issues/04-support-resource-transactions-on-postgresql.md) | Real PG locks, connection loss, receipt conformance | Ready |
+| [05](issues/05-enforce-libsql-compatibility.md) | Explicit libSQL unsupported gate, no exploratory support branch | Ready |
 | [06](issues/06-support-proven-external-handoff.md) | Durable intent acceptance, automatic retry, accepted duplicates | 02; PG integration also waits for 04 |
 | [07](issues/07-verify-grant-coordination-workflow.md) | Complete amended workflow and original-requirement gap map | 03, 04, 05, 06 |
 
