@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { openDevDatabase, runMutation, runCurrentUserJobWorker, createControllableRuntimeClock } from '../dist/server-runtime-source.js';
 import { table, String as Text, job, mutation, schedule } from '../dist/server.js';
+import { createSqliteDatabaseAdapter } from '../dist/database-runtime.js';
 import { resourceCanonicalJson, bindJobResources } from '../dist/resource-runtime.js';
 
 const actor = { userId: 'actor', displayName: 'Actor', email: null, picture: null, isAuthenticated: false, isGuest: true, provider: 'anonymous' };
@@ -468,4 +469,19 @@ test('the 101st scope log call rejects and rolls back staged writes', async () =
     assert.equal(JSON.parse((await f.enqueue()).failure).code, 'RESOURCE_INVALID_INPUT');
     assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM writes').get().n, 0);
   } finally { await f.close(); }
+});
+
+
+test('dedicated connection acquisition failure is redacted and releases the runtime gate', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'resource-open-failure-'));
+  const adapter = await createSqliteDatabaseAdapter(path.join(dir, 'data.db'));
+  try {
+    await rm(dir, { recursive: true, force: true });
+    await assert.rejects(adapter.withResourceTransaction(() => assert.fail('callback entered')), {
+      code: 'RESOURCE_STORAGE_ERROR', message: 'Resource operation could not complete.',
+    });
+    await assert.rejects(adapter.withResourceTransaction(() => assert.fail('callback entered')), {
+      code: 'RESOURCE_STORAGE_ERROR',
+    });
+  } finally { await adapter.close(); await rm(dir, { recursive: true, force: true }); }
 });

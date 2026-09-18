@@ -1760,7 +1760,9 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
       // The gate protects this runtime's ordinary connection; SQLite itself
       // supplies the cross-process exclusion on the dedicated connection.
       return connectionGate.runTransaction(async () => {
-        const dedicated = new DatabaseSync(databasePath);
+        let dedicated: DatabaseSync;
+        try { dedicated = new DatabaseSync(databasePath); }
+        catch { throw resourceError("RESOURCE_STORAGE_ERROR"); }
         let begun = false;
         let commitIssued = false;
         const operations = {

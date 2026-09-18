@@ -215,7 +215,7 @@ The evidence refers to commit `38b6103b3830ac6293f620eee9677152c3c84b9e`.
 
 **Approved by Matt on 2026-09-18**, with automatic retry of uncertain email
 submission and acceptance of duplicate/stale email risk. See the
-[maintainer approval record](https://github.com/mgscox/sporades/blob/main/.scratch/ordinary-job-resource-fences/maintainer-approval.md).
+[maintainer approval record](https://github.com/mgscox/sporades/pull/61/files#diff-3b0a007b65246750e4f990cbf547dd0eab0775a3f4d579c878dce485cb023ba5).
 The GitHub issue text remains unchanged and open; this explicitly recorded
 amendment replaces its first two acceptance criteria for this implementation:
 
@@ -465,8 +465,8 @@ claim of exactly-once or unconditional eventual delivery is made.
 
 ### Revised dispatch gate
 
-See the [revised plan](https://github.com/mgscox/sporades/blob/main/.scratch/ordinary-job-resource-fences/README.md) and
-[approval record](https://github.com/mgscox/sporades/blob/main/.scratch/ordinary-job-resource-fences/maintainer-approval.md).
+See the [revised plan](https://github.com/mgscox/sporades/pull/61/files#diff-e6f0d5bf3690b911004d52e84be6019c33acb4517a07de3ccad01765fbd39cf5) and
+[approval record](https://github.com/mgscox/sporades/pull/61/files#diff-3b0a007b65246750e4f990cbf547dd0eab0775a3f4d579c878dce485cb023ba5).
 **M1 is approved; ticket 01's amended-contract gate is cleared and ticket 02 is
 ready for implementation.** Tickets 03–06 depend on 02, and 07 on all four.
 The implementation is not started by this planning update. 02–05 can implement
