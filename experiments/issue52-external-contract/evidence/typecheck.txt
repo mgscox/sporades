@@ -1,0 +1,2 @@
+> sporades@0.9.25 typecheck
+> tsc --project tsconfig.json --noEmit && tsc --project tsconfig.runtime.json

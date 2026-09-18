@@ -1,0 +1,40 @@
+✔ startup recovers an expired running lease as a consumed delayed retry (69.836291ms)
+✔ restart before a running lease expires recovers the Job when the lease becomes due (30.056042ms)
+✔ libSQL restart before lease expiry recovers the Job when the lease becomes due (657.188333ms)
+✔ Postgres restart before lease expiry recovers the Job when the lease becomes due (338.636709ms)
+✔ startup fails running Jobs with missing or noncanonical leases without executing them (16.694ms)
+✔ startup terminally classifies a running Job with malformed claim ownership (18.760583ms)
+✔ close clears a future running-lease recovery wake (13.16775ms)
+✔ a transient due-lease recovery failure is logged and retried (18.671542ms)
+✔ expired exhausted leases fail safely and retained idempotency survives restart (17.435125ms)
+✔ retained idempotency resolves one Job after runtime restart (42.292541ms)
+✔ conditional lease claim has one winner and expired side effects may run again (45.613417ms)
+✔ expired leases recover in availableAt then Job ID order (45.452792ms)
+✔ a malformed retained Job payload fails its claim without blocking later Jobs (27.806417ms)
+✔ concurrent Postgres mutations converge one idempotent Job inside their handler transactions (423.720208ms)
+✔ a failed mutation drops deferred Job enqueues with its rolled-back data (42.621334ms)
+✔ multiple Job enqueues cannot partially persist when a later enqueue fails (15.442917ms)
+✔ a post-commit dispatch failure does not misreport committed handler work and can be retried (46.188209ms)
+✔ Job enqueue bounds profile metadata already accepted by Auth (16.855833ms)
+✔ a failed message drops deferred Job enqueues with its rolled-back data (42.887042ms)
+✔ a failed endpoint rolls back its Job enqueue with its handler data (43.373166ms)
+✔ Jobs capture enqueue-time Session provider provenance across later provider switches (13.724458ms)
+✔ durable Jobs replay captured provider provenance after runtime restart (16.478125ms)
+✔ legacy Jobs migrate to bounded anonymous provider provenance (22.619875ms)
+✔ Access-key Jobs preserve bounded admission provenance through deletion, retry, restart, and child enqueue (45.726667ms)
+✔ retained Job provenance must match its actor and fails terminally before handler claim (23.829084ms)
+✔ Access-key Job lifecycle is stable across SQLite restart (27.802916ms)
+✔ Access-key Job lifecycle is stable across service-backed libSQL restart (920.819666ms)
+✔ Access-key Job lifecycle is stable across PostgreSQL restart (446.07925ms)
+✔ current users can enqueue, execute, get, and list their own durable jobs (127.564167ms)
+✔ insertOrIgnore inserts a declared singleton once and returns null only for its named conflict (28.313792ms)
+✔ insertOrIgnore preserves insert ACL and field-integrity errors for an exact named constraint (18.508583ms)
+✔ concurrent Postgres mutation bootstraps insert one singleton and the loser rereads it (395.359375ms)
+ℹ tests 32
+ℹ suites 0
+ℹ pass 32
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 4488.511167

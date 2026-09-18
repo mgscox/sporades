@@ -1,0 +1,9 @@
+Recorded UTC: 2026-09-18T05:24:57.774518+00:00
+Base: 6570a7bac7042c3f98e1e60f00928043afd40f92
+Node: v24.19.0
+Docker: 29.7.2
+PostgreSQL: postgres (PostgreSQL) 17.11
+Image: sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+Dependencies: npm ci in isolated worktree; node_modules is not a symlink
+Receiver: loopback-only controlled fixture, no real email
+Clock: logical 0, 29999, 30001 milliseconds in lease experiment
