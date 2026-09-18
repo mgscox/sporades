@@ -96,6 +96,7 @@ export function bindOuterResources(database, context, hooks) {
     const parentDb = context.db;
     const parentJobs = context.jobs;
     const pending = new Set();
+    const executions = new Set();
     const track = (operation) => {
         let value;
         try {
@@ -112,6 +113,20 @@ export function bindOuterResources(database, context, hooks) {
         void promise.catch((error) => { terminalError ??= error; });
         return promise;
     };
+    const trackExecution = (operation) => {
+        let value;
+        try {
+            value = operation();
+        }
+        catch (error) {
+            terminalError ??= error;
+            throw error;
+        }
+        const promise = Promise.resolve(value);
+        executions.add(promise);
+        void promise.catch(() => { });
+        return promise;
+    };
     const actorDigest = createHash("sha256").update(resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged: false })).digest("hex");
     const guardCapability = (name, value) => wrapCapability(value, (path) => {
         if (used)
@@ -119,7 +134,7 @@ export function bindOuterResources(database, context, hooks) {
         if (!["where", "orderBy", "limit"].includes(path.at(-1)))
             touched = true;
     });
-    for (const name of ["db", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
+    for (const name of ["db", "log", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
         if (!context[name])
             continue;
         context[name] = guardCapability(name, context[name]);
@@ -212,10 +227,10 @@ export function bindOuterResources(database, context, hooks) {
                         logs.push(level);
                     }]))),
                 signal: controller.signal,
-                notifications: Object.freeze({ accept: async () => {
+                notifications: Object.freeze({ accept: () => track(() => Promise.resolve().then(() => {
                         terminalError ??= resourceError("RESOURCE_EFFECT_UNSUPPORTED");
                         throw terminalError;
-                    } }),
+                    })) }),
             });
             let result;
             try {
@@ -252,7 +267,7 @@ export function bindOuterResources(database, context, hooks) {
             controller.abort();
         }
     };
-    context.resources = Object.freeze({ run: (options, callback) => execute(options, callback, false), status: (options) => execute(options, undefined, true) });
+    context.resources = Object.freeze({ run: (options, callback) => trackExecution(() => execute(options, callback, false)), status: (options) => trackExecution(() => execute(options, undefined, true)) });
     const release = () => { invocationActive = false; if (watchdog !== undefined)
         database.clock.clearTimer(watchdog); };
     release.assertOuterLive = () => {
@@ -262,6 +277,11 @@ export function bindOuterResources(database, context, hooks) {
             throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
     };
     release.aborted = () => outerAborted;
+    release.drain = async () => {
+        await Promise.allSettled([...executions]);
+        if (terminalError)
+            throw terminalError;
+    };
     release.race = (operation) => Promise.race([operation, outerAborted]);
     release.guardCapability = guardCapability;
     return release;

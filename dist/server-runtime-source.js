@@ -3556,6 +3556,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                     }
                     finally {
                         try {
+                            await revokeOuterResources?.race(revokeOuterResources.drain());
                             await revokeOuterResources?.race(cleanupTransactionHandler(transactionDatabase, context, handlerFailed));
                         }
                         finally {
@@ -6328,6 +6329,7 @@ export async function runMutation(database, auth, mutationName, args, options = 
                 }
                 finally {
                     try {
+                        await revokeOuterResources?.race(revokeOuterResources.drain());
                         await revokeOuterResources?.race(cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed));
                     }
                     finally {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { openDevDatabase, runMutation, runEndpoint, runCurrentUserJobWorker, createControllableRuntimeClock } from '../dist/server-runtime-source.js';
@@ -148,6 +148,91 @@ test('a caught or unawaited invalid child enqueue poisons outer mutation and end
     assert.equal((await runMutation(f.database, actor, 'badChild', [])).ok, false);
     await assert.rejects(runEndpoint(f.database, f.database.endpoints.find(item => item.name === 'badChild'), new URL('http://capsule.test/bad-child'), { method: 'POST', headers: {}, async *[Symbol.asyncIterator]() {} }));
     assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sqlite_schema WHERE name='sporades_resource_receipts'").get().n, 0);
+  } finally { await f.close(); }
+});
+
+test('outer mutation and endpoint settlement wait for an unawaited whole resource invocation', async () => {
+  let release;
+  let entered;
+  const f = await fixture(() => null, {
+    mutations: {
+      unawaitedResource: mutation(ctx => {
+        ctx.resources.run({ ...options(), operationId: 'unawaited-mutation' }, async scope => {
+          await scope.db.writes.insert({ value: 'unawaited-mutation' });
+          entered();
+          await new Promise(resolve => { release = resolve; });
+          return { settled: true };
+        });
+        return { outerReturned: true };
+      }),
+    },
+    endpoints: {
+      unawaitedResource: endpoint({ method: 'POST', path: '/unawaited-resource' }, ctx => {
+        ctx.resources.run({ ...options(), operationId: 'unawaited-endpoint' }, async scope => {
+          await scope.db.writes.insert({ value: 'unawaited-endpoint' });
+          entered();
+          await new Promise(resolve => { release = resolve; });
+          return { settled: true };
+        });
+        return { outerReturned: true };
+      }),
+    },
+  });
+  const request = { method: 'POST', headers: {}, async *[Symbol.asyncIterator]() {} };
+  try {
+    for (const mode of ['mutation', 'endpoint']) {
+      let reach;
+      const reached = new Promise(resolve => { reach = resolve; });
+      entered = reach;
+      const running = mode === 'mutation'
+        ? runMutation(f.database, actor, 'unawaitedResource', [])
+        : runEndpoint(f.database, f.database.endpoints.find(item => item.name === 'unawaitedResource'), new URL('http://capsule.test/unawaited-resource'), request);
+      await reached;
+      assert.equal(await Promise.race([running.then(() => true, () => true), new Promise(resolve => setTimeout(() => resolve(false), 25))]), false, `${mode} committed while its resource callback was still blocked`);
+      release();
+      const result = await running;
+      if (mode === 'mutation') assert.equal(result.ok, true);
+      else assert.deepEqual(result, { outerReturned: true });
+      assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM writes WHERE value=?').get(`unawaited-${mode}`).n, 1);
+      assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts WHERE operationId=?').get(`unawaited-${mode}`).n, 1);
+    }
+  } finally { release?.(); await f.close(); }
+});
+
+test('outer resource scopes fence retained parent loggers and never publish their payload on rollback', async () => {
+  const f = await fixture(() => null, {
+    mutations: {
+      retainedParentLog: mutation(async ctx => {
+        const retained = ctx.log;
+        await ctx.resources.run({ ...options(), operationId: 'parent-log-mutation' }, scope => {
+          retained.info('must not publish', { token: 'super-secret' });
+          scope.log.info('resource diagnostic');
+          return true;
+        });
+        return { unexpected: true };
+      }),
+    },
+    endpoints: {
+      retainedParentLog: endpoint({ method: 'POST', path: '/retained-parent-log' }, async ctx => {
+        const retained = ctx.log;
+        await ctx.resources.run({ ...options(), operationId: 'parent-log-endpoint' }, scope => {
+          retained.warn('must not publish', { password: 'super-secret' });
+          scope.log.warn('resource diagnostic');
+          return true;
+        });
+        return { unexpected: true };
+      }),
+    },
+  });
+  const request = { method: 'POST', headers: {}, async *[Symbol.asyncIterator]() {} };
+  try {
+    const mutationResult = await runMutation(f.database, actor, 'retainedParentLog', []);
+    assert.equal(mutationResult.ok, false);
+    await assert.rejects(runEndpoint(f.database, f.database.endpoints.find(item => item.name === 'retainedParentLog'), new URL('http://capsule.test/retained-parent-log'), request), { code: 'RESOURCE_EFFECT_UNSUPPORTED' });
+    const jsonl = existsSync(f.database.log.path) ? readFileSync(f.database.log.path, 'utf8') : '';
+    assert.equal(jsonl.includes('must not publish'), false);
+    assert.equal(jsonl.includes('super-secret'), false);
+    assert.equal((await f.database.adapter.readRecentLogEvents(100)).filter(event => event.category === 'resource').length, 0);
   } finally { await f.close(); }
 });
 

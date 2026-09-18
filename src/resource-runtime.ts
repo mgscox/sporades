@@ -95,6 +95,7 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
   const parentDb = context.db;
   const parentJobs = context.jobs;
   const pending = new Set<Promise<any>>();
+  const executions = new Set<Promise<any>>();
   const track = (operation: () => any) => {
     let value: any;
     try { value = operation(); }
@@ -105,12 +106,21 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
     void promise.catch((error) => { terminalError ??= error; });
     return promise;
   };
+  const trackExecution = (operation: () => any) => {
+    let value: any;
+    try { value = operation(); }
+    catch (error) { terminalError ??= error; throw error; }
+    const promise = Promise.resolve(value);
+    executions.add(promise);
+    void promise.catch(() => {});
+    return promise;
+  };
   const actorDigest = createHash("sha256").update(resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged: false })).digest("hex");
   const guardCapability = (name: string, value: any) => wrapCapability(value, (path) => {
       if (used) throw resourceError(!invocationActive || !scopeActive || !admission ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
       if (!["where", "orderBy", "limit"].includes(path.at(-1)!)) touched = true;
     });
-  for (const name of ["db", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
+  for (const name of ["db", "log", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
     if (!context[name]) continue;
     context[name] = guardCapability(name, context[name]);
   }
@@ -181,10 +191,10 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
           assertLive(true); if (logs.length >= 100) throw resourceError("RESOURCE_INVALID_INPUT"); logs.push(level);
         }]))),
         signal: controller.signal,
-        notifications: Object.freeze({ accept: async () => {
+        notifications: Object.freeze({ accept: () => track(() => Promise.resolve().then(() => {
           terminalError ??= resourceError("RESOURCE_EFFECT_UNSUPPORTED");
           throw terminalError;
-        } }),
+        })) }),
       });
       let result: any;
       try { result = await Promise.race([Promise.resolve().then(() => callback(scope)), outerAborted]); }
@@ -207,13 +217,17 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
       scopeActive = false; admission = false; controller.abort();
     }
   };
-  context.resources = Object.freeze({ run: (options: any, callback: any) => execute(options, callback, false), status: (options: any) => execute(options, undefined, true) });
+  context.resources = Object.freeze({ run: (options: any, callback: any) => trackExecution(() => execute(options, callback, false)), status: (options: any) => trackExecution(() => execute(options, undefined, true)) });
   const release: any = () => { invocationActive = false; if (watchdog !== undefined) database.clock.clearTimer(watchdog); };
   release.assertOuterLive = () => {
     if (terminalError) throw terminalError;
     if (outerDeadline && database.clock.now().getTime() >= outerDeadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
   };
   release.aborted = () => outerAborted;
+  release.drain = async () => {
+    await Promise.allSettled([...executions]);
+    if (terminalError) throw terminalError;
+  };
   release.race = <Value>(operation: Promise<Value>) => Promise.race([operation, outerAborted]);
   release.guardCapability = guardCapability;
   return release;

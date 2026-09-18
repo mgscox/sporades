@@ -94112,6 +94112,7 @@ function bindOuterResources(database, context, hooks) {
   const parentDb = context.db;
   const parentJobs = context.jobs;
   const pending = /* @__PURE__ */ new Set();
+  const executions = /* @__PURE__ */ new Set();
   const track = (operation) => {
     let value;
     try {
@@ -94128,12 +94129,26 @@ function bindOuterResources(database, context, hooks) {
     });
     return promise;
   };
+  const trackExecution = (operation) => {
+    let value;
+    try {
+      value = operation();
+    } catch (error) {
+      terminalError ??= error;
+      throw error;
+    }
+    const promise = Promise.resolve(value);
+    executions.add(promise);
+    void promise.catch(() => {
+    });
+    return promise;
+  };
   const actorDigest = createHash8("sha256").update(resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged: false })).digest("hex");
   const guardCapability = (name2, value) => wrapCapability(value, (path14) => {
     if (used) throw resourceError(!invocationActive || !scopeActive || !admission ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
     if (!["where", "orderBy", "limit"].includes(path14.at(-1))) touched = true;
   });
-  for (const name2 of ["db", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
+  for (const name2 of ["db", "log", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
     if (!context[name2]) continue;
     context[name2] = guardCapability(name2, context[name2]);
   }
@@ -94205,10 +94220,10 @@ function bindOuterResources(database, context, hooks) {
           logs.push(level);
         }]))),
         signal: controller.signal,
-        notifications: Object.freeze({ accept: async () => {
+        notifications: Object.freeze({ accept: () => track(() => Promise.resolve().then(() => {
           terminalError ??= resourceError("RESOURCE_EFFECT_UNSUPPORTED");
           throw terminalError;
-        } })
+        })) })
       });
       let result;
       try {
@@ -94240,7 +94255,7 @@ function bindOuterResources(database, context, hooks) {
       controller.abort();
     }
   };
-  context.resources = Object.freeze({ run: (options, callback) => execute(options, callback, false), status: (options) => execute(options, void 0, true) });
+  context.resources = Object.freeze({ run: (options, callback) => trackExecution(() => execute(options, callback, false)), status: (options) => trackExecution(() => execute(options, void 0, true)) });
   const release = () => {
     invocationActive = false;
     if (watchdog !== void 0) database.clock.clearTimer(watchdog);
@@ -94250,6 +94265,10 @@ function bindOuterResources(database, context, hooks) {
     if (outerDeadline && database.clock.now().getTime() >= outerDeadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
   };
   release.aborted = () => outerAborted;
+  release.drain = async () => {
+    await Promise.allSettled([...executions]);
+    if (terminalError) throw terminalError;
+  };
   release.race = (operation) => Promise.race([operation, outerAborted]);
   release.guardCapability = guardCapability;
   return release;
@@ -102531,6 +102550,7 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
             throw error;
           } finally {
             try {
+              await revokeOuterResources?.race(revokeOuterResources.drain());
               await revokeOuterResources?.race(cleanupTransactionHandler(transactionDatabase, context, handlerFailed));
             } finally {
               revokeOuterResources?.();
@@ -105172,6 +105192,7 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
           throw error;
         } finally {
           try {
+            await revokeOuterResources?.race(revokeOuterResources.drain());
             await revokeOuterResources?.race(cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed));
           } finally {
             revokeOuterResources?.();
