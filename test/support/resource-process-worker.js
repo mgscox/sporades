@@ -72,6 +72,8 @@ const definition = {
     try {
       const value = await ctx.resources.run({ resource: { table: 'anchors', id: 'anchor' }, operationId: payload.operation, input: null }, async scope => {
         escaped = scope.db.writes;
+        const anchor = await scope.db.anchors.where('id', 'anchor').get();
+        send('observed', { value: anchor?.value ?? null });
         await scope.db.writes.insert({ value: 'protected' });
         send('entered');
         await wait('release');

@@ -132,6 +132,7 @@ test('independent Grant rotation before Job acquisition is observed before prote
     assert.equal(f.read.prepare("SELECT count(*) n FROM sporades_resource_receipts WHERE operationId='grant-rotate'").get().n, 1);
     assert.equal(f.read.prepare("SELECT value FROM anchors WHERE id='anchor'").get().value, 'rotated');
     f.a.send('acquire'); await f.a.wait('entered');
+    assert.equal((await f.a.wait('observed')).value, 'rotated');
     f.a.send('release');
     assert.equal((await f.a.wait('outcome')).code, 'COMMITTED');
     assert.equal(f.read.prepare('SELECT count(*) n FROM writes').get().n, 1);
@@ -155,6 +156,7 @@ for (const action of ['rotate', 'revoke']) test(`independent Grant ${action} aft
   const f = await setup();
   try {
     f.a.send('acquire'); await f.a.wait('entered');
+    assert.equal((await f.a.wait('observed')).value, 'original');
     f.b.send('grant-change', { action });
     assert.equal((await f.b.wait('grant-change')).code, 'RESOURCE_BUSY');
     assert.equal(f.read.prepare('SELECT count(*) n FROM writes').get().n, 0);
