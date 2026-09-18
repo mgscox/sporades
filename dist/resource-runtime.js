@@ -239,7 +239,7 @@ export function bindJobResources(database, context, claim, hooks) {
                                 throw resourceError("RESOURCE_INVALID_INPUT");
                             logs.push(level);
                         }]))),
-                    notifications: Object.freeze({ accept: async () => rejectEffect() }),
+                    notifications: Object.freeze({ accept: () => track(rejectEffect) }),
                 });
                 const value = await Promise.race([Promise.resolve().then(() => callback(scope)), aborted]);
                 admission = false;

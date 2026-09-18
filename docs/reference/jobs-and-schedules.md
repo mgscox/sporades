@@ -490,7 +490,9 @@ attempt settles, so handlers can report outcomes; during the scope use only its
 transactional `scope.log`. `run` and `status` both consume the invocation's one entry.
 There is no fallback to ordinary DB work after a failed acquisition. A rejected
 admitted DB/ACL operation poisons the transaction even if the callback catches its
-error. The 101st scope log call throws `RESOURCE_INVALID_INPUT`; log arguments are
+error. An unsupported `scope.notifications.accept` attempt is tracked and also
+poisons the transaction, including when its rejection is caught or not awaited.
+The 101st scope log call throws `RESOURCE_INVALID_INPUT`; log arguments are
 never retained. Scope ACL denial diagnostics are suppressed rather than written
 outside the owning transaction; callers still receive the opaque authorization
 error, and ordinary Job failure reporting remains available.

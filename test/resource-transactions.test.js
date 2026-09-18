@@ -77,14 +77,14 @@ test('entry is first and once; parent aliases, nested privilege and notification
       return null;
     }
     const alias = ctx.db.writes;
-    await ctx.resources.run(options(), async scope => {
+    await assert.rejects(ctx.resources.run(options(), async scope => {
       assert.throws(() => alias.all(), { code: 'RESOURCE_CONTEXT_UNSUPPORTED' });
       assert.throws(() => ctx.privileged.run({}, () => null), { code: 'RESOURCE_CONTEXT_UNSUPPORTED' });
       await assert.rejects(ctx.resources.run(options(), () => null), { code: 'RESOURCE_CONTEXT_UNSUPPORTED' });
       await assert.rejects(scope.notifications.accept({}), { code: 'RESOURCE_EFFECT_UNSUPPORTED' });
       seen.push('callback');
       return null;
-    });
+    }), { code: 'RESOURCE_EFFECT_UNSUPPORTED' });
     await assert.rejects(ctx.resources.run(options(), () => null), { code: 'RESOURCE_CONTEXT_UNSUPPORTED' });
     return null;
   });
@@ -521,4 +521,19 @@ for (const remote of [false, true]) for (const privileged of [false, true]) test
     assert.equal(JSON.parse(settled.attemptHistory).length, 1);
     assert.equal(JSON.parse(settled.attemptHistory)[0].outcome, 'cancelled');
   } finally { resume(); await f.close(); }
+});
+
+test('an unawaited unsupported notification poisons and rolls back the resource transaction', async () => {
+  const f = await fixture(ctx => ctx.resources.run(options(), async scope => {
+    await scope.db.writes.insert({ value: 'must roll back' });
+    scope.notifications.accept({});
+    return true;
+  }));
+  try {
+    const result = await f.enqueue();
+    assert.equal(result.status, 'failed');
+    assert.equal(JSON.parse(result.failure).code, 'RESOURCE_EFFECT_UNSUPPORTED');
+    assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM writes').get().n, 0);
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sqlite_schema WHERE name='sporades_resource_receipts'").get().n, 0);
+  } finally { await f.close(); }
 });

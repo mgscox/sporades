@@ -212,7 +212,7 @@ export function bindJobResources(database: RecordValue, context: RecordValue, cl
           log: Object.freeze(Object.fromEntries(["info", "warn", "error"].map((level) => [level, () => {
             assertLive(true); if (logs.length >= 100) throw resourceError("RESOURCE_INVALID_INPUT"); logs.push(level);
           }]))),
-          notifications: Object.freeze({ accept: async () => rejectEffect() }),
+          notifications: Object.freeze({ accept: () => track(rejectEffect) }),
         });
         const value = await Promise.race([Promise.resolve().then(() => callback(scope)), aborted]);
         admission = false;
