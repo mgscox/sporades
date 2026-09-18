@@ -3639,6 +3639,7 @@ function createTransactionDatabase(database, transactionAdapter, writeState) {
         __transactionActive: true,
         [trustedReadTransactionAdapter]: transactionAdapter,
         __rootDatabase: database.__rootDatabase ?? database,
+        [Symbol.for("sporades.database.outerTransactionAdapter")]: transactionAdapter,
         __pendingLogWrites: pendingLogWrites,
     };
     transactionDatabase.stageTeamBillingMembershipChange = (teamId) => stageTeamBillingMembershipChange(transactionDatabase, teamId);

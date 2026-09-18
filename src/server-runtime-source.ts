@@ -3825,6 +3825,7 @@ function createTransactionDatabase(database: LooseRecord, transactionAdapter: an
     __transactionActive: true,
     [trustedReadTransactionAdapter]: transactionAdapter,
     __rootDatabase: database.__rootDatabase ?? database,
+    [Symbol.for("sporades.database.outerTransactionAdapter")]: transactionAdapter,
     __pendingLogWrites: pendingLogWrites,
   };
   transactionDatabase.stageTeamBillingMembershipChange = (teamId: string) =>

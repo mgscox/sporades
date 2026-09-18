@@ -464,25 +464,44 @@ test('outer resource commit checks the deadline at the actual transaction commit
 });
 
 test('an outer unknown commit outcome reconciles by receipt without replaying its callback', async () => {
-  let callbacks = 0;
-  const f = await fixture(() => null, { mutations: { unknownOuterCommit: mutation(ctx => ctx.resources.run({ ...options(), operationId: 'outer-unknown-commit' }, async scope => {
-    callbacks++; await scope.db.writes.insert({ value: 'outer-once' }); return { once: true };
-  })) } });
-  const withTransaction = f.database.adapter.withTransaction.bind(f.database.adapter);
-  let loseReply = true;
-  f.database.adapter.withTransaction = async callback => {
-    const result = await withTransaction(callback);
-    if (loseReply) { loseReply = false; throw Object.assign(new Error('lost COMMIT reply'), { code: 'RESOURCE_COMMIT_UNKNOWN' }); }
-    return result;
-  };
+  globalThis.__outerResourceCallbacks = 0;
+  const f = await fixture(() => null, {
+    mutations: { unknownOuterCommit: mutation(ctx => ctx.resources.run({ resource: { table: 'anchors', id: 'anchor' }, operationId: 'outer-unknown-mutation', input: { a: 1, b: 2 } }, async scope => {
+      globalThis.__outerResourceCallbacks++; await scope.db.writes.insert({ value: 'outer-once-mutation' }); return { once: true };
+    })) },
+    endpoints: { unknownOuterCommit: endpoint({ method: 'POST', path: '/outer-unknown' }, ctx => ctx.resources.run({ resource: { table: 'anchors', id: 'anchor' }, operationId: 'outer-unknown-endpoint', input: { a: 1, b: 2 } }, async scope => {
+      globalThis.__outerResourceCallbacks++; await scope.db.writes.insert({ value: 'outer-once-endpoint' }); return { once: true };
+    })) },
+  });
+  const request = { method: 'POST', headers: {}, async *[Symbol.asyncIterator]() {} };
   try {
-    const first = await runMutation(f.database, actor, 'unknownOuterCommit', []);
-    assert.equal(first.ok, false); assert.equal(first.error.code, 'RESOURCE_COMMIT_UNKNOWN');
-    const replay = await runMutation(f.database, actor, 'unknownOuterCommit', []);
-    assert.deepEqual(replay, { ok: true, data: { once: true }, error: null });
-    assert.equal(callbacks, 1);
-    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='outer-once'").get().n, 1);
-  } finally { f.database.adapter.withTransaction = withTransaction; await f.close(); }
+    for (const mode of ['mutation', 'endpoint']) {
+      const transactionOperations = Symbol.for('sporades.database.transactionOperations');
+      const originalOperations = f.database.adapter[transactionOperations];
+      const uncertainAdapter = Object.create(f.database.adapter);
+      Object.defineProperty(uncertainAdapter, transactionOperations, { value: () => {
+        const operations = originalOperations();
+        return { ...operations, exec(sql) {
+          const value = operations.exec(sql);
+          if (sql === 'COMMIT') throw Object.assign(new Error('lost COMMIT reply'), { code: 'ECONNRESET' });
+          return value;
+        } };
+      } });
+      const uncertainDatabase = { ...f.database, adapter: uncertainAdapter };
+      const first = mode === 'mutation'
+        ? await runMutation(uncertainDatabase, actor, 'unknownOuterCommit', [])
+        : await runEndpoint(uncertainDatabase, f.database.endpoints.find(item => item.name === 'unknownOuterCommit'), new URL('http://capsule.test/outer-unknown'), request).then(() => null, error => error);
+      const code = mode === 'mutation' ? first.error?.code : first.code;
+      assert.equal(code, 'RESOURCE_COMMIT_UNKNOWN', JSON.stringify(first));
+      const replay = mode === 'mutation'
+        ? await runMutation(f.database, actor, 'unknownOuterCommit', [])
+        : await runEndpoint(f.database, f.database.endpoints.find(item => item.name === 'unknownOuterCommit'), new URL('http://capsule.test/outer-unknown'), request);
+      if (mode === 'mutation') assert.deepEqual(replay, { ok: true, data: { once: true }, error: null });
+      else assert.deepEqual(replay, { once: true });
+      assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM writes WHERE value=?').get(`outer-once-${mode}`).n, 1);
+    }
+    assert.equal(globalThis.__outerResourceCallbacks, 2);
+  } finally { delete globalThis.__outerResourceCallbacks; await f.close(); }
 });
 
 test('the outer watchdog aborts the real pending-log cleanup phase after a completed resource scope', async () => {

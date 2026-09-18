@@ -94147,7 +94147,7 @@ function bindOuterResources(database, context, hooks) {
     used = true;
     scopeActive = true;
     admission = true;
-    database.adapter[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
+    (database[Symbol.for("sporades.database.outerTransactionAdapter")] ?? database.adapter)[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
     const deadline = hooks.startedAt + 3e4;
     outerDeadline = deadline;
     const beforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
@@ -98392,10 +98392,17 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
   const { DatabaseSync } = await import("node:sqlite");
   const path14 = await import("node:path");
   if (!options.readOnly) nodeFsModule.mkdirSync(path14.dirname(String(databasePath)), { recursive: true });
-  const connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
+  let connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
   const dialect = sqliteDatabaseDialect();
   const connectionGate = createConnectionTransactionGate();
   const runDirectly = (operation) => operation();
+  const discardUncertainResourceConnection = () => {
+    try {
+      connection.close();
+    } catch {
+    }
+    connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
+  };
   const createOperations = (run2) => ({
     exec(sql) {
       return run2(() => connection.exec(sql));
@@ -98485,7 +98492,7 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
           try {
             result = await fn(transactionAdapter);
             await runTransactionBeforeCommitChecks(transactionAdapter);
-            resourceCommitIssued = Boolean(transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")]);
+            resourceCommitIssued = Boolean(transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")]) || Array.isArray(transactionAdapter[transactionBeforeCommitChecks2]) && transactionAdapter[transactionBeforeCommitChecks2].length > 0;
           } finally {
             revokeTransactionScopedAdapter(transactionAdapter);
           }
@@ -98493,7 +98500,14 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
           return result;
         } catch (error) {
           if (!resourceCommitIssued) await transactionExec("ROLLBACK");
-          if (resourceCommitIssued) throw resourceError("RESOURCE_COMMIT_UNKNOWN");
+          if (resourceCommitIssued) {
+            try {
+              discardUncertainResourceConnection();
+            } catch {
+              throw resourceError("RESOURCE_STORAGE_ERROR");
+            }
+            throw resourceError("RESOURCE_COMMIT_UNKNOWN");
+          }
           throw error;
         }
       }, options2);
@@ -102599,6 +102613,7 @@ function createTransactionDatabase(database, transactionAdapter, writeState) {
     __transactionActive: true,
     [trustedReadTransactionAdapter]: transactionAdapter,
     __rootDatabase: database.__rootDatabase ?? database,
+    [Symbol.for("sporades.database.outerTransactionAdapter")]: transactionAdapter,
     __pendingLogWrites: pendingLogWrites
   };
   transactionDatabase.stageTeamBillingMembershipChange = (teamId) => stageTeamBillingMembershipChange(transactionDatabase, teamId);

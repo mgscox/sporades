@@ -1317,10 +1317,21 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     const path = await import("node:path");
     if (!options.readOnly)
         nodeFsModule.mkdirSync(path.dirname(String(databasePath)), { recursive: true });
-    const connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
+    let connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
     const dialect = sqliteDatabaseDialect();
     const connectionGate = createConnectionTransactionGate();
     const runDirectly = (operation) => operation();
+    const discardUncertainResourceConnection = () => {
+        // A COMMIT acknowledgement can be lost after SQLite has durably decided.
+        // Never return that connection to ordinary root work: replace it only after
+        // its transaction-scoped adapter has been revoked and the native handle is
+        // closed. Existing closures still point at the revoked scoped adapter.
+        try {
+            connection.close();
+        }
+        catch { }
+        connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
+    };
     const createOperations = (run) => ({
         exec(sql) {
             return run(() => connection.exec(sql));
@@ -1425,7 +1436,9 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
                     try {
                         result = await fn(transactionAdapter);
                         await runTransactionBeforeCommitChecks(transactionAdapter);
-                        resourceCommitIssued = Boolean(transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")]);
+                        resourceCommitIssued = Boolean(transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")])
+                            || Array.isArray(transactionAdapter[transactionBeforeCommitChecks])
+                                && transactionAdapter[transactionBeforeCommitChecks].length > 0;
                     }
                     finally {
                         revokeTransactionScopedAdapter(transactionAdapter);
@@ -1439,8 +1452,15 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
                     // reconciles through the durable receipt after new authority.
                     if (!resourceCommitIssued)
                         await transactionExec("ROLLBACK");
-                    if (resourceCommitIssued)
+                    if (resourceCommitIssued) {
+                        try {
+                            discardUncertainResourceConnection();
+                        }
+                        catch {
+                            throw resourceError("RESOURCE_STORAGE_ERROR");
+                        }
                         throw resourceError("RESOURCE_COMMIT_UNKNOWN");
+                    }
                     throw error;
                 }
             }, options);
