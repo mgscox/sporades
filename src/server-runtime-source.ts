@@ -3688,6 +3688,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
       let ingressFenceAcquired = false;
       try {
         context = undefined;
+        const outerStartedAt = database.clock.now().getTime();
         result = await database.adapter.withTransaction(async (transactionAdapter: any) => {
           // This conditional no-op UPDATE is deliberately the first endpoint SQL. It gives every
           // runtime connection the same sorted receipt lock order before middleware or app code
@@ -3697,6 +3698,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
           ingressFenceAcquired = true;
           const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
           let handlerFailed = false;
+          let revokeOuterResources: (() => void) | undefined;
           try {
             const resolvedSession = (accessKeyAdmission ?? session) as LooseRecord;
             context = createEndpointContext(transactionDatabase, endpointRequest, resolvedSession, {
@@ -3704,8 +3706,8 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
               credential: accessKeyAdmission?.credential,
               accessKeyGrants: accessKeyAdmission?.grants,
             });
-            bindOuterResources(transactionDatabase, context, {
-              startedAt: database.clock.now().getTime(),
+            revokeOuterResources = bindOuterResources(transactionDatabase, context, {
+              startedAt: outerStartedAt,
               async authorize(_context: LooseRecord, db: LooseRecord, identity: LooseRecord) {
                 const anchor = await db[identity.table].where("id", identity.id).get();
                 if (!anchor) throw commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
@@ -3738,7 +3740,8 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
             handlerFailed = true;
             throw error;
           } finally {
-            await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
+            try { await cleanupTransactionHandler(transactionDatabase, context, handlerFailed); }
+            finally { revokeOuterResources?.(); }
           }
         });
         break;
@@ -6542,19 +6545,21 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
       const maintenanceNow = database.clock.now().toISOString();
       await database.adapter.withTransaction((maintenanceAdapter: LooseRecord) => maintenanceAdapter.deleteExpiredReauthenticationProofs(maintenanceNow));
     }
+    const outerStartedAt = database.clock.now().getTime();
     const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter: any) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
       const mutationInvocation = { active: true };
       return mutationExecution.run(mutationInvocation, async () => {
         let handlerFailed = false;
+        let revokeOuterResources: (() => void) | undefined;
         try {
         context = createMutationContext(transactionDatabase, auth, {
           sessionToken: options.sessionToken,
           serviceUserMutationAuthority,
           mutationInvocation,
         });
-        bindOuterResources(transactionDatabase, context, {
-          startedAt: database.clock.now().getTime(),
+        revokeOuterResources = bindOuterResources(transactionDatabase, context, {
+          startedAt: outerStartedAt,
           async authorize(_context: LooseRecord, db: LooseRecord, identity: LooseRecord) {
             const anchor = await db[identity.table].where("id", identity.id).get();
             if (!anchor) throw commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
@@ -6597,9 +6602,9 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
           handlerFailed = true;
           throw error;
         } finally {
-          try {
-            await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed);
-          } finally {
+          try { await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed); }
+          finally {
+            revokeOuterResources?.();
             mutationInvocation.active = false;
           }
         }

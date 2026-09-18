@@ -84,6 +84,7 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
   let invocationActive = true;
   let used = false;
   let scopeActive = false;
+  let admission = false;
   let touched = false;
   let terminalError: any;
   const parentDb = context.db;
@@ -92,24 +93,47 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
   for (const name of ["db", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
     if (!context[name]) continue;
     context[name] = wrapCapability(context[name], (path) => {
-      if (used) throw resourceError(!invocationActive || !scopeActive ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
+      if (used) throw resourceError(!invocationActive || !scopeActive || !admission ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
       if (!["where", "orderBy", "limit"].includes(path.at(-1)!)) touched = true;
     });
   }
   const execute = async (options: any, callback: any, status: boolean) => {
-    if (!invocationActive || used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
+    if (!invocationActive) throw resourceError("RESOURCE_SCOPE_INACTIVE");
+    if (used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
     if (database.adapter.engine !== "sqlite") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
     const identity = optionsSnapshot(options, status);
     if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
     if (!database.schema.tables.some((table: any) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
-    used = true; scopeActive = true;
+    used = true; scopeActive = true; admission = true;
     const deadline = hooks.startedAt + 30_000;
-    const assertLive = (admission = false) => {
-      if (!invocationActive || !scopeActive) throw resourceError("RESOURCE_SCOPE_INACTIVE");
+    const controller = new AbortController();
+    let rejectAborted: (error: any) => void = () => {};
+    const aborted = new Promise<never>((_, reject) => { rejectAborted = reject; });
+    void aborted.catch(() => {});
+    const revoke = (error: any) => {
+      terminalError ??= error;
+      scopeActive = false; admission = false;
+      controller.abort(); rejectAborted(terminalError);
+    };
+    const assertLive = (requireAdmission = false) => {
+      if (!invocationActive || !scopeActive || requireAdmission && !admission) throw resourceError("RESOURCE_SCOPE_INACTIVE");
       if (terminalError) throw terminalError;
       if (database.clock.now().getTime() >= deadline - (admission ? 1000 : 0)) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
     };
+    const watchdog = database.clock.setTimer(() => revoke(resourceError("RESOURCE_DEADLINE_EXCEEDED")), Math.max(0, deadline - database.clock.now().getTime()));
     try {
+      assertLive(true);
+      // The surrounding mutation/endpoint starts deferred. Promote it to an
+      // actual SQLite writer before reading authorization so Grant, ACL and Team
+      // transitions cannot slip between the recheck and the outer commit.
+      try {
+        await database.adapter.exec("CREATE TABLE IF NOT EXISTS sporades_resource_outer_fence (id INTEGER PRIMARY KEY, epoch INTEGER NOT NULL)");
+        await database.adapter.prepare("INSERT OR IGNORE INTO sporades_resource_outer_fence (id, epoch) VALUES (1, 0)").run();
+        await database.adapter.prepare("UPDATE sporades_resource_outer_fence SET epoch=epoch+1 WHERE id=1").run();
+      } catch (error: any) {
+        if (error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY") throw resourceError("RESOURCE_BUSY");
+        throw error;
+      }
       assertLive(true);
       await hooks.authorize(context, parentDb, identity);
       assertLive(true);
@@ -131,15 +155,18 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
           throw terminalError;
         } }),
       });
-      const result = await callback(scope);
+      const result = await Promise.race([Promise.resolve().then(() => callback(scope)), aborted]);
       if (terminalError) throw terminalError;
-      scopeActive = false;
+      admission = false;
       const resultJson = resourceCanonicalJson(result);
       await hooks.drain(context);
+      assertLive();
       await database.adapter.prepare("INSERT INTO sporades_resource_receipts VALUES (?,?,?,?,?,?,?,?)").run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
+      assertLive();
       return JSON.parse(resultJson);
     } finally {
-      scopeActive = false;
+      scopeActive = false; admission = false; controller.abort();
+      database.clock.clearTimer(watchdog);
     }
   };
   context.resources = Object.freeze({ run: (options: any, callback: any) => execute(options, callback, false), status: (options: any) => execute(options, undefined, true) });

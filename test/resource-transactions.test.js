@@ -110,6 +110,34 @@ test('a mutation resource scope invalidates parent and escaped database handles 
   } finally { await f.close(); }
 });
 
+test('an unused mutation resource entry cannot escape its settled outer transaction', async () => {
+  let escapedResources;
+  const f = await fixture(() => null, {
+    mutations: { retainResources: mutation(ctx => { escapedResources = ctx.resources; return null; }) },
+  });
+  try {
+    assert.equal((await runMutation(f.database, actor, 'retainResources', [])).ok, true);
+    await assert.rejects(escapedResources.run(options(), () => null), { code: 'RESOURCE_SCOPE_INACTIVE' });
+  } finally { await f.close(); }
+});
+
+test('a non-Job resource watchdog rejects a noncooperative callback at the outer deadline', async () => {
+  let entered;
+  const enteredPromise = new Promise(resolve => { entered = resolve; });
+  const f = await fixture(() => null, {
+    mutations: { stalls: mutation(ctx => ctx.resources.run(options(), async () => { entered(); await new Promise(() => {}); return null; })) },
+  });
+  try {
+    const running = runMutation(f.database, actor, 'stalls', []);
+    assert.equal(await Promise.race([enteredPromise.then(() => true), new Promise(resolve => setTimeout(() => resolve(false), 100))]), true);
+    f.clock.advanceBy(30_000);
+    await f.clock.runDueTimers();
+    const result = await running;
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, 'RESOURCE_DEADLINE_EXCEEDED');
+  } finally { await f.close(); }
+});
+
 test('a Custom endpoint joins its outer transaction for a first resource scope', async () => {
   const f = await fixture(() => null, {
     endpoints: {

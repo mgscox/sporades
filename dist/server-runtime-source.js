@@ -3489,6 +3489,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
             let ingressFenceAcquired = false;
             try {
                 context = undefined;
+                const outerStartedAt = database.clock.now().getTime();
                 result = await database.adapter.withTransaction(async (transactionAdapter) => {
                     // This conditional no-op UPDATE is deliberately the first endpoint SQL. It gives every
                     // runtime connection the same sorted receipt lock order before middleware or app code
@@ -3499,6 +3500,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                     ingressFenceAcquired = true;
                     const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
                     let handlerFailed = false;
+                    let revokeOuterResources;
                     try {
                         const resolvedSession = (accessKeyAdmission ?? session);
                         context = createEndpointContext(transactionDatabase, endpointRequest, resolvedSession, {
@@ -3506,8 +3508,8 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                             credential: accessKeyAdmission?.credential,
                             accessKeyGrants: accessKeyAdmission?.grants,
                         });
-                        bindOuterResources(transactionDatabase, context, {
-                            startedAt: database.clock.now().getTime(),
+                        revokeOuterResources = bindOuterResources(transactionDatabase, context, {
+                            startedAt: outerStartedAt,
                             async authorize(_context, db, identity) {
                                 const anchor = await db[identity.table].where("id", identity.id).get();
                                 if (!anchor)
@@ -3542,7 +3544,12 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                         throw error;
                     }
                     finally {
-                        await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
+                        try {
+                            await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
+                        }
+                        finally {
+                            revokeOuterResources?.();
+                        }
                     }
                 });
                 break;
@@ -6236,19 +6243,21 @@ export async function runMutation(database, auth, mutationName, args, options = 
             const maintenanceNow = database.clock.now().toISOString();
             await database.adapter.withTransaction((maintenanceAdapter) => maintenanceAdapter.deleteExpiredReauthenticationProofs(maintenanceNow));
         }
+        const outerStartedAt = database.clock.now().getTime();
         const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
             const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
             const mutationInvocation = { active: true };
             return mutationExecution.run(mutationInvocation, async () => {
                 let handlerFailed = false;
+                let revokeOuterResources;
                 try {
                     context = createMutationContext(transactionDatabase, auth, {
                         sessionToken: options.sessionToken,
                         serviceUserMutationAuthority,
                         mutationInvocation,
                     });
-                    bindOuterResources(transactionDatabase, context, {
-                        startedAt: database.clock.now().getTime(),
+                    revokeOuterResources = bindOuterResources(transactionDatabase, context, {
+                        startedAt: outerStartedAt,
                         async authorize(_context, db, identity) {
                             const anchor = await db[identity.table].where("id", identity.id).get();
                             if (!anchor)
@@ -6296,6 +6305,7 @@ export async function runMutation(database, auth, mutationName, args, options = 
                         await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed);
                     }
                     finally {
+                        revokeOuterResources?.();
                         mutationInvocation.active = false;
                     }
                 }

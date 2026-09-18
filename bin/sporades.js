@@ -94097,6 +94097,7 @@ function bindOuterResources(database, context, hooks) {
   let invocationActive = true;
   let used = false;
   let scopeActive = false;
+  let admission = false;
   let touched = false;
   let terminalError;
   const parentDb = context.db;
@@ -94105,25 +94106,52 @@ function bindOuterResources(database, context, hooks) {
   for (const name2 of ["db", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
     if (!context[name2]) continue;
     context[name2] = wrapCapability(context[name2], (path14) => {
-      if (used) throw resourceError(!invocationActive || !scopeActive ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
+      if (used) throw resourceError(!invocationActive || !scopeActive || !admission ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
       if (!["where", "orderBy", "limit"].includes(path14.at(-1))) touched = true;
     });
   }
   const execute = async (options, callback, status) => {
-    if (!invocationActive || used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
+    if (!invocationActive) throw resourceError("RESOURCE_SCOPE_INACTIVE");
+    if (used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
     if (database.adapter.engine !== "sqlite") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
     const identity = optionsSnapshot(options, status);
     if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
     if (!database.schema.tables.some((table) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
     used = true;
     scopeActive = true;
+    admission = true;
     const deadline = hooks.startedAt + 3e4;
-    const assertLive = (admission = false) => {
-      if (!invocationActive || !scopeActive) throw resourceError("RESOURCE_SCOPE_INACTIVE");
+    const controller = new AbortController();
+    let rejectAborted = () => {
+    };
+    const aborted = new Promise((_, reject) => {
+      rejectAborted = reject;
+    });
+    void aborted.catch(() => {
+    });
+    const revoke = (error) => {
+      terminalError ??= error;
+      scopeActive = false;
+      admission = false;
+      controller.abort();
+      rejectAborted(terminalError);
+    };
+    const assertLive = (requireAdmission = false) => {
+      if (!invocationActive || !scopeActive || requireAdmission && !admission) throw resourceError("RESOURCE_SCOPE_INACTIVE");
       if (terminalError) throw terminalError;
       if (database.clock.now().getTime() >= deadline - (admission ? 1e3 : 0)) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
     };
+    const watchdog = database.clock.setTimer(() => revoke(resourceError("RESOURCE_DEADLINE_EXCEEDED")), Math.max(0, deadline - database.clock.now().getTime()));
     try {
+      assertLive(true);
+      try {
+        await database.adapter.exec("CREATE TABLE IF NOT EXISTS sporades_resource_outer_fence (id INTEGER PRIMARY KEY, epoch INTEGER NOT NULL)");
+        await database.adapter.prepare("INSERT OR IGNORE INTO sporades_resource_outer_fence (id, epoch) VALUES (1, 0)").run();
+        await database.adapter.prepare("UPDATE sporades_resource_outer_fence SET epoch=epoch+1 WHERE id=1").run();
+      } catch (error) {
+        if (error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY") throw resourceError("RESOURCE_BUSY");
+        throw error;
+      }
       assertLive(true);
       await hooks.authorize(context, parentDb, identity);
       assertLive(true);
@@ -94151,15 +94179,20 @@ function bindOuterResources(database, context, hooks) {
           throw terminalError;
         } })
       });
-      const result = await callback(scope);
+      const result = await Promise.race([Promise.resolve().then(() => callback(scope)), aborted]);
       if (terminalError) throw terminalError;
-      scopeActive = false;
+      admission = false;
       const resultJson = resourceCanonicalJson(result);
       await hooks.drain(context);
+      assertLive();
       await database.adapter.prepare("INSERT INTO sporades_resource_receipts VALUES (?,?,?,?,?,?,?,?)").run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
+      assertLive();
       return JSON.parse(resultJson);
     } finally {
       scopeActive = false;
+      admission = false;
+      controller.abort();
+      database.clock.clearTimer(watchdog);
     }
   };
   context.resources = Object.freeze({ run: (options, callback) => execute(options, callback, false), status: (options) => execute(options, void 0, true) });
@@ -102367,12 +102400,14 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
       let ingressFenceAcquired = false;
       try {
         context = void 0;
+        const outerStartedAt = database.clock.now().getTime();
         result = await database.adapter.withTransaction(async (transactionAdapter) => {
           const ingressLeaseIds = (endpointRequest.multipart?.files ?? []).map((lease) => String(lease.leaseId));
           if (ingressLeaseIds.length > 0) await transactionAdapter.lockIngressReceipts(ingressLeaseIds);
           ingressFenceAcquired = true;
           const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
           let handlerFailed = false;
+          let revokeOuterResources;
           try {
             const resolvedSession = accessKeyAdmission ?? session;
             context = createEndpointContext(transactionDatabase, endpointRequest, resolvedSession, {
@@ -102380,8 +102415,8 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
               credential: accessKeyAdmission?.credential,
               accessKeyGrants: accessKeyAdmission?.grants
             });
-            bindOuterResources(transactionDatabase, context, {
-              startedAt: database.clock.now().getTime(),
+            revokeOuterResources = bindOuterResources(transactionDatabase, context, {
+              startedAt: outerStartedAt,
               async authorize(_context, db, identity) {
                 const anchor = await db[identity.table].where("id", identity.id).get();
                 if (!anchor) throw commandError2("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
@@ -102414,7 +102449,11 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
             handlerFailed = true;
             throw error;
           } finally {
-            await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
+            try {
+              await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
+            } finally {
+              revokeOuterResources?.();
+            }
           }
         });
         break;
@@ -104985,19 +105024,21 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
       const maintenanceNow = database.clock.now().toISOString();
       await database.adapter.withTransaction((maintenanceAdapter) => maintenanceAdapter.deleteExpiredReauthenticationProofs(maintenanceNow));
     }
+    const outerStartedAt = database.clock.now().getTime();
     const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
       const mutationInvocation = { active: true };
       return mutationExecution.run(mutationInvocation, async () => {
         let handlerFailed = false;
+        let revokeOuterResources;
         try {
           context = createMutationContext(transactionDatabase, auth, {
             sessionToken: options.sessionToken,
             serviceUserMutationAuthority,
             mutationInvocation
           });
-          bindOuterResources(transactionDatabase, context, {
-            startedAt: database.clock.now().getTime(),
+          revokeOuterResources = bindOuterResources(transactionDatabase, context, {
+            startedAt: outerStartedAt,
             async authorize(_context, db, identity) {
               const anchor = await db[identity.table].where("id", identity.id).get();
               if (!anchor) throw commandError2("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
@@ -105037,6 +105078,7 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
           try {
             await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed);
           } finally {
+            revokeOuterResources?.();
             mutationInvocation.active = false;
           }
         }
