@@ -370,6 +370,8 @@ test('the outer watchdog aborts a stalled after-mutation hook after a completed 
 test('the outer watchdog aborts the real pending-log cleanup phase after a completed resource scope', async () => {
   let entered;
   const inserted = new Promise(resolve => { entered = resolve; });
+  let draining;
+  const drainStarted = new Promise(resolve => { draining = resolve; });
   const cleanupPending = new Promise(() => {});
   const f = await fixture(() => null, { mutations: { cleanupDeadline: mutation(async ctx => {
     await ctx.resources.run({ ...options(), operationId: 'cleanup-deadline' }, () => true);
@@ -379,13 +381,21 @@ test('the outer watchdog aborts the real pending-log cleanup phase after a compl
   }) } });
   const withTransaction = f.database.adapter.withTransaction.bind(f.database.adapter);
   f.database.adapter.withTransaction = async callback => withTransaction(async adapter => {
-    adapter.insertLogIndexEvent = () => { entered(); return cleanupPending; };
+    adapter.insertLogIndexEvent = () => {
+      const pendingSymbol = Object.getOwnPropertySymbols(adapter).find(symbol => symbol.description === 'sporades.transactionPendingLogWrites');
+      const pending = adapter[pendingSymbol];
+      const splice = pending.splice.bind(pending);
+      pending.splice = (...args) => { draining(); return splice(...args); };
+      entered();
+      return cleanupPending;
+    };
     return await callback(adapter);
   });
   try {
     const before = new Set(f.clock.pendingTimerIds());
     const running = runMutation(f.database, actor, 'cleanupDeadline', []);
     await inserted;
+    await drainStarted;
     const [watchdog] = f.clock.pendingTimerIds().filter(id => !before.has(id));
     assert.equal(typeof watchdog, 'number');
     f.clock.advanceBy(30_000); await f.clock.runTimer(watchdog);
