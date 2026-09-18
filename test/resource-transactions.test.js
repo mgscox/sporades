@@ -485,3 +485,33 @@ test('dedicated connection acquisition failure is redacted and releases the runt
     });
   } finally { await adapter.close(); await rm(dir, { recursive: true, force: true }); }
 });
+
+for (const privileged of [false, true]) test(`resource cancellation settles the ${privileged ? 'Privileged' : 'ordinary'} Job as cancelled without consuming retries`, async () => {
+  let entered, resume;
+  const ready = new Promise(resolve => { entered = resolve; });
+  const proceed = new Promise(resolve => { resume = resolve; });
+  const f = await fixture(async ctx => {
+    entered();
+    await proceed;
+    return ctx.resources.run(options(), () => assert.fail('cancelled callback entered'));
+  }, { mutations: {
+    enqueue: mutation((ctx, payload, retry) => privileged
+      ? ctx.privileged.run({ operation: 'resource.enqueue', targetResourceKind: 'job-queue' }, admin => admin.jobs.enqueue('work', payload, { retry }))
+      : ctx.jobs.enqueue('work', payload, { retry })),
+    cancel: mutation((ctx, id) => privileged
+      ? ctx.privileged.run({ operation: 'resource.cancel', targetResourceKind: 'job-queue' }, admin => admin.jobs.cancel(id))
+      : ctx.jobs.cancel(id)),
+  } });
+  try {
+    const completion = f.enqueue(null, { maxAttempts: 3, delayMs: 0 });
+    await ready;
+    const running = f.database.adapter.prepare("SELECT id FROM sporades_jobs WHERE status='running'").get();
+    const cancelled = await runMutation(f.database, actor, 'cancel', [running.id]);
+    assert.equal(cancelled.ok, true);
+    resume();
+    const settled = await completion;
+    assert.equal(settled.status, 'cancelled', settled.failure);
+    assert.equal(JSON.parse(settled.attemptHistory).length, 1);
+    assert.equal(JSON.parse(settled.attemptHistory)[0].outcome, 'cancelled');
+  } finally { resume(); await f.close(); }
+});

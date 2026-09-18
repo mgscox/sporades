@@ -141,17 +141,17 @@ export function bindJobResources(database: RecordValue, context: RecordValue, cl
     const assertLive = (admit = false) => {
       if (!active || admit && !admission) throw resourceError("RESOURCE_SCOPE_INACTIVE");
       if (terminalError) throw terminalError;
-      if (context.signal?.aborted || database.__jobStopped) throw Object.assign(new Error("Job aborted."), { code: "ABORTED" });
+      if (context.signal?.aborted || database.__jobStopped) throw Object.assign(new Error("Job aborted."), { name: "AbortError", code: "ABORTED" });
       if (database.clock.now().getTime() >= deadline - (admit ? 1000 : 0)) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
     };
-    const abort = () => revoke(Object.assign(new Error("Job aborted."), { code: "ABORTED" }));
+    const abort = () => revoke(Object.assign(new Error("Job aborted."), { name: "AbortError", code: "ABORTED" }));
     context.signal?.addEventListener("abort", abort, { once: true });
     const watchdog = database.clock.setTimer(() => revoke(resourceError("RESOURCE_DEADLINE_EXCEEDED")), Math.max(0, deadline - database.clock.now().getTime()));
     const checkClaim = async (adapter: RecordValue, entry = false) => {
       assertLive(entry);
       const row = await adapter.prepare("SELECT status, claimToken, leaseExpiresAt, cancelRequestedAt FROM sporades_jobs WHERE id=?").get(claim.id);
       if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
-      if (row.cancelRequestedAt) throw Object.assign(new Error("Job aborted."), { code: "ABORTED" });
+      if (row.cancelRequestedAt) throw Object.assign(new Error("Job aborted."), { name: "AbortError", code: "ABORTED" });
       assertLive(entry);
     };
     const track = (operation: () => any) => {
@@ -218,11 +218,11 @@ export function bindJobResources(database: RecordValue, context: RecordValue, cl
       }, (adapter: RecordValue) => {
         // SQLite statements and COMMIT are synchronous on this connection: this
         // final check and the commit decision have no JavaScript await gap.
-        if (context.signal?.aborted || database.__jobStopped) throw Object.assign(new Error("Job aborted."), { code: "ABORTED" });
+        if (context.signal?.aborted || database.__jobStopped) throw Object.assign(new Error("Job aborted."), { name: "AbortError", code: "ABORTED" });
         if (database.clock.now().getTime() >= deadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
         const row = adapter.prepare("SELECT status, claimToken, leaseExpiresAt, cancelRequestedAt FROM sporades_jobs WHERE id=?").get(claim.id);
         if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
-        if (row.cancelRequestedAt) throw Object.assign(new Error("Job aborted."), { code: "ABORTED" });
+        if (row.cancelRequestedAt) throw Object.assign(new Error("Job aborted."), { name: "AbortError", code: "ABORTED" });
       });
       engineCommitted = true;
       active = false;
