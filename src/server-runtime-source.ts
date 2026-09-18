@@ -2798,7 +2798,13 @@ function normalizeUniqueConstraints(tableName: string, fields: Record<string, un
 }
 
 function assertNotReservedTeamTableName(name: string) {
-  if (name.toLowerCase().startsWith("sporades_resource_")) throw resourceError("RESERVED_TABLE_NAME");
+  if (name.toLowerCase().startsWith("sporades_resource_")) {
+    throw commandError(
+      `Reserved runtime table name: ${name}`,
+      "Choose a Capsule table name outside the sporades_resource_ runtime namespace.",
+      "RESERVED_TABLE_NAME",
+    );
+  }
   if (name.toLowerCase().startsWith("sporades_team")) {
     throw commandError(
       `Reserved runtime table name: ${name}`,

@@ -105,6 +105,7 @@ function wrapCapability(value, before, path = [], cache = new WeakMap()) {
 export function bindJobResources(database, context, claim, hooks) {
     let invocationActive = true;
     let used = false;
+    let scopeRunning = false;
     let touched = false;
     const privileged = hooks.privileged === true;
     const actorBinding = resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged });
@@ -113,7 +114,7 @@ export function bindJobResources(database, context, claim, hooks) {
         if (!context[name])
             continue;
         context[name] = wrapCapability(context[name], (path) => {
-            if (used)
+            if (used && (name !== "log" || scopeRunning || !invocationActive))
                 throw resourceError(!invocationActive ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
             if (name !== "log" && !["where", "orderBy", "limit"].includes(path.at(-1)))
                 touched = true;
@@ -130,7 +131,9 @@ export function bindJobResources(database, context, claim, hooks) {
         if (!database.schema.tables.some((table) => table.name === identity.table))
             throw resourceError("RESOURCE_INVALID_INPUT");
         used = true;
+        scopeRunning = true;
         let scopeContext;
+        let engineCommitted = false;
         let active = true;
         let admission = true;
         let terminalError;
@@ -254,16 +257,20 @@ export function bindJobResources(database, context, claim, hooks) {
                 if (row.cancelRequestedAt)
                     throw Object.assign(new Error("Job aborted."), { code: "ABORTED" });
             });
+            engineCommitted = true;
             active = false;
             await hooks.committed(scopeContext, logs);
             return result;
         }
         catch (error) {
             active = false;
+            if (engineCommitted)
+                throw resourceError("RESOURCE_STORAGE_ERROR");
             hooks.rolledBack(scopeContext);
             throw error;
         }
         finally {
+            scopeRunning = false;
             active = false;
             admission = false;
             controller.abort();

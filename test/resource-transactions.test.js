@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { openDevDatabase, runMutation, runCurrentUserJobWorker, createControllableRuntimeClock } from '../dist/server-runtime-source.js';
-import { table, String as Text, job, mutation } from '../dist/server.js';
+import { table, String as Text, job, mutation, schedule } from '../dist/server.js';
 import { resourceCanonicalJson, bindJobResources } from '../dist/resource-runtime.js';
 
 const actor = { userId: 'actor', displayName: 'Actor', email: null, picture: null, isAuthenticated: false, isGuest: true, provider: 'anonymous' };
@@ -218,13 +218,15 @@ test('non-opt-in ordinary Jobs retain synchronous DB access and nontransactional
 });
 
 test('different captured actor cannot replay or inspect another actor receipt', async () => {
-  const f = await fixture(ctx => ctx.resources.run(options(), () => true));
+  const f = await fixture((ctx, mode) => mode === 'status' ? ctx.resources.status({ resource: options().resource, operationId: 'operation' }) : ctx.resources.run(options(), () => true));
   try {
     await f.enqueue();
-    const queued = await runMutation(f.database, { ...actor, userId: 'other' }, 'enqueue', [null, { maxAttempts: 1 }]);
+    for (const mode of [null, 'status']) {
+    const queued = await runMutation(f.database, { ...actor, userId: 'other' }, 'enqueue', [mode, { maxAttempts: 1 }]);
     await runCurrentUserJobWorker(f.database);
     const row = f.database.adapter.prepare('SELECT failure FROM sporades_jobs WHERE id=?').get(queued.data.id);
     assert.equal(JSON.parse(row.failure).code, 'RESOURCE_OPERATION_CONFLICT');
+    }
   } finally { await f.close(); }
 });
 
@@ -338,4 +340,132 @@ test('unsupported adapter discriminators reject run and status before opening a 
     await assert.rejects(context.resources.run(options(), () => assert.fail('unsupported callback entered')), { code: 'RESOURCE_ADAPTER_UNSUPPORTED' });
     await assert.rejects(context.resources.status({ resource: options().resource, operationId: 'operation' }), { code: 'RESOURCE_ADAPTER_UNSUPPORTED' });
   }
+});
+
+test('a postcommit hook failure never calls rollback hooks and has a redacted error', async () => {
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  let rolledBack = 0;
+  const context = { auth: actor };
+  bindJobResources({
+    clock, schema: { tables: [{ name: 'anchors' }] },
+    adapter: { engine: 'sqlite', withResourceTransaction: async () => true },
+  }, context, { leaseExpiresAt: '2030-01-01T00:00:30.000Z' }, {
+    committed() { throw new Error('private filesystem path'); },
+    rolledBack() { rolledBack++; }, release() {},
+  });
+  await assert.rejects(context.resources.run(options(), () => null), error => {
+    assert.equal(error.code, 'RESOURCE_STORAGE_ERROR');
+    assert.equal(error.message, 'Resource operation could not complete.');
+    return true;
+  });
+  assert.equal(rolledBack, 0);
+});
+
+test('resource entry locks out parent DB but permits outcome logging after settlement even on busy', async () => {
+  const f = await fixture(async (ctx, busy) => {
+    if (busy) await assert.rejects(ctx.resources.run(options(), () => null), { code: 'RESOURCE_BUSY' });
+    else await ctx.resources.run(options(), () => {
+      assert.throws(() => ctx.log.info('inside scope'), { code: 'RESOURCE_EFFECT_UNSUPPORTED' });
+      return true;
+    });
+    assert.throws(() => ctx.db.writes.all(), { code: 'RESOURCE_CONTEXT_UNSUPPORTED' });
+    assert.doesNotThrow(() => ctx.log.info('after scope'));
+    return true;
+  });
+  try {
+    assert.equal((await f.enqueue(false)).status, 'succeeded');
+    f.database.adapter.withResourceTransaction = async () => { throw Object.assign(new Error('busy'), { code: 'RESOURCE_BUSY' }); };
+    assert.equal((await f.enqueue(true)).status, 'succeeded');
+  } finally { await f.close(); }
+});
+
+test('same-runtime resource acquisition is busy behind a transaction but roots queue behind a resource', async () => {
+  const f = await fixture(() => null);
+  const barrier = () => { let release; const promise = new Promise(resolve => { release = resolve; }); return { promise, release }; };
+  try {
+    const entered = barrier(), finish = barrier();
+    const outer = f.database.adapter.withTransaction(async () => { entered.release(); await finish.promise; });
+    await entered.promise;
+    await assert.rejects(f.database.adapter.withResourceTransaction(() => assert.fail('busy callback')), { code: 'RESOURCE_BUSY', retryable: true });
+    finish.release(); await outer;
+    const scoped = barrier(), releaseScope = barrier();
+    const resource = f.database.adapter.withResourceTransaction(async () => { scoped.release(); await releaseScope.promise; });
+    await scoped.promise;
+    let rootRan = false;
+    const root = f.database.adapter.withTransaction(() => { rootRan = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(rootRan, false);
+    releaseScope.release(); await resource; await root;
+    assert.equal(rootRan, true);
+  } finally { await f.close(); }
+});
+
+
+test('resource table namespace rejects module and source schemas descriptively', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'resource-reserved-'));
+  try {
+    for (const fromSource of [false, true]) {
+      await assert.rejects(openDevDatabase(path.join(dir, `${fromSource}.db`),
+        fromSource ? 'schema: { sporades_resource_private: table({ value: String() }) }' : '', {}, {},
+        fromSource ? undefined : { schema: { sporades_resource_private: table({ value: Text() }) } }), error => {
+          assert.equal(error.code, 'RESERVED_TABLE_NAME');
+          assert.match(error.message, /Reserved runtime table name: sporades_resource_private/);
+          return true;
+        });
+    }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('caught engine constraint failure poisons scope and maps to redacted storage failure', async () => {
+  const f = await fixture(ctx => ctx.resources.run(options(), async scope => {
+    await scope.db.writes.insert({ value: 'duplicate' });
+    await assert.rejects(scope.db.writes.insert({ value: 'duplicate' }));
+    return true;
+  }), { schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }).unique('value') } });
+  try {
+    const row = await f.enqueue();
+    assert.equal(row.status, 'failed');
+    assert.deepEqual(JSON.parse(row.failure), { code: 'RESOURCE_STORAGE_ERROR', message: 'Resource operation could not complete.' });
+    assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM writes').get().n, 0);
+  } finally { await f.close(); }
+});
+
+test('resource busy Job settlement retains the public redacted busy message', async () => {
+  const f = await fixture(ctx => ctx.resources.run(options(), () => true));
+  try {
+    f.database.adapter.withResourceTransaction = async () => { throw Object.assign(new Error('private engine details'), { code: 'RESOURCE_BUSY' }); };
+    assert.deepEqual(JSON.parse((await f.enqueue()).failure), { code: 'RESOURCE_BUSY', message: 'Resource transaction is busy.' });
+  } finally { await f.close(); }
+});
+
+test('a scheduled Job opts into resources and transfers its enqueuer to child Jobs', async () => {
+  const f = await fixture(ctx => ctx.resources.run(options(), async scope => {
+    await scope.db.writes.insert({ value: 'scheduled' });
+    await scope.jobs.enqueue('child', null, { availableAt: '2031-01-01T00:00:00.000Z' });
+    return true;
+  }), { schedules: { recurring: schedule({ expression: '* * * * *', job: 'work' }) } });
+  try {
+    f.clock.advanceBy(60_000);
+    await f.clock.runDueTimers();
+    const parent = f.database.adapter.prepare("SELECT * FROM sporades_jobs WHERE handler='work'").get();
+    const child = f.database.adapter.prepare("SELECT * FROM sporades_jobs WHERE handler='child'").get();
+    assert.equal(parent.status, 'succeeded', parent.failure);
+    assert.equal(parent.scheduleName, 'recurring');
+    assert.equal(parent.scheduledFor, '2030-01-01T00:01:00.000Z');
+    assert.equal(child.enqueuedByUserId, parent.enqueuedByUserId);
+    assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM writes').get().n, 1);
+  } finally { await f.close(); }
+});
+
+test('the 101st scope log call rejects and rolls back staged writes', async () => {
+  const f = await fixture(ctx => ctx.resources.run(options(), async scope => {
+    await scope.db.writes.insert({ value: 'rollback-log-cap' });
+    for (let i = 0; i < 100; i++) scope.log.info('discarded payload');
+    scope.log.info('one too many');
+    return true;
+  }));
+  try {
+    assert.equal(JSON.parse((await f.enqueue()).failure).code, 'RESOURCE_INVALID_INPUT');
+    assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM writes').get().n, 0);
+  } finally { await f.close(); }
 });

@@ -1,0 +1,13 @@
+# Ticket 02 review and regression evidence
+
+Task009 received ticket02 as an already implemented change at d2553b240c174e01b6787af97a05d7a719a11297. That commit combines code and tests; no original RED transcript or test-first commit is available. The coordinator did not recreate or claim a historical test-first sequence. This is the explicit exception for the pre-existing implementation. New downstream implementation remains test-first.
+
+An equivalent behavioral regression check was run during task009: a fresh detached worktree at 2b5cc9c65094b3007360fb800e38ab0726faf326 received npm ci and had a real, non-symlink node_modules. The first test and fixture from test/resource-transactions.test.js were extracted unchanged except omitting an unused import from the new resource-runtime module, so the baseline reaches behavior rather than failing module loading. node --test test/task009-red.test.js fails at its expected first succeeded Job status: actual failed, JOB_FAILED. Original test/resource-transactions.test.js plus test/resource-process.test.js at aa68a27c7b4bb0525b9a63f4f6307969de6bae17 pass 28/28, zero skips.
+
+The baseline reproduction proves the new receipt/replay behavior is absent before the slice; it does not retroactively establish original TDD chronology. Full command output and extracted reproduction are retained by agent-net under scratch/task-20260918-009/ticket02-base-red.log and ticket02-red-reproduction.js.
+
+## Task010 rework
+
+The predecessor died during its rebuild. Rebuilding the inherited source first yielded 31/31 resource/process tests, including its three new regressions; the earlier postcommit RED exercised stale dist and is not evidence against the source correction. Task010 then added review regression coverage (not claimed as historical test-first development) for both reserved-name schema paths, caught storage failures, cross-actor status, scheduled resource use and child enqueuer transfer, busy settlement text, and the 101st log call. Parent logging remains forbidden while a scope runs, but is restored after settlement, including failed acquisition; DB/provider capabilities stay locked out. The final resource/process suite passes 36/36 with zero skips.
+
+Fresh npm ci, build, typecheck and generated-artifact check passed. Bundle/types pass 23/23 with the approved task009 PostgreSQL database; docs tests pass 46/46 and VitePress builds. Existing host archive and in-suite teams baseline failures remain known-red; this rework does not reclassify or repair them. ADR planning links use main, where the planning package is now retained, rather than a transient bootstrap commit.

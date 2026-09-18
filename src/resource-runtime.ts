@@ -99,6 +99,7 @@ function wrapCapability(value: any, before: (path: string[]) => void, path: stri
 export function bindJobResources(database: RecordValue, context: RecordValue, claim: RecordValue, hooks: RecordValue) {
   let invocationActive = true;
   let used = false;
+  let scopeRunning = false;
   let touched = false;
   const privileged = hooks.privileged === true;
   const actorBinding = resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged });
@@ -106,7 +107,7 @@ export function bindJobResources(database: RecordValue, context: RecordValue, cl
   for (const name of ["db", "log", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
     if (!context[name]) continue;
     context[name] = wrapCapability(context[name], (path) => {
-      if (used) throw resourceError(!invocationActive ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
+      if (used && (name !== "log" || scopeRunning || !invocationActive)) throw resourceError(!invocationActive ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
       if (name !== "log" && !["where", "orderBy", "limit"].includes(path.at(-1)!)) touched = true;
     });
   }
@@ -118,7 +119,9 @@ export function bindJobResources(database: RecordValue, context: RecordValue, cl
     if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
     if (!database.schema.tables.some((table: any) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
     used = true;
+    scopeRunning = true;
     let scopeContext: RecordValue | undefined;
+    let engineCommitted = false;
     let active = true;
     let admission = true;
     let terminalError: any;
@@ -221,14 +224,17 @@ export function bindJobResources(database: RecordValue, context: RecordValue, cl
         if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
         if (row.cancelRequestedAt) throw Object.assign(new Error("Job aborted."), { code: "ABORTED" });
       });
+      engineCommitted = true;
       active = false;
       await hooks.committed(scopeContext, logs);
       return result;
     } catch (error) {
       active = false;
+      if (engineCommitted) throw resourceError("RESOURCE_STORAGE_ERROR");
       hooks.rolledBack(scopeContext);
       throw error;
     } finally {
+      scopeRunning = false;
       active = false; admission = false; controller.abort();
       database.clock.clearTimer(watchdog);
       context.signal?.removeEventListener("abort", abort);

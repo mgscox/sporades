@@ -67952,6 +67952,7 @@ function safeJobFailure(error) {
     STRIPE_PORTAL_REJECTED: "Stripe rejected the Customer Portal request.",
     STRIPE_PORTAL_RESPONSE_INVALID: "Stripe returned an invalid Customer Portal Session.",
     PAYMENT_PORTAL_UNAVAILABLE: "Customer Portal is not available for this billing holder.",
+    RESOURCE_BUSY: "Resource transaction is busy.",
     JOB_FAILED: "Job handler failed."
   };
   return { code, message: messages[code] ?? "Resource operation could not complete." };
@@ -94117,6 +94118,7 @@ function wrapCapability(value, before, path14 = [], cache = /* @__PURE__ */ new 
 function bindJobResources(database, context, claim, hooks) {
   let invocationActive = true;
   let used = false;
+  let scopeRunning = false;
   let touched = false;
   const privileged = hooks.privileged === true;
   const actorBinding = resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged });
@@ -94124,7 +94126,7 @@ function bindJobResources(database, context, claim, hooks) {
   for (const name2 of ["db", "log", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
     if (!context[name2]) continue;
     context[name2] = wrapCapability(context[name2], (path14) => {
-      if (used) throw resourceError(!invocationActive ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
+      if (used && (name2 !== "log" || scopeRunning || !invocationActive)) throw resourceError(!invocationActive ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
       if (name2 !== "log" && !["where", "orderBy", "limit"].includes(path14.at(-1))) touched = true;
     });
   }
@@ -94135,7 +94137,9 @@ function bindJobResources(database, context, claim, hooks) {
     if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
     if (!database.schema.tables.some((table) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
     used = true;
+    scopeRunning = true;
     let scopeContext;
+    let engineCommitted = false;
     let active = true;
     let admission = true;
     let terminalError;
@@ -94257,14 +94261,17 @@ function bindJobResources(database, context, claim, hooks) {
         if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
         if (row.cancelRequestedAt) throw Object.assign(new Error("Job aborted."), { code: "ABORTED" });
       });
+      engineCommitted = true;
       active = false;
       await hooks.committed(scopeContext, logs);
       return result;
     } catch (error) {
       active = false;
+      if (engineCommitted) throw resourceError("RESOURCE_STORAGE_ERROR");
       hooks.rolledBack(scopeContext);
       throw error;
     } finally {
+      scopeRunning = false;
       active = false;
       admission = false;
       controller.abort();
@@ -101496,7 +101503,13 @@ function normalizeUniqueConstraints(tableName, fields, declarations) {
   }).sort((left, right) => [...left].sort().join("\0").localeCompare([...right].sort().join("\0")));
 }
 function assertNotReservedTeamTableName(name2) {
-  if (name2.toLowerCase().startsWith("sporades_resource_")) throw resourceError("RESERVED_TABLE_NAME");
+  if (name2.toLowerCase().startsWith("sporades_resource_")) {
+    throw commandError2(
+      `Reserved runtime table name: ${name2}`,
+      "Choose a Capsule table name outside the sporades_resource_ runtime namespace.",
+      "RESERVED_TABLE_NAME"
+    );
+  }
   if (name2.toLowerCase().startsWith("sporades_team")) {
     throw commandError2(
       `Reserved runtime table name: ${name2}`,

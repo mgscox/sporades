@@ -215,7 +215,7 @@ The evidence refers to commit `38b6103b3830ac6293f620eee9677152c3c84b9e`.
 
 **Approved by Matt on 2026-09-18**, with automatic retry of uncertain email
 submission and acceptance of duplicate/stale email risk. See the
-[maintainer approval record](../../.scratch/ordinary-job-resource-fences/maintainer-approval.md).
+[maintainer approval record](https://github.com/mgscox/sporades/blob/main/.scratch/ordinary-job-resource-fences/maintainer-approval.md).
 The GitHub issue text remains unchanged and open; this explicitly recorded
 amendment replaces its first two acceptance criteria for this implementation:
 
@@ -465,8 +465,8 @@ claim of exactly-once or unconditional eventual delivery is made.
 
 ### Revised dispatch gate
 
-See the [revised plan](../../.scratch/ordinary-job-resource-fences/README.md) and
-[approval record](../../.scratch/ordinary-job-resource-fences/maintainer-approval.md).
+See the [revised plan](https://github.com/mgscox/sporades/blob/main/.scratch/ordinary-job-resource-fences/README.md) and
+[approval record](https://github.com/mgscox/sporades/blob/main/.scratch/ordinary-job-resource-fences/maintainer-approval.md).
 **M1 is approved; ticket 01's amended-contract gate is cleared and ticket 02 is
 ready for implementation.** Tickets 03–06 depend on 02, and 07 on all four.
 The implementation is not started by this planning update. 02–05 can implement
@@ -513,7 +513,9 @@ boundary, not a promise that every existing SQLite caller blocks. Independent
 ordinary SQLite connections use immediate busy failure; a cancellation attempted
 while a resource writer holds authority returns SQLite busy without committing
 its marker. Its caller must retry after release. The same-runtime connection
-gate queues independent root operations. Automatically replaying an entire
+gate queues independent root operations behind an acquired resource (up to the
+29-second transaction wait budget), but resource acquisition itself immediately
+returns `RESOURCE_BUSY` when that gate is occupied. Automatically replaying an entire
 mutation/endpoint callback to hide `SQLITE_BUSY_SNAPSHOT` would violate the
 no-hidden-callback-replay contract and change non-opt-in behavior. Ticket 02
 therefore preserves this explicit failure and proves cancellation after release

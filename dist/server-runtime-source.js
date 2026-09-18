@@ -1,4 +1,4 @@
-import { bindJobResources, resourceError, unsupportedResources } from "./resource-runtime.js";
+import { bindJobResources, unsupportedResources } from "./resource-runtime.js";
 // `createHmac` left this line with the S3 signing path in batch 6: `s3Hmac` was its only remaining
 // consumer, and it reaches the builtin through `process.getBuiltinModule` in `file-storage-runtime.ts`
 // now (ADR-0042). The rest of this list has been wider than what this file binds since batch 3 —
@@ -2677,8 +2677,9 @@ function normalizeUniqueConstraints(tableName, fields, declarations) {
     }).sort((left, right) => [...left].sort().join("\u0000").localeCompare([...right].sort().join("\u0000")));
 }
 function assertNotReservedTeamTableName(name) {
-    if (name.toLowerCase().startsWith("sporades_resource_"))
-        throw resourceError("RESERVED_TABLE_NAME");
+    if (name.toLowerCase().startsWith("sporades_resource_")) {
+        throw commandError(`Reserved runtime table name: ${name}`, "Choose a Capsule table name outside the sporades_resource_ runtime namespace.", "RESERVED_TABLE_NAME");
+    }
     if (name.toLowerCase().startsWith("sporades_team")) {
         throw commandError(`Reserved runtime table name: ${name}`, "Choose a Capsule table name outside the sporades_team runtime namespace.", "RESERVED_TABLE_NAME");
     }

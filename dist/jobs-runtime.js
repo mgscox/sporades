@@ -1455,6 +1455,7 @@ export function safeJobFailure(error) {
         STRIPE_PORTAL_REJECTED: "Stripe rejected the Customer Portal request.",
         STRIPE_PORTAL_RESPONSE_INVALID: "Stripe returned an invalid Customer Portal Session.",
         PAYMENT_PORTAL_UNAVAILABLE: "Customer Portal is not available for this billing holder.",
+        RESOURCE_BUSY: "Resource transaction is busy.",
         JOB_FAILED: "Job handler failed.",
     };
     return { code, message: messages[code] ?? "Resource operation could not complete." };

@@ -468,6 +468,9 @@ there is no per-resource parallel-throughput or fairness promise. Contention
 returns `{ code: "RESOURCE_BUSY", retryable: true }` on an Error with the fixed
 message `Resource transaction is busy.` No callback runs on acquisition failure.
 Use ordinary Job retry/backoff; the runtime never secretly reruns the callback.
+Acquisition also returns immediate busy when this runtime already has an active
+or queued root transaction. In the reverse order, ordinary root operations queue
+behind an acquired resource transaction. Resource acquisition itself never queues.
 
 Anchor read/update ACLs and each operation's ACL/Team checks run inside that
 transaction under the captured Job actor. Previously captured parent DB handles
@@ -479,6 +482,18 @@ handles reject `RESOURCE_SCOPE_INACTIVE`. Nested resource/Privileged entry,
 Files, provider calls, messages and lifecycle transitions are unsupported.
 Arbitrary JavaScript I/O and independently imported provider clients cannot be
 sandboxed or detected by this API; they must not be used in a scope.
+
+After a valid resource entry attempt, including busy, deadline or lost-claim
+failure, the parent context's DB and provider capabilities remain unavailable for
+the rest of that Job invocation. Parent `ctx.log` is available again after the
+attempt settles, so handlers can report outcomes; during the scope use only its
+transactional `scope.log`. `run` and `status` both consume the invocation's one entry.
+There is no fallback to ordinary DB work after a failed acquisition. A rejected
+admitted DB/ACL operation poisons the transaction even if the callback catches its
+error. The 101st scope log call throws `RESOURCE_INVALID_INPUT`; log arguments are
+never retained. Scope ACL denial diagnostics are suppressed rather than written
+outside the owning transaction; callers still receive the opaque authorization
+error, and ordinary Job failure reporting remains available.
 
 The exact running Job ID, claim token, stored deadline and cancellation marker
 are checked at entry and immediately before COMMIT. The original 30,000ms lease
@@ -508,6 +523,11 @@ operationId})` consumes the same first/once entry and returns either
 `{state: "absent"}` or `{state: "committed", result, intentIds}` under current
 anchor authorization and actor binding. Absence after acquisition rules out an
 older transaction still committing.
+If post-commit child-dispatch or JSONL publication fails, the scope reports the
+redacted `RESOURCE_STORAGE_ERROR` without running rollback hooks. Its receipt,
+application writes, child Jobs and indexed log events remain committed. Retry
+with the same binding or use a new invocation's `status` to reconcile; a failed
+JSONL copy is not rolled back or guaranteed to be republished.
 
 Other fixed resource errors are `RESOURCE_INVALID_INPUT`,
 `RESOURCE_CONTEXT_UNSUPPORTED`, `RESOURCE_ADAPTER_UNSUPPORTED`,
@@ -527,6 +547,7 @@ existing nontransactional behavior. See [ADR-0054](../adr/0054-ordinary-job-auth
 
 A cancellation or recovery writer on an independent SQLite connection may receive
 SQLite busy and must retry after engine release. The existing same-runtime gate
-queues independent root work. "Wait for release" is an ordering guarantee, not
+queues independent root work behind an acquired resource; resource acquisition
+against an already-busy gate instead rejects immediately. "Wait for release" is an ordering guarantee, not
 transparent callback replay: cancellation cannot commit its marker while the
 resource writer holds the engine, and a later cancellation cannot undo its receipt.
