@@ -8,6 +8,8 @@ import { openDevDatabase, runMutation, runEndpoint, runCurrentUserJobWorker, cre
 import { table, String as Text, endpoint, job, mutation, schedule } from '../dist/server.js';
 import { createSqliteDatabaseAdapter } from '../dist/database-runtime.js';
 import { resourceCanonicalJson, bindJobResources, bindOuterResources } from '../dist/resource-runtime.js';
+import { POSTGRES_SKIP_REASON, postgresTestUrl, resetPostgresSchema } from './support/database-adapter-engines.js';
+import { createPostgresDatabaseAdapter } from '../dist/server-runtime-source.js';
 
 const actor = { userId: 'actor', displayName: 'Actor', email: null, picture: null, isAuthenticated: false, isGuest: true, provider: 'anonymous' };
 const options = (input = { b: 2, a: 1 }) => ({ resource: { table: 'anchors', id: 'anchor' }, operationId: 'operation', input });
@@ -30,6 +32,27 @@ async function fixture(handler, extra = {}) {
   };
   return { database, clock, enqueue, file: path.join(dir, 'data.db'), close: async () => { await database.shutdown(); await database.close(); await rm(dir, { recursive: true, force: true }); } };
 }
+
+test('Postgres Job resource scope commits a canonical receipt through its dedicated resource connection', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.close();
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  const database = await openDevDatabase('postgres-resource-test', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-resource', services: { database: { engine: 'postgres' } } }, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+    jobs: { work: job(ctx => ctx.resources.run(options(), async scope => { await scope.db.writes.insert({ value: 'postgres' }); return { committed: true }; })) },
+    mutations: { enqueue: mutation(ctx => ctx.jobs.enqueue('work', null)) },
+  }, { clock });
+  try {
+    await database.init();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'postgres');
+    const queued = await runMutation(database, actor, 'enqueue', []);
+    assert.equal(queued.ok, true);
+    await runCurrentUserJobWorker(database);
+    assert.equal((await database.adapter.prepare("SELECT status FROM sporades_jobs WHERE id=?").get(queued.data.id)).status, 'succeeded');
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM writes').get()).n), 1);
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 1);
+  } finally { await database.shutdown(); await database.close(); }
+});
 
 test('SQLite commits writes, enqueues and a canonical replay receipt exactly once', async () => {
   let callbacks = 0;
