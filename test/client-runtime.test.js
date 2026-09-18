@@ -24,6 +24,62 @@ test("browser client runtime exposes no Privileged server role authority", async
   assert.equal(Object.hasOwn(runtime.auth, "asPrivileged"), false);
 });
 
+test("auth.sessionToken is a synchronous passive accessor for confirmed signed-in state", async () => {
+  const browser = installBrowserFakes({ ...anonymousAuth, isAuthenticated: true, isGuest: false });
+  try {
+    const runtime = await importClientRuntime();
+    assert.equal(runtime.auth.sessionToken(), null);
+    assert.equal(browser.sockets.length, 0, "reading the accessor must not start transport");
+    browser.storage.set("sporades.sessionToken", "unvalidated-token");
+    const loading = runtime.auth.get();
+    assert.equal(runtime.auth.sessionToken(), null, "persisted tokens are not confirmed identities");
+    await loading;
+    const sentBefore = browser.sent.length;
+    assert.equal(runtime.auth.sessionToken(), "session-token");
+    assert.equal(runtime.auth.sessionToken(), "session-token");
+    assert.equal(browser.sent.length, sentBefore, "reading adds no messages or persistence");
+    browser.sockets[0].readyState = 3;
+    assert.equal(runtime.auth.sessionToken(), null, "disconnected state is not current");
+  } finally { browser.cleanup(); }
+});
+
+test("auth.sessionToken never adopts another tab's unconfirmed principal or removed token", async () => {
+  const linked = { ...anonymousAuth, userId: "first-user", isAuthenticated: true, isGuest: false };
+  const browser = installBrowserFakes(linked);
+  try {
+    const runtime = await importClientRuntime();
+    await runtime.auth.get();
+    browser.storage.set("sporades.sessionToken", "second-user-token");
+    assert.equal(runtime.auth.sessionToken(), null);
+    runtime.sendMessage("ping", {}); // Existing transport may adopt shared storage first.
+    assert.equal(runtime.auth.sessionToken(), null);
+    browser.sockets[0].emit("message", { data: JSON.stringify({ type: "auth.session.replace", data: {
+      sessionToken: "second-user-token", auth: { ...linked, userId: "second-user" },
+    }, error: null }) });
+    assert.equal(runtime.auth.sessionToken(), "second-user-token");
+    browser.storage.delete("sporades.sessionToken");
+    assert.equal(runtime.auth.sessionToken(), null);
+  } finally { browser.cleanup(); }
+});
+
+test("auth.sessionToken returns null for anonymous, rejected, and expired session confirmations", async () => {
+  const linked = { ...anonymousAuth, isAuthenticated: true, isGuest: false };
+  const browser = installBrowserFakes(linked);
+  try {
+    const runtime = await importClientRuntime();
+    await runtime.auth.get();
+    for (const message of [
+      { type: "auth.result", data: null, error: { message: "Session rejected" } },
+      { type: "auth.result", data: { sessionToken: "new-anonymous-after-expiry", auth: anonymousAuth }, error: null },
+    ]) {
+      browser.sockets[0].emit("message", { data: JSON.stringify(message) });
+      assert.equal(runtime.auth.sessionToken(), null);
+    }
+    browser.emitWindow("pagehide", {});
+    assert.equal(runtime.auth.sessionToken(), null);
+  } finally { browser.cleanup(); }
+});
+
 test("framework-neutral Access-key management uses request results without retaining one-time secrets", async () => {
   const calls = [];
   let summary = {
@@ -2211,6 +2267,7 @@ test("client auth.signIn sends email credentials without starting a redirect", a
     assert.equal(result.error, null);
     assert.equal(result.data.ok, true);
     assert.equal(browser.storage.get("sporades.sessionToken"), "rotated-email-token");
+    assert.equal(runtime.auth.sessionToken(), "rotated-email-token");
     assert.deepEqual(
       stateUpdates.map((state) => state.auth?.provider),
       ["anonymous", "email"],
@@ -2283,6 +2340,7 @@ test("client auth.signUp sends email credentials through the provider-generic au
     assert.equal(result.data.ok, true);
     assert.equal(result.data.auth.provider, "email");
     assert.equal(browser.storage.get("sporades.sessionToken"), "rotated-sign-up-token");
+    assert.equal(runtime.auth.sessionToken(), "rotated-sign-up-token");
     assert.deepEqual(
       stateUpdates.map((state) => state.auth?.provider),
       ["anonymous", "email"],
@@ -2338,6 +2396,7 @@ test("client auth.signOut clears the stored session and refreshes auth state", a
 
     assert.deepEqual(result.data, { ok: true });
     assert.equal(browser.storage.get("sporades.sessionToken"), "fresh-anonymous-token");
+    assert.equal(runtime.auth.sessionToken(), null);
     assert.equal(await runtime.isAuthenticated(), false);
   } finally {
     browser.cleanup();

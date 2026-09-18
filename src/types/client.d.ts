@@ -98,10 +98,20 @@ export type AuthResult = { auth: AuthState; providers: AuthProviders };
 /**
  * Browser auth API.
  *
- * The SDK stores the Sporades session token in localStorage and sends it over
- * the same-origin client transport. Provider SDKs are not exposed to app code.
+ * The SDK owns session storage and the same-origin client transport. Reading
+ * localStorage["sporades.sessionToken"] is unsupported. Provider SDKs are not exposed to app code.
  */
 export type AuthApi = {
+  /**
+   * Current server-confirmed signed-in token, or null before auth loads, while
+   * disconnected, after sign-out/session rejection, or while this tab and shared
+   * session storage disagree. Call get() to refresh server validation, including
+   * expiry; this synchronous accessor performs no network I/O and cannot detect unseen
+   * server revocation. Read immediately before calling your own same-origin
+   * public endpoint with the x-sporades-session-token header. This is a bearer
+   * credential: never log it, put it in a URL, cache it, or send it cross-origin.
+   */
+  sessionToken(): string | null;
   get(): Promise<SporadesResult<AuthResult>>;
   subscribe(listener: (state: AuthObserverState) => void): Subscription;
   signUp(provider: "email", credentials: EmailCredentials, options?: RegistrationOptions): Promise<SporadesResult>;

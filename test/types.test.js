@@ -85,6 +85,10 @@ import { createStripePaymentIntegration, type StripeCheckoutSessionResult, type 
 import { importLegacyTeamBillingEvidence, type LegacyTeamBillingEvidence, type TeamBillingImportAdapter } from "sporades/server/team-billing-import";
 import { accessKeys, auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teamBilling, teams, type AccessKeyErrorCode, type JourneyRecord } from "sporades/client";
 
+import { auth as emittedAuth } from "${repoRoot}/dist/client.js";
+const ownSessionToken: string | null = auth.sessionToken();
+const emittedSessionToken: string | null = emittedAuth.sessionToken();
+
 const importAdapter: TeamBillingImportAdapter = {
   dialect: { name: "sqlite", sql: (statement) => statement },
   exec: async () => {},

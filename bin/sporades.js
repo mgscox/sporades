@@ -59085,6 +59085,9 @@ export const journey = {
 };
 
 export const auth = {
+  sessionToken() {
+    return connection?.sessionToken() ?? null;
+  },
   get() {
     return connect().auth();
   },
@@ -60119,6 +60122,14 @@ function createConnection() {
   open();
 
   return {
+    sessionToken() {
+      // Expose only the token paired with this tab's confirmed identity. Shared
+      // storage may already belong to a different tab's newly signed-in user.
+      const confirmed = latestAuthMessage;
+      if (pageRetired || socket?.readyState !== WebSocket.OPEN || confirmed?.error || !confirmed?.data?.auth?.isAuthenticated) return null;
+      const token = confirmed.data.sessionToken;
+      return typeof token === "string" && token.length > 0 && token === sessionToken && token === localStorage.getItem("sporades.sessionToken") ? token : null;
+    },
     auth() {
       return request("auth.get").then(publicAuthResult);
     },

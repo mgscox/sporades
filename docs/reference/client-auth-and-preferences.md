@@ -90,6 +90,59 @@ function NewProjectForm() {
 
 The mutation arguments are sent as-is to the server mutation after `ctx`.
 
+### Call Your Own Public Endpoints as the Signed-in User
+
+Import `auth` from `sporades/client` and call **`auth.sessionToken()`** immediately
+before a request to your own same-origin public endpoint. It synchronously returns
+`string | null`; it is a function, not a property. Reading it starts no connection,
+sends no request, and changes no session state.
+
+```ts
+import { auth } from "sporades/client";
+
+// Refresh server validation before a submission, including expiry/revocation.
+const current = await auth.get();
+if (current.error) throw new Error(current.error.message);
+const token = auth.sessionToken();
+if (current.data?.auth.isAuthenticated && !token) {
+  throw new Error("Your session changed. Please retry.");
+}
+await fetch("/support", {
+  method: "POST",
+  headers: {
+    "content-type": "application/json",
+    ...(token ? { "x-sporades-session-token": token } : {}),
+  },
+  body: JSON.stringify({ message: "I need help with my account." }),
+});
+```
+
+The endpoint resolves the header through the same session store as the socket.
+This does not bypass endpoint authorization. A token is a **bearer credential**:
+never log it, put it in a URL, send it cross-origin, or retain it for later use.
+Use a relative same-origin URL and read the token for each request.
+
+| Lifecycle | Return value |
+| --- | --- |
+| Before auth loads, including a new tab with persisted storage | `null`; await `auth.get()` or observe loaded auth state first. |
+| Anonymous/unauthenticated | `null`, even though the transport maintains an internal anonymous session. |
+| Successful sign-up/sign-in | The token paired with the confirmed signed-in identity. Failed sign-in leaves the existing confirmed session unchanged. |
+| Successful sign-out | `null`, including while the runtime refreshes its anonymous session. Failed sign-out retains the confirmed session. |
+| Server rejects an expired/revoked session and refreshes auth | `null`. Call `auth.get()` to obtain current server validation. |
+| Disconnected or retired page | `null`. Reconnect and refresh auth before use. |
+| Another tab changes or removes the shared session | `null` while this tab's confirmed identity and storage disagree; refresh with `auth.get()` before using the new session. |
+
+This is an accessor over the last server-confirmed state, not a validity check.
+A synchronous read cannot discover server-side expiry or revocation that has not
+yet been observed; the server validates every request, and a session can expire
+between validation and use. Do not infer authorization from the presence of a token.
+The accessor never substitutes another tab's token under this tab's old identity.
+
+Reading `localStorage["sporades.sessionToken"]` is **unsupported**. That key and
+storage mechanism are runtime internals. Use this one accessor; framework adapters
+do not expose a separate token API. Apps that do not call it keep their existing
+transport and authentication behavior.
+
 ### Use Auth State
 
 The scaffold exposes auth through `useAuth()`:
