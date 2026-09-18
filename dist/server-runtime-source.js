@@ -3517,6 +3517,10 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                                 await db[identity.table].update(identity.id, {});
                             },
                             drain: drainPendingAclWrites,
+                            async stageLogs(levels) {
+                                for (const level of levels)
+                                    await transactionDatabase.adapter.insertLogIndexEvent(uncappedLogEnvelope({ config: database.config, category: "resource", event: "resource.log", level, message: "Resource transaction committed.", data: null }));
+                            },
                         });
                         const endpointIngressApi = Object.freeze({
                             ...context.files,
@@ -6268,6 +6272,10 @@ export async function runMutation(database, auth, mutationName, args, options = 
                             await db[identity.table].update(identity.id, {});
                         },
                         drain: drainPendingAclWrites,
+                        async stageLogs(levels) {
+                            for (const level of levels)
+                                await transactionDatabase.adapter.insertLogIndexEvent(uncappedLogEnvelope({ config: database.config, category: "resource", event: "resource.log", level, message: "Resource transaction committed.", data: null }));
+                        },
                     });
                     const customHandler = transactionDatabase.mutations.find((candidate) => candidate.name === mutationName);
                     const mutationHandler = customHandler ? materializeHandler(customHandler) : null;

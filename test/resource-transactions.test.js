@@ -88,6 +88,51 @@ test('a Custom mutation outer rollback removes its resource receipt and staged w
   } finally { await f.close(); }
 });
 
+test('a caught outer scope callback or canonical-result failure poisons the enclosing mutation', async () => {
+  const f = await fixture(() => null, {
+    mutations: {
+      caughtCallback: mutation(async ctx => {
+        try { await ctx.resources.run(options(), async scope => { await scope.db.writes.insert({ value: 'caught-callback' }); throw new Error('callback failure'); }); } catch {}
+        return { unexpectedlyCommitted: true };
+      }),
+      caughtResult: mutation(async ctx => {
+        try { await ctx.resources.run(options(), async scope => { await scope.db.writes.insert({ value: 'caught-result' }); return undefined; }); } catch {}
+        return { unexpectedlyCommitted: true };
+      }),
+    },
+  });
+  try {
+    for (const name of ['caughtCallback', 'caughtResult']) {
+      const result = await runMutation(f.database, actor, name, []);
+      assert.equal(result.ok, false);
+    }
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM writes WHERE value LIKE 'caught-%'").get().n, 0);
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sqlite_schema WHERE name='sporades_resource_receipts'").get().n, 0);
+  } finally { await f.close(); }
+});
+
+test('a caught or unawaited invalid child enqueue poisons outer mutation and endpoint resource scopes', async () => {
+  const f = await fixture(() => null, {
+    mutations: {
+      badChild: mutation(async ctx => {
+        await ctx.resources.run(options(), scope => { scope.jobs.enqueue('missing', null); return { queued: true }; });
+        return { unexpectedlyCommitted: true };
+      }),
+    },
+    endpoints: {
+      badChild: endpoint({ method: 'POST', path: '/bad-child' }, async ctx => {
+        try { await ctx.resources.run(options(), async scope => { try { await scope.jobs.enqueue('missing', null); } catch {} return { queued: true }; }); } catch {}
+        return { unexpectedlyCommitted: true };
+      }),
+    },
+  });
+  try {
+    assert.equal((await runMutation(f.database, actor, 'badChild', [])).ok, false);
+    await assert.rejects(runEndpoint(f.database, f.database.endpoints.find(item => item.name === 'badChild'), new URL('http://capsule.test/bad-child'), { method: 'POST', headers: {}, async *[Symbol.asyncIterator]() {} }));
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sqlite_schema WHERE name='sporades_resource_receipts'").get().n, 0);
+  } finally { await f.close(); }
+});
+
 test('a Custom mutation holds its SQLite writer through outer settlement after the scope returns', async () => {
   let scopeReturned, releaseOuter;
   const afterScope = new Promise(resolve => { scopeReturned = resolve; });

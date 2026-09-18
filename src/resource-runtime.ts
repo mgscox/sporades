@@ -94,6 +94,17 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
   void outerAborted.catch(() => {});
   const parentDb = context.db;
   const parentJobs = context.jobs;
+  const pending = new Set<Promise<any>>();
+  const track = (operation: () => any) => {
+    let value: any;
+    try { value = operation(); }
+    catch (error) { terminalError ??= error; throw error; }
+    if (!value || typeof value.then !== "function") return value;
+    const promise = Promise.resolve(value);
+    pending.add(promise);
+    void promise.catch((error) => { terminalError ??= error; });
+    return promise;
+  };
   const actorDigest = createHash("sha256").update(resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged: false })).digest("hex");
   for (const name of ["db", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
     if (!context[name]) continue;
@@ -147,22 +158,33 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
         return status ? { state: "committed", result: JSON.parse(receipt.resultJson), intentIds: JSON.parse(receipt.intentIdsJson) } : JSON.parse(receipt.resultJson);
       }
       if (status) return { state: "absent" };
-      const scopeDb = wrapCapability(parentDb, () => assertLive(true));
+      const scopeDb = wrapCapability(parentDb, () => assertLive(true), [], new WeakMap<object, any>(), track);
+      const logs: string[] = [];
       const scope = Object.freeze({
         db: scopeDb,
-        jobs: Object.freeze({ enqueue: (...args: any[]) => { assertLive(true); return parentJobs.enqueue(...args); } }),
-        log: Object.freeze({ info() {}, warn() {}, error() {} }),
+        jobs: Object.freeze({ enqueue: (...args: any[]) => track(() => { assertLive(true); return parentJobs.enqueue(...args); }) }),
+        log: Object.freeze(Object.fromEntries(["info", "warn", "error"].map((level) => [level, () => {
+          assertLive(true); if (logs.length >= 100) throw resourceError("RESOURCE_INVALID_INPUT"); logs.push(level);
+        }]))),
         signal: controller.signal,
         notifications: Object.freeze({ accept: async () => {
           terminalError ??= resourceError("RESOURCE_EFFECT_UNSUPPORTED");
           throw terminalError;
         } }),
       });
-      const result = await Promise.race([Promise.resolve().then(() => callback(scope)), outerAborted]);
+      let result: any;
+      try { result = await Promise.race([Promise.resolve().then(() => callback(scope)), outerAborted]); }
+      catch (error) { terminalError ??= error; throw error; }
       if (terminalError) throw terminalError;
       admission = false;
-      const resultJson = resourceCanonicalJson(result);
-      await hooks.drain(context);
+      let resultJson: string;
+      try {
+        resultJson = resourceCanonicalJson(result);
+        await Promise.all([...pending]);
+        if (terminalError) throw terminalError;
+        await hooks.drain(context);
+        await hooks.stageLogs?.(logs);
+      } catch (error) { terminalError ??= error; throw error; }
       assertLive();
       await database.adapter.prepare("INSERT INTO sporades_resource_receipts VALUES (?,?,?,?,?,?,?,?)").run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
       assertLive();
@@ -183,7 +205,7 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
 
 // An invocation owns its eligibility in a closure; public context fields cannot
 // forge a Job claim. Proxies preserve synchronous non-opt-in DB return values.
-function wrapCapability(value: any, before: (path: string[]) => void, path: string[] = [], cache = new WeakMap<object, any>()): any {
+function wrapCapability(value: any, before: (path: string[]) => void, path: string[] = [], cache = new WeakMap<object, any>(), afterCall?: (operation: () => any) => any): any {
   if (!value || typeof value !== "object") return value;
   if (cache.has(value)) return cache.get(value);
   const functions = new Map<string, Function>();
@@ -200,8 +222,9 @@ function wrapCapability(value: any, before: (path: string[]) => void, path: stri
         const wrapped = (...args: any[]) => {
         const next = [...path, key];
         before(next);
-        const result = Reflect.apply(member, value, args);
-        return ["where", "orderBy", "limit"].includes(key) ? wrapCapability(result, before, path, cache) : result;
+        const invoke = () => Reflect.apply(member, value, args);
+        const result = afterCall && !["where", "orderBy", "limit"].includes(key) ? afterCall(invoke) : invoke();
+        return ["where", "orderBy", "limit"].includes(key) ? wrapCapability(result, before, path, cache, afterCall) : result;
         };
         functions.set(key, wrapped);
         return wrapped;
