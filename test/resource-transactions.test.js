@@ -265,6 +265,32 @@ test('a Custom endpoint joins its outer transaction for a first resource scope',
   } finally { await f.close(); }
 });
 
+test('a Custom endpoint has the same outer deadline and authorized status semantics as a mutation', async () => {
+  let entered;
+  const endpointEntered = new Promise(resolve => { entered = resolve; });
+  const f = await fixture(() => null, {
+    endpoints: {
+      resourceStall: endpoint({ method: 'POST', path: '/resource-stall' }, async ctx => ctx.resources.run(options(), async () => {
+        entered();
+        await new Promise(() => {});
+        return null;
+      })),
+      resourceStatus: endpoint({ method: 'POST', path: '/resource-status' }, ctx => ctx.resources.status({ resource: options().resource, operationId: 'missing' })),
+    },
+  });
+  const request = { method: 'POST', headers: {}, async *[Symbol.asyncIterator]() {} };
+  try {
+    assert.deepEqual(await runEndpoint(f.database, f.database.endpoints.find(item => item.name === 'resourceStatus'), new URL('http://capsule.test/resource-status'), request), { state: 'absent' });
+    const before = new Set(f.clock.pendingTimerIds());
+    const running = runEndpoint(f.database, f.database.endpoints.find(item => item.name === 'resourceStall'), new URL('http://capsule.test/resource-stall'), request);
+    await endpointEntered;
+    const [watchdog] = f.clock.pendingTimerIds().filter(id => !before.has(id));
+    f.clock.advanceBy(30_000);
+    await f.clock.runTimer(watchdog);
+    await assert.rejects(running, { code: 'RESOURCE_DEADLINE_EXCEEDED' });
+  } finally { await f.close(); }
+});
+
 test('rollback removes app writes and receipt; escaped handles reject after callback', async () => {
   let escaped;
   const f = await fixture(async ctx => ctx.resources.run(options(), async scope => {
