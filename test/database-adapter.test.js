@@ -4224,7 +4224,7 @@ test("sessions and local identity simulation cannot resolve the privileged senti
       assert.notEqual(simulated.data.auth.userId, "__privileged__");
       assert.equal(
         database.adapter.prepare("SELECT provider FROM sporades_auth_users WHERE id = ?").get(simulated.data.auth.userId).provider,
-        "anonymous",
+        "email",
       );
       assert.equal(
         database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_users WHERE id = ?").get("__privileged__").count,
@@ -4693,8 +4693,8 @@ test("Provider identities use stable subjects and Sessions retain their own auth
       assert.equal(database.adapter.readAuthSessionWithUser(firstSession.token).provider, "google");
       assert.equal(
         database.adapter.prepare("SELECT provider FROM sporades_auth_users WHERE id = ?").get(first.auth.userId).provider,
-        "anonymous",
-        "linking an identity must not rewrite the legacy user provider marker",
+        "google",
+        "linking an identity records the method on the user independently of Sessions",
       );
 
       const secondSession = await resolveAnonymousSession(database, null);
@@ -4740,8 +4740,8 @@ test("Provider identities use stable subjects and Sessions retain their own auth
       assert.equal(database.adapter.readAuthSessionWithUser(email.sessionToken).provider, "email");
       assert.equal(
         database.adapter.prepare("SELECT provider FROM sporades_auth_users WHERE id = ?").get(email.auth.userId).provider,
-        "anonymous",
-        "email registration must not make the legacy user provider marker authoritative",
+        "email",
+        "email registration records its method without making the user label authentication authority",
       );
 
       const secondEmailAnonymous = await resolveAnonymousSession(database, null);

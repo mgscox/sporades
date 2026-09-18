@@ -281,3 +281,23 @@ There is intentionally no Capsule-facing key command in this release. If key
 material is missing or corrupt, stop accepting new OAuth registrations, restore
 the database from a protected backup, reopen the Capsule to reconcile, and ask
 users whose state expired during recovery to start OAuth again.
+
+## Stored user provider labels
+
+`sporades_auth_users.provider` summarizes the method of the user's most recent
+successful authentication write. `anonymous` means an unauthenticated guest,
+including after unlink; the old `guest` spelling is normalized on startup.
+Authenticated users cannot carry either guest label. Sessions retain their own
+provider provenance, so signing in with another method does not rewrite the
+provider of other Sessions. Use `isAuthenticated` and `isGuest` for authentication
+decisions, not a provider string alone.
+
+On upgrade, historical authenticated guest labels are repaired from
+`sporades_auth_identities` when every recorded identity method agrees on one
+supported method. A row with no identity evidence (including legacy email-only
+credential rows), unsupported evidence, or multiple distinct methods receives
+`unknown`, never a guessed method. A successful subsequent sign-in replaces that
+summary with the method used. Existing correct labels are preserved. This
+idempotent repair changes only user labels: flags, email, identities, credentials,
+and Session tokens, expiry, and provenance remain unchanged. No sign-out is
+required. See [ADR 0015](../adr/0015-provider-auth-runtime-owned-oauth.md).

@@ -1007,8 +1007,10 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
         picture: "https://example.com/registered.png",
         isAuthenticated: 1,
         isGuest: 0,
+        provider: "email",
       });
       assert.equal(updated.changes, 1);
+      assert.equal((await adapter.prepare(adapter.dialect.sql("SELECT [provider] FROM [sporades_auth_users] WHERE [id] = ?")).get(REGISTERED_USER.id)).provider, "email");
 
       // The profile columns change and the address does not, which is what separates this method
       // from `linkAuthUser` below.
@@ -1031,8 +1033,10 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
         picture: null,
         isAuthenticated: 1,
         isGuest: 0,
+        provider: "email",
       });
       assert.equal(linked.changes, 1);
+      assert.equal((await adapter.prepare(adapter.dialect.sql("SELECT [provider] FROM [sporades_auth_users] WHERE [id] = ?")).get(REGISTERED_USER.id)).provider, "email");
       assert.deepEqual(sessionFields(await adapter.readAuthSessionWithUser(REGISTERED_SESSION_TOKEN)), {
         token: REGISTERED_SESSION_TOKEN,
         userId: REGISTERED_USER.id,
@@ -1047,7 +1051,7 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
 
       // Both sides of each write: a Sporades user that does not exist is reported as unchanged
       // rather than silently created, and neither method will touch the reserved identity.
-      const absent = { id: "auth-user-absent", displayName: "Nobody", email: "nobody@example.com", picture: null, isAuthenticated: 1, isGuest: 0 };
+      const absent = { id: "auth-user-absent", provider: "email", displayName: "Nobody", email: "nobody@example.com", picture: null, isAuthenticated: 1, isGuest: 0 };
       assert.equal((await adapter.updateAuthUserProfile(absent)).changes, 0);
       assert.equal((await adapter.linkAuthUser(absent)).changes, 0);
 
@@ -1611,6 +1615,7 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
             picture: null,
             isAuthenticated: 0,
             isGuest: 1,
+            provider: "anonymous",
           });
       });
       await locked;
@@ -1876,6 +1881,7 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
         picture: SIGNED_IN_USER.picture,
         isAuthenticated: 0,
         isGuest: 1,
+        provider: "anonymous",
       });
       const unlinkedListing = await adapter.withTransaction((tx) =>
         tx.listAccessKeyRecordsForOwner(active.ownerUserId, sessionOptions));
