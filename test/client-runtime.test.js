@@ -43,6 +43,45 @@ test("auth.sessionToken is a synchronous passive accessor for confirmed signed-i
   } finally { browser.cleanup(); }
 });
 
+test("auth.sessionToken waits for the replacement socket's auth confirmation", async () => {
+  const linked = { ...anonymousAuth, isAuthenticated: true, isGuest: false };
+  let respond;
+  const browser = installBrowserFakes(linked);
+  try {
+    const runtime = await importClientRuntime();
+    await runtime.auth.get();
+    assert.equal(runtime.auth.sessionToken(), "session-token");
+    const oldSocket = browser.sockets[0];
+    oldSocket.readyState = 3;
+    oldSocket.emit("close", {});
+    assert.equal(runtime.auth.sessionToken(), null);
+    // Capture auth on the replacement before replying, including a delayed
+    // old-socket confirmation that must not validate the new connection.
+    const FakeWebSocket = globalThis.WebSocket;
+    const originalSend = FakeWebSocket.prototype.send;
+    FakeWebSocket.prototype.send = function(raw) {
+      const message = JSON.parse(raw);
+      if (message.type !== "auth.get") return originalSend.call(this, raw);
+      respond = (auth) => this.emit("message", { data: JSON.stringify({
+        id: message.id, type: "auth.result", data: { sessionToken: "session-token", auth }, error: null,
+      }) });
+    };
+    const refreshing = runtime.auth.get();
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    const replacement = browser.sockets.at(-1);
+    assert.notEqual(replacement, oldSocket);
+    assert.equal(replacement.readyState, FakeWebSocket.OPEN);
+    assert.equal(runtime.auth.sessionToken(), null, "OPEN alone is not a fresh confirmation");
+    oldSocket.emit("message", { data: JSON.stringify({ type: "auth.result", data: { sessionToken: "session-token", auth: linked }, error: null }) });
+    assert.equal(runtime.auth.sessionToken(), null, "old socket cannot confirm its replacement");
+    respond(anonymousAuth);
+    await refreshing;
+    assert.equal(runtime.auth.sessionToken(), null, "revoked or expired offline session stays unavailable");
+    respond(linked);
+    assert.equal(runtime.auth.sessionToken(), "session-token", "current socket can confirm a linked session");
+  } finally { browser.cleanup(); }
+});
+
 test("auth.sessionToken never adopts another tab's unconfirmed principal or removed token", async () => {
   const linked = { ...anonymousAuth, userId: "first-user", isAuthenticated: true, isGuest: false };
   const browser = installBrowserFakes(linked);
