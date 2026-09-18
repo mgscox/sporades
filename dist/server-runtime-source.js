@@ -3484,6 +3484,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
     try {
         let result;
         let transactionAttempt = 0;
+        let committedResourceLogEvents = [];
         let sealCommittedAttachmentResult = (value) => value;
         while (true) {
             let ingressFenceAcquired = false;
@@ -3518,8 +3519,10 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                             },
                             drain: drainPendingAclWrites,
                             async stageLogs(levels) {
-                                for (const level of levels)
-                                    await transactionDatabase.adapter.insertLogIndexEvent(uncappedLogEnvelope({ config: database.config, category: "resource", event: "resource.log", level, message: "Resource transaction committed.", data: null }));
+                                const events = levels.map((level) => uncappedLogEnvelope({ config: database.config, category: "resource", event: "resource.log", level, message: "Resource transaction committed.", data: null }));
+                                for (const event of events)
+                                    await transactionDatabase.adapter.insertLogIndexEvent(event);
+                                committedResourceLogEvents = events;
                             },
                         });
                         const endpointIngressApi = Object.freeze({
@@ -3559,6 +3562,9 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                         }
                     }
                 });
+                if (database.log?.path)
+                    for (const event of committedResourceLogEvents)
+                        appendFileSync(database.log.path, `${JSON.stringify(event)}\n`);
                 break;
             }
             catch (error) {
@@ -6242,6 +6248,7 @@ function normalizeQueryArgumentValue(value, ancestors) {
 export async function runMutation(database, auth, mutationName, args, options = {}) {
     let context;
     let result;
+    let committedResourceLogEvents = [];
     const writeState = { didWrite: false };
     try {
         const declaredHandler = database.mutations.find((candidate) => candidate.name === mutationName);
@@ -6273,8 +6280,10 @@ export async function runMutation(database, auth, mutationName, args, options = 
                         },
                         drain: drainPendingAclWrites,
                         async stageLogs(levels) {
-                            for (const level of levels)
-                                await transactionDatabase.adapter.insertLogIndexEvent(uncappedLogEnvelope({ config: database.config, category: "resource", event: "resource.log", level, message: "Resource transaction committed.", data: null }));
+                            const events = levels.map((level) => uncappedLogEnvelope({ config: database.config, category: "resource", event: "resource.log", level, message: "Resource transaction committed.", data: null }));
+                            for (const event of events)
+                                await transactionDatabase.adapter.insertLogIndexEvent(event);
+                            committedResourceLogEvents = events;
                         },
                     });
                     const customHandler = transactionDatabase.mutations.find((candidate) => candidate.name === mutationName);
@@ -6325,6 +6334,9 @@ export async function runMutation(database, auth, mutationName, args, options = 
                 }
             });
         });
+        if (database.log?.path)
+            for (const event of committedResourceLogEvents)
+                appendFileSync(database.log.path, `${JSON.stringify(event)}\n`);
         await commitPendingCurrentUserFileByteDeletes(context);
         commitPendingJobCancellationAborts(context);
         await flushAccessKeyLifecycleAuditEvents(database, context);

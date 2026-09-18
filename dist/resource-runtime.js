@@ -139,6 +139,9 @@ export function bindOuterResources(database, context, hooks) {
         used = true;
         scopeActive = true;
         admission = true;
+        // Mark only this opt-in outer transaction for resource-aware COMMIT outcome
+        // handling. Ordinary mutations retain their historical transaction semantics.
+        database.adapter[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
         const deadline = hooks.startedAt + 30_000;
         outerDeadline = deadline;
         // The outer lifecycle tears down its watchdog during async cleanup, before

@@ -1804,18 +1804,24 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
           : { exec: this.exec.bind(this), prepare: this.prepare.bind(this) };
         const transactionAdapter = createTransactionScopedAdapter(this, ownerOperations, this, "transaction");
         const transactionExec = ownerOperations.exec;
+        let resourceCommitIssued = false;
         await transactionExec("BEGIN");
         try {
           let result;
           try {
             result = await fn(transactionAdapter);
             await runTransactionBeforeCommitChecks(transactionAdapter);
+            resourceCommitIssued = Boolean((transactionAdapter as any)[Symbol.for("sporades.database.resourceOuterTransaction")]);
           }
           finally { revokeTransactionScopedAdapter(transactionAdapter); }
           await transactionExec("COMMIT");
           return result;
         } catch (error) {
-          await transactionExec("ROLLBACK");
+          // A resource transaction cannot call a lost COMMIT acknowledgement a
+          // rollback. Its scoped handles have already been revoked; the caller
+          // reconciles through the durable receipt after new authority.
+          if (!resourceCommitIssued) await transactionExec("ROLLBACK");
+          if (resourceCommitIssued) throw resourceError("RESOURCE_COMMIT_UNKNOWN");
           throw error;
         }
       }, options);

@@ -547,7 +547,13 @@ they join the enclosing transaction, hold its SQLite writer authority after the
 scope callback returns, and return provisional data which becomes visible only
 when the outer transaction commits. An outer rollback removes the receipt and
 protected writes. Their outer transaction receives the same 30-second budget and
-one-second admission reserve as an ordinary Job claim. PostgreSQL and libSQL fail
+one-second admission reserve as an ordinary Job claim, including an adapter-owned
+check at the actual commit decision. A lost outer COMMIT acknowledgement reports
+`RESOURCE_COMMIT_UNKNOWN`, invalidates the scoped handles, and is reconciled only
+by a later authorized receipt read; it is never reported as rollback. Resource
+log index events and their bounded payload-free JSONL copies publish only after a
+known outer commit, so an unknown outcome intentionally has no JSONL publication
+claim. PostgreSQL and libSQL fail
 closed before callback execution; their tickets are 04 and 05. The
 `notifications.accept({id, to, subject, text, html?})` signature is reserved and
 always rejects `RESOURCE_EFFECT_UNSUPPORTED` until ticket 06; this slice stages

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { openDevDatabase, runMutation, runEndpoint, runCurrentUserJobWorker, createControllableRuntimeClock } from '../dist/server-runtime-source.js';
@@ -462,6 +463,28 @@ test('outer resource commit checks the deadline at the actual transaction commit
   } finally { f.database.adapter.withTransaction = withTransaction; await f.close(); }
 });
 
+test('an outer unknown commit outcome reconciles by receipt without replaying its callback', async () => {
+  let callbacks = 0;
+  const f = await fixture(() => null, { mutations: { unknownOuterCommit: mutation(ctx => ctx.resources.run({ ...options(), operationId: 'outer-unknown-commit' }, async scope => {
+    callbacks++; await scope.db.writes.insert({ value: 'outer-once' }); return { once: true };
+  })) } });
+  const withTransaction = f.database.adapter.withTransaction.bind(f.database.adapter);
+  let loseReply = true;
+  f.database.adapter.withTransaction = async callback => {
+    const result = await withTransaction(callback);
+    if (loseReply) { loseReply = false; throw Object.assign(new Error('lost COMMIT reply'), { code: 'RESOURCE_COMMIT_UNKNOWN' }); }
+    return result;
+  };
+  try {
+    const first = await runMutation(f.database, actor, 'unknownOuterCommit', []);
+    assert.equal(first.ok, false); assert.equal(first.error.code, 'RESOURCE_COMMIT_UNKNOWN');
+    const replay = await runMutation(f.database, actor, 'unknownOuterCommit', []);
+    assert.deepEqual(replay, { ok: true, data: { once: true }, error: null });
+    assert.equal(callbacks, 1);
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='outer-once'").get().n, 1);
+  } finally { f.database.adapter.withTransaction = withTransaction; await f.close(); }
+});
+
 test('the outer watchdog aborts the real pending-log cleanup phase after a completed resource scope', async () => {
   let entered;
   const inserted = new Promise(resolve => { entered = resolve; });
@@ -561,6 +584,9 @@ test('outer mutation and endpoint resource logs commit payload-free, roll back, 
     const events = (await f.database.adapter.readRecentLogEvents(100)).filter(event => event.category === 'resource');
     assert.equal(events.length, 2);
     assert.equal(JSON.stringify(events).includes('secret'), false);
+    const jsonl = readFileSync(f.database.log.path, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)).filter(event => event.category === 'resource');
+    assert.equal(jsonl.length, 2);
+    assert.equal(JSON.stringify(jsonl).includes('secret'), false);
   } finally { await f.close(); }
 });
 

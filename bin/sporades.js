@@ -94147,6 +94147,7 @@ function bindOuterResources(database, context, hooks) {
     used = true;
     scopeActive = true;
     admission = true;
+    database.adapter[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
     const deadline = hooks.startedAt + 3e4;
     outerDeadline = deadline;
     const beforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
@@ -98477,19 +98478,22 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         const ownerOperations = typeof this[transactionOperations] === "function" ? this[transactionOperations]() : { exec: this.exec.bind(this), prepare: this.prepare.bind(this) };
         const transactionAdapter = createTransactionScopedAdapter(this, ownerOperations, this, "transaction");
         const transactionExec = ownerOperations.exec;
+        let resourceCommitIssued = false;
         await transactionExec("BEGIN");
         try {
           let result;
           try {
             result = await fn(transactionAdapter);
             await runTransactionBeforeCommitChecks(transactionAdapter);
+            resourceCommitIssued = Boolean(transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")]);
           } finally {
             revokeTransactionScopedAdapter(transactionAdapter);
           }
           await transactionExec("COMMIT");
           return result;
         } catch (error) {
-          await transactionExec("ROLLBACK");
+          if (!resourceCommitIssued) await transactionExec("ROLLBACK");
+          if (resourceCommitIssued) throw resourceError("RESOURCE_COMMIT_UNKNOWN");
           throw error;
         }
       }, options2);
@@ -102448,6 +102452,7 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
   try {
     let result;
     let transactionAttempt = 0;
+    let committedResourceLogEvents = [];
     let sealCommittedAttachmentResult = (value) => value;
     while (true) {
       let ingressFenceAcquired = false;
@@ -102477,7 +102482,9 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
               },
               drain: drainPendingAclWrites,
               async stageLogs(levels) {
-                for (const level of levels) await transactionDatabase.adapter.insertLogIndexEvent(uncappedLogEnvelope({ config: database.config, category: "resource", event: "resource.log", level, message: "Resource transaction committed.", data: null }));
+                const events = levels.map((level) => uncappedLogEnvelope({ config: database.config, category: "resource", event: "resource.log", level, message: "Resource transaction committed.", data: null }));
+                for (const event of events) await transactionDatabase.adapter.insertLogIndexEvent(event);
+                committedResourceLogEvents = events;
               }
             });
             const endpointIngressApi = Object.freeze({
@@ -102515,6 +102522,8 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
             }
           }
         });
+        if (database.log?.path) for (const event of committedResourceLogEvents) appendFileSync(database.log.path, `${JSON.stringify(event)}
+`);
         break;
       } catch (error) {
         if (ingressFenceAcquired || database.adapter.engine !== "sqlite" || transactionAttempt >= 100 || !String(error?.message ?? "").includes("database is locked")) throw error;
@@ -105075,6 +105084,7 @@ function normalizeQueryArgumentValue(value, ancestors) {
 async function runMutation(database, auth, mutationName, args, options = {}) {
   let context;
   let result;
+  let committedResourceLogEvents = [];
   const writeState = { didWrite: false };
   try {
     const declaredHandler = database.mutations.find((candidate) => candidate.name === mutationName);
@@ -105105,7 +105115,9 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
             },
             drain: drainPendingAclWrites,
             async stageLogs(levels) {
-              for (const level of levels) await transactionDatabase.adapter.insertLogIndexEvent(uncappedLogEnvelope({ config: database.config, category: "resource", event: "resource.log", level, message: "Resource transaction committed.", data: null }));
+              const events = levels.map((level) => uncappedLogEnvelope({ config: database.config, category: "resource", event: "resource.log", level, message: "Resource transaction committed.", data: null }));
+              for (const event of events) await transactionDatabase.adapter.insertLogIndexEvent(event);
+              committedResourceLogEvents = events;
             }
           });
           const customHandler = transactionDatabase.mutations.find((candidate) => candidate.name === mutationName);
@@ -105149,6 +105161,8 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
         }
       });
     });
+    if (database.log?.path) for (const event of committedResourceLogEvents) appendFileSync(database.log.path, `${JSON.stringify(event)}
+`);
     await commitPendingCurrentUserFileByteDeletes(context);
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);

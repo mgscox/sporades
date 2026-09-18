@@ -3683,6 +3683,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
   let context: LooseRecord | undefined;
   try {
     let result: any; let transactionAttempt = 0;
+    let committedResourceLogEvents: LooseRecord[] = [];
     let sealCommittedAttachmentResult = (value: unknown) => value;
     while (true) {
       let ingressFenceAcquired = false;
@@ -3715,7 +3716,9 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
               },
               drain: drainPendingAclWrites,
               async stageLogs(levels: string[]) {
-                for (const level of levels) await transactionDatabase.adapter.insertLogIndexEvent(uncappedLogEnvelope({ config: database.config, category: "resource", event: "resource.log", level, message: "Resource transaction committed.", data: null }));
+                const events = levels.map((level) => uncappedLogEnvelope({ config: database.config, category: "resource", event: "resource.log", level, message: "Resource transaction committed.", data: null }));
+                for (const event of events) await transactionDatabase.adapter.insertLogIndexEvent(event);
+                committedResourceLogEvents = events;
               },
             });
             const endpointIngressApi = Object.freeze({
@@ -3750,6 +3753,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
             finally { revokeOuterResources?.(); }
           }
         });
+        if (database.log?.path) for (const event of committedResourceLogEvents) appendFileSync(database.log.path, `${JSON.stringify(event)}\n`);
         break;
       } catch (error: any) {
         if (ingressFenceAcquired || database.adapter.engine !== "sqlite" || transactionAttempt >= 100 || !String(error?.message ?? "").includes("database is locked")) throw error;
@@ -6543,6 +6547,7 @@ function normalizeQueryArgumentValue(value: unknown, ancestors: Set<object>): un
 export async function runMutation(database: LooseRecord, auth: any, mutationName: string, args: any, options: LooseRecord = {}) {
   let context: LooseRecord | undefined;
   let result;
+  let committedResourceLogEvents: LooseRecord[] = [];
   const writeState = { didWrite: false };
   try {
     const declaredHandler = database.mutations.find((candidate: { name: any; }) => candidate.name === mutationName);
@@ -6573,7 +6578,9 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
           },
           drain: drainPendingAclWrites,
           async stageLogs(levels: string[]) {
-            for (const level of levels) await transactionDatabase.adapter.insertLogIndexEvent(uncappedLogEnvelope({ config: database.config, category: "resource", event: "resource.log", level, message: "Resource transaction committed.", data: null }));
+            const events = levels.map((level) => uncappedLogEnvelope({ config: database.config, category: "resource", event: "resource.log", level, message: "Resource transaction committed.", data: null }));
+            for (const event of events) await transactionDatabase.adapter.insertLogIndexEvent(event);
+            committedResourceLogEvents = events;
           },
         });
         const customHandler = transactionDatabase.mutations.find((candidate: { name: any; }) => candidate.name === mutationName);
@@ -6623,6 +6630,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
         }
       });
     });
+    if (database.log?.path) for (const event of committedResourceLogEvents) appendFileSync(database.log.path, `${JSON.stringify(event)}\n`);
     await commitPendingCurrentUserFileByteDeletes(context);
     commitPendingJobCancellationAborts(context);
     await flushAccessKeyLifecycleAuditEvents(database, context);
