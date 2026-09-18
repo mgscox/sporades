@@ -1,3 +1,4 @@
+export type { ResourceIdentity, ResourceRunOptions, ResourceStatusOptions, ResourceNotification, ResourceScope, ResourceStatus, ResourcesApi } from "../src/types/server.js";
 import type { EndpointBodyBytes as CanonicalEndpointBodyBytes, EndpointContext as CanonicalEndpointContext, EndpointFileAttachmentApi as CanonicalEndpointFileAttachmentApi, EndpointFileAttachmentContext as CanonicalEndpointFileAttachmentContext, EndpointFileAttachmentOptions as CanonicalEndpointFileAttachmentOptions, EndpointFileAttachmentReference as CanonicalEndpointFileAttachmentReference, EndpointFileAttachmentResponse as CanonicalEndpointFileAttachmentResponse, EndpointFileIngressApi as CanonicalEndpointFileIngressApi, EndpointFileIngressInspection as CanonicalEndpointFileIngressInspection, EndpointFileIngressLease as CanonicalEndpointFileIngressLease, EndpointFileMetadata as CanonicalEndpointFileMetadata, EndpointRequest as CanonicalEndpointRequest, FileIngressOptions as CanonicalFileIngressOptions, SchemaDefinition as CanonicalSchemaDefinition } from "../src/types/server.js";
 export type FieldKind = "String" | "Boolean" | "Number" | "Date" | "Json" | "Reference";
 export type UnknownRecord = Record<string, unknown>;
@@ -326,5 +327,4 @@ export declare function Date(): FieldBuilder<string | globalThis.Date | null>;
 export declare function Json<Value extends JsonValue = JsonValue>(): FieldBuilder<Value>;
 export declare function Reference(targetTable: string): ReferenceFieldBuilder;
 export declare function serverRuntimeModuleSource(): string;
-export {};
 //# sourceMappingURL=server.d.ts.map

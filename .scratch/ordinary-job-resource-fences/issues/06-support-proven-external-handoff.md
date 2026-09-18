@@ -22,3 +22,7 @@
 - [ ] Ship types, generated behavior, bounded redacted diagnostics and docs stating possible post-revocation send, automatic retry after crash/uncertainty, possible duplicate acceptance, and no exactly-once or unconditional eventual-delivery promise. Do not claim original #52 is satisfied.
 
 **Validation prerequisites:** Follow the shared plan: real worktree-installed dependencies via `npm ci`, never symlinked `node_modules`; approved disposable local PostgreSQL and dedicated test harness when PostgreSQL is tested.
+
+## Ticket 02 handoff
+
+02 reserves notifications.accept but always rejects RESOURCE_EFFECT_UNSUPPORTED. Receipts retain intentIdsJson as [] and are their own permanent replay tombstones. Add validated immutable intent staging atomically here; do not infer that reserved types are an implemented acceptance path.

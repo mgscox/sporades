@@ -1,6 +1,6 @@
 # Ordinary Job authority does not fence SMTP acceptance
 
-Date: 2026-09-18. Status: **M1 approved by maintainer; ticket 02 ready; implementation not started**.
+Date: 2026-09-18. Status: **M1 approved by maintainer; ticket 02 SQLite implementation; downstream tickets pending**.
 Part of [#52](https://github.com/mgscox/sporades/issues/52),
 [ticket 01](https://github.com/mgscox/sporades/blob/codex/issue-52-resource-fence-tickets/.scratch/ordinary-job-resource-fences/issues/01-prove-external-side-effect-contract.md).
 
@@ -474,3 +474,49 @@ the amended DB boundary without solving ordinary SMTP fencing; 06 implements
 durable intent delivery with automatic retry and accepted duplicates. Strict SMTP
 fencing and public CAS remain outside this approved plan. #52 stays open until
 implementation and validation against the amended contract are complete.
+
+### Ticket 02 implementation decisions and corrections
+
+The API above specifies the completed seven-ticket contract. The frontier is
+staged: ticket 02 implements ordinary Jobs on file-backed SQLite; ticket 03 owns
+mutation/Custom endpoint joining, and 06 owns intent staging. Until those tickets,
+other contexts reject `RESOURCE_CONTEXT_UNSUPPORTED` and `notifications.accept`
+rejects `RESOURCE_EFFECT_UNSUPPORTED`. This resolves the ticket-02 checklist's
+"exact ADR API" wording versus the explicit 03/06 ownership: exposing incomplete
+outer-transaction or intent behavior would be unsafe and would start those tickets.
+No SMTP or other notification transport is included here. In-memory SQLite is
+unsupported because an independent connection would address a different database.
+
+The requirement to reject arbitrary network I/O cannot be a runtime enforcement
+claim: Capsule JavaScript can import Node sockets or a provider client without
+using `ctx`. This API guards framework context capabilities and documents arbitrary
+I/O as forbidden application behavior, with no sandbox/fencing guarantee. The
+same limitation applies to detecting a prior independently imported provider call.
+This clarifies the already stated JavaScript limitation instead of pretending
+that withholding `scope.mail` revokes an unrelated function.
+
+V1 decisions are fixed in the [canonical reference](../reference/jobs-and-schedules.md#sqlite-resource-transactions-ticket-02):
+128-byte well-formed UTF-8 identities; 65,536-byte canonical input/result; maximum
+JSON nesting 64; complete captured Auth/Credential plus Privileged-mode actor
+binding; once-per-invocation status/run; fixed redacted errors; immediate busy
+Error `{code: "RESOURCE_BUSY", retryable: true}`. SQLite receipts are stored in
+`sporades_resource_receipts`, created lazily, keyed by table/ID/operation within
+the retained database, with input/actor SHA-256, canonical result, intent IDs and
+commit time. A receipt is its own indefinitely retained replay tombstone. No
+SQLite resource-lock row or resource lease exists to delete/reset on restart.
+Logs buffer at most 100 payload-free severity events, stage their index rows
+in the receipt transaction, and publish the JSONL copy after commit;
+identifiers, inputs, results and message payloads are never included by this API.
+
+The phrase "recovery/cancel waits for engine release" describes the ordering
+boundary, not a promise that every existing SQLite caller blocks. Independent
+ordinary SQLite connections use immediate busy failure; a cancellation attempted
+while a resource writer holds authority returns SQLite busy without committing
+its marker. Its caller must retry after release. The same-runtime connection
+gate queues independent root operations. Automatically replaying an entire
+mutation/endpoint callback to hide `SQLITE_BUSY_SNAPSHOT` would violate the
+no-hidden-callback-replay contract and change non-opt-in behavior. Ticket 02
+therefore preserves this explicit failure and proves cancellation after release
+cannot undo a committed receipt. Recovery's existing retry timer likewise cannot
+transfer ownership while the engine excludes its conditional update. No expiry,
+cancellation signal, or startup path forcibly drops an engine lock.

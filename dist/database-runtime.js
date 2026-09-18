@@ -1,3 +1,4 @@
+import { resourceError } from "./resource-runtime.js";
 // The Capsule runtime's Database adapters and dialect: the three engines, the seam they answer, the
 // one shared method set every behavioural call goes through, and the app-schema DDL that method set
 // emits. Batch 9 of the migration ADR-0041 records, and the last domain to leave
@@ -186,6 +187,7 @@ function createConnectionTransactionGate() {
     const transactionOwner = Object.freeze({});
     let transactionTail = Promise.resolve();
     let transactionActive = false;
+    let transactionWaiters = 0;
     const pending = [];
     const drainPending = async () => {
         while (pending.length > 0) {
@@ -213,6 +215,7 @@ function createConnectionTransactionGate() {
     const runTransaction = async (operation, options = {}) => {
         if (transactionOwnership.getStore() === transactionOwner)
             return await rejectNestedTransactionScope();
+        transactionWaiters += 1;
         const previous = transactionTail;
         let release = () => { };
         transactionTail = new Promise((resolve) => { release = resolve; });
@@ -221,6 +224,7 @@ function createConnectionTransactionGate() {
         // the serial chain cannot be released until its predecessor has finished:
         // otherwise a later transaction could overlap the still-active owner.
         if (options.signal?.aborted) {
+            transactionWaiters -= 1;
             void waitForPrevious.then(release);
             throw cancelledTransaction();
         }
@@ -244,6 +248,7 @@ function createConnectionTransactionGate() {
         }
         finally {
             removeAbort();
+            transactionWaiters -= 1;
             if (entered) {
                 transactionActive = false;
                 await drainPending();
@@ -255,7 +260,7 @@ function createConnectionTransactionGate() {
         }
     };
     const whenIdle = async () => await transactionTail.catch(() => { });
-    return { runOperation, runTransaction, whenIdle };
+    return { runOperation, runTransaction, whenIdle, isBusy: () => transactionWaiters > 0 };
 }
 async function rejectNestedTransactionScope() {
     throw commandError("Nested database transactions are not supported.", "Keep mutation work inside a single Sporades mutation transaction.");
@@ -1345,6 +1350,61 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         engine: "sqlite",
         dialect,
         normalization: sqliteRowNormalization(),
+        async withResourceTransaction(fn, beforeCommit) {
+            if (options.readOnly || String(databasePath) === ":memory:")
+                throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+            if (connectionGate.isBusy())
+                throw resourceError("RESOURCE_BUSY");
+            // The gate protects this runtime's ordinary connection; SQLite itself
+            // supplies the cross-process exclusion on the dedicated connection.
+            return connectionGate.runTransaction(async () => {
+                const dedicated = new DatabaseSync(databasePath);
+                let begun = false;
+                let commitIssued = false;
+                const operations = {
+                    exec: (sql) => dedicated.exec(sql),
+                    prepare: (sql) => dedicated.prepare(sql),
+                };
+                const transaction = createTransactionScopedAdapter(adapter, operations, adapter, "transaction");
+                try {
+                    dedicated.exec("PRAGMA busy_timeout = 0");
+                    try {
+                        dedicated.exec("BEGIN IMMEDIATE");
+                    }
+                    catch (error) {
+                        if (error?.errcode === 5 || error?.errcode === 6)
+                            throw resourceError("RESOURCE_BUSY");
+                        throw resourceError("RESOURCE_STORAGE_ERROR");
+                    }
+                    begun = true;
+                    const result = await fn(transaction);
+                    beforeCommit?.(transaction);
+                    revokeTransactionScopedAdapter(transaction);
+                    commitIssued = true;
+                    dedicated.exec("COMMIT");
+                    begun = false;
+                    return result;
+                }
+                catch (error) {
+                    revokeTransactionScopedAdapter(transaction);
+                    if (begun) {
+                        try {
+                            dedicated.exec("ROLLBACK");
+                        }
+                        catch { }
+                    }
+                    if (commitIssued)
+                        throw resourceError("RESOURCE_COMMIT_UNKNOWN");
+                    if (error?.code === "ERR_SQLITE_ERROR")
+                        throw resourceError("RESOURCE_STORAGE_ERROR");
+                    throw error;
+                }
+                finally {
+                    revokeTransactionScopedAdapter(transaction);
+                    dedicated.close();
+                }
+            });
+        },
         async withTransaction(fn, options = {}) {
             return await connectionGate.runTransaction(async () => {
                 const ownerOperations = typeof this[transactionOperations] === "function"

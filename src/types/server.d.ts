@@ -864,15 +864,33 @@ export type PrivilegedApi<Schema extends SchemaDefinition = SchemaDefinition> = 
   ): Promise<Result>;
 };
 
-/**
- * Runtime-owned context passed to queries, mutations, endpoints, messages,
- * middleware, and hooks.
- */
+/** Exact declared app-table identity in the retained Capsule database. */
+export type ResourceIdentity = Readonly<{ table: string; id: string }>;
+export type ResourceRunOptions = Readonly<{ resource: ResourceIdentity; operationId: string; input: JsonValue }>;
+export type ResourceStatusOptions = Readonly<{ resource: ResourceIdentity; operationId: string }>;
+export type ResourceNotification = Readonly<{ id: string; to: readonly string[]; subject: string; text: string; html?: string }>;
+export type ResourceScope<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{
+  db: DatabaseFromSchema<Schema>;
+  jobs: Pick<JobApi, "enqueue">;
+  log: Logger;
+  signal: AbortSignal;
+  /** Reserved surface. Rejects RESOURCE_EFFECT_UNSUPPORTED until durable intents ship. */
+  notifications: { accept(input: ResourceNotification): Promise<{ id: string; state: "staged" }> };
+}>;
+export type ResourceStatus = { state: "absent" } | { state: "committed"; result: JsonValue; intentIds: string[] };
+/** SQLite ordinary Jobs only in this slice. One call, before application DB/provider work. */
+export type ResourcesApi<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{
+  run<Result extends JsonValue>(options: ResourceRunOptions, callback: (scope: ResourceScope<Schema>) => MaybePromise<Result>): Promise<Result>;
+  status(options: ResourceStatusOptions): Promise<ResourceStatus>;
+}>;
+
+/** Runtime-owned context passed to handlers, middleware and hooks. */
 export type CapsuleContext<
   Schema extends SchemaDefinition = SchemaDefinition,
   Credential extends CredentialProvenance = CredentialProvenance,
 > = {
   db: DatabaseFromSchema<Schema>;
+  resources: ResourcesApi<Schema>;
   auth: AuthContext;
   credential: Credential;
   env: Record<string, string>;

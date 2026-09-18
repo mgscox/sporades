@@ -1354,3 +1354,7 @@ use project files directly and never snapshot them. Seed publication is journale
 before it happens; an interrupted attempt blocks further lifecycle commands until
 `sporades deploy reconcile` or `sporades host reconcile` settles it, rolling back
 only unchanged seeds and always retaining edits.
+
+### SQLite Job resource transactions
+
+Ordinary Jobs may opt into one first-operation resource scope with current anchor authorization, exact Job-claim ownership, a dedicated SQLite writer transaction and durable actor/input-bound replay receipts. Non-opt-in Jobs retain their existing behavior. Scope handles expire, unsupported effects fail closed, and an uncertain commit is reconciled only after reacquiring engine authority. Mutation/endpoint joining and notification intents are downstream work; PostgreSQL/libSQL conformance is not established by this slice. [Contract and bounds](reference/jobs-and-schedules.md#sqlite-resource-transactions-ticket-02).

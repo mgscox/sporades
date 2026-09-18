@@ -26829,6 +26829,22 @@ function validatePublicTreeFileSet(files) {
   return { ok: true, fileCount: files.length, totalBytes };
 }
 
+// src/resource-runtime.ts
+function resourceError(code) {
+  return Object.assign(new Error(code === "RESOURCE_BUSY" ? "Resource transaction is busy." : "Resource operation could not complete."), {
+    code,
+    ...code === "RESOURCE_BUSY" ? { retryable: true } : {}
+  });
+}
+var unsupportedResources = Object.freeze({
+  async run() {
+    throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
+  },
+  async status() {
+    throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
+  }
+});
+
 // src/log-envelope.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
 function uncappedLogEnvelope(input) {

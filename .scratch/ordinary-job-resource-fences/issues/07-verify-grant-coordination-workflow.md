@@ -20,3 +20,7 @@
 - [ ] Publish a walkthrough and redacted evidence with the accepted amendment and remaining limits. Do not modify or close #52 automatically.
 
 **Validation prerequisites:** Follow the shared plan: real worktree-installed dependencies via `npm ci`, never symlinked `node_modules`; approved disposable local PostgreSQL and dedicated test harness when PostgreSQL is tested.
+
+## Ticket 02 handoff
+
+02 has SQLite ordinary-Job receipts and process-lock evidence only. Its mutation/endpoint and notification surfaces remain fail closed until 03/06. Verify completed surfaces and adapters independently; do not label reserved signatures or SQLite-only evidence as complete workflow conformance.

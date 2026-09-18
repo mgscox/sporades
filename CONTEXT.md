@@ -571,3 +571,7 @@ _Avoid_: persistent config, writable mount
 **Attempt journal**:
 `deploy-file-attempt.jsonl`, written beside `preserved-files/` before a deployment publishes any seed. It records the attempted release, both Containers, temporary seed paths, and each seed's inode and hash. A surviving journal blocks deploy, stop, restart, remove, and Hosted start, restart, and rollback until `sporades deploy reconcile` or `sporades host reconcile` settles it from the journal alone.
 _Avoid_: lock file, deploy log
+
+### SQLite Job resource transaction
+
+An opt-in, server-only `ctx.resources.run/status` boundary for ordinary SQLite Jobs. A dedicated engine writer transaction binds current anchor ACL/Team authorization, the exact fixed Job claim, application writes, child enqueues and an indefinitely retained canonical replay receipt. No resource lease or SMTP fence is introduced. Outer mutation/endpoint joining and durable intent acceptance remain fail-closed until their separate tickets. See [the reference](docs/reference/jobs-and-schedules.md#sqlite-resource-transactions-ticket-02).

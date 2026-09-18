@@ -18,7 +18,8 @@ one commit; CAS alone would leave recovery to each Capsule. See the
 **M1 approved by Matt on 2026-09-18**, including automatic resend of uncertain
 email attempts with accepted duplicate risk. See the [approval record](maintainer-approval.md)
 for the conversation quotation and scope. Ticket 01's amendment gate is cleared;
-**ticket 02 is ready**. This update does not start implementation or close #52.
+**ticket 02 is implemented on its dedicated branch, pending draft review/integration**.
+This slice does not start downstream tickets or close #52.
 Original strict SMTP criteria remain disproved; the explicitly accepted amendment
 is the implementation contract, not a retroactive proof of those criteria.
 
@@ -31,12 +32,12 @@ provenance, not a frozen world view: current Grant checks still occur on acquisi
 ## Revised tickets and frontier
 
 The filenames are retained for stable links; the current titles/scopes below
-now supersede their old contents under approved M1. No implementation is completed.
+now supersede their old contents under approved M1. Ticket 02 is implemented on its dedicated branch and awaits draft review/integration; downstream implementations remain pending.
 
 | Ticket | Approved responsibility | Remaining gate |
 | --- | --- | --- |
 | [01](issues/01-prove-external-side-effect-contract.md) | Completed negative evidence and approved amended contract | Complete; no experiment rerun |
-| [02](issues/02-run-resource-transactions-on-sqlite.md) | SQLite scope, exact Job ownership, receipt replay/recovery | Ready; 01 evidence and M1 approval recorded |
+| [02](issues/02-run-resource-transactions-on-sqlite.md) | SQLite scope, exact Job ownership, receipt replay/recovery | Implemented; draft review/integration pending |
 | [03](issues/03-coordinate-jobs-mutations-and-endpoints.md) | Shared outer transaction and current authority ordering | 02 |
 | [04](issues/04-support-resource-transactions-on-postgresql.md) | Real PG locks, connection loss, receipt conformance | 02 |
 | [05](issues/05-enforce-libsql-compatibility.md) | Explicit libSQL unsupported gate, no exploratory support branch | 02 |

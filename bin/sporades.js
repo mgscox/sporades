@@ -58890,7 +58890,7 @@ function validateAliasDomains(value) {
 
 // src/cli/sporades.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { createHash as createHash12, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes8, timingSafeEqual as timingSafeEqual4 } from "node:crypto";
+import { createHash as createHash13, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes8, timingSafeEqual as timingSafeEqual4 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer as createServer2 } from "node:http";
 import { appendFile, chmod as chmod2, cp, lstat as lstat8, mkdir as mkdir8, readdir as readdir3, readFile as readFile10, rename as rename6, rm as rm8, writeFile as writeFile7 } from "node:fs/promises";
@@ -67915,7 +67915,18 @@ function safeJobFailure(error) {
     "STRIPE_CHECKOUT_RESPONSE_INVALID",
     "STRIPE_PORTAL_REJECTED",
     "STRIPE_PORTAL_RESPONSE_INVALID",
-    "PAYMENT_PORTAL_UNAVAILABLE"
+    "PAYMENT_PORTAL_UNAVAILABLE",
+    "RESOURCE_BUSY",
+    "RESOURCE_INVALID_INPUT",
+    "RESOURCE_CONTEXT_UNSUPPORTED",
+    "RESOURCE_ADAPTER_UNSUPPORTED",
+    "RESOURCE_OPERATION_CONFLICT",
+    "RESOURCE_SCOPE_INACTIVE",
+    "RESOURCE_EFFECT_UNSUPPORTED",
+    "RESOURCE_DEADLINE_EXCEEDED",
+    "RESOURCE_CLAIM_LOST",
+    "RESOURCE_COMMIT_UNKNOWN",
+    "RESOURCE_STORAGE_ERROR"
   ]);
   const code = knownCodes.has(error?.code) ? error.code : "JOB_FAILED";
   const messages = {
@@ -67930,7 +67941,7 @@ function safeJobFailure(error) {
     PAYMENT_PORTAL_UNAVAILABLE: "Customer Portal is not available for this billing holder.",
     JOB_FAILED: "Job handler failed."
   };
-  return { code, message: messages[code] };
+  return { code, message: messages[code] ?? "Resource operation could not complete." };
 }
 
 // src/runtime-log-policy.ts
@@ -94008,8 +94019,258 @@ function restartPolicyStatus(mode, overrides2 = {}) {
   };
 }
 
+// src/resource-runtime.ts
+import { createHash as createHash8 } from "node:crypto";
+function resourceError(code) {
+  return Object.assign(new Error(code === "RESOURCE_BUSY" ? "Resource transaction is busy." : "Resource operation could not complete."), {
+    code,
+    ...code === "RESOURCE_BUSY" ? { retryable: true } : {}
+  });
+}
+function resourceCanonicalJson(value) {
+  const ancestors = /* @__PURE__ */ new Set();
+  const visit = (input, depth) => {
+    if (depth > 64) throw resourceError("RESOURCE_INVALID_INPUT");
+    if (input === null || typeof input === "boolean" || typeof input === "string") return input;
+    if (typeof input === "number" && Number.isFinite(input)) return input === 0 ? 0 : input;
+    if (typeof input !== "object" || ancestors.has(input)) throw resourceError("RESOURCE_INVALID_INPUT");
+    const prototype = Object.getPrototypeOf(input);
+    if (!Array.isArray(input) && prototype !== Object.prototype && prototype !== null) throw resourceError("RESOURCE_INVALID_INPUT");
+    if (Object.getOwnPropertySymbols(input).length) throw resourceError("RESOURCE_INVALID_INPUT");
+    ancestors.add(input);
+    const output = Array.isArray(input) ? [] : /* @__PURE__ */ Object.create(null);
+    const keys = Array.isArray(input) ? Array.from({ length: input.length }, (_, i) => String(i)) : Object.keys(input).sort();
+    if (Array.isArray(input) && Object.keys(input).length !== input.length) throw resourceError("RESOURCE_INVALID_INPUT");
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(input, key);
+      if (!descriptor || !Object.hasOwn(descriptor, "value")) throw resourceError("RESOURCE_INVALID_INPUT");
+      output[key] = visit(descriptor.value, depth + 1);
+    }
+    ancestors.delete(input);
+    return output;
+  };
+  const json = JSON.stringify(visit(value, 0));
+  if (Buffer.byteLength(json, "utf8") > 65536) throw resourceError("RESOURCE_INVALID_INPUT");
+  return json;
+}
+function boundedIdentity(value) {
+  if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > 128 || Buffer.from(value, "utf8").toString("utf8") !== value) throw resourceError("RESOURCE_INVALID_INPUT");
+  return value;
+}
+function optionsSnapshot(options, status) {
+  if (!options || Object.getPrototypeOf(options) !== Object.prototype || Object.getOwnPropertySymbols(options).length || Object.values(Object.getOwnPropertyDescriptors(options)).some((descriptor) => !Object.hasOwn(descriptor, "value")) || Object.keys(options).sort().join(",") !== (status ? "operationId,resource" : "input,operationId,resource") || !options.resource || Object.getPrototypeOf(options.resource) !== Object.prototype || Object.getOwnPropertySymbols(options.resource).length || Object.values(Object.getOwnPropertyDescriptors(options.resource)).some((descriptor) => !Object.hasOwn(descriptor, "value")) || Object.keys(options.resource).sort().join(",") !== "id,table") throw resourceError("RESOURCE_INVALID_INPUT");
+  const table = boundedIdentity(options.resource.table);
+  const id2 = boundedIdentity(options.resource.id);
+  const operationId = boundedIdentity(options.operationId);
+  return { table, id: id2, operationId, digest: status ? null : createHash8("sha256").update(resourceCanonicalJson(options.input)).digest("hex") };
+}
+var unsupportedResources = Object.freeze({
+  async run() {
+    throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
+  },
+  async status() {
+    throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
+  }
+});
+function wrapCapability(value, before, path14 = [], cache = /* @__PURE__ */ new WeakMap()) {
+  if (!value || typeof value !== "object") return value;
+  if (cache.has(value)) return cache.get(value);
+  const functions = /* @__PURE__ */ new Map();
+  const proxy = new Proxy({}, {
+    ownKeys: () => Reflect.ownKeys(value),
+    set: (_target, key, member) => Reflect.set(value, key, member),
+    has: (_target, key) => Reflect.has(value, key),
+    getOwnPropertyDescriptor: () => ({ configurable: true, enumerable: true }),
+    get(_target, key) {
+      const member = Reflect.get(value, key);
+      if (typeof key !== "string") return member;
+      if (typeof member === "function") {
+        if (functions.has(key)) return functions.get(key);
+        const wrapped = (...args) => {
+          const next = [...path14, key];
+          before(next);
+          const result = Reflect.apply(member, value, args);
+          return ["where", "orderBy", "limit"].includes(key) ? wrapCapability(result, before, path14, cache) : result;
+        };
+        functions.set(key, wrapped);
+        return wrapped;
+      }
+      return wrapCapability(member, before, [...path14, key], cache);
+    }
+  });
+  cache.set(value, proxy);
+  return proxy;
+}
+function bindJobResources(database, context, claim, hooks) {
+  let invocationActive = true;
+  let used = false;
+  let touched = false;
+  const privileged = hooks.privileged === true;
+  const actorBinding = resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged });
+  const actorDigest = createHash8("sha256").update(actorBinding).digest("hex");
+  for (const name2 of ["db", "log", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
+    if (!context[name2]) continue;
+    context[name2] = wrapCapability(context[name2], (path14) => {
+      if (used) throw resourceError(!invocationActive ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
+      if (name2 !== "log" && !["where", "orderBy", "limit"].includes(path14.at(-1))) touched = true;
+    });
+  }
+  const execute = async (options, callback, status) => {
+    if (!invocationActive || used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
+    if (database.adapter.engine !== "sqlite" || typeof database.adapter.withResourceTransaction !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+    const identity = optionsSnapshot(options, status);
+    if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
+    if (!database.schema.tables.some((table) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
+    used = true;
+    let scopeContext;
+    let active = true;
+    let admission = true;
+    let terminalError;
+    const controller = new AbortController();
+    const deadline = Date.parse(claim.leaseExpiresAt);
+    const pending = /* @__PURE__ */ new Set();
+    const logs = [];
+    let rejectAbort = () => {
+    };
+    const aborted = new Promise((_, reject) => {
+      rejectAbort = reject;
+    });
+    void aborted.catch(() => {
+    });
+    const revoke = (error) => {
+      terminalError ??= error;
+      active = false;
+      admission = false;
+      controller.abort();
+      rejectAbort(error);
+    };
+    const assertLive = (admit = false) => {
+      if (!active || admit && !admission) throw resourceError("RESOURCE_SCOPE_INACTIVE");
+      if (terminalError) throw terminalError;
+      if (context.signal?.aborted || database.__jobStopped) throw Object.assign(new Error("Job aborted."), { code: "ABORTED" });
+      if (database.clock.now().getTime() >= deadline - (admit ? 1e3 : 0)) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+    };
+    const abort = () => revoke(Object.assign(new Error("Job aborted."), { code: "ABORTED" }));
+    context.signal?.addEventListener("abort", abort, { once: true });
+    const watchdog = database.clock.setTimer(() => revoke(resourceError("RESOURCE_DEADLINE_EXCEEDED")), Math.max(0, deadline - database.clock.now().getTime()));
+    const checkClaim = async (adapter, entry = false) => {
+      assertLive(entry);
+      const row = await adapter.prepare("SELECT status, claimToken, leaseExpiresAt, cancelRequestedAt FROM sporades_jobs WHERE id=?").get(claim.id);
+      if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
+      if (row.cancelRequestedAt) throw Object.assign(new Error("Job aborted."), { code: "ABORTED" });
+      assertLive(entry);
+    };
+    const track = (operation) => {
+      assertLive(true);
+      const promise = Promise.resolve().then(() => {
+        assertLive();
+        return operation();
+      });
+      pending.add(promise);
+      void promise.catch((error) => {
+        terminalError ??= error;
+      });
+      return promise;
+    };
+    try {
+      assertLive(true);
+      const result = await database.adapter.withResourceTransaction(async (adapter) => {
+        const guarded = Object.create(adapter);
+        guarded.prepare = (sql) => {
+          assertLive();
+          const statement = adapter.prepare(sql);
+          return Object.fromEntries(["get", "all", "run", "columns"].map((method) => [method, (...args) => {
+            assertLive();
+            return statement[method](...args);
+          }]));
+        };
+        guarded.exec = (sql) => {
+          assertLive();
+          return adapter.exec(sql);
+        };
+        await checkClaim(guarded, true);
+        scopeContext = hooks.createContext(guarded, controller.signal, privileged);
+        await Promise.race([hooks.authorize(scopeContext, identity), aborted]);
+        assertLive(true);
+        await guarded.exec("CREATE TABLE IF NOT EXISTS sporades_resource_receipts (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, operationId TEXT NOT NULL, inputDigest TEXT NOT NULL, actorDigest TEXT NOT NULL, resultJson TEXT NOT NULL, intentIdsJson TEXT NOT NULL, committedAt TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId, operationId))");
+        const receipt2 = await guarded.prepare("SELECT * FROM sporades_resource_receipts WHERE resourceTable=? AND resourceId=? AND operationId=?").get(identity.table, identity.id, identity.operationId);
+        if (receipt2) {
+          if (receipt2.actorDigest !== actorDigest || !status && receipt2.inputDigest !== identity.digest) throw resourceError("RESOURCE_OPERATION_CONFLICT");
+          await checkClaim(guarded);
+          return status ? { state: "committed", result: JSON.parse(receipt2.resultJson), intentIds: JSON.parse(receipt2.intentIdsJson) } : JSON.parse(receipt2.resultJson);
+        }
+        if (status) {
+          await checkClaim(guarded);
+          return { state: "absent" };
+        }
+        const db = Object.fromEntries(Object.entries(scopeContext.db).map(([name2, table]) => {
+          const wrapTable = (api) => Object.fromEntries(Object.keys(api).map((method) => [method, (...args) => {
+            assertLive(true);
+            if (["where", "orderBy", "limit"].includes(method)) return wrapTable(api[method](...args));
+            return track(() => api[method](...args));
+          }]));
+          return [name2, wrapTable(table)];
+        }));
+        const rejectEffect = () => {
+          assertLive(true);
+          throw resourceError("RESOURCE_EFFECT_UNSUPPORTED");
+        };
+        const scope = Object.freeze({
+          db: Object.freeze(db),
+          signal: controller.signal,
+          jobs: Object.freeze({ enqueue: (...args) => track(() => scopeContext.jobs.enqueue(...args)) }),
+          log: Object.freeze(Object.fromEntries(["info", "warn", "error"].map((level) => [level, () => {
+            assertLive(true);
+            if (logs.length >= 100) throw resourceError("RESOURCE_INVALID_INPUT");
+            logs.push(level);
+          }]))),
+          notifications: Object.freeze({ accept: async () => rejectEffect() })
+        });
+        const value = await Promise.race([Promise.resolve().then(() => callback(scope)), aborted]);
+        admission = false;
+        await Promise.race([Promise.all([...pending]), aborted]);
+        await Promise.race([hooks.drain(scopeContext), aborted]);
+        const resultJson = resourceCanonicalJson(value);
+        await hooks.stageLogs(scopeContext, logs);
+        await checkClaim(guarded);
+        await guarded.prepare("INSERT INTO sporades_resource_receipts VALUES (?,?,?,?,?,?,?,?)").run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
+        await checkClaim(guarded);
+        active = false;
+        return JSON.parse(resultJson);
+      }, (adapter) => {
+        if (context.signal?.aborted || database.__jobStopped) throw Object.assign(new Error("Job aborted."), { code: "ABORTED" });
+        if (database.clock.now().getTime() >= deadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+        const row = adapter.prepare("SELECT status, claimToken, leaseExpiresAt, cancelRequestedAt FROM sporades_jobs WHERE id=?").get(claim.id);
+        if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
+        if (row.cancelRequestedAt) throw Object.assign(new Error("Job aborted."), { code: "ABORTED" });
+      });
+      active = false;
+      await hooks.committed(scopeContext, logs);
+      return result;
+    } catch (error) {
+      active = false;
+      hooks.rolledBack(scopeContext);
+      throw error;
+    } finally {
+      active = false;
+      admission = false;
+      controller.abort();
+      database.clock.clearTimer(watchdog);
+      context.signal?.removeEventListener("abort", abort);
+      hooks.release(scopeContext);
+    }
+  };
+  context.resources = Object.freeze({
+    run: (options, callback) => execute(options, callback, false),
+    status: (options) => execute(options, void 0, true)
+  });
+  return () => {
+    invocationActive = false;
+  };
+}
+
 // src/server-runtime-source.ts
-import { createHash as createHash9, randomBytes as randomBytes5, randomUUID as randomUUID9 } from "node:crypto";
+import { createHash as createHash10, randomBytes as randomBytes5, randomUUID as randomUUID9 } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 
 // src/log-envelope.ts
@@ -95343,7 +95604,7 @@ function encodeMimeBase64(value) {
 }
 
 // src/email-events-runtime.ts
-import { createHash as createHash8, createHmac as createHmac2, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+import { createHash as createHash9, createHmac as createHmac2, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 var MAILJET_EVENT_KINDS = {
   sent: "delivered",
   open: "opened",
@@ -95562,7 +95823,7 @@ function normalizePostmarkEvent(raw) {
   const metadata = data2.Metadata && typeof data2.Metadata === "object" && !Array.isArray(data2.Metadata) ? data2.Metadata : {};
   const correlationKey = Object.keys(metadata).find((key) => key.toLowerCase() === "correlationid");
   const correlationId = correlationKey ? text(metadata[correlationKey]).trim() : "";
-  const identity = createHash8("sha256").update(JSON.stringify([recordType, messageId || null, occurredAt, recipient, descriptor.identityDiscriminator])).digest("hex");
+  const identity = createHash9("sha256").update(JSON.stringify([recordType, messageId || null, occurredAt, recipient, descriptor.identityDiscriminator])).digest("hex");
   return {
     provider: "postmark",
     kind: descriptor.kind,
@@ -95596,7 +95857,7 @@ function normalizeMailgunWebhook(raw) {
   const accountId = text(account.id).trim();
   const domainName = text(domain.name).trim().toLowerCase();
   if (!accountId || !domainName) return false;
-  const providerScope = createHash8("sha256").update(JSON.stringify([accountId, domainName])).digest("hex").slice(0, 16);
+  const providerScope = createHash9("sha256").update(JSON.stringify([accountId, domainName])).digest("hex").slice(0, 16);
   return {
     provider: "mailgun",
     kind,
@@ -96655,6 +96916,7 @@ function createConnectionTransactionGate() {
   const transactionOwner = Object.freeze({});
   let transactionTail = Promise.resolve();
   let transactionActive = false;
+  let transactionWaiters = 0;
   const pending = [];
   const drainPending = async () => {
     while (pending.length > 0) {
@@ -96674,6 +96936,7 @@ function createConnectionTransactionGate() {
   const cancelledTransaction = () => Object.assign(new Error("Database transaction acquisition was cancelled."), { code: "TRANSACTION_ACQUISITION_CANCELLED" });
   const runTransaction = async (operation, options = {}) => {
     if (transactionOwnership.getStore() === transactionOwner) return await rejectNestedTransactionScope();
+    transactionWaiters += 1;
     const previous = transactionTail;
     let release = () => {
     };
@@ -96683,6 +96946,7 @@ function createConnectionTransactionGate() {
     const waitForPrevious = previous.catch(() => {
     });
     if (options.signal?.aborted) {
+      transactionWaiters -= 1;
       void waitForPrevious.then(release);
       throw cancelledTransaction();
     }
@@ -96705,6 +96969,7 @@ function createConnectionTransactionGate() {
       return await transactionOwnership.run(transactionOwner, operation);
     } finally {
       removeAbort();
+      transactionWaiters -= 1;
       if (entered) {
         transactionActive = false;
         await drainPending();
@@ -96716,7 +96981,7 @@ function createConnectionTransactionGate() {
   };
   const whenIdle = async () => await transactionTail.catch(() => {
   });
-  return { runOperation, runTransaction, whenIdle };
+  return { runOperation, runTransaction, whenIdle, isBusy: () => transactionWaiters > 0 };
 }
 async function rejectNestedTransactionScope() {
   throw commandError2(
@@ -97970,6 +98235,51 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     engine: "sqlite",
     dialect,
     normalization: sqliteRowNormalization(),
+    async withResourceTransaction(fn, beforeCommit) {
+      if (options.readOnly || String(databasePath) === ":memory:") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+      if (connectionGate.isBusy()) throw resourceError("RESOURCE_BUSY");
+      return connectionGate.runTransaction(async () => {
+        const dedicated = new DatabaseSync(databasePath);
+        let begun = false;
+        let commitIssued = false;
+        const operations = {
+          exec: (sql) => dedicated.exec(sql),
+          prepare: (sql) => dedicated.prepare(sql)
+        };
+        const transaction = createTransactionScopedAdapter(adapter, operations, adapter, "transaction");
+        try {
+          dedicated.exec("PRAGMA busy_timeout = 0");
+          try {
+            dedicated.exec("BEGIN IMMEDIATE");
+          } catch (error) {
+            if (error?.errcode === 5 || error?.errcode === 6) throw resourceError("RESOURCE_BUSY");
+            throw resourceError("RESOURCE_STORAGE_ERROR");
+          }
+          begun = true;
+          const result = await fn(transaction);
+          beforeCommit?.(transaction);
+          revokeTransactionScopedAdapter(transaction);
+          commitIssued = true;
+          dedicated.exec("COMMIT");
+          begun = false;
+          return result;
+        } catch (error) {
+          revokeTransactionScopedAdapter(transaction);
+          if (begun) {
+            try {
+              dedicated.exec("ROLLBACK");
+            } catch {
+            }
+          }
+          if (commitIssued) throw resourceError("RESOURCE_COMMIT_UNKNOWN");
+          if (error?.code === "ERR_SQLITE_ERROR") throw resourceError("RESOURCE_STORAGE_ERROR");
+          throw error;
+        } finally {
+          revokeTransactionScopedAdapter(transaction);
+          dedicated.close();
+        }
+      });
+    },
     async withTransaction(fn, options2 = {}) {
       return await connectionGate.runTransaction(async () => {
         const ownerOperations = typeof this[transactionOperations] === "function" ? this[transactionOperations]() : { exec: this.exec.bind(this), prepare: this.prepare.bind(this) };
@@ -101173,6 +101483,7 @@ function normalizeUniqueConstraints(tableName, fields, declarations) {
   }).sort((left, right) => [...left].sort().join("\0").localeCompare([...right].sort().join("\0")));
 }
 function assertNotReservedTeamTableName(name2) {
+  if (name2.toLowerCase().startsWith("sporades_resource_")) throw resourceError("RESERVED_TABLE_NAME");
   if (name2.toLowerCase().startsWith("sporades_team")) {
     throw commandError2(
       `Reserved runtime table name: ${name2}`,
@@ -101790,7 +102101,7 @@ async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest,
   if (decision?.allow !== true || typeof namespace !== "string" || !definition.principalNamespaces.includes(namespace) || typeof key !== "string" || key.length === 0 || Buffer.byteLength(key, "utf8") > 256 || /[\x00-\x1f\x7f]/.test(key) || Buffer.byteLength(serialized, "utf8") > 4096) {
     throw commandError2("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
   }
-  return Object.freeze({ allowFiles, authority: Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash9("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId }) });
+  return Object.freeze({ allowFiles, authority: Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash10("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId }) });
 }
 var endpointMultipartAdmissionTimeoutMs = 5e3;
 function multipartAdmissionDenied() {
@@ -102113,6 +102424,67 @@ async function acquireAtomicStripeConsequenceFence(adapter) {
     throw error;
   }
 }
+function bindOrdinaryJobResourceContext(database, context, claim, privileged = false) {
+  const scopeDatabases = /* @__PURE__ */ new WeakMap();
+  const scopeLogEvents = /* @__PURE__ */ new WeakMap();
+  return bindJobResources(database, context, claim, {
+    privileged,
+    createContext(adapter, signal) {
+      const scopedDatabase = createTransactionDatabase(database, adapter);
+      scopedDatabase.log = { emit() {
+      } };
+      const scoped = createMutationContext(scopedDatabase, context.auth, {
+        ...context.credential ? { credential: context.credential } : { ordinaryCredential: false }
+      });
+      scoped.signal = signal;
+      scoped.__jobEnqueuedBy = context.__jobEnqueuedBy;
+      if (privileged) {
+        scoped.__privilegedRunActive = true;
+        grantPrivilegedDbAccess(scoped);
+        scoped.jobs = createPrivilegedJobApi(scopedDatabase, () => scoped);
+      }
+      bindPendingAclWrites(scoped);
+      scopeDatabases.set(scoped, scopedDatabase);
+      return scoped;
+    },
+    async authorize(scoped, identity) {
+      const scopedDatabase = scopeDatabases.get(scoped);
+      const table = database.schema.tables.find((candidate) => candidate.name === identity.table);
+      const stored = await scopedDatabase.adapter.selectAppRowById(table, identity.id);
+      const row = stored ? deserializeRow(table, stored) : null;
+      if (!row || !await applyReadAcl(scopedDatabase, table, row, scoped)) {
+        throw commandError2("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+      }
+      await runTableWriteWithAcl(scopedDatabase, table, "update", row, row, () => scoped, () => void 0);
+    },
+    async drain(scoped) {
+      await drainPendingAclWrites(scoped);
+      await drainPendingLogWrites(scopeDatabases.get(scoped));
+    },
+    async stageLogs(scoped, levels) {
+      const scopedDatabase = scopeDatabases.get(scoped);
+      const events = levels.map((level) => uncappedLogEnvelope({ config: database.config, category: "resource", event: "resource.log", level, message: "Resource transaction committed.", data: null }));
+      for (const event of events) await scopedDatabase.adapter.insertLogIndexEvent(event);
+      scopeLogEvents.set(scoped, events);
+    },
+    async committed(scoped) {
+      database.rowCache.clear();
+      await dispatchPendingJobs(scoped);
+      if (scoped && database.log?.path) for (const event of scopeLogEvents.get(scoped) ?? []) appendFileSync(database.log.path, `${JSON.stringify(event)}
+`);
+    },
+    rolledBack(scoped) {
+      database.rowCache.clear();
+      dropPendingJobDispatch(scoped);
+    },
+    release(scoped) {
+      if (!scoped) return;
+      scoped.__privilegedRunActive = false;
+      revokePrivilegedDbAccess(scoped);
+      releaseHandlerContextMapping(scopeDatabases.get(scoped));
+    }
+  });
+}
 function createAtomicStripeConsequenceContext(database, parent) {
   const context = {
     auth: parent.auth,
@@ -102355,6 +102727,7 @@ function protectContextIdentity(value) {
   });
 }
 function createContextHolder(context) {
+  context.resources = unsupportedResources;
   const holder = { current: context };
   Object.defineProperty(context, "__sporadesContextHolder", {
     value: holder,
@@ -103434,8 +103807,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       const emailProviderEnabled = database.authConfig.providers.email?.enabled === true;
       if (authorized && message.provider === "email" && emailProviderEnabled && normalized.ok && typeof normalized.password === "string") {
         const reauthenticationThrottleKeys = [
-          `email:${createHash9("sha256").update(normalized.email).digest("base64url")}`,
-          `session:${createHash9("sha256").update(client.session.token).digest("base64url")}`
+          `email:${createHash10("sha256").update(normalized.email).digest("base64url")}`,
+          `session:${createHash10("sha256").update(client.session.token).digest("base64url")}`
         ];
         const throttleNow = database.clock.now();
         let reserved = false;
@@ -104212,7 +104585,7 @@ async function sendEmailPasswordResetLink(database, session, email, options = {}
   return { ok: true };
 }
 function createWebSocketAccept(key) {
-  return createHash9("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+  return createHash10("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
 }
 function drainWebSocketFrames(client, onMessage) {
   while (client.buffer.length >= 2) {
@@ -105323,9 +105696,11 @@ async function runCurrentUserJobWorker(database) {
           result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {} } }, async (privilegedCtx) => {
             handlerStarted = true;
             database.__runtimeJobAttempts.set(privilegedCtx, Number(row.attempts) + 1);
+            const releaseResources = bindOrdinaryJobResourceContext(database, privilegedCtx, { id: row.id, claimToken, leaseExpiresAt }, true);
             try {
               return await handler.handler(privilegedCtx, jobPayload);
             } finally {
+              releaseResources();
               database.__runtimeJobAttempts.delete(privilegedCtx);
             }
           });
@@ -105344,12 +105719,14 @@ async function runCurrentUserJobWorker(database) {
           handlerStarted = true;
           database.__runtimeJobAttempts.set(context, Number(row.attempts) + 1);
           let handlerFailed = false;
+          const releaseResources = bindOrdinaryJobResourceContext(database, context, { id: row.id, claimToken, leaseExpiresAt });
           try {
             result = await handler.handler(context, jobPayload);
           } catch (error) {
             handlerFailed = true;
             throw error;
           } finally {
+            releaseResources();
             revokeCurrentUserFileApi(context);
             try {
               await drainCurrentUserFileOperations(context);
@@ -108782,7 +109159,7 @@ function escapeHtml(value) {
 
 // src/dev-clamav-sidecar.ts
 import { spawn } from "node:child_process";
-import { createHash as createHash10, randomBytes as randomBytes6 } from "node:crypto";
+import { createHash as createHash11, randomBytes as randomBytes6 } from "node:crypto";
 import { mkdir as mkdir5, mkdtemp, rm as rm6 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
@@ -108967,7 +109344,7 @@ async function startDevClamavSidecar(options) {
   const dataRoot = path9.join(options.projectDir, ".sporades", "clamav");
   await mkdir5(path9.join(dataRoot, "clamav"), { recursive: true });
   const socketDir = await mkdtemp(path9.join(tmpdir(), "sporades-dev-clamav-"));
-  const identity = createHash10("sha256").update(`${path9.resolve(options.projectDir)}\0${process.pid}\0${randomBytes6(8).toString("hex")}`).digest("hex").slice(0, 20);
+  const identity = createHash11("sha256").update(`${path9.resolve(options.projectDir)}\0${process.pid}\0${randomBytes6(8).toString("hex")}`).digest("hex").slice(0, 20);
   const containerName = `sporades-dev-clamav-${identity}`;
   const socketPath = path9.join(socketDir, "clamd.sock");
   let child;
@@ -110084,7 +110461,7 @@ import { connect } from "node:net";
 import path12 from "node:path";
 
 // src/cli/project-config.ts
-import { createHash as createHash11 } from "node:crypto";
+import { createHash as createHash12 } from "node:crypto";
 import { chmod, mkdir as mkdir7, readFile as readFile8, writeFile as writeFile6 } from "node:fs/promises";
 import path11 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
@@ -110374,7 +110751,7 @@ async function resolveAuthorizedKeyLines(ssh, projectDir) {
 function authorizedKeyFingerprint(line) {
   const parts = line.split(/\s+/);
   const keyTypeIndex = parts.findIndex((part) => isOpenSshPublicKeyType(part));
-  const digest = createHash11("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
+  const digest = createHash12("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
   return `SHA256:${digest}`;
 }
 function withRuntimeSecuritySession(config, session) {
@@ -115049,7 +115426,7 @@ async function ensureHostProfileEnvKey(config, alias) {
   const hostKey = {
     publicKey,
     privateKey,
-    publicKeyFingerprint: createHash12("sha256").update(publicKey).digest("hex").slice(0, 16)
+    publicKeyFingerprint: createHash13("sha256").update(publicKey).digest("hex").slice(0, 16)
   };
   config.profiles[alias].sealedServerEnv = hostKey;
   return hostKey;
@@ -117383,7 +117760,7 @@ function upgradeHostHelper(options) {
     if (!statSync(localHelper).isFile()) {
       throw new Error("not a file");
     }
-    helperChecksum = createHash12("sha256").update(readFileSync2(localHelper)).digest("hex");
+    helperChecksum = createHash13("sha256").update(readFileSync2(localHelper)).digest("hex");
   } catch {
     throw commandError(
       "Local Host helper file was not found.",

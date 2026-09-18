@@ -63,6 +63,7 @@
       "src/package-root.ts",
       "src/public-tree-contract.ts",
       "src/public-tree.ts",
+      "src/resource-runtime.ts",
       "src/runtime-errors.ts",
       "src/runtime-log-policy.ts",
       "src/runtime-restart-policy.ts",
@@ -98,7 +99,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "2a6a79b131441e91f61cd441c9e0665975d5c94b7119775e552e470b60add4e0"
+    "digest": "35dbb782363cc3744bdb8b50a4ff476a0202f62285d84b0205d19724ca727ccb"
   },
   "outputs": {
     "files": [
@@ -320,6 +321,10 @@
       "dist/public-tree.d.ts.map",
       "dist/public-tree.js",
       "dist/public-tree.js.map",
+      "dist/resource-runtime.d.ts",
+      "dist/resource-runtime.d.ts.map",
+      "dist/resource-runtime.js",
+      "dist/resource-runtime.js.map",
       "dist/runtime-errors.d.ts",
       "dist/runtime-errors.d.ts.map",
       "dist/runtime-errors.js",
@@ -429,6 +434,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "a29498ddb7c73235ee0bd2fafeb8897d1596145d8859daebaa2a994494a0de88"
+    "digest": "e7a57a04f15a0fbfc12276ed5a21be6c7f43065ec5928d454844481f34825c54"
   }
 }

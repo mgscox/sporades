@@ -19,3 +19,7 @@
 - [ ] Update context types, generated contracts and canonical docs with focused tests; no new browser capability, nested Privileged authority or SMTP fence claim.
 
 **Validation prerequisites:** Follow the shared plan: real worktree-installed dependencies via `npm ci`, never symlinked `node_modules`; approved disposable local PostgreSQL and dedicated test harness when PostgreSQL is tested.
+
+## Ticket 02 handoff
+
+02 currently rejects mutation/endpoint resource entry. Reuse its canonical identity, complete captured actor binding, receipt schema and error shapes; implement outer transaction joining here without opening a second resource transaction.

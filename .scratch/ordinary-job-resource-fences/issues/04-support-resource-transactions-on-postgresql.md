@@ -19,3 +19,7 @@
 - [ ] Ship adapter code, generated artifacts and canonical docs together; retain SQLite/non-opt-in compatibility tests.
 
 **Validation prerequisites:** Follow the shared plan: real worktree-installed dependencies via `npm ci`, never symlinked `node_modules`; approved disposable local PostgreSQL and dedicated test harness when PostgreSQL is tested.
+
+## Ticket 02 handoff
+
+02 uses adapter.withResourceTransaction plus a synchronous SQLite precommit ownership check. PostgreSQL must provide its own asynchronous, dedicated-connection protocol; do not copy the synchronous check or treat SQLite process tests as PG evidence. Preserve the receipt binding and public error shapes.

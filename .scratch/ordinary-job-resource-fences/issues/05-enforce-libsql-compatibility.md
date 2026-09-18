@@ -17,3 +17,7 @@
 - [ ] Record that future libSQL support requires a separate approved proposal and real representative remote expiry/connection-loss/restart conformance. No fake service test or this rejection gate certifies support.
 
 **Validation prerequisites:** Follow the shared plan: real worktree-installed dependencies via `npm ci`, never symlinked `node_modules`; approved disposable local PostgreSQL and dedicated test harness when PostgreSQL is tested.
+
+## Ticket 02 handoff
+
+02 gates resources.run/status on file-backed SQLite before callback execution. Verify this rejection through the real libSQL entry surface; do not replace it with a local mutex or an autocommit fallback.

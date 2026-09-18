@@ -1460,6 +1460,9 @@ export function safeJobFailure(error: any) {
     "STRIPE_CHECKOUT_REJECTED", "STRIPE_CHECKOUT_RESPONSE_INVALID",
     "STRIPE_PORTAL_REJECTED", "STRIPE_PORTAL_RESPONSE_INVALID",
     "PAYMENT_PORTAL_UNAVAILABLE",
+    "RESOURCE_BUSY", "RESOURCE_INVALID_INPUT", "RESOURCE_CONTEXT_UNSUPPORTED", "RESOURCE_ADAPTER_UNSUPPORTED",
+    "RESOURCE_OPERATION_CONFLICT", "RESOURCE_SCOPE_INACTIVE", "RESOURCE_EFFECT_UNSUPPORTED",
+    "RESOURCE_DEADLINE_EXCEEDED", "RESOURCE_CLAIM_LOST", "RESOURCE_COMMIT_UNKNOWN", "RESOURCE_STORAGE_ERROR",
   ]);
   const code = knownCodes.has(error?.code) ? error.code : "JOB_FAILED";
   const messages: LooseRecord = {
@@ -1474,5 +1477,5 @@ export function safeJobFailure(error: any) {
     PAYMENT_PORTAL_UNAVAILABLE: "Customer Portal is not available for this billing holder.",
     JOB_FAILED: "Job handler failed.",
   };
-  return { code, message: messages[code] };
+  return { code, message: messages[code] ?? "Resource operation could not complete." };
 }

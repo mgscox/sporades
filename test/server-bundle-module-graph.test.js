@@ -2307,3 +2307,44 @@ test("the self-containment guard refuses a bundle that would resolve anything at
     },
   );
 });
+
+test('a generated SQLite Bundle commits and replays ordinary Job resource receipts', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'sporades-resource-bundle-'));
+  let booted, adapter;
+  try {
+    const serverSource = `
+import { capsule, endpoint, job, table, String } from 'sporades/server';
+export default capsule({ name: 'resource-bundle',
+  schema: { anchors: table({ value: String() }), writes: table({ value: String() }) },
+  endpoints: { start: endpoint({ method: 'POST', path: '/resource/start' }, async ctx => {
+    const anchor = await ctx.db.anchors.insert({ value: 'anchor' });
+    await ctx.jobs.enqueue('work', { id: anchor.id }, { retry: { maxAttempts: 2, delayMs: 0 } });
+    return { status: 200, body: { queued: true } };
+  }) },
+  jobs: { work: job(async (ctx, payload) => {
+    const result = await ctx.resources.run({ resource: { table: 'anchors', id: payload.id }, operationId: 'stable', input: payload }, async scope => {
+      await scope.db.writes.insert({ value: 'once' });
+      return { committed: true };
+    });
+    if (!globalThis.__resourceBundleRetried) { globalThis.__resourceBundleRetried = true; throw new Error('after commit'); }
+    return result;
+  }) }
+});`;
+    const serverModuleSource = await bundleServerCapsuleModule({ serverSource, serverSourcePath: path.join(process.cwd(), "server", "index.ts") });
+    const source = await buildBundle({ config: capsuleConfig(), serverEnv: {}, serverSource, serverModuleSource });
+    await writePublicTree(dir, '<!doctype html><html><body></body></html>');
+    booted = await bootBundle({ source, dir });
+    const response = await fetch(`${booted.baseUrl}/resource/start`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    assert.equal(response.status, 200);
+    adapter = await createSqliteDatabaseAdapter(path.join(dir, 'data', 'data.db'), { readOnly: true });
+    let settled;
+    for (let count = 0; count < 200; count++) {
+      settled = adapter.prepare("SELECT status, attempts FROM sporades_jobs WHERE handler='work'").get();
+      if (settled?.status === 'succeeded') break;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(settled?.status, 'succeeded'); assert.equal(settled?.attempts, 2);
+    assert.equal(adapter.prepare('SELECT count(*) n FROM writes').get().n, 1);
+    assert.equal(adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get().n, 1);
+  } finally { await adapter?.close(); await booted?.stop(); await rm(dir, { recursive: true, force: true }); }
+});

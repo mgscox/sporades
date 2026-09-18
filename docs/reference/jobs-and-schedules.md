@@ -436,3 +436,97 @@ effective timezone, policy, next occurrence, and latest safe outcome and Job
 correlation. They omit payloads and secrets, do not evaluate or advance a
 Schedule, and return `schedules: []` when no schedules exist. V1 has no human
 renderer, filters, pagination, or offline inspection.
+
+## SQLite resource transactions (ticket 02)
+
+An ordinary SQLite Job can call the server-only `ctx.resources.run` once, as
+its first application database or framework provider operation. It uses a
+pre-existing app row as the authorization anchor:
+
+```ts
+return ctx.resources.run({
+  resource: { table: "grants", id: payload.grantId },
+  operationId: payload.operationId,
+  input: payload,
+}, async scope => {
+  const current = await scope.db.grants.where("id", payload.grantId).get();
+  // Validate the current business state, then use scope.db and scope.jobs.enqueue.
+  return { found: current !== null };
+});
+```
+
+The resource identity is the retained Capsule database plus the exact declared
+table name and row ID. Names/IDs are nonempty, well-formed UTF-8 strings up to
+128 bytes. Input and result are canonical JSON up to 65,536 UTF-8 bytes each,
+with at most 64 levels of nesting; object keys are sorted and negative zero is
+zero. Cycles, sparse arrays, getters, symbols, nonfinite numbers, undefined and
+non-plain objects are rejected. No actor, token or lease options are accepted.
+
+A dedicated SQLite `BEGIN IMMEDIATE`, with zero busy timeout, holds writer
+authority through commit/rollback. SQLite excludes **all writers in that database**;
+there is no per-resource parallel-throughput or fairness promise. Contention
+returns `{ code: "RESOURCE_BUSY", retryable: true }` on an Error with the fixed
+message `Resource transaction is busy.` No callback runs on acquisition failure.
+Use ordinary Job retry/backoff; the runtime never secretly reruns the callback.
+
+Anchor read/update ACLs and each operation's ACL/Team checks run inside that
+transaction under the captured Job actor. Previously captured parent DB handles
+cannot reenter the root connection. The scope exposes DB operations, Job enqueue,
+`signal`, bounded payload-free `log.info/warn/error`, and a reserved notification
+surface. Logs buffer at most 100 severity events; arguments are deliberately not
+recorded. Detached admitted DB/ACL work drains before commit; escaped scoped
+handles reject `RESOURCE_SCOPE_INACTIVE`. Nested resource/Privileged entry,
+Files, provider calls, messages and lifecycle transitions are unsupported.
+Arbitrary JavaScript I/O and independently imported provider clients cannot be
+sandboxed or detected by this API; they must not be used in a scope.
+
+The exact running Job ID, claim token, stored deadline and cancellation marker
+are checked at entry and immediately before COMMIT. The original 30,000ms lease
+is never renewed. Entry and new DB work require more than 1,000ms remaining;
+that reserve is for draining and commit admission, not a maximum OS pause.
+A stopped process retains its SQLite lock beyond the deadline. Only actual
+engine commit/rollback or connection/process death releases authority. Graceful
+shutdown aborts and rolls back an unsettled scope; a watchdog revokes its DB
+capabilities before requesting rollback. A commit already admitted may finish
+past the deadline while still holding engine authority.
+
+Application writes, child Jobs and the operation receipt commit together.
+`sporades_resource_receipts` is created lazily on first opt-in and uses primary
+key `(resourceTable, resourceId, operationId)` within the database. It stores
+SHA-256 input and actor-binding digests, canonical result JSON, intent-ID JSON
+(currently `[]`), and `committedAt`. The actor digest binds the complete captured
+Auth/Credential snapshot and Privileged mode. Receipts are also the v1 replay
+tombstones and are retained indefinitely; SQLite needs no separate lock row or
+durable resource lease. The `sporades_resource_` table namespace is reserved.
+
+A same-bound retry reauthorizes and returns the recorded result without invoking
+the callback. Changed input or actor returns `RESOURCE_OPERATION_CONFLICT`.
+Failure later in the Job does not undo a committed scope. On
+`RESOURCE_COMMIT_UNKNOWN`, retry the same binding: only a receipt read **after
+reacquisition** can reconcile the outcome. `ctx.resources.status({resource,
+operationId})` consumes the same first/once entry and returns either
+`{state: "absent"}` or `{state: "committed", result, intentIds}` under current
+anchor authorization and actor binding. Absence after acquisition rules out an
+older transaction still committing.
+
+Other fixed resource errors are `RESOURCE_INVALID_INPUT`,
+`RESOURCE_CONTEXT_UNSUPPORTED`, `RESOURCE_ADAPTER_UNSUPPORTED`,
+`RESOURCE_EFFECT_UNSUPPORTED`, `RESOURCE_DEADLINE_EXCEEDED`,
+`RESOURCE_CLAIM_LOST`, `RESOURCE_SCOPE_INACTIVE`, `RESOURCE_COMMIT_UNKNOWN`, and
+`RESOURCE_STORAGE_ERROR`. They omit caller values. Cancellation keeps the
+existing Job cancellation outcome; authorization keeps opaque ACL errors.
+
+This slice supports ordinary Jobs, including the existing audited Privileged
+Job path, on file-backed SQLite only. Mutation/Custom endpoint transaction joining
+belongs to ticket 03 and currently fails closed. PostgreSQL and libSQL fail
+closed before callback execution; their tickets are 04 and 05. The
+`notifications.accept({id, to, subject, text, html?})` signature is reserved and
+always rejects `RESOURCE_EFFECT_UNSUPPORTED` until ticket 06; this slice stages
+no intent and adds no transport. Ordinary Jobs that never opt in retain their
+existing nontransactional behavior. See [ADR-0054](../adr/0054-ordinary-job-authority-does-not-fence-smtp-acceptance.md).
+
+A cancellation or recovery writer on an independent SQLite connection may receive
+SQLite busy and must retry after engine release. The existing same-runtime gate
+queues independent root work. "Wait for release" is an ordering guarantee, not
+transparent callback replay: cancellation cannot commit its marker while the
+resource writer holds the engine, and a later cancellation cannot undo its receipt.
