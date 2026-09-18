@@ -319,7 +319,7 @@ test("two independent PostgreSQL runtimes serialize Team billing convergence", {
   const stripeConfig = {
     enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
     publicOrigin: "https://billing.example.test", callbackPath: "/stripe/webhook",
-    apiVersion: "2026-07-29.dahlia", livemode: false, requestTimeoutMs: 10_000,
+    apiVersion: "2026-08-26.dahlia", livemode: false, requestTimeoutMs: 10_000,
   };
   const capsule = { teamBilling: {
     catalogue: { agency: { quantity: { kind: "fixed", value: 1 }, stripe: {

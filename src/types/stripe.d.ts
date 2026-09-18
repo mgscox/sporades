@@ -5,7 +5,7 @@ export type StripeEnabledPaymentsConfig = Readonly<{
   publicOrigin: string;
   /** Runtime-owned POST path outside the reserved /__sporades namespace. */
   callbackPath: string;
-  apiVersion: "2026-07-29.dahlia";
+  apiVersion: "2026-08-26.dahlia";
   livemode: boolean;
   requestTimeoutMs: number;
 }>;

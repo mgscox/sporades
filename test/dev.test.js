@@ -2351,7 +2351,7 @@ test("a generated activated blank Capsule runs Checkout, Customer Portal, and si
         webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
         publicOrigin: "https://payments.example.test",
         callbackPath: "/stripe/webhook",
-        apiVersion: "2026-07-29.dahlia",
+        apiVersion: "2026-08-26.dahlia",
         livemode: false,
         requestTimeoutMs: 10_000,
       };
@@ -2572,7 +2572,7 @@ test("a generated activated blank Capsule runs Checkout, Customer Portal, and si
       const stripeEvent = JSON.stringify({
         id: "evt_generated_callback_1",
         object: "event",
-        api_version: "2026-07-29.dahlia",
+        api_version: "2026-08-26.dahlia",
         created: Math.floor(Date.now() / 1000),
         data: { object: { id: "obj_future_1", object: "future.billing.object" } },
         livemode: false,
@@ -2652,7 +2652,7 @@ test("activated Stripe rejects legacy plaintext server env before publishing a B
       webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
       publicOrigin: "https://payments.example.test",
       callbackPath: "/stripe/webhook",
-      apiVersion: "2026-07-29.dahlia",
+      apiVersion: "2026-08-26.dahlia",
       livemode: false,
       requestTimeoutMs: 10_000,
     };

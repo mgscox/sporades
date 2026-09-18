@@ -175,6 +175,9 @@ export const journey = {
 };
 
 export const auth = {
+  sessionToken() {
+    return connection?.sessionToken() ?? null;
+  },
   get() {
     return connect().auth();
   },
@@ -723,6 +726,7 @@ function createConnection() {
   const appMessageListeners = new Set();
   const authStateListeners = new Set();
   let latestAuthMessage = null;
+  let latestAuthSocket = null;
   let journeyConsentOptions = null;
   let journeyEnabledUserId = null;
   let journeyCapture = null;
@@ -806,7 +810,7 @@ function createConnection() {
         return;
       }` : ""}
       if (message.type === "auth.result" || message.type === "auth.session.replace") {
-        storeAuthSession(message);
+        storeAuthSession(message, openedSocket);
       }
       if (message.type === "journey.event") {
         const subscription = journeySubscriptions.get(message.id);
@@ -1028,7 +1032,7 @@ function createConnection() {
     subscription.states = next;
   }
 
-  function storeAuthSession(message) {
+  function storeAuthSession(message, confirmedSocket = socket) {
     const token = message.data?.sessionToken;
     const nextAuthUserId = message.data?.auth?.userId ?? null;
     if ((latestAuthUserId && nextAuthUserId && latestAuthUserId !== nextAuthUserId) || (journeyEnabledUserId && nextAuthUserId && journeyEnabledUserId !== nextAuthUserId)) {
@@ -1044,6 +1048,7 @@ function createConnection() {
       localStorage.setItem("sporades.sessionToken", token);
     }
     latestAuthMessage = message;
+    latestAuthSocket = confirmedSocket;
     notifyAuthStateListeners(message);
     return message;
   }
@@ -1209,6 +1214,14 @@ function createConnection() {
   open();
 
   return {
+    sessionToken() {
+      // Expose only the token paired with this tab's confirmed identity. Shared
+      // storage may already belong to a different tab's newly signed-in user.
+      const confirmed = latestAuthMessage;
+      if (pageRetired || socket?.readyState !== WebSocket.OPEN || latestAuthSocket !== socket || confirmed?.error || !confirmed?.data?.auth?.isAuthenticated) return null;
+      const token = confirmed.data.sessionToken;
+      return typeof token === "string" && token.length > 0 && token === sessionToken && token === localStorage.getItem("sporades.sessionToken") ? token : null;
+    },
     auth() {
       return request("auth.get").then(publicAuthResult);
     },

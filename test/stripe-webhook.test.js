@@ -25,7 +25,7 @@ const stripe = {
   webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
   publicOrigin: "https://payments.example.test",
   callbackPath: "/stripe/webhook",
-  apiVersion: "2026-07-29.dahlia",
+  apiVersion: "2026-08-26.dahlia",
   livemode: false,
   requestTimeoutMs: 10_000,
 };
@@ -49,7 +49,7 @@ function stripeEvent(id = "evt_runtime_1", options = {}) {
   return JSON.stringify({
     id,
     object: "event",
-    api_version: "2026-07-29.dahlia",
+    api_version: "2026-08-26.dahlia",
     created,
     data: { object: options.object ?? { id: "cs_test_runtime_1", object: "checkout.session" } },
     livemode: false,

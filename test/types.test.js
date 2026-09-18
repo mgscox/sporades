@@ -101,6 +101,10 @@ import { createStripePaymentIntegration, type StripeCheckoutSessionResult, type 
 import { importLegacyTeamBillingEvidence, type LegacyTeamBillingEvidence, type TeamBillingImportAdapter } from "sporades/server/team-billing-import";
 import { accessKeys, auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teamBilling, teams, type AccessKeyErrorCode, type JourneyRecord } from "sporades/client";
 
+import { auth as emittedAuth } from "${repoRoot}/dist/client.js";
+const ownSessionToken: string | null = auth.sessionToken();
+const emittedSessionToken: string | null = emittedAuth.sessionToken();
+
 const importAdapter: TeamBillingImportAdapter = {
   dialect: { name: "sqlite", sql: (statement) => statement },
   exec: async () => {},
@@ -132,7 +136,7 @@ const disabledCheckout: Promise<StripePaymentsDisabledResult> = dormantStripe.cr
 void disabledCheckout;
 // @ts-expect-error Enabled integration requires normalized configuration and named Server env.
 createStripePaymentIntegration({ enabled: true });
-const enabledStripe = createStripePaymentIntegration({ enabled: true, config: { enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", webhookSecretEnv: "STRIPE_WEBHOOK_SECRET", publicOrigin: "https://payments.example.test", callbackPath: "/stripe/webhook", apiVersion: "2026-07-29.dahlia", livemode: false, requestTimeoutMs: 10000 }, env: { STRIPE_SECRET_KEY: "fixture", STRIPE_WEBHOOK_SECRET: "fixture" } });
+const enabledStripe = createStripePaymentIntegration({ enabled: true, config: { enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", webhookSecretEnv: "STRIPE_WEBHOOK_SECRET", publicOrigin: "https://payments.example.test", callbackPath: "/stripe/webhook", apiVersion: "2026-08-26.dahlia", livemode: false, requestTimeoutMs: 10000 }, env: { STRIPE_SECRET_KEY: "fixture", STRIPE_WEBHOOK_SECRET: "fixture" } });
 const checkout: Promise<StripeCheckoutSessionResult> = enabledStripe.createCheckoutSession({ mode: "payment", priceId: "price_server_owned", quantity: 1, successPath: "/success", cancelPath: "/cancel", idempotencyKey: "capsule:checkout:user:intent", businessReference: "intent-123" });
 const subscriptionCheckout: Promise<StripeCheckoutSessionResult> = enabledStripe.createCheckoutSession({ mode: "subscription", priceId: "price_recurring_server_owned", quantity: 1, successPath: "/success", cancelPath: "/cancel", idempotencyKey: "capsule:checkout:user:subscription", businessReference: "subscription-123" });
 const customerPortal: Promise<StripeCustomerPortalSessionResult> = enabledStripe.createCustomerPortalSession({ customerId: "cus_server_owned", returnPath: "/account/billing", idempotencyKey: "capsule:portal:user:intent" });

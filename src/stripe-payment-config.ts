@@ -1,6 +1,6 @@
 type LooseRecord = Record<string, any>;
 
-export const STRIPE_API_VERSION = "2026-07-29.dahlia" as const;
+export const STRIPE_API_VERSION = "2026-08-26.dahlia" as const;
 
 export type DormantStripePaymentsConfig = Readonly<{ enabled: false }>;
 export type StripeEnabledPaymentsConfig = Readonly<{

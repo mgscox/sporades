@@ -15,7 +15,7 @@ const enabledConfig = {
   webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
   publicOrigin: "https://payments.example.test",
   callbackPath: "/stripe/webhook",
-  apiVersion: "2026-07-29.dahlia",
+  apiVersion: "2026-08-26.dahlia",
   livemode: false,
   requestTimeoutMs: 10_000,
 };
@@ -54,9 +54,9 @@ async function withStripeFake(handler, run) {
   }
 }
 
-test("Sporades pins the official server Stripe SDK to the tested Ticket 02 range", async () => {
+test("Sporades pins the official server Stripe SDK to the tested range", async () => {
   const packageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
-  assert.equal(packageJson.dependencies.stripe, "^22.5.0");
+  assert.equal(packageJson.dependencies.stripe, "^22.6.2");
   assert.deepEqual(packageJson.exports["./server/stripe"], {
     types: "./src/types/stripe.d.ts",
     default: "./dist/stripe-payment-integration.js",
@@ -107,7 +107,7 @@ test("Stripe webhook verification preserves exact bytes and returns one bounded 
   const compact = JSON.stringify({
     id: "evt_protocol_exact_1",
     object: "event",
-    api_version: "2026-07-29.dahlia",
+    api_version: "2026-08-26.dahlia",
     created: occurredAtSeconds,
     data: { object: { id: "cs_test_exact_1", object: "checkout.session", customer: "cus_exact_1" } },
     livemode: false,
@@ -115,7 +115,7 @@ test("Stripe webhook verification preserves exact bytes and returns one bounded 
     request: { id: "req_exact_1", idempotency_key: null },
     type: "checkout.session.completed",
   });
-  const reordered = `{ "type": "checkout.session.completed", "request": { "id": "req_exact_1", "idempotency_key": null }, "pending_webhooks": 1, "livemode": false, "data": { "object": { "customer": "cus_exact_1", "object": "checkout.session", "id": "cs_test_exact_1" } }, "created": ${occurredAtSeconds}, "api_version": "2026-07-29.dahlia", "object": "event", "id": "evt_protocol_exact_1" }`;
+  const reordered = `{ "type": "checkout.session.completed", "request": { "id": "req_exact_1", "idempotency_key": null }, "pending_webhooks": 1, "livemode": false, "data": { "object": { "customer": "cus_exact_1", "object": "checkout.session", "id": "cs_test_exact_1" } }, "created": ${occurredAtSeconds}, "api_version": "2026-08-26.dahlia", "object": "event", "id": "evt_protocol_exact_1" }`;
   assert.deepEqual(JSON.parse(compact), JSON.parse(reordered));
   const signature = Stripe.webhooks.generateTestHeaderString({ payload: compact, secret, timestamp: occurredAtSeconds });
   const integration = createStripePaymentIntegration({
@@ -238,7 +238,7 @@ test("one-time Checkout sends only server-owned authority and returns a narrow v
   assert.equal(request.url, "/v1/checkout/sessions");
   assert.equal(request.headers.authorization, "Bearer sk_test_protocol_fixture");
   assert.equal(request.headers["idempotency-key"], "capsule:checkout:user-1:intent-1");
-  assert.equal(request.headers["stripe-version"], "2026-07-29.dahlia");
+  assert.equal(request.headers["stripe-version"], "2026-08-26.dahlia");
   assert.equal(request.body.get("mode"), "payment");
   assert.equal(request.body.get("line_items[0][price]"), "price_server_owned");
   assert.equal(request.body.get("line_items[0][quantity]"), "2");

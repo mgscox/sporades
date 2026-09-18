@@ -4,6 +4,9 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
+import { DatabaseSync } from "node:sqlite";
+import { createClientRuntimeSource } from "../dist/templates/client-runtime-template.js";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -19,6 +22,80 @@ async function withTempDir(fn) {
     await rm(dir, { recursive: true, force: true });
   }
 }
+
+test("auth.sessionToken authenticates a real public endpoint as the socket user and clears on expiry", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "session-token-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "session-token-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.auth = { providers: { anonymous: true, email: true } };
+    await writeFile(configPath, JSON.stringify(config));
+    await installFakeReact(projectDir);
+    await writeFile(path.join(projectDir, "server", "index.ts"), `
+import { capsule, endpoint } from "sporades/server";
+export default capsule({ name: "session-token-island", endpoints: {
+  identity: endpoint({ method: "GET", path: "/identity" }, (ctx) => JSON.stringify({
+    userId: ctx.auth.userId, isAuthenticated: ctx.auth.isAuthenticated,
+  })),
+} });
+`);
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    const retire = [];
+    try {
+      const started = await waitForJsonLine(child);
+      const storage = new Map();
+      const newTab = async () => {
+        const windowListeners = new Map();
+        const window = {
+          __SPORADES_CONNECTION_TOKEN: await readPageConnectionToken(started.data.url),
+          location: { href: started.data.url },
+          addEventListener: (type, listener) => windowListeners.set(type, listener),
+        };
+        const runtime = runInNewContext(createClientRuntimeSource().replace(/^export /gm, "") + "\n({ auth })", {
+          window, URL, WebSocket, setTimeout, clearTimeout, fetch, AbortController,
+          localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) },
+        });
+        retire.push(() => windowListeners.get("pagehide")?.());
+        return runtime;
+      };
+      const tab = await newTab();
+      assert.equal(tab.auth.sessionToken(), null);
+      const anonymous = await tab.auth.get();
+      assert.equal(anonymous.data.auth.isAuthenticated, false);
+      assert.equal(tab.auth.sessionToken(), null);
+      const credentials = { email: "session@example.com", password: "password-123", name: "Session User" };
+      assert.equal((await tab.auth.signUp("email", credentials)).error, null);
+      const socketAuth = (await tab.auth.get()).data.auth;
+      const token = tab.auth.sessionToken();
+      assert.equal(typeof token, "string");
+      const endpointAuth = await (await fetch(new URL("/identity", started.data.url), { headers: { "x-sporades-session-token": token } })).json();
+      assert.equal(endpointAuth.userId, socketAuth.userId);
+      assert.equal(endpointAuth.isAuthenticated, true);
+      const withoutToken = await (await fetch(new URL("/identity", started.data.url))).json();
+      assert.equal(withoutToken.isAuthenticated, false);
+      assert.notEqual(withoutToken.userId, socketAuth.userId);
+      const second = await newTab();
+      assert.equal(second.auth.sessionToken(), null, "a second tab cannot expose unvalidated storage");
+      assert.equal((await second.auth.get()).data.auth.userId, socketAuth.userId);
+      assert.equal(second.auth.sessionToken(), token);
+      await tab.auth.signOut();
+      assert.equal(tab.auth.sessionToken(), null);
+      assert.equal(second.auth.sessionToken(), null, "other-tab sign-out cannot leak its stale confirmed token");
+      assert.equal((await tab.auth.signIn("email", credentials)).error, null);
+      assert.equal(typeof tab.auth.sessionToken(), "string");
+      // Expire the real server record; the next auth.get exercises server rejection,
+      // rather than replacing a browser response with a fabricated anonymous state.
+      const database = new DatabaseSync(path.join(projectDir, ".sporades", "data.db"));
+      try { database.prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE token = ?").run("2000-01-01T00:00:00.000Z", tab.auth.sessionToken()); }
+      finally { database.close(); }
+      assert.equal((await tab.auth.get()).data.auth.isAuthenticated, false);
+      assert.equal(tab.auth.sessionToken(), null);
+    } finally { for (const close of retire) close(); await stopDevSession(child); }
+  });
+});
 
 test("User journey lifecycle is declaration-gated and bound to the enabling identity over the real transport", async () => {
   await withTempDir(async (dir) => {
