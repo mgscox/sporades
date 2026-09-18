@@ -497,8 +497,10 @@ The Capsule HTTP server handles:
 - `/__sporades/files/private/<id>`: serves private file reads.
 - `/__sporades/files/public/<id>`: serves public file URL reads.
 - custom Capsule endpoints declared with `endpoint()`.
-- `/__sporades/connection-token`: mints a fresh no-store page connection token
-  for bounded client transport recovery.
+- `/__sporades/connection-token`: checks the optional current page connection
+  token in `x-sporades-connection-token` for bounded client transport recovery.
+  A still-valid token is retained without extending its TTL; an invalid or
+  omitted token is replaced with a fresh token. Responses use `no-store`.
 - `/__sporades/ws`: upgrades to the WebSocket transport.
 
 Custom endpoints are the HTTP escape hatch for integrations such as webhooks.
@@ -535,13 +537,20 @@ The WebSocket transport carries the application control plane:
 
 Each served HTML document carries an opaque, expiring connection token and is
 served with `Cache-Control: no-store`. The token gates the WebSocket upgrade; it
-is not a Session credential and grants no app authority. If a restart or expiry
-invalidates it, the client obtains one fresh token from the same-origin
-`/__sporades/connection-token` route and retries with exponential backoff and
-jitter. Brief restarts can recover automatically within that bounded episode;
-longer outages stop after four WebSocket attempts and render a runtime-owned
+is not a Session credential and grants no app authority. After a socket closes,
+the client checks its token through the same-origin
+`/__sporades/connection-token` route using `x-sporades-connection-token`. A
+still-valid token is retained with its original expiry (its TTL is unchanged);
+an expired or evicted token is replaced before retrying with exponential backoff
+and jitter. An unavailable token check may retry the existing token within the
+same bounded budget.
+
+Four WebSocket connection attempts exhaust automatic recovery, even if brief
+connections open and receive messages. Only a connection that stays open for
+five continuous minutes and receives a server response rearms that recovery
+budget. Exhaustion notifies live-query consumers and renders a runtime-owned
 manual retry state rather than leaving the Capsule shell loading or reconnecting
-indefinitely.
+indefinitely. Manual retry obtains a fresh token and starts a new budget.
 
 The scaffold hides raw transport details behind `sporades/client`:
 

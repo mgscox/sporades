@@ -4685,7 +4685,10 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
     let journeyExpiryTimer = null;
     let journeyDisableRequests = 0;
     return {
-        createConnectionToken() {
+        createConnectionToken(currentToken) {
+            // Checking a healthy gate neither rotates it nor extends its original TTL.
+            if (currentToken && validateConnectionToken(currentToken))
+                return currentToken;
             while (connectionTokens.size >= maxConnectionTokens) {
                 const oldestToken = connectionTokens.keys().next().value;
                 if (typeof oldestToken !== "string")

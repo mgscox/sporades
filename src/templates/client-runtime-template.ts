@@ -736,6 +736,7 @@ function createConnection() {
   let pageRetired = false;
   const maxAutomaticConnectionAttempts = 4;
   let automaticConnectionAttempts = 0;
+  const stableConnectionMs = 5 * 60 * 1000;
   let retryInFlight = false;
   let terminalConnectionError = null;
   let connectionErrorPanel = null;
@@ -771,10 +772,11 @@ function createConnection() {
     }
     automaticConnectionAttempts += 1;
     const openedSocket = new WebSocket(url);
-    let opened = false;
+    let openedAt = null;
+    let receivedMessage = false;
     socket = openedSocket;
     openedSocket.addEventListener("open", () => {
-      opened = true;
+      openedAt = Date.now();
       retryInFlight = false;
       ${options.devRefresh ? 'request("dev.refresh.subscribe");' : ""}
       request("auth.get");
@@ -795,8 +797,7 @@ function createConnection() {
       for (const queued of retryQueue.splice(0)) send(queued.message, queued.onSocket);
     });
     openedSocket.addEventListener("message", (event) => {
-      automaticConnectionAttempts = 0;
-      terminalConnectionError = null;
+      receivedMessage = true;
       const message = JSON.parse(event.data);
       ${options.devRefresh ? `if (message.type === "refresh" && message.data?.mode === "full-page") {
         const refreshSequence = message.data.sequence;
@@ -865,16 +866,23 @@ function createConnection() {
         pending.delete(id);
       }
       if (socket !== openedSocket || pageRetired) return;
+      // A response alone is not recovery: flapping sockets may answer then die.
+      // Only a continuously healthy five-minute connection rearms the budget.
+      if (openedAt !== null && receivedMessage && Date.now() - openedAt >= stableConnectionMs) {
+        automaticConnectionAttempts = 0;
+      }
       if (automaticConnectionAttempts >= maxAutomaticConnectionAttempts) {
         showTerminalConnectionError();
         return;
       }
-      scheduleConnectionRetry(!opened);
+      // Upgrade HTTP failures have no distinguishable browser close code. Ask
+      // the same-origin runtime to retain a valid gate or replace an expired one.
+      scheduleConnectionRetry(true, connectionToken);
     });
     return openedSocket;
   }
 
-  async function scheduleConnectionRetry(refreshToken) {
+  async function scheduleConnectionRetry(refreshToken, currentToken = null) {
     if (pageRetired || retryInFlight) return;
     retryInFlight = true;
     if (refreshToken) {
@@ -886,6 +894,9 @@ function createConnection() {
           credentials: "same-origin",
           headers: { "x-sporades-connection-token-request": "1" },
         };
+        if (typeof currentToken === "string" && currentToken.length > 0) {
+          refreshOptions.headers["x-sporades-connection-token"] = currentToken;
+        }
         if (controller) refreshOptions.signal = controller.signal;
         const timeout = new Promise((_, reject) => {
           timeoutId = setTimeout(() => {

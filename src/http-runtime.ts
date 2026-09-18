@@ -363,7 +363,7 @@ export function isDocumentNavigationRequest(request: Pick<IncomingMessage, "head
 export function routeConnectionToken(
   request: Pick<IncomingMessage, "method" | "url" | "headers" | "socket">,
   response: Pick<ServerResponse, "writeHead" | "end">,
-  createConnectionToken: () => string,
+  createConnectionToken: (currentToken?: string) => string,
 ) {
   const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
   if (request.method !== "GET" || requestUrl.pathname !== "/__sporades/connection-token") return false;
@@ -384,7 +384,8 @@ export function routeConnectionToken(
     "cross-origin-resource-policy": "same-origin",
     pragma: "no-cache",
   });
-  response.end(JSON.stringify({ token: createConnectionToken() }));
+  const currentToken = request.headers["x-sporades-connection-token"];
+  response.end(JSON.stringify({ token: createConnectionToken(typeof currentToken === "string" ? currentToken : undefined) }));
   return true;
 }
 
