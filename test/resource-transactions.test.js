@@ -466,6 +466,78 @@ test('Postgres Job locks the authorization anchor before a concurrent revocation
   } finally { releaseAuthorization?.(); await database.shutdown(); await database.close(); }
 });
 
+test('Postgres Job authorization-anchor contention returns RESOURCE_BUSY without entering its resource callback', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  const handlerReady = Promise.withResolvers();
+  const resourceSettled = Promise.withResolvers();
+  let resourceCallbacks = 0;
+  let resourceOutcome;
+  const database = await openDevDatabase('postgres-resource-job-authorization-nowait', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-resource-job-authorization-nowait', services: { database: { engine: 'postgres' } } }, {
+    schema: {
+      anchors: table({ value: Text() }).acl({ read: ({ row }) => row?.value === 'allowed', write: () => true }),
+      writes: table({ value: Text() }),
+    },
+    jobs: { work: job(async ctx => {
+      await handlerReady.promise;
+      try {
+        return await ctx.resources.run(options({ authorization: 'contended' }), async scope => {
+          resourceCallbacks += 1;
+          await scope.db.writes.insert({ value: 'must-not-run' });
+          return { shouldNotEnter: true };
+        });
+      } catch (error) {
+        resourceOutcome = error.code;
+        resourceSettled.resolve();
+        return { resourceOutcome: error.code };
+      }
+    }) },
+    mutations: { enqueue: mutation(ctx => ctx.jobs.enqueue('work', null, { retry: { maxAttempts: 1, delayMs: 0 } })) },
+  }, { clock });
+  let controller;
+  let worker;
+  try {
+    await database.init();
+    const now = clock.now().toISOString();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', now, now, 'allowed');
+    await database.adapter.withResourceTransaction(() => null, undefined, { table: 'anchors', id: 'anchor' });
+    const queued = await runMutation(database, actor, 'enqueue', []);
+    assert.equal(queued.ok, true);
+    controller = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    await controller.exec('BEGIN');
+    await controller.prepare('SELECT id FROM anchors WHERE id=? FOR UPDATE').get('anchor');
+
+    worker = runCurrentUserJobWorker(database);
+    handlerReady.resolve();
+    const promptOutcome = await Promise.race([
+      resourceSettled.promise.then(() => 'resource-outcome'),
+      new Promise(resolve => setTimeout(() => resolve('pending'), 175)),
+    ]);
+    await controller.exec('ROLLBACK');
+    await worker;
+
+    assert.equal(promptOutcome, 'resource-outcome', 'Job authorization-anchor admission must not wait on an ordinary transaction');
+    assert.equal(resourceOutcome, 'RESOURCE_BUSY');
+    assert.equal(resourceCallbacks, 0);
+    const settled = await database.adapter.prepare('SELECT status,"claimToken" FROM sporades_jobs WHERE id=?').get(queued.data.id);
+    assert.deepEqual(settled, { status: 'succeeded', claimToken: null });
+    assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='must-not-run'").get()).n), 0);
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 0);
+
+    await controller.exec('BEGIN');
+    assert.deepEqual(await controller.prepare('SELECT "resourceTable" FROM sporades_resource_locks WHERE "resourceTable"=? AND "resourceId"=? FOR UPDATE NOWAIT').get('anchors', 'anchor'), { resourceTable: 'anchors' });
+    assert.deepEqual(await controller.prepare('SELECT id FROM sporades_jobs WHERE id=? FOR UPDATE NOWAIT').get(queued.data.id), { id: queued.data.id });
+    await controller.exec('ROLLBACK');
+  } finally {
+    handlerReady.resolve();
+    await controller?.exec('ROLLBACK').catch(() => {});
+    await worker?.catch(() => {});
+    await controller?.close();
+    await database.shutdown(); await database.close();
+  }
+});
+
 test('Postgres public resource scopes lock the authorization anchor through outer settlement', { skip: POSTGRES_SKIP_REASON }, async t => {
   for (const kind of ['mutation', 'endpoint']) await t.test(kind, async () => {
     const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });

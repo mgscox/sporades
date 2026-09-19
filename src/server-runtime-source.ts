@@ -3935,7 +3935,7 @@ function bindOrdinaryJobResourceContext(database: LooseRecord, context: LooseRec
       // that exclusion, so retain its ordinary lookup and ACL behaviour.
       const stored = database.adapter.engine === "postgres"
         ? await scopedDatabase.adapter.prepare(
-          `SELECT * FROM ${scopedDatabase.adapter.dialect.quoteIdentifier(table.name)} WHERE ${scopedDatabase.adapter.dialect.quoteIdentifier("id")} = ? FOR UPDATE`,
+          `SELECT * FROM ${scopedDatabase.adapter.dialect.quoteIdentifier(table.name)} WHERE ${scopedDatabase.adapter.dialect.quoteIdentifier("id")} = ? FOR UPDATE NOWAIT`,
         ).get(identity.id)
         : await scopedDatabase.adapter.selectAppRowById(table, identity.id);
       const row = stored ? deserializeRow(table, stored) : null;

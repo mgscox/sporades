@@ -103294,7 +103294,7 @@ function bindOrdinaryJobResourceContext(database, context, claim, privileged = f
       const scopedDatabase = scopeDatabases.get(scoped);
       const table = database.schema.tables.find((candidate) => candidate.name === identity.table);
       const stored = database.adapter.engine === "postgres" ? await scopedDatabase.adapter.prepare(
-        `SELECT * FROM ${scopedDatabase.adapter.dialect.quoteIdentifier(table.name)} WHERE ${scopedDatabase.adapter.dialect.quoteIdentifier("id")} = ? FOR UPDATE`
+        `SELECT * FROM ${scopedDatabase.adapter.dialect.quoteIdentifier(table.name)} WHERE ${scopedDatabase.adapter.dialect.quoteIdentifier("id")} = ? FOR UPDATE NOWAIT`
       ).get(identity.id) : await scopedDatabase.adapter.selectAppRowById(table, identity.id);
       const row = stored ? deserializeRow(table, stored) : null;
       if (!row || !await applyReadAcl(scopedDatabase, table, row, scoped)) {
