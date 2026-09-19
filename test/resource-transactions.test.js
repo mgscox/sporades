@@ -237,6 +237,225 @@ test('Postgres endpoint resource scopes reconcile a lost outer COMMIT acknowledg
   }
 });
 
+test('Postgres public mutation and endpoint resource paths preserve declared receipt columns and replay exactly once', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, ['anchors', 'writes']);
+  await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks');
+  await reset.close();
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  let mutationCallbacks = 0;
+  let endpointCallbacks = 0;
+  let jobCallbacks = 0;
+  const database = await openDevDatabase('postgres-public-outer-resource-identifiers', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-public-outer-resource-identifiers', services: { database: { engine: 'postgres' } } }, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+    jobs: { work: job(ctx => ctx.resources.run({ ...options(), operationId: 'public-job' }, async scope => { jobCallbacks++; await scope.db.writes.insert({ value: 'job-once' }); return { path: 'job' }; })) },
+    mutations: {
+      write: mutation(ctx => ctx.resources.run({ ...options(), operationId: 'public-mutation' }, async scope => { mutationCallbacks++; await scope.db.writes.insert({ value: 'mutation-once' }); return { path: 'mutation' }; })),
+      enqueue: mutation(ctx => ctx.jobs.enqueue('work', null, { retry: { maxAttempts: 1, delayMs: 0 } })),
+    },
+    endpoints: { write: endpoint({ method: 'POST', path: '/public-resource-write' }, ctx => ctx.resources.run({ ...options(), operationId: 'public-endpoint' }, async scope => { endpointCallbacks++; await scope.db.writes.insert({ value: 'endpoint-once' }); return { path: 'endpoint' }; })) },
+  }, { clock });
+  try {
+    await database.init();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'postgres');
+    assert.deepEqual(await runMutation(database, actor, 'write', []), { ok: true, data: { path: 'mutation' }, error: null });
+    assert.deepEqual(await runMutation(database, actor, 'write', []), { ok: true, data: { path: 'mutation' }, error: null });
+    const firstJob = await runMutation(database, actor, 'enqueue', []);
+    assert.equal(firstJob.ok, true);
+    await runCurrentUserJobWorker(database);
+    const replayJob = await runMutation(database, actor, 'enqueue', []);
+    assert.equal(replayJob.ok, true);
+    await runCurrentUserJobWorker(database);
+    const session = await resolveAnonymousSession(database, null);
+    const request = { method: 'POST', headers: { 'x-sporades-session-token': session.token }, async *[Symbol.asyncIterator]() {} };
+    const route = database.endpoints.find(item => item.path === '/public-resource-write');
+    assert.deepEqual(await runEndpoint(database, route, new URL('http://capsule.test/public-resource-write'), request), { path: 'endpoint' });
+    assert.deepEqual(await runEndpoint(database, route, new URL('http://capsule.test/public-resource-write'), request), { path: 'endpoint' });
+    assert.equal(mutationCallbacks, 1);
+    assert.equal(endpointCallbacks, 1);
+    assert.equal(jobCallbacks, 1);
+    assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM writes WHERE value IN ('mutation-once','job-once','endpoint-once')").get()).n), 3);
+    for (const [tableName, expectedColumns] of Object.entries({
+      sporades_resource_locks: ['resourceTable', 'resourceId'],
+      sporades_resource_receipts: ['resourceTable', 'resourceId', 'operationId', 'inputDigest', 'actorDigest', 'resultJson', 'intentIdsJson', 'committedAt'],
+    })) {
+      const actualColumns = (await database.adapter.prepare("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=? ORDER BY ordinal_position").all(tableName)).map(row => row.column_name);
+      assert.deepEqual(actualColumns, expectedColumns, `${tableName} must retain its declared PostgreSQL camelCase columns`);
+    }
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 3);
+  } finally { await database.shutdown(); await database.close(); }
+});
+
+test('Postgres Job-first resource bootstrap shares quoted receipt columns with public endpoint and mutation replays', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, ['anchors', 'writes']);
+  await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks');
+  await reset.close();
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  const callbacks = { job: 0, endpoint: 0, mutation: 0 };
+  const database = await openDevDatabase('postgres-job-first-resource-identifiers', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-job-first-resource-identifiers', services: { database: { engine: 'postgres' } } }, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+    jobs: { work: job(ctx => ctx.resources.run({ ...options(), operationId: 'job-first' }, async scope => { callbacks.job++; await scope.db.writes.insert({ value: 'job-first-once' }); return { path: 'job' }; })) },
+    mutations: {
+      enqueue: mutation(ctx => ctx.jobs.enqueue('work', null, { retry: { maxAttempts: 1, delayMs: 0 } })),
+      write: mutation(ctx => ctx.resources.run({ ...options(), operationId: 'mutation-after-job' }, async scope => { callbacks.mutation++; await scope.db.writes.insert({ value: 'mutation-after-job-once' }); return { path: 'mutation' }; })),
+    },
+    endpoints: { write: endpoint({ method: 'POST', path: '/endpoint-after-job' }, ctx => ctx.resources.run({ ...options(), operationId: 'endpoint-after-job' }, async scope => { callbacks.endpoint++; await scope.db.writes.insert({ value: 'endpoint-after-job-once' }); return { path: 'endpoint' }; })) },
+  }, { clock });
+  try {
+    await database.init();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'postgres');
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const queued = await runMutation(database, actor, 'enqueue', []);
+      assert.equal(queued.ok, true);
+      await runCurrentUserJobWorker(database);
+    }
+    const session = await resolveAnonymousSession(database, null);
+    const request = { method: 'POST', headers: { 'x-sporades-session-token': session.token }, async *[Symbol.asyncIterator]() {} };
+    const route = database.endpoints.find(item => item.path === '/endpoint-after-job');
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      assert.deepEqual(await runEndpoint(database, route, new URL('http://capsule.test/endpoint-after-job'), request), { path: 'endpoint' });
+      assert.deepEqual(await runMutation(database, actor, 'write', []), { ok: true, data: { path: 'mutation' }, error: null });
+    }
+    assert.deepEqual(callbacks, { job: 1, endpoint: 1, mutation: 1 });
+    assert.deepEqual((await database.adapter.prepare("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sporades_resource_receipts' ORDER BY ordinal_position").all()).map(row => row.column_name), ['resourceTable', 'resourceId', 'operationId', 'inputDigest', 'actorDigest', 'resultJson', 'intentIdsJson', 'committedAt']);
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 3);
+  } finally { await database.shutdown(); await database.close(); }
+});
+
+test('Postgres public resource mutation upgrades folded lock and receipt columns before replay', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, ['anchors', 'writes']);
+  await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks');
+  // This is the persisted pre-ADR-0039 shape: only this fixture deliberately
+  // leaves identifiers unquoted so the public path must perform the upgrade.
+  await reset.exec('CREATE TABLE sporades_resource_locks (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId))');
+  await reset.exec('CREATE TABLE sporades_resource_receipts (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, operationId TEXT NOT NULL, inputDigest TEXT NOT NULL, actorDigest TEXT NOT NULL, resultJson TEXT NOT NULL, intentIdsJson TEXT NOT NULL, committedAt TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId, operationId))');
+  await reset.close();
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  const callbacks = { mutation: 0, job: 0 };
+  const database = await openDevDatabase('postgres-public-resource-folded-upgrade', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-public-resource-folded-upgrade', services: { database: { engine: 'postgres' } } }, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+    jobs: { work: job(ctx => ctx.resources.run({ ...options(), operationId: 'folded-upgrade-job' }, async scope => { callbacks.job++; await scope.db.writes.insert({ value: 'folded-upgraded-job-once' }); return true; })) },
+    mutations: {
+      write: mutation(ctx => ctx.resources.run({ ...options(), operationId: 'folded-upgrade' }, async scope => { callbacks.mutation++; await scope.db.writes.insert({ value: 'folded-upgraded-once' }); return true; })),
+      enqueue: mutation(ctx => ctx.jobs.enqueue('work', null, { retry: { maxAttempts: 1, delayMs: 0 } })),
+    },
+  }, { clock });
+  try {
+    await database.init();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'postgres');
+    assert.equal((await runMutation(database, actor, 'write', [])).ok, true);
+    assert.equal((await runMutation(database, actor, 'write', [])).ok, true);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const queued = await runMutation(database, actor, 'enqueue', []);
+      assert.equal(queued.ok, true);
+      await runCurrentUserJobWorker(database);
+    }
+    assert.deepEqual(callbacks, { mutation: 1, job: 1 });
+    for (const [tableName, expectedColumns] of Object.entries({
+      sporades_resource_locks: ['resourceTable', 'resourceId'],
+      sporades_resource_receipts: ['resourceTable', 'resourceId', 'operationId', 'inputDigest', 'actorDigest', 'resultJson', 'intentIdsJson', 'committedAt'],
+    })) assert.deepEqual((await database.adapter.prepare("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=? ORDER BY ordinal_position").all(tableName)).map(row => row.column_name), expectedColumns);
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 2);
+  } finally { await database.shutdown(); await database.close(); }
+});
+
+test('Postgres Job-first resource replay upgrades seeded folded locks and receipts without losing rows', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, ['anchors', 'writes']);
+  await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks');
+  await reset.exec('CREATE TABLE sporades_resource_locks (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId))');
+  await reset.exec('CREATE TABLE sporades_resource_receipts (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, operationId TEXT NOT NULL, inputDigest TEXT NOT NULL, actorDigest TEXT NOT NULL, resultJson TEXT NOT NULL, intentIdsJson TEXT NOT NULL, committedAt TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId, operationId))');
+  await reset.prepare("INSERT INTO sporades_resource_receipts VALUES (?,?,?,?,?,?,?,?)").run('legacy-table', 'legacy-id', 'legacy-op', 'legacy-digest', 'legacy-actor', '{}', '[]', '2030-01-01T00:00:00.000Z');
+  await reset.close();
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  const callbacks = { job: 0, mutation: 0 };
+  const database = await openDevDatabase('postgres-job-first-folded-resource-upgrade', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-job-first-folded-resource-upgrade', services: { database: { engine: 'postgres' } } }, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+    jobs: { work: job(ctx => ctx.resources.run({ ...options(), operationId: 'legacy-job' }, async scope => { callbacks.job++; await scope.db.writes.insert({ value: 'legacy-job-once' }); return true; })) },
+    mutations: {
+      enqueue: mutation(ctx => ctx.jobs.enqueue('work', null, { retry: { maxAttempts: 1, delayMs: 0 } })),
+      write: mutation(ctx => ctx.resources.run({ ...options(), operationId: 'legacy-mutation' }, async scope => { callbacks.mutation++; await scope.db.writes.insert({ value: 'legacy-mutation-once' }); return true; })),
+    },
+  }, { clock });
+  try {
+    await database.init();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'postgres');
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const queued = await runMutation(database, actor, 'enqueue', []);
+      assert.equal(queued.ok, true);
+      await runCurrentUserJobWorker(database);
+      assert.equal((await runMutation(database, actor, 'write', [])).ok, true);
+    }
+    assert.deepEqual(callbacks, { job: 1, mutation: 1 });
+    assert.deepEqual(await database.adapter.prepare('SELECT "resourceTable","resourceId","operationId" FROM sporades_resource_receipts WHERE "operationId"=?').get('legacy-op'), { resourceTable: 'legacy-table', resourceId: 'legacy-id', operationId: 'legacy-op' });
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 3);
+    assert.deepEqual((await database.adapter.prepare("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sporades_resource_locks' ORDER BY ordinal_position").all()).map(row => row.column_name), ['resourceTable', 'resourceId']);
+  } finally { await database.shutdown(); await database.close(); }
+});
+
+test('Postgres outer replay preserves an actual legacy folded receipt payload without rerunning its callback', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, ['anchors', 'writes']);
+  await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks');
+  await reset.close();
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  const definition = (callback) => ({
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+    mutations: { write: mutation(ctx => ctx.resources.run({ ...options(), operationId: 'legacy-payload-replay' }, callback)) },
+  });
+  const open = (name, callback) => openDevDatabase(name, '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name, services: { database: { engine: 'postgres' } } }, definition(callback), { clock });
+  const first = await open('postgres-legacy-resource-payload-first', async scope => { await scope.db.writes.insert({ value: 'legacy-payload-once' }); return { retained: 'payload' }; });
+  try {
+    await first.init();
+    await first.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'postgres');
+    assert.deepEqual(await runMutation(first, actor, 'write', []), { ok: true, data: { retained: 'payload' }, error: null });
+  } finally { await first.shutdown(); await first.close(); }
+  const fold = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  try {
+    await fold.exec('ALTER TABLE sporades_resource_locks RENAME COLUMN "resourceTable" TO resourcetable');
+    await fold.exec('ALTER TABLE sporades_resource_locks RENAME COLUMN "resourceId" TO resourceid');
+    for (const column of ['resourceTable', 'resourceId', 'operationId', 'inputDigest', 'actorDigest', 'resultJson', 'intentIdsJson', 'committedAt']) await fold.exec(`ALTER TABLE sporades_resource_receipts RENAME COLUMN "${column}" TO ${column.toLowerCase()}`);
+  } finally { await fold.close(); }
+  let replayCallbacks = 0;
+  const restarted = await open('postgres-legacy-resource-payload-restarted', async () => { replayCallbacks++; return { unexpected: true }; });
+  try {
+    await restarted.init();
+    assert.deepEqual(await runMutation(restarted, actor, 'write', []), { ok: true, data: { retained: 'payload' }, error: null });
+    assert.equal(replayCallbacks, 0);
+    assert.equal(Number((await restarted.adapter.prepare("SELECT count(*) n FROM writes WHERE value='legacy-payload-once'").get()).n), 1);
+    assert.deepEqual((await restarted.adapter.prepare("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sporades_resource_receipts' ORDER BY ordinal_position").all()).map(row => row.column_name), ['resourceTable', 'resourceId', 'operationId', 'inputDigest', 'actorDigest', 'resultJson', 'intentIdsJson', 'committedAt']);
+  } finally { await restarted.shutdown(); await restarted.close(); }
+});
+
+test('Postgres outer folded receipt migration waits on its explicit schema lock only through the resource timeout', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, ['anchors', 'writes']);
+  await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks');
+  await reset.exec('CREATE TABLE "sporades_resource_locks" ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId"))');
+  await reset.exec('CREATE TABLE sporades_resource_receipts (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, operationId TEXT NOT NULL, inputDigest TEXT NOT NULL, actorDigest TEXT NOT NULL, resultJson TEXT NOT NULL, intentIdsJson TEXT NOT NULL, committedAt TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId, operationId))');
+  await reset.close();
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  const database = await openDevDatabase('postgres-folded-receipt-migration-lock', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-folded-receipt-migration-lock', services: { database: { engine: 'postgres' } } }, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+    mutations: { write: mutation(ctx => ctx.resources.run({ ...options(), operationId: 'receipt-migration-lock' }, async scope => { await scope.db.writes.insert({ value: 'after-migration-lock' }); return true; })) },
+  }, { clock });
+  const blocker = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  try {
+    await database.init();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'postgres');
+    await blocker.exec('BEGIN');
+    await blocker.exec('LOCK TABLE sporades_resource_receipts IN ACCESS EXCLUSIVE MODE');
+    const blocked = await runMutation(database, actor, 'write', []);
+    assert.equal(blocked.ok, false);
+    assert.equal(blocked.error.code, 'RESOURCE_BUSY');
+    await blocker.exec('ROLLBACK');
+    assert.equal((await runMutation(database, actor, 'write', [])).ok, true);
+    assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='after-migration-lock'").get()).n), 1);
+  } finally { await blocker.exec('ROLLBACK').catch(() => {}); await blocker.close(); await database.shutdown(); await database.close(); }
+});
+
 test('Postgres Job backend loss after its final claim check rolls back write and receipt before another owner acquires', { skip: POSTGRES_SKIP_REASON }, async () => {
   const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
   await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();

@@ -1995,6 +1995,23 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
         const resourceTableColumn = dialect.quoteIdentifier("resourceTable");
         const resourceIdColumn = dialect.quoteIdentifier("resourceId");
         await query(`CREATE TABLE IF NOT EXISTS ${resourceLockTable} (${resourceTableColumn} TEXT NOT NULL, ${resourceIdColumn} TEXT NOT NULL, PRIMARY KEY (${resourceTableColumn}, ${resourceIdColumn}))`);
+        // A pre-ADR-0039 runtime created this table with folded PostgreSQL
+        // columns. Lock the fixed runtime-owned table before inspecting and
+        // renaming it, so a concurrent resource owner cannot use its old
+        // shape between the compatibility decision and the first new claim.
+        await query(`LOCK TABLE ${resourceLockTable} IN ACCESS EXCLUSIVE MODE`);
+        const legacyLockColumns = new Set(postgresRowsFromResult(normalization, await query(
+          `SELECT ${dialect.quoteIdentifier("column_name")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("columns")} ` +
+          `WHERE ${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("table_name")}=?`,
+          ["sporades_resource_locks"]
+        )).map((row: any) => row.column_name));
+        for (const column of ["resourceTable", "resourceId"]) {
+          const folded = column.toLowerCase();
+          if (legacyLockColumns.has(folded) && !legacyLockColumns.has(column)) {
+            await query(`ALTER TABLE ${resourceLockTable} RENAME COLUMN ${dialect.quoteIdentifier(folded)} TO ${dialect.quoteIdentifier(column)}`);
+            legacyLockColumns.delete(folded); legacyLockColumns.add(column);
+          }
+        }
         await query(`INSERT INTO ${resourceLockTable} (${resourceTableColumn}, ${resourceIdColumn}) VALUES (?, ?) ON CONFLICT (${resourceTableColumn}, ${resourceIdColumn}) DO NOTHING`, [resource.table, resource.id]);
         await query(`SELECT ${resourceTableColumn} FROM ${resourceLockTable} WHERE ${resourceTableColumn}=? AND ${resourceIdColumn}=? FOR UPDATE NOWAIT`, [resource.table, resource.id]);
         const transaction = createTransactionScopedAdapter(adapter, operations, adapter, "transaction");
