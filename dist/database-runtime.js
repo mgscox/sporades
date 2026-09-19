@@ -1553,6 +1553,8 @@ export async function createPostgresDatabaseAdapter(options) {
         throw commandError("Missing Postgres database service URL.", "Start a Dev session or local Container session with services.database.engine set to postgres.");
     }
     let client = await createPostgresConnection(url);
+    let needsReconnect = false;
+    let reconnecting;
     const connectionGate = createConnectionTransactionGate();
     const runDirectly = (operation) => operation();
     let closed = false;
@@ -1643,6 +1645,18 @@ export async function createPostgresDatabaseAdapter(options) {
     };
     const rawQuery = async (sql, params = []) => {
         assertOpen();
+        if (needsReconnect) {
+            reconnecting ??= createPostgresConnection(url).then(async (connection) => {
+                if (closed) {
+                    await connection.close();
+                    assertOpen();
+                }
+                client = connection;
+                needsReconnect = false;
+            }).finally(() => { reconnecting = undefined; });
+            await reconnecting;
+            assertOpen();
+        }
         return await client.query(postgresInterpolate(sql, params));
     };
     const createOperations = (run) => ({
@@ -1816,11 +1830,11 @@ export async function createPostgresDatabaseAdapter(options) {
                     if (resourceCommitIssued) {
                         // Once COMMIT was issued its outcome is unknowable. Discard the
                         // socket before a later receipt lookup can use this connection.
+                        needsReconnect = true;
                         try {
                             await client.close();
-                            client = await createPostgresConnection(url);
                         }
-                        catch { /* the outcome remains unknown even if reconnect fails */ }
+                        catch { }
                         throw resourceError("RESOURCE_COMMIT_UNKNOWN");
                     }
                     try {

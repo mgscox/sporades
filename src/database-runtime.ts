@@ -1920,6 +1920,8 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
   }
 
   let client = await createPostgresConnection(url);
+  let needsReconnect = false;
+  let reconnecting: Promise<void> | undefined;
   const connectionGate = createConnectionTransactionGate();
   const runDirectly = (operation: () => any) => operation();
   let closed = false;
@@ -2011,6 +2013,18 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
 
   const rawQuery = async (sql: string, params: any[] = []) => {
     assertOpen();
+    if (needsReconnect) {
+      reconnecting ??= createPostgresConnection(url).then(async connection => {
+        if (closed) {
+          await connection.close();
+          assertOpen();
+        }
+        client = connection;
+        needsReconnect = false;
+      }).finally(() => { reconnecting = undefined; });
+      await reconnecting;
+      assertOpen();
+    }
     return await client.query(postgresInterpolate(sql, params));
   };
 
@@ -2156,8 +2170,9 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
           if (resourceCommitIssued) {
             // Once COMMIT was issued its outcome is unknowable. Discard the
             // socket before a later receipt lookup can use this connection.
-            try { await client.close(); client = await createPostgresConnection(url); }
-            catch { /* the outcome remains unknown even if reconnect fails */ }
+            needsReconnect = true;
+            try { await client.close(); }
+            catch {}
             throw resourceError("RESOURCE_COMMIT_UNKNOWN");
           }
           try {
