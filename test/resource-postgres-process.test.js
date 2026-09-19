@@ -1,11 +1,21 @@
 import assert from 'node:assert/strict';
-import { fork } from 'node:child_process';
+import { execFileSync, fork } from 'node:child_process';
 import { once } from 'node:events';
 import { test } from 'node:test';
 import { createPostgresDatabaseAdapter } from '../dist/server-runtime-source.js';
 import { POSTGRES_SKIP_REASON, postgresTestUrl, resetPostgresSchema } from './support/database-adapter-engines.js';
 
 const BARRIER_TIMEOUT_MS = 5_000;
+
+async function stopAtBarrier(child) {
+  child.kill('SIGSTOP');
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const state = execFileSync('ps', ['-o', 'state=', '-p', String(child.pid)], { encoding: 'utf8' });
+    if (state.includes('T')) return;
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.fail('PostgreSQL owner did not stop at its bounded IPC barrier');
+}
 
 function childWorker() {
   const child = fork(new URL('./support/resource-postgres-process-worker.js', import.meta.url), [], {
@@ -37,7 +47,7 @@ function childWorker() {
   };
   return {
     child, wait, exit,
-    send(kind) { if (child.connected) child.send({ kind }); },
+    send(kind, detail = {}) { if (child.connected) child.send({ kind, ...detail }); },
     async stop() {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
       await Promise.race([exit, new Promise(resolve => setTimeout(resolve, BARRIER_TIMEOUT_MS))]);
@@ -50,7 +60,7 @@ test('real PostgreSQL process death releases the resource lock and rolls back pr
   const setup = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
   const owner = childWorker();
   try {
-    await resetPostgresSchema(setup, ['ticket04_process_writes']);
+    await resetPostgresSchema(setup, ['ticket04_process_writes', 'sporades_resource_receipts', 'sporades_resource_locks']);
     await setup.exec('CREATE TABLE ticket04_process_writes (owner TEXT NOT NULL)');
     await setup.exec('CREATE TABLE sporades_resource_receipts (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, operationId TEXT NOT NULL, inputDigest TEXT NOT NULL, actorDigest TEXT NOT NULL, resultJson TEXT NOT NULL, intentIdsJson TEXT NOT NULL, committedAt TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId, operationId))');
     await owner.wait('ready'); owner.send('start'); await owner.wait('entered');
@@ -72,4 +82,54 @@ test('real PostgreSQL process death releases the resource lock and rolls back pr
     await owner.stop();
     await setup.close();
   }
+});
+
+test('real PostgreSQL keeps a live paused owner exclusive past a local expiry observation, then rolls back and permits restart recovery', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const setup = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  const owner = childWorker();
+  try {
+    await resetPostgresSchema(setup, ['ticket04_process_writes', 'sporades_resource_receipts', 'sporades_resource_locks']);
+    await setup.exec('CREATE TABLE ticket04_process_writes (owner TEXT NOT NULL)');
+    await setup.exec('CREATE TABLE sporades_resource_receipts (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, operationId TEXT NOT NULL, inputDigest TEXT NOT NULL, actorDigest TEXT NOT NULL, resultJson TEXT NOT NULL, intentIdsJson TEXT NOT NULL, committedAt TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId, operationId))');
+    await owner.wait('ready'); owner.send('start'); await owner.wait('entered');
+
+    await stopAtBarrier(owner.child);
+    // An elapsed local deadline cannot transfer a still-live engine lock. The
+    // successor must observe the real NOWAIT conflict, not enter on a timer.
+    await new Promise(resolve => setTimeout(resolve, 25));
+    const duringPause = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    try {
+      await assert.rejects(duringPause.withResourceTransaction(() => assert.fail('paused owner was replaced'), undefined, { table: 'anchors', id: 'anchor' }), { code: 'RESOURCE_BUSY' });
+    } finally { await duringPause.close(); }
+
+    owner.child.kill('SIGCONT'); owner.send('release', { rollback: true });
+    assert.equal((await owner.wait('error')).message, 'requested rollback');
+
+    const restarted = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    try {
+      await restarted.withResourceTransaction(async transaction => {
+        await transaction.prepare("INSERT INTO ticket04_process_writes (owner) VALUES ('restart-successor')").run();
+      }, undefined, { table: 'anchors', id: 'anchor' });
+      assert.equal(Number((await restarted.prepare("SELECT count(*) AS n FROM ticket04_process_writes WHERE owner LIKE 'A%'").get()).n), 0);
+      assert.equal(Number((await restarted.prepare("SELECT count(*) AS n FROM sporades_resource_receipts WHERE operationId='process-death'").get()).n), 0);
+      assert.equal(Number((await restarted.prepare("SELECT count(*) AS n FROM ticket04_process_writes WHERE owner='restart-successor'").get()).n), 1);
+    } finally { await restarted.close(); }
+  } finally {
+    await owner.stop();
+    await setup.close();
+  }
+});
+
+test('real PostgreSQL exact claim settlement is conditional and stale recovery cannot settle a newer claim', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const adapter = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  try {
+    await resetPostgresSchema(adapter, ['ticket04_claim_settlements']);
+    await adapter.exec('CREATE TABLE ticket04_claim_settlements (id TEXT PRIMARY KEY, "claimToken" TEXT NOT NULL, status TEXT NOT NULL)');
+    await adapter.prepare("INSERT INTO ticket04_claim_settlements VALUES ('claim', 'newer-claim', 'running')").run();
+    const stale = await adapter.prepare("UPDATE ticket04_claim_settlements SET status='failed' WHERE id=? AND status='running' AND \"claimToken\"=?").run('claim', 'older-claim');
+    const current = await adapter.prepare("UPDATE ticket04_claim_settlements SET status='succeeded' WHERE id=? AND status='running' AND \"claimToken\"=?").run('claim', 'newer-claim');
+    assert.equal(stale.changes, 0);
+    assert.equal(current.changes, 1);
+    assert.deepEqual(await adapter.prepare('SELECT "claimToken", status FROM ticket04_claim_settlements WHERE id=?').get('claim'), { claimToken: 'newer-claim', status: 'succeeded' });
+  } finally { await adapter.close(); }
 });

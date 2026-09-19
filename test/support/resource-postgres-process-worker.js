@@ -22,7 +22,8 @@ try {
     await transaction.prepare("INSERT INTO ticket04_process_writes (owner) VALUES ('A')").run();
     await transaction.prepare("INSERT INTO sporades_resource_receipts VALUES ('anchors','anchor','process-death','input','actor','{}','[]','2030-01-01T00:00:00.000Z')").run();
     send('entered');
-    await wait('release');
+    const release = await wait('release');
+    if (release.rollback) throw new Error('requested rollback');
     await transaction.prepare("INSERT INTO ticket04_process_writes (owner) VALUES ('A-after-barrier')").run();
   }, undefined, { table: 'anchors', id: 'anchor' });
   send('outcome', { code: 'COMMITTED' });
