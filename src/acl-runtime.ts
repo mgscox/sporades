@@ -76,7 +76,8 @@
 // `ReferenceError`s that `test/server-bundle-free-bindings.test.js` exists because of, and both are
 // private declarations in this file now, registered in nothing.
 //
-// This module reaches no Node builtin, so ADR-0042's accessor does not appear here.
+// The promise-lineage check reaches `node:v8` through `process.getBuiltinModule`, matching the
+// migrated runtime's synchronous builtin-access convention without introducing a bundle import.
 //
 // ## Nothing is redesigned
 //
@@ -796,12 +797,64 @@ export function filterRowsByReadAcl(database: any, table: any, rows: any[], cont
 // the two had come apart is a disagreement in that limb rather than a silent fail-open.
 export const ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
 
+const nodeAclPromiseHooks = (process.getBuiltinModule("node:v8") as any)?.promiseHooks;
+// A native thenable continuation alone is ambiguous: both `await helper` and a discarded
+// `Promise.resolve(helper)` use one. Keep the native promise graph long enough to prove that the
+// assimilation promise actually leads to the rule promise's settlement.
+const aclPromiseParents = new WeakMap<Promise<any>, Promise<any>>();
+const aclPromiseSettlementCauses = new WeakMap<Promise<any>, Promise<any>>();
+let aclPromiseHookStack: Promise<any>[] = [];
+let aclPromiseHookStop: (() => void) | undefined;
+let aclPromiseHookRetainers = 0;
+
+function retainAclPromiseHook(state: LooseRecord) {
+  if (!nodeAclPromiseHooks?.createHook || state.promiseHookRetained) return;
+  state.promiseHookRetained = true;
+  aclPromiseHookRetainers += 1;
+  if (aclPromiseHookStop) return;
+  aclPromiseHookStop = nodeAclPromiseHooks.createHook({
+    init(promise: Promise<any>, parent?: Promise<any>) {
+      if (parent) aclPromiseParents.set(promise, parent);
+    },
+    before(promise: Promise<any>) {
+      aclPromiseHookStack.push(promise);
+    },
+    after() {
+      aclPromiseHookStack.pop();
+    },
+    settled(promise: Promise<any>) {
+      const cause = aclPromiseHookStack.at(-1);
+      if (cause && cause !== promise) aclPromiseSettlementCauses.set(promise, cause);
+    },
+  });
+}
+
+function releaseAclPromiseHook(state: LooseRecord) {
+  if (!state.promiseHookRetained) return;
+  state.promiseHookRetained = false;
+  aclPromiseHookRetainers -= 1;
+  if (aclPromiseHookRetainers !== 0) return;
+  aclPromiseHookStop?.();
+  aclPromiseHookStop = undefined;
+  aclPromiseHookStack = [];
+}
+
+function aclPromiseDescendsFrom(promise: Promise<any> | undefined, ancestor: any) {
+  const visited = new Set<Promise<any>>();
+  for (let current = promise; current && !visited.has(current); current = aclPromiseParents.get(current)) {
+    if (current === ancestor) return true;
+    visited.add(current);
+  }
+  return false;
+}
+
 function createAclHelpers(database: any, context: any) {
   const state = {
     readCount: 0,
     maxReads: 32,
     touchedAsyncRead: false,
-    ruleInvocationActive: false,
+    rulePromise: undefined,
+    promiseHookRetained: false,
     unconsumedAsyncReads: new Set<object>(),
     pendingAsyncReads: new Set<Promise<any>>(),
     helperPromiseDependencies: new WeakMap<object, Set<object>>(),
@@ -891,21 +944,44 @@ function isActiveAclTeamApplicationRole(database: LooseRecord, role: any) {
 
 function aclRuleTouchedAsyncHelperRead(aclContext: any, synchronousRule = false) {
   const state = aclContext?.acl?.[ACL_HELPER_STATE];
+  if (!synchronousRule) consumeParticipatingAclHelperReads(state);
   return synchronousRule
     ? state?.touchedAsyncRead === true
     : (state?.unconsumedAsyncReads?.size ?? 0) > 0;
 }
 
+function consumeParticipatingAclHelperReads(state: LooseRecord | undefined) {
+  if (!state?.rulePromise) return;
+  const settlementCause = aclPromiseSettlementCauses.get(state.rulePromise);
+  for (const dependency of state.unconsumedAsyncReads ?? []) {
+    // Direct await makes the assimilation promise a descendant of the async rule promise.
+    // Awaiting Promise.resolve(helper) instead makes the rule's settlement cause a descendant
+    // of that assimilation promise. Unrelated, discarded chains satisfy neither relationship.
+    if ([...(dependency.assimilationPromises ?? [])].some((promise: Promise<any>) =>
+      aclPromiseDescendsFrom(promise, state.rulePromise)
+      || aclPromiseDescendsFrom(settlementCause, promise))) {
+      state.unconsumedAsyncReads.delete(dependency);
+    }
+  }
+}
+
 function invokeAclRule(aclContext: any, invoke: () => any) {
   const state = aclContext?.acl?.[ACL_HELPER_STATE];
   if (!state) return invoke();
-  state.ruleInvocationActive = true;
+  retainAclPromiseHook(state);
+  let result: any;
   try {
-    const result = invoke();
+    result = invoke();
+    state.rulePromise = isPromiseLike(result) ? result : undefined;
     consumeAclHelperPromiseDependencies(state, result);
     return result;
   } finally {
-    state.ruleInvocationActive = false;
+    if (isPromiseLike(result)) {
+      void Promise.resolve(result).then(
+        () => releaseAclPromiseHook(state),
+        () => releaseAclPromiseHook(state),
+      );
+    } else releaseAclPromiseHook(state);
   }
 }
 
@@ -917,22 +993,20 @@ function consumeAclHelperPromiseDependencies(state: LooseRecord, promise: any) {
 }
 
 function isPromiseAssimilationContinuation(args: any[]) {
-  // `await` and an async function's returned thenable are assimilated after
-  // the direct rule invocation with the engine's paired native continuations.
-  // User-authored chaining during the invocation stays branded below until
-  // that exact derived promise is returned as the rule's settlement value.
   return args.length === 2 && args.every((callback) =>
     typeof callback === "function" && Function.prototype.toString.call(callback).includes("[native code]"));
 }
 
-function trackAclHelperPromise(state: LooseRecord, promise: Promise<any>, dependencies: Set<object>) {
+function trackAclHelperPromise(state: LooseRecord, promise: Promise<any>, dependencies: Set<LooseRecord>) {
   let tracked: Promise<any>;
   tracked = new Proxy(promise, {
     get(target, property) {
       if (property === "then" || property === "catch" || property === "finally") {
         return (...args: any[]) => {
-          if (property === "then" && !state.ruleInvocationActive && isPromiseAssimilationContinuation(args)) {
-            for (const dependency of dependencies) state.unconsumedAsyncReads.delete(dependency);
+          const activePromise = aclPromiseHookStack.at(-1);
+          if (property === "then" && isPromiseAssimilationContinuation(args)
+            && activePromise) {
+            for (const dependency of dependencies) dependency.assimilationPromises.add(activePromise);
           }
           const derived = (target as any)[property](...args);
           return trackAclHelperPromise(state, derived, dependencies);
@@ -955,8 +1029,8 @@ function resolveAclHelperRead(state: LooseRecord, result: any, resolve: (value: 
   if (!isPromiseLike(result)) return resolve(result);
   state.touchedAsyncRead = true;
   const pending = Promise.resolve(result).then(resolve);
-  const dependency = {};
-  const dependencies = new Set<object>([dependency]);
+  const dependency = { assimilationPromises: new Set<Promise<any>>() };
+  const dependencies = new Set<LooseRecord>([dependency]);
   state.unconsumedAsyncReads.add(dependency);
   state.pendingAsyncReads.add(pending);
   void pending.then(

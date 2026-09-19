@@ -76,6 +76,12 @@ test('Postgres resource ACL helpers preserve awaited Team and cross-table decisi
         if (row.value === 'team-deny') return (async () => await ctx.acl.teams.isAdmin(teamId))();
         if (row.value === 'cross-table-allow') return ctx.acl.db.get('policies', 'allow').then(policy => policy?.value === 'allowed');
         if (row.value === 'cross-table-deny') return ctx.acl.db.exists('policies', 'missing').then(Boolean);
+        if (row.value === 'awaited-promise-resolve') return (async () => await Promise.resolve(ctx.acl.db.exists('policies', 'allow')))();
+        if (row.value === 'ignored-promise-resolve') return (async () => {
+          void Promise.resolve(ctx.acl.db.exists('policies', 'allow'));
+          await Promise.resolve();
+          return true;
+        })();
         if (row.value.startsWith('discarded-')) return (async () => {
           const helper = ctx.acl.teams.isAdmin(teamId);
           if (row.value === 'discarded-then') void helper.then(Boolean);
@@ -101,20 +107,21 @@ test('Postgres resource ACL helpers preserve awaited Team and cross-table decisi
     await database.adapter.prepare('INSERT INTO sporades_teams (id,name,"createdAt","createdByUserId") VALUES (?,?,?,?)').run(teamId, 'Postgres ACL Team', now, linkedActor.userId);
     await database.adapter.prepare('INSERT INTO sporades_team_memberships ("teamId","userId",role,"createdAt") VALUES (?,?,?,?)').run(teamId, linkedActor.userId, 'member', now);
     await database.adapter.prepare('INSERT INTO policies (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('allow', now, now, 'allowed');
-    const ids = ['team-allow', 'team-deny', 'cross-table-allow', 'cross-table-deny', 'discarded-then', 'discarded-catch', 'discarded-finally', 'unawaited'];
+    const ids = ['team-allow', 'team-deny', 'cross-table-allow', 'cross-table-deny', 'awaited-promise-resolve', 'ignored-promise-resolve', 'discarded-then', 'discarded-catch', 'discarded-finally', 'unawaited'];
+    const allowed = new Set(['team-allow', 'cross-table-allow', 'awaited-promise-resolve']);
     for (const id of ids) {
       await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run(id, now, now, id);
     }
     for (const id of ids) {
       const result = await runMutation(database, linkedActor, 'write', [id]);
-      if (id.endsWith('allow')) assert.deepEqual(result, { ok: true, data: { committed: id }, error: null });
+      if (allowed.has(id)) assert.deepEqual(result, { ok: true, data: { committed: id }, error: null });
       else {
         assert.equal(result.ok, false);
         assert.deepEqual({ code: result.error.code, message: result.error.message }, { code: 'DENIED', message: 'Denied.' });
       }
     }
-    assert.equal(callbacks, 2);
-    assert.deepEqual((await database.adapter.prepare('SELECT value FROM writes ORDER BY value').all()).map(row => row.value), ['cross-table-allow', 'team-allow']);
+    assert.equal(callbacks, 3);
+    assert.deepEqual((await database.adapter.prepare('SELECT value FROM writes ORDER BY value').all()).map(row => row.value), ['awaited-promise-resolve', 'cross-table-allow', 'team-allow']);
   } finally { await database.shutdown(); await database.close(); }
 });
 
@@ -938,13 +945,14 @@ test('Postgres endpoint resource scopes reconcile a lost outer COMMIT acknowledg
   }
 });
 
-test('Postgres resource readiness rejects unexpected constraints and accepts correctly-shaped tables', { skip: POSTGRES_SKIP_REASON }, async t => {
+test('Postgres resource readiness rejects malformed relations and accepts correctly-shaped tables', { skip: POSTGRES_SKIP_REASON }, async t => {
   const cases = [
     ...['locks', 'receipts'].flatMap(tableName => ['unique', 'check', 'foreign-key'].map(constraint => ({ tableName, constraint }))),
     { tableName: 'locks', constraint: 'standalone-unique-index' },
+    ...['locks', 'receipts'].map(tableName => ({ tableName, persistence: 'unlogged' })),
     ...['correct', 'fresh', 'folded-legacy'].map(shape => ({ shape })),
   ];
-  for (const { tableName, constraint, shape } of cases) await t.test(shape ?? `${tableName} ${constraint}`, async () => {
+  for (const { tableName, constraint, persistence, shape } of cases) await t.test(shape ?? `${tableName} ${constraint ?? persistence}`, async () => {
     const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
     try {
       await resetPostgresSchema(reset, ['anchors', 'writes']);
@@ -973,8 +981,8 @@ test('Postgres resource readiness rejects unexpected constraints and accepts cor
       for (const id of ['anchor-one', 'anchor-two']) await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run(id, clock.now().toISOString(), clock.now().toISOString(), 'ready');
       if (shape !== 'fresh') {
         const column = name => shape === 'folded-legacy' ? name : `"${name}"`;
-        await database.adapter.exec(`CREATE TABLE sporades_resource_locks (${column('resourceTable')} TEXT NOT NULL, ${column('resourceId')} TEXT NOT NULL, PRIMARY KEY (${column('resourceTable')}, ${column('resourceId')}))`);
-        await database.adapter.exec(`CREATE TABLE sporades_resource_receipts (${['resourceTable', 'resourceId', 'operationId', 'inputDigest', 'actorDigest', 'resultJson', 'intentIdsJson', 'committedAt'].map(name => `${column(name)} TEXT NOT NULL`).join(', ')}, PRIMARY KEY (${column('resourceTable')}, ${column('resourceId')}, ${column('operationId')}))`);
+        await database.adapter.exec(`CREATE ${persistence === 'unlogged' && tableName === 'locks' ? 'UNLOGGED ' : ''}TABLE sporades_resource_locks (${column('resourceTable')} TEXT NOT NULL, ${column('resourceId')} TEXT NOT NULL, PRIMARY KEY (${column('resourceTable')}, ${column('resourceId')}))`);
+        await database.adapter.exec(`CREATE ${persistence === 'unlogged' && tableName === 'receipts' ? 'UNLOGGED ' : ''}TABLE sporades_resource_receipts (${['resourceTable', 'resourceId', 'operationId', 'inputDigest', 'actorDigest', 'resultJson', 'intentIdsJson', 'committedAt'].map(name => `${column(name)} TEXT NOT NULL`).join(', ')}, PRIMARY KEY (${column('resourceTable')}, ${column('resourceId')}, ${column('operationId')}))`);
       }
       if (constraint) {
         const definition = constraint === 'unique' ? 'UNIQUE ("resourceTable")'
@@ -986,15 +994,16 @@ test('Postgres resource readiness rejects unexpected constraints and accepts cor
       }
       for (const id of ['anchor-one', 'anchor-two']) {
         const result = await runMutation(database, actor, 'write', [id]);
-        if (constraint) {
-          assert.equal(result.ok, false, 'the readiness check rejects a table with unexpected constraints before its first write');
+        if (constraint || persistence) {
+          assert.equal(result.ok, false, 'the readiness check rejects a malformed runtime table before its first write');
           assert.deepEqual({ code: result.error.code, message: result.error.message }, { code: 'RESOURCE_STORAGE_ERROR', message: 'Resource operation could not complete.' });
         } else assert.deepEqual(result, { ok: true, data: { committed: id }, error: null });
       }
-      assert.equal(callbacks, constraint ? 0 : 2);
-      assert.deepEqual(observed, constraint ? Array.from({ length: 2 }, () => ({ code: 'RESOURCE_STORAGE_ERROR', message: 'Resource operation could not complete.', constraint: undefined, detail: undefined })) : []);
+      const malformed = Boolean(constraint || persistence);
+      assert.equal(callbacks, malformed ? 0 : 2);
+      assert.deepEqual(observed, malformed ? Array.from({ length: 2 }, () => ({ code: 'RESOURCE_STORAGE_ERROR', message: 'Resource operation could not complete.', constraint: undefined, detail: undefined })) : []);
       for (const name of ['writes', 'sporades_resource_locks', 'sporades_resource_receipts']) {
-        assert.equal(Number((await database.adapter.prepare(`SELECT count(*) n FROM ${name}`).get()).n), constraint ? 0 : 2);
+        assert.equal(Number((await database.adapter.prepare(`SELECT count(*) n FROM ${name}`).get()).n), malformed ? 0 : 2);
       }
     } finally { await database.shutdown(); await database.close(); }
   });

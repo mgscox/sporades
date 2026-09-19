@@ -68652,12 +68652,57 @@ function filterRowsByReadAcl(database, table, rows, context) {
   return rows.filter((_, index) => decisions[index]);
 }
 var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
+var nodeAclPromiseHooks = process.getBuiltinModule("node:v8")?.promiseHooks;
+var aclPromiseParents = /* @__PURE__ */ new WeakMap();
+var aclPromiseSettlementCauses = /* @__PURE__ */ new WeakMap();
+var aclPromiseHookStack = [];
+var aclPromiseHookStop;
+var aclPromiseHookRetainers = 0;
+function retainAclPromiseHook(state) {
+  if (!nodeAclPromiseHooks?.createHook || state.promiseHookRetained) return;
+  state.promiseHookRetained = true;
+  aclPromiseHookRetainers += 1;
+  if (aclPromiseHookStop) return;
+  aclPromiseHookStop = nodeAclPromiseHooks.createHook({
+    init(promise, parent) {
+      if (parent) aclPromiseParents.set(promise, parent);
+    },
+    before(promise) {
+      aclPromiseHookStack.push(promise);
+    },
+    after() {
+      aclPromiseHookStack.pop();
+    },
+    settled(promise) {
+      const cause = aclPromiseHookStack.at(-1);
+      if (cause && cause !== promise) aclPromiseSettlementCauses.set(promise, cause);
+    }
+  });
+}
+function releaseAclPromiseHook(state) {
+  if (!state.promiseHookRetained) return;
+  state.promiseHookRetained = false;
+  aclPromiseHookRetainers -= 1;
+  if (aclPromiseHookRetainers !== 0) return;
+  aclPromiseHookStop?.();
+  aclPromiseHookStop = void 0;
+  aclPromiseHookStack = [];
+}
+function aclPromiseDescendsFrom(promise, ancestor) {
+  const visited = /* @__PURE__ */ new Set();
+  for (let current2 = promise; current2 && !visited.has(current2); current2 = aclPromiseParents.get(current2)) {
+    if (current2 === ancestor) return true;
+    visited.add(current2);
+  }
+  return false;
+}
 function createAclHelpers(database, context) {
   const state = {
     readCount: 0,
     maxReads: 32,
     touchedAsyncRead: false,
-    ruleInvocationActive: false,
+    rulePromise: void 0,
+    promiseHookRetained: false,
     unconsumedAsyncReads: /* @__PURE__ */ new Set(),
     pendingAsyncReads: /* @__PURE__ */ new Set(),
     helperPromiseDependencies: /* @__PURE__ */ new WeakMap()
@@ -68733,18 +68778,35 @@ function isActiveAclTeamApplicationRole(database, role) {
 }
 function aclRuleTouchedAsyncHelperRead(aclContext, synchronousRule = false) {
   const state = aclContext?.acl?.[ACL_HELPER_STATE];
+  if (!synchronousRule) consumeParticipatingAclHelperReads(state);
   return synchronousRule ? state?.touchedAsyncRead === true : (state?.unconsumedAsyncReads?.size ?? 0) > 0;
+}
+function consumeParticipatingAclHelperReads(state) {
+  if (!state?.rulePromise) return;
+  const settlementCause = aclPromiseSettlementCauses.get(state.rulePromise);
+  for (const dependency of state.unconsumedAsyncReads ?? []) {
+    if ([...dependency.assimilationPromises ?? []].some((promise) => aclPromiseDescendsFrom(promise, state.rulePromise) || aclPromiseDescendsFrom(settlementCause, promise))) {
+      state.unconsumedAsyncReads.delete(dependency);
+    }
+  }
 }
 function invokeAclRule(aclContext, invoke) {
   const state = aclContext?.acl?.[ACL_HELPER_STATE];
   if (!state) return invoke();
-  state.ruleInvocationActive = true;
+  retainAclPromiseHook(state);
+  let result;
   try {
-    const result = invoke();
+    result = invoke();
+    state.rulePromise = isPromiseLike(result) ? result : void 0;
     consumeAclHelperPromiseDependencies(state, result);
     return result;
   } finally {
-    state.ruleInvocationActive = false;
+    if (isPromiseLike(result)) {
+      void Promise.resolve(result).then(
+        () => releaseAclPromiseHook(state),
+        () => releaseAclPromiseHook(state)
+      );
+    } else releaseAclPromiseHook(state);
   }
 }
 function consumeAclHelperPromiseDependencies(state, promise) {
@@ -68762,8 +68824,9 @@ function trackAclHelperPromise(state, promise, dependencies) {
     get(target, property) {
       if (property === "then" || property === "catch" || property === "finally") {
         return (...args) => {
-          if (property === "then" && !state.ruleInvocationActive && isPromiseAssimilationContinuation(args)) {
-            for (const dependency of dependencies) state.unconsumedAsyncReads.delete(dependency);
+          const activePromise = aclPromiseHookStack.at(-1);
+          if (property === "then" && isPromiseAssimilationContinuation(args) && activePromise) {
+            for (const dependency of dependencies) dependency.assimilationPromises.add(activePromise);
           }
           const derived = target[property](...args);
           return trackAclHelperPromise(state, derived, dependencies);
@@ -68784,7 +68847,7 @@ function resolveAclHelperRead(state, result, resolve) {
   if (!isPromiseLike(result)) return resolve(result);
   state.touchedAsyncRead = true;
   const pending = Promise.resolve(result).then(resolve);
-  const dependency = {};
+  const dependency = { assimilationPromises: /* @__PURE__ */ new Set() };
   const dependencies = /* @__PURE__ */ new Set([dependency]);
   state.unconsumedAsyncReads.add(dependency);
   state.pendingAsyncReads.add(pending);
@@ -98836,6 +98899,11 @@ async function createPostgresDatabaseAdapter(options) {
   ];
   const resourceSchemaReady = async (query) => {
     for (const schema of resourceSchemas) {
+      const relations = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("relkind")}, ${dialect.quoteIdentifier("relpersistence")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_class")} WHERE ${dialect.quoteIdentifier("oid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?))`,
+        [schema.table]
+      ));
+      if (relations.length !== 1 || relations[0].relkind !== "r" || relations[0].relpersistence !== "p") return false;
       const rows = postgresRowsFromResult(normalization, await query(
         `SELECT ${dialect.quoteIdentifier("column_name")}, ${dialect.quoteIdentifier("data_type")}, ${dialect.quoteIdentifier("is_nullable")}, ${dialect.quoteIdentifier("ordinal_position")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("columns")} WHERE ${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("table_name")}=? ORDER BY ${dialect.quoteIdentifier("ordinal_position")}`,
         [schema.table]

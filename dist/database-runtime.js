@@ -1567,6 +1567,9 @@ export async function createPostgresDatabaseAdapter(options) {
     ];
     const resourceSchemaReady = async (query) => {
         for (const schema of resourceSchemas) {
+            const relations = postgresRowsFromResult(normalization, await query(`SELECT ${dialect.quoteIdentifier("relkind")}, ${dialect.quoteIdentifier("relpersistence")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_class")} WHERE ${dialect.quoteIdentifier("oid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?))`, [schema.table]));
+            if (relations.length !== 1 || relations[0].relkind !== "r" || relations[0].relpersistence !== "p")
+                return false;
             const rows = postgresRowsFromResult(normalization, await query(`SELECT ${dialect.quoteIdentifier("column_name")}, ${dialect.quoteIdentifier("data_type")}, ${dialect.quoteIdentifier("is_nullable")}, ${dialect.quoteIdentifier("ordinal_position")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("columns")} WHERE ${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("table_name")}=? ORDER BY ${dialect.quoteIdentifier("ordinal_position")}`, [schema.table]));
             if (rows.length !== schema.columns.length || rows.some((row, index) => row.column_name !== schema.columns[index]
                 || row.data_type !== "text"

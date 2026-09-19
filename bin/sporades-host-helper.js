@@ -26989,6 +26989,7 @@ function auditString(value, fallback) {
   return text.trim() ? text : fallback;
 }
 var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
+var nodeAclPromiseHooks = process.getBuiltinModule("node:v8")?.promiseHooks;
 
 // src/file-storage-runtime.ts
 var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
