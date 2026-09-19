@@ -77,6 +77,21 @@ test('Postgres resource ACL helpers preserve awaited Team and cross-table decisi
         if (row.value === 'cross-table-allow') return ctx.acl.db.get('policies', 'allow').then(policy => policy?.value === 'allowed');
         if (row.value === 'cross-table-deny') return ctx.acl.db.exists('policies', 'missing').then(Boolean);
         if (row.value === 'awaited-promise-resolve') return (async () => await Promise.resolve(ctx.acl.db.exists('policies', 'allow')))();
+        if (row.value === 'awaited-promise-all') return (async () => {
+          const [member, policyExists] = await Promise.all([
+            ctx.acl.teams.isMember(teamId),
+            ctx.acl.db.exists('policies', 'allow'),
+          ]);
+          return member && policyExists;
+        })();
+        if (row.value === 'lost-promise-race') return (async () => await Promise.race([
+          Promise.resolve(true),
+          ctx.acl.db.exists('policies', 'allow'),
+        ]))();
+        if (row.value === 'lost-promise-any') return (async () => await Promise.any([
+          Promise.resolve(true),
+          ctx.acl.db.exists('policies', 'allow'),
+        ]))();
         if (row.value === 'ignored-promise-resolve') return (async () => {
           void Promise.resolve(ctx.acl.db.exists('policies', 'allow'));
           await Promise.resolve();
@@ -107,8 +122,8 @@ test('Postgres resource ACL helpers preserve awaited Team and cross-table decisi
     await database.adapter.prepare('INSERT INTO sporades_teams (id,name,"createdAt","createdByUserId") VALUES (?,?,?,?)').run(teamId, 'Postgres ACL Team', now, linkedActor.userId);
     await database.adapter.prepare('INSERT INTO sporades_team_memberships ("teamId","userId",role,"createdAt") VALUES (?,?,?,?)').run(teamId, linkedActor.userId, 'member', now);
     await database.adapter.prepare('INSERT INTO policies (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('allow', now, now, 'allowed');
-    const ids = ['team-allow', 'team-deny', 'cross-table-allow', 'cross-table-deny', 'awaited-promise-resolve', 'ignored-promise-resolve', 'discarded-then', 'discarded-catch', 'discarded-finally', 'unawaited'];
-    const allowed = new Set(['team-allow', 'cross-table-allow', 'awaited-promise-resolve']);
+    const ids = ['team-allow', 'team-deny', 'cross-table-allow', 'cross-table-deny', 'awaited-promise-resolve', 'awaited-promise-all', 'lost-promise-race', 'lost-promise-any', 'ignored-promise-resolve', 'discarded-then', 'discarded-catch', 'discarded-finally', 'unawaited'];
+    const allowed = new Set(['team-allow', 'cross-table-allow', 'awaited-promise-resolve', 'awaited-promise-all']);
     for (const id of ids) {
       await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run(id, now, now, id);
     }
@@ -120,8 +135,8 @@ test('Postgres resource ACL helpers preserve awaited Team and cross-table decisi
         assert.deepEqual({ code: result.error.code, message: result.error.message }, { code: 'DENIED', message: 'Denied.' });
       }
     }
-    assert.equal(callbacks, 3);
-    assert.deepEqual((await database.adapter.prepare('SELECT value FROM writes ORDER BY value').all()).map(row => row.value), ['awaited-promise-resolve', 'cross-table-allow', 'team-allow']);
+    assert.equal(callbacks, 4);
+    assert.deepEqual((await database.adapter.prepare('SELECT value FROM writes ORDER BY value').all()).map(row => row.value), ['awaited-promise-all', 'awaited-promise-resolve', 'cross-table-allow', 'team-allow']);
   } finally { await database.shutdown(); await database.close(); }
 });
 

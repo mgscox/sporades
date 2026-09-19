@@ -61,6 +61,7 @@
       "src/mail-runtime.ts",
       "src/maybe-promise.ts",
       "src/package-root.ts",
+      "src/promise-coordinator.ts",
       "src/public-tree-contract.ts",
       "src/public-tree.ts",
       "src/resource-runtime.ts",
@@ -99,7 +100,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "ead3f907bd2a60352453cd165587a6d944f8432ac104c98a6bc28401c11c833e"
+    "digest": "0947d5e277cf89b379247c38c1a30a94e6435949a8ca858914f1e0f7cd5a965f"
   },
   "outputs": {
     "files": [
@@ -313,6 +314,10 @@
       "dist/package-root.d.ts.map",
       "dist/package-root.js",
       "dist/package-root.js.map",
+      "dist/promise-coordinator.d.ts",
+      "dist/promise-coordinator.d.ts.map",
+      "dist/promise-coordinator.js",
+      "dist/promise-coordinator.js.map",
       "dist/public-tree-contract.d.ts",
       "dist/public-tree-contract.d.ts.map",
       "dist/public-tree-contract.js",
@@ -434,6 +439,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "513d373489faabfa1266fb91ed0933ac36c452325dea44455b165b8fe4cddfd5"
+    "digest": "60d092199ced69498dd847a07ac35c3bbaf7d2ac97edfa7c65972869e280da90"
   }
 }

@@ -26917,6 +26917,9 @@ function isSensitiveLogKey(key) {
   return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key));
 }
 
+// src/promise-coordinator.ts
+var nodePromiseHooks = process.getBuiltinModule("node:v8")?.promiseHooks;
+
 // src/acl-runtime.ts
 var PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
 var PRIVILEGED_AUDIT_ACTOR_KINDS = /* @__PURE__ */ new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
@@ -26989,11 +26992,9 @@ function auditString(value, fallback) {
   return text.trim() ? text : fallback;
 }
 var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
-var nodeAclPromiseHooks = process.getBuiltinModule("node:v8")?.promiseHooks;
 
 // src/file-storage-runtime.ts
 var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
-var nodePromiseHooks = process.getBuiltinModule("node:v8")?.promiseHooks;
 
 // src/file-ingress-runtime.ts
 var import_pdf_lib = __toESM(require_cjs(), 1);

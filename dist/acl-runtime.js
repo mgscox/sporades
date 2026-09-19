@@ -90,6 +90,7 @@ import { commandError } from "./runtime-errors.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import { deserializeRow } from "./stored-value-coding.js";
 import { accessKeyCredentialLogAttribution } from "./access-keys-runtime.js";
+import { activePromise, promiseCompositionRootCandidate, promiseDescendsFrom, promiseSettlementCause, releasePromiseObserver, retainPromiseObserver } from "./promise-coordinator.js";
 // The privileged audit event's contract. All three were serialized into the generated bundle's
 // constant preamble until batch 7; they are declarations inside this module's carried text now, and
 // the preamble no longer writes them. They stay exported because the constant probe in
@@ -703,59 +704,22 @@ export function filterRowsByReadAcl(database, table, rows, context) {
 // Symbols would make that read `undefined` and the write would be **allowed** — so a copy in which
 // the two had come apart is a disagreement in that limb rather than a silent fail-open.
 export const ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
-const nodeAclPromiseHooks = process.getBuiltinModule("node:v8")?.promiseHooks;
 // A native thenable continuation alone is ambiguous: both `await helper` and a discarded
-// `Promise.resolve(helper)` use one. Keep the native promise graph long enough to prove that the
-// assimilation promise actually leads to the rule promise's settlement.
-const aclPromiseParents = new WeakMap();
-const aclPromiseSettlementCauses = new WeakMap();
-let aclPromiseHookStack = [];
-let aclPromiseHookStop;
-let aclPromiseHookRetainers = 0;
+// `Promise.resolve(helper)` use one. The runtime-owned coordinator keeps the native promise graph
+// long enough to prove that the assimilation promise actually leads to the rule promise's
+// settlement, including a Promise combinator root shared by more than one helper.
+const aclPromiseObserver = {};
 function retainAclPromiseHook(state) {
-    if (!nodeAclPromiseHooks?.createHook || state.promiseHookRetained)
+    if (state.promiseHookRetained)
         return;
     state.promiseHookRetained = true;
-    aclPromiseHookRetainers += 1;
-    if (aclPromiseHookStop)
-        return;
-    aclPromiseHookStop = nodeAclPromiseHooks.createHook({
-        init(promise, parent) {
-            if (parent)
-                aclPromiseParents.set(promise, parent);
-        },
-        before(promise) {
-            aclPromiseHookStack.push(promise);
-        },
-        after() {
-            aclPromiseHookStack.pop();
-        },
-        settled(promise) {
-            const cause = aclPromiseHookStack.at(-1);
-            if (cause && cause !== promise)
-                aclPromiseSettlementCauses.set(promise, cause);
-        },
-    });
+    retainPromiseObserver(aclPromiseObserver);
 }
 function releaseAclPromiseHook(state) {
     if (!state.promiseHookRetained)
         return;
     state.promiseHookRetained = false;
-    aclPromiseHookRetainers -= 1;
-    if (aclPromiseHookRetainers !== 0)
-        return;
-    aclPromiseHookStop?.();
-    aclPromiseHookStop = undefined;
-    aclPromiseHookStack = [];
-}
-function aclPromiseDescendsFrom(promise, ancestor) {
-    const visited = new Set();
-    for (let current = promise; current && !visited.has(current); current = aclPromiseParents.get(current)) {
-        if (current === ancestor)
-            return true;
-        visited.add(current);
-    }
-    return false;
+    releasePromiseObserver(aclPromiseObserver);
 }
 function createAclHelpers(database, context) {
     const state = {
@@ -853,13 +817,13 @@ function aclRuleTouchedAsyncHelperRead(aclContext, synchronousRule = false) {
 function consumeParticipatingAclHelperReads(state) {
     if (!state?.rulePromise)
         return;
-    const settlementCause = aclPromiseSettlementCauses.get(state.rulePromise);
+    const settlementCause = promiseSettlementCause(state.rulePromise);
     for (const dependency of state.unconsumedAsyncReads ?? []) {
         // Direct await makes the assimilation promise a descendant of the async rule promise.
         // Awaiting Promise.resolve(helper) instead makes the rule's settlement cause a descendant
         // of that assimilation promise. Unrelated, discarded chains satisfy neither relationship.
-        if ([...(dependency.assimilationPromises ?? [])].some((promise) => aclPromiseDescendsFrom(promise, state.rulePromise)
-            || aclPromiseDescendsFrom(settlementCause, promise))) {
+        if (dependency.settled && [...(dependency.assimilationPromises ?? [])].some((promise) => promiseDescendsFrom(promise, state.rulePromise)
+            || promiseDescendsFrom(settlementCause, promise))) {
             state.unconsumedAsyncReads.delete(dependency);
         }
     }
@@ -901,12 +865,19 @@ function trackAclHelperPromise(state, promise, dependencies) {
     tracked = new Proxy(promise, {
         get(target, property) {
             if (property === "then" || property === "catch" || property === "finally") {
-                return (...args) => {
-                    const activePromise = aclPromiseHookStack.at(-1);
-                    if (property === "then" && isPromiseAssimilationContinuation(args)
-                        && activePromise) {
+                if (property === "then") {
+                    const compositionRoot = promiseCompositionRootCandidate();
+                    if (compositionRoot) {
                         for (const dependency of dependencies)
-                            dependency.assimilationPromises.add(activePromise);
+                            dependency.assimilationPromises.add(compositionRoot);
+                    }
+                }
+                return (...args) => {
+                    const active = activePromise();
+                    if (property === "then" && isPromiseAssimilationContinuation(args)
+                        && active) {
+                        for (const dependency of dependencies)
+                            dependency.assimilationPromises.add(active);
                     }
                     const derived = target[property](...args);
                     return trackAclHelperPromise(state, derived, dependencies);
@@ -928,11 +899,11 @@ function resolveAclHelperRead(state, result, resolve) {
         return resolve(result);
     state.touchedAsyncRead = true;
     const pending = Promise.resolve(result).then(resolve);
-    const dependency = { assimilationPromises: new Set() };
+    const dependency = { assimilationPromises: new Set(), settled: false };
     const dependencies = new Set([dependency]);
     state.unconsumedAsyncReads.add(dependency);
     state.pendingAsyncReads.add(pending);
-    void pending.then(() => state.pendingAsyncReads.delete(pending), () => state.pendingAsyncReads.delete(pending));
+    void pending.then(() => { dependency.settled = true; state.pendingAsyncReads.delete(pending); }, () => { dependency.settled = true; state.pendingAsyncReads.delete(pending); });
     pending.catch(() => { });
     return trackAclHelperPromise(state, pending, dependencies);
 }
