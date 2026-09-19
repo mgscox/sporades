@@ -135,6 +135,40 @@ test("Postgres resource locks contend deterministically for both first and exist
   }, { appTableNames: [] });
 });
 
+test("Postgres dedicated resource bootstrap fences repeated fresh and folded-legacy two-connection races", { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  try {
+    for (const phase of ["fresh", "folded-legacy"]) {
+      for (let attempt = 0; attempt < 6; attempt++) {
+        await reset.exec('DROP TABLE IF EXISTS "sporades_resource_receipts", "sporades_resource_locks"');
+        if (phase === "folded-legacy") {
+          await reset.exec('CREATE TABLE sporades_resource_locks (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId))');
+          await reset.exec('CREATE TABLE sporades_resource_receipts (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, operationId TEXT NOT NULL, inputDigest TEXT NOT NULL, actorDigest TEXT NOT NULL, resultJson TEXT NOT NULL, intentIdsJson TEXT NOT NULL, committedAt TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId, operationId))');
+          await reset.prepare('INSERT INTO sporades_resource_receipts VALUES (?,?,?,?,?,?,?,?)').run('legacy-table', 'legacy-id', 'legacy-operation', 'legacy-input', 'legacy-actor', '{"legacy":true}', '[]', '2030-01-01T00:00:00.000Z');
+        }
+        const left = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+        const right = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+        try {
+          const outcomes = await Promise.allSettled([left, right].map((adapter, owner) => adapter.withResourceTransaction(async () => {
+            await new Promise(resolve => setTimeout(resolve, 35));
+            return owner;
+          }, undefined, { table: 'bootstrap-race', id: `${phase}-${attempt}` })));
+          const codes = outcomes.filter(result => result.status === 'rejected').map(result => result.reason?.code);
+          assert.equal(outcomes.filter(result => result.status === 'fulfilled').length, 1, `${phase} attempt ${attempt}: one dedicated owner acquires`);
+          assert.deepEqual(codes, ['RESOURCE_BUSY'], `${phase} attempt ${attempt}: contender gets the bounded resource result, never raw PostgreSQL DDL`);
+          assert.equal(codes.includes('23505'), false);
+        } finally { await left.close(); await right.close(); }
+        const columns = await reset.prepare("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=? ORDER BY ordinal_position").all('sporades_resource_locks');
+        assert.deepEqual(columns.map(column => column.column_name), ['resourceTable', 'resourceId']);
+        if (phase === 'folded-legacy') {
+          const legacy = await reset.prepare('SELECT resultjson FROM sporades_resource_receipts WHERE resourcetable=? AND resourceid=? AND operationid=?').get('legacy-table', 'legacy-id', 'legacy-operation');
+          assert.equal(legacy.resultjson, '{"legacy":true}', 'the bootstrap primitive never discards a legacy receipt');
+        }
+      }
+    }
+  } finally { await reset.close(); }
+});
+
 test("Postgres resource-lock storage preserves its declared camel-case identifiers through the dialect", { skip: POSTGRES_SKIP_REASON }, async () => {
   await withPostgresAdapter(async (adapter) => {
     await adapter.exec('DROP TABLE IF EXISTS "sporades_resource_locks"');

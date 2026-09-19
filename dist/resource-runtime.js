@@ -15,6 +15,28 @@ export function resourceError(code) {
         ...(code === "RESOURCE_BUSY" ? { retryable: true } : {}),
     });
 }
+// There is no table to lock while a fresh PostgreSQL resource schema is being
+// created.  Take one fixed transaction-scoped advisory lock before any
+// resource DDL instead: dedicated Job scopes and joined public scopes share
+// this key, so CREATE/legacy-column migration cannot race in the catalogue.
+// pg_try_advisory_xact_lock is deliberately non-waiting; contention is the
+// same bounded public RESOURCE_BUSY result as a NOWAIT resource-row lock.
+export async function acquirePostgresResourceBootstrapLock(adapter) {
+    if (adapter.engine !== "postgres")
+        return;
+    try {
+        const row = await adapter.prepare("SELECT pg_try_advisory_xact_lock(hashtext(?)) AS acquired")
+            .get("sporades.resource.bootstrap.v1");
+        const acquired = row?.acquired ?? row?.pg_try_advisory_xact_lock;
+        if (acquired !== true && acquired !== "t" && acquired !== 1)
+            throw resourceError("RESOURCE_BUSY");
+    }
+    catch (error) {
+        if (error?.code === "RESOURCE_BUSY" || error?.code === "55P03" || error?.code === "57014")
+            throw resourceError("RESOURCE_BUSY");
+        throw error;
+    }
+}
 export function resourceCanonicalJson(value) {
     const ancestors = new Set();
     const visit = (input, depth) => {
@@ -241,6 +263,7 @@ export function bindOuterResources(database, context, hooks) {
             try {
                 if (database.adapter.engine === "postgres") {
                     await database.adapter.exec("SET LOCAL lock_timeout = '100ms'");
+                    await acquirePostgresResourceBootstrapLock(database.adapter);
                     await database.adapter.exec(database.adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_locks] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId]))"));
                     await upgradeFoldedResourceColumns(database.adapter, "sporades_resource_locks", ["resourceTable", "resourceId"]);
                     await database.adapter.prepare(database.adapter.dialect.sql("INSERT INTO [sporades_resource_locks] ([resourceTable], [resourceId]) VALUES (?, ?) ON CONFLICT ([resourceTable], [resourceId]) DO NOTHING")).run(identity.table, identity.id);
@@ -253,7 +276,7 @@ export function bindOuterResources(database, context, hooks) {
                 }
             }
             catch (error) {
-                if (error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY" || error?.code === "55P03" || error?.code === "57014")
+                if (error?.code === "RESOURCE_BUSY" || error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY" || error?.code === "55P03" || error?.code === "57014")
                     throw resourceError("RESOURCE_BUSY");
                 throw resourceError("RESOURCE_STORAGE_ERROR");
             }

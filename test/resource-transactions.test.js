@@ -15,6 +15,9 @@ import { createPostgresDatabaseAdapter } from '../dist/server-runtime-source.js'
 
 const actor = { userId: 'actor', displayName: 'Actor', email: null, picture: null, isAuthenticated: false, isGuest: true, provider: 'anonymous' };
 const options = (input = { b: 2, a: 1 }) => ({ resource: { table: 'anchors', id: 'anchor' }, operationId: 'operation', input });
+// Runtime-owned identifiers are quoted through ADR-0039's dialect.  The
+// fault hooks observe the receipt operation, not one historical rendering.
+const isResourceReceiptInsert = sql => /INSERT\s+INTO\s+(?:\[|\")?sporades_resource_receipts(?:\]|\")?\b/i.test(sql);
 async function fixture(handler, extra = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), 'resource-runtime-'));
   const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
@@ -197,14 +200,14 @@ test('Postgres mutation resource scopes hold the resource lock and report a lost
 test('Postgres endpoint resource scopes reconcile a lost outer COMMIT acknowledgement without replaying the callback', { skip: POSTGRES_SKIP_REASON }, async () => {
   const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
   await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
-  const target = new URL(postgresTestUrl()); let dropNextCommit = false;
+  const target = new URL(postgresTestUrl()); let dropNextCommit = false; let receiptFaults = 0;
   const sockets = new Set();
   const proxy = net.createServer((client) => {
     const upstream = net.createConnection({ host: target.hostname, port: Number(target.port) }); sockets.add(client); sockets.add(upstream);
     const remove = () => { sockets.delete(client); sockets.delete(upstream); }; client.once('close', remove); upstream.once('close', remove);
     let receiptForwarded = false; let commitForwarded = false;
     client.on('data', chunk => {
-      if (dropNextCommit && chunk.includes(Buffer.from('INSERT INTO sporades_resource_receipts'))) receiptForwarded = true;
+      if (dropNextCommit && isResourceReceiptInsert(chunk.toString('utf8'))) { receiptForwarded = true; receiptFaults++; }
       if (dropNextCommit && receiptForwarded && chunk.includes(Buffer.from('COMMIT\0'))) commitForwarded = true;
       upstream.write(chunk);
     });
@@ -230,11 +233,61 @@ test('Postgres endpoint resource scopes reconcile a lost outer COMMIT acknowledg
     assert.equal(uncertain.code, 'RESOURCE_COMMIT_UNKNOWN');
     assert.equal(await runEndpoint(database, route, new URL('http://capsule.test/write'), request), true);
     assert.equal(callbacks, 1);
+    assert.equal(receiptFaults, 1, 'the endpoint loss proxy observed the quoted receipt insert');
     assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='endpoint-written-once'").get()).n), 1);
     assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 1);
   } finally {
     await database.shutdown(); await database.close().catch(() => {}); for (const socket of sockets) socket.destroy(); await new Promise(resolve => proxy.close(resolve));
   }
+});
+
+test('Postgres public mutation and endpoint bootstrap fence repeated fresh and folded-legacy races', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  try {
+    for (const phase of ['fresh', 'folded-legacy']) for (let attempt = 0; attempt < 4; attempt++) {
+      await resetPostgresSchema(reset, ['anchors', 'writes']);
+      await reset.exec('DROP TABLE IF EXISTS "sporades_resource_receipts", "sporades_resource_locks"');
+      const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+      let release; let markEntered;
+      const entered = new Promise(resolve => { markEntered = resolve; });
+      const held = new Promise(resolve => { release = resolve; });
+      const makeDatabase = async (name, kind) => {
+        const database = await openDevDatabase(name, '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name, services: { database: { engine: 'postgres' } } }, {
+          schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+          mutations: kind === 'mutation' ? { write: mutation(ctx => ctx.resources.run({ ...options(), operationId: `outer-bootstrap-${phase}-${attempt}` }, async scope => { markEntered(); await held; await scope.db.writes.insert({ value: `outer-${phase}-${attempt}` }); return true; })) } : {},
+          endpoints: kind === 'endpoint' ? { write: endpoint({ method: 'POST', path: '/write' }, ctx => ctx.resources.run({ ...options(), operationId: `outer-bootstrap-${phase}-${attempt}` }, async scope => { markEntered(); await held; await scope.db.writes.insert({ value: `outer-${phase}-${attempt}` }); return true; })) } : {},
+        }, { clock });
+        await database.init();
+        return database;
+      };
+      const mutationDatabase = await makeDatabase(`postgres-public-bootstrap-mutation-${phase}-${attempt}`, 'mutation');
+      const endpointDatabase = await makeDatabase(`postgres-public-bootstrap-endpoint-${phase}-${attempt}`, 'endpoint');
+      try {
+        await mutationDatabase.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'ready');
+        if (phase === 'folded-legacy') {
+          await reset.exec('CREATE TABLE sporades_resource_locks (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId))');
+          await reset.exec('CREATE TABLE sporades_resource_receipts (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, operationId TEXT NOT NULL, inputDigest TEXT NOT NULL, actorDigest TEXT NOT NULL, resultJson TEXT NOT NULL, intentIdsJson TEXT NOT NULL, committedAt TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId, operationId))');
+          await reset.prepare('INSERT INTO sporades_resource_receipts VALUES (?,?,?,?,?,?,?,?)').run('legacy-table', 'legacy-id', 'legacy-operation', 'legacy-input', 'legacy-actor', '{"legacy":true}', '[]', '2030-01-01T00:00:00.000Z');
+        }
+        const session = await resolveAnonymousSession(endpointDatabase, null);
+        const mutationResult = runMutation(mutationDatabase, actor, 'write', []);
+        const endpointResult = runEndpoint(endpointDatabase, endpointDatabase.endpoints.find(item => item.path === '/write'), new URL('http://capsule.test/write'), { method: 'POST', headers: { 'x-sporades-session-token': session.token }, async *[Symbol.asyncIterator]() {} }).then(value => ({ ok: true, value }), error => ({ ok: false, error }));
+        await Promise.race([entered, new Promise((_, reject) => setTimeout(() => reject(new Error(`${phase} attempt ${attempt}: no public owner acquired`)), 2_000))]);
+        await new Promise(resolve => setTimeout(resolve, 40));
+        release();
+        const [mutation, endpointResultValue] = await Promise.all([mutationResult, endpointResult]);
+        const outcomes = [mutation.ok ? { ok: true } : { ok: false, error: mutation.error }, endpointResultValue];
+        assert.equal(outcomes.filter(outcome => outcome.ok).length, 1, `${phase} attempt ${attempt}: exactly one public owner enters`);
+        const error = outcomes.find(outcome => !outcome.ok).error;
+        assert.equal(error.code, 'RESOURCE_BUSY', `${phase} attempt ${attempt}: public contender gets bounded contention rather than raw DDL`);
+        assert.notEqual(error.code, '23505');
+        if (phase === 'folded-legacy') {
+          const legacy = await reset.prepare('SELECT "resultJson" FROM "sporades_resource_receipts" WHERE "resourceTable"=? AND "resourceId"=? AND "operationId"=?').get('legacy-table', 'legacy-id', 'legacy-operation');
+          assert.equal(legacy.resultJson, '{"legacy":true}', 'legacy receipt identity and payload survive public bootstrap migration');
+        }
+      } finally { release?.(); await mutationDatabase.shutdown(); await mutationDatabase.close(); await endpointDatabase.shutdown(); await endpointDatabase.close(); }
+    }
+  } finally { await reset.close(); }
 });
 
 test('Postgres public mutation and endpoint resource paths preserve declared receipt columns and replay exactly once', { skip: POSTGRES_SKIP_REASON }, async () => {
@@ -1129,7 +1182,7 @@ test('an outer unknown commit outcome reconciles by receipt without replaying it
     for (const mode of ['endpoint', 'mutation']) {
       const transactionOperations = Symbol.for('sporades.database.transactionOperations');
       const originalOperations = f.database.adapter[transactionOperations];
-      const uncertainAdapter = Object.create(f.database.adapter);
+      const uncertainAdapter = Object.create(f.database.adapter); let receiptFaults = 0;
       Object.defineProperty(uncertainAdapter, transactionOperations, { value: () => {
         const operations = originalOperations();
         let resourceReceiptInserted = false;
@@ -1137,7 +1190,7 @@ test('an outer unknown commit outcome reconciles by receipt without replaying it
           const statement = operations.prepare(sql);
           return Object.assign(Object.create(statement), { run(...args) {
             const value = statement.run(...args);
-            if (sql.includes('INSERT INTO sporades_resource_receipts')) resourceReceiptInserted = true;
+            if (isResourceReceiptInsert(sql)) { resourceReceiptInserted = true; receiptFaults++; }
             return value;
           } });
         }, exec(sql) {
@@ -1152,6 +1205,7 @@ test('an outer unknown commit outcome reconciles by receipt without replaying it
         : await runEndpoint(uncertainDatabase, f.database.endpoints.find(item => item.name === 'unknownOuterCommit'), new URL('http://capsule.test/outer-unknown'), request).then(() => null, error => error);
       const code = mode === 'mutation' ? first.error?.code : first.code;
       assert.equal(code, 'RESOURCE_COMMIT_UNKNOWN', `${mode}: ${JSON.stringify(first)}`);
+      assert.equal(receiptFaults, 1, `${mode}: the receipt loss hook fired exactly once`);
       const [parentTable, scopedTable] = globalThis.__outerResourceHandles.at(-1);
       assert.throws(() => parentTable.all(), { code: 'RESOURCE_SCOPE_INACTIVE' });
       assert.throws(() => scopedTable.all(), { code: 'RESOURCE_SCOPE_INACTIVE' });
@@ -1174,8 +1228,8 @@ test('caught and unawaited outer receipt insertion failures poison mutation and 
     caughtReceipt: endpoint({ method: 'POST', path: '/caught-receipt' }, async ctx => { try { await ctx.resources.run({ ...options(), operationId: 'caught-endpoint-receipt' }, async scope => { await scope.db.writes.insert({ value: 'caught-endpoint-receipt' }); return true; }); } catch {} return { caught: true }; }),
     unawaitedReceipt: endpoint({ method: 'POST', path: '/unawaited-receipt' }, ctx => { void ctx.resources.run({ ...options(), operationId: 'unawaited-endpoint-receipt' }, async scope => { await scope.db.writes.insert({ value: 'unawaited-endpoint-receipt' }); return true; }); return { returned: true }; }),
   } });
-  const symbol = Symbol.for('sporades.database.transactionOperations'), original = f.database.adapter[symbol], adapter = Object.create(f.database.adapter);
-  Object.defineProperty(adapter, symbol, { value: () => { const operations = original(); return { ...operations, prepare(sql) { const statement = operations.prepare(sql); return Object.assign(Object.create(statement), { run(...args) { if (sql.includes('INSERT INTO sporades_resource_receipts')) throw new Error('receipt insert failed'); return statement.run(...args); } }); } }; } });
+  const symbol = Symbol.for('sporades.database.transactionOperations'), original = f.database.adapter[symbol], adapter = Object.create(f.database.adapter); let receiptFaults = 0;
+  Object.defineProperty(adapter, symbol, { value: () => { const operations = original(); return { ...operations, prepare(sql) { const statement = operations.prepare(sql); return Object.assign(Object.create(statement), { run(...args) { if (isResourceReceiptInsert(sql)) { receiptFaults++; throw new Error('receipt insert failed'); } return statement.run(...args); } }); } }; } });
   const request = { method: 'POST', headers: {}, async *[Symbol.asyncIterator]() {} };
   try {
     for (const name of ['caughtReceipt', 'unawaitedReceipt']) {
@@ -1183,6 +1237,7 @@ test('caught and unawaited outer receipt insertion failures poison mutation and 
       await assert.rejects(runEndpoint({ ...f.database, adapter }, f.database.endpoints.find(item => item.name === name), new URL(`http://capsule.test/${name}`), request), /receipt insert failed/, `endpoint ${name}`);
     }
     assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM writes WHERE value LIKE '%receipt'").get().n, 0);
+    assert.equal(receiptFaults, 4, 'every caught/unawaited mutation and endpoint receipt fault fired');
     assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sqlite_schema WHERE name='sporades_resource_receipts'").get().n, 0);
   } finally { await f.close(); }
 });
@@ -1195,9 +1250,10 @@ test('an outer resource COMMIT with a failed native close quarantines root and c
   const operationsFactory = f.database.adapter[transactionOperations];
   const uncertainAdapter = Object.create(f.database.adapter);
   const cachedRootStatement = f.database.adapter.prepare('SELECT count(*) n FROM writes');
+  let receiptFaults = 0;
   Object.defineProperty(uncertainAdapter, transactionOperations, { value: () => {
     const operations = operationsFactory(); let receipt = false;
-    return { ...operations, prepare(sql) { const statement = operations.prepare(sql); return Object.assign(Object.create(statement), { run(...args) { const value = statement.run(...args); if (sql.includes('INSERT INTO sporades_resource_receipts')) receipt = true; return value; } }); }, exec(sql) {
+    return { ...operations, prepare(sql) { const statement = operations.prepare(sql); return Object.assign(Object.create(statement), { run(...args) { const value = statement.run(...args); if (isResourceReceiptInsert(sql)) { receipt = true; receiptFaults++; } return value; } }); }, exec(sql) {
       const value = operations.exec(sql); if (sql === 'COMMIT' && receipt) throw Object.assign(new Error('lost COMMIT reply'), { code: 'ECONNRESET' }); return value;
     } };
   } });
@@ -1208,6 +1264,7 @@ test('an outer resource COMMIT with a failed native close quarantines root and c
   try {
     const result = await runMutation({ ...f.database, adapter: uncertainAdapter }, actor, 'closeUnknown', []);
     assert.equal(result.error.code, 'RESOURCE_COMMIT_UNKNOWN');
+    assert.equal(receiptFaults, 1, 'the native-close uncertainty hook fired after receipt insertion');
     assert.throws(() => f.database.adapter.exec('SELECT 1'), { code: 'RESOURCE_COMMIT_UNKNOWN' });
     assert.throws(() => f.database.adapter.prepare('SELECT 1').get(), { code: 'RESOURCE_COMMIT_UNKNOWN' });
     assert.throws(() => cachedRootStatement.get(), { code: 'RESOURCE_COMMIT_UNKNOWN' });
@@ -1230,9 +1287,10 @@ test('an outer resource COMMIT with a failed SQLite replacement quarantines root
   const cachedRootStatement = f.database.adapter.prepare('SELECT count(*) n FROM writes');
   const movedPath = `${f.file}.reopen-fault`;
   let pathReplaced = false;
+  let receiptFaults = 0;
   Object.defineProperty(uncertainAdapter, transactionOperations, { value: () => {
     const operations = operationsFactory(); let receipt = false;
-    return { ...operations, prepare(sql) { const statement = operations.prepare(sql); return Object.assign(Object.create(statement), { run(...args) { const value = statement.run(...args); if (sql.includes('INSERT INTO sporades_resource_receipts')) receipt = true; return value; } }); }, exec(sql) {
+    return { ...operations, prepare(sql) { const statement = operations.prepare(sql); return Object.assign(Object.create(statement), { run(...args) { const value = statement.run(...args); if (isResourceReceiptInsert(sql)) { receipt = true; receiptFaults++; } return value; } }); }, exec(sql) {
       const value = operations.exec(sql);
       if (sql === 'COMMIT' && receipt) { renameSync(f.file, movedPath); mkdirSync(f.file); pathReplaced = true; throw Object.assign(new Error('lost COMMIT reply'), { code: 'ECONNRESET' }); }
       return value;
@@ -1241,6 +1299,7 @@ test('an outer resource COMMIT with a failed SQLite replacement quarantines root
   try {
     const result = await runMutation({ ...f.database, adapter: uncertainAdapter }, actor, 'reopenUnknown', []);
     assert.equal(result.error.code, 'RESOURCE_COMMIT_UNKNOWN');
+    assert.equal(receiptFaults, 1, 'the replacement uncertainty hook fired after receipt insertion');
     assert.throws(() => f.database.adapter.exec('SELECT 1'), { code: 'RESOURCE_COMMIT_UNKNOWN' });
     assert.throws(() => f.database.adapter.prepare('SELECT 1').get(), { code: 'RESOURCE_COMMIT_UNKNOWN' });
     assert.throws(() => cachedRootStatement.get(), { code: 'RESOURCE_COMMIT_UNKNOWN' });
@@ -1265,9 +1324,10 @@ test('an outer resource COMMIT throw before engine completion leaves no receipt 
   const transactionOperations = Symbol.for('sporades.database.transactionOperations');
   const originalOperations = f.database.adapter[transactionOperations];
   const uncertainAdapter = Object.create(f.database.adapter);
+  let receiptFaults = 0;
   Object.defineProperty(uncertainAdapter, transactionOperations, { value: () => {
     const operations = originalOperations(); let receipt = false;
-    return { ...operations, prepare(sql) { const statement = operations.prepare(sql); return Object.assign(Object.create(statement), { run(...args) { const value = statement.run(...args); if (sql.includes('INSERT INTO sporades_resource_receipts')) receipt = true; return value; } }); }, exec(sql) {
+    return { ...operations, prepare(sql) { const statement = operations.prepare(sql); return Object.assign(Object.create(statement), { run(...args) { const value = statement.run(...args); if (isResourceReceiptInsert(sql)) { receipt = true; receiptFaults++; } return value; } }); }, exec(sql) {
       if (sql === 'COMMIT' && receipt) throw Object.assign(new Error('connection died before COMMIT'), { code: 'ECONNRESET' });
       return operations.exec(sql);
     } };
@@ -1275,6 +1335,7 @@ test('an outer resource COMMIT throw before engine completion leaves no receipt 
   try {
     const first = await runMutation({ ...f.database, adapter: uncertainAdapter }, actor, 'beforeCommit', []);
     assert.equal(first.error.code, 'RESOURCE_COMMIT_UNKNOWN');
+    assert.equal(receiptFaults, 1, 'the pre-COMMIT mutation fault hook fired after receipt insertion');
     assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sqlite_schema WHERE name='sporades_resource_receipts'").get().n, 0);
     const independent = await createSqliteDatabaseAdapter(f.file);
     try { assert.doesNotThrow(() => independent.prepare("UPDATE anchors SET value='fresh' WHERE id='anchor'").run()); }
@@ -1289,11 +1350,12 @@ test('an endpoint resource COMMIT throw before engine completion leaves no recei
   const f = await fixture(() => null, { endpoints: { beforeCommit: endpoint({ method: 'POST', path: '/before-commit' }, ctx => ctx.resources.run({ resource: { table: 'anchors', id: 'anchor' }, operationId: 'outer-before-endpoint', input: { a: 1 } }, async scope => { callbacks++; await scope.db.writes.insert({ value: 'before-endpoint' }); return true; })) } });
   const auth = { userId: 'before-endpoint', displayName: 'Before endpoint', email: 'before-endpoint@example.com', picture: null, isAuthenticated: true, isGuest: false, provider: 'email' }; const token = 'before-endpoint-token';
   await f.database.adapter.insertAuthUser({ id: auth.userId, createdAt: f.clock.now().toISOString(), displayName: auth.displayName, email: auth.email, picture: null, isAuthenticated: 1, isGuest: 0, provider: auth.provider }); await f.database.adapter.insertAuthSession({ token, userId: auth.userId, provider: auth.provider, createdAt: f.clock.now().toISOString(), expiresAt: '2099-01-01T00:00:00.000Z' });
-  const symbol = Symbol.for('sporades.database.transactionOperations'), operationsFactory = f.database.adapter[symbol], adapter = Object.create(f.database.adapter);
-  Object.defineProperty(adapter, symbol, { value: () => { const operations = operationsFactory(); let receipt = false; return { ...operations, prepare(sql) { const statement = operations.prepare(sql); return Object.assign(Object.create(statement), { run(...args) { const value = statement.run(...args); if (sql.includes('INSERT INTO sporades_resource_receipts')) receipt = true; return value; } }); }, exec(sql) { if (sql === 'COMMIT' && receipt) throw Object.assign(new Error('endpoint before commit'), { code: 'ECONNRESET' }); return operations.exec(sql); } }; } });
+  const symbol = Symbol.for('sporades.database.transactionOperations'), operationsFactory = f.database.adapter[symbol], adapter = Object.create(f.database.adapter); let receiptFaults = 0;
+  Object.defineProperty(adapter, symbol, { value: () => { const operations = operationsFactory(); let receipt = false; return { ...operations, prepare(sql) { const statement = operations.prepare(sql); return Object.assign(Object.create(statement), { run(...args) { const value = statement.run(...args); if (isResourceReceiptInsert(sql)) { receipt = true; receiptFaults++; } return value; } }); }, exec(sql) { if (sql === 'COMMIT' && receipt) throw Object.assign(new Error('endpoint before commit'), { code: 'ECONNRESET' }); return operations.exec(sql); } }; } });
   const request = { method: 'POST', headers: { 'x-sporades-session-token': token }, async *[Symbol.asyncIterator]() {} }; const route = f.database.endpoints.find(item => item.name === 'beforeCommit');
   try {
     const error = await runEndpoint({ ...f.database, adapter }, route, new URL('http://capsule.test/before-commit'), request).then(() => null, value => value); assert.equal(error.code, 'RESOURCE_COMMIT_UNKNOWN');
+    assert.equal(receiptFaults, 1, 'the pre-COMMIT endpoint fault hook fired after receipt insertion');
     assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sqlite_schema WHERE name='sporades_resource_receipts'").get().n, 0);
     assert.equal(await runEndpoint(f.database, route, new URL('http://capsule.test/before-commit'), request), true); assert.equal(callbacks, 2);
   } finally { await f.close(); }

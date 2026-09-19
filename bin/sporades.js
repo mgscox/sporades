@@ -94072,6 +94072,17 @@ function resourceError(code) {
     ...code === "RESOURCE_BUSY" ? { retryable: true } : {}
   });
 }
+async function acquirePostgresResourceBootstrapLock(adapter) {
+  if (adapter.engine !== "postgres") return;
+  try {
+    const row = await adapter.prepare("SELECT pg_try_advisory_xact_lock(hashtext(?)) AS acquired").get("sporades.resource.bootstrap.v1");
+    const acquired = row?.acquired ?? row?.pg_try_advisory_xact_lock;
+    if (acquired !== true && acquired !== "t" && acquired !== 1) throw resourceError("RESOURCE_BUSY");
+  } catch (error) {
+    if (error?.code === "RESOURCE_BUSY" || error?.code === "55P03" || error?.code === "57014") throw resourceError("RESOURCE_BUSY");
+    throw error;
+  }
+}
 function resourceCanonicalJson(value) {
   const ancestors = /* @__PURE__ */ new Set();
   const visit = (input, depth) => {
@@ -94247,6 +94258,7 @@ function bindOuterResources(database, context, hooks) {
       try {
         if (database.adapter.engine === "postgres") {
           await database.adapter.exec("SET LOCAL lock_timeout = '100ms'");
+          await acquirePostgresResourceBootstrapLock(database.adapter);
           await database.adapter.exec(database.adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_locks] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId]))"));
           await upgradeFoldedResourceColumns(database.adapter, "sporades_resource_locks", ["resourceTable", "resourceId"]);
           await database.adapter.prepare(database.adapter.dialect.sql("INSERT INTO [sporades_resource_locks] ([resourceTable], [resourceId]) VALUES (?, ?) ON CONFLICT ([resourceTable], [resourceId]) DO NOTHING")).run(identity.table, identity.id);
@@ -94257,7 +94269,7 @@ function bindOuterResources(database, context, hooks) {
           await database.adapter.prepare(database.adapter.dialect.sql("UPDATE [sporades_resource_outer_fence] SET [epoch]=[epoch]+1 WHERE [id]=1")).run();
         }
       } catch (error) {
-        if (error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY" || error?.code === "55P03" || error?.code === "57014") throw resourceError("RESOURCE_BUSY");
+        if (error?.code === "RESOURCE_BUSY" || error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY" || error?.code === "55P03" || error?.code === "57014") throw resourceError("RESOURCE_BUSY");
         throw resourceError("RESOURCE_STORAGE_ERROR");
       }
       acquired = true;
@@ -98785,6 +98797,7 @@ async function createPostgresDatabaseAdapter(options) {
         await query("BEGIN ISOLATION LEVEL READ COMMITTED");
         begun = true;
         await query("SET LOCAL lock_timeout = '100ms'");
+        await acquirePostgresResourceBootstrapLock({ engine: "postgres", prepare: (sql) => ({ get: (...args) => query(sql, args).then((result) => result.rows[0]) }) });
         const resourceLockTable = dialect.quoteIdentifier("sporades_resource_locks");
         const resourceTableColumn = dialect.quoteIdentifier("resourceTable");
         const resourceIdColumn = dialect.quoteIdentifier("resourceId");

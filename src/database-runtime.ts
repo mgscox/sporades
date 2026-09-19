@@ -1,4 +1,4 @@
-import { resourceError } from "./resource-runtime.js";
+import { acquirePostgresResourceBootstrapLock, resourceError } from "./resource-runtime.js";
 // The Capsule runtime's Database adapters and dialect: the three engines, the seam they answer, the
 // one shared method set every behavioural call goes through, and the app-schema DDL that method set
 // emits. Batch 9 of the migration ADR-0041 records, and the last domain to leave
@@ -1991,6 +1991,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
         };
         await query("BEGIN ISOLATION LEVEL READ COMMITTED"); begun = true;
         await query("SET LOCAL lock_timeout = '100ms'");
+        await acquirePostgresResourceBootstrapLock({ engine: "postgres", prepare: (sql: string) => ({ get: (...args: any[]) => query(sql, args).then((result: any) => result.rows[0]) }) });
         const resourceLockTable = dialect.quoteIdentifier("sporades_resource_locks");
         const resourceTableColumn = dialect.quoteIdentifier("resourceTable");
         const resourceIdColumn = dialect.quoteIdentifier("resourceId");
