@@ -1,18 +1,21 @@
-# Ticket 04 PostgreSQL evidence index
+# Ticket 04 PostgreSQL criterion-to-test index
 
-| Criterion | Real-engine proof | Result |
-| --- | --- | --- |
-| Disposable engine | `04-postgres-version.log` | PostgreSQL 17.11 in `sporades-task009-postgres`; dedicated harness targets `127.0.0.1:55432/sporades_w17`. |
-| First and existing resource-row contention | `04-green-pg-contention-termination.log` | `test/database-adapter.test.js` holds A through a barrier while B opens an independent adapter. B gets `RESOURCE_BUSY` for first creation and an existing row. The prior `04-red-pg-contention-termination.log` is an assertion-fixture correction: it observed the intended synchronous stale-scope rejection. |
-| Terminated owner and stale scope primitive | `test/database-adapter.test.js` — `terminating only the owning Postgres backend revokes its scoped connection before another owner acquires` | A exposes `pg_backend_pid()` after entry; controller terminates that backend, B acquires the same row, resumed A cannot execute SQL and retained scope is inactive. This is a database assertion, not an SMTP claim. |
-| Process death/restart and live pause/rollback/restart | `test/resource-postgres-process.test.js` — both real PostgreSQL cases | A hard-killed child rolls back protected write and receipt before B acquires; a `SIGSTOP` child remains `RESOURCE_BUSY` past an elapsed observation until it resumes and explicitly rolls back, after which a fresh successor commits. No test is skipped when the dedicated harness URL is present. |
-| Cancellation/recovery conflict and exact Job settlement | `test/resource-transactions.test.js` — `Postgres Job resource authority locks cancellation and recovery through exact claim settlement` | A real Job owns the locked `sporades_jobs` claim while a separate PostgreSQL connection gets `55P03` for both exact-token cancellation and recovery updates. After release, the runtime settles that exact claim once, clears its token, retains one write/receipt, and a stale token settlement changes zero rows. |
-| Job receipt | `04-red-pg-job-receipt.log`, `04-green-pg-job-receipt.log` | Earlier receipt proof is provisional: its initial assertion caught a Job error. `04-red-pg-job-diagnosis-2.log` exposed the runtime PostgreSQL `claimToken` quoting defect; the corrected exact Job receipt proof is recorded separately after the current bounded repair. |
-| Runtime lost-COMMIT receipt replay | `04-red-pg-outer-commit-ack-loss-1.log`, `04-green-pg-runtime-commit-ack-loss-1.log` | A real TCP proxy forwards PostgreSQL COMMIT then loses its acknowledgement. Job and outer mutation paths return `RESOURCE_COMMIT_UNKNOWN`; a fresh locked receipt read replays without a second callback or write. |
-| Endpoint lost-COMMIT receipt replay | `04-pg-endpoint-ack-loss-behavioral-red-pre675.log`, `04-pg-endpoint-ack-loss-green.log` | Against pre-`675120bd`, the real-PG endpoint proxy scenario returned `RESOURCE_STORAGE_ERROR` instead of recoverable unknown-commit semantics. At `675120bd`, the proxy forwards the endpoint receipt write and COMMIT, drops only the acknowledgement, then the same actor replays the locked receipt with one callback, one write, and one receipt. |
-| SQLite compatibility | `04-resource-sqlite-repair-2.log` | 70 focused resource checks pass without PostgreSQL substitution. |
-| Shared SQLite/PostgreSQL adapter conformance | `04-pg-shared-conformance-sequential.log` | One sequential harness run passes all 21 SQLite, libSQL, and real PostgreSQL conformance checks; PostgreSQL is not skipped. |
-| Shared adapter/transaction gate | `04-final-pg-gate-repair.log` | 167 checks, zero skips, passed before the added backend-termination seam. |
+The required harness is the disposable task-owned PostgreSQL 17.11 instance at
+`127.0.0.1:55432/sporades_w17`, selected only through
+`SPORADES_POSTGRES_TEST_URL`. Each listed case has `{ skip: POSTGRES_SKIP_REASON }`;
+an unset URL is a skip and is not PostgreSQL support evidence. The historical
+`04-pg-child-lifecycle-green.log` is invalid (its boolean/integer fixture failed)
+and is deliberately not cited here.
 
-The backend-termination test is a database assertion. It makes no SMTP claim;
-`notifications.accept` remains unsupported until ticket 06.
+| Criterion | Executable real-engine proof |
+| --- | --- |
+| Dedicated READ COMMITTED connection, `FOR UPDATE NOWAIT`, first-row and existing-row contention | `test/database-adapter.test.js` — `Postgres resource transactions use a dedicated NOWAIT lock...` and `Postgres resource locks contend deterministically...` |
+| Connection/backend loss and stale scope revocation | `test/database-adapter.test.js` — `terminating only the owning Postgres backend...`; `test/resource-transactions.test.js` — `Postgres Job backend loss after its final claim check...` |
+| Receipt replay, actor/input binding, current authority, deadline reserve, and unknown COMMIT | `test/resource-transactions.test.js` PostgreSQL Job, mutation, endpoint, lost-COMMIT, and backend-loss cases, with the shared SQLite cases in that same file |
+| Live paused owner, rollback/restart recovery, and process death/restart | `test/resource-postgres-process.test.js` — both child-process cases. A live `SIGSTOP` owner remains `RESOURCE_BUSY` after an elapsed observation; a hard-killed owner rolls back write and receipt before a successor acquires. |
+| Cancellation/recovery conflict and exact claim settlement | `test/resource-transactions.test.js` — `Postgres Job resource authority locks cancellation and recovery through exact claim settlement`. A public cancellation waits behind the real Job's locked `sporades_jobs` row; a separate recovery update receives `55P03`; after release the committed write/receipt remain and the Job settles cancelled once under its exact claim. |
+| PostgreSQL process gate | `node --test --test-concurrency=1 test/resource-transactions.test.js test/resource-postgres-process.test.js` with the harness URL set. This is the current focused command; it must not be replaced by a skipped run. |
+
+These assertions are database/resource-authority evidence only. They do not
+claim SMTP acceptance or notification delivery; `notifications.accept` remains
+unsupported until ticket 06.

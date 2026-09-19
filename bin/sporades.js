@@ -106235,10 +106235,23 @@ async function runCurrentUserJobWorker(database) {
         history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: "succeeded", completedAt });
         const payloadRetentionUntil = row.handler === STRIPE_EVENT_JOB ? stripeEventPayloadRetentionStorageValue(completedAt) : null;
         const settled = row.handler === STRIPE_EVENT_JOB ? await database.adapter.prepare(sql(
-          "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ?, [payloadRetentionUntil] = ? WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?"
+          "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ?, [payloadRetentionUntil] = ? WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ? AND [cancelRequestedAt] IS NULL"
         )).run(resultJson, completedAt, JSON.stringify(history), payloadRetentionUntil, row.id, claimToken) : await database.adapter.prepare(sql(
-          "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ? WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?"
+          "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ? WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ? AND [cancelRequestedAt] IS NULL"
         )).run(resultJson, completedAt, JSON.stringify(history), row.id, claimToken);
+        if (Number(settled?.changes ?? 0) === 0) {
+          const cancellation = await database.adapter.prepare(sql(
+            "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?"
+          )).get(row.id, claimToken);
+          if (cancellation?.cancelRequestedAt) {
+            const cancelledAt = database.clock.now().toISOString();
+            const cancellationHistory = JSON.parse(row.attemptHistory || "[]");
+            cancellationHistory.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: "cancelled", code: "ABORTED", completedAt: cancelledAt });
+            await database.adapter.prepare(sql(
+              "UPDATE [sporades_jobs] SET [status]='cancelled', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? WHERE [id]=? AND [status]='running' AND [claimToken]=? AND [cancelRequestedAt] IS NOT NULL"
+            )).run(JSON.stringify({ code: "ABORTED", message: "Job aborted." }), cancelledAt, JSON.stringify(cancellationHistory), row.id, claimToken);
+          }
+        }
         if (row.handler === STRIPE_EVENT_JOB && Number(settled?.changes ?? 0) === 1 && typeof payloadRetentionUntil === "string" && isCanonicalJobTimestamp(payloadRetentionUntil)) {
           scheduleStripeEventPayloadCleanup(database, Date.parse(payloadRetentionUntil));
         }

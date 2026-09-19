@@ -256,7 +256,10 @@ test('Postgres Job resource authority locks cancellation and recovery through ex
     jobs: { work: job(ctx => ctx.resources.run(options(), async scope => {
       await scope.db.writes.insert({ value: 'claim-owner' }); entered(); await releaseScope; return { committed: true };
     })) },
-    mutations: { enqueue: mutation(ctx => ctx.jobs.enqueue('work', null, { retry: { maxAttempts: 1, delayMs: 0 } })) },
+    mutations: {
+      enqueue: mutation(ctx => ctx.jobs.enqueue('work', null, { retry: { maxAttempts: 1, delayMs: 0 } })),
+      cancel: mutation((ctx, id) => ctx.jobs.cancel(id)),
+    },
   }, { clock });
   try {
     await database.init();
@@ -270,14 +273,16 @@ test('Postgres Job resource authority locks cancellation and recovery through ex
     const controller = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
     try {
       await controller.exec("SET lock_timeout = '50ms'");
-      const cancellation = controller.prepare('UPDATE sporades_jobs SET "cancelRequestedAt"=? WHERE id=? AND status=\'running\' AND "claimToken"=?').run(clock.now().toISOString(), queued.data.id, claim.claimToken);
-      await assert.rejects(cancellation, { code: '55P03' });
+      const cancellation = runMutation(database, actor, 'cancel', [queued.data.id]);
+      assert.equal(await Promise.race([cancellation.then(() => 'settled'), new Promise(resolve => setTimeout(() => resolve('pending'), 75))]), 'pending');
       const recovery = controller.prepare('UPDATE sporades_jobs SET status=\'queued\' WHERE id=? AND status=\'running\' AND "claimToken"=?').run(queued.data.id, claim.claimToken);
       await assert.rejects(recovery, { code: '55P03' });
+      release();
+      assert.equal((await cancellation).ok, true);
     } finally { await controller.close(); }
-    release(); await worker;
+    await worker;
     const settled = await database.adapter.prepare('SELECT status,"claimToken","attemptHistory" FROM sporades_jobs WHERE id=?').get(queued.data.id);
-    assert.equal(settled.status, 'succeeded'); assert.equal(settled.claimToken, null);
+    assert.equal(settled.status, 'cancelled'); assert.equal(settled.claimToken, null);
     assert.equal(JSON.parse(settled.attemptHistory).length, 1);
     assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='claim-owner'").get()).n), 1);
     assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 1);
