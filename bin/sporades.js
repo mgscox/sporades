@@ -68844,7 +68844,7 @@ function bindPostgresAclDependencyLocking(database, adapter) {
   database.lockAclHelperDependencies = async (tableNames) => {
     const pending = [...new Set(tableNames)].filter((tableName) => !lockedTables.has(tableName)).sort();
     if (pending.length === 0) return;
-    await adapter.exec(`LOCK TABLE ${pending.map((tableName) => adapter.dialect.quoteIdentifier(tableName)).join(", ")} IN SHARE ROW EXCLUSIVE MODE`);
+    await adapter.exec(`LOCK TABLE ${pending.map((tableName) => adapter.dialect.quoteIdentifier(tableName)).join(", ")} IN SHARE ROW EXCLUSIVE MODE NOWAIT`);
     for (const tableName of pending) lockedTables.add(tableName);
   };
 }

@@ -907,7 +907,7 @@ export function bindPostgresAclDependencyLocking(database: LooseRecord, adapter:
     // A table lock covers both returned rows and an empty predicate. The
     // self-conflicting mode keeps the ACL decision stable until the transaction
     // that consumes it commits or rolls back, without lock-upgrade deadlocks.
-    await adapter.exec(`LOCK TABLE ${pending.map((tableName) => adapter.dialect.quoteIdentifier(tableName)).join(", ")} IN SHARE ROW EXCLUSIVE MODE`);
+    await adapter.exec(`LOCK TABLE ${pending.map((tableName) => adapter.dialect.quoteIdentifier(tableName)).join(", ")} IN SHARE ROW EXCLUSIVE MODE NOWAIT`);
     for (const tableName of pending) lockedTables.add(tableName);
   };
 }

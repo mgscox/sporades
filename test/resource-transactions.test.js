@@ -255,6 +255,72 @@ test('Postgres resource ACL helpers preserve awaited Team and cross-table decisi
   } finally { await database.shutdown(); await database.close(); }
 });
 
+test('Postgres resource ACL dependency lock contention returns RESOURCE_BUSY without entering its callback', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, ['anchors', 'policies', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  const linkedActor = { ...actor, userId: 'postgres-acl-lock-contender', isAuthenticated: true, isGuest: false, provider: 'email' };
+  let callbacks = 0;
+  const database = await openDevDatabase('postgres-resource-acl-lock-contention', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-resource-acl-lock-contention', services: { database: { engine: 'postgres' } } }, {
+    schema: {
+      anchors: table({ value: Text() }).acl({
+        read: ({ ctx }) => ctx.acl.db.exists('policies', 'allow'),
+        write: () => true,
+      }),
+      policies: table({ value: Text() }),
+      writes: table({ value: Text() }),
+    },
+    mutations: { write: mutation(ctx => ctx.resources.run({ ...options(), operationId: 'acl-lock-contention' }, async scope => {
+      callbacks++;
+      await scope.db.writes.insert({ value: 'unexpected' });
+      return { committed: true };
+    })) },
+  }, { clock });
+  let blocker; let attempt;
+  try {
+    await database.init();
+    const now = clock.now().toISOString();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', now, now, 'anchor');
+    await database.adapter.prepare('INSERT INTO policies (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('allow', now, now, 'allowed');
+    blocker = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    await blocker.exec('BEGIN');
+    await blocker.exec('LOCK TABLE policies IN ACCESS EXCLUSIVE MODE');
+
+    const startedAt = Date.now();
+    attempt = runMutation(database, linkedActor, 'write', []);
+    const outcome = await Promise.race([
+      attempt.then(result => ({ state: 'settled', result })),
+      new Promise(resolve => setTimeout(() => resolve({ state: 'pending' }), 175)),
+    ]);
+    assert.notEqual(outcome.state, 'pending', 'ACL dependency lock acquisition must be bounded');
+    assert.equal(Date.now() - startedAt < 175, true, 'ACL dependency contention must settle promptly');
+    assert.equal(outcome.result.ok, false);
+    assert.deepEqual({ code: outcome.result.error.code, message: outcome.result.error.message }, { code: 'RESOURCE_BUSY', message: 'Resource transaction is busy.' });
+    assert.equal(callbacks, 0);
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM writes').get()).n), 0);
+
+    const probe = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    try {
+      await probe.exec('BEGIN');
+      await probe.prepare('SELECT "resourceTable" FROM sporades_resource_locks WHERE "resourceTable"=? AND "resourceId"=? FOR UPDATE NOWAIT').get('anchors', 'anchor');
+      await probe.prepare('SELECT id FROM anchors WHERE id=? FOR UPDATE NOWAIT').get('anchor');
+      await probe.exec('ROLLBACK');
+      await blocker.exec('ROLLBACK');
+      await probe.exec('BEGIN');
+      await probe.exec('LOCK TABLE policies IN SHARE ROW EXCLUSIVE MODE NOWAIT');
+      await probe.exec('ROLLBACK');
+    } finally {
+      await probe.exec('ROLLBACK').catch(() => {});
+      await probe.close();
+    }
+  } finally {
+    await blocker?.exec('ROLLBACK').catch(() => {});
+    await attempt?.catch(() => {});
+    await blocker?.close();
+    await database.shutdown(); await database.close();
+  }
+});
+
 test('Postgres resource ACL Team dependencies stay locked through callback settlement', { skip: POSTGRES_SKIP_REASON }, async t => {
   for (const dependency of ['membership', 'application-role']) await t.test(dependency, async () => {
     const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
