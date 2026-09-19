@@ -10,6 +10,7 @@ and is deliberately not cited here.
 | Criterion | Executable real-engine proof |
 | --- | --- |
 | Dedicated READ COMMITTED connection, `FOR UPDATE NOWAIT`, first-row and existing-row contention | `test/database-adapter.test.js` — `Postgres resource transactions use a dedicated NOWAIT lock...` and `Postgres resource locks contend deterministically...` |
+| Exact Job-row acquisition is immediate and does not enter the resource callback on contention | `test/resource-transactions.test.js` — `Postgres Job exact claim-row contention returns RESOURCE_BUSY without entering its resource callback`. A public Job is paused only after its ordinary claim has committed; an independent real PostgreSQL connection locks that exact `sporades_jobs.id` row, then the public handler enters `resources.run`. The handler settles `RESOURCE_BUSY` before PostgreSQL reports a waiting Job-lock query, and the protected callback counter remains zero. The test releases the actual row lock before awaiting normal Job settlement. This is not timing-only proof. |
 | PostgreSQL runtime resource-lock identifiers remain dialect-quoted; public resource adapter method remains shared | `test/database-adapter.test.js` — `Postgres resource-lock storage preserves its declared camel-case identifiers through the dialect` and `resource transactions retain the shared public adapter method and a symbol-keyed engine primitive`. The first reads `information_schema` after a real resource transaction; the second proves SQLite and PostgreSQL expose the shared method body, keeps the primitive at a descriptor-checked symbol boundary, rejects nested scope entry, and exercises PostgreSQL's private dedicated-session primitive. |
 | Bootstrap schema is committed before the first protected callback, but protected application writes are still uncommitted | `test/resource-postgres-publication.test.js` — `Postgres dedicated resource first use publishes lock and receipt schema before its held callback, while hiding application writes` and `Postgres public mutation and endpoint first use publish schema before held callbacks while hiding outer writes`. Each drops the resource schema for first use, holds the real callback after a write, and uses an independent PostgreSQL connection to assert the exact `information_schema` columns for both resource tables while asserting that the callback write is absent. The dedicated case also proves a distinct initialized resource can enter. |
 | Authorization-anchor lock ordering under concurrent revocation | `test/resource-transactions.test.js` — `Postgres Job locks the authorization anchor before a concurrent revocation can commit`. The only barrier is the public protected callback, which cannot begin until `resources.run` has authorized and locked the real generic `anchors` resource row; a separate PostgreSQL connection's revocation remains pending until that callback releases and settlement completes. No adapter, statement, or SQL-text monkey patch participates. |
@@ -40,3 +41,18 @@ Its log is `/Users/mattcox/.codex/state/goal-swarm/task-20260918-011-evidence/04
 These assertions are database/resource-authority evidence only. They do not
 claim SMTP acceptance or notification delivery; `notifications.accept` remains
 unsupported until ticket 06.
+
+## Exact Job-row NOWAIT review rework
+
+The `91ce4717` review found the two PostgreSQL exact-Job acquisitions in
+`bindJobResources` used `FOR UPDATE` despite ADR-0054 requiring `FOR UPDATE
+NOWAIT`. Before this source change, the complete required four-file real-PG
+gate passed 170/170 with no skips; that is compatibility evidence, not proof
+of the missing immediate-lock contract. The old and new implementations both
+normalize a released lock conflict to public `RESOURCE_BUSY`, so there is no
+honest distinct pre-fix public result to label RED. The credible before/after
+record is the exact SQL contract (`FOR UPDATE` -> `FOR UPDATE NOWAIT` at both
+initial and subsequent claim checks), paired with the synchronized real exact
+Job-row contention assertion above. Its post-fix focused result is recorded
+by the complete four-file gate: 171 passed, 0 failed, 0 skipped in 22.393s:
+`python3 /Volumes/M2_2TB/develop/agent-net/scratch/task002-with-postgres.py node --test --test-concurrency=1 test/database-adapter.test.js test/resource-transactions.test.js test/resource-postgres-process.test.js test/resource-postgres-publication.test.js`.

@@ -94468,7 +94468,7 @@ function bindJobResources(database, context, claim, hooks) {
     const watchdog = database.clock.setTimer(() => revoke(resourceError("RESOURCE_DEADLINE_EXCEEDED")), Math.max(0, deadline - database.clock.now().getTime()));
     const checkClaim = async (adapter, entry = false) => {
       assertLive(entry);
-      const row = await adapter.prepare(adapter.dialect.sql(database.adapter.engine === "postgres" ? "SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? FOR UPDATE" : "SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=?")).get(claim.id);
+      const row = await adapter.prepare(adapter.dialect.sql(database.adapter.engine === "postgres" ? "SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? FOR UPDATE NOWAIT" : "SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=?")).get(claim.id);
       if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
       if (row.cancelRequestedAt) throw resourceAbortError();
       assertLive(entry);
@@ -94556,7 +94556,7 @@ function bindJobResources(database, context, claim, hooks) {
       }, database.adapter.engine === "postgres" ? async (adapter) => {
         if (context.signal?.aborted || database.__jobStopped) throw resourceAbortError();
         if (database.clock.now().getTime() >= deadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
-        const row = await adapter.prepare(adapter.dialect.sql("SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? FOR UPDATE")).get(claim.id);
+        const row = await adapter.prepare(adapter.dialect.sql("SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? FOR UPDATE NOWAIT")).get(claim.id);
         if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
         if (row.cancelRequestedAt) throw resourceAbortError();
       } : (adapter) => {

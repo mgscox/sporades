@@ -107,6 +107,81 @@ test('Postgres Job locks the authorization anchor before a concurrent revocation
   } finally { releaseAuthorization?.(); await database.shutdown(); await database.close(); }
 });
 
+test('Postgres Job exact claim-row contention returns RESOURCE_BUSY without entering its resource callback', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  let releaseHandler, markResourceSettled, resourceCallbacks = 0, resourceOutcome;
+  const handlerReady = new Promise(resolve => { releaseHandler = resolve; });
+  const resourceSettled = new Promise(resolve => { markResourceSettled = resolve; });
+  let markClaimed;
+  const claimed = new Promise(resolve => { markClaimed = resolve; });
+  const database = await openDevDatabase('postgres-resource-exact-job-nowait', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-resource-exact-job-nowait', services: { database: { engine: 'postgres' } } }, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+    jobs: { work: job(async ctx => {
+      markClaimed();
+      await handlerReady;
+      try {
+        const result = await ctx.resources.run(options({ exactJob: true }), async () => {
+          resourceCallbacks += 1;
+          return { shouldNotEnter: true };
+        });
+        resourceOutcome = 'RESOURCE_CALLBACK_ENTERED';
+        markResourceSettled();
+        return result;
+      } catch (error) {
+        resourceOutcome = error.code;
+        markResourceSettled();
+        return { resourceOutcome: error.code };
+      }
+    }) },
+    mutations: { enqueue: mutation(ctx => ctx.jobs.enqueue('work', null, { retry: { maxAttempts: 1, delayMs: 0 } })) },
+  }, { clock });
+  let controller, observer;
+  try {
+    await database.init();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'postgres');
+    const queued = await runMutation(database, actor, 'enqueue', []);
+    assert.equal(queued.ok, true);
+    const worker = runCurrentUserJobWorker(database);
+    await Promise.race([claimed, new Promise((_, reject) => setTimeout(() => reject(new Error('Job did not claim its exact row before resource entry')), 2_000))]);
+    controller = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    observer = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    await controller.exec('BEGIN');
+    await controller.prepare('SELECT id FROM sporades_jobs WHERE id=? FOR UPDATE').get(queued.data.id);
+
+    let observing = true;
+    const observedJobLockWait = (async () => {
+      for (let attempt = 0; observing && attempt < 400; attempt += 1) {
+        const row = await observer.prepare("SELECT count(*) AS n FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%sporades_jobs%' AND query LIKE '%FOR UPDATE%'").get();
+        if (Number(row.n) > 0) return 'job-lock-wait';
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      return 'no-job-lock-wait';
+    })();
+    releaseHandler();
+    const contention = await Promise.race([
+      resourceSettled.then(() => 'resource-outcome'),
+      observedJobLockWait,
+    ]);
+    observing = false;
+    await observedJobLockWait;
+    await controller.exec('ROLLBACK');
+    await worker;
+
+    assert.equal(contention, 'resource-outcome', 'the exact Job-row NOWAIT acquisition must settle before PostgreSQL reports a waiting Job lock');
+    assert.equal(resourceOutcome, 'RESOURCE_BUSY');
+    assert.equal(resourceCallbacks, 0);
+    assert.equal((await database.adapter.prepare('SELECT status FROM sporades_jobs WHERE id=?').get(queued.data.id)).status, 'succeeded');
+  } finally {
+    releaseHandler?.();
+    await controller?.exec('ROLLBACK').catch(() => {});
+    await observer?.close();
+    await controller?.close();
+    await database.shutdown(); await database.close();
+  }
+});
+
 test('Postgres Job reconciles a lost resource COMMIT acknowledgement through its locked receipt without repeating writes', { skip: POSTGRES_SKIP_REASON }, async () => {
   const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
   await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
