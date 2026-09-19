@@ -90,3 +90,23 @@ real-PostgreSQL gate passed 185/185 with no skips in 23.519 seconds. Evidence:
 `/Volumes/M2_2TB/develop/agent-net/scratch/task002-failure-paths-approved-green-focused.log`,
 and
 `/Volumes/M2_2TB/develop/agent-net/scratch/task002-failure-paths-approved-required-green.log`.
+
+## Public outer storage-redaction review rework
+
+The `6a049ac7` review found PostgreSQL failures from mutation and Custom-endpoint
+scoped Database writes and receipt inserts escaped the SQLite-only outer
+normalizer. A real PostgreSQL public regression failed 0/1 before the repair:
+the mutation returned raw SQLSTATE `23505` and the engine's named
+`writes_value_key` diagnostic. After the repair, the same regression passed 1/1
+across mutation and endpoint caught and detached duplicate writes, forced named
+receipt CHECK failures, and deliberate callback errors carrying a `23505` code.
+Every storage failure used the fixed public code and message with no constraint
+or detail metadata, every callback error retained its identity, and all writes
+and receipts rolled back. Evidence:
+`/Volumes/M2_2TB/develop/agent-net/scratch/task002-outer-redaction-red.log` and
+`/Volumes/M2_2TB/develop/agent-net/scratch/task002-outer-redaction-green-focused.log`.
+The required four-file real-PostgreSQL gate then passed 186/186 with no skips in
+23.721 seconds; its log is
+`/Volumes/M2_2TB/develop/agent-net/scratch/task002-outer-redaction-required-green.log`.
+Build, typecheck, generated-artifact parity, and the 46/46 documentation gate
+also passed in the corresponding `task002-outer-redaction-*.log` files.

@@ -350,9 +350,10 @@ const result = await ctx.resources.run({
    ordinary table updates do not magically participate. No global serializable
    snapshot or parallel throughput promise is added. Constraint/deadlock/connection
    errors roll back; never automatically rerun a callback. Constraint and
-   pre-COMMIT connection diagnostics are reported only as the fixed
-   `RESOURCE_STORAGE_ERROR`; deliberate callback errors and the separate unknown
-   COMMIT outcome retain their own identities.
+   pre-COMMIT connection diagnostics from dedicated Job connections, tracked
+   outer scoped Database operations, and runtime-owned receipt statements are
+   reported only as the fixed `RESOURCE_STORAGE_ERROR`; deliberate callback
+   errors and the separate unknown COMMIT outcome retain their own identities.
 5. Engine commit/rollback or engine-confirmed connection/process death releases
    authority. There is no durable resource lease to expire or reset on restart.
    Receipt rows are outcomes, not locks. PG backend loss invalidates all old scoped

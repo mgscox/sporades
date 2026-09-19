@@ -94189,19 +94189,27 @@ function bindOuterResources(database, context, hooks) {
   const pending = /* @__PURE__ */ new Set();
   const executions = /* @__PURE__ */ new Set();
   const normalizeStorageError = (error) => error?.code === "RESOURCE_BUSY" || error?.code === "SQLITE_BUSY" || error?.errcode === 5 || error?.errcode === 6 ? resourceError("RESOURCE_BUSY") : error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== void 0 ? resourceError("RESOURCE_STORAGE_ERROR") : error;
+  const normalizeDatabaseOperationError = (error, definiteStorageOperation = false) => {
+    if (typeof error?.code === "string" && error.code.startsWith("RESOURCE_")) return normalizeStorageError(error);
+    if (error?.code === "55P03" || error?.code === "57014") return resourceError("RESOURCE_BUSY");
+    const normalized = normalizeStorageError(error);
+    if (normalized !== error) return normalized;
+    if (database.adapter.engine === "postgres" && (definiteStorageOperation || typeof error?.code === "string" && (/^[0-9A-Z]{5}$/.test(error.code) || ["ECONNRESET", "ECONNREFUSED", "EPIPE", "ETIMEDOUT"].includes(error.code)) || error?.message === "database is not open")) return resourceError("RESOURCE_STORAGE_ERROR");
+    return error;
+  };
   const track = (operation) => {
     let value;
     try {
       value = operation();
     } catch (error) {
-      terminalError ??= normalizeStorageError(error);
+      terminalError ??= normalizeDatabaseOperationError(error);
       throw error;
     }
     if (!value || typeof value.then !== "function") return value;
     const promise = Promise.resolve(value);
     pending.add(promise);
     void promise.catch((error) => {
-      terminalError ??= normalizeStorageError(error);
+      terminalError ??= normalizeDatabaseOperationError(error);
     });
     return promise;
   };
@@ -94298,8 +94306,7 @@ function bindOuterResources(database, context, hooks) {
         }
         receipt2 = resourceReceiptRow(database.adapter, await database.adapter.prepare(database.adapter.dialect.sql("SELECT * FROM [sporades_resource_receipts] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=?")).get(identity.table, identity.id, identity.operationId));
       } catch (error) {
-        if (error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== void 0) throw resourceError("RESOURCE_STORAGE_ERROR");
-        throw error;
+        throw normalizeDatabaseOperationError(error, true);
       }
       if (receipt2) {
         if (receipt2.actorDigest !== actorDigest || !status && receipt2.inputDigest !== identity.digest) throw resourceError("RESOURCE_OPERATION_CONFLICT");
@@ -94352,8 +94359,7 @@ function bindOuterResources(database, context, hooks) {
       try {
         await database.adapter.prepare(database.adapter.dialect.sql("INSERT INTO [sporades_resource_receipts] VALUES (?,?,?,?,?,?,?,?)")).run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
       } catch (error) {
-        if (error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== void 0) throw resourceError("RESOURCE_STORAGE_ERROR");
-        throw error;
+        throw normalizeDatabaseOperationError(error, true);
       }
       assertLive();
       return JSON.parse(resultJson);

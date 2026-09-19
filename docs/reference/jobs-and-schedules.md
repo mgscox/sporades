@@ -538,11 +538,13 @@ Other fixed resource errors are `RESOURCE_INVALID_INPUT`,
 `RESOURCE_EFFECT_UNSUPPORTED`, `RESOURCE_DEADLINE_EXCEEDED`,
 `RESOURCE_CLAIM_LOST`, `RESOURCE_SCOPE_INACTIVE`, `RESOURCE_COMMIT_UNKNOWN`, and
 `RESOURCE_STORAGE_ERROR`. They omit caller values. PostgreSQL constraint,
-connection, and other storage failures before COMMIT use the fixed
-`RESOURCE_STORAGE_ERROR` code and message without SQLSTATE, constraint, or engine
-metadata; an error deliberately thrown by the resource callback remains that
-callback error. Cancellation keeps the existing Job cancellation outcome;
-authorization keeps opaque ACL errors.
+connection, and other storage failures before COMMIT, including tracked
+mutation/endpoint scoped Database operations and runtime-owned receipt
+statements, use the fixed `RESOURCE_STORAGE_ERROR` code and message without
+SQLSTATE, constraint, or engine metadata. An error deliberately thrown by the
+resource callback remains that callback error, including when its `code` happens
+to resemble a SQLSTATE. Cancellation keeps the existing Job cancellation
+outcome; authorization keeps opaque ACL errors.
 
 This slice supports ordinary Jobs, including the existing audited Privileged
 Job path, plus Custom mutations and Custom endpoints on file-backed SQLite.

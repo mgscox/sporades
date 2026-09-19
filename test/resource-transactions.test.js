@@ -270,6 +270,52 @@ test('Postgres Job resource storage failures are redacted without replacing call
   } finally { await database.shutdown(); await database.close(); }
 });
 
+test('Postgres public resource storage failures are redacted without replacing callback errors', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  const operation = (kind, mode) => ({ ...options({ kind, mode }), operationId: `public-error-${kind}-${mode}` });
+  const run = (kind, mode) => async ctx => ctx.resources.run(operation(kind, mode), async scope => {
+    await scope.db.writes.insert({ value: `${kind}-${mode}` });
+    if (mode === 'callback') throw Object.assign(new Error('Expected callback failure.'), { code: '23505', constraint: 'deliberate_callback_constraint', detail: 'deliberate callback detail' });
+    if (mode === 'receipt') return { receiptFailure: true };
+    const duplicate = scope.db.writes.insert({ value: `${kind}-${mode}` });
+    if (mode === 'caught') try { await duplicate; } catch {}
+    else void duplicate.catch(() => {});
+    return { impossible: true };
+  });
+  const database = await openDevDatabase('postgres-public-resource-error-redaction', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-public-resource-error-redaction', services: { database: { engine: 'postgres' } } }, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }).unique('value') },
+    mutations: Object.fromEntries(['caught', 'unawaited', 'receipt', 'callback'].map(mode => [mode, mutation(run('mutation', mode))])),
+    endpoints: Object.fromEntries(['caught', 'unawaited', 'receipt', 'callback'].map(mode => [mode, endpoint({ method: 'POST', path: `/${mode}` }, run('endpoint', mode))])),
+  }, { clock });
+  const request = { method: 'POST', headers: {}, async *[Symbol.asyncIterator]() {} };
+  try {
+    await database.init();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'postgres');
+    await database.adapter[Symbol.for('sporades.database.resourceBootstrapMechanics')]();
+    await database.adapter.exec(`ALTER TABLE sporades_resource_receipts ADD CONSTRAINT receipt_result_json_forbidden CHECK ("resultJson" <> '{"receiptFailure":true}')`);
+    for (const kind of ['mutation', 'endpoint']) for (const mode of ['caught', 'unawaited', 'receipt', 'callback']) {
+      const error = kind === 'mutation'
+        ? (await runMutation(database, actor, mode, [])).error
+        : await runEndpoint(database, database.endpoints.find(item => item.name === mode), new URL(`http://capsule.test/${mode}`), request).then(() => null, value => value);
+      if (mode === 'callback') {
+        assert.deepEqual({ code: error.code, message: error.message, constraint: error.constraint, detail: error.detail }, {
+          code: '23505', message: 'Expected callback failure.',
+          constraint: kind === 'endpoint' ? 'deliberate_callback_constraint' : undefined,
+          detail: kind === 'endpoint' ? 'deliberate callback detail' : undefined,
+        });
+      } else {
+        assert.deepEqual({ code: error.code, message: error.message, constraint: error.constraint, detail: error.detail }, {
+          code: 'RESOURCE_STORAGE_ERROR', message: 'Resource operation could not complete.', constraint: undefined, detail: undefined,
+        });
+      }
+    }
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM writes').get()).n), 0);
+    assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM sporades_resource_receipts WHERE \"operationId\" LIKE 'public-error-%'").get()).n), 0);
+  } finally { await database.shutdown(); await database.close(); }
+});
+
 test('Postgres Job exact claim-row contention returns RESOURCE_BUSY without entering its resource callback', { skip: POSTGRES_SKIP_REASON }, async () => {
   const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
   await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();

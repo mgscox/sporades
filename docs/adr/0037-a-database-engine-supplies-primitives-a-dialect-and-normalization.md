@@ -176,6 +176,15 @@ PostgreSQL or SQLite adapter override. Authorization, claim, receipt, and
 settlement therefore remain one Resource-runtime behaviour, while the engine
 supplies only the session mechanics it uniquely controls.
 
+Mutation and Custom-endpoint resource scopes retain their existing outer
+transaction rather than opening that dedicated connection. Their Resource
+runtime boundary therefore normalizes PostgreSQL failures where they are known
+to come from a tracked scoped Database operation or a runtime-owned receipt
+read/write. It does not classify the callback's thrown value by shape: even a
+deliberate callback error carrying a SQLSTATE-like `code` remains the callback
+error. This keeps engine diagnostics out of public mutation and endpoint results
+without turning arbitrary Capsule errors into storage failures.
+
 The specification to build against is ADR-0035's, not a reading of any adapter.
 Add the engine to the conformance engine list and the suite tells you what is
 still missing, which is what a new engine wants and what reverse-engineering the
