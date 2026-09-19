@@ -1438,6 +1438,87 @@ test('Postgres resource readiness scopes primary-key columns to the checked tabl
   });
 });
 
+test('Postgres resource readiness rejects receipt tables with inherited children before callback entry', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  try {
+    await resetPostgresSchema(reset, ['sporades_resource_receipts_child', 'anchors', 'writes']);
+    await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts_child, sporades_resource_receipts, sporades_resource_locks');
+  } finally { await reset.close(); }
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  let callbacks = 0;
+  const database = await openDevDatabase('postgres-resource-receipt-inheritance', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-resource-receipt-inheritance', services: { database: { engine: 'postgres' } } }, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+    mutations: { write: mutation(ctx => ctx.resources.run(options(), async scope => {
+      callbacks++;
+      await scope.db.writes.insert({ value: 'must-not-repeat' });
+      return { committed: true };
+    })) },
+  }, { clock });
+  try {
+    await database.init();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'ready');
+    assert.deepEqual(await runMutation(database, actor, 'write', []), { ok: true, data: { committed: true }, error: null });
+    assert.equal(callbacks, 1);
+    await database.adapter.exec('CREATE TABLE sporades_resource_receipts_child () INHERITS (sporades_resource_receipts)');
+    await database.adapter.exec('INSERT INTO sporades_resource_receipts_child SELECT * FROM ONLY sporades_resource_receipts');
+    await database.adapter.exec('DELETE FROM ONLY sporades_resource_receipts');
+    callbacks = 0;
+
+    const result = await runMutation(database, actor, 'write', []);
+    assert.equal(result.ok, false);
+    assert.deepEqual({ code: result.error.code, message: result.error.message }, { code: 'RESOURCE_STORAGE_ERROR', message: 'Resource operation could not complete.' });
+    assert.equal(callbacks, 0, 'schema readiness rejects inheritance before protected work starts');
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM ONLY sporades_resource_receipts').get()).n), 0);
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts_child').get()).n), 1);
+  } finally {
+    try { await database.adapter.exec('DROP TABLE IF EXISTS sporades_resource_receipts_child, sporades_resource_receipts, sporades_resource_locks'); }
+    finally { await database.shutdown(); await database.close(); }
+  }
+});
+
+test('Postgres resource readiness rejects deferrable lock primary keys before callback entry', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  try {
+    await resetPostgresSchema(reset, ['anchors', 'writes']);
+    await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks');
+    await reset.exec('CREATE TABLE sporades_resource_locks ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId") DEFERRABLE INITIALLY IMMEDIATE)');
+    await reset.exec('CREATE TABLE sporades_resource_receipts ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, "operationId" TEXT NOT NULL, "inputDigest" TEXT NOT NULL, "actorDigest" TEXT NOT NULL, "resultJson" TEXT NOT NULL, "intentIdsJson" TEXT NOT NULL, "committedAt" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId", "operationId"))');
+  } finally { await reset.close(); }
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  let callbacks = 0;
+  const database = await openDevDatabase('postgres-resource-deferrable-primary-key', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-resource-deferrable-primary-key', services: { database: { engine: 'postgres' } } }, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+    mutations: { write: mutation(ctx => ctx.resources.run(options(), async scope => {
+      callbacks++;
+      await scope.db.writes.insert({ value: 'must-not-commit' });
+      return { committed: true };
+    })) },
+  }, { clock });
+  const locker = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  try {
+    await database.init();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'ready');
+    await assert.rejects(
+      database.adapter.prepare('INSERT INTO sporades_resource_locks ("resourceTable", "resourceId") VALUES (?, ?) ON CONFLICT ("resourceTable", "resourceId") DO NOTHING').run('probe', 'probe'),
+      error => /ON CONFLICT does not support deferrable/.test(error.message),
+      'the malformed primary key cannot arbitrate the later lock upsert',
+    );
+    await locker.exec('BEGIN');
+    await locker.exec('LOCK TABLE sporades_resource_locks IN ACCESS EXCLUSIVE MODE');
+    const result = await runMutation(database, actor, 'write', []);
+    assert.equal(result.ok, false);
+    assert.deepEqual({ code: result.error.code, message: result.error.message }, { code: 'RESOURCE_STORAGE_ERROR', message: 'Resource operation could not complete.' });
+    assert.equal(callbacks, 0, 'schema readiness rejects a deferrable lock primary key before protected work starts');
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM writes').get()).n), 0);
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 0);
+  } finally {
+    try { await locker.exec('ROLLBACK'); } catch {}
+    await locker.close();
+    try { await database.adapter.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); }
+    finally { await database.shutdown(); await database.close(); }
+  }
+});
+
 test('Postgres public mutation and endpoint bootstrap fence repeated fresh and folded-legacy races', { skip: POSTGRES_SKIP_REASON }, async () => {
   const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
   try {
