@@ -553,11 +553,14 @@ check at the actual commit decision. A lost outer COMMIT acknowledgement reports
 by a later authorized receipt read; it is never reported as rollback. Resource
 log index events and their bounded payload-free JSONL copies publish only after a
 known outer commit, so an unknown outcome intentionally has no JSONL publication
-claim. PostgreSQL Jobs and outer scopes first verify the exact resource lock and
-receipt schema. A missing or folded legacy schema is published by a separate
+claim. PostgreSQL Jobs and outer scopes first verify the exact ordered resource
+lock and receipt columns, text types, nullability, absence of extras, and primary
+keys. A missing or folded legacy schema is published by a separate
 short transaction whose transaction-scoped advisory guard remains held through
 its commit; initialized scopes take no bootstrap guard and lock the same
-`FOR UPDATE NOWAIT` resource row in their respective transaction. A PostgreSQL COMMIT acknowledgement loss discards that
+`FOR UPDATE NOWAIT` resource row in their respective transaction. They then
+lock the authorization anchor before evaluating its current ACL and retain both
+locks through settlement. A PostgreSQL COMMIT acknowledgement loss discards that
 connection before the later receipt lookup reconnects. libSQL fails closed
 before callback execution; its ticket is 05. The
 `notifications.accept({id, to, subject, text, html?})` signature is reserved and

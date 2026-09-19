@@ -107,6 +107,55 @@ test('Postgres Job locks the authorization anchor before a concurrent revocation
   } finally { releaseAuthorization?.(); await database.shutdown(); await database.close(); }
 });
 
+test('Postgres public resource scopes lock the authorization anchor through outer settlement', { skip: POSTGRES_SKIP_REASON }, async t => {
+  for (const kind of ['mutation', 'endpoint']) await t.test(kind, async () => {
+    const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
+    const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+    const entered = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const protectedRun = ctx => ctx.resources.run({ ...options({ authorization: kind }), operationId: `outer-authorization-${kind}` }, async scope => {
+      entered.resolve();
+      await release.promise;
+      await scope.db.writes.insert({ value: `protected-${kind}` });
+      return { kind };
+    });
+    const database = await openDevDatabase(`postgres-outer-authorization-${kind}`, '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: `postgres-outer-authorization-${kind}`, services: { database: { engine: 'postgres' } } }, {
+      schema: {
+        anchors: table({ value: Text() }).acl({ read: ({ row }) => row?.value === 'allowed', write: () => true }),
+        writes: table({ value: Text() }),
+      },
+      mutations: kind === 'mutation' ? { write: mutation(protectedRun) } : {},
+      endpoints: kind === 'endpoint' ? { write: endpoint({ method: 'POST', path: '/authorization-lock' }, protectedRun) } : {},
+    }, { clock });
+    let revoker; let execution;
+    try {
+      await database.init();
+      await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'allowed');
+      execution = kind === 'mutation'
+        ? runMutation(database, actor, 'write', [])
+        : resolveAnonymousSession(database, null).then(session => runEndpoint(database, database.endpoints.find(item => item.path === '/authorization-lock'), new URL('http://capsule.test/authorization-lock'), { method: 'POST', headers: { 'x-sporades-session-token': session.token }, async *[Symbol.asyncIterator]() {} }));
+      await Promise.race([entered.promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`${kind} did not enter after authorization`)), 2_000))]);
+      revoker = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+      const revocation = revoker.prepare('UPDATE anchors SET value=? WHERE id=?').run('revoked', 'anchor');
+      assert.equal(await Promise.race([revocation.then(() => 'committed'), new Promise(resolve => setTimeout(() => resolve('pending'), 75))]), 'pending');
+      release.resolve();
+      const result = await execution;
+      if (kind === 'mutation') assert.deepEqual(result, { ok: true, data: { kind }, error: null });
+      else assert.deepEqual(result, { kind });
+      await revocation;
+      assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM writes WHERE value=?').get(`protected-${kind}`)).n), 1);
+      assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts WHERE "operationId"=?').get(`outer-authorization-${kind}`)).n), 1);
+      assert.equal((await database.adapter.prepare('SELECT value FROM anchors WHERE id=?').get('anchor')).value, 'revoked');
+    } finally {
+      release.resolve();
+      await execution?.catch(() => {});
+      await revoker?.close();
+      await database.shutdown(); await database.close();
+    }
+  });
+});
+
 test('Postgres Job exact claim-row contention returns RESOURCE_BUSY without entering its resource callback', { skip: POSTGRES_SKIP_REASON }, async () => {
   const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
   await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();

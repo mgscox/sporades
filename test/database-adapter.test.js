@@ -135,6 +135,41 @@ test("Postgres resource locks contend deterministically for both first and exist
   }, { appTableNames: [] });
 });
 
+test("Postgres resource transactions reject malformed runtime schemas before protected work", { skip: POSTGRES_SKIP_REASON }, async t => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  try {
+    for (const malformed of ["lock-without-primary-key", "reordered-receipt-columns", "wrong-receipt-type", "nullable-receipt-column", "extra-receipt-column"]) await t.test(malformed, async () => {
+      await reset.exec('DROP TABLE IF EXISTS "sporades_resource_receipts", "sporades_resource_locks"');
+      if (malformed === "lock-without-primary-key") {
+        await reset.exec('CREATE TABLE "sporades_resource_locks" ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL)');
+        await reset.exec('CREATE TABLE "sporades_resource_receipts" ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, "operationId" TEXT NOT NULL, "inputDigest" TEXT NOT NULL, "actorDigest" TEXT NOT NULL, "resultJson" TEXT NOT NULL, "intentIdsJson" TEXT NOT NULL, "committedAt" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId", "operationId"))');
+      } else {
+        await reset.exec('CREATE TABLE "sporades_resource_locks" ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId"))');
+        const operationId = malformed === "wrong-receipt-type" ? '"operationId" INTEGER NOT NULL' : '"operationId" TEXT NOT NULL';
+        const committedAt = malformed === "nullable-receipt-column" ? '"committedAt" TEXT' : '"committedAt" TEXT NOT NULL';
+        const extra = malformed === "extra-receipt-column" ? ', "unexpected" TEXT NOT NULL' : '';
+        const columns = malformed === "reordered-receipt-columns"
+          ? `${operationId}, "resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, "inputDigest" TEXT NOT NULL, "actorDigest" TEXT NOT NULL, "resultJson" TEXT NOT NULL, "intentIdsJson" TEXT NOT NULL, ${committedAt}`
+          : `"resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, ${operationId}, "inputDigest" TEXT NOT NULL, "actorDigest" TEXT NOT NULL, "resultJson" TEXT NOT NULL, "intentIdsJson" TEXT NOT NULL, ${committedAt}`;
+        await reset.exec(`CREATE TABLE "sporades_resource_receipts" (${columns}${extra}, PRIMARY KEY ("resourceTable", "resourceId", "operationId"))`);
+      }
+      const adapter = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+      let callbacks = 0;
+      try {
+        await assert.rejects(
+          adapter.withResourceTransaction(async () => { callbacks++; }, undefined, { table: "anchors", id: malformed }),
+          { code: "RESOURCE_STORAGE_ERROR" },
+        );
+        assert.equal(callbacks, 0, `${malformed} must fail before protected work`);
+        assert.equal(Number((await reset.prepare('SELECT count(*) AS n FROM "sporades_resource_locks"').get()).n), 0);
+      } finally { await adapter.close(); }
+    });
+  } finally {
+    await reset.exec('DROP TABLE IF EXISTS "sporades_resource_receipts", "sporades_resource_locks"');
+    await reset.close();
+  }
+});
+
 test("Postgres dedicated resource bootstrap fences repeated fresh and folded-legacy two-connection races", { skip: POSTGRES_SKIP_REASON }, async () => {
   const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
   try {

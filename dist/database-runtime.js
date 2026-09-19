@@ -1559,14 +1559,19 @@ export async function createPostgresDatabaseAdapter(options) {
     const dialect = postgresDatabaseDialect();
     const normalization = postgresRowNormalization();
     const resourceSchemas = [
-        { table: "sporades_resource_locks", columns: ["resourceTable", "resourceId"], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId])" },
-        { table: "sporades_resource_receipts", columns: ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId])" },
+        { table: "sporades_resource_locks", columns: ["resourceTable", "resourceId"], primaryKey: ["resourceTable", "resourceId"], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId])" },
+        { table: "sporades_resource_receipts", columns: ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"], primaryKey: ["resourceTable", "resourceId", "operationId"], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId])" },
     ];
     const resourceSchemaReady = async (query) => {
         for (const schema of resourceSchemas) {
-            const rows = postgresRowsFromResult(normalization, await query(`SELECT ${dialect.quoteIdentifier("column_name")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("columns")} WHERE ${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("table_name")}=?`, [schema.table]));
-            const columns = new Set(rows.map((row) => row.column_name));
-            if (!schema.columns.every(column => columns.has(column)))
+            const rows = postgresRowsFromResult(normalization, await query(`SELECT ${dialect.quoteIdentifier("column_name")}, ${dialect.quoteIdentifier("data_type")}, ${dialect.quoteIdentifier("is_nullable")}, ${dialect.quoteIdentifier("ordinal_position")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("columns")} WHERE ${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("table_name")}=? ORDER BY ${dialect.quoteIdentifier("ordinal_position")}`, [schema.table]));
+            if (rows.length !== schema.columns.length || rows.some((row, index) => row.column_name !== schema.columns[index]
+                || row.data_type !== "text"
+                || row.is_nullable !== "NO"
+                || Number(row.ordinal_position) !== index + 1))
+                return false;
+            const primaryKey = postgresRowsFromResult(normalization, await query(`SELECT ${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("column_name")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("table_constraints")} AS ${dialect.quoteIdentifier("tc")} JOIN ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("key_column_usage")} AS ${dialect.quoteIdentifier("kcu")} ON ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("constraint_catalog")}=${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("constraint_catalog")} AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("constraint_schema")}=${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("constraint_schema")} AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("constraint_name")}=${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("constraint_name")} WHERE ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("table_name")}=? AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("constraint_type")}='PRIMARY KEY' ORDER BY ${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("ordinal_position")}`, [schema.table]));
+            if (primaryKey.length !== schema.primaryKey.length || primaryKey.some((row, index) => row.column_name !== schema.primaryKey[index]))
                 return false;
         }
         return true;
@@ -1606,7 +1611,7 @@ export async function createPostgresDatabaseAdapter(options) {
                     }
                 }
                 if (!await resourceSchemaReady(query))
-                    throw new Error("PostgreSQL resource schema publication did not produce the required columns.");
+                    throw resourceError("RESOURCE_STORAGE_ERROR");
             }
             await query("COMMIT");
             begun = false;
