@@ -2154,6 +2154,10 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
         const resourceIdColumn = dialect.quoteIdentifier("resourceId");
         await query(`INSERT INTO ${resourceLockTable} (${resourceTableColumn}, ${resourceIdColumn}) VALUES (?, ?) ON CONFLICT (${resourceTableColumn}, ${resourceIdColumn}) DO NOTHING`, [resource.table, resource.id]);
         await query(`SELECT ${resourceTableColumn} FROM ${resourceLockTable} WHERE ${resourceTableColumn}=? AND ${resourceIdColumn}=? FOR UPDATE NOWAIT`, [resource.table, resource.id]);
+        // The short timeout bounds admission only. Callback application writes
+        // retain the connection's normal lock-wait policy inside this resource
+        // transaction rather than inheriting the 100ms admission setting.
+        await query("SET LOCAL lock_timeout = DEFAULT");
         const transaction = createTransactionScopedAdapter(adapter, operations, adapter, "transaction");
         try {
           const result = await fn(transaction);

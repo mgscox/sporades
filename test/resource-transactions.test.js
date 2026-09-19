@@ -63,6 +63,75 @@ test('Postgres Job resource scope commits a canonical receipt through its dedica
   } finally { await database.shutdown(); await database.close(); }
 });
 
+test('Postgres resource callbacks retain ordinary row-lock waits after bounded admission', { skip: POSTGRES_SKIP_REASON }, async t => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  const callbackEntered = { dedicated: Promise.withResolvers(), outer: Promise.withResolvers() };
+  const database = await openDevDatabase('postgres-resource-callback-lock-wait', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-resource-callback-lock-wait', services: { database: { engine: 'postgres' } } }, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+    mutations: { write: mutation(ctx => ctx.resources.run({ ...options({ kind: 'outer' }), operationId: 'outer-lock-wait' }, async scope => {
+      callbackEntered.outer.resolve();
+      await scope.db.writes.update('target', { value: 'outer-complete' });
+      return { completed: true };
+    })) },
+  }, { clock });
+  try {
+    await database.init();
+    const now = clock.now().toISOString();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', now, now, 'postgres');
+    await database.adapter.prepare('INSERT INTO writes (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('target', now, now, 'original');
+
+    await t.test('dedicated resource transaction callback', async () => {
+      const locker = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+      let execution;
+      try {
+        await locker.exec('BEGIN');
+        await locker.prepare('SELECT id FROM writes WHERE id=? FOR UPDATE').get('target');
+        execution = database.adapter.withResourceTransaction(async transaction => {
+          callbackEntered.dedicated.resolve();
+          await transaction.prepare('UPDATE writes SET value=? WHERE id=?').run('dedicated-complete', 'target');
+          return { completed: true };
+        }, undefined, { table: 'anchors', id: 'anchor' });
+        await callbackEntered.dedicated.promise;
+        assert.equal(await Promise.race([
+          execution.then(() => 'settled', error => error?.code ?? 'rejected'),
+          new Promise(resolve => setTimeout(() => resolve('pending'), 175)),
+        ]), 'pending', 'ordinary callback writes may wait beyond the 100ms admission bound');
+        await locker.exec('ROLLBACK');
+        assert.deepEqual(await execution, { completed: true });
+        assert.equal((await database.adapter.prepare('SELECT value FROM writes WHERE id=?').get('target')).value, 'dedicated-complete');
+      } finally {
+        await locker.exec('ROLLBACK').catch(() => {});
+        await execution?.catch(() => {});
+        await locker.close();
+      }
+    });
+
+    await t.test('outer mutation resource callback', async () => {
+      const locker = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+      let execution;
+      try {
+        await locker.exec('BEGIN');
+        await locker.prepare('SELECT id FROM writes WHERE id=? FOR UPDATE').get('target');
+        execution = runMutation(database, actor, 'write', []);
+        await callbackEntered.outer.promise;
+        assert.equal(await Promise.race([
+          execution.then(result => result?.error?.code ?? 'settled', error => error?.code ?? 'rejected'),
+          new Promise(resolve => setTimeout(() => resolve('pending'), 175)),
+        ]), 'pending', 'ordinary callback writes may wait beyond the 100ms admission bound');
+        await locker.exec('ROLLBACK');
+        assert.deepEqual(await execution, { ok: true, data: { completed: true }, error: null });
+        assert.equal((await database.adapter.prepare('SELECT value FROM writes WHERE id=?').get('target')).value, 'outer-complete');
+      } finally {
+        await locker.exec('ROLLBACK').catch(() => {});
+        await execution?.catch(() => {});
+        await locker.close();
+      }
+    });
+  } finally { await database.shutdown(); await database.close(); }
+});
+
 test('Postgres resource ACL helpers preserve awaited Team and cross-table decisions while rejecting synchronous unawaited reads', { skip: POSTGRES_SKIP_REASON }, async () => {
   const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
   await resetPostgresSchema(reset, ['anchors', 'policies', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();

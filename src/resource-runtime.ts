@@ -270,6 +270,9 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
             `SELECT ${database.adapter.dialect.quoteIdentifier("id")} FROM ${database.adapter.dialect.quoteIdentifier(identity.table)} WHERE ${database.adapter.dialect.quoteIdentifier("id")}=? FOR UPDATE NOWAIT`,
           ).get(identity.id);
           if (!anchor) throw resourceError("RESOURCE_STORAGE_ERROR");
+          // The short timeout bounds admission only. Authorization and callback
+          // application writes retain the connection's normal lock-wait policy.
+          await database.adapter.exec("SET LOCAL lock_timeout = DEFAULT");
         } else {
           await database.adapter.exec(database.adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_outer_fence] ([id] INTEGER PRIMARY KEY, [epoch] INTEGER NOT NULL)"));
           await database.adapter.prepare(database.adapter.dialect.sql("INSERT OR IGNORE INTO [sporades_resource_outer_fence] ([id], [epoch]) VALUES (1, 0)")).run();
