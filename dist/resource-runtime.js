@@ -276,6 +276,14 @@ export function bindOuterResources(database, context, hooks) {
             controller.abort();
             rejectOuterAbort(terminalError);
         };
+        const expire = () => {
+            const error = resourceError("RESOURCE_DEADLINE_EXCEEDED");
+            terminalError ??= error;
+            const cancel = database.adapter[Symbol.for("sporades.database.resourceCancelActiveQuery")];
+            if (typeof cancel === "function")
+                void Promise.resolve(cancel()).catch(() => { });
+            revoke(error);
+        };
         const assertLive = (requireAdmission = false) => {
             if (!invocationActive || !scopeActive || requireAdmission && !admission)
                 throw resourceError("RESOURCE_SCOPE_INACTIVE");
@@ -284,7 +292,7 @@ export function bindOuterResources(database, context, hooks) {
             if (database.clock.now().getTime() >= deadline - (admission ? 1000 : 0))
                 throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
         };
-        watchdog ??= database.clock.setTimer(() => revoke(resourceError("RESOURCE_DEADLINE_EXCEEDED")), Math.max(0, deadline - database.clock.now().getTime()));
+        watchdog ??= database.clock.setTimer(expire, Math.max(0, deadline - database.clock.now().getTime()));
         let acquired = false;
         try {
             assertLive(true);
@@ -525,6 +533,7 @@ export function bindJobResources(database, context, claim, hooks) {
         const deadline = Date.parse(claim.leaseExpiresAt);
         const pending = new Set();
         const logs = [];
+        let resourceAdapter;
         let rejectAbort = () => { };
         const aborted = new Promise((_, reject) => { rejectAbort = reject; });
         // Attach before any asynchronous acquisition to avoid an unhandled rejection.
@@ -548,7 +557,14 @@ export function bindJobResources(database, context, claim, hooks) {
         };
         const abort = () => revoke(resourceAbortError());
         context.signal?.addEventListener("abort", abort, { once: true });
-        const watchdog = database.clock.setTimer(() => revoke(resourceError("RESOURCE_DEADLINE_EXCEEDED")), Math.max(0, deadline - database.clock.now().getTime()));
+        const watchdog = database.clock.setTimer(() => {
+            const error = resourceError("RESOURCE_DEADLINE_EXCEEDED");
+            terminalError ??= error;
+            const cancel = resourceAdapter?.[Symbol.for("sporades.database.resourceCancelActiveQuery")];
+            if (typeof cancel === "function")
+                void Promise.resolve(cancel()).catch(() => { });
+            revoke(error);
+        }, Math.max(0, deadline - database.clock.now().getTime()));
         const checkClaim = async (adapter, entry = false) => {
             assertLive(entry);
             const row = await adapter.prepare(adapter.dialect.sql(database.adapter.engine === "postgres"
@@ -570,6 +586,7 @@ export function bindJobResources(database, context, claim, hooks) {
         try {
             assertLive(true);
             const result = await database.adapter.withResourceTransaction(async (adapter) => {
+                resourceAdapter = adapter;
                 // Every subsequent SQL statement, including delayed ACL continuations,
                 // checks revocation. No stale work can reconnect after watchdog rollback.
                 const guarded = Object.create(adapter);
@@ -673,6 +690,7 @@ export function bindJobResources(database, context, claim, hooks) {
             active = false;
             admission = false;
             controller.abort();
+            resourceAdapter = undefined;
             database.clock.clearTimer(watchdog);
             context.signal?.removeEventListener("abort", abort);
             hooks.release(scopeContext);

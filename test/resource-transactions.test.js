@@ -177,6 +177,106 @@ test('Postgres resource callbacks retain ordinary row-lock waits after bounded a
   } finally { await database.shutdown(); await database.close(); }
 });
 
+test('Postgres resource deadlines cancel blocked callback writes and release protected transactions', { skip: POSTGRES_SKIP_REASON }, async t => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  let jobEntered = Promise.withResolvers();
+  let outerEntered = Promise.withResolvers();
+  const database = await openDevDatabase('postgres-resource-callback-deadline', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-resource-callback-deadline', services: { database: { engine: 'postgres' } } }, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+    jobs: { work: job(ctx => ctx.resources.run({ ...options({ kind: 'job' }), operationId: 'job-deadline' }, async scope => {
+      jobEntered.resolve();
+      await scope.db.writes.update('target', { value: 'job-deadline' });
+      return { completed: true };
+    })) },
+    mutations: {
+      enqueue: mutation(ctx => ctx.jobs.enqueue('work', null, { retry: { maxAttempts: 1, delayMs: 0 } })),
+      write: mutation(ctx => ctx.resources.run({ ...options({ kind: 'outer' }), operationId: 'outer-deadline' }, async scope => {
+        outerEntered.resolve();
+        await scope.db.writes.update('target', { value: 'outer-deadline' });
+        return { completed: true };
+      })),
+    },
+  }, { clock });
+  try {
+    await database.init();
+    const now = clock.now().toISOString();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', now, now, 'postgres');
+    await database.adapter.prepare('INSERT INTO writes (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('target', now, now, 'original');
+
+    await t.test('dedicated Job resource callback', async () => {
+      const locker = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+      let running;
+      try {
+        await locker.exec('BEGIN');
+        await locker.prepare('SELECT id FROM writes WHERE id=? FOR UPDATE').get('target');
+        const queued = await runMutation(database, actor, 'enqueue', []);
+        assert.equal(queued.ok, true);
+        const timersBefore = new Set(clock.pendingTimerIds());
+        running = runCurrentUserJobWorker(database);
+        await jobEntered.promise;
+        await new Promise(resolve => setTimeout(resolve, 50));
+        const [watchdog] = clock.pendingTimerIds().filter(id => !timersBefore.has(id));
+        assert.equal(typeof watchdog, 'number');
+        clock.advanceBy(30_000); await clock.runTimer(watchdog);
+        assert.equal(await Promise.race([
+          running.then(() => 'settled', error => error?.code ?? 'rejected'),
+          new Promise(resolve => setTimeout(() => resolve('pending'), 500)),
+        ]), 'settled', 'deadline cancellation must not queue rollback behind the blocked callback write');
+        const settled = await database.adapter.prepare('SELECT status,failure FROM sporades_jobs WHERE id=?').get(queued.data.id);
+        assert.equal(settled.status, 'failed', settled.failure);
+        assert.equal(JSON.parse(settled.failure).code, 'RESOURCE_DEADLINE_EXCEEDED');
+        assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='job-deadline'").get()).n), 0);
+        assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM sporades_resource_receipts WHERE \"operationId\"='job-deadline'").get()).n), 0);
+      } finally {
+        await locker.exec('ROLLBACK').catch(() => {});
+        await running?.catch(() => {});
+        await locker.close();
+      }
+      jobEntered = Promise.withResolvers();
+      const retry = await runMutation(database, actor, 'enqueue', []);
+      assert.equal(retry.ok, true);
+      await runCurrentUserJobWorker(database);
+      const recovered = await database.adapter.prepare('SELECT status,failure FROM sporades_jobs WHERE id=?').get(retry.data.id);
+      assert.equal(recovered.status, 'succeeded', recovered.failure);
+      assert.equal((await database.adapter.prepare('SELECT value FROM writes WHERE id=?').get('target')).value, 'job-deadline');
+    });
+
+    await t.test('outer mutation resource callback', async () => {
+      const locker = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+      let execution;
+      try {
+        await locker.exec('BEGIN');
+        await locker.prepare('SELECT id FROM writes WHERE id=? FOR UPDATE').get('target');
+        const timersBefore = new Set(clock.pendingTimerIds());
+        execution = runMutation(database, actor, 'write', []);
+        await outerEntered.promise;
+        await new Promise(resolve => setTimeout(resolve, 50));
+        const [watchdog] = clock.pendingTimerIds().filter(id => !timersBefore.has(id));
+        assert.equal(typeof watchdog, 'number');
+        clock.advanceBy(30_000); await clock.runTimer(watchdog);
+        assert.equal(await Promise.race([
+          execution.then(() => 'settled', error => error?.code ?? 'rejected'),
+          new Promise(resolve => setTimeout(() => resolve('pending'), 500)),
+        ]), 'settled', 'deadline cancellation must not queue outer rollback behind the blocked callback write');
+        const result = await execution;
+        assert.equal(result.ok, false);
+        assert.equal(result.error.code, 'RESOURCE_DEADLINE_EXCEEDED');
+        assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='outer-deadline'").get()).n), 0);
+        assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM sporades_resource_receipts WHERE \"operationId\"='outer-deadline'").get()).n), 0);
+      } finally {
+        await locker.exec('ROLLBACK').catch(() => {});
+        await execution?.catch(() => {});
+        await locker.close();
+      }
+      outerEntered = Promise.withResolvers();
+      assert.deepEqual(await runMutation(database, actor, 'write', []), { ok: true, data: { completed: true }, error: null });
+      assert.equal((await database.adapter.prepare('SELECT value FROM writes WHERE id=?').get('target')).value, 'outer-deadline');
+    });
+  } finally { await database.shutdown(); await database.close(); }
+});
+
 test('Postgres resource ACL helpers preserve awaited Team and cross-table decisions while rejecting synchronous unawaited reads', { skip: POSTGRES_SKIP_REASON }, async () => {
   const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
   await resetPostgresSchema(reset, ['anchors', 'policies', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();

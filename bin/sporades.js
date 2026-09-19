@@ -68179,12 +68179,20 @@ function bindOuterResources(database, context, hooks) {
       controller.abort();
       rejectOuterAbort(terminalError);
     };
+    const expire = () => {
+      const error = resourceError("RESOURCE_DEADLINE_EXCEEDED");
+      terminalError ??= error;
+      const cancel = database.adapter[Symbol.for("sporades.database.resourceCancelActiveQuery")];
+      if (typeof cancel === "function") void Promise.resolve(cancel()).catch(() => {
+      });
+      revoke(error);
+    };
     const assertLive = (requireAdmission = false) => {
       if (!invocationActive || !scopeActive || requireAdmission && !admission) throw resourceError("RESOURCE_SCOPE_INACTIVE");
       if (terminalError) throw terminalError;
       if (database.clock.now().getTime() >= deadline - (admission ? 1e3 : 0)) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
     };
-    watchdog ??= database.clock.setTimer(() => revoke(resourceError("RESOURCE_DEADLINE_EXCEEDED")), Math.max(0, deadline - database.clock.now().getTime()));
+    watchdog ??= database.clock.setTimer(expire, Math.max(0, deadline - database.clock.now().getTime()));
     let acquired = false;
     try {
       assertLive(true);
@@ -68378,6 +68386,7 @@ function bindJobResources(database, context, claim, hooks) {
     const deadline = Date.parse(claim.leaseExpiresAt);
     const pending = /* @__PURE__ */ new Set();
     const logs = [];
+    let resourceAdapter;
     let rejectAbort = () => {
     };
     const aborted = new Promise((_, reject) => {
@@ -68400,7 +68409,14 @@ function bindJobResources(database, context, claim, hooks) {
     };
     const abort = () => revoke(resourceAbortError());
     context.signal?.addEventListener("abort", abort, { once: true });
-    const watchdog = database.clock.setTimer(() => revoke(resourceError("RESOURCE_DEADLINE_EXCEEDED")), Math.max(0, deadline - database.clock.now().getTime()));
+    const watchdog = database.clock.setTimer(() => {
+      const error = resourceError("RESOURCE_DEADLINE_EXCEEDED");
+      terminalError ??= error;
+      const cancel = resourceAdapter?.[Symbol.for("sporades.database.resourceCancelActiveQuery")];
+      if (typeof cancel === "function") void Promise.resolve(cancel()).catch(() => {
+      });
+      revoke(error);
+    }, Math.max(0, deadline - database.clock.now().getTime()));
     const checkClaim = async (adapter, entry = false) => {
       assertLive(entry);
       const row = await adapter.prepare(adapter.dialect.sql(database.adapter.engine === "postgres" ? "SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? FOR UPDATE NOWAIT" : "SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=?")).get(claim.id);
@@ -68423,6 +68439,7 @@ function bindJobResources(database, context, claim, hooks) {
     try {
       assertLive(true);
       const result = await database.adapter.withResourceTransaction(async (adapter) => {
+        resourceAdapter = adapter;
         const guarded = Object.create(adapter);
         guarded.prepare = (sql) => {
           assertLive();
@@ -68515,6 +68532,7 @@ function bindJobResources(database, context, claim, hooks) {
       active = false;
       admission = false;
       controller.abort();
+      resourceAdapter = void 0;
       database.clock.clearTimer(watchdog);
       context.signal?.removeEventListener("abort", abort);
       hooks.release(scopeContext);
@@ -97546,6 +97564,7 @@ var transactionBeforeCommitChecks2 = Symbol.for("sporades.database.transactionBe
 var resourceTransactionMechanics = Symbol.for("sporades.database.resourceTransactionMechanics");
 var resourceBootstrapMechanics = Symbol.for("sporades.database.resourceBootstrapMechanics");
 var resourceConsumptionMechanics = Symbol.for("sporades.database.resourceConsumptionMechanics");
+var resourceCancelActiveQuery = Symbol.for("sporades.database.resourceCancelActiveQuery");
 async function runTransactionBeforeCommitChecks(transactionAdapter) {
   for (const check of transactionAdapter[transactionBeforeCommitChecks2] ?? []) await check();
 }
@@ -99092,6 +99111,7 @@ async function createPostgresDatabaseAdapter(options) {
     [resourceConsumptionMechanics]: function() {
       return lockAndVerifyResourceSchema(this);
     },
+    [resourceCancelActiveQuery]: () => client[resourceCancelActiveQuery](),
     dialect,
     normalization,
     // A resource scope owns an independent READ COMMITTED backend.  Closing it
@@ -99147,6 +99167,10 @@ async function createPostgresDatabaseAdapter(options) {
         await query(`SELECT ${resourceTableColumn} FROM ${resourceLockTable} WHERE ${resourceTableColumn}=? AND ${resourceIdColumn}=? FOR UPDATE NOWAIT`, [resource.table, resource.id]);
         await query("SET LOCAL lock_timeout = DEFAULT");
         const transaction = createTransactionScopedAdapter(adapter, operations, adapter, "transaction");
+        Object.defineProperty(transaction, resourceCancelActiveQuery, {
+          configurable: true,
+          value: () => dedicated[resourceCancelActiveQuery]()
+        });
         try {
           const result = await fn(transaction);
           await beforeCommit?.(transaction);
@@ -99280,6 +99304,7 @@ async function createPostgresConnection(url) {
   let ready = false;
   let closed = false;
   let backendKeyData = null;
+  let queryActive = false;
   let queryQueue = Promise.resolve();
   const waiters = [];
   socket.on("data", (chunk) => {
@@ -99356,7 +99381,7 @@ async function createPostgresConnection(url) {
       ready = true;
     }
   }
-  return {
+  return Object.defineProperty({
     get backendKeyData() {
       return backendKeyData;
     },
@@ -99382,43 +99407,63 @@ async function createPostgresConnection(url) {
       socket.write(Buffer.from([88, 0, 0, 0, 4]));
       socket.end();
     }
-  };
+  }, resourceCancelActiveQuery, { value: cancelActiveQuery });
+  async function cancelActiveQuery() {
+    if (closed || !queryActive || !backendKeyData) return false;
+    const cancelSocket = net2.createConnection({ host: options.host, port: options.port });
+    const request = Buffer.concat([
+      postgresInt32(16),
+      postgresInt32(80877102),
+      backendKeyData
+    ]);
+    await new Promise((resolve, reject) => {
+      cancelSocket.once("error", reject);
+      cancelSocket.once("close", resolve);
+      cancelSocket.once("connect", () => cancelSocket.end(request));
+    });
+    return true;
+  }
   async function executePostgresQuery(sql) {
     if (closed) {
       throw new Error("database is not open");
     }
-    socket.write(postgresQueryMessage(sql));
-    const fields = [];
-    const rows = [];
-    let rowCount = 0;
-    let queryError = null;
-    while (true) {
-      const message = await readPostgresMessage();
-      if (message.type === "T") {
-        fields.splice(0, fields.length, ...postgresParseRowDescription(message.body));
-        continue;
-      }
-      if (message.type === "D") {
-        rows.push(postgresParseDataRow(message.body, fields));
-        continue;
-      }
-      if (message.type === "C") {
-        rowCount = postgresRowCountFromCommand(message.body.toString("utf8").replace(/\0$/, ""));
-        continue;
-      }
-      if (message.type === "E") {
-        queryError = postgresErrorFromBody(message.body);
-        continue;
-      }
-      if (message.type === "Z") {
-        if (queryError) {
-          if (message.body[0] === 73 && queryError.code && !queryError.code.startsWith("08") && queryError.code !== "40003") {
-            postgresRejectedTransactions.add(queryError);
-          }
-          throw queryError;
+    queryActive = true;
+    try {
+      socket.write(postgresQueryMessage(sql));
+      const fields = [];
+      const rows = [];
+      let rowCount = 0;
+      let queryError = null;
+      while (true) {
+        const message = await readPostgresMessage();
+        if (message.type === "T") {
+          fields.splice(0, fields.length, ...postgresParseRowDescription(message.body));
+          continue;
         }
-        return { fields, rows, rowCount };
+        if (message.type === "D") {
+          rows.push(postgresParseDataRow(message.body, fields));
+          continue;
+        }
+        if (message.type === "C") {
+          rowCount = postgresRowCountFromCommand(message.body.toString("utf8").replace(/\0$/, ""));
+          continue;
+        }
+        if (message.type === "E") {
+          queryError = postgresErrorFromBody(message.body);
+          continue;
+        }
+        if (message.type === "Z") {
+          if (queryError) {
+            if (message.body[0] === 73 && queryError.code && !queryError.code.startsWith("08") && queryError.code !== "40003") {
+              postgresRejectedTransactions.add(queryError);
+            }
+            throw queryError;
+          }
+          return { fields, rows, rowCount };
+        }
       }
+    } finally {
+      queryActive = false;
     }
   }
   async function readPostgresMessage() {

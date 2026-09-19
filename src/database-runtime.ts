@@ -342,6 +342,7 @@ const transactionBeforeCommitChecks = Symbol.for("sporades.database.transactionB
 const resourceTransactionMechanics = Symbol.for("sporades.database.resourceTransactionMechanics");
 const resourceBootstrapMechanics = Symbol.for("sporades.database.resourceBootstrapMechanics");
 const resourceConsumptionMechanics = Symbol.for("sporades.database.resourceConsumptionMechanics");
+const resourceCancelActiveQuery = Symbol.for("sporades.database.resourceCancelActiveQuery");
 
 async function runTransactionBeforeCommitChecks(transactionAdapter: LooseRecord) {
   for (const check of (transactionAdapter as any)[transactionBeforeCommitChecks] ?? []) await check();
@@ -2120,6 +2121,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     [Symbol.for("sporades.database.resourceTransactionEligible")]: true,
     [resourceBootstrapMechanics]: ensureResourceSchemaPublished,
     [resourceConsumptionMechanics]: function() { return lockAndVerifyResourceSchema(this); },
+    [resourceCancelActiveQuery]: () => (client as any)[resourceCancelActiveQuery](),
     dialect,
     normalization,
     // A resource scope owns an independent READ COMMITTED backend.  Closing it
@@ -2165,6 +2167,10 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
         // transaction rather than inheriting the 100ms admission setting.
         await query("SET LOCAL lock_timeout = DEFAULT");
         const transaction = createTransactionScopedAdapter(adapter, operations, adapter, "transaction");
+        Object.defineProperty(transaction, resourceCancelActiveQuery, {
+          configurable: true,
+          value: () => dedicated[resourceCancelActiveQuery](),
+        });
         try {
           const result = await fn(transaction);
           await beforeCommit?.(transaction);
@@ -2274,7 +2280,8 @@ export async function createPostgresConnection(url: any) {
   let buffer = Buffer.alloc(0);
   let ready = false;
   let closed = false;
-  let backendKeyData = null;
+  let backendKeyData: Buffer<ArrayBuffer> | null = null;
+  let queryActive = false;
   let queryQueue: Promise<any> = Promise.resolve();
   const waiters: any[] = [];
 
@@ -2355,7 +2362,7 @@ export async function createPostgresConnection(url: any) {
     }
   }
 
-  return {
+  return Object.defineProperty({
     get backendKeyData() {
       return backendKeyData;
     },
@@ -2379,47 +2386,68 @@ export async function createPostgresConnection(url: any) {
       socket.write(Buffer.from([0x58, 0, 0, 0, 4]));
       socket.end();
     },
-  };
+  }, resourceCancelActiveQuery, { value: cancelActiveQuery });
+
+  async function cancelActiveQuery() {
+    if (closed || !queryActive || !backendKeyData) return false;
+    const cancelSocket = net.createConnection({ host: options.host, port: options.port });
+    const request = Buffer.concat([
+      postgresInt32(16),
+      postgresInt32(80877102),
+      backendKeyData,
+    ]);
+    await new Promise<void>((resolve, reject) => {
+      cancelSocket.once("error", reject);
+      cancelSocket.once("close", resolve);
+      cancelSocket.once("connect", () => cancelSocket.end(request));
+    });
+    return true;
+  }
 
   async function executePostgresQuery(sql: any) {
     if (closed) {
       throw new Error("database is not open");
     }
-    socket.write(postgresQueryMessage(sql));
-    const fields: any[] = [];
-    const rows = [];
-    let rowCount = 0;
-    let queryError = null;
-    while (true) {
-      const message = await readPostgresMessage();
-      if (message.type === "T") {
-        fields.splice(0, fields.length, ...postgresParseRowDescription(message.body));
-        continue;
-      }
-      if (message.type === "D") {
-        rows.push(postgresParseDataRow(message.body, fields));
-        continue;
-      }
-      if (message.type === "C") {
-        rowCount = postgresRowCountFromCommand(message.body.toString("utf8").replace(/\0$/, ""));
-        continue;
-      }
-      if (message.type === "E") {
-        // Keep reading to the ReadyForQuery message so the next queued query
-        // does not consume this query's remaining response messages.
-        queryError = postgresErrorFromBody(message.body);
-        continue;
-      }
-      if (message.type === "Z") {
-        if (queryError) {
-          if (message.body[0] === 0x49 && queryError.code
-            && !queryError.code.startsWith("08") && queryError.code !== "40003") {
-            postgresRejectedTransactions.add(queryError);
-          }
-          throw queryError;
+    queryActive = true;
+    try {
+      socket.write(postgresQueryMessage(sql));
+      const fields: any[] = [];
+      const rows = [];
+      let rowCount = 0;
+      let queryError = null;
+      while (true) {
+        const message = await readPostgresMessage();
+        if (message.type === "T") {
+          fields.splice(0, fields.length, ...postgresParseRowDescription(message.body));
+          continue;
         }
-        return { fields, rows, rowCount };
+        if (message.type === "D") {
+          rows.push(postgresParseDataRow(message.body, fields));
+          continue;
+        }
+        if (message.type === "C") {
+          rowCount = postgresRowCountFromCommand(message.body.toString("utf8").replace(/\0$/, ""));
+          continue;
+        }
+        if (message.type === "E") {
+          // Keep reading to the ReadyForQuery message so the next queued query
+          // does not consume this query's remaining response messages.
+          queryError = postgresErrorFromBody(message.body);
+          continue;
+        }
+        if (message.type === "Z") {
+          if (queryError) {
+            if (message.body[0] === 0x49 && queryError.code
+              && !queryError.code.startsWith("08") && queryError.code !== "40003") {
+              postgresRejectedTransactions.add(queryError);
+            }
+            throw queryError;
+          }
+          return { fields, rows, rowCount };
+        }
       }
+    } finally {
+      queryActive = false;
     }
   }
 
