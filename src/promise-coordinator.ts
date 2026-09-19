@@ -9,6 +9,7 @@ const nodePromiseHooks = (process.getBuiltinModule("node:v8") as any)?.promiseHo
 const observerRetainers = new Map<PromiseObserver, number>();
 const promiseParents = new WeakMap<Promise<any>, Promise<any>>();
 const promiseSettlementCauses = new WeakMap<Promise<any>, Promise<any>>();
+const promiseCombinatorInputs = new WeakMap<Promise<any>, Set<Promise<any>>>();
 let settledPromises = new WeakSet<Promise<any>>();
 let promiseHookStack: Promise<any>[] = [];
 let promiseHookStop: (() => void) | undefined;
@@ -37,6 +38,16 @@ function installPromiseHook() {
     init(promise: Promise<any>, parent?: Promise<any>) {
       if (parent) promiseParents.set(promise, parent);
       else retainCompositionRootCandidate(promise);
+      const match = parent && (new Error().stack ?? "").match(/at (?:Promise|Function)\.(all|allSettled|any|race)\b/);
+      if (parent && match) {
+        const root = [...compositionRootCandidates].reverse().find((candidate) => !thenableWrapperRoots.has(candidate));
+        if (root) {
+          promiseCombinatorKinds.set(root, match[1] as "all" | "allSettled" | "any" | "race");
+          const inputs = promiseCombinatorInputs.get(root) ?? new Set<Promise<any>>();
+          inputs.add(parent);
+          promiseCombinatorInputs.set(root, inputs);
+        }
+      }
       for (const observer of observerRetainers.keys()) observer.init?.(promise, parent);
     },
     before(promise: Promise<any>) {
@@ -88,6 +99,23 @@ export function promiseDescendsFrom(promise: Promise<any> | undefined, ancestor:
   for (let current = promise; current && !visited.has(current); current = promiseParents.get(current)) {
     if (current === ancestor) return true;
     visited.add(current);
+  }
+  return false;
+}
+
+export function promiseDependsOn(promise: Promise<any> | undefined, dependency: Promise<any>) {
+  const pending = promise ? [promise] : [];
+  const visited = new Set<Promise<any>>();
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (current === dependency) return true;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    const parent = promiseParents.get(current);
+    if (parent) pending.push(parent);
+    if (["all", "allSettled"].includes(promiseCombinatorKinds.get(current) ?? "")) {
+      pending.push(...(promiseCombinatorInputs.get(current) ?? []));
+    }
   }
   return false;
 }

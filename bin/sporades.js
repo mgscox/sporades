@@ -68642,6 +68642,7 @@ var nodePromiseHooks = process.getBuiltinModule("node:v8")?.promiseHooks;
 var observerRetainers = /* @__PURE__ */ new Map();
 var promiseParents = /* @__PURE__ */ new WeakMap();
 var promiseSettlementCauses = /* @__PURE__ */ new WeakMap();
+var promiseCombinatorInputs = /* @__PURE__ */ new WeakMap();
 var settledPromises = /* @__PURE__ */ new WeakSet();
 var promiseHookStack = [];
 var promiseHookStop;
@@ -68664,6 +68665,16 @@ function installPromiseHook() {
     init(promise, parent) {
       if (parent) promiseParents.set(promise, parent);
       else retainCompositionRootCandidate(promise);
+      const match = parent && (new Error().stack ?? "").match(/at (?:Promise|Function)\.(all|allSettled|any|race)\b/);
+      if (parent && match) {
+        const root = [...compositionRootCandidates].reverse().find((candidate) => !thenableWrapperRoots.has(candidate));
+        if (root) {
+          promiseCombinatorKinds.set(root, match[1]);
+          const inputs = promiseCombinatorInputs.get(root) ?? /* @__PURE__ */ new Set();
+          inputs.add(parent);
+          promiseCombinatorInputs.set(root, inputs);
+        }
+      }
       for (const observer of observerRetainers.keys()) observer.init?.(promise, parent);
     },
     before(promise) {
@@ -68710,6 +68721,22 @@ function promiseDescendsFrom(promise, ancestor) {
   for (let current2 = promise; current2 && !visited.has(current2); current2 = promiseParents.get(current2)) {
     if (current2 === ancestor) return true;
     visited.add(current2);
+  }
+  return false;
+}
+function promiseDependsOn(promise, dependency) {
+  const pending = promise ? [promise] : [];
+  const visited = /* @__PURE__ */ new Set();
+  while (pending.length > 0) {
+    const current2 = pending.pop();
+    if (current2 === dependency) return true;
+    if (visited.has(current2)) continue;
+    visited.add(current2);
+    const parent = promiseParents.get(current2);
+    if (parent) pending.push(parent);
+    if (["all", "allSettled"].includes(promiseCombinatorKinds.get(current2) ?? "")) {
+      pending.push(...promiseCombinatorInputs.get(current2) ?? []);
+    }
   }
   return false;
 }
@@ -69451,7 +69478,7 @@ function consumeParticipatingAclHelperReads(state) {
   if (!state?.rulePromise) return;
   const settlementCause = promiseSettlementCause(state.rulePromise);
   for (const dependency of state.unconsumedAsyncReads ?? []) {
-    if (dependency.settled && [...dependency.assimilationPromises ?? []].some((promise) => !["race", "any"].includes(dependency.compositionKinds?.get(promise)) && (promiseDescendsFrom(promise, state.rulePromise) || promiseDescendsFrom(settlementCause, promise)))) {
+    if (dependency.settled && [...dependency.assimilationPromises ?? []].some((promise) => !["race", "any"].includes(dependency.compositionKinds?.get(promise)) && (promiseDescendsFrom(promise, state.rulePromise) || promiseDependsOn(settlementCause, promise)))) {
       state.unconsumedAsyncReads.delete(dependency);
     }
   }
@@ -99336,6 +99363,7 @@ async function createPostgresConnection(url) {
   let closed = false;
   let backendKeyData = null;
   let queryActive = false;
+  let cancellationGeneration = 0;
   let queryQueue = Promise.resolve();
   const waiters = [];
   socket.on("data", (chunk) => {
@@ -99420,9 +99448,10 @@ async function createPostgresConnection(url) {
       if (closed) {
         throw new Error("database is not open");
       }
+      const generation = cancellationGeneration;
       const pending = queryQueue.then(
-        () => executePostgresQuery(sql),
-        () => executePostgresQuery(sql)
+        () => executeQueuedPostgresQuery(sql, generation),
+        () => executeQueuedPostgresQuery(sql, generation)
       );
       queryQueue = pending.catch(() => {
       });
@@ -99440,7 +99469,9 @@ async function createPostgresConnection(url) {
     }
   }, resourceCancelActiveQuery, { value: cancelActiveQuery });
   async function cancelActiveQuery() {
-    if (closed || !queryActive || !backendKeyData) return false;
+    if (closed) return false;
+    cancellationGeneration += 1;
+    if (!queryActive || !backendKeyData) return false;
     const cancelSocket = net2.createConnection({ host: options.host, port: options.port });
     const request = Buffer.concat([
       postgresInt32(16),
@@ -99453,6 +99484,12 @@ async function createPostgresConnection(url) {
       cancelSocket.once("connect", () => cancelSocket.end(request));
     });
     return true;
+  }
+  function executeQueuedPostgresQuery(sql, generation) {
+    if (generation !== cancellationGeneration) {
+      throw Object.assign(new Error("canceling statement due to user request"), { code: "57014" });
+    }
+    return executePostgresQuery(sql);
   }
   async function executePostgresQuery(sql) {
     if (closed) {

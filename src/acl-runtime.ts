@@ -92,7 +92,7 @@ import { resourceError } from "./resource-runtime.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import { deserializeRow } from "./stored-value-coding.js";
 import { accessKeyCredentialLogAttribution } from "./access-keys-runtime.js";
-import { activePromise, promiseCombinatorKind, promiseCompositionRootCandidate, promiseDescendsFrom, promiseSettlementCause, releasePromiseObserver, retainPromiseObserver } from "./promise-coordinator.js";
+import { activePromise, promiseCombinatorKind, promiseCompositionRootCandidate, promiseDependsOn, promiseDescendsFrom, promiseSettlementCause, releasePromiseObserver, retainPromiseObserver } from "./promise-coordinator.js";
 
 // The monolith's own alias, redeclared rather than imported: it is a type, so it is erased before
 // either bundle is built and there is no binding to collide with.
@@ -950,7 +950,7 @@ function consumeParticipatingAclHelperReads(state: LooseRecord | undefined) {
     if (dependency.settled && [...(dependency.assimilationPromises ?? [])].some((promise: Promise<any>) =>
       !["race", "any"].includes(dependency.compositionKinds?.get(promise))
       && (promiseDescendsFrom(promise, state.rulePromise)
-        || promiseDescendsFrom(settlementCause, promise)))) {
+        || promiseDependsOn(settlementCause, promise)))) {
       state.unconsumedAsyncReads.delete(dependency);
     }
   }

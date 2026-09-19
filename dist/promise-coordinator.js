@@ -2,6 +2,7 @@ const nodePromiseHooks = process.getBuiltinModule("node:v8")?.promiseHooks;
 const observerRetainers = new Map();
 const promiseParents = new WeakMap();
 const promiseSettlementCauses = new WeakMap();
+const promiseCombinatorInputs = new WeakMap();
 let settledPromises = new WeakSet();
 let promiseHookStack = [];
 let promiseHookStop;
@@ -31,6 +32,16 @@ function installPromiseHook() {
                 promiseParents.set(promise, parent);
             else
                 retainCompositionRootCandidate(promise);
+            const match = parent && (new Error().stack ?? "").match(/at (?:Promise|Function)\.(all|allSettled|any|race)\b/);
+            if (parent && match) {
+                const root = [...compositionRootCandidates].reverse().find((candidate) => !thenableWrapperRoots.has(candidate));
+                if (root) {
+                    promiseCombinatorKinds.set(root, match[1]);
+                    const inputs = promiseCombinatorInputs.get(root) ?? new Set();
+                    inputs.add(parent);
+                    promiseCombinatorInputs.set(root, inputs);
+                }
+            }
             for (const observer of observerRetainers.keys())
                 observer.init?.(promise, parent);
         },
@@ -86,6 +97,25 @@ export function promiseDescendsFrom(promise, ancestor) {
         if (current === ancestor)
             return true;
         visited.add(current);
+    }
+    return false;
+}
+export function promiseDependsOn(promise, dependency) {
+    const pending = promise ? [promise] : [];
+    const visited = new Set();
+    while (pending.length > 0) {
+        const current = pending.pop();
+        if (current === dependency)
+            return true;
+        if (visited.has(current))
+            continue;
+        visited.add(current);
+        const parent = promiseParents.get(current);
+        if (parent)
+            pending.push(parent);
+        if (["all", "allSettled"].includes(promiseCombinatorKinds.get(current) ?? "")) {
+            pending.push(...(promiseCombinatorInputs.get(current) ?? []));
+        }
     }
     return false;
 }

@@ -91,7 +91,7 @@ import { resourceError } from "./resource-runtime.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import { deserializeRow } from "./stored-value-coding.js";
 import { accessKeyCredentialLogAttribution } from "./access-keys-runtime.js";
-import { activePromise, promiseCombinatorKind, promiseCompositionRootCandidate, promiseDescendsFrom, promiseSettlementCause, releasePromiseObserver, retainPromiseObserver } from "./promise-coordinator.js";
+import { activePromise, promiseCombinatorKind, promiseCompositionRootCandidate, promiseDependsOn, promiseDescendsFrom, promiseSettlementCause, releasePromiseObserver, retainPromiseObserver } from "./promise-coordinator.js";
 // The privileged audit event's contract. All three were serialized into the generated bundle's
 // constant preamble until batch 7; they are declarations inside this module's carried text now, and
 // the preamble no longer writes them. They stay exported because the constant probe in
@@ -850,7 +850,7 @@ function consumeParticipatingAclHelperReads(state) {
         // of that assimilation promise. Unrelated, discarded chains satisfy neither relationship.
         if (dependency.settled && [...(dependency.assimilationPromises ?? [])].some((promise) => !["race", "any"].includes(dependency.compositionKinds?.get(promise))
             && (promiseDescendsFrom(promise, state.rulePromise)
-                || promiseDescendsFrom(settlementCause, promise)))) {
+                || promiseDependsOn(settlementCause, promise)))) {
             state.unconsumedAsyncReads.delete(dependency);
         }
     }

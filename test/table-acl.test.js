@@ -1064,6 +1064,47 @@ test("async ACL helper promises preserve then, catch, and finally behavior", asy
   });
 });
 
+test("async ACL helpers preserve nested Promise aggregate lineage without admitting discarded work", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openCapsuleDatabase(dir, {
+      schema: {
+        projects: table({ name: String() }),
+        notes: table({ title: String(), projectId: String() }).acl({
+          read: async ({ row, ctx }) => {
+            const nested = Promise.all([Promise.all([ctx.acl.db.exists("projects", row.projectId)])]);
+            if (row.title === "Discarded nested aggregate") {
+              void nested;
+              await Promise.resolve();
+              return true;
+            }
+            if (row.title === "Lost nested race") {
+              return await Promise.race([Promise.resolve(true), nested]);
+            }
+            return (await nested)[0][0];
+          },
+        }),
+      },
+      queries: { notes: query((ctx) => ctx.db.notes.all()) },
+    });
+    try {
+      const db = createEndpointDatabaseApi(database);
+      const project = db.projects.insert({ name: "Nested Promise API" });
+      db.notes.insert({ title: "Awaited nested aggregate", projectId: project.id });
+      db.notes.insert({ title: "Discarded nested aggregate", projectId: project.id });
+      db.notes.insert({ title: "Lost nested race", projectId: project.id });
+      const selectAppRowById = database.adapter.selectAppRowById.bind(database.adapter);
+      database.adapter.selectAppRowById = async (...args) => selectAppRowById(...args);
+
+      const result = await runQuery(database, auth("u1"), "notes");
+
+      assert.equal(result.error, null);
+      assert.deepEqual(result.data.map((row) => row.title), ["Awaited nested aggregate"]);
+    } finally {
+      database.close();
+    }
+  });
+});
+
 test("ACL storage helpers expose live files by File ID and absolute File path", async () => {
   await withTempDir(async (dir) => {
     const seenFiles = new Map();

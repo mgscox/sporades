@@ -2298,6 +2298,7 @@ export async function createPostgresConnection(url: any) {
   let closed = false;
   let backendKeyData: Buffer<ArrayBuffer> | null = null;
   let queryActive = false;
+  let cancellationGeneration = 0;
   let queryQueue: Promise<any> = Promise.resolve();
   const waiters: any[] = [];
 
@@ -2386,9 +2387,10 @@ export async function createPostgresConnection(url: any) {
       if (closed) {
         throw new Error("database is not open");
       }
+      const generation = cancellationGeneration;
       const pending = queryQueue.then(
-        () => executePostgresQuery(sql),
-        () => executePostgresQuery(sql),
+        () => executeQueuedPostgresQuery(sql, generation),
+        () => executeQueuedPostgresQuery(sql, generation),
       );
       queryQueue = pending.catch(() => { });
       return pending;
@@ -2405,7 +2407,9 @@ export async function createPostgresConnection(url: any) {
   }, resourceCancelActiveQuery, { value: cancelActiveQuery });
 
   async function cancelActiveQuery() {
-    if (closed || !queryActive || !backendKeyData) return false;
+    if (closed) return false;
+    cancellationGeneration += 1;
+    if (!queryActive || !backendKeyData) return false;
     const cancelSocket = net.createConnection({ host: options.host, port: options.port });
     const request = Buffer.concat([
       postgresInt32(16),
@@ -2418,6 +2422,13 @@ export async function createPostgresConnection(url: any) {
       cancelSocket.once("connect", () => cancelSocket.end(request));
     });
     return true;
+  }
+
+  function executeQueuedPostgresQuery(sql: any, generation: number) {
+    if (generation !== cancellationGeneration) {
+      throw Object.assign(new Error("canceling statement due to user request"), { code: "57014" });
+    }
+    return executePostgresQuery(sql);
   }
 
   async function executePostgresQuery(sql: any) {

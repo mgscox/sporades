@@ -8,7 +8,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { openDevDatabase, runMutation, runEndpoint, runCurrentUserJobWorker, createControllableRuntimeClock } from '../dist/server-runtime-source.js';
 import { table, String as Text, endpoint, job, mutation, requireAuth, schedule } from '../dist/server.js';
-import { createSqliteDatabaseAdapter } from '../dist/database-runtime.js';
+import { createPostgresConnection, createSqliteDatabaseAdapter } from '../dist/database-runtime.js';
 import { completePendingFileUpload, createPendingFileUpload, createPublicFileUrl, deletePrivateFile } from '../dist/file-storage-runtime.js';
 import { resolveAnonymousSession } from '../dist/auth-runtime.js';
 import { resourceCanonicalJson, bindJobResources, bindOuterResources } from '../dist/resource-runtime.js';
@@ -178,6 +178,35 @@ test('Postgres resource callbacks retain ordinary row-lock waits after bounded a
   } finally { await database.shutdown(); await database.close(); }
 });
 
+test('Postgres cancellation rejects every query already waiting in the connection queue', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const blocker = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  const connection = await createPostgresConnection(postgresTestUrl());
+  const advisoryLock = 8_742_011;
+  let first;
+  let second;
+  try {
+    await blocker.exec(`SELECT pg_advisory_lock(${advisoryLock})`);
+    first = connection.query(`SELECT pg_advisory_lock(${advisoryLock})`);
+    second = connection.query(`SELECT pg_advisory_lock(${advisoryLock})`);
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    assert.equal(await connection[Symbol.for('sporades.database.resourceCancelActiveQuery')](), true);
+    await assert.rejects(first, { code: '57014' });
+    await assert.rejects(Promise.race([
+      second,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('queued query survived cancellation')), 500)),
+    ]), { code: '57014' });
+
+    const control = await connection.query('SELECT 1 AS value');
+    assert.equal(Number(control.rows[0].value), 1);
+  } finally {
+    await blocker.exec(`SELECT pg_advisory_unlock(${advisoryLock})`).catch(() => {});
+    await Promise.allSettled([first, second].filter(Boolean));
+    await connection.close();
+    await blocker.close();
+  }
+});
+
 test('Postgres resource deadlines cancel blocked callback writes and release protected transactions', { skip: POSTGRES_SKIP_REASON }, async t => {
   const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
   await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
@@ -188,14 +217,20 @@ test('Postgres resource deadlines cancel blocked callback writes and release pro
     schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
     jobs: { work: job(ctx => ctx.resources.run({ ...options({ kind: 'job' }), operationId: 'job-deadline' }, async scope => {
       jobEntered.resolve();
-      await scope.db.writes.update('target', { value: 'job-deadline' });
+      await Promise.all([
+        scope.db.writes.update('target', { value: 'job-deadline' }),
+        scope.db.writes.update('target', { value: 'job-deadline-queued' }),
+      ]);
       return { completed: true };
     })) },
     mutations: {
       enqueue: mutation(ctx => ctx.jobs.enqueue('work', null, { retry: { maxAttempts: 1, delayMs: 0 } })),
       write: mutation(ctx => ctx.resources.run({ ...options({ kind: 'outer' }), operationId: 'outer-deadline' }, async scope => {
         outerEntered.resolve();
-        await scope.db.writes.update('target', { value: 'outer-deadline' });
+        await Promise.all([
+          scope.db.writes.update('target', { value: 'outer-deadline' }),
+          scope.db.writes.update('target', { value: 'outer-deadline-queued' }),
+        ]);
         return { completed: true };
       })),
     },
@@ -228,7 +263,7 @@ test('Postgres resource deadlines cancel blocked callback writes and release pro
         const settled = await database.adapter.prepare('SELECT status,failure FROM sporades_jobs WHERE id=?').get(queued.data.id);
         assert.equal(settled.status, 'failed', settled.failure);
         assert.equal(JSON.parse(settled.failure).code, 'RESOURCE_DEADLINE_EXCEEDED');
-        assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='job-deadline'").get()).n), 0);
+        assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM writes WHERE value IN ('job-deadline','job-deadline-queued')").get()).n), 0);
         assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM sporades_resource_receipts WHERE \"operationId\"='job-deadline'").get()).n), 0);
       } finally {
         await locker.exec('ROLLBACK').catch(() => {});
@@ -241,7 +276,7 @@ test('Postgres resource deadlines cancel blocked callback writes and release pro
       await runCurrentUserJobWorker(database);
       const recovered = await database.adapter.prepare('SELECT status,failure FROM sporades_jobs WHERE id=?').get(retry.data.id);
       assert.equal(recovered.status, 'succeeded', recovered.failure);
-      assert.equal((await database.adapter.prepare('SELECT value FROM writes WHERE id=?').get('target')).value, 'job-deadline');
+      assert.equal((await database.adapter.prepare('SELECT value FROM writes WHERE id=?').get('target')).value, 'job-deadline-queued');
     });
 
     await t.test('outer mutation resource callback', async () => {
@@ -264,7 +299,7 @@ test('Postgres resource deadlines cancel blocked callback writes and release pro
         const result = await execution;
         assert.equal(result.ok, false);
         assert.equal(result.error.code, 'RESOURCE_DEADLINE_EXCEEDED');
-        assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='outer-deadline'").get()).n), 0);
+        assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM writes WHERE value IN ('outer-deadline','outer-deadline-queued')").get()).n), 0);
         assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM sporades_resource_receipts WHERE \"operationId\"='outer-deadline'").get()).n), 0);
       } finally {
         await locker.exec('ROLLBACK').catch(() => {});
@@ -273,7 +308,7 @@ test('Postgres resource deadlines cancel blocked callback writes and release pro
       }
       outerEntered = Promise.withResolvers();
       assert.deepEqual(await runMutation(database, actor, 'write', []), { ok: true, data: { completed: true }, error: null });
-      assert.equal((await database.adapter.prepare('SELECT value FROM writes WHERE id=?').get('target')).value, 'outer-deadline');
+      assert.equal((await database.adapter.prepare('SELECT value FROM writes WHERE id=?').get('target')).value, 'outer-deadline-queued');
     });
   } finally { await database.shutdown(); await database.close(); }
 });
