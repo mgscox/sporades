@@ -119,17 +119,3 @@ test('real PostgreSQL keeps a live paused owner exclusive past a local expiry ob
     await setup.close();
   }
 });
-
-test('real PostgreSQL exact claim settlement is conditional and stale recovery cannot settle a newer claim', { skip: POSTGRES_SKIP_REASON }, async () => {
-  const adapter = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
-  try {
-    await resetPostgresSchema(adapter, ['ticket04_claim_settlements']);
-    await adapter.exec('CREATE TABLE ticket04_claim_settlements (id TEXT PRIMARY KEY, "claimToken" TEXT NOT NULL, status TEXT NOT NULL)');
-    await adapter.prepare("INSERT INTO ticket04_claim_settlements VALUES ('claim', 'newer-claim', 'running')").run();
-    const stale = await adapter.prepare("UPDATE ticket04_claim_settlements SET status='failed' WHERE id=? AND status='running' AND \"claimToken\"=?").run('claim', 'older-claim');
-    const current = await adapter.prepare("UPDATE ticket04_claim_settlements SET status='succeeded' WHERE id=? AND status='running' AND \"claimToken\"=?").run('claim', 'newer-claim');
-    assert.equal(stale.changes, 0);
-    assert.equal(current.changes, 1);
-    assert.deepEqual(await adapter.prepare('SELECT "claimToken", status FROM ticket04_claim_settlements WHERE id=?').get('claim'), { claimToken: 'newer-claim', status: 'succeeded' });
-  } finally { await adapter.close(); }
-});

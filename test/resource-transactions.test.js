@@ -244,6 +244,48 @@ test('Postgres Job backend loss after its final claim check rolls back write and
   } finally { release?.(); await database.shutdown(); await database.close(); }
 });
 
+test('Postgres Job resource authority locks cancellation and recovery through exact claim settlement', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  let entered, release;
+  const enteredScope = new Promise(resolve => { entered = resolve; });
+  const releaseScope = new Promise(resolve => { release = resolve; });
+  const database = await openDevDatabase('postgres-resource-claim-conflict', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-resource-claim-conflict', services: { database: { engine: 'postgres' } } }, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+    jobs: { work: job(ctx => ctx.resources.run(options(), async scope => {
+      await scope.db.writes.insert({ value: 'claim-owner' }); entered(); await releaseScope; return { committed: true };
+    })) },
+    mutations: { enqueue: mutation(ctx => ctx.jobs.enqueue('work', null, { retry: { maxAttempts: 1, delayMs: 0 } })) },
+  }, { clock });
+  try {
+    await database.init();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'postgres');
+    const queued = await runMutation(database, actor, 'enqueue', []);
+    assert.equal(queued.ok, true);
+    const worker = runCurrentUserJobWorker(database);
+    await Promise.race([enteredScope, new Promise((_, reject) => setTimeout(() => reject(new Error('PostgreSQL Job did not enter its resource scope')), 2_000))]);
+    const claim = await database.adapter.prepare('SELECT status,"claimToken" FROM sporades_jobs WHERE id=?').get(queued.data.id);
+    assert.equal(claim.status, 'running'); assert.equal(typeof claim.claimToken, 'string');
+    const controller = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    try {
+      await controller.exec("SET lock_timeout = '50ms'");
+      const cancellation = controller.prepare('UPDATE sporades_jobs SET "cancelRequestedAt"=? WHERE id=? AND status=\'running\' AND "claimToken"=?').run(clock.now().toISOString(), queued.data.id, claim.claimToken);
+      await assert.rejects(cancellation, { code: '55P03' });
+      const recovery = controller.prepare('UPDATE sporades_jobs SET status=\'queued\' WHERE id=? AND status=\'running\' AND "claimToken"=?').run(queued.data.id, claim.claimToken);
+      await assert.rejects(recovery, { code: '55P03' });
+    } finally { await controller.close(); }
+    release(); await worker;
+    const settled = await database.adapter.prepare('SELECT status,"claimToken","attemptHistory" FROM sporades_jobs WHERE id=?').get(queued.data.id);
+    assert.equal(settled.status, 'succeeded'); assert.equal(settled.claimToken, null);
+    assert.equal(JSON.parse(settled.attemptHistory).length, 1);
+    assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='claim-owner'").get()).n), 1);
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 1);
+    const staleSettlement = await database.adapter.prepare("UPDATE sporades_jobs SET status='failed' WHERE id=? AND status='running' AND \"claimToken\"=?").run(queued.data.id, claim.claimToken);
+    assert.equal(staleSettlement.changes, 0);
+  } finally { release?.(); await database.shutdown(); await database.close(); }
+});
+
 test('SQLite commits writes, enqueues and a canonical replay receipt exactly once', async () => {
   let callbacks = 0;
   const f = await fixture(async (ctx, input) => ctx.resources.run(options(input), async scope => {
