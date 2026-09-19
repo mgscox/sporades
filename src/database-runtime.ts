@@ -1909,7 +1909,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     );
   }
 
-  const client = await createPostgresConnection(url);
+  let client = await createPostgresConnection(url);
   const connectionGate = createConnectionTransactionGate();
   const runDirectly = (operation: () => any) => operation();
   let closed = false;
@@ -2037,6 +2037,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     // that silently never ran ADR-0036's ordering migration.
     async withTransaction(fn: (transactionAdapter: LooseRecord) => any, options: { signal?: AbortSignal } = {}) {
       return await connectionGate.runTransaction(async () => {
+        let resourceCommitIssued = false;
         await rawQuery("BEGIN");
         try {
           const transactionAdapter = createTransactionScopedAdapter(adapter, createOperations(runDirectly), adapter, "transaction");
@@ -2044,11 +2045,19 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
           try {
             result = await fn(transactionAdapter);
             await runTransactionBeforeCommitChecks(transactionAdapter);
+            resourceCommitIssued = Boolean((transactionAdapter as any)[Symbol.for("sporades.database.resourceOuterTransaction")]);
           }
           finally { revokeTransactionScopedAdapter(transactionAdapter); }
           await rawQuery("COMMIT");
           return result;
         } catch (error) {
+          if (resourceCommitIssued) {
+            // Once COMMIT was issued its outcome is unknowable. Discard the
+            // socket before a later receipt lookup can use this connection.
+            try { await client.close(); client = await createPostgresConnection(url); }
+            catch { /* the outcome remains unknown even if reconnect fails */ }
+            throw resourceError("RESOURCE_COMMIT_UNKNOWN");
+          }
           try {
             await rawQuery("ROLLBACK");
           } catch { }

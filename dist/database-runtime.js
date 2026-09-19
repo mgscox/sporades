@@ -1541,7 +1541,7 @@ export async function createPostgresDatabaseAdapter(options) {
     if (!url) {
         throw commandError("Missing Postgres database service URL.", "Start a Dev session or local Container session with services.database.engine set to postgres.");
     }
-    const client = await createPostgresConnection(url);
+    let client = await createPostgresConnection(url);
     const connectionGate = createConnectionTransactionGate();
     const runDirectly = (operation) => operation();
     let closed = false;
@@ -1682,6 +1682,7 @@ export async function createPostgresDatabaseAdapter(options) {
         // that silently never ran ADR-0036's ordering migration.
         async withTransaction(fn, options = {}) {
             return await connectionGate.runTransaction(async () => {
+                let resourceCommitIssued = false;
                 await rawQuery("BEGIN");
                 try {
                     const transactionAdapter = createTransactionScopedAdapter(adapter, createOperations(runDirectly), adapter, "transaction");
@@ -1689,6 +1690,7 @@ export async function createPostgresDatabaseAdapter(options) {
                     try {
                         result = await fn(transactionAdapter);
                         await runTransactionBeforeCommitChecks(transactionAdapter);
+                        resourceCommitIssued = Boolean(transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")]);
                     }
                     finally {
                         revokeTransactionScopedAdapter(transactionAdapter);
@@ -1697,6 +1699,16 @@ export async function createPostgresDatabaseAdapter(options) {
                     return result;
                 }
                 catch (error) {
+                    if (resourceCommitIssued) {
+                        // Once COMMIT was issued its outcome is unknowable. Discard the
+                        // socket before a later receipt lookup can use this connection.
+                        try {
+                            await client.close();
+                            client = await createPostgresConnection(url);
+                        }
+                        catch { /* the outcome remains unknown even if reconnect fails */ }
+                        throw resourceError("RESOURCE_COMMIT_UNKNOWN");
+                    }
                     try {
                         await rawQuery("ROLLBACK");
                     }

@@ -71,6 +71,19 @@ function optionsSnapshot(options, status) {
     const operationId = boundedIdentity(options.operationId);
     return { table, id, operationId, digest: status ? null : createHash("sha256").update(resourceCanonicalJson(options.input)).digest("hex") };
 }
+// PostgreSQL folds the unquoted legacy receipt columns to lowercase. Keep the
+// persisted layout compatible while presenting the shared receipt shape.
+function resourceReceiptRow(adapter, row) {
+    if (!row || adapter.engine !== "postgres")
+        return row;
+    return {
+        ...row,
+        inputDigest: row.inputDigest ?? row.inputdigest,
+        actorDigest: row.actorDigest ?? row.actordigest,
+        resultJson: row.resultJson ?? row.resultjson,
+        intentIdsJson: row.intentIdsJson ?? row.intentidsjson,
+    };
+}
 export const unsupportedResources = Object.freeze({
     async run() { throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED"); },
     async status() { throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED"); },
@@ -201,16 +214,24 @@ export function bindOuterResources(database, context, hooks) {
         let acquired = false;
         try {
             assertLive(true);
-            // The surrounding mutation/endpoint starts deferred. Promote it to an
-            // actual SQLite writer before reading authorization so Grant, ACL and Team
-            // transitions cannot slip between the recheck and the outer commit.
+            // Acquire the resource before authorization reads. SQLite promotes its
+            // deferred writer; PostgreSQL locks the same runtime-owned row used by
+            // Job scopes, so an outer mutation/endpoint is a participant too.
             try {
-                await database.adapter.exec("CREATE TABLE IF NOT EXISTS sporades_resource_outer_fence (id INTEGER PRIMARY KEY, epoch INTEGER NOT NULL)");
-                await database.adapter.prepare("INSERT OR IGNORE INTO sporades_resource_outer_fence (id, epoch) VALUES (1, 0)").run();
-                await database.adapter.prepare("UPDATE sporades_resource_outer_fence SET epoch=epoch+1 WHERE id=1").run();
+                if (database.adapter.engine === "postgres") {
+                    await database.adapter.exec("SET LOCAL lock_timeout = '100ms'");
+                    await database.adapter.exec("CREATE TABLE IF NOT EXISTS sporades_resource_locks (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId))");
+                    await database.adapter.prepare("INSERT INTO sporades_resource_locks (resourceTable, resourceId) VALUES (?, ?) ON CONFLICT (resourceTable, resourceId) DO NOTHING").run(identity.table, identity.id);
+                    await database.adapter.prepare("SELECT resourceTable FROM sporades_resource_locks WHERE resourceTable=? AND resourceId=? FOR UPDATE NOWAIT").get(identity.table, identity.id);
+                }
+                else {
+                    await database.adapter.exec("CREATE TABLE IF NOT EXISTS sporades_resource_outer_fence (id INTEGER PRIMARY KEY, epoch INTEGER NOT NULL)");
+                    await database.adapter.prepare("INSERT OR IGNORE INTO sporades_resource_outer_fence (id, epoch) VALUES (1, 0)").run();
+                    await database.adapter.prepare("UPDATE sporades_resource_outer_fence SET epoch=epoch+1 WHERE id=1").run();
+                }
             }
             catch (error) {
-                if (error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY")
+                if (error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY" || error?.code === "55P03" || error?.code === "57014")
                     throw resourceError("RESOURCE_BUSY");
                 throw resourceError("RESOURCE_STORAGE_ERROR");
             }
@@ -221,7 +242,7 @@ export function bindOuterResources(database, context, hooks) {
             let receipt;
             try {
                 await database.adapter.exec("CREATE TABLE IF NOT EXISTS sporades_resource_receipts (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, operationId TEXT NOT NULL, inputDigest TEXT NOT NULL, actorDigest TEXT NOT NULL, resultJson TEXT NOT NULL, intentIdsJson TEXT NOT NULL, committedAt TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId, operationId))");
-                receipt = await database.adapter.prepare("SELECT * FROM sporades_resource_receipts WHERE resourceTable=? AND resourceId=? AND operationId=?").get(identity.table, identity.id, identity.operationId);
+                receipt = resourceReceiptRow(database.adapter, await database.adapter.prepare("SELECT * FROM sporades_resource_receipts WHERE resourceTable=? AND resourceId=? AND operationId=?").get(identity.table, identity.id, identity.operationId));
             }
             catch (error) {
                 if (error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== undefined)
@@ -462,7 +483,7 @@ export function bindJobResources(database, context, claim, hooks) {
                 await Promise.race([hooks.authorize(scopeContext, identity), aborted]);
                 assertLive(true);
                 await guarded.exec("CREATE TABLE IF NOT EXISTS sporades_resource_receipts (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, operationId TEXT NOT NULL, inputDigest TEXT NOT NULL, actorDigest TEXT NOT NULL, resultJson TEXT NOT NULL, intentIdsJson TEXT NOT NULL, committedAt TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId, operationId))");
-                const receipt = await guarded.prepare("SELECT * FROM sporades_resource_receipts WHERE resourceTable=? AND resourceId=? AND operationId=?").get(identity.table, identity.id, identity.operationId);
+                const receipt = resourceReceiptRow(database.adapter, await guarded.prepare("SELECT * FROM sporades_resource_receipts WHERE resourceTable=? AND resourceId=? AND operationId=?").get(identity.table, identity.id, identity.operationId));
                 if (receipt) {
                     if (receipt.actorDigest !== actorDigest || !status && receipt.inputDigest !== identity.digest)
                         throw resourceError("RESOURCE_OPERATION_CONFLICT");

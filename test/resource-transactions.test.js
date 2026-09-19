@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import net from 'node:net';
 import path from 'node:path';
 import { openDevDatabase, runMutation, runEndpoint, runCurrentUserJobWorker, createControllableRuntimeClock } from '../dist/server-runtime-source.js';
 import { table, String as Text, endpoint, job, mutation, schedule } from '../dist/server.js';
@@ -55,6 +56,96 @@ test('Postgres Job resource scope commits a canonical receipt through its dedica
     assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM writes').get()).n), 1);
     assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 1);
   } finally { await database.shutdown(); await database.close(); }
+});
+
+test('Postgres Job reconciles a lost resource COMMIT acknowledgement through its locked receipt without repeating writes', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
+  const target = new URL(postgresTestUrl());
+  let dropNextCommit = false;
+  const sockets = new Set();
+  const proxy = net.createServer((client) => {
+    const upstream = net.createConnection({ host: target.hostname, port: Number(target.port) });
+    sockets.add(client); sockets.add(upstream);
+    const remove = () => { sockets.delete(client); sockets.delete(upstream); };
+    client.once('close', remove); upstream.once('close', remove);
+    let commitForwarded = false;
+    client.on('data', chunk => {
+      if (dropNextCommit && chunk.includes(Buffer.from('COMMIT\0'))) commitForwarded = true;
+      upstream.write(chunk);
+    });
+    upstream.on('data', chunk => {
+      if (commitForwarded) { dropNextCommit = false; client.destroy(); upstream.destroy(); return; }
+      client.write(chunk);
+    });
+    client.on('error', () => {}); upstream.on('error', () => {});
+  });
+  await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
+  const proxiedUrl = new URL(postgresTestUrl()); proxiedUrl.port = String(proxy.address().port);
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  let callbacks = 0;
+  const database = await openDevDatabase('postgres-resource-commit-loss-test', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: proxiedUrl.toString() }, { name: 'postgres-resource-commit-loss', services: { database: { engine: 'postgres' } } }, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+    jobs: { work: job(ctx => ctx.resources.run(options(), async scope => { callbacks++; await scope.db.writes.insert({ value: 'written-once' }); return { committed: true }; })) },
+    mutations: { enqueue: mutation(ctx => ctx.jobs.enqueue('work', null, { retry: { maxAttempts: 1, delayMs: 0 } })) },
+  }, { clock });
+  try {
+    await database.init();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'postgres');
+    const first = await runMutation(database, actor, 'enqueue', []);
+    assert.equal(first.ok, true);
+    dropNextCommit = true;
+    await runCurrentUserJobWorker(database);
+    assert.equal(JSON.parse((await database.adapter.prepare('SELECT failure FROM sporades_jobs WHERE id=?').get(first.data.id)).failure).code, 'RESOURCE_COMMIT_UNKNOWN');
+    const replay = await runMutation(database, actor, 'enqueue', []);
+    assert.equal(replay.ok, true);
+    await runCurrentUserJobWorker(database);
+    const replaySettled = await database.adapter.prepare('SELECT status,failure FROM sporades_jobs WHERE id=?').get(replay.data.id);
+    assert.equal(replaySettled.status, 'succeeded', replaySettled.failure);
+    assert.equal(callbacks, 1);
+    assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='written-once'").get()).n), 1);
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 1);
+  } finally {
+    await database.shutdown(); await database.close().catch(() => {});
+    for (const socket of sockets) socket.destroy();
+    await new Promise(resolve => proxy.close(resolve));
+  }
+});
+
+test('Postgres mutation resource scopes hold the resource lock and report a lost outer COMMIT acknowledgement', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
+  const target = new URL(postgresTestUrl()); let dropNextCommit = false;
+  const sockets = new Set();
+  const proxy = net.createServer((client) => {
+    const upstream = net.createConnection({ host: target.hostname, port: Number(target.port) }); sockets.add(client); sockets.add(upstream);
+    const remove = () => { sockets.delete(client); sockets.delete(upstream); }; client.once('close', remove); upstream.once('close', remove);
+    let commitForwarded = false;
+    client.on('data', chunk => { if (dropNextCommit && chunk.includes(Buffer.from('COMMIT\0'))) commitForwarded = true; upstream.write(chunk); });
+    upstream.on('data', chunk => { if (commitForwarded) { dropNextCommit = false; client.destroy(); upstream.destroy(); return; } client.write(chunk); });
+    client.on('error', () => {}); upstream.on('error', () => {});
+  });
+  await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
+  const proxiedUrl = new URL(postgresTestUrl()); proxiedUrl.port = String(proxy.address().port);
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z'); let callbacks = 0;
+  const database = await openDevDatabase('postgres-outer-commit-loss-test', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: proxiedUrl.toString() }, { name: 'postgres-outer-commit-loss', services: { database: { engine: 'postgres' } } }, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+    mutations: { write: mutation(ctx => ctx.resources.run(options(), async scope => { callbacks++; await scope.db.writes.insert({ value: 'outer-written-once' }); return true; })) },
+  }, { clock });
+  try {
+    await database.init();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'postgres');
+    dropNextCommit = true;
+    const uncertain = await runMutation(database, actor, 'write', []);
+    assert.equal(uncertain.ok, false);
+    assert.equal(uncertain.error.code, 'RESOURCE_COMMIT_UNKNOWN');
+    const replay = await runMutation(database, actor, 'write', []);
+    assert.deepEqual(replay, { ok: true, data: true, error: null });
+    assert.equal(callbacks, 1);
+    assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='outer-written-once'").get()).n), 1);
+  } finally {
+    await database.shutdown(); await database.close().catch(() => {}); for (const socket of sockets) socket.destroy(); await new Promise(resolve => proxy.close(resolve));
+  }
 });
 
 test('Postgres Job backend loss after its final claim check rolls back write and receipt before another owner acquires', { skip: POSTGRES_SKIP_REASON }, async () => {

@@ -553,8 +553,11 @@ check at the actual commit decision. A lost outer COMMIT acknowledgement reports
 by a later authorized receipt read; it is never reported as rollback. Resource
 log index events and their bounded payload-free JSONL copies publish only after a
 known outer commit, so an unknown outcome intentionally has no JSONL publication
-claim. PostgreSQL and libSQL fail
-closed before callback execution; their tickets are 04 and 05. The
+claim. PostgreSQL Jobs use their dedicated locked connection; PostgreSQL
+mutations and endpoints take the same `FOR UPDATE NOWAIT` resource row in their
+outer transaction. A PostgreSQL COMMIT acknowledgement loss discards that
+connection before the later receipt lookup reconnects. libSQL fails closed
+before callback execution; its ticket is 05. The
 `notifications.accept({id, to, subject, text, html?})` signature is reserved and
 always rejects `RESOURCE_EFFECT_UNSUPPORTED` until ticket 06; this slice stages
 no intent and adds no transport. Ordinary Jobs that never opt in retain their
