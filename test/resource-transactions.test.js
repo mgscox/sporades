@@ -8,6 +8,7 @@ import path from 'node:path';
 import { openDevDatabase, runMutation, runEndpoint, runCurrentUserJobWorker, createControllableRuntimeClock } from '../dist/server-runtime-source.js';
 import { table, String as Text, endpoint, job, mutation, schedule } from '../dist/server.js';
 import { createSqliteDatabaseAdapter } from '../dist/database-runtime.js';
+import { resolveAnonymousSession } from '../dist/auth-runtime.js';
 import { resourceCanonicalJson, bindJobResources, bindOuterResources } from '../dist/resource-runtime.js';
 import { POSTGRES_SKIP_REASON, postgresTestUrl, resetPostgresSchema } from './support/database-adapter-engines.js';
 import { createPostgresDatabaseAdapter } from '../dist/server-runtime-source.js';
@@ -143,6 +144,49 @@ test('Postgres mutation resource scopes hold the resource lock and report a lost
     assert.deepEqual(replay, { ok: true, data: true, error: null });
     assert.equal(callbacks, 1);
     assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='outer-written-once'").get()).n), 1);
+  } finally {
+    await database.shutdown(); await database.close().catch(() => {}); for (const socket of sockets) socket.destroy(); await new Promise(resolve => proxy.close(resolve));
+  }
+});
+
+test('Postgres endpoint resource scopes reconcile a lost outer COMMIT acknowledgement without replaying the callback', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
+  const target = new URL(postgresTestUrl()); let dropNextCommit = false;
+  const sockets = new Set();
+  const proxy = net.createServer((client) => {
+    const upstream = net.createConnection({ host: target.hostname, port: Number(target.port) }); sockets.add(client); sockets.add(upstream);
+    const remove = () => { sockets.delete(client); sockets.delete(upstream); }; client.once('close', remove); upstream.once('close', remove);
+    let receiptForwarded = false; let commitForwarded = false;
+    client.on('data', chunk => {
+      if (dropNextCommit && chunk.includes(Buffer.from('INSERT INTO sporades_resource_receipts'))) receiptForwarded = true;
+      if (dropNextCommit && receiptForwarded && chunk.includes(Buffer.from('COMMIT\0'))) commitForwarded = true;
+      upstream.write(chunk);
+    });
+    upstream.on('data', chunk => { if (commitForwarded) { dropNextCommit = false; client.destroy(); upstream.destroy(); return; } client.write(chunk); });
+    client.on('error', () => {}); upstream.on('error', () => {});
+  });
+  await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
+  const proxiedUrl = new URL(postgresTestUrl()); proxiedUrl.port = String(proxy.address().port);
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z'); let callbacks = 0;
+  const database = await openDevDatabase('postgres-endpoint-commit-loss-test', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: proxiedUrl.toString() }, { name: 'postgres-endpoint-commit-loss', services: { database: { engine: 'postgres' } } }, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+    endpoints: { write: endpoint({ method: 'POST', path: '/write' }, ctx => ctx.resources.run(options(), async scope => { callbacks++; await scope.db.writes.insert({ value: 'endpoint-written-once' }); return true; })) },
+  }, { clock });
+  let request;
+  try {
+    await database.init();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'postgres');
+    const session = await resolveAnonymousSession(database, null);
+    request = { method: 'POST', headers: { 'x-sporades-session-token': session.token }, async *[Symbol.asyncIterator]() {} };
+    dropNextCommit = true;
+    const route = database.endpoints.find(item => item.path === '/write');
+    const uncertain = await runEndpoint(database, route, new URL('http://capsule.test/write'), request).then(() => null, error => error);
+    assert.equal(uncertain.code, 'RESOURCE_COMMIT_UNKNOWN');
+    assert.equal(await runEndpoint(database, route, new URL('http://capsule.test/write'), request), true);
+    assert.equal(callbacks, 1);
+    assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='endpoint-written-once'").get()).n), 1);
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 1);
   } finally {
     await database.shutdown(); await database.close().catch(() => {}); for (const socket of sockets) socket.destroy(); await new Promise(resolve => proxy.close(resolve));
   }
