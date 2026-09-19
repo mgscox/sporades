@@ -22,24 +22,18 @@ export function resourceError(code: string) {
 }
 
 // There is no table to lock while a fresh PostgreSQL resource schema is being
-// created. Take one fixed *session* advisory lock only around resource DDL and
-// legacy-column migration. The caller must release the returned lock before it
-// claims a resource row: schema bootstrap is globally serialized, but normal
-// resource authority remains granular at (resourceTable, resourceId).
+// created. Bootstrap therefore uses a transaction-scoped advisory lock in its
+// own short publication transaction. It must never be released before that
+// transaction commits: another connection could otherwise observe neither the
+// old nor the new schema. Normal resource scopes use the verified-ready fast
+// path supplied by the adapter and never hold this guard through a callback.
 export async function acquirePostgresResourceBootstrapLock(adapter: RecordValue) {
-  if (adapter.engine !== "postgres") return () => {};
-  const key = "sporades.resource.bootstrap.v1";
+  if (adapter.engine !== "postgres") return;
   try {
-    const row = await adapter.prepare(adapter.dialect.sql("SELECT pg_try_advisory_lock(hashtext(?)) AS [acquired]"))
-      .get(key);
-    const acquired = row?.acquired;
+    const row = await adapter.prepare(adapter.dialect.sql("SELECT pg_try_advisory_xact_lock(hashtext(?)) AS [acquired]"))
+      .get("sporades.resource.bootstrap.v1");
+    const acquired = row?.acquired ?? row?.pg_try_advisory_xact_lock;
     if (acquired !== true && acquired !== "t" && acquired !== 1) throw resourceError("RESOURCE_BUSY");
-    let released = false;
-    return async () => {
-      if (released) return;
-      released = true;
-      await adapter.prepare(adapter.dialect.sql("SELECT pg_advisory_unlock(hashtext(?)) AS [released]")).get(key);
-    };
   } catch (error: any) {
     if (error?.code === "RESOURCE_BUSY" || error?.code === "55P03" || error?.code === "57014") throw resourceError("RESOURCE_BUSY");
     throw error;
@@ -243,13 +237,13 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
       try {
         if (database.adapter.engine === "postgres") {
           await database.adapter.exec("SET LOCAL lock_timeout = '100ms'");
-          const releaseBootstrap = await acquirePostgresResourceBootstrapLock(database.adapter);
-          try {
-            await database.adapter.exec(database.adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_locks] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId]))"));
-            await upgradeFoldedResourceColumns(database.adapter, "sporades_resource_locks", ["resourceTable", "resourceId"]);
-          } finally {
-            await releaseBootstrap();
-          }
+          const bootstrap = (database.adapter as any)[Symbol.for("sporades.database.resourceBootstrapMechanics")];
+          if (typeof bootstrap !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+          // This uses a separate short PostgreSQL transaction if the exact
+          // runtime schema is not already published. Do not put bootstrap DDL
+          // in this outer handler transaction: returning from this scope is
+          // deliberately still provisional until the outer COMMIT.
+          await bootstrap();
           await database.adapter.prepare(database.adapter.dialect.sql("INSERT INTO [sporades_resource_locks] ([resourceTable], [resourceId]) VALUES (?, ?) ON CONFLICT ([resourceTable], [resourceId]) DO NOTHING")).run(identity.table, identity.id);
           await database.adapter.prepare(database.adapter.dialect.sql("SELECT [resourceTable] FROM [sporades_resource_locks] WHERE [resourceTable]=? AND [resourceId]=? FOR UPDATE NOWAIT")).get(identity.table, identity.id);
         } else {
@@ -267,8 +261,10 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
       assertLive(true);
       let receipt: any;
       try {
-        await database.adapter.exec(database.adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_receipts] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId]))"));
-        await upgradeFoldedResourceColumns(database.adapter, "sporades_resource_receipts", ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"]);
+        if (database.adapter.engine !== "postgres") {
+          await database.adapter.exec(database.adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_receipts] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId]))"));
+          await upgradeFoldedResourceColumns(database.adapter, "sporades_resource_receipts", ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"]);
+        }
         receipt = resourceReceiptRow(database.adapter, await database.adapter.prepare(database.adapter.dialect.sql("SELECT * FROM [sporades_resource_receipts] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=?")).get(identity.table, identity.id, identity.operationId));
       } catch (error: any) {
         if (error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== undefined) throw resourceError("RESOURCE_STORAGE_ERROR");
@@ -463,8 +459,10 @@ export function bindJobResources(database: RecordValue, context: RecordValue, cl
         scopeContext = hooks.createContext(guarded, controller.signal, privileged);
         await Promise.race([hooks.authorize(scopeContext, identity), aborted]);
         assertLive(true);
-        await guarded.exec(adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_receipts] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId]))"));
-        await upgradeFoldedResourceColumns(guarded, "sporades_resource_receipts", ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"]);
+        if (database.adapter.engine !== "postgres") {
+          await guarded.exec(adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_receipts] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId]))"));
+          await upgradeFoldedResourceColumns(guarded, "sporades_resource_receipts", ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"]);
+        }
         const receipt = resourceReceiptRow(database.adapter, await guarded.prepare(adapter.dialect.sql("SELECT * FROM [sporades_resource_receipts] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=?")).get(identity.table, identity.id, identity.operationId));
         if (receipt) {
           if (receipt.actorDigest !== actorDigest || !status && receipt.inputDigest !== identity.digest) throw resourceError("RESOURCE_OPERATION_CONFLICT");

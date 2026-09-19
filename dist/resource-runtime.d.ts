@@ -6,7 +6,7 @@ export declare function resourceError(code: string): Error & {
     retryable?: boolean | undefined;
     code: string;
 };
-export declare function acquirePostgresResourceBootstrapLock(adapter: RecordValue): Promise<() => void>;
+export declare function acquirePostgresResourceBootstrapLock(adapter: RecordValue): Promise<void>;
 export declare function resourceCanonicalJson(value: unknown): string;
 export declare const unsupportedResources: Readonly<{
     run(): Promise<never>;

@@ -161,8 +161,8 @@ test("Postgres dedicated resource bootstrap fences repeated fresh and folded-leg
         const columns = await reset.prepare("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=? ORDER BY ordinal_position").all('sporades_resource_locks');
         assert.deepEqual(columns.map(column => column.column_name), ['resourceTable', 'resourceId']);
         if (phase === 'folded-legacy') {
-          const legacy = await reset.prepare('SELECT resultjson FROM sporades_resource_receipts WHERE resourcetable=? AND resourceid=? AND operationid=?').get('legacy-table', 'legacy-id', 'legacy-operation');
-          assert.equal(legacy.resultjson, '{"legacy":true}', 'the bootstrap primitive never discards a legacy receipt');
+          const legacy = await reset.prepare('SELECT "resultJson" FROM "sporades_resource_receipts" WHERE "resourceTable"=? AND "resourceId"=? AND "operationId"=?').get('legacy-table', 'legacy-id', 'legacy-operation');
+          assert.equal(legacy.resultJson, '{"legacy":true}', 'the bootstrap primitive never discards a legacy receipt');
         }
       }
     }

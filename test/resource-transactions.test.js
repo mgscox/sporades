@@ -118,9 +118,10 @@ test('Postgres Job reconciles a lost resource COMMIT acknowledgement through its
     sockets.add(client); sockets.add(upstream);
     const remove = () => { sockets.delete(client); sockets.delete(upstream); };
     client.once('close', remove); upstream.once('close', remove);
-    let commitForwarded = false;
+    let receiptForwarded = false; let commitForwarded = false;
     client.on('data', chunk => {
-      if (dropNextCommit && chunk.includes(Buffer.from('COMMIT\0'))) commitForwarded = true;
+      if (dropNextCommit && isResourceReceiptInsert(chunk.toString('utf8'))) receiptForwarded = true;
+      if (dropNextCommit && receiptForwarded && chunk.includes(Buffer.from('COMMIT\0'))) commitForwarded = true;
       upstream.write(chunk);
     });
     upstream.on('data', chunk => {
@@ -169,8 +170,8 @@ test('Postgres mutation resource scopes hold the resource lock and report a lost
   const proxy = net.createServer((client) => {
     const upstream = net.createConnection({ host: target.hostname, port: Number(target.port) }); sockets.add(client); sockets.add(upstream);
     const remove = () => { sockets.delete(client); sockets.delete(upstream); }; client.once('close', remove); upstream.once('close', remove);
-    let commitForwarded = false;
-    client.on('data', chunk => { if (dropNextCommit && chunk.includes(Buffer.from('COMMIT\0'))) commitForwarded = true; upstream.write(chunk); });
+    let receiptForwarded = false; let commitForwarded = false;
+    client.on('data', chunk => { if (dropNextCommit && isResourceReceiptInsert(chunk.toString('utf8'))) receiptForwarded = true; if (dropNextCommit && receiptForwarded && chunk.includes(Buffer.from('COMMIT\0'))) commitForwarded = true; upstream.write(chunk); });
     upstream.on('data', chunk => { if (commitForwarded) { dropNextCommit = false; client.destroy(); upstream.destroy(); return; } client.write(chunk); });
     client.on('error', () => {}); upstream.on('error', () => {});
   });
@@ -590,7 +591,8 @@ test('Postgres Job backend loss after its final claim check rolls back write and
     await worker;
     assert.equal((await database.adapter.prepare('SELECT status FROM sporades_jobs WHERE id=?').get(queued.data.id)).status, 'failed');
     assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='must-rollback-after-backend-loss'").get()).n), 0);
-    assert.equal((await database.adapter.prepare("SELECT to_regclass('sporades_resource_receipts') AS receipt_table").get()).receipt_table, null);
+    assert.equal((await database.adapter.prepare("SELECT to_regclass('sporades_resource_receipts') AS receipt_table").get()).receipt_table, 'sporades_resource_receipts');
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM "sporades_resource_receipts"').get()).n), 0);
     assert.equal((await database.adapter.prepare("SELECT to_regclass('sporades_resource_intents') AS intent_table").get()).intent_table, null);
     assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM writes WHERE value IN ('old-scoped-after-loss','retained-before-loss','parent-after-loss','newly-reconnected-after-loss')").get()).n), 0);
   } finally { release?.(); await database.shutdown(); await database.close(); }

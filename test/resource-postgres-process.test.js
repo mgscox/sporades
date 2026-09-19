@@ -75,7 +75,7 @@ test('real PostgreSQL process death releases the resource lock and rolls back pr
         await transaction.prepare("INSERT INTO ticket04_process_writes (owner) VALUES ('B')").run();
       }, undefined, { table: 'anchors', id: 'anchor' });
       assert.equal(Number((await successor.prepare("SELECT count(*) AS n FROM ticket04_process_writes WHERE owner LIKE 'A%'").get()).n), 0);
-      assert.equal(Number((await successor.prepare("SELECT count(*) AS n FROM sporades_resource_receipts WHERE operationId='process-death'").get()).n), 0);
+      assert.equal(Number((await successor.prepare("SELECT count(*) AS n FROM \"sporades_resource_receipts\" WHERE \"operationId\"='process-death'").get()).n), 0);
       assert.equal(Number((await successor.prepare("SELECT count(*) AS n FROM ticket04_process_writes WHERE owner='B'").get()).n), 1);
     } finally { await successor.close(); }
   } finally {
@@ -111,7 +111,7 @@ test('real PostgreSQL keeps a live paused owner exclusive past a local expiry ob
         await transaction.prepare("INSERT INTO ticket04_process_writes (owner) VALUES ('restart-successor')").run();
       }, undefined, { table: 'anchors', id: 'anchor' });
       assert.equal(Number((await restarted.prepare("SELECT count(*) AS n FROM ticket04_process_writes WHERE owner LIKE 'A%'").get()).n), 0);
-      assert.equal(Number((await restarted.prepare("SELECT count(*) AS n FROM sporades_resource_receipts WHERE operationId='process-death'").get()).n), 0);
+      assert.equal(Number((await restarted.prepare("SELECT count(*) AS n FROM \"sporades_resource_receipts\" WHERE \"operationId\"='process-death'").get()).n), 0);
       assert.equal(Number((await restarted.prepare("SELECT count(*) AS n FROM ticket04_process_writes WHERE owner='restart-successor'").get()).n), 1);
     } finally { await restarted.close(); }
   } finally {

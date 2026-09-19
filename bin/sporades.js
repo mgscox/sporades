@@ -94073,19 +94073,11 @@ function resourceError(code) {
   });
 }
 async function acquirePostgresResourceBootstrapLock(adapter) {
-  if (adapter.engine !== "postgres") return () => {
-  };
-  const key = "sporades.resource.bootstrap.v1";
+  if (adapter.engine !== "postgres") return;
   try {
-    const row = await adapter.prepare(adapter.dialect.sql("SELECT pg_try_advisory_lock(hashtext(?)) AS [acquired]")).get(key);
-    const acquired = row?.acquired;
+    const row = await adapter.prepare(adapter.dialect.sql("SELECT pg_try_advisory_xact_lock(hashtext(?)) AS [acquired]")).get("sporades.resource.bootstrap.v1");
+    const acquired = row?.acquired ?? row?.pg_try_advisory_xact_lock;
     if (acquired !== true && acquired !== "t" && acquired !== 1) throw resourceError("RESOURCE_BUSY");
-    let released = false;
-    return async () => {
-      if (released) return;
-      released = true;
-      await adapter.prepare(adapter.dialect.sql("SELECT pg_advisory_unlock(hashtext(?)) AS [released]")).get(key);
-    };
   } catch (error) {
     if (error?.code === "RESOURCE_BUSY" || error?.code === "55P03" || error?.code === "57014") throw resourceError("RESOURCE_BUSY");
     throw error;
@@ -94276,13 +94268,9 @@ function bindOuterResources(database, context, hooks) {
       try {
         if (database.adapter.engine === "postgres") {
           await database.adapter.exec("SET LOCAL lock_timeout = '100ms'");
-          const releaseBootstrap = await acquirePostgresResourceBootstrapLock(database.adapter);
-          try {
-            await database.adapter.exec(database.adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_locks] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId]))"));
-            await upgradeFoldedResourceColumns(database.adapter, "sporades_resource_locks", ["resourceTable", "resourceId"]);
-          } finally {
-            await releaseBootstrap();
-          }
+          const bootstrap = database.adapter[Symbol.for("sporades.database.resourceBootstrapMechanics")];
+          if (typeof bootstrap !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+          await bootstrap();
           await database.adapter.prepare(database.adapter.dialect.sql("INSERT INTO [sporades_resource_locks] ([resourceTable], [resourceId]) VALUES (?, ?) ON CONFLICT ([resourceTable], [resourceId]) DO NOTHING")).run(identity.table, identity.id);
           await database.adapter.prepare(database.adapter.dialect.sql("SELECT [resourceTable] FROM [sporades_resource_locks] WHERE [resourceTable]=? AND [resourceId]=? FOR UPDATE NOWAIT")).get(identity.table, identity.id);
         } else {
@@ -94300,8 +94288,10 @@ function bindOuterResources(database, context, hooks) {
       assertLive(true);
       let receipt2;
       try {
-        await database.adapter.exec(database.adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_receipts] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId]))"));
-        await upgradeFoldedResourceColumns(database.adapter, "sporades_resource_receipts", ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"]);
+        if (database.adapter.engine !== "postgres") {
+          await database.adapter.exec(database.adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_receipts] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId]))"));
+          await upgradeFoldedResourceColumns(database.adapter, "sporades_resource_receipts", ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"]);
+        }
         receipt2 = resourceReceiptRow(database.adapter, await database.adapter.prepare(database.adapter.dialect.sql("SELECT * FROM [sporades_resource_receipts] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=?")).get(identity.table, identity.id, identity.operationId));
       } catch (error) {
         if (error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== void 0) throw resourceError("RESOURCE_STORAGE_ERROR");
@@ -94515,8 +94505,10 @@ function bindJobResources(database, context, claim, hooks) {
         scopeContext = hooks.createContext(guarded, controller.signal, privileged);
         await Promise.race([hooks.authorize(scopeContext, identity), aborted]);
         assertLive(true);
-        await guarded.exec(adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_receipts] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId]))"));
-        await upgradeFoldedResourceColumns(guarded, "sporades_resource_receipts", ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"]);
+        if (database.adapter.engine !== "postgres") {
+          await guarded.exec(adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_receipts] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId]))"));
+          await upgradeFoldedResourceColumns(guarded, "sporades_resource_receipts", ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"]);
+        }
         const receipt2 = resourceReceiptRow(database.adapter, await guarded.prepare(adapter.dialect.sql("SELECT * FROM [sporades_resource_receipts] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=?")).get(identity.table, identity.id, identity.operationId));
         if (receipt2) {
           if (receipt2.actorDigest !== actorDigest || !status && receipt2.inputDigest !== identity.digest) throw resourceError("RESOURCE_OPERATION_CONFLICT");
@@ -97380,6 +97372,7 @@ function revokeTransactionScopedAdapter(adapter) {
 var transactionOperations = Symbol.for("sporades.database.transactionOperations");
 var transactionBeforeCommitChecks2 = Symbol.for("sporades.database.transactionBeforeCommitChecks");
 var resourceTransactionMechanics = Symbol.for("sporades.database.resourceTransactionMechanics");
+var resourceBootstrapMechanics = Symbol.for("sporades.database.resourceBootstrapMechanics");
 async function runTransactionBeforeCommitChecks(transactionAdapter) {
   for (const check of transactionAdapter[transactionBeforeCommitChecks2] ?? []) await check();
 }
@@ -98748,6 +98741,74 @@ async function createPostgresDatabaseAdapter(options) {
   let closed = false;
   const dialect = postgresDatabaseDialect();
   const normalization = postgresRowNormalization();
+  const resourceSchemas = [
+    { table: "sporades_resource_locks", columns: ["resourceTable", "resourceId"], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId])" },
+    { table: "sporades_resource_receipts", columns: ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId])" }
+  ];
+  const resourceSchemaReady = async (query) => {
+    for (const schema of resourceSchemas) {
+      const rows = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("column_name")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("columns")} WHERE ${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("table_name")}=?`,
+        [schema.table]
+      ));
+      const columns = new Set(rows.map((row) => row.column_name));
+      if (!schema.columns.every((column) => columns.has(column))) return false;
+    }
+    return true;
+  };
+  const ensureResourceSchemaPublished = async () => {
+    if (await resourceSchemaReady(rawQuery)) return;
+    let bootstrap;
+    let begun = false;
+    try {
+      bootstrap = await createPostgresConnection(url);
+      const query = async (statement, params = []) => await bootstrap.query(postgresInterpolate(statement, params));
+      await query("BEGIN ISOLATION LEVEL READ COMMITTED");
+      begun = true;
+      await query("SET LOCAL lock_timeout = '100ms'");
+      await acquirePostgresResourceBootstrapLock({ engine: "postgres", dialect, prepare: (statement) => ({ get: (...args) => query(statement, args).then((result) => postgresRowsFromResult(normalization, result)[0] ?? null) }) });
+      if (!await resourceSchemaReady(query)) {
+        for (const schema of resourceSchemas) {
+          const table = dialect.quoteIdentifier(schema.table);
+          await query(`CREATE TABLE IF NOT EXISTS ${table} (${dialect.sql(schema.definition)})`);
+          let columns = new Set(postgresRowsFromResult(normalization, await query(
+            `SELECT ${dialect.quoteIdentifier("column_name")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("columns")} WHERE ${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("table_name")}=?`,
+            [schema.table]
+          )).map((row) => row.column_name));
+          if (schema.columns.some((column) => columns.has(column.toLowerCase()) && !columns.has(column))) {
+            await query(`LOCK TABLE ${table} IN ACCESS EXCLUSIVE MODE`);
+            columns = new Set(postgresRowsFromResult(normalization, await query(
+              `SELECT ${dialect.quoteIdentifier("column_name")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("columns")} WHERE ${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("table_name")}=?`,
+              [schema.table]
+            )).map((row) => row.column_name));
+            for (const column of schema.columns) {
+              const folded = column.toLowerCase();
+              if (columns.has(folded) && !columns.has(column)) {
+                await query(`ALTER TABLE ${table} RENAME COLUMN ${dialect.quoteIdentifier(folded)} TO ${dialect.quoteIdentifier(column)}`);
+                columns.delete(folded);
+                columns.add(column);
+              }
+            }
+          }
+        }
+        if (!await resourceSchemaReady(query)) throw new Error("PostgreSQL resource schema publication did not produce the required columns.");
+      }
+      await query("COMMIT");
+      begun = false;
+    } catch (error) {
+      if (begun) {
+        try {
+          await bootstrap.query("ROLLBACK");
+        } catch {
+        }
+      }
+      if (error?.code === "RESOURCE_BUSY" || error?.code === "55P03" || error?.code === "57014") throw resourceError("RESOURCE_BUSY");
+      throw error;
+    } finally {
+      if (bootstrap) await bootstrap.close().catch(() => {
+      });
+    }
+  };
   const assertOpen = () => {
     if (closed) {
       throw new Error("database is not open");
@@ -98789,6 +98850,7 @@ async function createPostgresDatabaseAdapter(options) {
     ...createOperations(connectionGate.runOperation),
     engine: "postgres",
     [Symbol.for("sporades.database.resourceTransactionEligible")]: true,
+    [resourceBootstrapMechanics]: ensureResourceSchemaPublished,
     dialect,
     normalization,
     // A resource scope owns an independent READ COMMITTED backend.  Closing it
@@ -98800,6 +98862,7 @@ async function createPostgresDatabaseAdapter(options) {
       let begun = false;
       let commitIssued = false;
       try {
+        await ensureResourceSchemaPublished();
         dedicated = await createPostgresConnection(url);
         const query = async (statement, params = []) => await dedicated.query(postgresInterpolate(statement, params));
         const operations = {
@@ -98822,31 +98885,6 @@ async function createPostgresDatabaseAdapter(options) {
         const resourceLockTable = dialect.quoteIdentifier("sporades_resource_locks");
         const resourceTableColumn = dialect.quoteIdentifier("resourceTable");
         const resourceIdColumn = dialect.quoteIdentifier("resourceId");
-        const bootstrapAdapter = { engine: "postgres", dialect, prepare: (statement) => ({ get: (...args) => query(statement, args).then((result) => postgresRowsFromResult(normalization, result)[0] ?? null) }) };
-        const releaseBootstrap = await acquirePostgresResourceBootstrapLock(bootstrapAdapter);
-        try {
-          await query(`CREATE TABLE IF NOT EXISTS ${resourceLockTable} (${resourceTableColumn} TEXT NOT NULL, ${resourceIdColumn} TEXT NOT NULL, PRIMARY KEY (${resourceTableColumn}, ${resourceIdColumn}))`);
-          const bootstrapColumns = new Set(postgresRowsFromResult(normalization, await query(
-            `SELECT ${dialect.quoteIdentifier("column_name")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("columns")} WHERE ${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("table_name")}=?`,
-            ["sporades_resource_locks"]
-          )).map((row) => row.column_name));
-          const requiresLegacyUpgrade = ["resourceTable", "resourceId"].some((column) => bootstrapColumns.has(column.toLowerCase()) && !bootstrapColumns.has(column));
-          if (requiresLegacyUpgrade) await query(`LOCK TABLE ${resourceLockTable} IN ACCESS EXCLUSIVE MODE`);
-          const legacyLockColumns = new Set(postgresRowsFromResult(normalization, await query(
-            `SELECT ${dialect.quoteIdentifier("column_name")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("columns")} WHERE ${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("table_name")}=?`,
-            ["sporades_resource_locks"]
-          )).map((row) => row.column_name));
-          for (const column of ["resourceTable", "resourceId"]) {
-            const folded = column.toLowerCase();
-            if (legacyLockColumns.has(folded) && !legacyLockColumns.has(column)) {
-              await query(`ALTER TABLE ${resourceLockTable} RENAME COLUMN ${dialect.quoteIdentifier(folded)} TO ${dialect.quoteIdentifier(column)}`);
-              legacyLockColumns.delete(folded);
-              legacyLockColumns.add(column);
-            }
-          }
-        } finally {
-          await releaseBootstrap();
-        }
         await query(`INSERT INTO ${resourceLockTable} (${resourceTableColumn}, ${resourceIdColumn}) VALUES (?, ?) ON CONFLICT (${resourceTableColumn}, ${resourceIdColumn}) DO NOTHING`, [resource.table, resource.id]);
         await query(`SELECT ${resourceTableColumn} FROM ${resourceLockTable} WHERE ${resourceTableColumn}=? AND ${resourceIdColumn}=? FOR UPDATE NOWAIT`, [resource.table, resource.id]);
         const transaction = createTransactionScopedAdapter(adapter, operations, adapter, "transaction");
