@@ -72,11 +72,12 @@
 // bundle builds it into the one IIFE `MIGRATED_RUNTIME_MODULES` names, together with the six other
 // migrated modules it imports from. A name that fails to travel out of this file is a compile error
 // rather than a `ReferenceError` in a deployed Capsule — which this domain paid for twice already:
-// `markAsyncAclHelperRead` and `resolveAclStorageFileReference` are two of the four production
+// `resolveAclHelperRead` and `resolveAclStorageFileReference` are two of the four production
 // `ReferenceError`s that `test/server-bundle-free-bindings.test.js` exists because of, and both are
 // private declarations in this file now, registered in nothing.
 //
-// This module reaches no Node builtin, so ADR-0042's accessor does not appear here.
+// The promise-lineage check reaches `node:v8` through `process.getBuiltinModule`, matching the
+// migrated runtime's synchronous builtin-access convention without introducing a bundle import.
 //
 // ## Nothing is redesigned
 //
@@ -85,11 +86,12 @@
 
 import { createPublicFileUrl, createStructuredFileError, deletePrivateFile, fileMetadataFromRow, isAbsoluteFilePath, normalizeAbsoluteFilePath, resolvePrivilegedLiveFileReference } from "./file-storage-runtime.js";
 import { jobError, scheduleSummary } from "./jobs-runtime.js";
-import { isPromiseLike } from "./maybe-promise.js";
+import { isPromiseLike, thenIfPromise } from "./maybe-promise.js";
 import { commandError } from "./runtime-errors.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import { deserializeRow } from "./stored-value-coding.js";
 import { accessKeyCredentialLogAttribution } from "./access-keys-runtime.js";
+import { activePromise, promiseCombinatorKind, promiseCompositionRootCandidate, promiseDescendsFrom, promiseSettlementCause, releasePromiseObserver, retainPromiseObserver } from "./promise-coordinator.js";
 
 // The monolith's own alias, redeclared rather than imported: it is a type, so it is erased before
 // either bundle is built and there is no binding to collide with.
@@ -633,11 +635,17 @@ export function applyFileAcl(database: LooseRecord, operation: string, row: Loos
     emitFileAclDeniedLog(database, { context, operation, row });
     return false;
   };
-  const result = rule(input);
+  const result = invokeAclRule(context, () => rule(input));
   if (!isPromiseLike(result)) {
-    return result && !aclRuleTouchedAsyncHelperRead(context) ? true : deny();
+    if (result && !aclRuleTouchedAsyncHelperRead(context, true)) return true;
+    const settlement = settleAclHelperReads(context);
+    return settlement ? settlement.then(deny) : deny();
   }
-  return Promise.resolve(result).then((allowed) => (allowed && !aclRuleTouchedAsyncHelperRead(context) ? true : deny()));
+  return Promise.resolve(result).then((allowed) => {
+    if (allowed && !aclRuleTouchedAsyncHelperRead(context)) return true;
+    const settlement = settleAclHelperReads(context);
+    return settlement ? settlement.then(deny) : deny();
+  });
 }
 
 function privilegedDbAccessContextSet() {
@@ -693,22 +701,24 @@ export function runTableWriteWithAcl(database: any, table: LooseRecord, operatio
     throw createAclDeniedError(denialLogData);
   };
   const aclContext = createTableAclContext(context, database);
-  const result = rule({
+  const result = invokeAclRule(aclContext, () => rule({
     ctx: aclContext,
     operation,
     table: table.name,
     previous,
     next,
-  });
+  }));
   if (!isPromiseLike(result)) {
-    if (!result || aclRuleTouchedAsyncHelperRead(aclContext)) {
-      deny();
+    if (!result || aclRuleTouchedAsyncHelperRead(aclContext, true)) {
+      const settlement = settleAclHelperReads(aclContext);
+      return settlement ? settlement.then(deny) : deny();
     }
     return write();
   }
   const pending = Promise.resolve(result).then((allowed) => {
     if (!allowed || aclRuleTouchedAsyncHelperRead(aclContext)) {
-      deny();
+      const settlement = settleAclHelperReads(aclContext);
+      return settlement ? settlement.then(deny) : deny();
     }
     return write();
   });
@@ -725,12 +735,12 @@ export function applyReadAcl(database: any, table: LooseRecord, row: any, contex
     return true;
   }
   const aclContext = createTableAclContext(context, database);
-  const result = rule({
+  const result = invokeAclRule(aclContext, () => rule({
     ctx: aclContext,
     operation: "read",
     table: table.name,
     row,
-  });
+  }));
   const deny = () => {
     emitAclDeniedLog(database, {
       context,
@@ -741,9 +751,15 @@ export function applyReadAcl(database: any, table: LooseRecord, row: any, contex
     return false;
   };
   if (!isPromiseLike(result)) {
-    return result && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny();
+    if (result && !aclRuleTouchedAsyncHelperRead(aclContext, true)) return true;
+    const settlement = settleAclHelperReads(aclContext);
+    return settlement ? settlement.then(deny) : deny();
   }
-  return Promise.resolve(result).then((allowed) => (allowed && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny()));
+  return Promise.resolve(result).then((allowed) => {
+    if (allowed && !aclRuleTouchedAsyncHelperRead(aclContext)) return true;
+    const settlement = settleAclHelperReads(aclContext);
+    return settlement ? settlement.then(deny) : deny();
+  });
 }
 
 export function filterRowsByReadAcl(database: any, table: any, rows: any[], context: any) {
@@ -776,14 +792,41 @@ export function filterRowsByReadAcl(database: any, table: any, rows: any[], cont
 //
 // The property is executed rather than asserted, on every bundle build. The ACL enforcement limb in
 // `describeMigratedModuleAnswers` drives a synchronous rule whose helper read returns a thenable:
-// `markAsyncAclHelperRead` writes `touchedAsyncRead` through this key and
+// `resolveAclHelperRead` records a pending asynchronous read through this key and
 // `aclRuleTouchedAsyncHelperRead` reads it back through this key, and the write is denied. Two
 // Symbols would make that read `undefined` and the write would be **allowed** — so a copy in which
 // the two had come apart is a disagreement in that limb rather than a silent fail-open.
 export const ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
 
+// A native thenable continuation alone is ambiguous: both `await helper` and a discarded
+// `Promise.resolve(helper)` use one. The runtime-owned coordinator keeps the native promise graph
+// long enough to prove that the assimilation promise actually leads to the rule promise's
+// settlement, including a Promise combinator root shared by more than one helper.
+const aclPromiseObserver = {};
+
+function retainAclPromiseHook(state: LooseRecord) {
+  if (state.promiseHookRetained) return;
+  state.promiseHookRetained = true;
+  retainPromiseObserver(aclPromiseObserver);
+}
+
+function releaseAclPromiseHook(state: LooseRecord) {
+  if (!state.promiseHookRetained) return;
+  state.promiseHookRetained = false;
+  releasePromiseObserver(aclPromiseObserver);
+}
+
 function createAclHelpers(database: any, context: any) {
-  const state = { readCount: 0, maxReads: 32, touchedAsyncRead: false };
+  const state = {
+    readCount: 0,
+    maxReads: 32,
+    touchedAsyncRead: false,
+    rulePromise: undefined,
+    promiseHookRetained: false,
+    unconsumedAsyncReads: new Set<object>(),
+    pendingAsyncReads: new Set<Promise<any>>(),
+    helperPromiseDependencies: new WeakMap<object, Set<object>>(),
+  };
   const helpers = {
     db: createAclDbHelpers(database, state),
     storage: createAclStorageHelpers(database, state),
@@ -800,23 +843,23 @@ function createAclTeamHelpers(database: LooseRecord, context: LooseRecord, state
   return Object.freeze({
     isMember(teamId: any) {
       const membership = readAclTeamMembership(database, context, state, teamId);
-      return membership?.role === "admin" || membership?.role === "member";
+      return resolveAclHelperRead(state, membership, (resolved: any) => resolved?.role === "admin" || resolved?.role === "member");
     },
     isAdmin(teamId: any) {
-      return readAclTeamMembership(database, context, state, teamId)?.role === "admin";
+      return resolveAclHelperRead(state, readAclTeamMembership(database, context, state, teamId), (membership: any) => membership?.role === "admin");
     },
     hasRole(teamId: any, role: any) {
       assertAclHelperReadAllowed(state);
       if (!isActiveAclTeamApplicationRole(database, role)) return false;
       const actorUserId = aclTeamActorUserId(context);
       if (!actorUserId || !isAclTeamId(teamId)) return false;
-      const selected = database.adapter.prepare(database.adapter.dialect.sql(
-        "SELECT [r].[role] FROM [sporades_team_memberships] [m] " +
-        "JOIN [sporades_team_membership_application_roles] [r] ON [r].[teamId] = [m].[teamId] AND [r].[userId] = [m].[userId] " +
-        "WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] = ?",
-      )).get(teamId, actorUserId, role);
-      if (markAsyncAclHelperRead(state, selected)) return false;
-      return selected?.role === role;
+      const selected = readWithAclHelperDependencies(database, ["sporades_team_memberships", "sporades_team_membership_application_roles"], () =>
+        database.adapter.prepare(database.adapter.dialect.sql(
+          "SELECT [r].[role] FROM [sporades_team_memberships] [m] " +
+          "JOIN [sporades_team_membership_application_roles] [r] ON [r].[teamId] = [m].[teamId] AND [r].[userId] = [m].[userId] " +
+          "WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] = ?",
+        )).get(teamId, actorUserId, role));
+      return resolveAclHelperRead(state, selected, (resolved: any) => resolved?.role === role);
     },
     hasAnyRole(teamId: any, roles: any) {
       assertAclHelperReadAllowed(state);
@@ -826,13 +869,13 @@ function createAclTeamHelpers(database: LooseRecord, context: LooseRecord, state
       const actorUserId = aclTeamActorUserId(context);
       if (!actorUserId || !isAclTeamId(teamId)) return false;
       const placeholders = activeRoles.map(() => "?").join(", ");
-      const selected = database.adapter.prepare(database.adapter.dialect.sql(
-        "SELECT [r].[role] FROM [sporades_team_memberships] [m] " +
-        "JOIN [sporades_team_membership_application_roles] [r] ON [r].[teamId] = [m].[teamId] AND [r].[userId] = [m].[userId] " +
-        `WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] IN (${placeholders})`,
-      )).all(teamId, actorUserId, ...activeRoles);
-      if (markAsyncAclHelperRead(state, selected)) return false;
-      return Array.isArray(selected) && selected.some((row) => activeRoles.includes(row?.role));
+      const selected = readWithAclHelperDependencies(database, ["sporades_team_memberships", "sporades_team_membership_application_roles"], () =>
+        database.adapter.prepare(database.adapter.dialect.sql(
+          "SELECT [r].[role] FROM [sporades_team_memberships] [m] " +
+          "JOIN [sporades_team_membership_application_roles] [r] ON [r].[teamId] = [m].[teamId] AND [r].[userId] = [m].[userId] " +
+          `WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] IN (${placeholders})`,
+        )).all(teamId, actorUserId, ...activeRoles));
+      return resolveAclHelperRead(state, selected, (resolved: any) => Array.isArray(resolved) && resolved.some((row) => activeRoles.includes(row?.role)));
     },
   });
 }
@@ -841,11 +884,32 @@ function readAclTeamMembership(database: LooseRecord, context: LooseRecord, stat
   assertAclHelperReadAllowed(state);
   const actorUserId = aclTeamActorUserId(context);
   if (!actorUserId || !isAclTeamId(teamId)) return null;
-  const selected = database.adapter.prepare(database.adapter.dialect.sql(
-    "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?",
-  )).get(teamId, actorUserId);
-  if (markAsyncAclHelperRead(state, selected)) return null;
-  return selected ?? null;
+  const selected = readWithAclHelperDependencies(database, ["sporades_team_memberships"], () =>
+    database.adapter.prepare(database.adapter.dialect.sql(
+      "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?",
+    )).get(teamId, actorUserId));
+  return selected;
+}
+
+function readWithAclHelperDependencies(database: LooseRecord, tableNames: string[], read: () => any) {
+  const lock = database.lockAclHelperDependencies?.(tableNames);
+  return isPromiseLike(lock) ? Promise.resolve(lock).then(read) : read();
+}
+
+export function bindPostgresAclDependencyLocking(database: LooseRecord, adapter: LooseRecord) {
+  if (adapter?.engine !== "postgres" || typeof database.lockAclHelperDependencies === "function") return;
+  const lockedTables = new Set<string>();
+  database.lockAclHelperDependencies = async (tableNames: string[]) => {
+    const pending = [...new Set(tableNames)]
+      .filter((tableName) => !lockedTables.has(tableName))
+      .sort();
+    if (pending.length === 0) return;
+    // A table lock covers both returned rows and an empty predicate. The
+    // self-conflicting mode keeps the ACL decision stable until the transaction
+    // that consumes it commits or rolls back, without lock-upgrade deadlocks.
+    await adapter.exec(`LOCK TABLE ${pending.map((tableName) => adapter.dialect.quoteIdentifier(tableName)).join(", ")} IN SHARE ROW EXCLUSIVE MODE`);
+    for (const tableName of pending) lockedTables.add(tableName);
+  };
 }
 
 function aclTeamActorUserId(context: LooseRecord) {
@@ -862,17 +926,117 @@ function isActiveAclTeamApplicationRole(database: LooseRecord, role: any) {
   return typeof role === "string" && Array.isArray(database.teamApplicationRoles) && database.teamApplicationRoles.includes(role);
 }
 
-function aclRuleTouchedAsyncHelperRead(aclContext: any) {
-  return aclContext?.acl?.[ACL_HELPER_STATE]?.touchedAsyncRead === true;
+function aclRuleTouchedAsyncHelperRead(aclContext: any, synchronousRule = false) {
+  const state = aclContext?.acl?.[ACL_HELPER_STATE];
+  if (!synchronousRule) consumeParticipatingAclHelperReads(state);
+  return synchronousRule
+    ? state?.touchedAsyncRead === true
+    : (state?.unconsumedAsyncReads?.size ?? 0) > 0;
 }
 
-function markAsyncAclHelperRead(state: LooseRecord, result: any) {
-  if (isPromiseLike(result)) {
-    state.touchedAsyncRead = true;
-    Promise.resolve(result).catch(() => { });
-    return true;
+function consumeParticipatingAclHelperReads(state: LooseRecord | undefined) {
+  if (!state?.rulePromise) return;
+  const settlementCause = promiseSettlementCause(state.rulePromise);
+  for (const dependency of state.unconsumedAsyncReads ?? []) {
+    // Direct await makes the assimilation promise a descendant of the async rule promise.
+    // Awaiting Promise.resolve(helper) instead makes the rule's settlement cause a descendant
+    // of that assimilation promise. Unrelated, discarded chains satisfy neither relationship.
+    if (dependency.settled && [...(dependency.assimilationPromises ?? [])].some((promise: Promise<any>) =>
+      !["race", "any"].includes(dependency.compositionKinds?.get(promise))
+      && (promiseDescendsFrom(promise, state.rulePromise)
+        || promiseDescendsFrom(settlementCause, promise)))) {
+      state.unconsumedAsyncReads.delete(dependency);
+    }
   }
-  return false;
+}
+
+function invokeAclRule(aclContext: any, invoke: () => any) {
+  const state = aclContext?.acl?.[ACL_HELPER_STATE];
+  if (!state) return invoke();
+  retainAclPromiseHook(state);
+  let result: any;
+  try {
+    result = invoke();
+    state.rulePromise = isPromiseLike(result) ? result : undefined;
+    consumeAclHelperPromiseDependencies(state, result);
+    return result;
+  } finally {
+    if (isPromiseLike(result)) {
+      void Promise.resolve(result).then(
+        () => releaseAclPromiseHook(state),
+        () => releaseAclPromiseHook(state),
+      );
+    } else releaseAclPromiseHook(state);
+  }
+}
+
+function consumeAclHelperPromiseDependencies(state: LooseRecord, promise: any) {
+  if (!promise || typeof promise !== "object") return;
+  const dependencies = state.helperPromiseDependencies.get(promise);
+  if (!dependencies) return;
+  for (const dependency of dependencies) state.unconsumedAsyncReads.delete(dependency);
+}
+
+function isPromiseAssimilationContinuation(args: any[]) {
+  return args.length === 2 && args.every((callback) =>
+    typeof callback === "function" && Function.prototype.toString.call(callback).includes("[native code]"));
+}
+
+function trackAclHelperPromise(state: LooseRecord, promise: Promise<any>, dependencies: Set<LooseRecord>) {
+  let tracked: Promise<any>;
+  tracked = new Proxy(promise, {
+    get(target, property) {
+      if (property === "then" || property === "catch" || property === "finally") {
+        if (property === "then") {
+          const compositionRoot = promiseCompositionRootCandidate();
+          if (compositionRoot) {
+            for (const dependency of dependencies) {
+              dependency.assimilationPromises.add(compositionRoot);
+              dependency.compositionKinds.set(compositionRoot, promiseCombinatorKind(compositionRoot));
+            }
+          }
+        }
+        return (...args: any[]) => {
+          const active = activePromise();
+          if (property === "then" && isPromiseAssimilationContinuation(args)
+            && active) {
+            for (const dependency of dependencies) dependency.assimilationPromises.add(active);
+          }
+          const derived = (target as any)[property](...args);
+          return trackAclHelperPromise(state, derived, dependencies);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  state.helperPromiseDependencies.set(tracked, dependencies);
+  return tracked;
+}
+
+function settleAclHelperReads(aclContext: any) {
+  const pending = [...(aclContext?.acl?.[ACL_HELPER_STATE]?.pendingAsyncReads ?? [])] as Promise<any>[];
+  return pending.length > 0 ? Promise.allSettled(pending) : null;
+}
+
+function resolveAclHelperRead(state: LooseRecord, result: any, resolve: (value: any) => any) {
+  if (!isPromiseLike(result)) return resolve(result);
+  state.touchedAsyncRead = true;
+  const pending = Promise.resolve(result).then(resolve);
+  const dependency = {
+    assimilationPromises: new Set<Promise<any>>(),
+    compositionKinds: new WeakMap<Promise<any>, string | undefined>(),
+    settled: false,
+  };
+  const dependencies = new Set<LooseRecord>([dependency]);
+  state.unconsumedAsyncReads.add(dependency);
+  state.pendingAsyncReads.add(pending);
+  void pending.then(
+    () => { dependency.settled = true; state.pendingAsyncReads.delete(pending); },
+    () => { dependency.settled = true; state.pendingAsyncReads.delete(pending); },
+  );
+  pending.catch(() => { });
+  return trackAclHelperPromise(state, pending, dependencies);
 }
 
 function createAclDbHelpers(database: LooseRecord, state: LooseRecord) {
@@ -880,20 +1044,14 @@ function createAclDbHelpers(database: LooseRecord, state: LooseRecord) {
     get(tableName: any, id: any) {
       assertAclHelperReadAllowed(state);
       const table = resolveAclAppTable(database, tableName);
-      const selected = database.adapter.selectAppRowById(table, id);
-      if (markAsyncAclHelperRead(state, selected)) {
-        return null;
-      }
-      return selected ? deserializeRow(table, selected) : null;
+      const selected = readWithAclHelperDependencies(database, [table.name], () => database.adapter.selectAppRowById(table, id));
+      return resolveAclHelperRead(state, selected, (resolved: any) => resolved ? deserializeRow(table, resolved) : null);
     },
     exists(tableName: any, id: any) {
       assertAclHelperReadAllowed(state);
       const table = resolveAclAppTable(database, tableName);
-      const selected = database.adapter.selectAppRowById(table, id);
-      if (markAsyncAclHelperRead(state, selected)) {
-        return false;
-      }
-      return Boolean(selected);
+      const selected = readWithAclHelperDependencies(database, [table.name], () => database.adapter.selectAppRowById(table, id));
+      return resolveAclHelperRead(state, selected, Boolean);
     },
   });
 }
@@ -904,8 +1062,8 @@ function createAclStorageHelpers(database: any, state: LooseRecord) {
       assertAclHelperReadAllowed(state);
       const resource = resolveAclStorageResource(resourceName);
       if (resource === "files") {
-        const row = resolveAclStorageFileReference(database, state, reference);
-        return row ? aclStorageMetadataFromFileRow(row) : null;
+        const row = readWithAclHelperDependencies(database, ["sporades_files"], () => resolveAclStorageFileReference(database, reference));
+        return resolveAclHelperRead(state, row, (resolved: any) => resolved ? aclStorageMetadataFromFileRow(resolved) : null);
       }
       return null;
     },
@@ -913,14 +1071,15 @@ function createAclStorageHelpers(database: any, state: LooseRecord) {
       assertAclHelperReadAllowed(state);
       const resource = resolveAclStorageResource(resourceName);
       if (resource === "files") {
-        return Boolean(resolveAclStorageFileReference(database, state, reference));
+        const row = readWithAclHelperDependencies(database, ["sporades_files"], () => resolveAclStorageFileReference(database, reference));
+        return resolveAclHelperRead(state, row, Boolean);
       }
       return false;
     },
   });
 }
 
-function resolveAclStorageFileReference(database: LooseRecord, state: any, reference: any) {
+function resolveAclStorageFileReference(database: LooseRecord, reference: any) {
   const value = String(reference ?? "");
   if (isAbsoluteFilePath(value)) {
     let path;
@@ -930,20 +1089,16 @@ function resolveAclStorageFileReference(database: LooseRecord, state: any, refer
       return null;
     }
     const selected = database.adapter.selectLiveFileByPath(path);
-    if (markAsyncAclHelperRead(state, selected)) {
-      return null;
-    }
-    const resolved = selected.length > 1 ? { ambiguous: true } : (selected[0] ?? null);
-    return resolved?.ambiguous ? null : resolved;
+    return thenIfPromise(selected, (rows: any) => {
+      const resolved = rows.length > 1 ? { ambiguous: true } : (rows[0] ?? null);
+      return resolved?.ambiguous ? null : resolved;
+    });
   }
   const selected = database.adapter.selectFileById(value);
-  if (markAsyncAclHelperRead(state, selected)) {
-    return null;
-  }
-  if (!selected || selected.deletedAt !== null || selected.status !== "uploaded") {
-    return null;
-  }
-  return selected;
+  return thenIfPromise(selected, (resolved: any) => {
+    if (!resolved || resolved.deletedAt !== null || resolved.status !== "uploaded") return null;
+    return resolved;
+  });
 }
 
 function assertAclHelperReadAllowed(state: LooseRecord) {

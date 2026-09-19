@@ -687,7 +687,7 @@ the declaration.
 
 The identity itself is now executed on every bundle build rather than reasoned about. The
 differential's ACL write limb drives a *synchronous* rule whose `ctx.acl.db.get()` returns a
-thenable: `markAsyncAclHelperRead` writes `touchedAsyncRead` through the Symbol and
+thenable: `resolveAclHelperRead` records the pending read through the Symbol and
 `aclRuleTouchedAsyncHelperRead` reads it back through the Symbol, and the write must be
 refused. Executed rather than asserted — a skewed `dist/` in which the reader mints a Symbol
 of its own answers `{"returned":"written"}` where the honest copy throws `DENIED`. **It is

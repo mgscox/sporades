@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
+import net from "node:net";
 import test from "node:test";
 
 import {
@@ -43,9 +44,11 @@ import {
   updateCurrentUserPreferences,
 } from "../dist/server-runtime-source.js";
 import { mutation } from "../dist/server.js";
+import { createSharedDatabaseAdapterMethods, postgresDatabaseDialect } from "../dist/database-runtime.js";
 import {
   POSTGRES_SKIP_REASON,
   postgresTestUrl,
+  resetPostgresSchema,
   withLibsqlAdapter,
   withPostgresAdapter,
   withSqliteAdapter,
@@ -76,6 +79,311 @@ async function captureErrorCode(fn) {
     return error.code ?? error.message;
   }
 }
+
+test("Postgres resource transactions use a dedicated NOWAIT lock and release it after rollback", { skip: POSTGRES_SKIP_REASON }, async () => {
+  await withPostgresAdapter(async (adapter, controls) => {
+    assert.equal(typeof adapter.withResourceTransaction, "function");
+    let release;
+    let markEntered;
+    const entered = new Promise((resolve) => { markEntered = resolve; });
+    const held = new Promise((resolve) => { release = resolve; });
+    const first = adapter.withResourceTransaction(async () => {
+      markEntered();
+      await held;
+      throw new Error("rollback fixture");
+    }, undefined, { table: "grants", id: "grant-1" });
+    await Promise.race([entered, new Promise((_, reject) => setTimeout(() => reject(new Error("first resource owner did not acquire")), 2_000))]);
+    const competing = await controls.connect();
+    try {
+      await assert.rejects(
+        competing.withResourceTransaction(() => assert.fail("NOWAIT loser entered"), undefined, { table: "grants", id: "grant-1" }),
+        { code: "RESOURCE_BUSY" },
+      );
+    } finally {
+      await competing.close();
+    }
+    release();
+    await assert.rejects(first, /rollback fixture/);
+    await adapter.withResourceTransaction(async () => null, undefined, { table: "grants", id: "grant-1" });
+  }, { appTableNames: [] });
+});
+
+test("Postgres resource locks contend deterministically for both first and existing rows on independent connections", { skip: POSTGRES_SKIP_REASON }, async () => {
+  await withPostgresAdapter(async (adapter, controls) => {
+    for (const phase of ["first-row", "existing-row"]) {
+      let release;
+      let markEntered;
+      const entered = new Promise((resolve) => { markEntered = resolve; });
+      const held = new Promise((resolve) => { release = resolve; });
+      const owner = adapter.withResourceTransaction(async () => {
+        markEntered();
+        await held;
+        return phase;
+      }, undefined, { table: "grants", id: "same-grant" });
+      try {
+        await Promise.race([entered, new Promise((_, reject) => setTimeout(() => reject(new Error(`${phase} owner did not acquire`)), 2_000))]);
+        const contender = await controls.connect();
+        try {
+          await assert.rejects(
+            contender.withResourceTransaction(() => assert.fail(`${phase} loser entered`), undefined, { table: "grants", id: "same-grant" }),
+            { code: "RESOURCE_BUSY" },
+          );
+        } finally { await contender.close(); }
+      } finally { release?.(); }
+      assert.equal(await owner, phase);
+    }
+  }, { appTableNames: [] });
+});
+
+test("Postgres resource readiness is independent of an aborted root transaction awaiting rollback", { skip: POSTGRES_SKIP_REASON }, async () => {
+  await withPostgresAdapter(async adapter => {
+    await adapter.withResourceTransaction(() => null, undefined, { table: "readiness", id: "bootstrap" });
+
+    let resourceAdmission;
+    await assert.rejects(
+      adapter.withTransaction(async transaction => {
+        const failedStatement = transaction.prepare('SELECT "missing_column" FROM "sporades_resource_locks"').get();
+        resourceAdmission = adapter.withResourceTransaction(
+          () => "independent-resource-entered",
+          undefined,
+          { table: "readiness", id: "independent" },
+        );
+        void resourceAdmission.catch(() => {});
+        await failedStatement;
+      }),
+      /missing_column/,
+    );
+
+    assert.equal(await resourceAdmission, "independent-resource-entered");
+  }, { appTableNames: [] });
+});
+
+test("Postgres resource transactions reject malformed runtime schemas before protected work", { skip: POSTGRES_SKIP_REASON }, async t => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  try {
+    for (const malformed of ["lock-without-primary-key", "reordered-receipt-columns", "wrong-receipt-type", "nullable-receipt-column", "extra-receipt-column"]) await t.test(malformed, async () => {
+      await reset.exec('DROP TABLE IF EXISTS "sporades_resource_receipts", "sporades_resource_locks"');
+      if (malformed === "lock-without-primary-key") {
+        await reset.exec('CREATE TABLE "sporades_resource_locks" ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL)');
+        await reset.exec('CREATE TABLE "sporades_resource_receipts" ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, "operationId" TEXT NOT NULL, "inputDigest" TEXT NOT NULL, "actorDigest" TEXT NOT NULL, "resultJson" TEXT NOT NULL, "intentIdsJson" TEXT NOT NULL, "committedAt" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId", "operationId"))');
+      } else {
+        await reset.exec('CREATE TABLE "sporades_resource_locks" ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId"))');
+        const operationId = malformed === "wrong-receipt-type" ? '"operationId" INTEGER NOT NULL' : '"operationId" TEXT NOT NULL';
+        const committedAt = malformed === "nullable-receipt-column" ? '"committedAt" TEXT' : '"committedAt" TEXT NOT NULL';
+        const extra = malformed === "extra-receipt-column" ? ', "unexpected" TEXT NOT NULL' : '';
+        const columns = malformed === "reordered-receipt-columns"
+          ? `${operationId}, "resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, "inputDigest" TEXT NOT NULL, "actorDigest" TEXT NOT NULL, "resultJson" TEXT NOT NULL, "intentIdsJson" TEXT NOT NULL, ${committedAt}`
+          : `"resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, ${operationId}, "inputDigest" TEXT NOT NULL, "actorDigest" TEXT NOT NULL, "resultJson" TEXT NOT NULL, "intentIdsJson" TEXT NOT NULL, ${committedAt}`;
+        await reset.exec(`CREATE TABLE "sporades_resource_receipts" (${columns}${extra}, PRIMARY KEY ("resourceTable", "resourceId", "operationId"))`);
+      }
+      const adapter = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+      let callbacks = 0;
+      try {
+        await assert.rejects(
+          adapter.withResourceTransaction(async () => { callbacks++; }, undefined, { table: "anchors", id: malformed }),
+          { code: "RESOURCE_STORAGE_ERROR" },
+        );
+        assert.equal(callbacks, 0, `${malformed} must fail before protected work`);
+        assert.equal(Number((await reset.prepare('SELECT count(*) AS n FROM "sporades_resource_locks"').get()).n), 0);
+      } finally { await adapter.close(); }
+    });
+  } finally {
+    await reset.exec('DROP TABLE IF EXISTS "sporades_resource_receipts", "sporades_resource_locks"');
+    await reset.close();
+  }
+});
+
+test("Postgres resource precommit connection failures are redacted while callback errors remain unchanged", { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, ["anchors"]);
+  await reset.exec('DROP TABLE IF EXISTS "sporades_resource_receipts", "sporades_resource_locks"');
+  const adapter = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  const killer = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  const callbackError = Object.assign(new Error("Expected callback failure."), { code: "EXPECTED_CALLBACK_FAILURE" });
+  try {
+    await assert.rejects(adapter.withResourceTransaction(
+      () => true,
+      async transaction => {
+        const { pid } = await transaction.prepare("SELECT pg_backend_pid() AS pid").get();
+        const terminated = await killer.prepare("SELECT pg_terminate_backend(?) AS terminated").get(pid);
+        assert.equal(terminated.terminated, true);
+        await transaction.prepare("SELECT 1 AS one").get();
+      },
+      { table: "anchors", id: "precommit-connection-loss" },
+    ), error => {
+      assert.deepEqual({ code: error.code, message: error.message }, { code: "RESOURCE_STORAGE_ERROR", message: "Resource operation could not complete." });
+      assert.equal(error.detail, undefined);
+      return true;
+    });
+    await assert.rejects(adapter.withResourceTransaction(
+      () => { throw callbackError; },
+      undefined,
+      { table: "anchors", id: "callback-error" },
+    ), error => error === callbackError);
+  } finally {
+    await killer.close(); await adapter.close().catch(() => {}); await reset.close();
+  }
+});
+
+test("Postgres dedicated resource bootstrap fences repeated fresh and folded-legacy two-connection races", { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  try {
+    for (const phase of ["fresh", "folded-legacy"]) {
+      for (let attempt = 0; attempt < 6; attempt++) {
+        await reset.exec('DROP TABLE IF EXISTS "sporades_resource_receipts", "sporades_resource_locks"');
+        if (phase === "folded-legacy") {
+          await reset.exec('CREATE TABLE sporades_resource_locks (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId))');
+          await reset.exec('CREATE TABLE sporades_resource_receipts (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, operationId TEXT NOT NULL, inputDigest TEXT NOT NULL, actorDigest TEXT NOT NULL, resultJson TEXT NOT NULL, intentIdsJson TEXT NOT NULL, committedAt TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId, operationId))');
+          await reset.prepare('INSERT INTO sporades_resource_receipts VALUES (?,?,?,?,?,?,?,?)').run('legacy-table', 'legacy-id', 'legacy-operation', 'legacy-input', 'legacy-actor', '{"legacy":true}', '[]', '2030-01-01T00:00:00.000Z');
+        }
+        const left = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+        const right = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+        try {
+          const outcomes = await Promise.allSettled([left, right].map((adapter, owner) => adapter.withResourceTransaction(async () => {
+            await new Promise(resolve => setTimeout(resolve, 35));
+            return owner;
+          }, undefined, { table: 'bootstrap-race', id: `${phase}-${attempt}` })));
+          const codes = outcomes.filter(result => result.status === 'rejected').map(result => result.reason?.code);
+          assert.equal(outcomes.filter(result => result.status === 'fulfilled').length, 1, `${phase} attempt ${attempt}: one dedicated owner acquires`);
+          assert.deepEqual(codes, ['RESOURCE_BUSY'], `${phase} attempt ${attempt}: contender gets the bounded resource result, never raw PostgreSQL DDL`);
+          assert.equal(codes.includes('23505'), false);
+        } finally { await left.close(); await right.close(); }
+        const columns = await reset.prepare("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=? ORDER BY ordinal_position").all('sporades_resource_locks');
+        assert.deepEqual(columns.map(column => column.column_name), ['resourceTable', 'resourceId']);
+        if (phase === 'folded-legacy') {
+          const legacy = await reset.prepare('SELECT "resultJson" FROM "sporades_resource_receipts" WHERE "resourceTable"=? AND "resourceId"=? AND "operationId"=?').get('legacy-table', 'legacy-id', 'legacy-operation');
+          assert.equal(legacy.resultJson, '{"legacy":true}', 'the bootstrap primitive never discards a legacy receipt');
+        }
+      }
+    }
+  } finally { await reset.close(); }
+});
+
+test("Postgres bootstrap serialization releases before distinct resource authority", { skip: POSTGRES_SKIP_REASON }, async () => {
+  await withPostgresAdapter(async (owner, controls) => {
+    const entered = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const left = owner.withResourceTransaction(async () => {
+      entered.resolve();
+      await release.promise;
+      return "left";
+    }, undefined, { table: "independent-resources", id: "left" });
+    await Promise.race([entered.promise, new Promise((_, reject) => setTimeout(() => reject(new Error("owner did not acquire")), 2_000))]);
+    const contender = await controls.connect();
+    try {
+      assert.equal(await contender.withResourceTransaction(async () => "right", undefined, { table: "independent-resources", id: "right" }), "right");
+    } finally {
+      release.resolve();
+      await contender.close();
+    }
+    assert.equal(await left, "left");
+  }, { appTableNames: [] });
+});
+
+test("Postgres resource-lock storage preserves its declared camel-case identifiers through the dialect", { skip: POSTGRES_SKIP_REASON }, async () => {
+  await withPostgresAdapter(async (adapter) => {
+    await adapter.exec('DROP TABLE IF EXISTS "sporades_resource_locks"');
+    await adapter.withResourceTransaction(async () => null, undefined, { table: "grants", id: "quoted-columns" });
+    const columns = await adapter.prepare(
+      "SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=? ORDER BY ordinal_position",
+    ).all("sporades_resource_locks");
+    assert.deepEqual(columns.map((column) => column.column_name), ["resourceTable", "resourceId"]);
+  }, { appTableNames: [] });
+});
+
+test("resource transactions retain the shared public adapter method and a symbol-keyed engine primitive", { skip: POSTGRES_SKIP_REASON }, async () => {
+  const shared = createSharedDatabaseAdapterMethods(postgresDatabaseDialect());
+  const assertAdapterBoundary = (adapter) => {
+    assert.equal(Object.getOwnPropertyNames(adapter).includes("withResourceTransaction"), true);
+    assert.equal(Object.getOwnPropertyNames(adapter).includes("resourceTransactionMechanics"), false);
+    const primitive = Object.getOwnPropertySymbols(adapter).find((symbol) => symbol.description === "sporades.database.resourceTransactionMechanics");
+    assert.ok(primitive, "adapter exposes its dedicated-session primitive only at the private symbol boundary");
+    assert.equal(Object.getOwnPropertyDescriptor(adapter, primitive).enumerable, true);
+  };
+  await withSqliteAdapter(async (sqlite) => {
+    assertAdapterBoundary(sqlite);
+    assert.equal(String(sqlite.withResourceTransaction), String(shared.withResourceTransaction));
+  });
+  await withPostgresAdapter(async (postgres) => {
+    assertAdapterBoundary(postgres);
+    assert.equal(String(postgres.withResourceTransaction), String(shared.withResourceTransaction));
+    await postgres.withResourceTransaction(async (scope) => {
+      await assert.rejects(scope.withResourceTransaction(async () => assert.fail("nested resource transaction entered")), /Nested database transactions are not supported/);
+      return "shared-public-method";
+    }, undefined, { table: "grants", id: "shared-method" });
+  }, { appTableNames: [] });
+});
+
+test("terminating only the owning Postgres backend revokes its scoped connection before another owner acquires", { skip: POSTGRES_SKIP_REASON }, async () => {
+  await withPostgresAdapter(async (adapter, controls) => {
+    let release;
+    let markEntered;
+    let backendId;
+    let retained;
+    const entered = new Promise((resolve) => { markEntered = resolve; });
+    const resume = new Promise((resolve) => { release = resolve; });
+    const owner = adapter.withResourceTransaction(async (scope) => {
+      retained = scope;
+      backendId = Number((await scope.prepare("SELECT pg_backend_pid() AS pid").get()).pid);
+      markEntered();
+      await resume;
+      await scope.prepare("CREATE TABLE should_not_write_after_termination (id TEXT PRIMARY KEY)").run();
+      return "impossible";
+    }, undefined, { table: "grants", id: "terminated-grant" });
+    try {
+      await Promise.race([entered, new Promise((_, reject) => setTimeout(() => reject(new Error("owner did not expose its backend")), 2_000))]);
+      const controller = await controls.connect();
+      try {
+        assert.equal((await controller.prepare("SELECT pg_terminate_backend(?) AS terminated").get(backendId)).terminated, true);
+        await controller.withResourceTransaction(async () => null, undefined, { table: "grants", id: "terminated-grant" });
+      } finally { await controller.close(); }
+      release();
+      await assert.rejects(owner);
+      assert.throws(() => retained.prepare("SELECT 1"), /Transaction-scoped database access is no longer active/);
+    } finally { release?.(); }
+  }, { appTableNames: [] });
+});
+
+test("Postgres reports an unknown resource COMMIT after a real server commit loses its acknowledgement", { skip: POSTGRES_SKIP_REASON }, async () => {
+  const direct = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(direct, ['commit_ack_drop_rows']);
+  const target = new URL(postgresTestUrl());
+  const sockets = new Set();
+  const proxy = net.createServer((client) => {
+    const upstream = net.createConnection({ host: target.hostname, port: Number(target.port) });
+    sockets.add(client); sockets.add(upstream);
+    const remove = () => { sockets.delete(client); sockets.delete(upstream); };
+    client.once('close', remove); upstream.once('close', remove);
+    let commitForwarded = false;
+    client.on('data', chunk => {
+      if (chunk.includes(Buffer.from('COMMIT\0'))) commitForwarded = true;
+      upstream.write(chunk);
+    });
+    upstream.on('data', chunk => {
+      if (commitForwarded) { client.destroy(); upstream.destroy(); return; }
+      client.write(chunk);
+    });
+    client.on('error', () => {}); upstream.on('error', () => {});
+  });
+  await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
+  const port = proxy.address().port;
+  const proxiedUrl = new URL(postgresTestUrl()); proxiedUrl.port = String(port);
+  const proxied = await createPostgresDatabaseAdapter({ url: proxiedUrl.toString() });
+  try {
+    await assert.rejects(
+      proxied.withResourceTransaction(async transaction => {
+        await transaction.exec('CREATE TABLE commit_ack_drop_rows (id TEXT PRIMARY KEY)');
+        await transaction.prepare('INSERT INTO commit_ack_drop_rows (id) VALUES (?)').run('committed');
+      }, undefined, { table: 'grants', id: 'ack-drop' }),
+      { code: 'RESOURCE_COMMIT_UNKNOWN' },
+    );
+    assert.equal(Number((await direct.prepare('SELECT count(*) n FROM commit_ack_drop_rows').get()).n), 1);
+  } finally {
+    await proxied.close().catch(() => {}); await direct.close();
+    for (const socket of sockets) socket.destroy();
+    await new Promise(resolve => proxy.close(resolve));
+  }
+});
 
 test("endpoint source extraction excludes a trailing handler argument comma", () => {
   const [endpoint] = extractEndpoints(`

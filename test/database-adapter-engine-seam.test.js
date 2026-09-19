@@ -259,10 +259,23 @@ const MIGRATED_RUNTIME_MODULES = [
   // bootstrap writer is the atomic history/membership foundation, so retaining
   // it in the census prevents a generated Capsule from carrying only the API shell.
   { file: "teams-runtime.js", atLeast: 3, sentinel: "ensureInitialTeamOnAdapter" },
+  // Resource operations are carried as their own runtime module. Its private
+  // abort marker is what prevents a cancelled durable operation from being
+  // mistaken for an ordinary storage error, so it must remain visible even
+  // though Capsule code cannot resolve it by name. The floor is 7 against 10
+  // declarations: enough room for an honest consolidation, not enough for a
+  // partial parser result to look like the carried resource protocol.
+  { file: "resource-runtime.js", atLeast: 7, sentinel: "resourceAbortError" },
   // Headless Team Billing owns provider-correlation DDL and the fail-closed
   // projection boundary. The private timestamp validator is the final gate
   // before runtime-owned text can cross into browser state.
   { file: "team-billing-runtime.js", atLeast: 7, sentinel: "canonicalTimestamp" },
+  // The shared Team Billing quantity policy is a separately carried module:
+  // plan management, convergence, and the runtime all depend on its exact
+  // member-count floor. Its two declarations leave no private sentinel, so
+  // the canonical quantity calculation is the stable boundary. The floor of
+  // one still rejects a parse that has lost either half of this tiny module.
+  { file: "team-billing-quantity.js", atLeast: 1, sentinel: "billableTeamMemberQuantity" },
   { file: "team-billing-convergence.js", atLeast: 15, sentinel: "winsRatchet" },
   { file: "team-billing-erasure.js", atLeast: 12, sentinel: "validateEvidence" },
   { file: "team-billing-management.js", atLeast: 35, sentinel: "scheduleAfterOwnedTransaction" },

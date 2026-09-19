@@ -158,37 +158,26 @@ Promise, so there is no synchronous mode to get wrong. That option is rejected,
 and it is rejected on a specific constraint rather than on taste.
 
 ADR-0022 exposes a constrained read-only ACL context to ACL rules, with scoped
-helpers including `ctx.acl.db.get()` and `ctx.acl.storage.get()`. The runtime
-implements those helpers to fail closed when the underlying adapter read is
-asynchronous: the helper returns null to the rule and marks the evaluation, and
-the decision point denies on that mark. Making every adapter read asynchronous
-would therefore make every ACL rule that reads through an ACL context helper
-fail closed on every engine, including SQLite in a Dev session. That is a
-Capsule-facing breaking change to working Capsules, which is a worse outcome
-than the defect class this ADR closes.
+helpers including `ctx.acl.db.get()` and `ctx.acl.storage.get()`. Those helpers
+retain the adapter's dual-mode convention: SQLite can return a value directly,
+while a remote adapter can return a Promise. ACL rules may await that Promise
+and decide from the resolved value. The decision point still fails closed when
+a synchronous rule starts an asynchronous helper read and returns without it,
+so making every adapter read asynchronous would remain a Capsule-facing change
+for synchronous helper-reading rules.
 
-Writing the rule as `async` is not an escape hatch, and this ADR should not be
-read as implying one. The helper sets the mark from inside itself, before the
-rule can await anything, and the decision point tests that mark on both the
-synchronous and the awaited branch. An `async` rule doing `await
-ctx.acl.db.get(...)` is denied exactly as a synchronous one is. Async-first is
-therefore more blocked than a sync-only framing would suggest, not less.
-
-What does bound the cost is that the mark is only ever set from inside the
-`ctx.acl.db.*` and `ctx.acl.storage.*` helpers. An ACL rule that decides from
+What does bound the cost is that pending reads are only tracked inside the
+`ctx.acl.db.*`, `ctx.acl.storage.*`, and `ctx.acl.teams.*` helpers. An ACL rule that decides from
 `ctx`, `previous`, `next`, or the row alone is unaffected whatever its
 synchrony, and that is the common case. It is also worth keeping two things
 separate: ADR-0022 mandates the ACL context helpers and their read-only
 vocabulary, but says nothing about asynchrony or about failing closed. The
-fail-closed response to an asynchronous read is a property of the current
-runtime implementation, not an ADR-0022 requirement, and could in principle be
-changed by a decision that faced what helper-reading ACL rules should then do.
+fail-closed response to an unconsumed asynchronous read is a property of the
+runtime implementation, not an ADR-0022 requirement.
 
 A future reader must not reopen async-first without meeting that constraint
-first. What happens to ACL rules that read through an ACL context helper —
-synchronous or asynchronous — is an ADR-0022 question and needs its own
-specification; until it is answered, the dual-mode return convention stays and
-the invariant above is what keeps it safe.
+first. The dual-mode return convention stays: portable helper-reading ACL rules
+await results, while synchronous unawaited misuse remains fail-closed.
 
 ## The dual-mode return convention
 

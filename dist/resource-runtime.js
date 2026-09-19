@@ -15,6 +15,28 @@ export function resourceError(code) {
         ...(code === "RESOURCE_BUSY" ? { retryable: true } : {}),
     });
 }
+// There is no table to lock while a fresh PostgreSQL resource schema is being
+// created. Bootstrap therefore uses a transaction-scoped advisory lock in its
+// own short publication transaction. It must never be released before that
+// transaction commits: another connection could otherwise observe neither the
+// old nor the new schema. Normal resource scopes use the verified-ready fast
+// path supplied by the adapter and never hold this guard through a callback.
+export async function acquirePostgresResourceBootstrapLock(adapter) {
+    if (adapter.engine !== "postgres")
+        return;
+    try {
+        const row = await adapter.prepare(adapter.dialect.sql("SELECT pg_try_advisory_xact_lock(hashtext(?)) AS [acquired]"))
+            .get("sporades.resource.bootstrap.v1");
+        const acquired = row?.acquired ?? row?.pg_try_advisory_xact_lock;
+        if (acquired !== true && acquired !== "t" && acquired !== 1)
+            throw resourceError("RESOURCE_BUSY");
+    }
+    catch (error) {
+        if (error?.code === "RESOURCE_BUSY" || error?.code === "55P03" || error?.code === "57014")
+            throw resourceError("RESOURCE_BUSY");
+        throw error;
+    }
+}
 export function resourceCanonicalJson(value) {
     const ancestors = new Set();
     const visit = (input, depth) => {
@@ -71,6 +93,53 @@ function optionsSnapshot(options, status) {
     const operationId = boundedIdentity(options.operationId);
     return { table, id, operationId, digest: status ? null : createHash("sha256").update(resourceCanonicalJson(options.input)).digest("hex") };
 }
+// PostgreSQL folds the unquoted legacy receipt columns to lowercase. Keep the
+// persisted layout compatible while presenting the shared receipt shape.
+function resourceReceiptRow(adapter, row) {
+    if (!row || adapter.engine !== "postgres")
+        return row;
+    return {
+        ...row,
+        inputDigest: row.inputDigest ?? row.inputdigest,
+        actorDigest: row.actorDigest ?? row.actordigest,
+        resultJson: row.resultJson ?? row.resultjson,
+        intentIdsJson: row.intentIdsJson ?? row.intentidsjson,
+    };
+}
+async function upgradeFoldedResourceColumns(adapter, table, columns) {
+    if (adapter.engine !== "postgres")
+        return;
+    const readColumns = async () => new Set((await adapter.prepare(adapter.dialect.sql("SELECT [column_name] FROM [information_schema].[columns] WHERE [table_schema]=current_schema() AND [table_name]=?")).all(table)).map((row) => row.column_name));
+    let existing = await readColumns();
+    if (!columns.some((column) => existing.has(column.toLowerCase()) && !existing.has(column)))
+        return;
+    await adapter.exec("SAVEPOINT sporades_resource_schema_upgrade");
+    try {
+        await adapter.exec(`LOCK TABLE ${adapter.dialect.quoteIdentifier(table)} IN ACCESS EXCLUSIVE MODE`);
+        // Bootstrap serialization prevents another upgrade path, while re-reading
+        // after the table lock also makes a concurrent legacy upgrader harmless.
+        existing = await readColumns();
+        for (const column of columns) {
+            const folded = column.toLowerCase();
+            if (existing.has(folded) && !existing.has(column)) {
+                await adapter.exec(`ALTER TABLE ${adapter.dialect.quoteIdentifier(table)} RENAME COLUMN ${adapter.dialect.quoteIdentifier(folded)} TO ${adapter.dialect.quoteIdentifier(column)}`);
+                existing.delete(folded);
+                existing.add(column);
+            }
+        }
+        await adapter.exec("RELEASE SAVEPOINT sporades_resource_schema_upgrade");
+    }
+    catch (error) {
+        try {
+            await adapter.exec("ROLLBACK TO SAVEPOINT sporades_resource_schema_upgrade");
+            await adapter.exec("RELEASE SAVEPOINT sporades_resource_schema_upgrade");
+        }
+        catch { }
+        if (error?.code === "55P03" || error?.code === "57014")
+            throw resourceError("RESOURCE_BUSY");
+        throw error;
+    }
+}
 export const unsupportedResources = Object.freeze({
     async run() { throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED"); },
     async status() { throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED"); },
@@ -102,20 +171,38 @@ export function bindOuterResources(database, context, hooks) {
         : error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== undefined
             ? resourceError("RESOURCE_STORAGE_ERROR")
             : error;
+    const normalizeDatabaseOperationError = (error, definiteStorageOperation = false) => {
+        if (typeof error?.code === "string" && error.code.startsWith("RESOURCE_"))
+            return normalizeStorageError(error);
+        if (error?.code === "55P03" || error?.code === "57014")
+            return resourceError("RESOURCE_BUSY");
+        const normalized = normalizeStorageError(error);
+        if (normalized !== error)
+            return normalized;
+        if (database.adapter.engine === "postgres" && (definiteStorageOperation
+            || typeof error?.code === "string" && (/^[0-9A-Z]{5}$/.test(error.code) || ["ECONNRESET", "ECONNREFUSED", "EPIPE", "ETIMEDOUT"].includes(error.code))
+            || error?.message === "database is not open"))
+            return resourceError("RESOURCE_STORAGE_ERROR");
+        return error;
+    };
     const track = (operation) => {
         let value;
         try {
             value = operation();
         }
         catch (error) {
-            terminalError ??= normalizeStorageError(error);
+            terminalError ??= normalizeDatabaseOperationError(error);
             throw error;
         }
         if (!value || typeof value.then !== "function")
             return value;
-        const promise = Promise.resolve(value);
+        const promise = Promise.resolve(value).catch((error) => {
+            const normalized = normalizeDatabaseOperationError(error);
+            terminalError ??= normalized;
+            throw normalized;
+        });
         pending.add(promise);
-        void promise.catch((error) => { terminalError ??= normalizeStorageError(error); });
+        void promise.catch(() => { });
         return promise;
     };
     const trackExecution = (operation, poison = true) => {
@@ -154,7 +241,7 @@ export function bindOuterResources(database, context, hooks) {
             throw resourceError("RESOURCE_SCOPE_INACTIVE");
         if (used || touched)
             throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-        if (database.adapter.engine !== "sqlite" || database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true)
+        if (!(["sqlite", "postgres"].includes(database.adapter.engine)) || database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true)
             throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
         const identity = optionsSnapshot(options, status);
         if (!status && typeof callback !== "function")
@@ -201,32 +288,72 @@ export function bindOuterResources(database, context, hooks) {
         let acquired = false;
         try {
             assertLive(true);
-            // The surrounding mutation/endpoint starts deferred. Promote it to an
-            // actual SQLite writer before reading authorization so Grant, ACL and Team
-            // transitions cannot slip between the recheck and the outer commit.
+            // Acquire the resource before authorization reads. SQLite promotes its
+            // deferred writer; PostgreSQL locks the same runtime-owned row used by
+            // Job scopes, so an outer mutation/endpoint is a participant too.
             try {
-                await database.adapter.exec("CREATE TABLE IF NOT EXISTS sporades_resource_outer_fence (id INTEGER PRIMARY KEY, epoch INTEGER NOT NULL)");
-                await database.adapter.prepare("INSERT OR IGNORE INTO sporades_resource_outer_fence (id, epoch) VALUES (1, 0)").run();
-                await database.adapter.prepare("UPDATE sporades_resource_outer_fence SET epoch=epoch+1 WHERE id=1").run();
+                if (database.adapter.engine === "postgres") {
+                    await database.adapter.exec("SET LOCAL lock_timeout = '100ms'");
+                    const bootstrap = database.adapter[Symbol.for("sporades.database.resourceBootstrapMechanics")];
+                    if (typeof bootstrap !== "function")
+                        throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+                    // This uses a separate short PostgreSQL transaction if the exact
+                    // runtime schema is not already published. Do not put bootstrap DDL
+                    // in this outer handler transaction: returning from this scope is
+                    // deliberately still provisional until the outer COMMIT.
+                    await bootstrap();
+                    const consume = database.adapter[Symbol.for("sporades.database.resourceConsumptionMechanics")];
+                    if (typeof consume !== "function")
+                        throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+                    await Reflect.apply(consume, database.adapter, []);
+                    await database.adapter.prepare(database.adapter.dialect.sql("INSERT INTO [sporades_resource_locks] ([resourceTable], [resourceId]) VALUES (?, ?) ON CONFLICT ([resourceTable], [resourceId]) DO NOTHING")).run(identity.table, identity.id);
+                    const resourceLock = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [resourceTable] FROM [sporades_resource_locks] WHERE [resourceTable]=? AND [resourceId]=? FOR UPDATE NOWAIT")).get(identity.table, identity.id);
+                    if (!resourceLock)
+                        throw resourceError("RESOURCE_STORAGE_ERROR");
+                    const anchor = await database.adapter.prepare(`SELECT ${database.adapter.dialect.quoteIdentifier("id")} FROM ${database.adapter.dialect.quoteIdentifier(identity.table)} WHERE ${database.adapter.dialect.quoteIdentifier("id")}=? FOR UPDATE NOWAIT`).get(identity.id);
+                    if (!anchor)
+                        throw resourceError("RESOURCE_STORAGE_ERROR");
+                    // The short timeout bounds admission only. Authorization and callback
+                    // application writes retain the connection's normal lock-wait policy.
+                    await database.adapter.exec("SET LOCAL lock_timeout = DEFAULT");
+                }
+                else {
+                    await database.adapter.exec(database.adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_outer_fence] ([id] INTEGER PRIMARY KEY, [epoch] INTEGER NOT NULL)"));
+                    await database.adapter.prepare(database.adapter.dialect.sql("INSERT OR IGNORE INTO [sporades_resource_outer_fence] ([id], [epoch]) VALUES (1, 0)")).run();
+                    await database.adapter.prepare(database.adapter.dialect.sql("UPDATE [sporades_resource_outer_fence] SET [epoch]=[epoch]+1 WHERE [id]=1")).run();
+                }
             }
             catch (error) {
-                if (error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY")
-                    throw resourceError("RESOURCE_BUSY");
-                throw resourceError("RESOURCE_STORAGE_ERROR");
+                const normalized = error?.code === "RESOURCE_BUSY" || error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY" || error?.code === "55P03" || error?.code === "57014"
+                    ? resourceError("RESOURCE_BUSY")
+                    : resourceError("RESOURCE_STORAGE_ERROR");
+                // PostgreSQL marks the enclosing transaction failed after either
+                // acquisition statement loses NOWAIT contention. A caller may catch the
+                // bounded error, but settlement must still roll back rather than accept
+                // PostgreSQL's COMMIT-as-ROLLBACK response as a successful handler result.
+                if (database.adapter.engine === "postgres")
+                    terminalError ??= normalized;
+                throw normalized;
             }
             acquired = true;
             assertLive(true);
-            await hooks.authorize(context, parentDb, identity);
+            try {
+                await hooks.authorize(context, parentDb, identity);
+            }
+            catch (error) {
+                throw database.adapter.engine === "postgres" ? normalizeDatabaseOperationError(error) : error;
+            }
             assertLive(true);
             let receipt;
             try {
-                await database.adapter.exec("CREATE TABLE IF NOT EXISTS sporades_resource_receipts (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, operationId TEXT NOT NULL, inputDigest TEXT NOT NULL, actorDigest TEXT NOT NULL, resultJson TEXT NOT NULL, intentIdsJson TEXT NOT NULL, committedAt TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId, operationId))");
-                receipt = await database.adapter.prepare("SELECT * FROM sporades_resource_receipts WHERE resourceTable=? AND resourceId=? AND operationId=?").get(identity.table, identity.id, identity.operationId);
+                if (database.adapter.engine !== "postgres") {
+                    await database.adapter.exec(database.adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_receipts] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId]))"));
+                    await upgradeFoldedResourceColumns(database.adapter, "sporades_resource_receipts", ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"]);
+                }
+                receipt = resourceReceiptRow(database.adapter, await database.adapter.prepare(database.adapter.dialect.sql("SELECT * FROM [sporades_resource_receipts] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=?")).get(identity.table, identity.id, identity.operationId));
             }
             catch (error) {
-                if (error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== undefined)
-                    throw resourceError("RESOURCE_STORAGE_ERROR");
-                throw error;
+                throw normalizeDatabaseOperationError(error, true);
             }
             if (receipt) {
                 if (receipt.actorDigest !== actorDigest || !status && receipt.inputDigest !== identity.digest)
@@ -281,12 +408,10 @@ export function bindOuterResources(database, context, hooks) {
             }
             assertLive();
             try {
-                await database.adapter.prepare("INSERT INTO sporades_resource_receipts VALUES (?,?,?,?,?,?,?,?)").run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
+                await database.adapter.prepare(database.adapter.dialect.sql("INSERT INTO [sporades_resource_receipts] VALUES (?,?,?,?,?,?,?,?)")).run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
             }
             catch (error) {
-                if (error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== undefined)
-                    throw resourceError("RESOURCE_STORAGE_ERROR");
-                throw error;
+                throw normalizeDatabaseOperationError(error, true);
             }
             assertLive();
             return JSON.parse(resultJson);
@@ -382,7 +507,7 @@ export function bindJobResources(database, context, claim, hooks) {
     const execute = async (options, callback, status) => {
         if (!invocationActive || used || touched)
             throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-        if (database.adapter.engine !== "sqlite" || typeof database.adapter.withResourceTransaction !== "function")
+        if (!(["sqlite", "postgres"].includes(database.adapter.engine)) || (database.adapter.engine === "postgres" && database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true) || typeof database.adapter.withResourceTransaction !== "function")
             throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
         const identity = optionsSnapshot(options, status);
         if (!status && typeof callback !== "function")
@@ -426,7 +551,9 @@ export function bindJobResources(database, context, claim, hooks) {
         const watchdog = database.clock.setTimer(() => revoke(resourceError("RESOURCE_DEADLINE_EXCEEDED")), Math.max(0, deadline - database.clock.now().getTime()));
         const checkClaim = async (adapter, entry = false) => {
             assertLive(entry);
-            const row = await adapter.prepare("SELECT status, claimToken, leaseExpiresAt, cancelRequestedAt FROM sporades_jobs WHERE id=?").get(claim.id);
+            const row = await adapter.prepare(adapter.dialect.sql(database.adapter.engine === "postgres"
+                ? "SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? FOR UPDATE NOWAIT"
+                : "SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=?")).get(claim.id);
             if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt)
                 throw resourceError("RESOURCE_CLAIM_LOST");
             if (row.cancelRequestedAt)
@@ -459,8 +586,11 @@ export function bindJobResources(database, context, claim, hooks) {
                 scopeContext = hooks.createContext(guarded, controller.signal, privileged);
                 await Promise.race([hooks.authorize(scopeContext, identity), aborted]);
                 assertLive(true);
-                await guarded.exec("CREATE TABLE IF NOT EXISTS sporades_resource_receipts (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, operationId TEXT NOT NULL, inputDigest TEXT NOT NULL, actorDigest TEXT NOT NULL, resultJson TEXT NOT NULL, intentIdsJson TEXT NOT NULL, committedAt TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId, operationId))");
-                const receipt = await guarded.prepare("SELECT * FROM sporades_resource_receipts WHERE resourceTable=? AND resourceId=? AND operationId=?").get(identity.table, identity.id, identity.operationId);
+                if (database.adapter.engine !== "postgres") {
+                    await guarded.exec(adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_receipts] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId]))"));
+                    await upgradeFoldedResourceColumns(guarded, "sporades_resource_receipts", ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"]);
+                }
+                const receipt = resourceReceiptRow(database.adapter, await guarded.prepare(adapter.dialect.sql("SELECT * FROM [sporades_resource_receipts] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=?")).get(identity.table, identity.id, identity.operationId));
                 if (receipt) {
                     if (receipt.actorDigest !== actorDigest || !status && receipt.inputDigest !== identity.digest)
                         throw resourceError("RESOURCE_OPERATION_CONFLICT");
@@ -499,23 +629,33 @@ export function bindJobResources(database, context, claim, hooks) {
                 const resultJson = resourceCanonicalJson(value);
                 await hooks.stageLogs(scopeContext, logs);
                 await checkClaim(guarded);
-                await guarded.prepare("INSERT INTO sporades_resource_receipts VALUES (?,?,?,?,?,?,?,?)").run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
+                await guarded.prepare(adapter.dialect.sql("INSERT INTO [sporades_resource_receipts] VALUES (?,?,?,?,?,?,?,?)")).run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
                 await checkClaim(guarded);
                 active = false;
                 return JSON.parse(resultJson);
-            }, (adapter) => {
+            }, database.adapter.engine === "postgres" ? async (adapter) => {
+                if (context.signal?.aborted || database.__jobStopped)
+                    throw resourceAbortError();
+                if (database.clock.now().getTime() >= deadline)
+                    throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+                const row = await adapter.prepare(adapter.dialect.sql("SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? FOR UPDATE NOWAIT")).get(claim.id);
+                if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt)
+                    throw resourceError("RESOURCE_CLAIM_LOST");
+                if (row.cancelRequestedAt)
+                    throw resourceAbortError();
+            } : (adapter) => {
                 // SQLite statements and COMMIT are synchronous on this connection: this
                 // final check and the commit decision have no JavaScript await gap.
                 if (context.signal?.aborted || database.__jobStopped)
                     throw resourceAbortError();
                 if (database.clock.now().getTime() >= deadline)
                     throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
-                const row = adapter.prepare("SELECT status, claimToken, leaseExpiresAt, cancelRequestedAt FROM sporades_jobs WHERE id=?").get(claim.id);
+                const row = adapter.prepare(adapter.dialect.sql("SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=?")).get(claim.id);
                 if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt)
                     throw resourceError("RESOURCE_CLAIM_LOST");
                 if (row.cancelRequestedAt)
                     throw resourceAbortError();
-            });
+            }, { table: identity.table, id: identity.id });
             engineCommitted = true;
             active = false;
             await hooks.committed(scopeContext, logs);

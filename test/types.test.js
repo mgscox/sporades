@@ -259,9 +259,9 @@ const app = capsule({
   files: {
     accessKeys: { read: { scopes: ["todos:read"] } },
     acl: {
-      read: ({ file, ctx }) => {
+      read: async ({ file, ctx }) => {
         file.path.toUpperCase();
-        const permitted = ctx.acl.teams.isMember("00000000-0000-4000-8000-000000000000");
+        const permitted = await ctx.acl.teams.isMember("00000000-0000-4000-8000-000000000000");
         // @ts-expect-error File ACL contexts expose constrained decisions, not mutable Team management.
         ctx.teams.list();
         return permitted;
@@ -354,13 +354,13 @@ const app = capsule({
       ownerId: String(),
     }).acl({
       read: async ({ row, ctx }) => {
-        const file = ctx.acl.storage.get("files", "/avatars/profile.png");
-        const hasFile = ctx.acl.storage.exists("files", file?.id ?? "/avatars/profile.png");
-        const userExists = ctx.acl.db.exists("users", row?.authorId ?? "missing");
-        const teamMember = ctx.acl.teams.isMember("00000000-0000-4000-8000-000000000000");
-        const teamAdmin = ctx.acl.teams.isAdmin("00000000-0000-4000-8000-000000000000");
-        const teamAuthor = ctx.acl.teams.hasRole("00000000-0000-4000-8000-000000000000", "author");
-        const teamReviewer = ctx.acl.teams.hasAnyRole("00000000-0000-4000-8000-000000000000", ["author", "reviewer"]);
+        const file = await ctx.acl.storage.get("files", "/avatars/profile.png");
+        const hasFile = await ctx.acl.storage.exists("files", file?.id ?? "/avatars/profile.png");
+        const userExists = await ctx.acl.db.exists("users", row?.authorId ?? "missing");
+        const teamMember = await ctx.acl.teams.isMember("00000000-0000-4000-8000-000000000000");
+        const teamAdmin = await ctx.acl.teams.isAdmin("00000000-0000-4000-8000-000000000000");
+        const teamAuthor = await ctx.acl.teams.hasRole("00000000-0000-4000-8000-000000000000", "author");
+        const teamReviewer = await ctx.acl.teams.hasAnyRole("00000000-0000-4000-8000-000000000000", ["author", "reviewer"]);
         // @ts-expect-error Team ACL helpers are decisions, not the mutable Team management API.
         ctx.acl.teams.create("not available in ACL");
         // @ts-expect-error Team ACL role sets must be arrays.
@@ -376,8 +376,6 @@ const app = capsule({
           // @ts-expect-error ACL file metadata exposes logical bucket names, not internal bucket row IDs.
           file.bucketId;
         }
-        // @ts-expect-error ACL helper reads are synchronous at the policy boundary, not Promise-returning.
-        ctx.acl.storage.exists("files", "/avatars/profile.png").then(() => true);
         return row?.ownerId === ctx.auth.userId && userExists && hasFile === (file !== null) && file !== null && file.path.startsWith("/") && !teamMember && !teamAdmin && !teamAuthor && !teamReviewer;
       },
       write: async ({ next, previous, ctx }) => {
