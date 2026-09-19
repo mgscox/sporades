@@ -88,6 +88,7 @@ import { createPublicFileUrl, createStructuredFileError, deletePrivateFile, file
 import { jobError, scheduleSummary } from "./jobs-runtime.js";
 import { isPromiseLike, thenIfPromise } from "./maybe-promise.js";
 import { commandError } from "./runtime-errors.js";
+import { resourceError } from "./resource-runtime.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import { deserializeRow } from "./stored-value-coding.js";
 import { accessKeyCredentialLogAttribution } from "./access-keys-runtime.js";
@@ -907,7 +908,12 @@ export function bindPostgresAclDependencyLocking(database: LooseRecord, adapter:
     // A table lock covers both returned rows and an empty predicate. The
     // self-conflicting mode keeps the ACL decision stable until the transaction
     // that consumes it commits or rolls back, without lock-upgrade deadlocks.
-    await adapter.exec(`LOCK TABLE ${pending.map((tableName) => adapter.dialect.quoteIdentifier(tableName)).join(", ")} IN SHARE ROW EXCLUSIVE MODE NOWAIT`);
+    try {
+      await adapter.exec(`LOCK TABLE ${pending.map((tableName) => adapter.dialect.quoteIdentifier(tableName)).join(", ")} IN SHARE ROW EXCLUSIVE MODE NOWAIT`);
+    } catch (error: any) {
+      if (error?.code === "55P03") throw resourceError("RESOURCE_BUSY");
+      throw error;
+    }
     for (const tableName of pending) lockedTables.add(tableName);
   };
 }

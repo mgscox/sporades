@@ -138,3 +138,27 @@ real-PostgreSQL gate passed 187/187 with zero skips in 24.534 seconds. Evidence:
 `/Volumes/M2_2TB/develop/agent-net/scratch/task002-promise-probe-red.log`,
 `/Volumes/M2_2TB/develop/agent-net/scratch/task002-promise-probe-green-focused.log`,
 and `/Volumes/M2_2TB/develop/agent-net/scratch/task002-promise-probe-required-green.log`.
+
+## Ordinary ACL dependency contention normalization
+
+Connector finding `r4055053524` was reproduced from exact source baseline
+`fa474fd61e11fa289fefbc8d1d7186629ef48e98` with the task's real PostgreSQL
+harness. The focused command was
+`python3 /Volumes/M2_2TB/develop/agent-net/scratch/task002-with-postgres.py node --test --test-concurrency=1 test/acl-postgres-contention.test.js`.
+The RED run passed 1/4, failed 3/4, and skipped 0: ordinary mutation exposed
+`55P03` plus relation `policies`, while File public-URL creation and deletion
+exposed `55P03` plus relation `sporades_team_memberships`. The passing guard
+proved a real trigger-raised `55P03` after ACL dependency locking retained its
+existing error, rather than being broadly normalized. After the catch was
+scoped to the dependency `LOCK TABLE ... NOWAIT` statement and only `55P03`,
+the same command passed 4/4 with 0 failures and 0 skips. Each contention case
+also proves prompt settlement, no protected write or File effect, the fixed
+`RESOURCE_BUSY` code and message, and no backend detail or relation metadata.
+The required real-PostgreSQL resource/process gate, including this regression
+file, passed 166/166 with no failures or skips:
+`python3 /Volumes/M2_2TB/develop/agent-net/scratch/task002-with-postgres.py node --test --test-concurrency=1 test/acl-postgres-contention.test.js test/resource-transactions.test.js test/resource-postgres-process.test.js`.
+The focused non-Postgres File and ACL regression command
+`node --test --test-concurrency=1 test/server-files.test.js test/table-acl.test.js`
+passed 47/47 with no failures or skips. Build, generated-bin parity,
+`git diff --check`, and the documentation gate also passed; the documentation
+tests passed 46/46 with no skips before VitePress completed successfully.
