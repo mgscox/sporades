@@ -112,6 +112,20 @@ The required four-file real-PostgreSQL gate then passed 186/186 with no skips in
 Build, typecheck, generated-artifact parity, and the 46/46 documentation gate
 also passed in the corresponding `task002-outer-redaction-*.log` files.
 
+## Unexpected PostgreSQL index connector rework
+
+Finding `r4054971917` was reproduced at `59005492b11d4c5b6f2350ef96e67c2178c202e1`
+with a real non-unique expression index on `sporades_resource_receipts`. Its
+immutable index function raises only for the regression operation ID, so the
+baseline readiness probe accepted the schema, entered the protected callback
+once, and then failed the receipt insert. The exact focused RED run passed 0/1,
+failed 1/1, and skipped 0; the failing assertion observed callback count `1`
+instead of `0`. After readiness began rejecting every index except the exact
+primary-key backing index, the same test passed 1/1 with no skips and returned
+the fixed `RESOURCE_STORAGE_ERROR` before callback entry. The required real-PG
+`resource-transactions` plus `resource-postgres-process` gate passed 162/162
+with zero failures and zero skips.
+
 ## Promise redaction and readiness-probe review rework
 
 Review findings `4052793510` and `4052793516` were reproduced at `619e0ab5`

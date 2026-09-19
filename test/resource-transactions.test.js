@@ -1386,6 +1386,52 @@ test('Postgres resource readiness rejects malformed relations and accepts correc
   });
 });
 
+test('Postgres resource readiness rejects a receipt expression index before protected work', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  try {
+    await resetPostgresSchema(reset, ['anchors', 'writes']);
+    await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks');
+    await reset.exec('DROP FUNCTION IF EXISTS reject_resource_receipt_index_input(TEXT) CASCADE');
+    await reset.exec('CREATE TABLE sporades_resource_locks ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId"))');
+    await reset.exec('CREATE TABLE sporades_resource_receipts ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, "operationId" TEXT NOT NULL, "inputDigest" TEXT NOT NULL, "actorDigest" TEXT NOT NULL, "resultJson" TEXT NOT NULL, "intentIdsJson" TEXT NOT NULL, "committedAt" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId", "operationId"))');
+    await reset.exec("CREATE FUNCTION reject_resource_receipt_index_input(input_value TEXT) RETURNS TEXT LANGUAGE plpgsql IMMUTABLE AS $$ BEGIN IF input_value = 'expression-index-receipt' THEN RAISE EXCEPTION 'reject resource receipt'; END IF; RETURN input_value; END $$");
+    await reset.exec('CREATE INDEX unexpected_resource_expression_index ON sporades_resource_receipts (reject_resource_receipt_index_input("operationId"))');
+    assert.deepEqual(
+      await reset.prepare("SELECT indisunique, indexprs IS NOT NULL AS has_expression, indpred IS NOT NULL AS has_predicate FROM pg_catalog.pg_index WHERE indexrelid=pg_catalog.to_regclass('unexpected_resource_expression_index')").get(),
+      { indisunique: false, has_expression: true, has_predicate: false },
+      'the hostile fixture is a non-unique expression index',
+    );
+  } finally { await reset.close(); }
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  let callbacks = 0;
+  const database = await openDevDatabase('postgres-resource-receipt-expression-index', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-resource-receipt-expression-index', services: { database: { engine: 'postgres' } } }, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+    mutations: { write: mutation(ctx => ctx.resources.run({ ...options(), operationId: 'expression-index-receipt' }, async scope => {
+      callbacks++;
+      await scope.db.writes.insert({ value: 'must-not-run' });
+      return { committed: true };
+    })) },
+  }, { clock });
+  try {
+    await database.init();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'ready');
+    const result = await runMutation(database, actor, 'write', []);
+    assert.equal(result.ok, false);
+    assert.deepEqual({ code: result.error.code, message: result.error.message }, { code: 'RESOURCE_STORAGE_ERROR', message: 'Resource operation could not complete.' });
+    assert.equal(callbacks, 0, 'schema readiness rejects the expression index before protected work starts');
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM writes').get()).n), 0);
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 0);
+  } finally {
+    await database.shutdown();
+    await database.close();
+    const cleanup = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    try {
+      await cleanup.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks');
+      await cleanup.exec('DROP FUNCTION IF EXISTS reject_resource_receipt_index_input(TEXT) CASCADE');
+    } finally { await cleanup.close(); }
+  }
+});
+
 test('Postgres resource readiness rejects user database mechanisms that can remove a resource receipt', { skip: POSTGRES_SKIP_REASON }, async t => {
   for (const mode of ['before-suppress', 'after-delete', 'rewrite-instead']) await t.test(mode, async () => {
     const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });

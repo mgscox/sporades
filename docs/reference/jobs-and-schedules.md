@@ -563,8 +563,8 @@ by a later authorized receipt read; it is never reported as rollback. Resource
 log index events and their bounded payload-free JSONL copies publish only after a
 known outer commit, so an unknown outcome intentionally has no JSONL publication
 claim. PostgreSQL Jobs and outer scopes first verify the exact ordered resource
-lock and receipt columns, text types, nullability, absence of extras, and primary
-keys. The readiness query uses a separate bootstrap connection so it remains
+lock and receipt columns, text types, nullability, absence of extras, primary
+keys, and absence of every index except the primary-key backing index. The readiness query uses a separate bootstrap connection so it remains
 independent of any root transaction awaiting rollback. A missing or folded legacy schema is published by a separate
 short transaction whose transaction-scoped advisory guard remains held through
 its commit; initialized scopes take no bootstrap guard and lock the same
