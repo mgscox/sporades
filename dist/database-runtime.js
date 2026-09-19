@@ -1622,25 +1622,35 @@ export async function createPostgresDatabaseAdapter(options) {
                 await query("BEGIN ISOLATION LEVEL READ COMMITTED");
                 begun = true;
                 await query("SET LOCAL lock_timeout = '100ms'");
-                await acquirePostgresResourceBootstrapLock({ engine: "postgres", prepare: (sql) => ({ get: (...args) => query(sql, args).then((result) => result.rows[0]) }) });
                 const resourceLockTable = dialect.quoteIdentifier("sporades_resource_locks");
                 const resourceTableColumn = dialect.quoteIdentifier("resourceTable");
                 const resourceIdColumn = dialect.quoteIdentifier("resourceId");
-                await query(`CREATE TABLE IF NOT EXISTS ${resourceLockTable} (${resourceTableColumn} TEXT NOT NULL, ${resourceIdColumn} TEXT NOT NULL, PRIMARY KEY (${resourceTableColumn}, ${resourceIdColumn}))`);
-                // A pre-ADR-0039 runtime created this table with folded PostgreSQL
-                // columns. Lock the fixed runtime-owned table before inspecting and
-                // renaming it, so a concurrent resource owner cannot use its old
-                // shape between the compatibility decision and the first new claim.
-                await query(`LOCK TABLE ${resourceLockTable} IN ACCESS EXCLUSIVE MODE`);
-                const legacyLockColumns = new Set(postgresRowsFromResult(normalization, await query(`SELECT ${dialect.quoteIdentifier("column_name")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("columns")} ` +
-                    `WHERE ${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("table_name")}=?`, ["sporades_resource_locks"])).map((row) => row.column_name));
-                for (const column of ["resourceTable", "resourceId"]) {
-                    const folded = column.toLowerCase();
-                    if (legacyLockColumns.has(folded) && !legacyLockColumns.has(column)) {
-                        await query(`ALTER TABLE ${resourceLockTable} RENAME COLUMN ${dialect.quoteIdentifier(folded)} TO ${dialect.quoteIdentifier(column)}`);
-                        legacyLockColumns.delete(folded);
-                        legacyLockColumns.add(column);
+                const bootstrapAdapter = { engine: "postgres", dialect, prepare: (statement) => ({ get: (...args) => query(statement, args).then((result) => postgresRowsFromResult(normalization, result)[0] ?? null) }) };
+                const releaseBootstrap = await acquirePostgresResourceBootstrapLock(bootstrapAdapter);
+                try {
+                    await query(`CREATE TABLE IF NOT EXISTS ${resourceLockTable} (${resourceTableColumn} TEXT NOT NULL, ${resourceIdColumn} TEXT NOT NULL, PRIMARY KEY (${resourceTableColumn}, ${resourceIdColumn}))`);
+                    const bootstrapColumns = new Set(postgresRowsFromResult(normalization, await query(`SELECT ${dialect.quoteIdentifier("column_name")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("columns")} ` +
+                        `WHERE ${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("table_name")}=?`, ["sporades_resource_locks"])).map((row) => row.column_name));
+                    const requiresLegacyUpgrade = ["resourceTable", "resourceId"].some((column) => bootstrapColumns.has(column.toLowerCase()) && !bootstrapColumns.has(column));
+                    // A pre-ADR-0039 runtime created this table with folded PostgreSQL
+                    // columns. Lock the fixed runtime-owned table before inspecting and
+                    // renaming it, so a concurrent resource owner cannot use its old
+                    // shape between the compatibility decision and the first new claim.
+                    if (requiresLegacyUpgrade)
+                        await query(`LOCK TABLE ${resourceLockTable} IN ACCESS EXCLUSIVE MODE`);
+                    const legacyLockColumns = new Set(postgresRowsFromResult(normalization, await query(`SELECT ${dialect.quoteIdentifier("column_name")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("columns")} ` +
+                        `WHERE ${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("table_name")}=?`, ["sporades_resource_locks"])).map((row) => row.column_name));
+                    for (const column of ["resourceTable", "resourceId"]) {
+                        const folded = column.toLowerCase();
+                        if (legacyLockColumns.has(folded) && !legacyLockColumns.has(column)) {
+                            await query(`ALTER TABLE ${resourceLockTable} RENAME COLUMN ${dialect.quoteIdentifier(folded)} TO ${dialect.quoteIdentifier(column)}`);
+                            legacyLockColumns.delete(folded);
+                            legacyLockColumns.add(column);
+                        }
                     }
+                }
+                finally {
+                    await releaseBootstrap();
                 }
                 await query(`INSERT INTO ${resourceLockTable} (${resourceTableColumn}, ${resourceIdColumn}) VALUES (?, ?) ON CONFLICT (${resourceTableColumn}, ${resourceIdColumn}) DO NOTHING`, [resource.table, resource.id]);
                 await query(`SELECT ${resourceTableColumn} FROM ${resourceLockTable} WHERE ${resourceTableColumn}=? AND ${resourceIdColumn}=? FOR UPDATE NOWAIT`, [resource.table, resource.id]);

@@ -169,6 +169,27 @@ test("Postgres dedicated resource bootstrap fences repeated fresh and folded-leg
   } finally { await reset.close(); }
 });
 
+test("Postgres bootstrap serialization releases before distinct resource authority", { skip: POSTGRES_SKIP_REASON }, async () => {
+  await withPostgresAdapter(async (owner, controls) => {
+    const entered = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const left = owner.withResourceTransaction(async () => {
+      entered.resolve();
+      await release.promise;
+      return "left";
+    }, undefined, { table: "independent-resources", id: "left" });
+    await Promise.race([entered.promise, new Promise((_, reject) => setTimeout(() => reject(new Error("owner did not acquire")), 2_000))]);
+    const contender = await controls.connect();
+    try {
+      assert.equal(await contender.withResourceTransaction(async () => "right", undefined, { table: "independent-resources", id: "right" }), "right");
+    } finally {
+      release.resolve();
+      await contender.close();
+    }
+    assert.equal(await left, "left");
+  }, { appTableNames: [] });
+});
+
 test("Postgres resource-lock storage preserves its declared camel-case identifiers through the dialect", { skip: POSTGRES_SKIP_REASON }, async () => {
   await withPostgresAdapter(async (adapter) => {
     await adapter.exec('DROP TABLE IF EXISTS "sporades_resource_locks"');
