@@ -135,6 +135,29 @@ test("Postgres resource locks contend deterministically for both first and exist
   }, { appTableNames: [] });
 });
 
+test("Postgres resource readiness is independent of an aborted root transaction awaiting rollback", { skip: POSTGRES_SKIP_REASON }, async () => {
+  await withPostgresAdapter(async adapter => {
+    await adapter.withResourceTransaction(() => null, undefined, { table: "readiness", id: "bootstrap" });
+
+    let resourceAdmission;
+    await assert.rejects(
+      adapter.withTransaction(async transaction => {
+        const failedStatement = transaction.prepare('SELECT "missing_column" FROM "sporades_resource_locks"').get();
+        resourceAdmission = adapter.withResourceTransaction(
+          () => "independent-resource-entered",
+          undefined,
+          { table: "readiness", id: "independent" },
+        );
+        void resourceAdmission.catch(() => {});
+        await failedStatement;
+      }),
+      /missing_column/,
+    );
+
+    assert.equal(await resourceAdmission, "independent-resource-entered");
+  }, { appTableNames: [] });
+});
+
 test("Postgres resource transactions reject malformed runtime schemas before protected work", { skip: POSTGRES_SKIP_REASON }, async t => {
   const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
   try {

@@ -1581,13 +1581,17 @@ export async function createPostgresDatabaseAdapter(options) {
     // transaction's COMMIT, so a losing initializer cannot observe uncommitted
     // fresh or legacy-upgrade DDL. The cheap catalog check is the normal path.
     const ensureResourceSchemaPublished = async () => {
-        if (await resourceSchemaReady(rawQuery))
-            return;
         let bootstrap;
         let begun = false;
         try {
             bootstrap = await createPostgresConnection(url);
             const query = async (statement, params = []) => await bootstrap.query(postgresInterpolate(statement, params));
+            // Even the normal readiness probe stays off the primary client. That
+            // client may currently own an unrelated root transaction whose failed
+            // statement is queued ahead of rollback; catalog work there would inherit
+            // its aborted state instead of remaining an independent resource concern.
+            if (await resourceSchemaReady(query))
+                return;
             await query("BEGIN ISOLATION LEVEL READ COMMITTED");
             begun = true;
             await query("SET LOCAL lock_timeout = '100ms'");

@@ -274,13 +274,16 @@ test('Postgres public resource storage failures are redacted without replacing c
   const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
   await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
   const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  const callbackCaught = [];
   const operation = (kind, mode) => ({ ...options({ kind, mode }), operationId: `public-error-${kind}-${mode}` });
   const run = (kind, mode) => async ctx => ctx.resources.run(operation(kind, mode), async scope => {
     await scope.db.writes.insert({ value: `${kind}-${mode}` });
     if (mode === 'callback') throw Object.assign(new Error('Expected callback failure.'), { code: '23505', constraint: 'deliberate_callback_constraint', detail: 'deliberate callback detail' });
     if (mode === 'receipt') return { receiptFailure: true };
     const duplicate = scope.db.writes.insert({ value: `${kind}-${mode}` });
-    if (mode === 'caught') try { await duplicate; } catch {}
+    if (mode === 'caught') try { await duplicate; } catch (error) {
+      callbackCaught.push({ kind, code: error.code, message: error.message, constraint: error.constraint, detail: error.detail });
+    }
     else void duplicate.catch(() => {});
     return { impossible: true };
   });
@@ -313,6 +316,13 @@ test('Postgres public resource storage failures are redacted without replacing c
     }
     assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM writes').get()).n), 0);
     assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM sporades_resource_receipts WHERE \"operationId\" LIKE 'public-error-%'").get()).n), 0);
+    assert.deepEqual(callbackCaught, ['mutation', 'endpoint'].map(kind => ({
+      kind,
+      code: 'RESOURCE_STORAGE_ERROR',
+      message: 'Resource operation could not complete.',
+      constraint: undefined,
+      detail: undefined,
+    })));
   } finally { await database.shutdown(); await database.close(); }
 });
 

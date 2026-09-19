@@ -178,9 +178,13 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
     try { value = operation(); }
     catch (error) { terminalError ??= normalizeDatabaseOperationError(error); throw error; }
     if (!value || typeof value.then !== "function") return value;
-    const promise = Promise.resolve(value);
+    const promise = Promise.resolve(value).catch((error) => {
+      const normalized = normalizeDatabaseOperationError(error);
+      terminalError ??= normalized;
+      throw normalized;
+    });
     pending.add(promise);
-    void promise.catch((error) => { terminalError ??= normalizeDatabaseOperationError(error); });
+    void promise.catch(() => {});
     return promise;
   };
   const trackExecution = (operation: () => any, poison = true) => {

@@ -541,7 +541,10 @@ Other fixed resource errors are `RESOURCE_INVALID_INPUT`,
 connection, and other storage failures before COMMIT, including tracked
 mutation/endpoint scoped Database operations and runtime-owned receipt
 statements, use the fixed `RESOURCE_STORAGE_ERROR` code and message without
-SQLSTATE, constraint, or engine metadata. An error deliberately thrown by the
+SQLSTATE, constraint, or engine metadata. The tracked operation promise itself
+rejects with this fixed error, so awaiting and catching it inside the resource
+callback cannot inspect engine metadata; detached failures remain drained and
+poison outer settlement. An error deliberately thrown by the
 resource callback remains that callback error, including when its `code` happens
 to resemble a SQLSTATE. Cancellation keeps the existing Job cancellation
 outcome; authorization keeps opaque ACL errors.
@@ -561,7 +564,8 @@ log index events and their bounded payload-free JSONL copies publish only after 
 known outer commit, so an unknown outcome intentionally has no JSONL publication
 claim. PostgreSQL Jobs and outer scopes first verify the exact ordered resource
 lock and receipt columns, text types, nullability, absence of extras, and primary
-keys. A missing or folded legacy schema is published by a separate
+keys. The readiness query uses a separate bootstrap connection so it remains
+independent of any root transaction awaiting rollback. A missing or folded legacy schema is published by a separate
 short transaction whose transaction-scoped advisory guard remains held through
 its commit; initialized scopes take no bootstrap guard and lock the same
 `FOR UPDATE NOWAIT` resource row in their respective transaction. They then

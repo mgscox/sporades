@@ -94206,10 +94206,13 @@ function bindOuterResources(database, context, hooks) {
       throw error;
     }
     if (!value || typeof value.then !== "function") return value;
-    const promise = Promise.resolve(value);
+    const promise = Promise.resolve(value).catch((error) => {
+      const normalized = normalizeDatabaseOperationError(error);
+      terminalError ??= normalized;
+      throw normalized;
+    });
     pending.add(promise);
-    void promise.catch((error) => {
-      terminalError ??= normalizeDatabaseOperationError(error);
+    void promise.catch(() => {
     });
     return promise;
   };
@@ -98773,12 +98776,12 @@ async function createPostgresDatabaseAdapter(options) {
     return true;
   };
   const ensureResourceSchemaPublished = async () => {
-    if (await resourceSchemaReady(rawQuery)) return;
     let bootstrap;
     let begun = false;
     try {
       bootstrap = await createPostgresConnection(url);
       const query = async (statement, params = []) => await bootstrap.query(postgresInterpolate(statement, params));
+      if (await resourceSchemaReady(query)) return;
       await query("BEGIN ISOLATION LEVEL READ COMMITTED");
       begun = true;
       await query("SET LOCAL lock_timeout = '100ms'");
