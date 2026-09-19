@@ -205,6 +205,89 @@ test('Postgres public resource scopes reject a missing anchor before authorizati
   });
 });
 
+test('Postgres public resource authorization reports fixed storage errors and preserves policy decisions', { skip: POSTGRES_SKIP_REASON }, async t => {
+  for (const kind of ['mutation', 'endpoint']) for (const mode of ['sqlstate', 'connection', 'denial', 'policy', 'authorized']) await t.test(`${kind} ${mode}`, async () => {
+    const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
+    const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+    let transaction; let authorizationReads = 0; let callbacks = 0; let observed;
+    const protectedRun = async ctx => {
+      try {
+        return await ctx.resources.run(options({ authorization: mode }), async scope => {
+          callbacks++;
+          await scope.db.writes.insert({ value: `${kind}-${mode}` });
+          return { committed: true };
+        });
+      } catch (error) {
+        observed = error;
+        throw error;
+      }
+    };
+    const database = await openDevDatabase(`postgres-authorization-error-${kind}-${mode}`, '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-authorization-error', services: { database: { engine: 'postgres' } } }, {
+      schema: {
+        anchors: table({ value: Text() }).acl({ read: async () => {
+          authorizationReads++;
+          if (mode === 'sqlstate') await transaction.prepare('SELECT value::integer FROM anchors WHERE id=?').get('anchor');
+          if (mode === 'connection') await transaction.exec('SELECT pg_terminate_backend(pg_backend_pid())');
+          if (mode === 'policy') throw Object.assign(new Error('Resource operation could not complete.'), { code: 'RESOURCE_INVALID_INPUT' });
+          return mode !== 'denial';
+        }, write: () => true }),
+        writes: table({ value: Text() }),
+      },
+      mutations: kind === 'mutation' ? { write: mutation(protectedRun) } : {},
+      endpoints: kind === 'endpoint' ? { write: endpoint({ method: 'POST', path: '/authorization-error' }, protectedRun) } : {},
+    }, { clock });
+    const originalWithTransaction = database.adapter.withTransaction;
+    try {
+      await database.init();
+      await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'allowed');
+      const session = kind === 'endpoint' ? await resolveAnonymousSession(database, null) : null;
+      database.adapter.withTransaction = callback => originalWithTransaction.call(database.adapter, async tx => {
+        transaction = tx;
+        return callback(tx);
+      });
+      const execute = () => kind === 'mutation'
+        ? runMutation(database, actor, 'write', [])
+        : runEndpoint(database, database.endpoints.find(item => item.path === '/authorization-error'), new URL('http://capsule.test/authorization-error'), { method: 'POST', headers: { 'x-sporades-session-token': session.token }, async *[Symbol.asyncIterator]() {} });
+      if (mode === 'authorized') {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const result = await execute();
+          assert.deepEqual(result, kind === 'mutation' ? { ok: true, data: { committed: true }, error: null } : { committed: true });
+        }
+        assert.equal(observed, undefined);
+        assert.equal(callbacks, 1);
+      } else {
+        const expected = mode === 'denial'
+          ? { code: 'DENIED', message: 'Denied.' }
+          : { code: mode === 'policy' ? 'RESOURCE_INVALID_INPUT' : 'RESOURCE_STORAGE_ERROR', message: 'Resource operation could not complete.' };
+        if (kind === 'mutation') {
+          const result = await execute();
+          assert.equal(result.ok, false);
+          assert.deepEqual({ code: result.error.code, message: result.error.message }, expected);
+        } else await assert.rejects(execute(), expected);
+        assert.deepEqual({ code: observed.code, message: observed.message }, expected);
+        assert.equal(observed.constraint, undefined);
+        assert.equal(observed.detail, undefined);
+        assert.equal(observed.cause, undefined);
+        if (mode === 'sqlstate' || mode === 'connection') {
+          assert.deepEqual(Object.getOwnPropertyNames(observed).sort(), ['code', 'message', 'stack']);
+          assert.doesNotMatch(observed.stack, /22P02|57P01|invalid input syntax|terminating connection|database is not open/);
+        }
+        assert.equal(callbacks, 0);
+      }
+      assert.ok(authorizationReads > 0, 'the failure or decision occurs during authorization after anchor acquisition');
+      const inspector = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+      try {
+        assert.equal(Number((await inspector.prepare('SELECT count(*) n FROM writes').get()).n), mode === 'authorized' ? 1 : 0);
+        assert.equal(Number((await inspector.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), mode === 'authorized' ? 1 : 0);
+      } finally { await inspector.close(); }
+    } finally {
+      database.adapter.withTransaction = originalWithTransaction;
+      await database.shutdown(); await database.close();
+    }
+  });
+});
+
 test('Postgres caught public resource contention poisons outer settlement without losing prior runtime state', { skip: POSTGRES_SKIP_REASON }, async t => {
   for (const { kind, lockedRow } of [
     { kind: 'mutation', lockedRow: 'resource' },
@@ -346,7 +429,8 @@ test('Postgres public resource storage failures are redacted without replacing c
     await database.init();
     await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'postgres');
     await database.adapter[Symbol.for('sporades.database.resourceBootstrapMechanics')]();
-    await database.adapter.exec(`ALTER TABLE sporades_resource_receipts ADD CONSTRAINT receipt_result_json_forbidden CHECK ("resultJson" <> '{"receiptFailure":true}')`);
+    await database.adapter.exec('CREATE OR REPLACE FUNCTION sporades_test_receipt_result_forbidden() RETURNS trigger LANGUAGE plpgsql AS $trigger$ BEGIN IF NEW."resultJson" = \'{"receiptFailure":true}\' THEN RAISE EXCEPTION \'receipt result forbidden\'; END IF; RETURN NEW; END; $trigger$');
+    await database.adapter.exec(`CREATE TRIGGER receipt_result_json_forbidden BEFORE INSERT ON sporades_resource_receipts FOR EACH ROW EXECUTE FUNCTION sporades_test_receipt_result_forbidden()`);
     for (const kind of ['mutation', 'endpoint']) for (const mode of ['caught', 'unawaited', 'receipt', 'callback']) {
       const error = kind === 'mutation'
         ? (await runMutation(database, actor, mode, [])).error
@@ -372,7 +456,12 @@ test('Postgres public resource storage failures are redacted without replacing c
       constraint: undefined,
       detail: undefined,
     })));
-  } finally { await database.shutdown(); await database.close(); }
+  } finally {
+    try {
+      await database.adapter.exec('DROP TRIGGER IF EXISTS receipt_result_json_forbidden ON sporades_resource_receipts');
+      await database.adapter.exec('DROP FUNCTION IF EXISTS sporades_test_receipt_result_forbidden()');
+    } finally { await database.shutdown(); await database.close(); }
+  }
 });
 
 test('Postgres Job exact claim-row contention returns RESOURCE_BUSY without entering its resource callback', { skip: POSTGRES_SKIP_REASON }, async () => {
@@ -448,6 +537,69 @@ test('Postgres Job exact claim-row contention returns RESOURCE_BUSY without ente
     await controller?.close();
     await database.shutdown(); await database.close();
   }
+});
+
+test('Postgres rejected resource COMMIT reports a storage failure for Job mutation and endpoint scopes', { skip: POSTGRES_SKIP_REASON }, async t => {
+  for (const kind of ['job', 'mutation', 'endpoint']) await t.test(kind, async () => {
+    const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
+    const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+    let callbacks = 0; let completedCallbacks = 0;
+    const handler = ctx => ctx.resources.run(options(), async scope => {
+      callbacks++;
+      await scope.db.writes.insert({ value: 'duplicate' });
+      await scope.db.writes.insert({ value: 'duplicate' });
+      completedCallbacks++;
+      return true;
+    });
+    const database = await openDevDatabase(`postgres-rejected-commit-${kind}`, '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: `postgres-rejected-commit-${kind}`, services: { database: { engine: 'postgres' } } }, {
+      schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+      jobs: { work: job(handler) },
+      mutations: {
+        enqueue: mutation(ctx => ctx.jobs.enqueue('work', null, { retry: { maxAttempts: 1, delayMs: 0 } })),
+        write: mutation(handler),
+      },
+      endpoints: { write: endpoint({ method: 'POST', path: '/write' }, handler) },
+    }, { clock });
+    try {
+      await database.init();
+      await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'postgres');
+      await database.adapter.exec('ALTER TABLE writes ADD CONSTRAINT writes_value_deferred UNIQUE (value) DEFERRABLE INITIALLY DEFERRED');
+      const session = kind === 'endpoint' ? await resolveAnonymousSession(database, null) : null;
+      const execute = async () => {
+        if (kind === 'job') {
+          const queued = await runMutation(database, actor, 'enqueue', []);
+          assert.equal(queued.ok, true);
+          await runCurrentUserJobWorker(database);
+          const settled = await database.adapter.prepare('SELECT status,failure FROM sporades_jobs WHERE id=?').get(queued.data.id);
+          if (settled.status === 'failed') return JSON.parse(settled.failure);
+          assert.equal(settled.status, 'succeeded', settled.failure);
+          return null;
+        }
+        if (kind === 'mutation') {
+          const result = await runMutation(database, actor, 'write', []);
+          return result.ok ? null : result.error;
+        }
+        return runEndpoint(database, database.endpoints.find(item => item.path === '/write'), new URL('http://capsule.test/write'), { method: 'POST', headers: { 'x-sporades-session-token': session.token }, async *[Symbol.asyncIterator]() {} }).then(() => null, error => error);
+      };
+      const error = await execute();
+      assert.equal(callbacks, 1);
+      assert.equal(completedCallbacks, 1);
+      assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM writes').get()).n), 0);
+      assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 0);
+      assert.deepEqual({ code: error?.code, message: error?.message }, { code: 'RESOURCE_STORAGE_ERROR', message: 'Resource operation could not complete.' });
+      await database.adapter.exec('ALTER TABLE writes DROP CONSTRAINT writes_value_deferred');
+      assert.equal(await execute(), null);
+      assert.equal(callbacks, 2);
+      assert.equal(completedCallbacks, 2);
+      assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM writes').get()).n), 2);
+      assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 1);
+      assert.equal(await execute(), null);
+      assert.equal(callbacks, 2);
+      assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM writes').get()).n), 2);
+      assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 1);
+    } finally { await database.shutdown(); await database.close(); }
+  });
 });
 
 test('Postgres Job reconciles a lost resource COMMIT acknowledgement through its locked receipt without repeating writes', { skip: POSTGRES_SKIP_REASON }, async () => {
@@ -536,6 +688,7 @@ test('Postgres mutation resource scopes hold the resource lock and report a lost
     assert.deepEqual(replay, { ok: true, data: true, error: null });
     assert.equal(callbacks, 1);
     assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='outer-written-once'").get()).n), 1);
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 1);
   } finally {
     await database.shutdown(); await database.close().catch(() => {}); for (const socket of sockets) socket.destroy(); await new Promise(resolve => proxy.close(resolve));
   }
@@ -659,6 +812,112 @@ test('Postgres endpoint resource scopes reconcile a lost outer COMMIT acknowledg
   } finally {
     await database.shutdown(); await database.close().catch(() => {}); for (const socket of sockets) socket.destroy(); await new Promise(resolve => proxy.close(resolve));
   }
+});
+
+test('Postgres resource readiness rejects unexpected constraints and accepts correctly-shaped tables', { skip: POSTGRES_SKIP_REASON }, async t => {
+  const cases = [
+    ...['locks', 'receipts'].flatMap(tableName => ['unique', 'check', 'foreign-key'].map(constraint => ({ tableName, constraint }))),
+    ...['correct', 'fresh', 'folded-legacy'].map(shape => ({ shape })),
+  ];
+  for (const { tableName, constraint, shape } of cases) await t.test(shape ?? `${tableName} ${constraint}`, async () => {
+    const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    try {
+      await resetPostgresSchema(reset, ['anchors', 'writes']);
+      await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks');
+    } finally { await reset.close(); }
+    const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+    let callbacks = 0;
+    const observed = [];
+    const database = await openDevDatabase('postgres-resource-schema-constraints', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-resource-schema-constraints', services: { database: { engine: 'postgres' } } }, {
+      schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+      mutations: { write: mutation(async (ctx, id) => {
+        try {
+          return await ctx.resources.run({ ...options(), resource: { table: 'anchors', id } }, async scope => {
+            callbacks++;
+            await scope.db.writes.insert({ value: id });
+            return { committed: id };
+          });
+        } catch (error) {
+          observed.push({ code: error.code, message: error.message, constraint: error.constraint, detail: error.detail });
+          throw error;
+        }
+      }) },
+    }, { clock });
+    try {
+      await database.init();
+      for (const id of ['anchor-one', 'anchor-two']) await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run(id, clock.now().toISOString(), clock.now().toISOString(), 'ready');
+      if (shape !== 'fresh') {
+        const column = name => shape === 'folded-legacy' ? name : `"${name}"`;
+        await database.adapter.exec(`CREATE TABLE sporades_resource_locks (${column('resourceTable')} TEXT NOT NULL, ${column('resourceId')} TEXT NOT NULL, PRIMARY KEY (${column('resourceTable')}, ${column('resourceId')}))`);
+        await database.adapter.exec(`CREATE TABLE sporades_resource_receipts (${['resourceTable', 'resourceId', 'operationId', 'inputDigest', 'actorDigest', 'resultJson', 'intentIdsJson', 'committedAt'].map(name => `${column(name)} TEXT NOT NULL`).join(', ')}, PRIMARY KEY (${column('resourceTable')}, ${column('resourceId')}, ${column('operationId')}))`);
+      }
+      if (constraint) {
+        const definition = constraint === 'unique' ? 'UNIQUE ("resourceTable")'
+          : constraint === 'check' ? `CHECK ("resourceId" <> 'anchor-two')`
+          : 'FOREIGN KEY ("resourceId") REFERENCES anchors(id)';
+        await database.adapter.exec(`ALTER TABLE sporades_resource_${tableName} ADD CONSTRAINT unexpected_resource_constraint ${definition}`);
+      }
+      for (const id of ['anchor-one', 'anchor-two']) {
+        const result = await runMutation(database, actor, 'write', [id]);
+        if (constraint) {
+          assert.equal(result.ok, false, 'the readiness check rejects a table with unexpected constraints before its first write');
+          assert.deepEqual({ code: result.error.code, message: result.error.message }, { code: 'RESOURCE_STORAGE_ERROR', message: 'Resource operation could not complete.' });
+        } else assert.deepEqual(result, { ok: true, data: { committed: id }, error: null });
+      }
+      assert.equal(callbacks, constraint ? 0 : 2);
+      assert.deepEqual(observed, constraint ? Array.from({ length: 2 }, () => ({ code: 'RESOURCE_STORAGE_ERROR', message: 'Resource operation could not complete.', constraint: undefined, detail: undefined })) : []);
+      for (const name of ['writes', 'sporades_resource_locks', 'sporades_resource_receipts']) {
+        assert.equal(Number((await database.adapter.prepare(`SELECT count(*) n FROM ${name}`).get()).n), constraint ? 0 : 2);
+      }
+    } finally { await database.shutdown(); await database.close(); }
+  });
+});
+
+test('Postgres resource readiness scopes primary-key columns to the checked table', { skip: POSTGRES_SKIP_REASON }, async t => {
+  for (const tableName of ['locks', 'receipts']) for (const shape of ['correct', 'wrong-primary-key']) await t.test(`${tableName} ${shape}`, async () => {
+    const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    try {
+      await resetPostgresSchema(reset, ['resource_catalog_other', 'anchors', 'writes']);
+      await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks');
+    } finally { await reset.close(); }
+    const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+    let callbacks = 0;
+    const database = await openDevDatabase('postgres-resource-catalog-table', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-resource-catalog-table', services: { database: { engine: 'postgres' } } }, {
+      schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+      mutations: { write: mutation(ctx => ctx.resources.run(options(), async scope => {
+        callbacks++;
+        await scope.db.writes.insert({ value: 'table-scoped' });
+        return { committed: true };
+      })) },
+    }, { clock });
+    try {
+      await database.init();
+      await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'ready');
+      await database.adapter.exec('CREATE TABLE sporades_resource_locks ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId"))');
+      await database.adapter.exec('CREATE TABLE sporades_resource_receipts ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, "operationId" TEXT NOT NULL, "inputDigest" TEXT NOT NULL, "actorDigest" TEXT NOT NULL, "resultJson" TEXT NOT NULL, "intentIdsJson" TEXT NOT NULL, "committedAt" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId", "operationId"))');
+      const primaryKey = tableName === 'locks' ? ['resourceTable', 'resourceId'] : ['resourceTable', 'resourceId', 'operationId'];
+      if (shape === 'wrong-primary-key') {
+        await database.adapter.exec(`ALTER TABLE sporades_resource_${tableName} DROP CONSTRAINT sporades_resource_${tableName}_pkey`);
+        await database.adapter.exec(`ALTER TABLE sporades_resource_${tableName} ADD CONSTRAINT sporades_resource_${tableName}_pkey PRIMARY KEY (${[...primaryKey].reverse().map(name => `"${name}"`).join(', ')})`);
+      }
+      const foreignColumns = primaryKey.map((_, index) => `other_${index}`);
+      await database.adapter.exec(`CREATE TABLE resource_catalog_other (${foreignColumns.map(name => `${name} TEXT NOT NULL`).join(', ')}, CONSTRAINT sporades_resource_${tableName}_pkey FOREIGN KEY (${foreignColumns.join(', ')}) REFERENCES sporades_resource_${tableName} (${primaryKey.map(name => `"${name}"`).join(', ')}))`);
+      const result = await runMutation(database, actor, 'write', []);
+      if (shape === 'correct') {
+        assert.deepEqual(result, { ok: true, data: { committed: true }, error: null });
+      } else {
+        assert.equal(result.ok, false);
+        assert.deepEqual({ code: result.error.code, message: result.error.message }, { code: 'RESOURCE_STORAGE_ERROR', message: 'Resource operation could not complete.' });
+      }
+      assert.equal(callbacks, shape === 'correct' ? 1 : 0);
+      for (const name of ['writes', 'sporades_resource_locks', 'sporades_resource_receipts']) {
+        assert.equal(Number((await database.adapter.prepare(`SELECT count(*) n FROM ${name}`).get()).n), shape === 'correct' ? 1 : 0);
+      }
+    } finally {
+      try { await database.adapter.exec('DROP TABLE IF EXISTS resource_catalog_other, sporades_resource_receipts, sporades_resource_locks'); }
+      finally { await database.shutdown(); await database.close(); }
+    }
+  });
 });
 
 test('Postgres public mutation and endpoint bootstrap fence repeated fresh and folded-legacy races', { skip: POSTGRES_SKIP_REASON }, async () => {

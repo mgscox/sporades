@@ -330,7 +330,12 @@ export function bindOuterResources(database, context, hooks) {
             }
             acquired = true;
             assertLive(true);
-            await hooks.authorize(context, parentDb, identity);
+            try {
+                await hooks.authorize(context, parentDb, identity);
+            }
+            catch (error) {
+                throw database.adapter.engine === "postgres" ? normalizeDatabaseOperationError(error) : error;
+            }
             assertLive(true);
             let receipt;
             try {

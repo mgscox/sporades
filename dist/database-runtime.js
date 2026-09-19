@@ -1560,6 +1560,7 @@ export async function createPostgresDatabaseAdapter(options) {
     let closed = false;
     const dialect = postgresDatabaseDialect();
     const normalization = postgresRowNormalization();
+    const commitWasRejected = (error) => postgresRejectedTransactions.has(error);
     const resourceSchemas = [
         { table: "sporades_resource_locks", columns: ["resourceTable", "resourceId"], primaryKey: ["resourceTable", "resourceId"], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId])" },
         { table: "sporades_resource_receipts", columns: ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"], primaryKey: ["resourceTable", "resourceId", "operationId"], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId])" },
@@ -1572,8 +1573,11 @@ export async function createPostgresDatabaseAdapter(options) {
                 || row.is_nullable !== "NO"
                 || Number(row.ordinal_position) !== index + 1))
                 return false;
-            const primaryKey = postgresRowsFromResult(normalization, await query(`SELECT ${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("column_name")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("table_constraints")} AS ${dialect.quoteIdentifier("tc")} JOIN ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("key_column_usage")} AS ${dialect.quoteIdentifier("kcu")} ON ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("constraint_catalog")}=${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("constraint_catalog")} AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("constraint_schema")}=${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("constraint_schema")} AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("constraint_name")}=${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("constraint_name")} WHERE ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("table_name")}=? AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("constraint_type")}='PRIMARY KEY' ORDER BY ${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("ordinal_position")}`, [schema.table]));
+            const primaryKey = postgresRowsFromResult(normalization, await query(`SELECT ${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("column_name")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("table_constraints")} AS ${dialect.quoteIdentifier("tc")} JOIN ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("key_column_usage")} AS ${dialect.quoteIdentifier("kcu")} ON ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("constraint_catalog")}=${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("constraint_catalog")} AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("constraint_schema")}=${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("constraint_schema")} AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("constraint_name")}=${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("constraint_name")} AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("table_schema")}=${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("table_schema")} AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("table_name")}=${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("table_name")} WHERE ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("table_name")}=? AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("constraint_type")}='PRIMARY KEY' ORDER BY ${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("ordinal_position")}`, [schema.table]));
             if (primaryKey.length !== schema.primaryKey.length || primaryKey.some((row, index) => row.column_name !== schema.primaryKey[index]))
+                return false;
+            const extraConstraints = postgresRowsFromResult(normalization, await query(`SELECT ${dialect.quoteIdentifier("contype")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_constraint")} WHERE ${dialect.quoteIdentifier("conrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND ${dialect.quoteIdentifier("contype")} NOT IN ('p', 'n')`, [schema.table]));
+            if (extraConstraints.length !== 0)
                 return false;
         }
         return true;
@@ -1749,7 +1753,7 @@ export async function createPostgresDatabaseAdapter(options) {
                     await beforeCommit?.(transaction);
                     revokeTransactionScopedAdapter(transaction);
                     commitIssued = true;
-                    await query("COMMIT");
+                    await dedicated.query("COMMIT");
                     begun = false;
                     return result;
                 }
@@ -1761,8 +1765,11 @@ export async function createPostgresDatabaseAdapter(options) {
                         }
                         catch { }
                     }
-                    if (commitIssued)
+                    if (commitIssued) {
+                        if (commitWasRejected(error))
+                            throw resourceError("RESOURCE_STORAGE_ERROR");
                         throw Object.assign(new Error("Resource commit outcome is unknown."), { code: "RESOURCE_COMMIT_UNKNOWN" });
+                    }
                     if (error?.code === "55P03" || error?.code === "57014")
                         throw Object.assign(new Error("Resource is busy."), { code: "RESOURCE_BUSY", retryable: true });
                     throw error;
@@ -1828,8 +1835,8 @@ export async function createPostgresDatabaseAdapter(options) {
                 }
                 catch (error) {
                     if (resourceCommitIssued) {
-                        // Once COMMIT was issued its outcome is unknowable. Discard the
-                        // socket before a later receipt lookup can use this connection.
+                        if (commitWasRejected(error))
+                            throw resourceError("RESOURCE_STORAGE_ERROR");
                         needsReconnect = true;
                         try {
                             await client.close();
@@ -1876,6 +1883,7 @@ export async function createPostgresDatabaseAdapter(options) {
     };
     return adapter;
 }
+const postgresRejectedTransactions = new WeakSet();
 export async function createPostgresConnection(url) {
     const net = await import("node:net");
     const crypto = await import("node:crypto");
@@ -2005,6 +2013,10 @@ export async function createPostgresConnection(url) {
             }
             if (message.type === "Z") {
                 if (queryError) {
+                    if (message.body[0] === 0x49 && queryError.code
+                        && !queryError.code.startsWith("08") && queryError.code !== "40003") {
+                        postgresRejectedTransactions.add(queryError);
+                    }
                     throw queryError;
                 }
                 return { fields, rows, rowCount };
