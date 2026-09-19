@@ -156,6 +156,55 @@ test('Postgres public resource scopes lock the authorization anchor through oute
   });
 });
 
+test('Postgres public resource scopes reject a missing anchor before authorization and commit after insertion', { skip: POSTGRES_SKIP_REASON }, async t => {
+  for (const kind of ['mutation', 'endpoint']) await t.test(kind, async () => {
+    const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
+    const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+    let authorizationReads = 0; let callbacks = 0;
+    const protectedRun = ctx => ctx.resources.run({ ...options({ missingAnchor: kind }), operationId: `missing-anchor-${kind}` }, async scope => {
+      callbacks++;
+      await scope.db.writes.insert({ value: `missing-anchor-${kind}` });
+      return { kind };
+    });
+    const database = await openDevDatabase(`postgres-missing-anchor-${kind}`, '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: `postgres-missing-anchor-${kind}`, services: { database: { engine: 'postgres' } } }, {
+      schema: {
+        anchors: table({ value: Text() }).acl({ read: ({ row }) => { authorizationReads++; return row?.value === 'allowed'; }, write: () => true }),
+        writes: table({ value: Text() }),
+      },
+      mutations: kind === 'mutation' ? { write: mutation(protectedRun) } : {},
+      endpoints: kind === 'endpoint' ? { write: endpoint({ method: 'POST', path: '/missing-anchor' }, protectedRun) } : {},
+    }, { clock });
+    try {
+      await database.init();
+      const session = kind === 'endpoint' ? await resolveAnonymousSession(database, null) : null;
+      const execute = () => kind === 'mutation'
+        ? runMutation(database, actor, 'write', [])
+        : runEndpoint(database, database.endpoints.find(item => item.path === '/missing-anchor'), new URL('http://capsule.test/missing-anchor'), { method: 'POST', headers: { 'x-sporades-session-token': session.token }, async *[Symbol.asyncIterator]() {} });
+      const expectedError = { code: 'RESOURCE_STORAGE_ERROR', message: 'Resource operation could not complete.' };
+      if (kind === 'mutation') {
+        const result = await execute();
+        assert.equal(result.ok, false);
+        assert.deepEqual({ code: result.error.code, message: result.error.message }, expectedError);
+      } else {
+        await assert.rejects(execute(), expectedError);
+      }
+      assert.equal(authorizationReads, 0, 'a missing anchor must fail before its read ACL runs');
+      assert.equal(callbacks, 0);
+      assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM writes').get()).n), 0);
+      assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 0);
+      await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'allowed');
+      const result = await execute();
+      if (kind === 'mutation') assert.deepEqual(result, { ok: true, data: { kind }, error: null });
+      else assert.deepEqual(result, { kind });
+      assert.ok(authorizationReads > 0, 'the inserted anchor must be authorized on retry');
+      assert.equal(callbacks, 1);
+      assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM writes').get()).n), 1);
+      assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 1);
+    } finally { await database.shutdown(); await database.close(); }
+  });
+});
+
 test('Postgres caught public resource contention poisons outer settlement without losing prior runtime state', { skip: POSTGRES_SKIP_REASON }, async t => {
   for (const { kind, lockedRow } of [
     { kind: 'mutation', lockedRow: 'resource' },
