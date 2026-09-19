@@ -113,7 +113,7 @@
 // sees only builtins behind `kind: "dynamic-import"` — which is the one external ADR-0041 allows,
 // and the route the SMTP transport has always taken.
 import { chainMaybePromise, thenIfPromise } from "./maybe-promise.js";
-import { applyFileAcl } from "./acl-runtime.js";
+import { applyFileAcl, bindPostgresAclDependencyLocking } from "./acl-runtime.js";
 import { enclosingPromiseCombinatorRoot, promiseCompositionRootCandidate, releasePromiseObserver, retainPromiseObserver } from "./promise-coordinator.js";
 // Synchronous access to a Node builtin without an import — see the header. `process` is a global in
 // both places this module runs: `dist/file-storage-runtime.js` loaded as an ES module, and the
@@ -747,6 +747,7 @@ export async function createPublicFileUrl(database, auth, fileReference, options
     }
     return await runFileMetadataTransaction(database, async (sqlite) => {
         const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+        bindPostgresAclDependencyLocking(transactionDatabase, sqlite);
         const resolved = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "publicUrl");
         if (!resolved.ok) {
             return resolved;
@@ -1376,6 +1377,7 @@ export async function deletePrivateFile(database, auth, fileReference, credentia
     const now = new Date().toISOString();
     const result = await runFileMetadataTransaction(database, async (sqlite) => {
         const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+        bindPostgresAclDependencyLocking(transactionDatabase, sqlite);
         if (requireLiveActor) {
             const actor = await sqlite.lockAuthUserFileAuthority(auth?.userId);
             if (!actor || (actor.userKind === "service" && actor.lifecycleStatus !== "active")) {

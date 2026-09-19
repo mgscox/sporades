@@ -341,6 +341,7 @@ const transactionOperations = Symbol.for("sporades.database.transactionOperation
 const transactionBeforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
 const resourceTransactionMechanics = Symbol.for("sporades.database.resourceTransactionMechanics");
 const resourceBootstrapMechanics = Symbol.for("sporades.database.resourceBootstrapMechanics");
+const resourceConsumptionMechanics = Symbol.for("sporades.database.resourceConsumptionMechanics");
 
 async function runTransactionBeforeCommitChecks(transactionAdapter: LooseRecord) {
   for (const check of (transactionAdapter as any)[transactionBeforeCommitChecks] ?? []) await check();
@@ -1995,6 +1996,15 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     return true;
   };
 
+  const lockAndVerifyResourceSchema = async (transactionAdapter: LooseRecord) => {
+    const tables = resourceSchemas.map(({ table }) => dialect.quoteIdentifier(table)).join(", ");
+    await transactionAdapter.exec(`LOCK TABLE ${tables} IN ROW EXCLUSIVE MODE NOWAIT`);
+    const query = async (statement: string, params: any[] = []) => ({
+      rows: await transactionAdapter.prepare(statement).all(...params),
+    });
+    if (!await resourceSchemaReady(query)) throw resourceError("RESOURCE_STORAGE_ERROR");
+  };
+
   // Schema publication is separate from a resource or outer-handler
   // transaction. A transaction-scoped advisory lock remains held through this
   // transaction's COMMIT, so a losing initializer cannot observe uncommitted
@@ -2103,6 +2113,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     engine: "postgres",
     [Symbol.for("sporades.database.resourceTransactionEligible")]: true,
     [resourceBootstrapMechanics]: ensureResourceSchemaPublished,
+    [resourceConsumptionMechanics]: function() { return lockAndVerifyResourceSchema(this); },
     dialect,
     normalization,
     // A resource scope owns an independent READ COMMITTED backend.  Closing it
@@ -2137,6 +2148,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
         };
         await query("BEGIN ISOLATION LEVEL READ COMMITTED"); begun = true;
         await query("SET LOCAL lock_timeout = '100ms'");
+        await lockAndVerifyResourceSchema(operations);
         const resourceLockTable = dialect.quoteIdentifier("sporades_resource_locks");
         const resourceTableColumn = dialect.quoteIdentifier("resourceTable");
         const resourceIdColumn = dialect.quoteIdentifier("resourceId");

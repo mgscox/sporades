@@ -302,6 +302,10 @@ export function bindOuterResources(database, context, hooks) {
                     // in this outer handler transaction: returning from this scope is
                     // deliberately still provisional until the outer COMMIT.
                     await bootstrap();
+                    const consume = database.adapter[Symbol.for("sporades.database.resourceConsumptionMechanics")];
+                    if (typeof consume !== "function")
+                        throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+                    await Reflect.apply(consume, database.adapter, []);
                     await database.adapter.prepare(database.adapter.dialect.sql("INSERT INTO [sporades_resource_locks] ([resourceTable], [resourceId]) VALUES (?, ?) ON CONFLICT ([resourceTable], [resourceId]) DO NOTHING")).run(identity.table, identity.id);
                     const resourceLock = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [resourceTable] FROM [sporades_resource_locks] WHERE [resourceTable]=? AND [resourceId]=? FOR UPDATE NOWAIT")).get(identity.table, identity.id);
                     if (!resourceLock)

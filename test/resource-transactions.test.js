@@ -8,6 +8,7 @@ import path from 'node:path';
 import { openDevDatabase, runMutation, runEndpoint, runCurrentUserJobWorker, createControllableRuntimeClock } from '../dist/server-runtime-source.js';
 import { table, String as Text, endpoint, job, mutation, requireAuth, schedule } from '../dist/server.js';
 import { createSqliteDatabaseAdapter } from '../dist/database-runtime.js';
+import { createPublicFileUrl, deletePrivateFile } from '../dist/file-storage-runtime.js';
 import { resolveAnonymousSession } from '../dist/auth-runtime.js';
 import { resourceCanonicalJson, bindJobResources, bindOuterResources } from '../dist/resource-runtime.js';
 import { POSTGRES_SKIP_REASON, postgresTestUrl, resetPostgresSchema } from './support/database-adapter-engines.js';
@@ -187,6 +188,115 @@ test('Postgres resource ACL Team dependencies stay locked through callback settl
       await revocation;
       assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM writes WHERE value=?').get(dependency)).n), 1);
       assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts WHERE "operationId"=?').get(`acl-dependency-${dependency}`)).n), 1);
+    } finally {
+      release.resolve();
+      await execution?.catch(() => {});
+      await revocation?.catch(() => {});
+      await revoker?.close();
+      await database.shutdown(); await database.close();
+    }
+  });
+});
+
+test('ordinary Postgres ACL dependency reads stay locked through write settlement', { skip: POSTGRES_SKIP_REASON }, async t => {
+  for (const dependency of ['membership', 'application-role', 'missing-row']) await t.test(dependency, async () => {
+    const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    await resetPostgresSchema(reset, ['documents', 'policies']);
+    await reset.close();
+    const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+    const teamId = '33333333-3333-4333-8333-333333333333';
+    const linkedActor = { ...actor, userId: `ordinary-${dependency}-user`, isAuthenticated: true, isGuest: false, provider: 'email' };
+    const authorized = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const database = await openDevDatabase(`postgres-ordinary-acl-${dependency}`, '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: `postgres-ordinary-acl-${dependency}`, services: { database: { engine: 'postgres' } } }, {
+      teams: { appRoles: ['author'] },
+      schema: {
+        documents: table({ value: Text() }).acl({
+          update: async ({ ctx }) => {
+            const allowed = dependency === 'membership'
+              ? await ctx.acl.teams.isMember(teamId)
+              : dependency === 'application-role'
+                ? await ctx.acl.teams.hasRole(teamId, 'author')
+                : !await ctx.acl.db.exists('policies', 'revoked');
+            authorized.resolve();
+            await release.promise;
+            return allowed;
+          },
+        }),
+        policies: table({ value: Text() }),
+      },
+      mutations: { write: mutation(ctx => ctx.db.documents.update('document', { value: `committed-${dependency}` })) },
+    }, { clock });
+    let revoker; let execution; let revocation;
+    try {
+      await database.init();
+      const now = clock.now().toISOString();
+      await database.adapter.prepare('INSERT INTO sporades_teams (id,name,"createdAt","createdByUserId") VALUES (?,?,?,?)').run(teamId, 'Ordinary ACL Team', now, linkedActor.userId);
+      await database.adapter.prepare('INSERT INTO sporades_team_memberships ("teamId","userId",role,"createdAt") VALUES (?,?,?,?)').run(teamId, linkedActor.userId, 'member', now);
+      await database.adapter.prepare('INSERT INTO sporades_team_membership_application_roles ("teamId","userId",role,"createdAt") VALUES (?,?,?,?)').run(teamId, linkedActor.userId, 'author', now);
+      await database.adapter.prepare('INSERT INTO documents (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('document', now, now, 'original');
+      execution = runMutation(database, linkedActor, 'write', []);
+      await Promise.race([authorized.promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`${dependency} ACL did not authorize`)), 2_000))]);
+      revoker = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+      revocation = dependency === 'membership'
+        ? revoker.prepare('DELETE FROM sporades_team_memberships WHERE "teamId"=? AND "userId"=?').run(teamId, linkedActor.userId)
+        : dependency === 'application-role'
+          ? revoker.prepare('DELETE FROM sporades_team_membership_application_roles WHERE "teamId"=? AND "userId"=? AND role=?').run(teamId, linkedActor.userId, 'author')
+          : revoker.prepare('INSERT INTO policies (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('revoked', now, now, 'revoked');
+      assert.equal(await Promise.race([revocation.then(() => 'committed'), new Promise(resolve => setTimeout(() => resolve('pending'), 75))]), 'pending', `${dependency} revocation must wait for the authorized write transaction`);
+      release.resolve();
+      assert.equal((await execution).ok, true);
+      await revocation;
+      assert.equal((await database.adapter.prepare('SELECT value FROM documents WHERE id=?').get('document')).value, `committed-${dependency}`);
+    } finally {
+      release.resolve();
+      await execution?.catch(() => {});
+      await revocation?.catch(() => {});
+      await revoker?.close();
+      await database.shutdown(); await database.close();
+    }
+  });
+});
+
+test('Postgres File ACL dependencies stay locked through public URL creation and deletion', { skip: POSTGRES_SKIP_REASON }, async t => {
+  for (const operation of ['publicUrl', 'delete']) await t.test(operation, async () => {
+    const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    await resetPostgresSchema(reset, []);
+    await reset.close();
+    const teamId = '44444444-4444-4444-8444-444444444444';
+    const owner = { ...actor, userId: `file-${operation}-owner` };
+    const collaborator = { ...actor, userId: `file-${operation}-collaborator`, isAuthenticated: true, isGuest: false, provider: 'email' };
+    const authorized = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const database = await openDevDatabase(`postgres-file-acl-${operation}`, '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: `postgres-file-acl-${operation}`, services: { database: { engine: 'postgres' } } }, {
+      files: { acl: { [operation]: async ({ ctx }) => {
+        const allowed = await ctx.acl.teams.isMember(teamId);
+        authorized.resolve();
+        await release.promise;
+        return allowed;
+      } } },
+    });
+    let revoker; let execution; let revocation;
+    try {
+      await database.init();
+      database.fileStorage = { async deleteFileVersion() {}, close() {} };
+      const now = '2030-01-01T00:00:00.000Z';
+      await database.adapter.prepare('INSERT INTO sporades_teams (id,name,"createdAt","createdByUserId") VALUES (?,?,?,?)').run(teamId, 'File ACL Team', now, collaborator.userId);
+      await database.adapter.prepare('INSERT INTO sporades_team_memberships ("teamId","userId",role,"createdAt") VALUES (?,?,?,?)').run(teamId, collaborator.userId, 'member', now);
+      await database.adapter.createFileBucket({ id: `bucket-${operation}`, ownerId: owner.userId, name: 'default', createdAt: now });
+      await database.adapter.insertFileRow({ id: `file-${operation}`, ownerId: owner.userId, bucketId: `bucket-${operation}`, bucketName: 'default', path: `/shared/${operation}.txt`, name: `${operation}.txt`, type: 'text/plain', size: 5, version: 'version-1', status: 'uploaded', createdAt: now, updatedAt: now });
+      execution = operation === 'publicUrl'
+        ? createPublicFileUrl(database, collaborator, `file-${operation}`, { noExpiry: true })
+        : deletePrivateFile(database, collaborator, `file-${operation}`);
+      await Promise.race([authorized.promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`File ${operation} ACL did not authorize`)), 2_000))]);
+      revoker = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+      revocation = revoker.prepare('DELETE FROM sporades_team_memberships WHERE "teamId"=? AND "userId"=?').run(teamId, collaborator.userId);
+      assert.equal(await Promise.race([revocation.then(() => 'committed'), new Promise(resolve => setTimeout(() => resolve('pending'), 75))]), 'pending', `membership revocation must wait for File ${operation} settlement`);
+      release.resolve();
+      assert.equal((await execution).ok, true);
+      await revocation;
+      if (operation === 'publicUrl') assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_file_public_urls WHERE "fileId"=?').get(`file-${operation}`)).n), 1);
+      else assert.notEqual((await database.adapter.prepare('SELECT "deletedAt" FROM sporades_files WHERE id=?').get(`file-${operation}`)).deletedAt, null);
     } finally {
       release.resolve();
       await execution?.catch(() => {});
@@ -1067,6 +1177,60 @@ test('Postgres resource readiness rejects user database mechanisms that can remo
         await database.adapter.exec('DROP FUNCTION IF EXISTS alter_resource_receipt() CASCADE');
       }
       finally { await database.shutdown(); await database.close(); }
+    }
+  });
+});
+
+test('Postgres resource consumption locks runtime tables against trigger and rule DDL through settlement', { skip: POSTGRES_SKIP_REASON }, async t => {
+  for (const [mechanism, settlement] of [['trigger', 'commit'], ['rule', 'rollback']]) await t.test(`${mechanism} through ${settlement}`, async () => {
+    const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    await resetPostgresSchema(reset, mechanism === 'rule' ? ['anchors'] : []);
+    await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks');
+    await reset.withResourceTransaction(async () => null, undefined, { table: 'schema-lock-seed', id: mechanism });
+    if (mechanism === 'trigger') await reset.exec('CREATE FUNCTION resource_ddl_probe() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$');
+    const entered = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    let transaction; let ddl; let database;
+    const contender = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    try {
+      if (mechanism === 'trigger') {
+        transaction = reset.withResourceTransaction(async () => {
+          entered.resolve();
+          await release.promise;
+          return 'committed';
+        }, undefined, { table: 'schema-lock-test', id: mechanism });
+      } else {
+        database = await openDevDatabase('postgres-outer-resource-schema-lock', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-outer-resource-schema-lock', services: { database: { engine: 'postgres' } } }, {
+          schema: { anchors: table({ value: Text() }) },
+          mutations: { write: mutation(ctx => ctx.resources.run({ ...options(), operationId: 'outer-schema-lock' }, async () => {
+            entered.resolve();
+            await release.promise;
+            throw new Error('intentional resource rollback');
+          })) },
+        });
+        await database.init();
+        await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', '2030-01-01T00:00:00.000Z', '2030-01-01T00:00:00.000Z', 'ready');
+        transaction = runMutation(database, actor, 'write', []);
+      }
+      await Promise.race([entered.promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`${mechanism} resource transaction did not enter`)), 2_000))]);
+      ddl = mechanism === 'trigger'
+        ? contender.exec('CREATE TRIGGER resource_ddl_probe BEFORE INSERT ON sporades_resource_receipts FOR EACH ROW EXECUTE FUNCTION resource_ddl_probe()')
+        : contender.exec('CREATE RULE resource_ddl_probe AS ON INSERT TO sporades_resource_receipts DO INSTEAD NOTHING');
+      assert.equal(await Promise.race([ddl.then(() => 'finished'), new Promise(resolve => setTimeout(() => resolve('pending'), 75))]), 'pending', `${mechanism} DDL must wait for resource ${settlement}`);
+      release.resolve();
+      if (settlement === 'commit') assert.equal(await transaction, 'committed');
+      else assert.equal((await transaction).error.message, 'intentional resource rollback');
+      await ddl;
+    } finally {
+      release.resolve();
+      await transaction?.catch(() => {});
+      await ddl?.catch(() => {});
+      try { await contender.exec('DROP RULE IF EXISTS resource_ddl_probe ON sporades_resource_receipts'); } catch {}
+      try { await contender.exec('DROP TRIGGER IF EXISTS resource_ddl_probe ON sporades_resource_receipts'); } catch {}
+      try { await contender.exec('DROP FUNCTION IF EXISTS resource_ddl_probe() CASCADE'); } catch {}
+      await contender.close();
+      await database?.shutdown(); await database?.close();
+      await reset.close();
     }
   });
 });

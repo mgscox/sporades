@@ -68838,6 +68838,16 @@ function readWithAclHelperDependencies(database, tableNames, read) {
   const lock = database.lockAclHelperDependencies?.(tableNames);
   return isPromiseLike(lock) ? Promise.resolve(lock).then(read) : read();
 }
+function bindPostgresAclDependencyLocking(database, adapter) {
+  if (adapter?.engine !== "postgres" || typeof database.lockAclHelperDependencies === "function") return;
+  const lockedTables = /* @__PURE__ */ new Set();
+  database.lockAclHelperDependencies = async (tableNames) => {
+    const pending = [...new Set(tableNames)].filter((tableName) => !lockedTables.has(tableName)).sort();
+    if (pending.length === 0) return;
+    await adapter.exec(`LOCK TABLE ${pending.map((tableName) => adapter.dialect.quoteIdentifier(tableName)).join(", ")} IN SHARE ROW EXCLUSIVE MODE`);
+    for (const tableName of pending) lockedTables.add(tableName);
+  };
+}
 function aclTeamActorUserId(context) {
   const auth = context?.auth;
   if (!auth?.isAuthenticated || auth?.isGuest || typeof auth?.userId !== "string" || auth.userId.length === 0) return null;
@@ -69786,6 +69796,7 @@ async function createPublicFileUrl(database, auth, fileReference, options = {}) 
   }
   return await runFileMetadataTransaction(database, async (sqlite) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+    bindPostgresAclDependencyLocking(transactionDatabase, sqlite);
     const resolved = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "publicUrl");
     if (!resolved.ok) {
       return resolved;
@@ -70333,6 +70344,7 @@ async function deletePrivateFile(database, auth, fileReference, credential = { k
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const result = await runFileMetadataTransaction(database, async (sqlite) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+    bindPostgresAclDependencyLocking(transactionDatabase, sqlite);
     if (requireLiveActor) {
       const actor = await sqlite.lockAuthUserFileAuthority(auth?.userId);
       if (!actor || actor.userKind === "service" && actor.lifecycleStatus !== "active") {
@@ -94414,6 +94426,9 @@ function bindOuterResources(database, context, hooks) {
           const bootstrap = database.adapter[Symbol.for("sporades.database.resourceBootstrapMechanics")];
           if (typeof bootstrap !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
           await bootstrap();
+          const consume = database.adapter[Symbol.for("sporades.database.resourceConsumptionMechanics")];
+          if (typeof consume !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+          await Reflect.apply(consume, database.adapter, []);
           await database.adapter.prepare(database.adapter.dialect.sql("INSERT INTO [sporades_resource_locks] ([resourceTable], [resourceId]) VALUES (?, ?) ON CONFLICT ([resourceTable], [resourceId]) DO NOTHING")).run(identity.table, identity.id);
           const resourceLock = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [resourceTable] FROM [sporades_resource_locks] WHERE [resourceTable]=? AND [resourceId]=? FOR UPDATE NOWAIT")).get(identity.table, identity.id);
           if (!resourceLock) throw resourceError("RESOURCE_STORAGE_ERROR");
@@ -97524,6 +97539,7 @@ var transactionOperations = Symbol.for("sporades.database.transactionOperations"
 var transactionBeforeCommitChecks2 = Symbol.for("sporades.database.transactionBeforeCommitChecks");
 var resourceTransactionMechanics = Symbol.for("sporades.database.resourceTransactionMechanics");
 var resourceBootstrapMechanics = Symbol.for("sporades.database.resourceBootstrapMechanics");
+var resourceConsumptionMechanics = Symbol.for("sporades.database.resourceConsumptionMechanics");
 async function runTransactionBeforeCommitChecks(transactionAdapter) {
   for (const check of transactionAdapter[transactionBeforeCommitChecks2] ?? []) await check();
 }
@@ -98948,6 +98964,14 @@ async function createPostgresDatabaseAdapter(options) {
     }
     return true;
   };
+  const lockAndVerifyResourceSchema = async (transactionAdapter) => {
+    const tables = resourceSchemas.map(({ table }) => dialect.quoteIdentifier(table)).join(", ");
+    await transactionAdapter.exec(`LOCK TABLE ${tables} IN ROW EXCLUSIVE MODE NOWAIT`);
+    const query = async (statement, params = []) => ({
+      rows: await transactionAdapter.prepare(statement).all(...params)
+    });
+    if (!await resourceSchemaReady(query)) throw resourceError("RESOURCE_STORAGE_ERROR");
+  };
   const ensureResourceSchemaPublished = async () => {
     let bootstrap;
     let begun = false;
@@ -99057,6 +99081,9 @@ async function createPostgresDatabaseAdapter(options) {
     engine: "postgres",
     [Symbol.for("sporades.database.resourceTransactionEligible")]: true,
     [resourceBootstrapMechanics]: ensureResourceSchemaPublished,
+    [resourceConsumptionMechanics]: function() {
+      return lockAndVerifyResourceSchema(this);
+    },
     dialect,
     normalization,
     // A resource scope owns an independent READ COMMITTED backend.  Closing it
@@ -99104,6 +99131,7 @@ async function createPostgresDatabaseAdapter(options) {
         await query("BEGIN ISOLATION LEVEL READ COMMITTED");
         begun = true;
         await query("SET LOCAL lock_timeout = '100ms'");
+        await lockAndVerifyResourceSchema(operations);
         const resourceLockTable = dialect.quoteIdentifier("sporades_resource_locks");
         const resourceTableColumn = dialect.quoteIdentifier("resourceTable");
         const resourceIdColumn = dialect.quoteIdentifier("resourceId");
@@ -103047,7 +103075,6 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
               resourceEntered() {
                 resourceAttempted = true;
                 transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
-                bindPostgresResourceAclDependencyLocking(transactionDatabase, transactionAdapter);
                 transactionDatabase.log = { emit() {
                 } };
               },
@@ -103186,6 +103213,7 @@ function createTransactionDatabase(database, transactionAdapter, writeState) {
     [Symbol.for("sporades.database.outerTransactionAdapter")]: transactionAdapter,
     __pendingLogWrites: pendingLogWrites
   };
+  bindPostgresAclDependencyLocking(transactionDatabase, adapter);
   transactionDatabase.stageTeamBillingMembershipChange = (teamId) => stageTeamBillingMembershipChange(transactionDatabase, teamId);
   transactionDatabase.scheduleTeamBillingJobDispatch = () => deferOrScheduleJobDispatch(
     transactionDatabase,
@@ -103204,16 +103232,6 @@ function createTransactionDatabase(database, transactionAdapter, writeState) {
     }
   });
   return transactionDatabase;
-}
-function bindPostgresResourceAclDependencyLocking(database, adapter) {
-  if (database.adapter.engine !== "postgres" || typeof database.lockAclHelperDependencies === "function") return;
-  const lockedTables = /* @__PURE__ */ new Set();
-  database.lockAclHelperDependencies = async (tableNames) => {
-    const pending = [...new Set(tableNames)].filter((tableName) => !lockedTables.has(tableName)).sort();
-    if (pending.length === 0) return;
-    await adapter.exec(`LOCK TABLE ${pending.map((tableName) => adapter.dialect.quoteIdentifier(tableName)).join(", ")} IN SHARE ROW EXCLUSIVE MODE`);
-    for (const tableName of pending) lockedTables.add(tableName);
-  };
 }
 function atomicStripeAbortError() {
   const error = new Error("Atomic Stripe consequence aborted.");
@@ -103254,7 +103272,6 @@ function bindOrdinaryJobResourceContext(database, context, claim, privileged = f
     privileged,
     createContext(adapter, signal) {
       const scopedDatabase = createTransactionDatabase(database, adapter);
-      bindPostgresResourceAclDependencyLocking(scopedDatabase, adapter);
       scopedDatabase.log = { emit() {
       } };
       const scoped = createMutationContext(scopedDatabase, context.auth, {
@@ -105713,7 +105730,6 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
             resourceEntered() {
               resourceAttempted = true;
               transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
-              bindPostgresResourceAclDependencyLocking(transactionDatabase, transactionAdapter);
               transactionDatabase.log = { emit() {
               } };
             },

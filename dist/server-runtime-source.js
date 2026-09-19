@@ -50,7 +50,7 @@ import { deserializeFieldValue, deserializeRow, normalizeDateValue, serializeFie
 // both are exported from `acl-runtime.js` for consumers outside this file — the constant probe and
 // `test/mail.test.js` — and reach them through the `export *` below rather than through a binding
 // here, so importing them would declare a name nothing in this file reads.
-import { applyReadAcl, assertActivePrivilegedJobAccess, bindPendingAclWrites, createPrivilegedAuditEmitter, createPrivilegedAuditEmissionPublicError, createPrivilegedFileApi, createPrivilegedRunAbortError, createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi, drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit, filterRowsByReadAcl, grantPrivilegedDbAccess, isPrivilegedAuditEmissionPublicError, normalizeFileAcl, normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback, revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode, trackPendingAclWrite, } from "./acl-runtime.js";
+import { applyReadAcl, assertActivePrivilegedJobAccess, bindPendingAclWrites, bindPostgresAclDependencyLocking, createPrivilegedAuditEmitter, createPrivilegedAuditEmissionPublicError, createPrivilegedFileApi, createPrivilegedRunAbortError, createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi, drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit, filterRowsByReadAcl, grantPrivilegedDbAccess, isPrivilegedAuditEmissionPublicError, normalizeFileAcl, normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback, revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode, trackPendingAclWrite, } from "./acl-runtime.js";
 import { bindCurrentUserFileDeleteState, commitPendingCurrentUserFileByteDeletes, createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter, createCurrentUserFileApi, deletePrivateFile, drainCurrentUserFileOperations, dropPendingCurrentUserFileByteDeletes, revokeCurrentUserFileApi, getPrivateFileUrl, revokePublicFileUrl, } from "./file-storage-runtime.js";
 import { createEndpointIngressApi, drainIngressClaimAuditOutbox, finalizeEndpointIngressClaims, initializeClamavRuntime, recoverIngressClaimAuditOutbox, shutdownClamavRuntime, stageMultipartIngress, sweepExpiredFileIngress, validateMultipartIngressPolicy } from "./file-ingress-runtime.js";
 import { createEndpointFileResponseApi } from "./endpoint-file-response.js";
@@ -3517,7 +3517,6 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                             resourceEntered() {
                                 resourceAttempted = true;
                                 transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
-                                bindPostgresResourceAclDependencyLocking(transactionDatabase, transactionAdapter);
                                 // A resource attempt has a deliberately payload-free diagnostic
                                 // channel. Its authorization checks must not escape through the
                                 // ordinary transaction logger before the resource settles.
@@ -3665,6 +3664,7 @@ function createTransactionDatabase(database, transactionAdapter, writeState) {
         [Symbol.for("sporades.database.outerTransactionAdapter")]: transactionAdapter,
         __pendingLogWrites: pendingLogWrites,
     };
+    bindPostgresAclDependencyLocking(transactionDatabase, adapter);
     transactionDatabase.stageTeamBillingMembershipChange = (teamId) => stageTeamBillingMembershipChange(transactionDatabase, teamId);
     transactionDatabase.scheduleTeamBillingJobDispatch = () => deferOrScheduleJobDispatch(transactionDatabase, transactionDatabase.__rootDatabase);
     if (typeof database.log?.withDatabase === "function") {
@@ -3677,24 +3677,6 @@ function createTransactionDatabase(database, transactionAdapter, writeState) {
         },
     });
     return transactionDatabase;
-}
-function bindPostgresResourceAclDependencyLocking(database, adapter) {
-    if (database.adapter.engine !== "postgres" || typeof database.lockAclHelperDependencies === "function")
-        return;
-    const lockedTables = new Set();
-    database.lockAclHelperDependencies = async (tableNames) => {
-        const pending = [...new Set(tableNames)]
-            .filter((tableName) => !lockedTables.has(tableName))
-            .sort();
-        if (pending.length === 0)
-            return;
-        // A table lock covers both returned rows and an empty predicate, and the
-        // self-conflicting mode serializes resource policies that later promote a
-        // dependency read into a write without introducing lock-upgrade deadlocks.
-        await adapter.exec(`LOCK TABLE ${pending.map((tableName) => adapter.dialect.quoteIdentifier(tableName)).join(", ")} IN SHARE ROW EXCLUSIVE MODE`);
-        for (const tableName of pending)
-            lockedTables.add(tableName);
-    };
 }
 function atomicStripeAbortError() {
     const error = new Error("Atomic Stripe consequence aborted.");
@@ -3735,7 +3717,6 @@ function bindOrdinaryJobResourceContext(database, context, claim, privileged = f
         privileged,
         createContext(adapter, signal) {
             const scopedDatabase = createTransactionDatabase(database, adapter);
-            bindPostgresResourceAclDependencyLocking(scopedDatabase, adapter);
             // Do not let ACL denials or app logs write outside the owning transaction.
             scopedDatabase.log = { emit() { } };
             const scoped = createMutationContext(scopedDatabase, context.auth, {
@@ -6332,7 +6313,6 @@ export async function runMutation(database, auth, mutationName, args, options = 
                         resourceEntered() {
                             resourceAttempted = true;
                             transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
-                            bindPostgresResourceAclDependencyLocking(transactionDatabase, transactionAdapter);
                             // An outer resource has its own bounded, payload-free diagnostics.
                             // Suppress ordinary ACL/app logging for its full attempted lifetime.
                             transactionDatabase.log = { emit() { } };

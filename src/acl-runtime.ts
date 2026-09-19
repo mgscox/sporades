@@ -896,6 +896,22 @@ function readWithAclHelperDependencies(database: LooseRecord, tableNames: string
   return isPromiseLike(lock) ? Promise.resolve(lock).then(read) : read();
 }
 
+export function bindPostgresAclDependencyLocking(database: LooseRecord, adapter: LooseRecord) {
+  if (adapter?.engine !== "postgres" || typeof database.lockAclHelperDependencies === "function") return;
+  const lockedTables = new Set<string>();
+  database.lockAclHelperDependencies = async (tableNames: string[]) => {
+    const pending = [...new Set(tableNames)]
+      .filter((tableName) => !lockedTables.has(tableName))
+      .sort();
+    if (pending.length === 0) return;
+    // A table lock covers both returned rows and an empty predicate. The
+    // self-conflicting mode keeps the ACL decision stable until the transaction
+    // that consumes it commits or rolls back, without lock-upgrade deadlocks.
+    await adapter.exec(`LOCK TABLE ${pending.map((tableName) => adapter.dialect.quoteIdentifier(tableName)).join(", ")} IN SHARE ROW EXCLUSIVE MODE`);
+    for (const tableName of pending) lockedTables.add(tableName);
+  };
+}
+
 function aclTeamActorUserId(context: LooseRecord) {
   const auth = context?.auth;
   if (!auth?.isAuthenticated || auth?.isGuest || typeof auth?.userId !== "string" || auth.userId.length === 0) return null;

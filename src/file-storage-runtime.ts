@@ -118,7 +118,7 @@ import type { BinaryLike, KeyObject } from "node:crypto";
 import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
 
 import { chainMaybePromise, thenIfPromise } from "./maybe-promise.js";
-import { applyFileAcl } from "./acl-runtime.js";
+import { applyFileAcl, bindPostgresAclDependencyLocking } from "./acl-runtime.js";
 import type { HelperError } from "./runtime-errors.js";
 import { enclosingPromiseCombinatorRoot, promiseCompositionRootCandidate, releasePromiseObserver, retainPromiseObserver } from "./promise-coordinator.js";
 
@@ -882,6 +882,7 @@ export async function createPublicFileUrl(database: LooseRecord, auth: LooseReco
   }
   return await runFileMetadataTransaction(database, async (sqlite: LooseRecord) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+    bindPostgresAclDependencyLocking(transactionDatabase, sqlite);
     const resolved: any = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "publicUrl");
     if (!resolved.ok) {
       return resolved;
@@ -1540,6 +1541,7 @@ export async function deletePrivateFile(
   const now = new Date().toISOString();
   const result = await runFileMetadataTransaction(database, async (sqlite: LooseRecord) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+    bindPostgresAclDependencyLocking(transactionDatabase, sqlite);
     if (requireLiveActor) {
       const actor = await sqlite.lockAuthUserFileAuthority(auth?.userId);
       if (!actor || (actor.userKind === "service" && actor.lifecycleStatus !== "active")) {

@@ -147,6 +147,7 @@ export declare function runTableWriteWithAcl(database: any, table: LooseRecord, 
 export declare function applyReadAcl(database: any, table: LooseRecord, row: any, context: any): boolean | Promise<boolean>;
 export declare function filterRowsByReadAcl(database: any, table: any, rows: any[], context: any): any[] | Promise<any[]>;
 export declare const ACL_HELPER_STATE: unique symbol;
+export declare function bindPostgresAclDependencyLocking(database: LooseRecord, adapter: LooseRecord): void;
 export declare function emitAclDeniedLog(database: LooseRecord, details: LooseRecord): void;
 export declare function assertActivePrivilegedJobAccess(contextGetter: () => LooseRecord): void;
 export declare function drainPendingAclWrites(context: LooseRecord): Promise<void>;
