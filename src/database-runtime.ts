@@ -1937,10 +1937,16 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
   const resourceSchemaReady = async (query: (sql: string, params?: any[]) => Promise<any>) => {
     for (const schema of resourceSchemas) {
       const relations = postgresRowsFromResult(normalization, await query(
-        `SELECT ${dialect.quoteIdentifier("relkind")}, ${dialect.quoteIdentifier("relpersistence")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_class")} WHERE ${dialect.quoteIdentifier("oid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?))`,
+        `SELECT ${dialect.quoteIdentifier("relation")}.${dialect.quoteIdentifier("relkind")}, ${dialect.quoteIdentifier("relation")}.${dialect.quoteIdentifier("relpersistence")}, ${dialect.quoteIdentifier("relation")}.${dialect.quoteIdentifier("relrowsecurity")}, ${dialect.quoteIdentifier("relation")}.${dialect.quoteIdentifier("relforcerowsecurity")}, EXISTS (SELECT 1 FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_policy")} AS ${dialect.quoteIdentifier("policy")} WHERE ${dialect.quoteIdentifier("policy")}.${dialect.quoteIdentifier("polrelid")}=${dialect.quoteIdentifier("relation")}.${dialect.quoteIdentifier("oid")}) AS ${dialect.quoteIdentifier("has_policies")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_class")} AS ${dialect.quoteIdentifier("relation")} WHERE ${dialect.quoteIdentifier("relation")}.${dialect.quoteIdentifier("oid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?))`,
         [schema.table],
       ));
-      if (relations.length !== 1 || relations[0].relkind !== "r" || relations[0].relpersistence !== "p") return false;
+      if (relations.length !== 1
+        || relations[0].relkind !== "r"
+        || relations[0].relpersistence !== "p"
+        || relations[0].relrowsecurity
+        || relations[0].relforcerowsecurity
+        || relations[0].has_policies
+      ) return false;
       const rows = postgresRowsFromResult(normalization, await query(
         `SELECT ${dialect.quoteIdentifier("column_name")}, ${dialect.quoteIdentifier("data_type")}, ${dialect.quoteIdentifier("is_nullable")}, ${dialect.quoteIdentifier("ordinal_position")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("columns")} WHERE ${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("table_name")}=? ORDER BY ${dialect.quoteIdentifier("ordinal_position")}`,
         [schema.table],
@@ -1956,6 +1962,15 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
         [schema.table],
       ));
       if (primaryKey.length !== schema.primaryKey.length || primaryKey.some((row: any, index: number) => row.column_name !== schema.primaryKey[index])) return false;
+      const primaryKeyCollations = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attname")}, ${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attcollation")}, ${dialect.quoteIdentifier("type")}.${dialect.quoteIdentifier("typcollation")}, ${dialect.quoteIdentifier("collation")}.${dialect.quoteIdentifier("collisdeterministic")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_attribute")} AS ${dialect.quoteIdentifier("attribute")} JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_type")} AS ${dialect.quoteIdentifier("type")} ON ${dialect.quoteIdentifier("type")}.${dialect.quoteIdentifier("oid")}=${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("atttypid")} LEFT JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_collation")} AS ${dialect.quoteIdentifier("collation")} ON ${dialect.quoteIdentifier("collation")}.${dialect.quoteIdentifier("oid")}=${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attcollation")} WHERE ${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND ${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attname")} IN (${schema.primaryKey.map(() => "?").join(", ")}) AND ${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attnum")}>0 AND NOT ${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attisdropped")}`,
+        [schema.table, ...schema.primaryKey],
+      ));
+      if (primaryKeyCollations.length !== schema.primaryKey.length || primaryKeyCollations.some((row: any) =>
+        !schema.primaryKey.includes(row.attname)
+        || Number(row.attcollation) !== Number(row.typcollation)
+        || row.collisdeterministic !== true
+      )) return false;
       const extraConstraints = postgresRowsFromResult(normalization, await query(
         `SELECT ${dialect.quoteIdentifier("contype")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_constraint")} WHERE ${dialect.quoteIdentifier("conrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND ${dialect.quoteIdentifier("contype")} NOT IN ('p', 'n')`,
         [schema.table],

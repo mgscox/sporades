@@ -1056,6 +1056,93 @@ test('Postgres resource readiness rejects user database mechanisms that can remo
   });
 });
 
+test('Postgres resource readiness rejects forced row security that can hide a committed receipt', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  try {
+    await resetPostgresSchema(reset, ['anchors', 'writes']);
+    await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks');
+    await reset.exec('DROP ROLE IF EXISTS sporades_resource_rls_reader');
+    await reset.exec('CREATE TABLE sporades_resource_locks ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId"))');
+    await reset.exec('CREATE TABLE sporades_resource_receipts ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, "operationId" TEXT NOT NULL, "inputDigest" TEXT NOT NULL, "actorDigest" TEXT NOT NULL, "resultJson" TEXT NOT NULL, "intentIdsJson" TEXT NOT NULL, "committedAt" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId", "operationId"))');
+    await reset.exec('ALTER TABLE sporades_resource_receipts ENABLE ROW LEVEL SECURITY');
+    await reset.exec('ALTER TABLE sporades_resource_receipts FORCE ROW LEVEL SECURITY');
+    await reset.exec('CREATE POLICY hide_resource_receipt_reads ON sporades_resource_receipts FOR SELECT USING (false)');
+    await reset.exec('CREATE POLICY allow_resource_receipt_inserts ON sporades_resource_receipts FOR INSERT WITH CHECK (true)');
+    await reset.exec('CREATE ROLE sporades_resource_rls_reader NOLOGIN');
+    await reset.exec('GRANT SELECT ON sporades_resource_receipts TO sporades_resource_rls_reader');
+    await reset.prepare('INSERT INTO sporades_resource_receipts VALUES (?,?,?,?,?,?,?,?)').run('anchors', 'anchor', 'hidden-by-rls', 'input', 'actor', '{}', '[]', '2030-01-01T00:00:00.000Z');
+    await reset.exec('SET ROLE sporades_resource_rls_reader');
+    try {
+      assert.equal((await reset.prepare("SELECT row_security_active('sporades_resource_receipts') AS active").get()).active, true);
+      assert.equal(Number((await reset.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 0, 'forced row security hides the committed receipt from a non-bypass role');
+    } finally { await reset.exec('RESET ROLE'); }
+  } finally { await reset.close(); }
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  let callbacks = 0;
+  const database = await openDevDatabase('postgres-resource-receipt-rls', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-resource-receipt-rls', services: { database: { engine: 'postgres' } } }, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+    mutations: { write: mutation(ctx => ctx.resources.run({ ...options(), operationId: 'forced-rls-receipt' }, async scope => {
+      callbacks++;
+      await scope.db.writes.insert({ value: 'must-not-commit' });
+      return { committed: true };
+    })) },
+  }, { clock });
+  try {
+    await database.init();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'ready');
+    const result = await runMutation(database, actor, 'write', []);
+    assert.equal(result.ok, false);
+    assert.deepEqual({ code: result.error.code, message: result.error.message }, { code: 'RESOURCE_STORAGE_ERROR', message: 'Resource operation could not complete.' });
+    assert.equal(callbacks, 0, 'schema readiness rejects receipt-hiding row security before protected work starts');
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM writes').get()).n), 0);
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts WHERE "operationId"=?').get('forced-rls-receipt')).n), 0);
+  } finally {
+    try {
+      await database.adapter.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks');
+      await database.adapter.exec('DROP ROLE IF EXISTS sporades_resource_rls_reader');
+    } finally { await database.shutdown(); await database.close(); }
+  }
+});
+
+test('Postgres resource readiness rejects case-folding operation identity collation', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  try {
+    await resetPostgresSchema(reset, ['anchors', 'writes']);
+    await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks');
+    await reset.exec('DROP COLLATION IF EXISTS sporades_resource_casefold');
+    await reset.exec("CREATE COLLATION sporades_resource_casefold (provider = icu, locale = 'und-u-ks-level2', deterministic = false)");
+    await reset.exec('CREATE TABLE sporades_resource_locks ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId"))');
+    await reset.exec('CREATE TABLE sporades_resource_receipts ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, "operationId" TEXT COLLATE sporades_resource_casefold NOT NULL, "inputDigest" TEXT NOT NULL, "actorDigest" TEXT NOT NULL, "resultJson" TEXT NOT NULL, "intentIdsJson" TEXT NOT NULL, "committedAt" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId", "operationId"))');
+    const identity = await reset.prepare("SELECT 'CaseFoldOperation' COLLATE sporades_resource_casefold = 'casefoldoperation' COLLATE sporades_resource_casefold AS collides").get();
+    assert.equal(identity.collides, true, 'the seeded primary-key collation folds distinct operation IDs together');
+  } finally { await reset.close(); }
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  let callbacks = 0;
+  const database = await openDevDatabase('postgres-resource-receipt-collation', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-resource-receipt-collation', services: { database: { engine: 'postgres' } } }, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+    mutations: { write: mutation(ctx => ctx.resources.run({ ...options(), operationId: 'CaseFoldOperation' }, async scope => {
+      callbacks++;
+      await scope.db.writes.insert({ value: 'must-not-commit' });
+      return { committed: true };
+    })) },
+  }, { clock });
+  try {
+    await database.init();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'ready');
+    const result = await runMutation(database, actor, 'write', []);
+    assert.equal(result.ok, false);
+    assert.deepEqual({ code: result.error.code, message: result.error.message }, { code: 'RESOURCE_STORAGE_ERROR', message: 'Resource operation could not complete.' });
+    assert.equal(callbacks, 0, 'schema readiness rejects case-folding receipt identity before protected work starts');
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM writes').get()).n), 0);
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 0);
+  } finally {
+    try {
+      await database.adapter.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks');
+      await database.adapter.exec('DROP COLLATION IF EXISTS sporades_resource_casefold');
+    } finally { await database.shutdown(); await database.close(); }
+  }
+});
+
 test('Postgres resource readiness scopes primary-key columns to the checked table', { skip: POSTGRES_SKIP_REASON }, async t => {
   for (const tableName of ['locks', 'receipts']) for (const shape of ['correct', 'wrong-primary-key']) await t.test(`${tableName} ${shape}`, async () => {
     const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
