@@ -146,14 +146,26 @@ test("Postgres resource-lock storage preserves its declared camel-case identifie
   }, { appTableNames: [] });
 });
 
-test("resource transactions retain the shared public adapter method across SQLite and Postgres", { skip: POSTGRES_SKIP_REASON }, async () => {
+test("resource transactions retain the shared public adapter method and a symbol-keyed engine primitive", { skip: POSTGRES_SKIP_REASON }, async () => {
   const shared = createSharedDatabaseAdapterMethods(postgresDatabaseDialect());
+  const assertAdapterBoundary = (adapter) => {
+    assert.equal(Object.getOwnPropertyNames(adapter).includes("withResourceTransaction"), true);
+    assert.equal(Object.getOwnPropertyNames(adapter).includes("resourceTransactionMechanics"), false);
+    const primitive = Object.getOwnPropertySymbols(adapter).find((symbol) => symbol.description === "sporades.database.resourceTransactionMechanics");
+    assert.ok(primitive, "adapter exposes its dedicated-session primitive only at the private symbol boundary");
+    assert.equal(Object.getOwnPropertyDescriptor(adapter, primitive).enumerable, true);
+  };
   await withSqliteAdapter(async (sqlite) => {
+    assertAdapterBoundary(sqlite);
     assert.equal(String(sqlite.withResourceTransaction), String(shared.withResourceTransaction));
   });
   await withPostgresAdapter(async (postgres) => {
+    assertAdapterBoundary(postgres);
     assert.equal(String(postgres.withResourceTransaction), String(shared.withResourceTransaction));
-    await postgres.withResourceTransaction(async () => "shared-public-method", undefined, { table: "grants", id: "shared-method" });
+    await postgres.withResourceTransaction(async (scope) => {
+      await assert.rejects(scope.withResourceTransaction(async () => assert.fail("nested resource transaction entered")), /Nested database transactions are not supported/);
+      return "shared-public-method";
+    }, undefined, { table: "grants", id: "shared-method" });
   }, { appTableNames: [] });
 });
 
