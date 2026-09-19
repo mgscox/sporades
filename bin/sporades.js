@@ -102901,7 +102901,9 @@ function bindOrdinaryJobResourceContext(database, context, claim, privileged = f
     async authorize(scoped, identity) {
       const scopedDatabase = scopeDatabases.get(scoped);
       const table = database.schema.tables.find((candidate) => candidate.name === identity.table);
-      const stored = await scopedDatabase.adapter.selectAppRowById(table, identity.id);
+      const stored = database.adapter.engine === "postgres" ? await scopedDatabase.adapter.prepare(
+        `SELECT * FROM ${scopedDatabase.adapter.dialect.quoteIdentifier(table.name)} WHERE ${scopedDatabase.adapter.dialect.quoteIdentifier("id")} = ? FOR UPDATE`
+      ).get(identity.id) : await scopedDatabase.adapter.selectAppRowById(table, identity.id);
       const row = stored ? deserializeRow(table, stored) : null;
       if (!row || !await applyReadAcl(scopedDatabase, table, row, scoped)) {
         throw commandError2("Denied.", "The current user is not allowed to perform this operation.", "DENIED");

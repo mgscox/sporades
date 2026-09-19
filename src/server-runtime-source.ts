@@ -3926,7 +3926,17 @@ function bindOrdinaryJobResourceContext(database: LooseRecord, context: LooseRec
     async authorize(scoped: LooseRecord, identity: LooseRecord) {
       const scopedDatabase = scopeDatabases.get(scoped)!;
       const table = database.schema.tables.find((candidate: LooseRecord) => candidate.name === identity.table);
-      const stored = await scopedDatabase.adapter.selectAppRowById(table, identity.id);
+      // PostgreSQL needs the anchor lock before its current ACL decision.  The
+      // resource and Job rows are already locked by the owning resource
+      // transaction; keeping this final authorization row lock through commit
+      // prevents a concurrent revocation from winning between authorization and
+      // the protected write. SQLite's BEGIN IMMEDIATE writer already supplies
+      // that exclusion, so retain its ordinary lookup and ACL behaviour.
+      const stored = database.adapter.engine === "postgres"
+        ? await scopedDatabase.adapter.prepare(
+          `SELECT * FROM ${scopedDatabase.adapter.dialect.quoteIdentifier(table.name)} WHERE ${scopedDatabase.adapter.dialect.quoteIdentifier("id")} = ? FOR UPDATE`,
+        ).get(identity.id)
+        : await scopedDatabase.adapter.selectAppRowById(table, identity.id);
       const row = stored ? deserializeRow(table, stored) : null;
       if (!row || !await applyReadAcl(scopedDatabase, table, row, scoped)) {
         throw commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");

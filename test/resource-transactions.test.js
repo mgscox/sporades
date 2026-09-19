@@ -59,6 +59,72 @@ test('Postgres Job resource scope commits a canonical receipt through its dedica
   } finally { await database.shutdown(); await database.close(); }
 });
 
+test('Postgres Job locks the authorization anchor before a concurrent revocation can commit', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  let releaseAuthorization;
+  let markAuthorizationRead;
+  const authorizationRead = new Promise(resolve => { markAuthorizationRead = resolve; });
+  const authorizationRelease = new Promise(resolve => { releaseAuthorization = resolve; });
+  const database = await openDevDatabase('postgres-resource-authorization-lock-test', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-resource-authorization-lock', services: { database: { engine: 'postgres' } } }, {
+    schema: {
+      anchors: table({ value: Text() }).acl({ read: ({ row }) => row?.value === 'allowed', write: () => true }),
+      writes: table({ value: Text() }),
+    },
+    jobs: { work: job(ctx => ctx.resources.run(options({ authorization: 'locked' }), async scope => {
+      await scope.db.writes.insert({ value: 'protected-after-authorization' });
+      return { committed: true };
+    })) },
+    mutations: { enqueue: mutation(ctx => ctx.jobs.enqueue('work', null, { retry: { maxAttempts: 1, delayMs: 0 } })) },
+  }, { clock });
+  try {
+    await database.init();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'allowed');
+    const original = database.adapter.withResourceTransaction.bind(database.adapter);
+    database.adapter.withResourceTransaction = async (callback, beforeCommit, resource) => await original(async transaction => {
+      const select = transaction.selectAppRowById.bind(transaction);
+      const prepare = transaction.prepare.bind(transaction);
+      const pauseAfterAuthorizationRead = async (read) => {
+        const row = await read();
+        markAuthorizationRead();
+        await authorizationRelease;
+        return row;
+      };
+      transaction.selectAppRowById = async (table, id) => {
+        const row = await select(table, id);
+        if (table.name === 'anchors' && id === 'anchor') {
+          return await pauseAfterAuthorizationRead(async () => row);
+        }
+        return row;
+      };
+      transaction.prepare = (statement) => {
+        const prepared = prepare(statement);
+        if (statement === 'SELECT * FROM "anchors" WHERE "id" = ? FOR UPDATE') {
+          return { ...prepared, get: async (...args) => await pauseAfterAuthorizationRead(() => prepared.get(...args)) };
+        }
+        return prepared;
+      };
+      return await callback(transaction);
+    }, beforeCommit, resource);
+    const queued = await runMutation(database, actor, 'enqueue', []);
+    const worker = runCurrentUserJobWorker(database);
+    await Promise.race([authorizationRead, new Promise((_, reject) => setTimeout(() => reject(new Error('Job did not read the authorization anchor')), 2_000))]);
+    const revoker = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    try {
+      const revocation = revoker.prepare('UPDATE anchors SET value=? WHERE id=?').run('revoked', 'anchor');
+      assert.equal(await Promise.race([revocation.then(() => 'committed'), new Promise(resolve => setTimeout(() => resolve('pending'), 75))]), 'pending');
+      releaseAuthorization();
+      await worker;
+      await revocation;
+    } finally { await revoker.close(); }
+    assert.equal((await database.adapter.prepare('SELECT status,failure FROM sporades_jobs WHERE id=?').get(queued.data.id)).status, 'succeeded');
+    assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='protected-after-authorization'").get()).n), 1);
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 1);
+    assert.equal((await database.adapter.prepare('SELECT value FROM anchors WHERE id=?').get('anchor')).value, 'revoked');
+  } finally { releaseAuthorization?.(); await database.shutdown(); await database.close(); }
+});
+
 test('Postgres Job reconciles a lost resource COMMIT acknowledgement through its locked receipt without repeating writes', { skip: POSTGRES_SKIP_REASON }, async () => {
   const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
   await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
@@ -196,6 +262,7 @@ test('Postgres Job backend loss after its final claim check rolls back write and
   const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
   await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
   const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  let oldScoped;
   let retained;
   let parent;
   const database = await openDevDatabase('postgres-resource-loss-test', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-resource-loss', services: { database: { engine: 'postgres' } } }, {
@@ -203,6 +270,7 @@ test('Postgres Job backend loss after its final claim check rolls back write and
     jobs: { work: job(ctx => {
       parent = ctx.db.writes;
       return ctx.resources.run(options(), async scope => {
+        oldScoped = scope.db.writes;
         retained = scope.db.writes;
         await scope.db.writes.insert({ value: 'must-rollback-after-backend-loss' });
         return { committed: true };
@@ -232,15 +300,48 @@ test('Postgres Job backend loss after its final claim check rolls back write and
     const successor = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
     try {
       assert.equal((await controller.prepare('SELECT pg_terminate_backend(?) AS terminated').get(backendId)).terminated, true);
-      await successor.withResourceTransaction(async () => null, undefined, { table: 'anchors', id: 'anchor' });
+      let releaseSuccessor;
+      let markSuccessorAcquired;
+      const successorAcquired = new Promise(resolve => { markSuccessorAcquired = resolve; });
+      const successorRelease = new Promise(resolve => { releaseSuccessor = resolve; });
+      const successorOwnership = successor.withResourceTransaction(async () => {
+        markSuccessorAcquired();
+        await successorRelease;
+      }, undefined, { table: 'anchors', id: 'anchor' });
+      await Promise.race([successorAcquired, new Promise((_, reject) => setTimeout(() => reject(new Error('B did not acquire after A backend termination')), 2_000))]);
+      // B now owns the released engine lock. Every A capability—an old scoped
+      // table, a retained alias, and parent re-entry—must fail before it can
+      // issue a stale protected write.
+      assert.throws(() => oldScoped.insert({ value: 'old-scoped-after-loss' }), { code: 'RESOURCE_SCOPE_INACTIVE' });
+      assert.throws(() => retained.insert({ value: 'retained-before-loss' }), { code: 'RESOURCE_SCOPE_INACTIVE' });
+      assert.throws(() => parent.insert({ value: 'parent-after-loss' }), { code: 'RESOURCE_CONTEXT_UNSUPPORTED' });
+
+      // A fresh session is a real reconnect boundary, not another method
+      // derived from A's dead scope. It has a new backend PID but cannot enter
+      // B's resource interval, so its callback cannot make a stale write,
+      // receipt, or intent.
+      const reconnected = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+      try {
+        const reconnectedBackendId = Number((await reconnected.prepare('SELECT pg_backend_pid() AS pid').get()).pid);
+        assert.notEqual(reconnectedBackendId, backendId);
+        let staleCallbackEntered = false;
+        await assert.rejects(reconnected.withResourceTransaction(async transaction => {
+          staleCallbackEntered = true;
+          await transaction.prepare("INSERT INTO writes (id, \"createdAt\", \"updatedAt\", value) VALUES ('newly-reconnected-after-loss','2030-01-01T00:00:00.000Z','2030-01-01T00:00:00.000Z','newly-reconnected-after-loss')").run();
+          await transaction.prepare("INSERT INTO sporades_resource_receipts VALUES ('anchors','anchor','newly-reconnected-after-loss','input','actor','{}','[]','2030-01-01T00:00:00.000Z')").run();
+        }, undefined, { table: 'anchors', id: 'anchor' }), { code: 'RESOURCE_BUSY' });
+        assert.equal(staleCallbackEntered, false);
+      } finally { await reconnected.close(); }
+      releaseSuccessor();
+      await successorOwnership;
     } finally { await controller.close(); await successor.close(); }
     release();
     await worker;
     assert.equal((await database.adapter.prepare('SELECT status FROM sporades_jobs WHERE id=?').get(queued.data.id)).status, 'failed');
     assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='must-rollback-after-backend-loss'").get()).n), 0);
     assert.equal((await database.adapter.prepare("SELECT to_regclass('sporades_resource_receipts') AS receipt_table").get()).receipt_table, null);
-    assert.throws(() => parent.insert({ value: 'parent-after-loss' }), { code: 'RESOURCE_SCOPE_INACTIVE' });
-    assert.throws(() => retained.insert({ value: 'retained-after-loss' }), { code: 'RESOURCE_SCOPE_INACTIVE' });
+    assert.equal((await database.adapter.prepare("SELECT to_regclass('sporades_resource_intents') AS intent_table").get()).intent_table, null);
+    assert.equal(Number((await database.adapter.prepare("SELECT count(*) n FROM writes WHERE value IN ('old-scoped-after-loss','retained-before-loss','parent-after-loss','newly-reconnected-after-loss')").get()).n), 0);
   } finally { release?.(); await database.shutdown(); await database.close(); }
 });
 
