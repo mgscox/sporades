@@ -164,6 +164,15 @@ a dialect entry, not a method body: a method body is how a behavioural divergenc
 gets in, and how the shared definition it shadows stays wrong and dormant until
 the next engine borrows it.
 
+`withResourceTransaction(fn, beforeCommit, resource)` is a shared public method
+in that set. Its engine-specific dedicated connection lifecycle is an internal
+transaction-session primitive: create the independent connection, acquire its
+resource lock, commit or roll back, quarantine an unknown commit, and close.
+The shared method delegates to that primitive rather than allowing a public
+PostgreSQL or SQLite adapter override. Authorization, claim, receipt, and
+settlement therefore remain one Resource-runtime behaviour, while the engine
+supplies only the session mechanics it uniquely controls.
+
 The specification to build against is ADR-0035's, not a reading of any adapter.
 Add the engine to the conformance engine list and the suite tells you what is
 still missing, which is what a new engine wants and what reverse-engineering the

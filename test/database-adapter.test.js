@@ -44,6 +44,7 @@ import {
   updateCurrentUserPreferences,
 } from "../dist/server-runtime-source.js";
 import { mutation } from "../dist/server.js";
+import { createSharedDatabaseAdapterMethods, postgresDatabaseDialect } from "../dist/database-runtime.js";
 import {
   POSTGRES_SKIP_REASON,
   postgresTestUrl,
@@ -131,6 +132,28 @@ test("Postgres resource locks contend deterministically for both first and exist
       } finally { release?.(); }
       assert.equal(await owner, phase);
     }
+  }, { appTableNames: [] });
+});
+
+test("Postgres resource-lock storage preserves its declared camel-case identifiers through the dialect", { skip: POSTGRES_SKIP_REASON }, async () => {
+  await withPostgresAdapter(async (adapter) => {
+    await adapter.exec('DROP TABLE IF EXISTS "sporades_resource_locks"');
+    await adapter.withResourceTransaction(async () => null, undefined, { table: "grants", id: "quoted-columns" });
+    const columns = await adapter.prepare(
+      "SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=? ORDER BY ordinal_position",
+    ).all("sporades_resource_locks");
+    assert.deepEqual(columns.map((column) => column.column_name), ["resourceTable", "resourceId"]);
+  }, { appTableNames: [] });
+});
+
+test("resource transactions retain the shared public adapter method across SQLite and Postgres", { skip: POSTGRES_SKIP_REASON }, async () => {
+  const shared = createSharedDatabaseAdapterMethods(postgresDatabaseDialect());
+  await withSqliteAdapter(async (sqlite) => {
+    assert.equal(String(sqlite.withResourceTransaction), String(shared.withResourceTransaction));
+  });
+  await withPostgresAdapter(async (postgres) => {
+    assert.equal(String(postgres.withResourceTransaction), String(shared.withResourceTransaction));
+    await postgres.withResourceTransaction(async () => "shared-public-method", undefined, { table: "grants", id: "shared-method" });
   }, { appTableNames: [] });
 });
 

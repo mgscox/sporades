@@ -42870,6 +42870,7 @@ var nodeCryptoModule4 = process.getBuiltinModule("node:crypto");
 var nodeFsModule = process.getBuiltinModule("node:fs");
 var transactionOperations = Symbol.for("sporades.database.transactionOperations");
 var transactionBeforeCommitChecks2 = Symbol.for("sporades.database.transactionBeforeCommitChecks");
+var resourceTransactionMechanics = Symbol.for("sporades.database.resourceTransactionMechanics");
 
 // src/server-runtime-source.ts
 var trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");

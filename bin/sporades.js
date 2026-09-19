@@ -97304,7 +97304,8 @@ function createTransactionScopedAdapter(adapter, operations, owner, kind) {
   };
   const scopedAdapter = Object.assign(Object.create(adapter), guardedOperations, {
     withTransaction: rejectNestedTransactionScope,
-    withReadOnlySnapshot: rejectNestedTransactionScope
+    withReadOnlySnapshot: rejectNestedTransactionScope,
+    withResourceTransaction: rejectNestedTransactionScope
   });
   transactionScopes.set(scopedAdapter, {
     revoke: () => {
@@ -97321,6 +97322,7 @@ function revokeTransactionScopedAdapter(adapter) {
 }
 var transactionOperations = Symbol.for("sporades.database.transactionOperations");
 var transactionBeforeCommitChecks2 = Symbol.for("sporades.database.transactionBeforeCommitChecks");
+var resourceTransactionMechanics = Symbol.for("sporades.database.resourceTransactionMechanics");
 async function runTransactionBeforeCommitChecks(transactionAdapter) {
   for (const check of transactionAdapter[transactionBeforeCommitChecks2] ?? []) await check();
 }
@@ -97484,6 +97486,13 @@ function createSharedDatabaseAdapterMethods(dialect) {
     "SELECT [s].[token] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = ? AND [u].[isGuest] = ?"
   );
   return {
+    // Public resource-transaction behaviour is shared. Engines contribute a
+    // symbol-keyed dedicated-session primitive, not a second adapter method.
+    withResourceTransaction(fn, beforeCommit, resource) {
+      const run2 = this[resourceTransactionMechanics];
+      if (typeof run2 !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+      return Reflect.apply(run2, this, [fn, beforeCommit, resource]);
+    },
     ensureSystemTable() {
       return this.exec(sql("CREATE TABLE IF NOT EXISTS [sporades] ([key] TEXT PRIMARY KEY, [value] TEXT NOT NULL)"));
     },
@@ -98544,7 +98553,7 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     [Symbol.for("sporades.database.resourceTransactionEligible")]: !options.readOnly && String(databasePath) !== ":memory:",
     dialect,
     normalization: sqliteRowNormalization(),
-    async withResourceTransaction(fn, beforeCommit) {
+    [resourceTransactionMechanics]: async function(fn, beforeCommit) {
       if (options.readOnly || String(databasePath) === ":memory:") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
       if (connectionGate.isBusy()) throw resourceError("RESOURCE_BUSY");
       return connectionGate.runTransaction(async () => {
@@ -98728,7 +98737,7 @@ async function createPostgresDatabaseAdapter(options) {
     // A resource scope owns an independent READ COMMITTED backend.  Closing it
     // on every exit also quarantines a connection whose COMMIT acknowledgement
     // was lost; ordinary work can never reuse that backend.
-    async withResourceTransaction(fn, beforeCommit, resource) {
+    [resourceTransactionMechanics]: async function(fn, beforeCommit, resource) {
       if (!resource || typeof resource.table !== "string" || typeof resource.id !== "string") throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_STORAGE_ERROR" });
       let dedicated;
       let begun = false;
@@ -98753,9 +98762,12 @@ async function createPostgresDatabaseAdapter(options) {
         await query("BEGIN ISOLATION LEVEL READ COMMITTED");
         begun = true;
         await query("SET LOCAL lock_timeout = '100ms'");
-        await query("CREATE TABLE IF NOT EXISTS sporades_resource_locks (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId))");
-        await query("INSERT INTO sporades_resource_locks (resourceTable, resourceId) VALUES (?, ?) ON CONFLICT (resourceTable, resourceId) DO NOTHING", [resource.table, resource.id]);
-        await query("SELECT resourceTable FROM sporades_resource_locks WHERE resourceTable=? AND resourceId=? FOR UPDATE NOWAIT", [resource.table, resource.id]);
+        const resourceLockTable = dialect.quoteIdentifier("sporades_resource_locks");
+        const resourceTableColumn = dialect.quoteIdentifier("resourceTable");
+        const resourceIdColumn = dialect.quoteIdentifier("resourceId");
+        await query(`CREATE TABLE IF NOT EXISTS ${resourceLockTable} (${resourceTableColumn} TEXT NOT NULL, ${resourceIdColumn} TEXT NOT NULL, PRIMARY KEY (${resourceTableColumn}, ${resourceIdColumn}))`);
+        await query(`INSERT INTO ${resourceLockTable} (${resourceTableColumn}, ${resourceIdColumn}) VALUES (?, ?) ON CONFLICT (${resourceTableColumn}, ${resourceIdColumn}) DO NOTHING`, [resource.table, resource.id]);
+        await query(`SELECT ${resourceTableColumn} FROM ${resourceLockTable} WHERE ${resourceTableColumn}=? AND ${resourceIdColumn}=? FOR UPDATE NOWAIT`, [resource.table, resource.id]);
         const transaction = createTransactionScopedAdapter(adapter, operations, adapter, "transaction");
         try {
           const result = await fn(transaction);

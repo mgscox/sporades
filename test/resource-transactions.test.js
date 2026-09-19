@@ -64,8 +64,8 @@ test('Postgres Job locks the authorization anchor before a concurrent revocation
   await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
   const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
   let releaseAuthorization;
-  let markAuthorizationRead;
-  const authorizationRead = new Promise(resolve => { markAuthorizationRead = resolve; });
+  let markAuthorizationLocked;
+  const authorizationLocked = new Promise(resolve => { markAuthorizationLocked = resolve; });
   const authorizationRelease = new Promise(resolve => { releaseAuthorization = resolve; });
   const database = await openDevDatabase('postgres-resource-authorization-lock-test', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-resource-authorization-lock', services: { database: { engine: 'postgres' } } }, {
     schema: {
@@ -73,6 +73,11 @@ test('Postgres Job locks the authorization anchor before a concurrent revocation
       writes: table({ value: Text() }),
     },
     jobs: { work: job(ctx => ctx.resources.run(options({ authorization: 'locked' }), async scope => {
+      // This public callback is entered only after `resources.run` authorizes
+      // the anchor. Pausing here retains the unmodified PostgreSQL transaction
+      // and its FOR UPDATE lock; no adapter method or SQL text is replaced.
+      markAuthorizationLocked();
+      await authorizationRelease;
       await scope.db.writes.insert({ value: 'protected-after-authorization' });
       return { committed: true };
     })) },
@@ -81,35 +86,9 @@ test('Postgres Job locks the authorization anchor before a concurrent revocation
   try {
     await database.init();
     await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'allowed');
-    const original = database.adapter.withResourceTransaction.bind(database.adapter);
-    database.adapter.withResourceTransaction = async (callback, beforeCommit, resource) => await original(async transaction => {
-      const select = transaction.selectAppRowById.bind(transaction);
-      const prepare = transaction.prepare.bind(transaction);
-      const pauseAfterAuthorizationRead = async (read) => {
-        const row = await read();
-        markAuthorizationRead();
-        await authorizationRelease;
-        return row;
-      };
-      transaction.selectAppRowById = async (table, id) => {
-        const row = await select(table, id);
-        if (table.name === 'anchors' && id === 'anchor') {
-          return await pauseAfterAuthorizationRead(async () => row);
-        }
-        return row;
-      };
-      transaction.prepare = (statement) => {
-        const prepared = prepare(statement);
-        if (statement === 'SELECT * FROM "anchors" WHERE "id" = ? FOR UPDATE') {
-          return { ...prepared, get: async (...args) => await pauseAfterAuthorizationRead(() => prepared.get(...args)) };
-        }
-        return prepared;
-      };
-      return await callback(transaction);
-    }, beforeCommit, resource);
     const queued = await runMutation(database, actor, 'enqueue', []);
     const worker = runCurrentUserJobWorker(database);
-    await Promise.race([authorizationRead, new Promise((_, reject) => setTimeout(() => reject(new Error('Job did not read the authorization anchor')), 2_000))]);
+    await Promise.race([authorizationLocked, new Promise((_, reject) => setTimeout(() => reject(new Error('Job did not lock the authorization anchor before entering its resource callback')), 2_000))]);
     const revoker = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
     try {
       const revocation = revoker.prepare('UPDATE anchors SET value=? WHERE id=?').run('revoked', 'anchor');
