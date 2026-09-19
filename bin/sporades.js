@@ -70937,7 +70937,7 @@ async function deletePrivateFile(database, auth, fileReference, credential = { k
         };
       }
     }
-    const resolved = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "delete", credential);
+    const resolved = await resolveLockedAccessibleFileReference(transactionDatabase, auth, fileReference, "delete", credential);
     if (!resolved.ok) return {
       ok: false,
       error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
@@ -71125,6 +71125,26 @@ async function resolveAccessibleFileReference(database, auth, reference, operati
   if (resolved.row.ownerId === auth?.userId) return resolved;
   const allowed = await applyFileAcl(database, operation, resolved.row, auth, credential);
   return { ok: true, row: allowed ? resolved.row : null };
+}
+async function resolveLockedAccessibleFileReference(database, auth, reference, operation, credential = { kind: "session" }) {
+  const resolved = await resolvePrivilegedLiveFileReference(database, reference);
+  if (!resolved.ok || !resolved.row) return resolved;
+  const row = await database.adapter.lockFileById(resolved.row.id);
+  if (!row || row.deletedAt !== null || row.status !== "uploaded") {
+    return { ok: true, row: null };
+  }
+  if (isAbsoluteFilePath(String(reference ?? ""))) {
+    let normalizedPath;
+    try {
+      normalizedPath = normalizeAbsoluteFilePath(String(reference));
+    } catch {
+      return { ok: true, row: null };
+    }
+    if (row.path !== normalizedPath) return { ok: true, row: null };
+  }
+  if (row.ownerId === auth?.userId) return { ok: true, row };
+  const allowed = await applyFileAcl(database, operation, row, auth, credential);
+  return { ok: true, row: allowed ? row : null };
 }
 async function resolvePrivilegedLiveFileReference(database, reference) {
   const value = String(reference ?? "");
@@ -97898,6 +97918,16 @@ function createSharedDatabaseAdapterMethods(dialect) {
     selectFileById(fileId) {
       return this.prepare(sql("SELECT * FROM [sporades_files] WHERE [id] = ?")).get(fileId) ?? null;
     },
+    lockFileById(fileId) {
+      const select = sql("SELECT * FROM [sporades_files] WHERE [id] = ?");
+      if (dialect.name === "postgres") {
+        return thenIfPromise(this.prepare(`${select} FOR UPDATE`).get(fileId), (row) => row ?? null);
+      }
+      return thenIfPromise(
+        this.prepare(sql("UPDATE [sporades_files] SET [id] = [id] WHERE [id] = ?")).run(fileId),
+        () => thenIfPromise(this.prepare(select).get(fileId), (row) => row ?? null)
+      );
+    },
     selectLiveFileByPath(path14) {
       return this.prepare(
         sql("SELECT * FROM [sporades_files] WHERE [path] = ? AND [deletedAt] IS NULL AND [status] = ?")
@@ -97922,16 +97952,17 @@ function createSharedDatabaseAdapterMethods(dialect) {
     },
     completeFileUpload(upload, size, updatedAt) {
       return thenIfPromise(
-        this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [id] = ? AND [fileId] = ? AND [version] = ?")).run(
-          upload.id,
-          upload.fileId,
-          upload.version
-        ),
-        (consumed) => {
-          if (consumed.changes === 0) {
-            return consumed;
-          }
-          return thenIfPromise(this.selectFileById(upload.fileId), (existing) => {
+        this.lockFileById(upload.fileId),
+        (existing) => thenIfPromise(
+          this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [id] = ? AND [fileId] = ? AND [version] = ?")).run(
+            upload.id,
+            upload.fileId,
+            upload.version
+          ),
+          (consumed) => {
+            if (consumed.changes === 0) {
+              return consumed;
+            }
             if (existing) {
               if (existing.deletedAt !== null && existing.deletedAt !== void 0) {
                 return { changes: 0 };
@@ -97967,8 +97998,8 @@ function createSharedDatabaseAdapterMethods(dialect) {
               createdAt: upload.createdAt,
               updatedAt
             });
-          });
-        }
+          }
+        )
       );
     },
     deleteFileUploadsForPath(path14) {

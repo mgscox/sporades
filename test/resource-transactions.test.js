@@ -5,10 +5,11 @@ import { existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import net from 'node:net';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import { openDevDatabase, runMutation, runEndpoint, runCurrentUserJobWorker, createControllableRuntimeClock } from '../dist/server-runtime-source.js';
 import { table, String as Text, endpoint, job, mutation, requireAuth, schedule } from '../dist/server.js';
 import { createSqliteDatabaseAdapter } from '../dist/database-runtime.js';
-import { createPublicFileUrl, deletePrivateFile } from '../dist/file-storage-runtime.js';
+import { completePendingFileUpload, createPendingFileUpload, createPublicFileUrl, deletePrivateFile } from '../dist/file-storage-runtime.js';
 import { resolveAnonymousSession } from '../dist/auth-runtime.js';
 import { resourceCanonicalJson, bindJobResources, bindOuterResources } from '../dist/resource-runtime.js';
 import { POSTGRES_SKIP_REASON, postgresTestUrl, resetPostgresSchema } from './support/database-adapter-engines.js';
@@ -585,6 +586,65 @@ test('Postgres File ACL dependencies stay locked through public URL creation and
       await database.shutdown(); await database.close();
     }
   });
+});
+
+test('Postgres File delete ACL authorization cannot delete a concurrently completed replacement', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, []);
+  await reset.close();
+  const owner = { ...actor, userId: 'file-version-owner' };
+  const collaborator = { ...actor, userId: 'file-version-collaborator', isAuthenticated: true, isGuest: false, provider: 'email' };
+  const authorized = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const database = await openDevDatabase('postgres-file-delete-version-lock', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-file-delete-version-lock', services: { database: { engine: 'postgres' } } }, {
+    files: { acl: { delete: async ({ file }) => {
+      authorized.resolve(file);
+      await release.promise;
+      return file.path === '/shared/review.txt';
+    } } },
+  });
+  const replacementDatabase = await openDevDatabase('postgres-file-delete-version-lock-replacement', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-file-delete-version-lock-replacement', services: { database: { engine: 'postgres' } } }, {});
+  let deletion; let replacement;
+  try {
+    await database.init();
+    await replacementDatabase.init();
+    database.fileStorage = { async writeFileVersion() {}, async deleteFileVersion() {}, close() {} };
+    replacementDatabase.fileStorage = { async writeFileVersion() {}, async deleteFileVersion() {}, close() {} };
+    const now = '2030-01-01T00:00:00.000Z';
+    await database.adapter.createFileBucket({ id: 'file-version-bucket', ownerId: owner.userId, name: 'default', createdAt: now });
+    await database.adapter.insertFileRow({ id: 'file-version-target', ownerId: owner.userId, bucketId: 'file-version-bucket', bucketName: 'default', path: '/shared/review.txt', name: 'review.txt', type: 'text/plain', size: 3, version: 'version-1', status: 'uploaded', createdAt: now, updatedAt: now });
+    const pending = await createPendingFileUpload(database, owner, {
+      replace: true,
+      fileId: 'file-version-target',
+      file: { path: '/private/owner.txt', name: 'owner.txt', type: 'text/plain', size: 11 },
+    });
+    assert.equal(pending.ok, true, pending.error?.message);
+
+    deletion = deletePrivateFile(database, collaborator, 'file-version-target');
+    const authorizedFile = await Promise.race([authorized.promise, new Promise((_, reject) => setTimeout(() => reject(new Error('File delete ACL did not authorize')), 2_000))]);
+    assert.equal(authorizedFile.path, '/shared/review.txt');
+
+    replacement = completePendingFileUpload(replacementDatabase, pending.data.uploadUrl.split('/').pop(), Readable.from([Buffer.from('replacement')]));
+    assert.equal(await Promise.race([
+      replacement.then(() => 'settled'),
+      new Promise(resolve => setTimeout(() => resolve('pending'), 175)),
+    ]), 'pending', 'replacement completion must wait for the File version used by the delete ACL decision');
+
+    release.resolve();
+    assert.equal((await deletion).ok, true);
+    const replacementResult = await replacement;
+    assert.equal(replacementResult.ok, false);
+    assert.equal(replacementResult.error.message, 'Upload URL was superseded.');
+    const retained = await database.adapter.selectFileById('file-version-target');
+    assert.equal(retained.path, '/shared/review.txt');
+    assert.notEqual(retained.deletedAt, null);
+  } finally {
+    release.resolve();
+    await deletion?.catch(() => {});
+    await replacement?.catch(() => {});
+    await replacementDatabase.shutdown(); await replacementDatabase.close();
+    await database.shutdown(); await database.close();
+  }
 });
 
 test('Postgres Job locks the authorization anchor before a concurrent revocation can commit', { skip: POSTGRES_SKIP_REASON }, async () => {

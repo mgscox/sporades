@@ -1551,7 +1551,7 @@ export async function deletePrivateFile(
         };
       }
     }
-    const resolved: any = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "delete", credential);
+    const resolved: any = await resolveLockedAccessibleFileReference(transactionDatabase, auth, fileReference, "delete", credential);
     if (!resolved.ok) return {
       ok: false,
       error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
@@ -1760,6 +1760,29 @@ async function resolveAccessibleFileReference(database: LooseRecord, auth: Loose
   if (resolved.row.ownerId === auth?.userId) return resolved;
   const allowed = await applyFileAcl(database, operation, resolved.row, auth, credential);
   return { ok: true, row: allowed ? resolved.row : null };
+}
+
+async function resolveLockedAccessibleFileReference(database: LooseRecord, auth: LooseRecord, reference: string, operation: string, credential: LooseRecord = { kind: "session" }) {
+  const resolved: any = await resolvePrivilegedLiveFileReference(database, reference);
+  if (!resolved.ok || !resolved.row) return resolved;
+  // Authorization and mutation must describe the same durable File version.
+  // The lock is held by the surrounding metadata transaction through delete.
+  const row = await database.adapter.lockFileById(resolved.row.id);
+  if (!row || row.deletedAt !== null || row.status !== "uploaded") {
+    return { ok: true, row: null };
+  }
+  if (isAbsoluteFilePath(String(reference ?? ""))) {
+    let normalizedPath;
+    try {
+      normalizedPath = normalizeAbsoluteFilePath(String(reference));
+    } catch {
+      return { ok: true, row: null };
+    }
+    if (row.path !== normalizedPath) return { ok: true, row: null };
+  }
+  if (row.ownerId === auth?.userId) return { ok: true, row };
+  const allowed = await applyFileAcl(database, operation, row, auth, credential);
+  return { ok: true, row: allowed ? row : null };
 }
 
 export async function resolvePrivilegedLiveFileReference(database: LooseRecord, reference: any) {

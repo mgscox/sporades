@@ -802,6 +802,18 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
     selectFileById(fileId: any) {
       return this.prepare(sql("SELECT * FROM [sporades_files] WHERE [id] = ?")).get(fileId) ?? null;
     },
+    lockFileById(fileId: any) {
+      const select = sql("SELECT * FROM [sporades_files] WHERE [id] = ?");
+      if (dialect.name === "postgres") {
+        return thenIfPromise(this.prepare(`${select} FOR UPDATE`).get(fileId), (row: any) => row ?? null);
+      }
+      // SQLite and libSQL have no row-level FOR UPDATE. A no-op write acquires
+      // their transaction writer before the authoritative reread instead.
+      return thenIfPromise(
+        this.prepare(sql("UPDATE [sporades_files] SET [id] = [id] WHERE [id] = ?")).run(fileId),
+        () => thenIfPromise(this.prepare(select).get(fileId), (row: any) => row ?? null),
+      );
+    },
     selectLiveFileByPath(path: any) {
       return this.prepare(
         sql("SELECT * FROM [sporades_files] WHERE [path] = ? AND [deletedAt] IS NULL AND [status] = ?"),
@@ -827,17 +839,21 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
       return this.prepare(sql("SELECT * FROM [sporades_file_uploads] WHERE [id] = ?")).get(uploadId) ?? null;
     },
     completeFileUpload(upload: { id: any; fileId: any; version: any; bucketId: any; bucketName: any; path: any; name: any; type: any; ownerId: any; createdAt: any; }, size: any, updatedAt: any) {
+      // File deletion takes this lock before removing pending uploads. Keep
+      // replacement completion in the same order so the two paths wait rather
+      // than deadlock while an asynchronous delete ACL is settling.
       return thenIfPromise(
-        this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [id] = ? AND [fileId] = ? AND [version] = ?")).run(
-          upload.id,
-          upload.fileId,
-          upload.version,
-        ),
-        (consumed: any) => {
-          if (consumed.changes === 0) {
-            return consumed;
-          }
-          return thenIfPromise(this.selectFileById(upload.fileId), (existing: any) => {
+        this.lockFileById(upload.fileId),
+        (existing: any) => thenIfPromise(
+          this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [id] = ? AND [fileId] = ? AND [version] = ?")).run(
+            upload.id,
+            upload.fileId,
+            upload.version,
+          ),
+          (consumed: any) => {
+            if (consumed.changes === 0) {
+              return consumed;
+            }
             if (existing) {
               if (existing.deletedAt !== null && existing.deletedAt !== undefined) {
                 return { changes: 0 };
@@ -874,8 +890,8 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
               createdAt: upload.createdAt,
               updatedAt,
             });
-          });
-        },
+          },
+        ),
       );
     },
     deleteFileUploadsForPath(path: any) {

@@ -683,6 +683,15 @@ export function createSharedDatabaseAdapterMethods(dialect) {
         selectFileById(fileId) {
             return this.prepare(sql("SELECT * FROM [sporades_files] WHERE [id] = ?")).get(fileId) ?? null;
         },
+        lockFileById(fileId) {
+            const select = sql("SELECT * FROM [sporades_files] WHERE [id] = ?");
+            if (dialect.name === "postgres") {
+                return thenIfPromise(this.prepare(`${select} FOR UPDATE`).get(fileId), (row) => row ?? null);
+            }
+            // SQLite and libSQL have no row-level FOR UPDATE. A no-op write acquires
+            // their transaction writer before the authoritative reread instead.
+            return thenIfPromise(this.prepare(sql("UPDATE [sporades_files] SET [id] = [id] WHERE [id] = ?")).run(fileId), () => thenIfPromise(this.prepare(select).get(fileId), (row) => row ?? null));
+        },
         selectLiveFileByPath(path) {
             return this.prepare(sql("SELECT * FROM [sporades_files] WHERE [path] = ? AND [deletedAt] IS NULL AND [status] = ?")).all(path, "uploaded");
         },
@@ -696,34 +705,35 @@ export function createSharedDatabaseAdapterMethods(dialect) {
             return this.prepare(sql("SELECT * FROM [sporades_file_uploads] WHERE [id] = ?")).get(uploadId) ?? null;
         },
         completeFileUpload(upload, size, updatedAt) {
-            return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [id] = ? AND [fileId] = ? AND [version] = ?")).run(upload.id, upload.fileId, upload.version), (consumed) => {
+            // File deletion takes this lock before removing pending uploads. Keep
+            // replacement completion in the same order so the two paths wait rather
+            // than deadlock while an asynchronous delete ACL is settling.
+            return thenIfPromise(this.lockFileById(upload.fileId), (existing) => thenIfPromise(this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [id] = ? AND [fileId] = ? AND [version] = ?")).run(upload.id, upload.fileId, upload.version), (consumed) => {
                 if (consumed.changes === 0) {
                     return consumed;
                 }
-                return thenIfPromise(this.selectFileById(upload.fileId), (existing) => {
-                    if (existing) {
-                        if (existing.deletedAt !== null && existing.deletedAt !== undefined) {
-                            return { changes: 0 };
-                        }
-                        return this.prepare(sql("UPDATE [sporades_files] SET [bucketId] = ?, [bucketName] = ?, [path] = ?, [name] = ?, [type] = ?, [size] = ?, " +
-                            "[version] = ?, [status] = ?, [updatedAt] = ? WHERE [id] = ? AND [deletedAt] IS NULL")).run(upload.bucketId, upload.bucketName, upload.path, upload.name, upload.type, size, upload.version, "uploaded", updatedAt, upload.fileId);
+                if (existing) {
+                    if (existing.deletedAt !== null && existing.deletedAt !== undefined) {
+                        return { changes: 0 };
                     }
-                    return this.insertFileRow({
-                        id: upload.fileId,
-                        ownerId: upload.ownerId,
-                        bucketId: upload.bucketId,
-                        bucketName: upload.bucketName,
-                        path: upload.path,
-                        name: upload.name,
-                        type: upload.type,
-                        size,
-                        version: upload.version,
-                        status: "uploaded",
-                        createdAt: upload.createdAt,
-                        updatedAt,
-                    });
+                    return this.prepare(sql("UPDATE [sporades_files] SET [bucketId] = ?, [bucketName] = ?, [path] = ?, [name] = ?, [type] = ?, [size] = ?, " +
+                        "[version] = ?, [status] = ?, [updatedAt] = ? WHERE [id] = ? AND [deletedAt] IS NULL")).run(upload.bucketId, upload.bucketName, upload.path, upload.name, upload.type, size, upload.version, "uploaded", updatedAt, upload.fileId);
+                }
+                return this.insertFileRow({
+                    id: upload.fileId,
+                    ownerId: upload.ownerId,
+                    bucketId: upload.bucketId,
+                    bucketName: upload.bucketName,
+                    path: upload.path,
+                    name: upload.name,
+                    type: upload.type,
+                    size,
+                    version: upload.version,
+                    status: "uploaded",
+                    createdAt: upload.createdAt,
+                    updatedAt,
                 });
-            });
+            }));
         },
         deleteFileUploadsForPath(path) {
             return this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [path] = ?")).run(path);

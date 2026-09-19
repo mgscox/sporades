@@ -614,6 +614,22 @@ test("Postgres locks a current-user File actor through the surrounding transacti
   assert.match(statements[0], /FOR UPDATE$/);
 });
 
+test("Postgres locks File metadata through the surrounding transaction", async () => {
+  const statements = [];
+  const adapter = {
+    ...createSharedDatabaseAdapterMethods(postgresDatabaseDialect()),
+    prepare(statement) {
+      statements.push(statement);
+      return {
+        get: async () => ({ id: "file-1", version: "version-1", status: "uploaded", deletedAt: null }),
+      };
+    },
+  };
+  const file = await adapter.lockFileById("file-1");
+  assert.equal(file.version, "version-1");
+  assert.match(statements[0], /FOR UPDATE$/);
+});
+
 // An engine that cannot ask a statement for its result shape has to embed the statement in more
 // SQL, and embedding is where a trailing terminator or comment stops being decoration. The
 // conformance specification asserts that the engines agree about such a query; this asserts the

@@ -5546,6 +5546,7 @@ function wrapAsyncRuntimeAdapter(adapter) {
     "updatePendingFileRow",
     "insertFileUpload",
     "selectFileById",
+    "lockFileById",
     "selectLiveFileByPath",
     "selectActiveFileByPath",
     "selectPendingFileUploadByPath",
