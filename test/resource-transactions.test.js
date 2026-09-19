@@ -63,6 +63,51 @@ test('Postgres Job resource scope commits a canonical receipt through its dedica
   } finally { await database.shutdown(); await database.close(); }
 });
 
+test('Postgres Job resource callbacks preserve deliberate SQLSTATE-shaped errors without retrying', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  const observations = [];
+  const outcomes = [];
+  const database = await openDevDatabase('postgres-resource-callback-sqlstate', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-resource-callback-sqlstate', services: { database: { engine: 'postgres' } } }, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+    jobs: { work: job(async (ctx, code) => {
+      const expected = Object.assign(new Error(`Deliberate callback ${code}.`), { code, retryable: false });
+      try {
+        await ctx.resources.run({ ...options({ code }), operationId: `callback-${code}` }, () => { throw expected; });
+        assert.fail('resource callback error was swallowed');
+      } catch (error) {
+        observations.push({ code, same: error === expected, errorCode: error.code, retryable: error.retryable });
+        if (error === expected) throw Object.assign(new Error('Deliberate callback failure was handled.'), { code: 'RESOURCE_INVALID_INPUT', retryable: false });
+        throw error;
+      }
+    }) },
+    mutations: { enqueue: mutation((ctx, code) => ctx.jobs.enqueue('work', code, { retry: { maxAttempts: 3, delayMs: 0 } })) },
+  }, { clock });
+  try {
+    await database.init();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'postgres');
+    for (const code of ['55P03', '57014']) {
+      const queued = await runMutation(database, actor, 'enqueue', [code]);
+      assert.equal(queued.ok, true);
+      await runCurrentUserJobWorker(database);
+      const settled = await database.adapter.prepare('SELECT status,attempts,failure,"attemptHistory" FROM sporades_jobs WHERE id=?').get(queued.data.id);
+      outcomes.push({
+        code,
+        status: settled.status,
+        attempts: Number(settled.attempts),
+        historyLength: JSON.parse(settled.attemptHistory).length,
+        failureCode: JSON.parse(settled.failure).code,
+        observations: observations.filter(observation => observation.code === code),
+      });
+    }
+    assert.deepEqual(outcomes, [
+      { code: '55P03', status: 'failed', attempts: 1, historyLength: 1, failureCode: 'RESOURCE_INVALID_INPUT', observations: [{ code: '55P03', same: true, errorCode: '55P03', retryable: false }] },
+      { code: '57014', status: 'failed', attempts: 1, historyLength: 1, failureCode: 'RESOURCE_INVALID_INPUT', observations: [{ code: '57014', same: true, errorCode: '57014', retryable: false }] },
+    ]);
+  } finally { await database.shutdown(); await database.close(); }
+});
+
 test('Postgres resource callbacks retain ordinary row-lock waits after bounded admission', { skip: POSTGRES_SKIP_REASON }, async t => {
   const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
   await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();

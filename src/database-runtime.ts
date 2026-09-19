@@ -2179,11 +2179,9 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
             if (commitWasRejected(error)) throw resourceError("RESOURCE_STORAGE_ERROR");
             throw Object.assign(new Error("Resource commit outcome is unknown."), { code: "RESOURCE_COMMIT_UNKNOWN" });
           }
-          if (error?.code === "55P03" || error?.code === "57014") throw Object.assign(new Error("Resource is busy."), { code: "RESOURCE_BUSY", retryable: true });
           throw error;
         }
       } catch (error: any) {
-        if (error?.code === "55P03" || error?.code === "57014") throw Object.assign(new Error("Resource is busy."), { code: "RESOURCE_BUSY", retryable: true });
         throw error;
       } finally { if (dedicated) await dedicated.close().catch(() => {}); }
     },
