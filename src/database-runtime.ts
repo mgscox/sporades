@@ -1950,13 +1950,14 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
         || relations[0].has_policies
       ) return false;
       const rows = postgresRowsFromResult(normalization, await query(
-        `SELECT ${dialect.quoteIdentifier("column_name")}, ${dialect.quoteIdentifier("data_type")}, ${dialect.quoteIdentifier("is_nullable")}, ${dialect.quoteIdentifier("ordinal_position")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("columns")} WHERE ${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("table_name")}=? ORDER BY ${dialect.quoteIdentifier("ordinal_position")}`,
+        `SELECT ${dialect.quoteIdentifier("column_name")}, ${dialect.quoteIdentifier("data_type")}, ${dialect.quoteIdentifier("is_nullable")}, ${dialect.quoteIdentifier("is_generated")}, ${dialect.quoteIdentifier("ordinal_position")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("columns")} WHERE ${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("table_name")}=? ORDER BY ${dialect.quoteIdentifier("ordinal_position")}`,
         [schema.table],
       ));
       if (rows.length !== schema.columns.length || rows.some((row: any, index: number) =>
         row.column_name !== schema.columns[index]
         || row.data_type !== "text"
         || row.is_nullable !== "NO"
+        || row.is_generated !== "NEVER"
         || Number(row.ordinal_position) !== index + 1
       )) return false;
       const primaryKey = postgresRowsFromResult(normalization, await query(

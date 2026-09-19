@@ -1476,6 +1476,40 @@ test('Postgres resource readiness rejects receipt tables with inherited children
   }
 });
 
+test('Postgres resource readiness rejects generated receipt columns before callback entry', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  try {
+    await resetPostgresSchema(reset, ['anchors', 'writes']);
+    await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks');
+    await reset.exec('CREATE TABLE sporades_resource_locks ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId"))');
+    await reset.exec('CREATE TABLE sporades_resource_receipts ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, "operationId" TEXT NOT NULL, "inputDigest" TEXT NOT NULL, "actorDigest" TEXT NOT NULL, "resultJson" TEXT GENERATED ALWAYS AS (\'{}\'::text) STORED NOT NULL, "intentIdsJson" TEXT NOT NULL, "committedAt" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId", "operationId"))');
+  } finally { await reset.close(); }
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  let callbacks = 0;
+  const database = await openDevDatabase('postgres-resource-generated-receipt-column', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-resource-generated-receipt-column', services: { database: { engine: 'postgres' } } }, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+    mutations: { write: mutation(ctx => ctx.resources.run(options(), async scope => {
+      callbacks++;
+      await scope.db.writes.insert({ value: 'must-not-repeat' });
+      return { committed: true };
+    })) },
+  }, { clock });
+  try {
+    await database.init();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'ready');
+
+    const result = await runMutation(database, actor, 'write', []);
+    assert.equal(result.ok, false);
+    assert.deepEqual({ code: result.error.code, message: result.error.message }, { code: 'RESOURCE_STORAGE_ERROR', message: 'Resource operation could not complete.' });
+    assert.equal(callbacks, 0, 'schema readiness rejects a generated receipt column before protected work starts');
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM writes').get()).n), 0);
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 0);
+  } finally {
+    try { await database.adapter.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); }
+    finally { await database.shutdown(); await database.close(); }
+  }
+});
+
 test('Postgres resource readiness rejects deferrable lock primary keys before callback entry', { skip: POSTGRES_SKIP_REASON }, async () => {
   const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
   try {
