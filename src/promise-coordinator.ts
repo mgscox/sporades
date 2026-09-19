@@ -14,6 +14,7 @@ let promiseHookStack: Promise<any>[] = [];
 let promiseHookStop: (() => void) | undefined;
 let compositionRootCandidates: Promise<any>[] = [];
 let thenableWrapperRoots = new WeakSet<Promise<any>>();
+const promiseCombinatorKinds = new WeakMap<Promise<any>, "all" | "allSettled" | "any" | "race">();
 let compositionRootClearQueued = false;
 
 // Native combinators expose their inputs through ordinary thenable access, but do not expose the
@@ -96,12 +97,21 @@ export function promiseCompositionRootCandidate() {
   if (!wrapper) return undefined;
   thenableWrapperRoots.add(wrapper);
   const stack = new Error().stack ?? "";
-  if (!/at (?:Promise|Function)\.(?:all|allSettled|any|race)\b/.test(stack)) return undefined;
+  const match = stack.match(/at (?:Promise|Function)\.(all|allSettled|any|race)\b/);
+  if (!match) return undefined;
   for (let index = compositionRootCandidates.length - 2; index >= 0; index -= 1) {
     const candidate = compositionRootCandidates[index];
-    if (!thenableWrapperRoots.has(candidate)) return candidate;
+    if (!thenableWrapperRoots.has(candidate)) {
+      promiseCombinatorKinds.set(candidate, match[1] as "all" | "allSettled" | "any" | "race");
+      return candidate;
+    }
   }
+  promiseCombinatorKinds.set(wrapper, match[1] as "all" | "allSettled" | "any" | "race");
   return wrapper;
+}
+
+export function promiseCombinatorKind(promise: Promise<any>) {
+  return promiseCombinatorKinds.get(promise);
 }
 
 export function enclosingPromiseCombinatorRoot() {

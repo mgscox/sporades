@@ -68069,6 +68069,7 @@ var promiseHookStack = [];
 var promiseHookStop;
 var compositionRootCandidates = [];
 var thenableWrapperRoots = /* @__PURE__ */ new WeakSet();
+var promiseCombinatorKinds = /* @__PURE__ */ new WeakMap();
 var compositionRootClearQueued = false;
 function retainCompositionRootCandidate(promise) {
   compositionRootCandidates.push(promise);
@@ -68139,12 +68140,20 @@ function promiseCompositionRootCandidate() {
   if (!wrapper) return void 0;
   thenableWrapperRoots.add(wrapper);
   const stack = new Error().stack ?? "";
-  if (!/at (?:Promise|Function)\.(?:all|allSettled|any|race)\b/.test(stack)) return void 0;
+  const match = stack.match(/at (?:Promise|Function)\.(all|allSettled|any|race)\b/);
+  if (!match) return void 0;
   for (let index = compositionRootCandidates.length - 2; index >= 0; index -= 1) {
     const candidate = compositionRootCandidates[index];
-    if (!thenableWrapperRoots.has(candidate)) return candidate;
+    if (!thenableWrapperRoots.has(candidate)) {
+      promiseCombinatorKinds.set(candidate, match[1]);
+      return candidate;
+    }
   }
+  promiseCombinatorKinds.set(wrapper, match[1]);
   return wrapper;
+}
+function promiseCombinatorKind(promise) {
+  return promiseCombinatorKinds.get(promise);
 }
 function enclosingPromiseCombinatorRoot() {
   const stack = new Error().stack ?? "";
@@ -68849,7 +68858,7 @@ function consumeParticipatingAclHelperReads(state) {
   if (!state?.rulePromise) return;
   const settlementCause = promiseSettlementCause(state.rulePromise);
   for (const dependency of state.unconsumedAsyncReads ?? []) {
-    if (dependency.settled && [...dependency.assimilationPromises ?? []].some((promise) => promiseDescendsFrom(promise, state.rulePromise) || promiseDescendsFrom(settlementCause, promise))) {
+    if (dependency.settled && [...dependency.assimilationPromises ?? []].some((promise) => !["race", "any"].includes(dependency.compositionKinds?.get(promise)) && (promiseDescendsFrom(promise, state.rulePromise) || promiseDescendsFrom(settlementCause, promise)))) {
       state.unconsumedAsyncReads.delete(dependency);
     }
   }
@@ -68890,7 +68899,10 @@ function trackAclHelperPromise(state, promise, dependencies) {
         if (property === "then") {
           const compositionRoot = promiseCompositionRootCandidate();
           if (compositionRoot) {
-            for (const dependency of dependencies) dependency.assimilationPromises.add(compositionRoot);
+            for (const dependency of dependencies) {
+              dependency.assimilationPromises.add(compositionRoot);
+              dependency.compositionKinds.set(compositionRoot, promiseCombinatorKind(compositionRoot));
+            }
           }
         }
         return (...args) => {
@@ -68917,7 +68929,11 @@ function resolveAclHelperRead(state, result, resolve) {
   if (!isPromiseLike(result)) return resolve(result);
   state.touchedAsyncRead = true;
   const pending = Promise.resolve(result).then(resolve);
-  const dependency = { assimilationPromises: /* @__PURE__ */ new Set(), settled: false };
+  const dependency = {
+    assimilationPromises: /* @__PURE__ */ new Set(),
+    compositionKinds: /* @__PURE__ */ new WeakMap(),
+    settled: false
+  };
   const dependencies = /* @__PURE__ */ new Set([dependency]);
   state.unconsumedAsyncReads.add(dependency);
   state.pendingAsyncReads.add(pending);

@@ -90,7 +90,7 @@ import { commandError } from "./runtime-errors.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import { deserializeRow } from "./stored-value-coding.js";
 import { accessKeyCredentialLogAttribution } from "./access-keys-runtime.js";
-import { activePromise, promiseCompositionRootCandidate, promiseDescendsFrom, promiseSettlementCause, releasePromiseObserver, retainPromiseObserver } from "./promise-coordinator.js";
+import { activePromise, promiseCombinatorKind, promiseCompositionRootCandidate, promiseDescendsFrom, promiseSettlementCause, releasePromiseObserver, retainPromiseObserver } from "./promise-coordinator.js";
 // The privileged audit event's contract. All three were serialized into the generated bundle's
 // constant preamble until batch 7; they are declarations inside this module's carried text now, and
 // the preamble no longer writes them. They stay exported because the constant probe in
@@ -822,8 +822,9 @@ function consumeParticipatingAclHelperReads(state) {
         // Direct await makes the assimilation promise a descendant of the async rule promise.
         // Awaiting Promise.resolve(helper) instead makes the rule's settlement cause a descendant
         // of that assimilation promise. Unrelated, discarded chains satisfy neither relationship.
-        if (dependency.settled && [...(dependency.assimilationPromises ?? [])].some((promise) => promiseDescendsFrom(promise, state.rulePromise)
-            || promiseDescendsFrom(settlementCause, promise))) {
+        if (dependency.settled && [...(dependency.assimilationPromises ?? [])].some((promise) => !["race", "any"].includes(dependency.compositionKinds?.get(promise))
+            && (promiseDescendsFrom(promise, state.rulePromise)
+                || promiseDescendsFrom(settlementCause, promise)))) {
             state.unconsumedAsyncReads.delete(dependency);
         }
     }
@@ -868,8 +869,10 @@ function trackAclHelperPromise(state, promise, dependencies) {
                 if (property === "then") {
                     const compositionRoot = promiseCompositionRootCandidate();
                     if (compositionRoot) {
-                        for (const dependency of dependencies)
+                        for (const dependency of dependencies) {
                             dependency.assimilationPromises.add(compositionRoot);
+                            dependency.compositionKinds.set(compositionRoot, promiseCombinatorKind(compositionRoot));
+                        }
                     }
                 }
                 return (...args) => {
@@ -899,7 +902,11 @@ function resolveAclHelperRead(state, result, resolve) {
         return resolve(result);
     state.touchedAsyncRead = true;
     const pending = Promise.resolve(result).then(resolve);
-    const dependency = { assimilationPromises: new Set(), settled: false };
+    const dependency = {
+        assimilationPromises: new Set(),
+        compositionKinds: new WeakMap(),
+        settled: false,
+    };
     const dependencies = new Set([dependency]);
     state.unconsumedAsyncReads.add(dependency);
     state.pendingAsyncReads.add(pending);

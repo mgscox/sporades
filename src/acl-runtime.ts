@@ -91,7 +91,7 @@ import { commandError } from "./runtime-errors.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import { deserializeRow } from "./stored-value-coding.js";
 import { accessKeyCredentialLogAttribution } from "./access-keys-runtime.js";
-import { activePromise, promiseCompositionRootCandidate, promiseDescendsFrom, promiseSettlementCause, releasePromiseObserver, retainPromiseObserver } from "./promise-coordinator.js";
+import { activePromise, promiseCombinatorKind, promiseCompositionRootCandidate, promiseDescendsFrom, promiseSettlementCause, releasePromiseObserver, retainPromiseObserver } from "./promise-coordinator.js";
 
 // The monolith's own alias, redeclared rather than imported: it is a type, so it is erased before
 // either bundle is built and there is no binding to collide with.
@@ -926,8 +926,9 @@ function consumeParticipatingAclHelperReads(state: LooseRecord | undefined) {
     // Awaiting Promise.resolve(helper) instead makes the rule's settlement cause a descendant
     // of that assimilation promise. Unrelated, discarded chains satisfy neither relationship.
     if (dependency.settled && [...(dependency.assimilationPromises ?? [])].some((promise: Promise<any>) =>
-      promiseDescendsFrom(promise, state.rulePromise)
-      || promiseDescendsFrom(settlementCause, promise))) {
+      !["race", "any"].includes(dependency.compositionKinds?.get(promise))
+      && (promiseDescendsFrom(promise, state.rulePromise)
+        || promiseDescendsFrom(settlementCause, promise)))) {
       state.unconsumedAsyncReads.delete(dependency);
     }
   }
@@ -973,7 +974,10 @@ function trackAclHelperPromise(state: LooseRecord, promise: Promise<any>, depend
         if (property === "then") {
           const compositionRoot = promiseCompositionRootCandidate();
           if (compositionRoot) {
-            for (const dependency of dependencies) dependency.assimilationPromises.add(compositionRoot);
+            for (const dependency of dependencies) {
+              dependency.assimilationPromises.add(compositionRoot);
+              dependency.compositionKinds.set(compositionRoot, promiseCombinatorKind(compositionRoot));
+            }
           }
         }
         return (...args: any[]) => {
@@ -1003,7 +1007,11 @@ function resolveAclHelperRead(state: LooseRecord, result: any, resolve: (value: 
   if (!isPromiseLike(result)) return resolve(result);
   state.touchedAsyncRead = true;
   const pending = Promise.resolve(result).then(resolve);
-  const dependency = { assimilationPromises: new Set<Promise<any>>(), settled: false };
+  const dependency = {
+    assimilationPromises: new Set<Promise<any>>(),
+    compositionKinds: new WeakMap<Promise<any>, string | undefined>(),
+    settled: false,
+  };
   const dependencies = new Set<LooseRecord>([dependency]);
   state.unconsumedAsyncReads.add(dependency);
   state.pendingAsyncReads.add(pending);

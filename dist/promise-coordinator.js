@@ -7,6 +7,7 @@ let promiseHookStack = [];
 let promiseHookStop;
 let compositionRootCandidates = [];
 let thenableWrapperRoots = new WeakSet();
+const promiseCombinatorKinds = new WeakMap();
 let compositionRootClearQueued = false;
 // Native combinators expose their inputs through ordinary thenable access, but do not expose the
 // aggregate Promise itself. Keep the root Promises created in that same synchronous turn so a
@@ -94,14 +95,21 @@ export function promiseCompositionRootCandidate() {
         return undefined;
     thenableWrapperRoots.add(wrapper);
     const stack = new Error().stack ?? "";
-    if (!/at (?:Promise|Function)\.(?:all|allSettled|any|race)\b/.test(stack))
+    const match = stack.match(/at (?:Promise|Function)\.(all|allSettled|any|race)\b/);
+    if (!match)
         return undefined;
     for (let index = compositionRootCandidates.length - 2; index >= 0; index -= 1) {
         const candidate = compositionRootCandidates[index];
-        if (!thenableWrapperRoots.has(candidate))
+        if (!thenableWrapperRoots.has(candidate)) {
+            promiseCombinatorKinds.set(candidate, match[1]);
             return candidate;
+        }
     }
+    promiseCombinatorKinds.set(wrapper, match[1]);
     return wrapper;
+}
+export function promiseCombinatorKind(promise) {
+    return promiseCombinatorKinds.get(promise);
 }
 export function enclosingPromiseCombinatorRoot() {
     const stack = new Error().stack ?? "";
