@@ -76,6 +76,13 @@ test('Postgres resource ACL helpers preserve awaited Team and cross-table decisi
         if (row.value === 'team-deny') return (async () => await ctx.acl.teams.isAdmin(teamId))();
         if (row.value === 'cross-table-allow') return ctx.acl.db.get('policies', 'allow').then(policy => policy?.value === 'allowed');
         if (row.value === 'cross-table-deny') return ctx.acl.db.exists('policies', 'missing').then(Boolean);
+        if (row.value.startsWith('discarded-')) return (async () => {
+          const helper = ctx.acl.teams.isAdmin(teamId);
+          if (row.value === 'discarded-then') void helper.then(Boolean);
+          if (row.value === 'discarded-catch') void helper.catch(() => false);
+          if (row.value === 'discarded-finally') void helper.finally(() => {});
+          return true;
+        })();
         ctx.acl.db.exists('policies', 'allow').then(Boolean);
         return true;
       }, write: () => true }),
@@ -94,10 +101,11 @@ test('Postgres resource ACL helpers preserve awaited Team and cross-table decisi
     await database.adapter.prepare('INSERT INTO sporades_teams (id,name,"createdAt","createdByUserId") VALUES (?,?,?,?)').run(teamId, 'Postgres ACL Team', now, linkedActor.userId);
     await database.adapter.prepare('INSERT INTO sporades_team_memberships ("teamId","userId",role,"createdAt") VALUES (?,?,?,?)').run(teamId, linkedActor.userId, 'member', now);
     await database.adapter.prepare('INSERT INTO policies (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('allow', now, now, 'allowed');
-    for (const id of ['team-allow', 'team-deny', 'cross-table-allow', 'cross-table-deny', 'unawaited']) {
+    const ids = ['team-allow', 'team-deny', 'cross-table-allow', 'cross-table-deny', 'discarded-then', 'discarded-catch', 'discarded-finally', 'unawaited'];
+    for (const id of ids) {
       await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run(id, now, now, id);
     }
-    for (const id of ['team-allow', 'team-deny', 'cross-table-allow', 'cross-table-deny', 'unawaited']) {
+    for (const id of ids) {
       const result = await runMutation(database, linkedActor, 'write', [id]);
       if (id.endsWith('allow')) assert.deepEqual(result, { ok: true, data: { committed: id }, error: null });
       else {
@@ -992,19 +1000,23 @@ test('Postgres resource readiness rejects unexpected constraints and accepts cor
   });
 });
 
-test('Postgres resource readiness rejects user triggers that can remove a resource receipt', { skip: POSTGRES_SKIP_REASON }, async t => {
-  for (const mode of ['before-suppress', 'after-delete']) await t.test(mode, async () => {
+test('Postgres resource readiness rejects user database mechanisms that can remove a resource receipt', { skip: POSTGRES_SKIP_REASON }, async t => {
+  for (const mode of ['before-suppress', 'after-delete', 'rewrite-instead']) await t.test(mode, async () => {
     const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
     try {
       await resetPostgresSchema(reset, ['anchors', 'writes']);
       await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks');
       await reset.exec('CREATE TABLE sporades_resource_locks ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId"))');
       await reset.exec('CREATE TABLE sporades_resource_receipts ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, "operationId" TEXT NOT NULL, "inputDigest" TEXT NOT NULL, "actorDigest" TEXT NOT NULL, "resultJson" TEXT NOT NULL, "intentIdsJson" TEXT NOT NULL, "committedAt" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId", "operationId"))');
-      const body = mode === 'before-suppress'
-        ? 'BEGIN RETURN NULL; END'
-        : 'BEGIN DELETE FROM sporades_resource_receipts WHERE "resourceTable"=NEW."resourceTable" AND "resourceId"=NEW."resourceId" AND "operationId"=NEW."operationId"; RETURN NEW; END';
-      await reset.exec(`CREATE FUNCTION alter_resource_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ ${body} $$`);
-      await reset.exec(`CREATE TRIGGER alter_resource_receipt ${mode === 'before-suppress' ? 'BEFORE' : 'AFTER'} INSERT ON sporades_resource_receipts FOR EACH ROW EXECUTE FUNCTION alter_resource_receipt()`);
+      if (mode === 'rewrite-instead') {
+        await reset.exec('CREATE RULE alter_resource_receipt AS ON INSERT TO sporades_resource_receipts DO INSTEAD NOTHING');
+      } else {
+        const body = mode === 'before-suppress'
+          ? 'BEGIN RETURN NULL; END'
+          : 'BEGIN DELETE FROM sporades_resource_receipts WHERE "resourceTable"=NEW."resourceTable" AND "resourceId"=NEW."resourceId" AND "operationId"=NEW."operationId"; RETURN NEW; END';
+        await reset.exec(`CREATE FUNCTION alter_resource_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ ${body} $$`);
+        await reset.exec(`CREATE TRIGGER alter_resource_receipt ${mode === 'before-suppress' ? 'BEFORE' : 'AFTER'} INSERT ON sporades_resource_receipts FOR EACH ROW EXECUTE FUNCTION alter_resource_receipt()`);
+      }
     } finally { await reset.close(); }
     const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
     let callbacks = 0;
@@ -1026,7 +1038,10 @@ test('Postgres resource readiness rejects user triggers that can remove a resour
       assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM writes').get()).n), 0);
       assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 0);
     } finally {
-      try { await database.adapter.exec('DROP FUNCTION IF EXISTS alter_resource_receipt() CASCADE'); }
+      try {
+        await database.adapter.exec('DROP RULE IF EXISTS alter_resource_receipt ON sporades_resource_receipts');
+        await database.adapter.exec('DROP FUNCTION IF EXISTS alter_resource_receipt() CASCADE');
+      }
       finally { await database.shutdown(); await database.close(); }
     }
   });

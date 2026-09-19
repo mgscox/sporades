@@ -544,14 +544,19 @@ export function applyFileAcl(database, operation, row, auth, credential = { kind
         emitFileAclDeniedLog(database, { context, operation, row });
         return false;
     };
-    const result = rule(input);
+    const result = invokeAclRule(context, () => rule(input));
     if (!isPromiseLike(result)) {
         if (result && !aclRuleTouchedAsyncHelperRead(context, true))
             return true;
         const settlement = settleAclHelperReads(context);
         return settlement ? settlement.then(deny) : deny();
     }
-    return Promise.resolve(result).then((allowed) => (allowed && !aclRuleTouchedAsyncHelperRead(context) ? true : deny()));
+    return Promise.resolve(result).then((allowed) => {
+        if (allowed && !aclRuleTouchedAsyncHelperRead(context))
+            return true;
+        const settlement = settleAclHelperReads(context);
+        return settlement ? settlement.then(deny) : deny();
+    });
 }
 function privilegedDbAccessContextSet() {
     const holder = privilegedDbAccessContextSet;
@@ -602,13 +607,13 @@ export function runTableWriteWithAcl(database, table, operation, previous, next,
         throw createAclDeniedError(denialLogData);
     };
     const aclContext = createTableAclContext(context, database);
-    const result = rule({
+    const result = invokeAclRule(aclContext, () => rule({
         ctx: aclContext,
         operation,
         table: table.name,
         previous,
         next,
-    });
+    }));
     if (!isPromiseLike(result)) {
         if (!result || aclRuleTouchedAsyncHelperRead(aclContext, true)) {
             const settlement = settleAclHelperReads(aclContext);
@@ -618,7 +623,8 @@ export function runTableWriteWithAcl(database, table, operation, previous, next,
     }
     const pending = Promise.resolve(result).then((allowed) => {
         if (!allowed || aclRuleTouchedAsyncHelperRead(aclContext)) {
-            deny();
+            const settlement = settleAclHelperReads(aclContext);
+            return settlement ? settlement.then(deny) : deny();
         }
         return write();
     });
@@ -634,12 +640,12 @@ export function applyReadAcl(database, table, row, context) {
         return true;
     }
     const aclContext = createTableAclContext(context, database);
-    const result = rule({
+    const result = invokeAclRule(aclContext, () => rule({
         ctx: aclContext,
         operation: "read",
         table: table.name,
         row,
-    });
+    }));
     const deny = () => {
         emitAclDeniedLog(database, {
             context,
@@ -655,7 +661,12 @@ export function applyReadAcl(database, table, row, context) {
         const settlement = settleAclHelperReads(aclContext);
         return settlement ? settlement.then(deny) : deny();
     }
-    return Promise.resolve(result).then((allowed) => (allowed && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny()));
+    return Promise.resolve(result).then((allowed) => {
+        if (allowed && !aclRuleTouchedAsyncHelperRead(aclContext))
+            return true;
+        const settlement = settleAclHelperReads(aclContext);
+        return settlement ? settlement.then(deny) : deny();
+    });
 }
 export function filterRowsByReadAcl(database, table, rows, context) {
     const decisions = rows.map((row) => applyReadAcl(database, table, row, context));
@@ -692,7 +703,15 @@ export function filterRowsByReadAcl(database, table, rows, context) {
 // the two had come apart is a disagreement in that limb rather than a silent fail-open.
 export const ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
 function createAclHelpers(database, context) {
-    const state = { readCount: 0, maxReads: 32, touchedAsyncRead: false, unconsumedAsyncReads: new Set(), pendingAsyncReads: new Set() };
+    const state = {
+        readCount: 0,
+        maxReads: 32,
+        touchedAsyncRead: false,
+        ruleInvocationActive: false,
+        unconsumedAsyncReads: new Set(),
+        pendingAsyncReads: new Set(),
+        helperPromiseDependencies: new WeakMap(),
+    };
     const helpers = {
         db: createAclDbHelpers(database, state),
         storage: createAclStorageHelpers(database, state),
@@ -773,6 +792,57 @@ function aclRuleTouchedAsyncHelperRead(aclContext, synchronousRule = false) {
         ? state?.touchedAsyncRead === true
         : (state?.unconsumedAsyncReads?.size ?? 0) > 0;
 }
+function invokeAclRule(aclContext, invoke) {
+    const state = aclContext?.acl?.[ACL_HELPER_STATE];
+    if (!state)
+        return invoke();
+    state.ruleInvocationActive = true;
+    try {
+        const result = invoke();
+        consumeAclHelperPromiseDependencies(state, result);
+        return result;
+    }
+    finally {
+        state.ruleInvocationActive = false;
+    }
+}
+function consumeAclHelperPromiseDependencies(state, promise) {
+    if (!promise || typeof promise !== "object")
+        return;
+    const dependencies = state.helperPromiseDependencies.get(promise);
+    if (!dependencies)
+        return;
+    for (const dependency of dependencies)
+        state.unconsumedAsyncReads.delete(dependency);
+}
+function isPromiseAssimilationContinuation(args) {
+    // `await` and an async function's returned thenable are assimilated after
+    // the direct rule invocation with the engine's paired native continuations.
+    // User-authored chaining during the invocation stays branded below until
+    // that exact derived promise is returned as the rule's settlement value.
+    return args.length === 2 && args.every((callback) => typeof callback === "function" && Function.prototype.toString.call(callback).includes("[native code]"));
+}
+function trackAclHelperPromise(state, promise, dependencies) {
+    let tracked;
+    tracked = new Proxy(promise, {
+        get(target, property) {
+            if (property === "then" || property === "catch" || property === "finally") {
+                return (...args) => {
+                    if (property === "then" && !state.ruleInvocationActive && isPromiseAssimilationContinuation(args)) {
+                        for (const dependency of dependencies)
+                            state.unconsumedAsyncReads.delete(dependency);
+                    }
+                    const derived = target[property](...args);
+                    return trackAclHelperPromise(state, derived, dependencies);
+                };
+            }
+            const value = Reflect.get(target, property, target);
+            return typeof value === "function" ? value.bind(target) : value;
+        },
+    });
+    state.helperPromiseDependencies.set(tracked, dependencies);
+    return tracked;
+}
 function settleAclHelperReads(aclContext) {
     const pending = [...(aclContext?.acl?.[ACL_HELPER_STATE]?.pendingAsyncReads ?? [])];
     return pending.length > 0 ? Promise.allSettled(pending) : null;
@@ -782,24 +852,13 @@ function resolveAclHelperRead(state, result, resolve) {
         return resolve(result);
     state.touchedAsyncRead = true;
     const pending = Promise.resolve(result).then(resolve);
-    let tracked;
-    tracked = new Proxy(pending, {
-        get(target, property) {
-            if (property === "then" || property === "catch" || property === "finally") {
-                return (...args) => {
-                    state.unconsumedAsyncReads.delete(tracked);
-                    return target[property](...args);
-                };
-            }
-            const value = Reflect.get(target, property, target);
-            return typeof value === "function" ? value.bind(target) : value;
-        },
-    });
-    state.unconsumedAsyncReads.add(tracked);
+    const dependency = {};
+    const dependencies = new Set([dependency]);
+    state.unconsumedAsyncReads.add(dependency);
     state.pendingAsyncReads.add(pending);
     void pending.then(() => state.pendingAsyncReads.delete(pending), () => state.pendingAsyncReads.delete(pending));
     pending.catch(() => { });
-    return tracked;
+    return trackAclHelperPromise(state, pending, dependencies);
 }
 function createAclDbHelpers(database, state) {
     return Object.freeze({

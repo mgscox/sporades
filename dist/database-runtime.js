@@ -1585,6 +1585,9 @@ export async function createPostgresDatabaseAdapter(options) {
             const userTriggers = postgresRowsFromResult(normalization, await query(`SELECT ${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("oid")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_trigger")} AS ${dialect.quoteIdentifier("trigger")} WHERE ${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("tgrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND NOT ${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("tgisinternal")}`, [schema.table]));
             if (userTriggers.length !== 0)
                 return false;
+            const rewriteRules = postgresRowsFromResult(normalization, await query(`SELECT ${dialect.quoteIdentifier("rewrite")}.${dialect.quoteIdentifier("oid")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_rewrite")} AS ${dialect.quoteIdentifier("rewrite")} WHERE ${dialect.quoteIdentifier("rewrite")}.${dialect.quoteIdentifier("ev_class")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?))`, [schema.table]));
+            if (rewriteRules.length !== 0)
+                return false;
         }
         return true;
     };

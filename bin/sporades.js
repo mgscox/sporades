@@ -68524,13 +68524,17 @@ function applyFileAcl(database, operation, row, auth, credential = { kind: "sess
     emitFileAclDeniedLog(database, { context, operation, row });
     return false;
   };
-  const result = rule(input);
+  const result = invokeAclRule(context, () => rule(input));
   if (!isPromiseLike(result)) {
     if (result && !aclRuleTouchedAsyncHelperRead(context, true)) return true;
     const settlement = settleAclHelperReads(context);
     return settlement ? settlement.then(deny) : deny();
   }
-  return Promise.resolve(result).then((allowed) => allowed && !aclRuleTouchedAsyncHelperRead(context) ? true : deny());
+  return Promise.resolve(result).then((allowed) => {
+    if (allowed && !aclRuleTouchedAsyncHelperRead(context)) return true;
+    const settlement = settleAclHelperReads(context);
+    return settlement ? settlement.then(deny) : deny();
+  });
 }
 function privilegedDbAccessContextSet() {
   const holder = privilegedDbAccessContextSet;
@@ -68581,13 +68585,13 @@ function runTableWriteWithAcl(database, table, operation, previous, next, contex
     throw createAclDeniedError(denialLogData);
   };
   const aclContext = createTableAclContext(context, database);
-  const result = rule({
+  const result = invokeAclRule(aclContext, () => rule({
     ctx: aclContext,
     operation,
     table: table.name,
     previous,
     next
-  });
+  }));
   if (!isPromiseLike(result)) {
     if (!result || aclRuleTouchedAsyncHelperRead(aclContext, true)) {
       const settlement = settleAclHelperReads(aclContext);
@@ -68597,7 +68601,8 @@ function runTableWriteWithAcl(database, table, operation, previous, next, contex
   }
   const pending = Promise.resolve(result).then((allowed) => {
     if (!allowed || aclRuleTouchedAsyncHelperRead(aclContext)) {
-      deny();
+      const settlement = settleAclHelperReads(aclContext);
+      return settlement ? settlement.then(deny) : deny();
     }
     return write();
   });
@@ -68613,12 +68618,12 @@ function applyReadAcl(database, table, row, context) {
     return true;
   }
   const aclContext = createTableAclContext(context, database);
-  const result = rule({
+  const result = invokeAclRule(aclContext, () => rule({
     ctx: aclContext,
     operation: "read",
     table: table.name,
     row
-  });
+  }));
   const deny = () => {
     emitAclDeniedLog(database, {
       context,
@@ -68633,7 +68638,11 @@ function applyReadAcl(database, table, row, context) {
     const settlement = settleAclHelperReads(aclContext);
     return settlement ? settlement.then(deny) : deny();
   }
-  return Promise.resolve(result).then((allowed) => allowed && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny());
+  return Promise.resolve(result).then((allowed) => {
+    if (allowed && !aclRuleTouchedAsyncHelperRead(aclContext)) return true;
+    const settlement = settleAclHelperReads(aclContext);
+    return settlement ? settlement.then(deny) : deny();
+  });
 }
 function filterRowsByReadAcl(database, table, rows, context) {
   const decisions = rows.map((row) => applyReadAcl(database, table, row, context));
@@ -68644,7 +68653,15 @@ function filterRowsByReadAcl(database, table, rows, context) {
 }
 var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
 function createAclHelpers(database, context) {
-  const state = { readCount: 0, maxReads: 32, touchedAsyncRead: false, unconsumedAsyncReads: /* @__PURE__ */ new Set(), pendingAsyncReads: /* @__PURE__ */ new Set() };
+  const state = {
+    readCount: 0,
+    maxReads: 32,
+    touchedAsyncRead: false,
+    ruleInvocationActive: false,
+    unconsumedAsyncReads: /* @__PURE__ */ new Set(),
+    pendingAsyncReads: /* @__PURE__ */ new Set(),
+    helperPromiseDependencies: /* @__PURE__ */ new WeakMap()
+  };
   const helpers = {
     db: createAclDbHelpers(database, state),
     storage: createAclStorageHelpers(database, state),
@@ -68718,6 +68735,47 @@ function aclRuleTouchedAsyncHelperRead(aclContext, synchronousRule = false) {
   const state = aclContext?.acl?.[ACL_HELPER_STATE];
   return synchronousRule ? state?.touchedAsyncRead === true : (state?.unconsumedAsyncReads?.size ?? 0) > 0;
 }
+function invokeAclRule(aclContext, invoke) {
+  const state = aclContext?.acl?.[ACL_HELPER_STATE];
+  if (!state) return invoke();
+  state.ruleInvocationActive = true;
+  try {
+    const result = invoke();
+    consumeAclHelperPromiseDependencies(state, result);
+    return result;
+  } finally {
+    state.ruleInvocationActive = false;
+  }
+}
+function consumeAclHelperPromiseDependencies(state, promise) {
+  if (!promise || typeof promise !== "object") return;
+  const dependencies = state.helperPromiseDependencies.get(promise);
+  if (!dependencies) return;
+  for (const dependency of dependencies) state.unconsumedAsyncReads.delete(dependency);
+}
+function isPromiseAssimilationContinuation(args) {
+  return args.length === 2 && args.every((callback) => typeof callback === "function" && Function.prototype.toString.call(callback).includes("[native code]"));
+}
+function trackAclHelperPromise(state, promise, dependencies) {
+  let tracked;
+  tracked = new Proxy(promise, {
+    get(target, property) {
+      if (property === "then" || property === "catch" || property === "finally") {
+        return (...args) => {
+          if (property === "then" && !state.ruleInvocationActive && isPromiseAssimilationContinuation(args)) {
+            for (const dependency of dependencies) state.unconsumedAsyncReads.delete(dependency);
+          }
+          const derived = target[property](...args);
+          return trackAclHelperPromise(state, derived, dependencies);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+  state.helperPromiseDependencies.set(tracked, dependencies);
+  return tracked;
+}
 function settleAclHelperReads(aclContext) {
   const pending = [...aclContext?.acl?.[ACL_HELPER_STATE]?.pendingAsyncReads ?? []];
   return pending.length > 0 ? Promise.allSettled(pending) : null;
@@ -68726,20 +68784,9 @@ function resolveAclHelperRead(state, result, resolve) {
   if (!isPromiseLike(result)) return resolve(result);
   state.touchedAsyncRead = true;
   const pending = Promise.resolve(result).then(resolve);
-  let tracked;
-  tracked = new Proxy(pending, {
-    get(target, property) {
-      if (property === "then" || property === "catch" || property === "finally") {
-        return (...args) => {
-          state.unconsumedAsyncReads.delete(tracked);
-          return target[property](...args);
-        };
-      }
-      const value = Reflect.get(target, property, target);
-      return typeof value === "function" ? value.bind(target) : value;
-    }
-  });
-  state.unconsumedAsyncReads.add(tracked);
+  const dependency = {};
+  const dependencies = /* @__PURE__ */ new Set([dependency]);
+  state.unconsumedAsyncReads.add(dependency);
   state.pendingAsyncReads.add(pending);
   void pending.then(
     () => state.pendingAsyncReads.delete(pending),
@@ -68747,7 +68794,7 @@ function resolveAclHelperRead(state, result, resolve) {
   );
   pending.catch(() => {
   });
-  return tracked;
+  return trackAclHelperPromise(state, pending, dependencies);
 }
 function createAclDbHelpers(database, state) {
   return Object.freeze({
@@ -98816,6 +98863,11 @@ async function createPostgresDatabaseAdapter(options) {
         [schema.table]
       ));
       if (userTriggers.length !== 0) return false;
+      const rewriteRules = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("rewrite")}.${dialect.quoteIdentifier("oid")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_rewrite")} AS ${dialect.quoteIdentifier("rewrite")} WHERE ${dialect.quoteIdentifier("rewrite")}.${dialect.quoteIdentifier("ev_class")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?))`,
+        [schema.table]
+      ));
+      if (rewriteRules.length !== 0) return false;
     }
     return true;
   };
