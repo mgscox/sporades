@@ -349,7 +349,10 @@ const result = await ctx.resources.run({
    Only writers using this protocol receive same-resource serial ordering; existing
    ordinary table updates do not magically participate. No global serializable
    snapshot or parallel throughput promise is added. Constraint/deadlock/connection
-   errors roll back; never automatically rerun a callback.
+   errors roll back; never automatically rerun a callback. Constraint and
+   pre-COMMIT connection diagnostics are reported only as the fixed
+   `RESOURCE_STORAGE_ERROR`; deliberate callback errors and the separate unknown
+   COMMIT outcome retain their own identities.
 5. Engine commit/rollback or engine-confirmed connection/process death releases
    authority. There is no durable resource lease to expire or reset on restart.
    Receipt rows are outcomes, not locks. PG backend loss invalidates all old scoped
@@ -383,6 +386,10 @@ const result = await ctx.resources.run({
    reserve. `resources.status({resource, operationId})` performs an authorized
    receipt read through the resource lock, returning committed result/intent IDs
    or `absent`; busy/denied remain errors. It does not run an application callback.
+   PostgreSQL marks the outer transaction failed when `NOWAIT` acquisition loses;
+   even if the handler catches `RESOURCE_BUSY`, settlement must roll back and
+   surface that error rather than accept PostgreSQL's `COMMIT`-as-`ROLLBACK`
+   response as success.
 
 libSQL is **unsupported in v1**: return `RESOURCE_ADAPTER_UNSUPPORTED` before scope
 callback/status work. No local mutex, autocommit or lease fallback. A future support

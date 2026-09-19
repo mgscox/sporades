@@ -15,6 +15,8 @@ and is deliberately not cited here.
 | Bootstrap schema is committed before the first protected callback, but protected application writes are still uncommitted | `test/resource-postgres-publication.test.js` — `Postgres dedicated resource first use publishes lock and receipt schema before its held callback, while hiding application writes` and `Postgres public mutation and endpoint first use publish schema before held callbacks while hiding outer writes`. Each drops the resource schema for first use, holds the real callback after a write, and uses an independent PostgreSQL connection to assert the exact `information_schema` columns for both resource tables while asserting that the callback write is absent. The dedicated case also proves a distinct initialized resource can enter. |
 | Authorization-anchor lock ordering under concurrent revocation | `test/resource-transactions.test.js` — `Postgres Job locks the authorization anchor before a concurrent revocation can commit` and `Postgres public resource scopes lock the authorization anchor through outer settlement`. The only barriers are public protected callbacks, which cannot begin until `resources.run` has authorized and locked the real generic `anchors` resource row; a separate PostgreSQL connection's revocation remains pending until Job, mutation, or endpoint settlement completes. No adapter, statement, or SQL-text monkey patch participates. |
 | Exact runtime schema admission | `test/database-adapter.test.js` — `Postgres resource transactions reject malformed runtime schemas before protected work`. Real PostgreSQL tables with a missing lock primary key or receipt columns that are reordered, mistyped, nullable, or extended all return `RESOURCE_STORAGE_ERROR` before the callback or resource-row insert. Existing fresh initialization and folded-legacy publication tests prove the accepted upgrade paths remain available. |
+| Caught public contention cannot falsely settle a rolled-back PostgreSQL transaction | `test/resource-transactions.test.js` — `Postgres caught public resource contention poisons outer settlement without losing prior runtime state`. Independent real transactions lock the runtime resource row for a guarded mutation and the authorization anchor for an endpoint. Both callbacks remain unentered; catching `RESOURCE_BUSY` inside the handler cannot produce success. The mutation also proves its already-consumed runtime-owned reauthentication proof is restored by rollback. |
+| PostgreSQL storage failures are fixed and redacted | `test/resource-transactions.test.js` — `Postgres Job resource storage failures are redacted without replacing callback errors` proves a real `23505` does not expose SQLSTATE, constraint, or engine text through a catching Job handler while a deliberate callback error remains unchanged. `test/database-adapter.test.js` — `Postgres resource precommit connection failures are redacted while callback errors remain unchanged` terminates only the dedicated backend during precommit and proves the same fixed error at the engine seam. Existing lost-COMMIT cases retain `RESOURCE_COMMIT_UNKNOWN`. |
 | Connection/backend loss and stale scope revocation | `test/database-adapter.test.js` — `terminating only the owning Postgres backend...`; `test/resource-transactions.test.js` — `Postgres Job backend loss after its final claim check...` |
 | Receipt replay, actor/input binding, current authority, deadline reserve, and unknown COMMIT | `test/resource-transactions.test.js` PostgreSQL Job, mutation, endpoint, lost-COMMIT, and backend-loss cases, with the shared SQLite cases in that same file |
 | Live paused owner, rollback/restart recovery, and process death/restart | `test/resource-postgres-process.test.js` — both child-process cases. A live `SIGSTOP` owner remains `RESOURCE_BUSY` after an elapsed observation; a hard-killed owner rolls back write and receipt before a successor acquires. |
@@ -73,3 +75,18 @@ The required four-file real-PostgreSQL gate passed 180/180 with no skips in
 `/Volumes/M2_2TB/develop/agent-net/scratch/task002-connector-repair-green-matrix.log`,
 and
 `/Volumes/M2_2TB/develop/agent-net/scratch/task002-connector-repair-required-green.log`.
+
+## Connector failure-path rework
+
+Review findings `4052714570` and `4052714573` were reproduced at
+`d2dc57cb6c39d08f8f1477c9f0372cbc5f4d3d34` with real PostgreSQL. The focused
+RED run failed 0/5 with no skips: caught resource-row and anchor-row contention
+returned successful mutation/endpoint results, a Job observed raw PostgreSQL
+`23505` plus `writes_value_key`, and a killed dedicated backend exposed
+`database is not open`. The deliberate callback error already remained intact.
+The same focused command passed 5/5 after the repair. The required four-file
+real-PostgreSQL gate passed 185/185 with no skips in 23.519 seconds. Evidence:
+`/Volumes/M2_2TB/develop/agent-net/scratch/task002-failure-paths-approved-red.log`,
+`/Volumes/M2_2TB/develop/agent-net/scratch/task002-failure-paths-approved-green-focused.log`,
+and
+`/Volumes/M2_2TB/develop/agent-net/scratch/task002-failure-paths-approved-required-green.log`.

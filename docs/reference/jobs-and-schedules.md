@@ -537,8 +537,12 @@ Other fixed resource errors are `RESOURCE_INVALID_INPUT`,
 `RESOURCE_CONTEXT_UNSUPPORTED`, `RESOURCE_ADAPTER_UNSUPPORTED`,
 `RESOURCE_EFFECT_UNSUPPORTED`, `RESOURCE_DEADLINE_EXCEEDED`,
 `RESOURCE_CLAIM_LOST`, `RESOURCE_SCOPE_INACTIVE`, `RESOURCE_COMMIT_UNKNOWN`, and
-`RESOURCE_STORAGE_ERROR`. They omit caller values. Cancellation keeps the
-existing Job cancellation outcome; authorization keeps opaque ACL errors.
+`RESOURCE_STORAGE_ERROR`. They omit caller values. PostgreSQL constraint,
+connection, and other storage failures before COMMIT use the fixed
+`RESOURCE_STORAGE_ERROR` code and message without SQLSTATE, constraint, or engine
+metadata; an error deliberately thrown by the resource callback remains that
+callback error. Cancellation keeps the existing Job cancellation outcome;
+authorization keeps opaque ACL errors.
 
 This slice supports ordinary Jobs, including the existing audited Privileged
 Job path, plus Custom mutations and Custom endpoints on file-backed SQLite.
@@ -561,7 +565,11 @@ its commit; initialized scopes take no bootstrap guard and lock the same
 `FOR UPDATE NOWAIT` resource row in their respective transaction. They then
 lock the authorization anchor before evaluating its current ACL and retain both
 locks through settlement. A PostgreSQL COMMIT acknowledgement loss discards that
-connection before the later receipt lookup reconnects. libSQL fails closed
+connection before the later receipt lookup reconnects. PostgreSQL lock contention
+aborts its transaction, so a mutation or endpoint cannot catch `RESOURCE_BUSY`
+and still settle successfully: the outer transaction is poisoned, rolls back,
+and reports the same bounded error. This also rolls back runtime-owned work which
+preceded resource entry, such as reauthentication-proof consumption. libSQL fails closed
 before callback execution; its ticket is 05. The
 `notifications.accept({id, to, subject, text, html?})` signature is reserved and
 always rejects `RESOURCE_EFFECT_UNSUPPORTED` until ticket 06; this slice stages

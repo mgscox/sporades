@@ -170,6 +170,38 @@ test("Postgres resource transactions reject malformed runtime schemas before pro
   }
 });
 
+test("Postgres resource precommit connection failures are redacted while callback errors remain unchanged", { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, ["anchors"]);
+  await reset.exec('DROP TABLE IF EXISTS "sporades_resource_receipts", "sporades_resource_locks"');
+  const adapter = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  const killer = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  const callbackError = Object.assign(new Error("Expected callback failure."), { code: "EXPECTED_CALLBACK_FAILURE" });
+  try {
+    await assert.rejects(adapter.withResourceTransaction(
+      () => true,
+      async transaction => {
+        const { pid } = await transaction.prepare("SELECT pg_backend_pid() AS pid").get();
+        const terminated = await killer.prepare("SELECT pg_terminate_backend(?) AS terminated").get(pid);
+        assert.equal(terminated.terminated, true);
+        await transaction.prepare("SELECT 1 AS one").get();
+      },
+      { table: "anchors", id: "precommit-connection-loss" },
+    ), error => {
+      assert.deepEqual({ code: error.code, message: error.message }, { code: "RESOURCE_STORAGE_ERROR", message: "Resource operation could not complete." });
+      assert.equal(error.detail, undefined);
+      return true;
+    });
+    await assert.rejects(adapter.withResourceTransaction(
+      () => { throw callbackError; },
+      undefined,
+      { table: "anchors", id: "callback-error" },
+    ), error => error === callbackError);
+  } finally {
+    await killer.close(); await adapter.close().catch(() => {}); await reset.close();
+  }
+});
+
 test("Postgres dedicated resource bootstrap fences repeated fresh and folded-legacy two-connection races", { skip: POSTGRES_SKIP_REASON }, async () => {
   const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
   try {

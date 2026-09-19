@@ -1684,9 +1684,30 @@ export async function createPostgresDatabaseAdapter(options) {
             let begun = false;
             let commitIssued = false;
             try {
-                await ensureResourceSchemaPublished();
-                dedicated = await createPostgresConnection(url);
-                const query = async (statement, params = []) => await dedicated.query(postgresInterpolate(statement, params));
+                try {
+                    await ensureResourceSchemaPublished();
+                }
+                catch (error) {
+                    if (typeof error?.code === "string" && error.code.startsWith("RESOURCE_"))
+                        throw error;
+                    throw resourceError("RESOURCE_STORAGE_ERROR");
+                }
+                try {
+                    dedicated = await createPostgresConnection(url);
+                }
+                catch {
+                    throw resourceError("RESOURCE_STORAGE_ERROR");
+                }
+                const query = async (statement, params = []) => {
+                    try {
+                        return await dedicated.query(postgresInterpolate(statement, params));
+                    }
+                    catch (error) {
+                        if (error?.code === "55P03" || error?.code === "57014")
+                            throw resourceError("RESOURCE_BUSY");
+                        throw resourceError("RESOURCE_STORAGE_ERROR");
+                    }
+                };
                 const operations = {
                     exec: async (statement) => { await query(statement); },
                     prepare: (statement) => ({

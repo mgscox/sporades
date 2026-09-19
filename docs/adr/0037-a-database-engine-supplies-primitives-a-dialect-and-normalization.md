@@ -167,7 +167,10 @@ the next engine borrows it.
 `withResourceTransaction(fn, beforeCommit, resource)` is a shared public method
 in that set. Its engine-specific dedicated connection lifecycle is an internal
 transaction-session primitive: create the independent connection, acquire its
-resource lock, commit or roll back, quarantine an unknown commit, and close.
+resource lock, normalize pre-COMMIT engine and connection failures to the fixed
+resource storage error, commit or roll back, quarantine an unknown commit, and
+close. Errors deliberately thrown by the shared callback remain callback errors;
+only the engine boundary classifies storage failures.
 The shared method delegates to that primitive rather than allowing a public
 PostgreSQL or SQLite adapter override. Authorization, claim, receipt, and
 settlement therefore remain one Resource-runtime behaviour, while the engine

@@ -255,8 +255,15 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
           await database.adapter.prepare(database.adapter.dialect.sql("UPDATE [sporades_resource_outer_fence] SET [epoch]=[epoch]+1 WHERE [id]=1")).run();
         }
       } catch (error: any) {
-        if (error?.code === "RESOURCE_BUSY" || error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY" || error?.code === "55P03" || error?.code === "57014") throw resourceError("RESOURCE_BUSY");
-        throw resourceError("RESOURCE_STORAGE_ERROR");
+        const normalized = error?.code === "RESOURCE_BUSY" || error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY" || error?.code === "55P03" || error?.code === "57014"
+          ? resourceError("RESOURCE_BUSY")
+          : resourceError("RESOURCE_STORAGE_ERROR");
+        // PostgreSQL marks the enclosing transaction failed after either
+        // acquisition statement loses NOWAIT contention. A caller may catch the
+        // bounded error, but settlement must still roll back rather than accept
+        // PostgreSQL's COMMIT-as-ROLLBACK response as a successful handler result.
+        if (database.adapter.engine === "postgres") terminalError ??= normalized;
+        throw normalized;
       }
       acquired = true;
       assertLive(true);

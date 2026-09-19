@@ -94282,8 +94282,9 @@ function bindOuterResources(database, context, hooks) {
           await database.adapter.prepare(database.adapter.dialect.sql("UPDATE [sporades_resource_outer_fence] SET [epoch]=[epoch]+1 WHERE [id]=1")).run();
         }
       } catch (error) {
-        if (error?.code === "RESOURCE_BUSY" || error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY" || error?.code === "55P03" || error?.code === "57014") throw resourceError("RESOURCE_BUSY");
-        throw resourceError("RESOURCE_STORAGE_ERROR");
+        const normalized = error?.code === "RESOURCE_BUSY" || error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY" || error?.code === "55P03" || error?.code === "57014" ? resourceError("RESOURCE_BUSY") : resourceError("RESOURCE_STORAGE_ERROR");
+        if (database.adapter.engine === "postgres") terminalError ??= normalized;
+        throw normalized;
       }
       acquired = true;
       assertLive(true);
@@ -98871,9 +98872,25 @@ async function createPostgresDatabaseAdapter(options) {
       let begun = false;
       let commitIssued = false;
       try {
-        await ensureResourceSchemaPublished();
-        dedicated = await createPostgresConnection(url);
-        const query = async (statement, params = []) => await dedicated.query(postgresInterpolate(statement, params));
+        try {
+          await ensureResourceSchemaPublished();
+        } catch (error) {
+          if (typeof error?.code === "string" && error.code.startsWith("RESOURCE_")) throw error;
+          throw resourceError("RESOURCE_STORAGE_ERROR");
+        }
+        try {
+          dedicated = await createPostgresConnection(url);
+        } catch {
+          throw resourceError("RESOURCE_STORAGE_ERROR");
+        }
+        const query = async (statement, params = []) => {
+          try {
+            return await dedicated.query(postgresInterpolate(statement, params));
+          } catch (error) {
+            if (error?.code === "55P03" || error?.code === "57014") throw resourceError("RESOURCE_BUSY");
+            throw resourceError("RESOURCE_STORAGE_ERROR");
+          }
+        };
         const operations = {
           exec: async (statement) => {
             await query(statement);

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import net from 'node:net';
 import path from 'node:path';
 import { openDevDatabase, runMutation, runEndpoint, runCurrentUserJobWorker, createControllableRuntimeClock } from '../dist/server-runtime-source.js';
-import { table, String as Text, endpoint, job, mutation, schedule } from '../dist/server.js';
+import { table, String as Text, endpoint, job, mutation, requireAuth, schedule } from '../dist/server.js';
 import { createSqliteDatabaseAdapter } from '../dist/database-runtime.js';
 import { resolveAnonymousSession } from '../dist/auth-runtime.js';
 import { resourceCanonicalJson, bindJobResources, bindOuterResources } from '../dist/resource-runtime.js';
@@ -154,6 +154,120 @@ test('Postgres public resource scopes lock the authorization anchor through oute
       await database.shutdown(); await database.close();
     }
   });
+});
+
+test('Postgres caught public resource contention poisons outer settlement without losing prior runtime state', { skip: POSTGRES_SKIP_REASON }, async t => {
+  for (const { kind, lockedRow } of [
+    { kind: 'mutation', lockedRow: 'resource' },
+    { kind: 'endpoint', lockedRow: 'anchor' },
+  ]) await t.test(`${kind} after ${lockedRow}-row contention`, async () => {
+    const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    await resetPostgresSchema(reset, ['anchors', 'writes']);
+    await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks');
+    await reset.close();
+    const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+    let callbacks = 0;
+    const protectedRun = async ctx => {
+      try {
+        await ctx.resources.run({ ...options({ contention: lockedRow }), operationId: `caught-${lockedRow}-${kind}` }, () => { callbacks++; return true; });
+      } catch (error) {
+        return { code: error.code, message: error.message };
+      }
+      return { code: 'RESOURCE_CALLBACK_ENTERED' };
+    };
+    const sessionActor = { ...actor, userId: 'caught-resource-user', email: 'caught-resource@example.test', isAuthenticated: true, isGuest: false, provider: 'email' };
+    const sessionToken = 'caught-resource-session';
+    const database = await openDevDatabase(`postgres-caught-${lockedRow}-${kind}`, '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: `postgres-caught-${lockedRow}-${kind}`, services: { database: { engine: 'postgres' } } }, {
+      ...(kind === 'mutation' ? { auth: { reauthentication: { purposes: { 'resource-write': { maxAgeSeconds: 900 } } } } } : {}),
+      schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+      mutations: kind === 'mutation' ? { contend: mutation(requireAuth({ credentials: ['session'], reauthentication: 'resource-write' }, protectedRun)) } : {},
+      endpoints: kind === 'endpoint' ? { contend: endpoint({ method: 'POST', path: '/contend' }, protectedRun) } : {},
+    }, { clock });
+    const locked = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    let locker; let lockOwner;
+    try {
+      await database.init();
+      await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'allowed');
+      if (kind === 'mutation') {
+        await database.adapter.insertAuthUser({ id: sessionActor.userId, createdAt: clock.now().toISOString(), displayName: sessionActor.displayName, email: sessionActor.email, picture: null, isAuthenticated: 1, isGuest: 0, provider: 'email' });
+        await database.adapter.insertAuthSession({ token: sessionToken, userId: sessionActor.userId, provider: 'email', createdAt: clock.now().toISOString(), expiresAt: '2099-01-01T00:00:00.000Z' });
+        await database.adapter.replaceReauthenticationProof({ id: 'caught-resource-proof', userId: sessionActor.userId, sessionToken, purpose: 'resource-write', createdAt: clock.now().toISOString(), expiresAt: '2099-01-01T00:00:00.000Z' });
+      }
+      if (lockedRow === 'resource') {
+        await database.adapter.withResourceTransaction(() => true, undefined, { table: 'anchors', id: 'anchor' });
+      }
+      locker = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+      lockOwner = locker.withTransaction(async transaction => {
+        if (lockedRow === 'resource') {
+          await transaction.prepare('SELECT "resourceTable" FROM "sporades_resource_locks" WHERE "resourceTable"=? AND "resourceId"=? FOR UPDATE').get('anchors', 'anchor');
+        } else {
+          await transaction.prepare('SELECT id FROM anchors WHERE id=? FOR UPDATE').get('anchor');
+        }
+        locked.resolve();
+        await release.promise;
+      });
+      await locked.promise;
+      if (kind === 'mutation') {
+        const result = await runMutation(database, sessionActor, 'contend', [], { sessionToken });
+        assert.equal(result.ok, false);
+        assert.deepEqual({ code: result.error.code, message: result.error.message }, { code: 'RESOURCE_BUSY', message: 'Resource transaction is busy.' });
+        assert.ok(await database.adapter.prepare('SELECT id FROM sporades_auth_reauthentication_proofs WHERE id=?').get('caught-resource-proof'), 'rollback retains the runtime-owned proof consumed before resource acquisition');
+      } else {
+        const session = await resolveAnonymousSession(database, null);
+        const request = { method: 'POST', headers: { 'x-sporades-session-token': session.token }, async *[Symbol.asyncIterator]() {} };
+        await assert.rejects(runEndpoint(database, database.endpoints.find(item => item.path === '/contend'), new URL('http://capsule.test/contend'), request), { code: 'RESOURCE_BUSY', message: 'Resource transaction is busy.' });
+      }
+      release.resolve();
+      await lockOwner;
+      assert.equal(callbacks, 0);
+      assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts WHERE "operationId"=?').get(`caught-${lockedRow}-${kind}`)).n), 0);
+    } finally {
+      release.resolve();
+      await lockOwner?.catch(() => {});
+      await locker?.close();
+      await database.shutdown(); await database.close();
+    }
+  });
+});
+
+test('Postgres Job resource storage failures are redacted without replacing callback errors', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  const observed = [];
+  const database = await openDevDatabase('postgres-resource-error-redaction', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-resource-error-redaction', services: { database: { engine: 'postgres' } } }, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }).unique('value') },
+    jobs: { work: job(async (ctx, mode) => {
+      try {
+        await ctx.resources.run({ ...options({ mode }), operationId: `error-${mode}` }, async scope => {
+          if (mode === 'callback') throw Object.assign(new Error('Expected callback failure.'), { code: 'EXPECTED_CALLBACK_FAILURE' });
+          await scope.db.writes.insert({ value: 'duplicate' });
+          await scope.db.writes.insert({ value: 'duplicate' });
+          return true;
+        });
+      } catch (error) {
+        observed.push({ code: error.code, message: error.message, constraint: error.constraint, detail: error.detail });
+      }
+      return { caught: mode };
+    }) },
+    mutations: { enqueue: mutation((ctx, mode) => ctx.jobs.enqueue('work', mode, { retry: { maxAttempts: 1, delayMs: 0 } })) },
+  }, { clock });
+  try {
+    await database.init();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'postgres');
+    for (const mode of ['storage', 'callback']) {
+      const queued = await runMutation(database, actor, 'enqueue', [mode]);
+      assert.equal(queued.ok, true);
+      await runCurrentUserJobWorker(database);
+      assert.equal((await database.adapter.prepare('SELECT status FROM sporades_jobs WHERE id=?').get(queued.data.id)).status, 'succeeded');
+    }
+    assert.deepEqual(observed, [
+      { code: 'RESOURCE_STORAGE_ERROR', message: 'Resource operation could not complete.', constraint: undefined, detail: undefined },
+      { code: 'EXPECTED_CALLBACK_FAILURE', message: 'Expected callback failure.', constraint: undefined, detail: undefined },
+    ]);
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM writes').get()).n), 0);
+  } finally { await database.shutdown(); await database.close(); }
 });
 
 test('Postgres Job exact claim-row contention returns RESOURCE_BUSY without entering its resource callback', { skip: POSTGRES_SKIP_REASON }, async () => {
