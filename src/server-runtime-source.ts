@@ -3715,6 +3715,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
               resourceEntered() {
                 resourceAttempted = true;
                 (transactionAdapter as any)[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
+                bindPostgresResourceAclDependencyLocking(transactionDatabase, transactionAdapter);
                 // A resource attempt has a deliberately payload-free diagnostic
                 // channel. Its authorization checks must not escape through the
                 // ordinary transaction logger before the resource settles.
@@ -3864,6 +3865,22 @@ function createTransactionDatabase(database: LooseRecord, transactionAdapter: an
   return transactionDatabase;
 }
 
+function bindPostgresResourceAclDependencyLocking(database: LooseRecord, adapter: LooseRecord) {
+  if (database.adapter.engine !== "postgres" || typeof database.lockAclHelperDependencies === "function") return;
+  const lockedTables = new Set<string>();
+  database.lockAclHelperDependencies = async (tableNames: string[]) => {
+    const pending = [...new Set(tableNames)]
+      .filter((tableName) => !lockedTables.has(tableName))
+      .sort();
+    if (pending.length === 0) return;
+    // A table lock covers both returned rows and an empty predicate, and the
+    // self-conflicting mode serializes resource policies that later promote a
+    // dependency read into a write without introducing lock-upgrade deadlocks.
+    await adapter.exec(`LOCK TABLE ${pending.map((tableName) => adapter.dialect.quoteIdentifier(tableName)).join(", ")} IN SHARE ROW EXCLUSIVE MODE`);
+    for (const tableName of pending) lockedTables.add(tableName);
+  };
+}
+
 function atomicStripeAbortError() {
   const error: any = new Error("Atomic Stripe consequence aborted.");
   error.name = "AbortError";
@@ -3907,6 +3924,7 @@ function bindOrdinaryJobResourceContext(database: LooseRecord, context: LooseRec
     privileged,
     createContext(adapter: LooseRecord, signal: AbortSignal) {
       const scopedDatabase = createTransactionDatabase(database, adapter);
+      bindPostgresResourceAclDependencyLocking(scopedDatabase, adapter);
       // Do not let ACL denials or app logs write outside the owning transaction.
       scopedDatabase.log = { emit() {} };
       const scoped = createMutationContext(scopedDatabase, context.auth, {
@@ -6605,6 +6623,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
           resourceEntered() {
             resourceAttempted = true;
             (transactionAdapter as any)[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
+            bindPostgresResourceAclDependencyLocking(transactionDatabase, transactionAdapter);
             // An outer resource has its own bounded, payload-free diagnostics.
             // Suppress ordinary ACL/app logging for its full attempted lifetime.
             transactionDatabase.log = { emit() {} };

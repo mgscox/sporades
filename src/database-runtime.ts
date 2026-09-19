@@ -1961,6 +1961,11 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
         [schema.table],
       ));
       if (standaloneUniqueIndexes.length !== 0) return false;
+      const userTriggers = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("oid")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_trigger")} AS ${dialect.quoteIdentifier("trigger")} WHERE ${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("tgrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND NOT ${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("tgisinternal")} AND ((${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("tgtype")} & 2) <> 0 OR (${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("tgtype")} & 64) <> 0)`,
+        [schema.table],
+      ));
+      if (userTriggers.length !== 0) return false;
     }
     return true;
   };

@@ -68526,7 +68526,9 @@ function applyFileAcl(database, operation, row, auth, credential = { kind: "sess
   };
   const result = rule(input);
   if (!isPromiseLike(result)) {
-    return result && !aclRuleTouchedAsyncHelperRead(context, true) ? true : deny();
+    if (result && !aclRuleTouchedAsyncHelperRead(context, true)) return true;
+    const settlement = settleAclHelperReads(context);
+    return settlement ? settlement.then(deny) : deny();
   }
   return Promise.resolve(result).then((allowed) => allowed && !aclRuleTouchedAsyncHelperRead(context) ? true : deny());
 }
@@ -68588,7 +68590,8 @@ function runTableWriteWithAcl(database, table, operation, previous, next, contex
   });
   if (!isPromiseLike(result)) {
     if (!result || aclRuleTouchedAsyncHelperRead(aclContext, true)) {
-      deny();
+      const settlement = settleAclHelperReads(aclContext);
+      return settlement ? settlement.then(deny) : deny();
     }
     return write();
   }
@@ -68626,7 +68629,9 @@ function applyReadAcl(database, table, row, context) {
     return false;
   };
   if (!isPromiseLike(result)) {
-    return result && !aclRuleTouchedAsyncHelperRead(aclContext, true) ? true : deny();
+    if (result && !aclRuleTouchedAsyncHelperRead(aclContext, true)) return true;
+    const settlement = settleAclHelperReads(aclContext);
+    return settlement ? settlement.then(deny) : deny();
   }
   return Promise.resolve(result).then((allowed) => allowed && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny());
 }
@@ -68639,7 +68644,7 @@ function filterRowsByReadAcl(database, table, rows, context) {
 }
 var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
 function createAclHelpers(database, context) {
-  const state = { readCount: 0, maxReads: 32, touchedAsyncRead: false, unconsumedAsyncReads: /* @__PURE__ */ new Set() };
+  const state = { readCount: 0, maxReads: 32, touchedAsyncRead: false, unconsumedAsyncReads: /* @__PURE__ */ new Set(), pendingAsyncReads: /* @__PURE__ */ new Set() };
   const helpers = {
     db: createAclDbHelpers(database, state),
     storage: createAclStorageHelpers(database, state),
@@ -68665,9 +68670,9 @@ function createAclTeamHelpers(database, context, state) {
       if (!isActiveAclTeamApplicationRole(database, role)) return false;
       const actorUserId = aclTeamActorUserId(context);
       if (!actorUserId || !isAclTeamId(teamId)) return false;
-      const selected = database.adapter.prepare(database.adapter.dialect.sql(
+      const selected = readWithAclHelperDependencies(database, ["sporades_team_memberships", "sporades_team_membership_application_roles"], () => database.adapter.prepare(database.adapter.dialect.sql(
         "SELECT [r].[role] FROM [sporades_team_memberships] [m] JOIN [sporades_team_membership_application_roles] [r] ON [r].[teamId] = [m].[teamId] AND [r].[userId] = [m].[userId] WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] = ?"
-      )).get(teamId, actorUserId, role);
+      )).get(teamId, actorUserId, role));
       return resolveAclHelperRead(state, selected, (resolved) => resolved?.role === role);
     },
     hasAnyRole(teamId, roles) {
@@ -68678,9 +68683,9 @@ function createAclTeamHelpers(database, context, state) {
       const actorUserId = aclTeamActorUserId(context);
       if (!actorUserId || !isAclTeamId(teamId)) return false;
       const placeholders = activeRoles.map(() => "?").join(", ");
-      const selected = database.adapter.prepare(database.adapter.dialect.sql(
+      const selected = readWithAclHelperDependencies(database, ["sporades_team_memberships", "sporades_team_membership_application_roles"], () => database.adapter.prepare(database.adapter.dialect.sql(
         `SELECT [r].[role] FROM [sporades_team_memberships] [m] JOIN [sporades_team_membership_application_roles] [r] ON [r].[teamId] = [m].[teamId] AND [r].[userId] = [m].[userId] WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] IN (${placeholders})`
-      )).all(teamId, actorUserId, ...activeRoles);
+      )).all(teamId, actorUserId, ...activeRoles));
       return resolveAclHelperRead(state, selected, (resolved) => Array.isArray(resolved) && resolved.some((row) => activeRoles.includes(row?.role)));
     }
   });
@@ -68689,10 +68694,14 @@ function readAclTeamMembership(database, context, state, teamId) {
   assertAclHelperReadAllowed(state);
   const actorUserId = aclTeamActorUserId(context);
   if (!actorUserId || !isAclTeamId(teamId)) return null;
-  const selected = database.adapter.prepare(database.adapter.dialect.sql(
+  const selected = readWithAclHelperDependencies(database, ["sporades_team_memberships"], () => database.adapter.prepare(database.adapter.dialect.sql(
     "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
-  )).get(teamId, actorUserId);
+  )).get(teamId, actorUserId));
   return selected;
+}
+function readWithAclHelperDependencies(database, tableNames, read) {
+  const lock = database.lockAclHelperDependencies?.(tableNames);
+  return isPromiseLike(lock) ? Promise.resolve(lock).then(read) : read();
 }
 function aclTeamActorUserId(context) {
   const auth = context?.auth;
@@ -68708,6 +68717,10 @@ function isActiveAclTeamApplicationRole(database, role) {
 function aclRuleTouchedAsyncHelperRead(aclContext, synchronousRule = false) {
   const state = aclContext?.acl?.[ACL_HELPER_STATE];
   return synchronousRule ? state?.touchedAsyncRead === true : (state?.unconsumedAsyncReads?.size ?? 0) > 0;
+}
+function settleAclHelperReads(aclContext) {
+  const pending = [...aclContext?.acl?.[ACL_HELPER_STATE]?.pendingAsyncReads ?? []];
+  return pending.length > 0 ? Promise.allSettled(pending) : null;
 }
 function resolveAclHelperRead(state, result, resolve) {
   if (!isPromiseLike(result)) return resolve(result);
@@ -68727,6 +68740,11 @@ function resolveAclHelperRead(state, result, resolve) {
     }
   });
   state.unconsumedAsyncReads.add(tracked);
+  state.pendingAsyncReads.add(pending);
+  void pending.then(
+    () => state.pendingAsyncReads.delete(pending),
+    () => state.pendingAsyncReads.delete(pending)
+  );
   pending.catch(() => {
   });
   return tracked;
@@ -68736,13 +68754,13 @@ function createAclDbHelpers(database, state) {
     get(tableName, id2) {
       assertAclHelperReadAllowed(state);
       const table = resolveAclAppTable(database, tableName);
-      const selected = database.adapter.selectAppRowById(table, id2);
+      const selected = readWithAclHelperDependencies(database, [table.name], () => database.adapter.selectAppRowById(table, id2));
       return resolveAclHelperRead(state, selected, (resolved) => resolved ? deserializeRow(table, resolved) : null);
     },
     exists(tableName, id2) {
       assertAclHelperReadAllowed(state);
       const table = resolveAclAppTable(database, tableName);
-      const selected = database.adapter.selectAppRowById(table, id2);
+      const selected = readWithAclHelperDependencies(database, [table.name], () => database.adapter.selectAppRowById(table, id2));
       return resolveAclHelperRead(state, selected, Boolean);
     }
   });
@@ -68753,7 +68771,7 @@ function createAclStorageHelpers(database, state) {
       assertAclHelperReadAllowed(state);
       const resource = resolveAclStorageResource(resourceName);
       if (resource === "files") {
-        const row = resolveAclStorageFileReference(database, reference);
+        const row = readWithAclHelperDependencies(database, ["sporades_files"], () => resolveAclStorageFileReference(database, reference));
         return resolveAclHelperRead(state, row, (resolved) => resolved ? aclStorageMetadataFromFileRow(resolved) : null);
       }
       return null;
@@ -68762,7 +68780,8 @@ function createAclStorageHelpers(database, state) {
       assertAclHelperReadAllowed(state);
       const resource = resolveAclStorageResource(resourceName);
       if (resource === "files") {
-        return resolveAclHelperRead(state, resolveAclStorageFileReference(database, reference), Boolean);
+        const row = readWithAclHelperDependencies(database, ["sporades_files"], () => resolveAclStorageFileReference(database, reference));
+        return resolveAclHelperRead(state, row, Boolean);
       }
       return false;
     }
@@ -98792,6 +98811,11 @@ async function createPostgresDatabaseAdapter(options) {
         [schema.table]
       ));
       if (standaloneUniqueIndexes.length !== 0) return false;
+      const userTriggers = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("oid")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_trigger")} AS ${dialect.quoteIdentifier("trigger")} WHERE ${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("tgrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND NOT ${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("tgisinternal")} AND ((${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("tgtype")} & 2) <> 0 OR (${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("tgtype")} & 64) <> 0)`,
+        [schema.table]
+      ));
+      if (userTriggers.length !== 0) return false;
     }
     return true;
   };
@@ -102894,6 +102918,7 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
               resourceEntered() {
                 resourceAttempted = true;
                 transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
+                bindPostgresResourceAclDependencyLocking(transactionDatabase, transactionAdapter);
                 transactionDatabase.log = { emit() {
                 } };
               },
@@ -103051,6 +103076,16 @@ function createTransactionDatabase(database, transactionAdapter, writeState) {
   });
   return transactionDatabase;
 }
+function bindPostgresResourceAclDependencyLocking(database, adapter) {
+  if (database.adapter.engine !== "postgres" || typeof database.lockAclHelperDependencies === "function") return;
+  const lockedTables = /* @__PURE__ */ new Set();
+  database.lockAclHelperDependencies = async (tableNames) => {
+    const pending = [...new Set(tableNames)].filter((tableName) => !lockedTables.has(tableName)).sort();
+    if (pending.length === 0) return;
+    await adapter.exec(`LOCK TABLE ${pending.map((tableName) => adapter.dialect.quoteIdentifier(tableName)).join(", ")} IN SHARE ROW EXCLUSIVE MODE`);
+    for (const tableName of pending) lockedTables.add(tableName);
+  };
+}
 function atomicStripeAbortError() {
   const error = new Error("Atomic Stripe consequence aborted.");
   error.name = "AbortError";
@@ -103090,6 +103125,7 @@ function bindOrdinaryJobResourceContext(database, context, claim, privileged = f
     privileged,
     createContext(adapter, signal) {
       const scopedDatabase = createTransactionDatabase(database, adapter);
+      bindPostgresResourceAclDependencyLocking(scopedDatabase, adapter);
       scopedDatabase.log = { emit() {
       } };
       const scoped = createMutationContext(scopedDatabase, context.auth, {
@@ -105548,6 +105584,7 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
             resourceEntered() {
               resourceAttempted = true;
               transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
+              bindPostgresResourceAclDependencyLocking(transactionDatabase, transactionAdapter);
               transactionDatabase.log = { emit() {
               } };
             },

@@ -546,7 +546,10 @@ export function applyFileAcl(database, operation, row, auth, credential = { kind
     };
     const result = rule(input);
     if (!isPromiseLike(result)) {
-        return result && !aclRuleTouchedAsyncHelperRead(context, true) ? true : deny();
+        if (result && !aclRuleTouchedAsyncHelperRead(context, true))
+            return true;
+        const settlement = settleAclHelperReads(context);
+        return settlement ? settlement.then(deny) : deny();
     }
     return Promise.resolve(result).then((allowed) => (allowed && !aclRuleTouchedAsyncHelperRead(context) ? true : deny()));
 }
@@ -608,7 +611,8 @@ export function runTableWriteWithAcl(database, table, operation, previous, next,
     });
     if (!isPromiseLike(result)) {
         if (!result || aclRuleTouchedAsyncHelperRead(aclContext, true)) {
-            deny();
+            const settlement = settleAclHelperReads(aclContext);
+            return settlement ? settlement.then(deny) : deny();
         }
         return write();
     }
@@ -646,7 +650,10 @@ export function applyReadAcl(database, table, row, context) {
         return false;
     };
     if (!isPromiseLike(result)) {
-        return result && !aclRuleTouchedAsyncHelperRead(aclContext, true) ? true : deny();
+        if (result && !aclRuleTouchedAsyncHelperRead(aclContext, true))
+            return true;
+        const settlement = settleAclHelperReads(aclContext);
+        return settlement ? settlement.then(deny) : deny();
     }
     return Promise.resolve(result).then((allowed) => (allowed && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny()));
 }
@@ -685,7 +692,7 @@ export function filterRowsByReadAcl(database, table, rows, context) {
 // the two had come apart is a disagreement in that limb rather than a silent fail-open.
 export const ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
 function createAclHelpers(database, context) {
-    const state = { readCount: 0, maxReads: 32, touchedAsyncRead: false, unconsumedAsyncReads: new Set() };
+    const state = { readCount: 0, maxReads: 32, touchedAsyncRead: false, unconsumedAsyncReads: new Set(), pendingAsyncReads: new Set() };
     const helpers = {
         db: createAclDbHelpers(database, state),
         storage: createAclStorageHelpers(database, state),
@@ -713,9 +720,9 @@ function createAclTeamHelpers(database, context, state) {
             const actorUserId = aclTeamActorUserId(context);
             if (!actorUserId || !isAclTeamId(teamId))
                 return false;
-            const selected = database.adapter.prepare(database.adapter.dialect.sql("SELECT [r].[role] FROM [sporades_team_memberships] [m] " +
+            const selected = readWithAclHelperDependencies(database, ["sporades_team_memberships", "sporades_team_membership_application_roles"], () => database.adapter.prepare(database.adapter.dialect.sql("SELECT [r].[role] FROM [sporades_team_memberships] [m] " +
                 "JOIN [sporades_team_membership_application_roles] [r] ON [r].[teamId] = [m].[teamId] AND [r].[userId] = [m].[userId] " +
-                "WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] = ?")).get(teamId, actorUserId, role);
+                "WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] = ?")).get(teamId, actorUserId, role));
             return resolveAclHelperRead(state, selected, (resolved) => resolved?.role === role);
         },
         hasAnyRole(teamId, roles) {
@@ -729,9 +736,9 @@ function createAclTeamHelpers(database, context, state) {
             if (!actorUserId || !isAclTeamId(teamId))
                 return false;
             const placeholders = activeRoles.map(() => "?").join(", ");
-            const selected = database.adapter.prepare(database.adapter.dialect.sql("SELECT [r].[role] FROM [sporades_team_memberships] [m] " +
+            const selected = readWithAclHelperDependencies(database, ["sporades_team_memberships", "sporades_team_membership_application_roles"], () => database.adapter.prepare(database.adapter.dialect.sql("SELECT [r].[role] FROM [sporades_team_memberships] [m] " +
                 "JOIN [sporades_team_membership_application_roles] [r] ON [r].[teamId] = [m].[teamId] AND [r].[userId] = [m].[userId] " +
-                `WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] IN (${placeholders})`)).all(teamId, actorUserId, ...activeRoles);
+                `WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] IN (${placeholders})`)).all(teamId, actorUserId, ...activeRoles));
             return resolveAclHelperRead(state, selected, (resolved) => Array.isArray(resolved) && resolved.some((row) => activeRoles.includes(row?.role)));
         },
     });
@@ -741,8 +748,12 @@ function readAclTeamMembership(database, context, state, teamId) {
     const actorUserId = aclTeamActorUserId(context);
     if (!actorUserId || !isAclTeamId(teamId))
         return null;
-    const selected = database.adapter.prepare(database.adapter.dialect.sql("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, actorUserId);
+    const selected = readWithAclHelperDependencies(database, ["sporades_team_memberships"], () => database.adapter.prepare(database.adapter.dialect.sql("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, actorUserId));
     return selected;
+}
+function readWithAclHelperDependencies(database, tableNames, read) {
+    const lock = database.lockAclHelperDependencies?.(tableNames);
+    return isPromiseLike(lock) ? Promise.resolve(lock).then(read) : read();
 }
 function aclTeamActorUserId(context) {
     const auth = context?.auth;
@@ -761,6 +772,10 @@ function aclRuleTouchedAsyncHelperRead(aclContext, synchronousRule = false) {
     return synchronousRule
         ? state?.touchedAsyncRead === true
         : (state?.unconsumedAsyncReads?.size ?? 0) > 0;
+}
+function settleAclHelperReads(aclContext) {
+    const pending = [...(aclContext?.acl?.[ACL_HELPER_STATE]?.pendingAsyncReads ?? [])];
+    return pending.length > 0 ? Promise.allSettled(pending) : null;
 }
 function resolveAclHelperRead(state, result, resolve) {
     if (!isPromiseLike(result))
@@ -781,6 +796,8 @@ function resolveAclHelperRead(state, result, resolve) {
         },
     });
     state.unconsumedAsyncReads.add(tracked);
+    state.pendingAsyncReads.add(pending);
+    void pending.then(() => state.pendingAsyncReads.delete(pending), () => state.pendingAsyncReads.delete(pending));
     pending.catch(() => { });
     return tracked;
 }
@@ -789,13 +806,13 @@ function createAclDbHelpers(database, state) {
         get(tableName, id) {
             assertAclHelperReadAllowed(state);
             const table = resolveAclAppTable(database, tableName);
-            const selected = database.adapter.selectAppRowById(table, id);
+            const selected = readWithAclHelperDependencies(database, [table.name], () => database.adapter.selectAppRowById(table, id));
             return resolveAclHelperRead(state, selected, (resolved) => resolved ? deserializeRow(table, resolved) : null);
         },
         exists(tableName, id) {
             assertAclHelperReadAllowed(state);
             const table = resolveAclAppTable(database, tableName);
-            const selected = database.adapter.selectAppRowById(table, id);
+            const selected = readWithAclHelperDependencies(database, [table.name], () => database.adapter.selectAppRowById(table, id));
             return resolveAclHelperRead(state, selected, Boolean);
         },
     });
@@ -806,7 +823,7 @@ function createAclStorageHelpers(database, state) {
             assertAclHelperReadAllowed(state);
             const resource = resolveAclStorageResource(resourceName);
             if (resource === "files") {
-                const row = resolveAclStorageFileReference(database, reference);
+                const row = readWithAclHelperDependencies(database, ["sporades_files"], () => resolveAclStorageFileReference(database, reference));
                 return resolveAclHelperRead(state, row, (resolved) => resolved ? aclStorageMetadataFromFileRow(resolved) : null);
             }
             return null;
@@ -815,7 +832,8 @@ function createAclStorageHelpers(database, state) {
             assertAclHelperReadAllowed(state);
             const resource = resolveAclStorageResource(resourceName);
             if (resource === "files") {
-                return resolveAclHelperRead(state, resolveAclStorageFileReference(database, reference), Boolean);
+                const row = readWithAclHelperDependencies(database, ["sporades_files"], () => resolveAclStorageFileReference(database, reference));
+                return resolveAclHelperRead(state, row, Boolean);
             }
             return false;
         },

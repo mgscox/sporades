@@ -110,6 +110,63 @@ test('Postgres resource ACL helpers preserve awaited Team and cross-table decisi
   } finally { await database.shutdown(); await database.close(); }
 });
 
+test('Postgres resource ACL Team dependencies stay locked through callback settlement', { skip: POSTGRES_SKIP_REASON }, async t => {
+  for (const dependency of ['membership', 'application-role']) await t.test(dependency, async () => {
+    const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
+    const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+    const teamId = '22222222-2222-4222-8222-222222222222';
+    const linkedActor = { ...actor, userId: `postgres-${dependency}-user`, isAuthenticated: true, isGuest: false, provider: 'email' };
+    const entered = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const database = await openDevDatabase(`postgres-resource-acl-${dependency}-lock`, '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: `postgres-resource-acl-${dependency}-lock`, services: { database: { engine: 'postgres' } } }, {
+      teams: { appRoles: ['author'] },
+      schema: {
+        anchors: table({ value: Text() }).acl({
+          read: ({ row, ctx }) => dependency === 'membership'
+            ? ctx.acl.teams.isMember(row.value)
+            : ctx.acl.teams.hasRole(row.value, 'author'),
+          write: () => true,
+        }),
+        writes: table({ value: Text() }),
+      },
+      mutations: { write: mutation(ctx => ctx.resources.run({ ...options({ dependency }), operationId: `acl-dependency-${dependency}` }, async scope => {
+        entered.resolve();
+        await release.promise;
+        await scope.db.writes.insert({ value: dependency });
+        return { committed: dependency };
+      })) },
+    }, { clock });
+    let revoker; let execution; let revocation;
+    try {
+      await database.init();
+      const now = clock.now().toISOString();
+      await database.adapter.prepare('INSERT INTO sporades_teams (id,name,"createdAt","createdByUserId") VALUES (?,?,?,?)').run(teamId, 'Postgres dependency Team', now, linkedActor.userId);
+      await database.adapter.prepare('INSERT INTO sporades_team_memberships ("teamId","userId",role,"createdAt") VALUES (?,?,?,?)').run(teamId, linkedActor.userId, 'member', now);
+      await database.adapter.prepare('INSERT INTO sporades_team_membership_application_roles ("teamId","userId",role,"createdAt") VALUES (?,?,?,?)').run(teamId, linkedActor.userId, 'author', now);
+      await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', now, now, teamId);
+      execution = runMutation(database, linkedActor, 'write', []);
+      await Promise.race([entered.promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`${dependency} ACL did not authorize before callback entry`)), 2_000))]);
+      revoker = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+      revocation = dependency === 'membership'
+        ? revoker.prepare('DELETE FROM sporades_team_memberships WHERE "teamId"=? AND "userId"=?').run(teamId, linkedActor.userId)
+        : revoker.prepare('DELETE FROM sporades_team_membership_application_roles WHERE "teamId"=? AND "userId"=? AND role=?').run(teamId, linkedActor.userId, 'author');
+      assert.equal(await Promise.race([revocation.then(() => 'committed'), new Promise(resolve => setTimeout(() => resolve('pending'), 75))]), 'pending');
+      release.resolve();
+      assert.deepEqual(await execution, { ok: true, data: { committed: dependency }, error: null });
+      await revocation;
+      assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM writes WHERE value=?').get(dependency)).n), 1);
+      assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts WHERE "operationId"=?').get(`acl-dependency-${dependency}`)).n), 1);
+    } finally {
+      release.resolve();
+      await execution?.catch(() => {});
+      await revocation?.catch(() => {});
+      await revoker?.close();
+      await database.shutdown(); await database.close();
+    }
+  });
+});
+
 test('Postgres Job locks the authorization anchor before a concurrent revocation can commit', { skip: POSTGRES_SKIP_REASON }, async () => {
   const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
   await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
@@ -478,7 +535,7 @@ test('Postgres public resource storage failures are redacted without replacing c
     await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'postgres');
     await database.adapter[Symbol.for('sporades.database.resourceBootstrapMechanics')]();
     await database.adapter.exec('CREATE OR REPLACE FUNCTION sporades_test_receipt_result_forbidden() RETURNS trigger LANGUAGE plpgsql AS $trigger$ BEGIN IF NEW."resultJson" = \'{"receiptFailure":true}\' THEN RAISE EXCEPTION \'receipt result forbidden\'; END IF; RETURN NEW; END; $trigger$');
-    await database.adapter.exec(`CREATE TRIGGER receipt_result_json_forbidden BEFORE INSERT ON sporades_resource_receipts FOR EACH ROW EXECUTE FUNCTION sporades_test_receipt_result_forbidden()`);
+    await database.adapter.exec(`CREATE TRIGGER receipt_result_json_forbidden AFTER INSERT ON sporades_resource_receipts FOR EACH ROW EXECUTE FUNCTION sporades_test_receipt_result_forbidden()`);
     for (const kind of ['mutation', 'endpoint']) for (const mode of ['caught', 'unawaited', 'receipt', 'callback']) {
       const error = kind === 'mutation'
         ? (await runMutation(database, actor, mode, [])).error
@@ -922,6 +979,41 @@ test('Postgres resource readiness rejects unexpected constraints and accepts cor
       }
     } finally { await database.shutdown(); await database.close(); }
   });
+});
+
+test('Postgres resource readiness rejects a user trigger that suppresses receipt insertion', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  try {
+    await resetPostgresSchema(reset, ['anchors', 'writes']);
+    await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks');
+    await reset.exec('CREATE TABLE sporades_resource_locks ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId"))');
+    await reset.exec('CREATE TABLE sporades_resource_receipts ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, "operationId" TEXT NOT NULL, "inputDigest" TEXT NOT NULL, "actorDigest" TEXT NOT NULL, "resultJson" TEXT NOT NULL, "intentIdsJson" TEXT NOT NULL, "committedAt" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId", "operationId"))');
+    await reset.exec('CREATE FUNCTION suppress_resource_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$');
+    await reset.exec('CREATE TRIGGER suppress_resource_receipt BEFORE INSERT ON sporades_resource_receipts FOR EACH ROW EXECUTE FUNCTION suppress_resource_receipt()');
+  } finally { await reset.close(); }
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  let callbacks = 0;
+  const database = await openDevDatabase('postgres-resource-receipt-trigger', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-resource-receipt-trigger', services: { database: { engine: 'postgres' } } }, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+    mutations: { write: mutation(ctx => ctx.resources.run({ ...options(), operationId: 'suppressed-receipt' }, async scope => {
+      callbacks++;
+      await scope.db.writes.insert({ value: 'must-not-commit' });
+      return { committed: true };
+    })) },
+  }, { clock });
+  try {
+    await database.init();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'ready');
+    const result = await runMutation(database, actor, 'write', []);
+    assert.equal(result.ok, false);
+    assert.deepEqual({ code: result.error.code, message: result.error.message }, { code: 'RESOURCE_STORAGE_ERROR', message: 'Resource operation could not complete.' });
+    assert.equal(callbacks, 0, 'schema readiness rejects the trigger before protected work starts');
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM writes').get()).n), 0);
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 0);
+  } finally {
+    try { await database.adapter.exec('DROP FUNCTION IF EXISTS suppress_resource_receipt() CASCADE'); }
+    finally { await database.shutdown(); await database.close(); }
+  }
 });
 
 test('Postgres resource readiness scopes primary-key columns to the checked table', { skip: POSTGRES_SKIP_REASON }, async t => {
