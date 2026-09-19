@@ -68526,7 +68526,7 @@ function applyFileAcl(database, operation, row, auth, credential = { kind: "sess
   };
   const result = rule(input);
   if (!isPromiseLike(result)) {
-    return result && !aclRuleTouchedAsyncHelperRead(context) ? true : deny();
+    return result && !aclRuleTouchedAsyncHelperRead(context, true) ? true : deny();
   }
   return Promise.resolve(result).then((allowed) => allowed && !aclRuleTouchedAsyncHelperRead(context) ? true : deny());
 }
@@ -68587,7 +68587,7 @@ function runTableWriteWithAcl(database, table, operation, previous, next, contex
     next
   });
   if (!isPromiseLike(result)) {
-    if (!result || aclRuleTouchedAsyncHelperRead(aclContext)) {
+    if (!result || aclRuleTouchedAsyncHelperRead(aclContext, true)) {
       deny();
     }
     return write();
@@ -68626,7 +68626,7 @@ function applyReadAcl(database, table, row, context) {
     return false;
   };
   if (!isPromiseLike(result)) {
-    return result && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny();
+    return result && !aclRuleTouchedAsyncHelperRead(aclContext, true) ? true : deny();
   }
   return Promise.resolve(result).then((allowed) => allowed && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny());
 }
@@ -68639,7 +68639,7 @@ function filterRowsByReadAcl(database, table, rows, context) {
 }
 var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
 function createAclHelpers(database, context) {
-  const state = { readCount: 0, maxReads: 32, touchedAsyncRead: false };
+  const state = { readCount: 0, maxReads: 32, touchedAsyncRead: false, unconsumedAsyncReads: /* @__PURE__ */ new Set() };
   const helpers = {
     db: createAclDbHelpers(database, state),
     storage: createAclStorageHelpers(database, state),
@@ -68655,10 +68655,10 @@ function createAclTeamHelpers(database, context, state) {
   return Object.freeze({
     isMember(teamId) {
       const membership = readAclTeamMembership(database, context, state, teamId);
-      return membership?.role === "admin" || membership?.role === "member";
+      return resolveAclHelperRead(state, membership, (resolved) => resolved?.role === "admin" || resolved?.role === "member");
     },
     isAdmin(teamId) {
-      return readAclTeamMembership(database, context, state, teamId)?.role === "admin";
+      return resolveAclHelperRead(state, readAclTeamMembership(database, context, state, teamId), (membership) => membership?.role === "admin");
     },
     hasRole(teamId, role) {
       assertAclHelperReadAllowed(state);
@@ -68668,8 +68668,7 @@ function createAclTeamHelpers(database, context, state) {
       const selected = database.adapter.prepare(database.adapter.dialect.sql(
         "SELECT [r].[role] FROM [sporades_team_memberships] [m] JOIN [sporades_team_membership_application_roles] [r] ON [r].[teamId] = [m].[teamId] AND [r].[userId] = [m].[userId] WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] = ?"
       )).get(teamId, actorUserId, role);
-      if (markAsyncAclHelperRead(state, selected)) return false;
-      return selected?.role === role;
+      return resolveAclHelperRead(state, selected, (resolved) => resolved?.role === role);
     },
     hasAnyRole(teamId, roles) {
       assertAclHelperReadAllowed(state);
@@ -68682,8 +68681,7 @@ function createAclTeamHelpers(database, context, state) {
       const selected = database.adapter.prepare(database.adapter.dialect.sql(
         `SELECT [r].[role] FROM [sporades_team_memberships] [m] JOIN [sporades_team_membership_application_roles] [r] ON [r].[teamId] = [m].[teamId] AND [r].[userId] = [m].[userId] WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] IN (${placeholders})`
       )).all(teamId, actorUserId, ...activeRoles);
-      if (markAsyncAclHelperRead(state, selected)) return false;
-      return Array.isArray(selected) && selected.some((row) => activeRoles.includes(row?.role));
+      return resolveAclHelperRead(state, selected, (resolved) => Array.isArray(resolved) && resolved.some((row) => activeRoles.includes(row?.role)));
     }
   });
 }
@@ -68694,8 +68692,7 @@ function readAclTeamMembership(database, context, state, teamId) {
   const selected = database.adapter.prepare(database.adapter.dialect.sql(
     "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
   )).get(teamId, actorUserId);
-  if (markAsyncAclHelperRead(state, selected)) return null;
-  return selected ?? null;
+  return selected;
 }
 function aclTeamActorUserId(context) {
   const auth = context?.auth;
@@ -68708,17 +68705,31 @@ function isAclTeamId(value) {
 function isActiveAclTeamApplicationRole(database, role) {
   return typeof role === "string" && Array.isArray(database.teamApplicationRoles) && database.teamApplicationRoles.includes(role);
 }
-function aclRuleTouchedAsyncHelperRead(aclContext) {
-  return aclContext?.acl?.[ACL_HELPER_STATE]?.touchedAsyncRead === true;
+function aclRuleTouchedAsyncHelperRead(aclContext, synchronousRule = false) {
+  const state = aclContext?.acl?.[ACL_HELPER_STATE];
+  return synchronousRule ? state?.touchedAsyncRead === true : (state?.unconsumedAsyncReads?.size ?? 0) > 0;
 }
-function markAsyncAclHelperRead(state, result) {
-  if (isPromiseLike(result)) {
-    state.touchedAsyncRead = true;
-    Promise.resolve(result).catch(() => {
-    });
-    return true;
-  }
-  return false;
+function resolveAclHelperRead(state, result, resolve) {
+  if (!isPromiseLike(result)) return resolve(result);
+  state.touchedAsyncRead = true;
+  const pending = Promise.resolve(result).then(resolve);
+  let tracked;
+  tracked = new Proxy(pending, {
+    get(target, property) {
+      if (property === "then" || property === "catch" || property === "finally") {
+        return (...args) => {
+          state.unconsumedAsyncReads.delete(tracked);
+          return target[property](...args);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+  state.unconsumedAsyncReads.add(tracked);
+  pending.catch(() => {
+  });
+  return tracked;
 }
 function createAclDbHelpers(database, state) {
   return Object.freeze({
@@ -68726,19 +68737,13 @@ function createAclDbHelpers(database, state) {
       assertAclHelperReadAllowed(state);
       const table = resolveAclAppTable(database, tableName);
       const selected = database.adapter.selectAppRowById(table, id2);
-      if (markAsyncAclHelperRead(state, selected)) {
-        return null;
-      }
-      return selected ? deserializeRow(table, selected) : null;
+      return resolveAclHelperRead(state, selected, (resolved) => resolved ? deserializeRow(table, resolved) : null);
     },
     exists(tableName, id2) {
       assertAclHelperReadAllowed(state);
       const table = resolveAclAppTable(database, tableName);
       const selected = database.adapter.selectAppRowById(table, id2);
-      if (markAsyncAclHelperRead(state, selected)) {
-        return false;
-      }
-      return Boolean(selected);
+      return resolveAclHelperRead(state, selected, Boolean);
     }
   });
 }
@@ -68748,8 +68753,8 @@ function createAclStorageHelpers(database, state) {
       assertAclHelperReadAllowed(state);
       const resource = resolveAclStorageResource(resourceName);
       if (resource === "files") {
-        const row = resolveAclStorageFileReference(database, state, reference);
-        return row ? aclStorageMetadataFromFileRow(row) : null;
+        const row = resolveAclStorageFileReference(database, reference);
+        return resolveAclHelperRead(state, row, (resolved) => resolved ? aclStorageMetadataFromFileRow(resolved) : null);
       }
       return null;
     },
@@ -68757,13 +68762,13 @@ function createAclStorageHelpers(database, state) {
       assertAclHelperReadAllowed(state);
       const resource = resolveAclStorageResource(resourceName);
       if (resource === "files") {
-        return Boolean(resolveAclStorageFileReference(database, state, reference));
+        return resolveAclHelperRead(state, resolveAclStorageFileReference(database, reference), Boolean);
       }
       return false;
     }
   });
 }
-function resolveAclStorageFileReference(database, state, reference) {
+function resolveAclStorageFileReference(database, reference) {
   const value = String(reference ?? "");
   if (isAbsoluteFilePath(value)) {
     let path14;
@@ -68773,20 +68778,16 @@ function resolveAclStorageFileReference(database, state, reference) {
       return null;
     }
     const selected2 = database.adapter.selectLiveFileByPath(path14);
-    if (markAsyncAclHelperRead(state, selected2)) {
-      return null;
-    }
-    const resolved = selected2.length > 1 ? { ambiguous: true } : selected2[0] ?? null;
-    return resolved?.ambiguous ? null : resolved;
+    return thenIfPromise(selected2, (rows) => {
+      const resolved = rows.length > 1 ? { ambiguous: true } : rows[0] ?? null;
+      return resolved?.ambiguous ? null : resolved;
+    });
   }
   const selected = database.adapter.selectFileById(value);
-  if (markAsyncAclHelperRead(state, selected)) {
-    return null;
-  }
-  if (!selected || selected.deletedAt !== null || selected.status !== "uploaded") {
-    return null;
-  }
-  return selected;
+  return thenIfPromise(selected, (resolved) => {
+    if (!resolved || resolved.deletedAt !== null || resolved.status !== "uploaded") return null;
+    return resolved;
+  });
 }
 function assertAclHelperReadAllowed(state) {
   state.readCount += 1;
@@ -98786,6 +98787,11 @@ async function createPostgresDatabaseAdapter(options) {
         [schema.table]
       ));
       if (extraConstraints.length !== 0) return false;
+      const standaloneUniqueIndexes = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexrelid")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_index")} AS ${dialect.quoteIdentifier("index")} LEFT JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_constraint")} AS ${dialect.quoteIdentifier("constraint")} ON ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("conindid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexrelid")} AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("conrelid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indrelid")} AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("contype")}='p' WHERE ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indisunique")} AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("oid")} IS NULL`,
+        [schema.table]
+      ));
+      if (standaloneUniqueIndexes.length !== 0) return false;
     }
     return true;
   };

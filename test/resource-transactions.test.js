@@ -62,6 +62,54 @@ test('Postgres Job resource scope commits a canonical receipt through its dedica
   } finally { await database.shutdown(); await database.close(); }
 });
 
+test('Postgres resource ACL helpers preserve awaited Team and cross-table decisions while rejecting synchronous unawaited reads', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, ['anchors', 'policies', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  const teamId = '11111111-1111-4111-8111-111111111111';
+  const linkedActor = { ...actor, userId: 'postgres-acl-user', isAuthenticated: true, isGuest: false, provider: 'email' };
+  let callbacks = 0;
+  const database = await openDevDatabase('postgres-resource-acl-helper-test', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-resource-acl-helper', services: { database: { engine: 'postgres' } } }, {
+    schema: {
+      anchors: table({ value: Text() }).acl({ read: ({ row, ctx }) => {
+        if (row.value === 'team-allow') return (async () => await ctx.acl.teams.isMember(teamId))();
+        if (row.value === 'team-deny') return (async () => await ctx.acl.teams.isAdmin(teamId))();
+        if (row.value === 'cross-table-allow') return ctx.acl.db.get('policies', 'allow').then(policy => policy?.value === 'allowed');
+        if (row.value === 'cross-table-deny') return ctx.acl.db.exists('policies', 'missing').then(Boolean);
+        ctx.acl.db.exists('policies', 'allow').then(Boolean);
+        return true;
+      }, write: () => true }),
+      policies: table({ value: Text() }),
+      writes: table({ value: Text() }),
+    },
+    mutations: { write: mutation((ctx, id) => ctx.resources.run({ ...options({ id }), resource: { table: 'anchors', id }, operationId: `acl-helper-${id}` }, async scope => {
+      callbacks++;
+      await scope.db.writes.insert({ value: id });
+      return { committed: id };
+    })) },
+  }, { clock });
+  try {
+    await database.init();
+    const now = clock.now().toISOString();
+    await database.adapter.prepare('INSERT INTO sporades_teams (id,name,"createdAt","createdByUserId") VALUES (?,?,?,?)').run(teamId, 'Postgres ACL Team', now, linkedActor.userId);
+    await database.adapter.prepare('INSERT INTO sporades_team_memberships ("teamId","userId",role,"createdAt") VALUES (?,?,?,?)').run(teamId, linkedActor.userId, 'member', now);
+    await database.adapter.prepare('INSERT INTO policies (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('allow', now, now, 'allowed');
+    for (const id of ['team-allow', 'team-deny', 'cross-table-allow', 'cross-table-deny', 'unawaited']) {
+      await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run(id, now, now, id);
+    }
+    for (const id of ['team-allow', 'team-deny', 'cross-table-allow', 'cross-table-deny', 'unawaited']) {
+      const result = await runMutation(database, linkedActor, 'write', [id]);
+      if (id.endsWith('allow')) assert.deepEqual(result, { ok: true, data: { committed: id }, error: null });
+      else {
+        assert.equal(result.ok, false);
+        assert.deepEqual({ code: result.error.code, message: result.error.message }, { code: 'DENIED', message: 'Denied.' });
+      }
+    }
+    assert.equal(callbacks, 2);
+    assert.deepEqual((await database.adapter.prepare('SELECT value FROM writes ORDER BY value').all()).map(row => row.value), ['cross-table-allow', 'team-allow']);
+  } finally { await database.shutdown(); await database.close(); }
+});
+
 test('Postgres Job locks the authorization anchor before a concurrent revocation can commit', { skip: POSTGRES_SKIP_REASON }, async () => {
   const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
   await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
@@ -817,6 +865,7 @@ test('Postgres endpoint resource scopes reconcile a lost outer COMMIT acknowledg
 test('Postgres resource readiness rejects unexpected constraints and accepts correctly-shaped tables', { skip: POSTGRES_SKIP_REASON }, async t => {
   const cases = [
     ...['locks', 'receipts'].flatMap(tableName => ['unique', 'check', 'foreign-key'].map(constraint => ({ tableName, constraint }))),
+    { tableName: 'locks', constraint: 'standalone-unique-index' },
     ...['correct', 'fresh', 'folded-legacy'].map(shape => ({ shape })),
   ];
   for (const { tableName, constraint, shape } of cases) await t.test(shape ?? `${tableName} ${constraint}`, async () => {
@@ -855,7 +904,9 @@ test('Postgres resource readiness rejects unexpected constraints and accepts cor
         const definition = constraint === 'unique' ? 'UNIQUE ("resourceTable")'
           : constraint === 'check' ? `CHECK ("resourceId" <> 'anchor-two')`
           : 'FOREIGN KEY ("resourceId") REFERENCES anchors(id)';
-        await database.adapter.exec(`ALTER TABLE sporades_resource_${tableName} ADD CONSTRAINT unexpected_resource_constraint ${definition}`);
+        if (constraint === 'standalone-unique-index') {
+          await database.adapter.exec('CREATE UNIQUE INDEX unexpected_resource_unique_index ON sporades_resource_locks ("resourceTable")');
+        } else await database.adapter.exec(`ALTER TABLE sporades_resource_${tableName} ADD CONSTRAINT unexpected_resource_constraint ${definition}`);
       }
       for (const id of ['anchor-one', 'anchor-two']) {
         const result = await runMutation(database, actor, 'write', [id]);

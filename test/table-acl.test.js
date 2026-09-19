@@ -317,8 +317,8 @@ test("Team ACL reads committed membership state after restart, rollback, cache r
         return { ...prepared, get: async (...values) => prepared.get(...values) };
       };
       const asyncRead = await runQuery(database, linkedAuthor, "notes");
-      assert.equal(asyncRead.error, null, "async Team helper reads remain an opaque filtered read");
-      assert.deepEqual(asyncRead.data, [], "async Team helper reads fail closed rather than returning a promise to policy code");
+      assert.equal(asyncRead.error, null);
+      assert.deepEqual(asyncRead.data.map((row) => row.title), ["Live"], "returned async Team helper decisions are awaited by ACL evaluation");
     } finally {
       database.close();
     }
@@ -984,7 +984,7 @@ test("ACL helpers expose async db exists checks and do not recursively evaluate 
   });
 });
 
-test("ACL db helpers fail closed when adapter reads are async", async () => {
+test("synchronous ACL rules fail closed on unawaited async db helper reads", async () => {
   await withTempDir(async (dir) => {
     const observed = [];
     const database = await openCapsuleDatabase(dir, {
@@ -1020,8 +1020,44 @@ test("ACL db helpers fail closed when adapter reads are async", async () => {
 
       assert.equal(result.error, null);
       assert.deepEqual(result.data, []);
-      assert.deepEqual(observed, [{ project: null, exists: false }]);
-      assert.equal(observed.some((entry) => isPromiseLike(entry.project) || isPromiseLike(entry.exists)), false);
+      assert.equal(observed.length, 1);
+      assert.equal(isPromiseLike(observed[0].project), true);
+      assert.equal(isPromiseLike(observed[0].exists), true);
+      assert.deepEqual(await Promise.all([observed[0].project, observed[0].exists]), [{ id: project.id, name: "Hidden", ownerId: "u1" }, true]);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("async ACL helper promises preserve then, catch, and finally behavior", async () => {
+  await withTempDir(async (dir) => {
+    let finalized = false;
+    const database = await openCapsuleDatabase(dir, {
+      schema: {
+        projects: table({ name: String() }),
+        notes: table({ projectId: String() }).acl({
+          read: async ({ row, ctx }) => {
+            const exists = ctx.acl.db.exists("projects", row.projectId);
+            assert.equal(exists instanceof Promise, true);
+            return await exists.catch(() => false).finally(() => { finalized = true; });
+          },
+        }),
+      },
+      queries: { notes: query((ctx) => ctx.db.notes.all()) },
+    });
+    try {
+      const db = createEndpointDatabaseApi(database);
+      const project = db.projects.insert({ name: "Promise API" });
+      db.notes.insert({ projectId: project.id });
+      const selectAppRowById = database.adapter.selectAppRowById.bind(database.adapter);
+      database.adapter.selectAppRowById = async (...args) => selectAppRowById(...args);
+
+      const result = await runQuery(database, auth("u1"), "notes");
+
+      assert.equal(result.error, null);
+      assert.equal(result.data.length, 1);
+      assert.equal(finalized, true);
     } finally {
       database.close();
     }
@@ -1330,7 +1366,7 @@ test("ACL storage helpers return plain false for missing default sync file looku
   });
 });
 
-test("ACL storage helpers fail closed when adapter reads are async in read rules", async () => {
+test("async read ACL rules fail closed when async storage helpers are not awaited", async () => {
   await withTempDir(async (dir) => {
     const observed = [];
     const database = await openCapsuleDatabase(dir, {
@@ -1345,6 +1381,7 @@ test("ACL storage helpers fail closed when adapter reads are async in read rules
             const file = ctx.acl.storage.get("files", row.fileRef);
             const exists = ctx.acl.storage.exists("files", row.fileRef);
             observed.push({ file, exists });
+            await new Promise((resolve) => setTimeout(resolve, 0));
             return true;
           },
         }),
@@ -1378,15 +1415,19 @@ test("ACL storage helpers fail closed when adapter reads are async in read rules
 
       assert.equal(result.error, null);
       assert.deepEqual(result.data, []);
-      assert.deepEqual(observed, [{ file: null, exists: false }]);
-      assert.equal(observed.some((entry) => isPromiseLike(entry.file) || isPromiseLike(entry.exists)), false);
+      assert.equal(observed.length, 1);
+      assert.equal(isPromiseLike(observed[0].file), true);
+      assert.equal(isPromiseLike(observed[0].exists), true);
+      const [file, exists] = await Promise.all([observed[0].file, observed[0].exists]);
+      assert.equal(file.id, "file-1");
+      assert.equal(exists, true);
     } finally {
       database.close();
     }
   });
 });
 
-test("ACL storage helpers fail closed when adapter reads are async in write rules", async () => {
+test("async write ACL rules fail closed when async storage helpers are not awaited", async () => {
   await withTempDir(async (dir) => {
     const observedExists = [];
     const database = await openCapsuleDatabase(dir, {
@@ -1437,8 +1478,9 @@ test("ACL storage helpers fail closed when adapter reads are async in write rule
       assert.equal(denied.ok, false);
       assert.equal(denied.error.code, "DENIED");
       assert.deepEqual(rows.data, []);
-      assert.deepEqual(observedExists, [false]);
-      assert.equal(observedExists.some(isPromiseLike), false);
+      assert.equal(observedExists.length, 1);
+      assert.equal(isPromiseLike(observedExists[0]), true);
+      assert.equal(await observedExists[0], true);
     } finally {
       database.close();
     }

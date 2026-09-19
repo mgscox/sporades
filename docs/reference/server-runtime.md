@@ -131,7 +131,10 @@ auth, system metadata, logs, or raw storage tables. `ctx.acl.storage.get()` and
 logical File metadata such as File ID, absolute File path, owner, bucket,
 status, timestamps, size, MIME type, original name, and version; they do not
 expose filesystem paths, object keys, Object buckets, runtime table names, or
-generated read URLs.
+generated read URLs. These helper reads may resolve synchronously on SQLite or
+asynchronously on remote database engines; portable ACL rules should be
+`async` and `await` every helper result. A synchronous rule that starts an
+asynchronous helper read without returning or awaiting it is denied fail-closed.
 
 `ctx.acl.teams` adds read-only, explicit-Team decisions for Team-aware
 Capsule rows and File metadata policies: `isMember(teamId)`,
@@ -146,9 +149,9 @@ declared roles.
 
 ```ts
 documents: table({ teamId: String(), body: String() }).acl({
-  read: ({ row, ctx }) => ctx.acl.teams.hasAnyRole(row.teamId, ["author", "reviewer"]),
-  write: ({ next, previous, ctx }) =>
-    ctx.acl.teams.isAdmin((next ?? previous).teamId),
+  read: async ({ row, ctx }) => await ctx.acl.teams.hasAnyRole(row.teamId, ["author", "reviewer"]),
+  write: async ({ next, previous, ctx }) =>
+    await ctx.acl.teams.isAdmin((next ?? previous).teamId),
 })
 ```
 

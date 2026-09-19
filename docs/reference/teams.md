@@ -108,8 +108,8 @@ import { String, table } from "sporades/server";
 
 schema: {
   documents: table({ teamId: String(), body: String() }).acl({
-    read: ({ row, ctx }) => ctx.acl.teams.isMember(row.teamId),
-    write: ({ next, previous, ctx }) => ctx.acl.teams.isAdmin((next ?? previous).teamId),
+    read: async ({ row, ctx }) => await ctx.acl.teams.isMember(row.teamId),
+    write: async ({ next, previous, ctx }) => await ctx.acl.teams.isAdmin((next ?? previous).teamId),
   }),
 }
 ```
@@ -119,11 +119,15 @@ Use `isMember(teamId)`, `isAdmin(teamId)`, `hasRole(teamId, role)`, or `hasAnyRo
 ```ts
 files: {
   acl: {
-    read: ({ file, ctx }) => ctx.acl.teams.isMember(file.path.split("/")[2]),
-    delete: ({ file, ctx }) => ctx.acl.teams.hasRole(file.path.split("/")[2], "author"),
+    read: async ({ file, ctx }) => await ctx.acl.teams.isMember(file.path.split("/")[2]),
+    delete: async ({ file, ctx }) => await ctx.acl.teams.hasRole(file.path.split("/")[2], "author"),
   },
 }
 ```
+
+Team ACL helpers may be synchronous on SQLite and asynchronous on remote
+database engines. Await their results in portable rules; starting a helper read
+from a synchronous rule and ignoring it is denied fail-closed.
 
 See [Files and Realtime](./files-and-realtime.md#file-uploads) for normal File operations and their opaque denial behaviour.
 

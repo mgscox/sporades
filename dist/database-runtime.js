@@ -1579,6 +1579,9 @@ export async function createPostgresDatabaseAdapter(options) {
             const extraConstraints = postgresRowsFromResult(normalization, await query(`SELECT ${dialect.quoteIdentifier("contype")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_constraint")} WHERE ${dialect.quoteIdentifier("conrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND ${dialect.quoteIdentifier("contype")} NOT IN ('p', 'n')`, [schema.table]));
             if (extraConstraints.length !== 0)
                 return false;
+            const standaloneUniqueIndexes = postgresRowsFromResult(normalization, await query(`SELECT ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexrelid")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_index")} AS ${dialect.quoteIdentifier("index")} LEFT JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_constraint")} AS ${dialect.quoteIdentifier("constraint")} ON ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("conindid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexrelid")} AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("conrelid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indrelid")} AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("contype")}='p' WHERE ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indisunique")} AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("oid")} IS NULL`, [schema.table]));
+            if (standaloneUniqueIndexes.length !== 0)
+                return false;
         }
         return true;
     };
