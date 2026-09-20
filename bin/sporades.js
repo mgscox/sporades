@@ -99174,7 +99174,7 @@ async function createPostgresDatabaseAdapter(options) {
     [resourceCancelActiveQuery]: () => {
       const quarantinedClient = client;
       needsReconnect = true;
-      const cancellation = quarantinedClient[resourceCancelActiveQuery]();
+      const cancellation = quarantinedClient[resourceCancelActiveQuery](true);
       void quarantinedClient.close().catch(() => {
       });
       return cancellation;
@@ -99484,7 +99484,7 @@ async function createPostgresConnection(url, signal) {
       socket.end();
     }
   }, resourceCancelActiveQuery, { value: cancelActiveQuery });
-  async function cancelActiveQuery() {
+  async function cancelActiveQuery(destroyAfterDelivery = false) {
     if (closed) return false;
     cancellationGeneration += 1;
     if (!queryActive || !backendKeyData) return false;
@@ -99518,6 +99518,11 @@ async function createPostgresConnection(url, signal) {
       cancelSocket.once("close", () => finish());
       cancelSocket.once("connect", () => cancelSocket.end(request));
     });
+    if (destroyAfterDelivery) {
+      closed = true;
+      signal?.removeEventListener("abort", abortConnection);
+      socket.destroy();
+    }
     return true;
   }
   function executeQueuedPostgresQuery(sql, generation) {

@@ -2148,7 +2148,13 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
       // work must reconnect even when the original query finishes naturally
       // while cancellation is still in flight.
       needsReconnect = true;
-      const cancellation = (quarantinedClient as any)[resourceCancelActiveQuery]();
+      const cancellation = (quarantinedClient as any)[resourceCancelActiveQuery](true);
+      // A CancelRequest can reach PostgreSQL after the active query has already
+      // completed while its response was lost in transit. Delivery then
+      // succeeds without ending the old transaction, whose locks remain held.
+      // This cancellation mode forcibly retires the already-quarantined primary
+      // after delivery, so graceful close cannot wait forever on its active
+      // query queue.
       void quarantinedClient.close().catch(() => {});
       return cancellation;
     },
@@ -2430,7 +2436,7 @@ export async function createPostgresConnection(url: any, signal?: AbortSignal) {
     },
   }, resourceCancelActiveQuery, { value: cancelActiveQuery });
 
-  async function cancelActiveQuery() {
+  async function cancelActiveQuery(destroyAfterDelivery = false) {
     if (closed) return false;
     cancellationGeneration += 1;
     if (!queryActive || !backendKeyData) return false;
@@ -2467,6 +2473,11 @@ export async function createPostgresConnection(url: any, signal?: AbortSignal) {
       cancelSocket.once("close", () => finish());
       cancelSocket.once("connect", () => cancelSocket.end(request));
     });
+    if (destroyAfterDelivery) {
+      closed = true;
+      signal?.removeEventListener("abort", abortConnection);
+      socket.destroy();
+    }
     return true;
   }
 

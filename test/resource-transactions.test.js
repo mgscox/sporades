@@ -274,6 +274,117 @@ test('Postgres cancellation delivery failure bounds the active query and closes 
   }
 });
 
+test('Postgres quarantine releases transaction locks when the cancelled primary response is lost', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const target = new URL(postgresTestUrl());
+  const cancelDelivered = Promise.withResolvers();
+  const primaryClosed = Promise.withResolvers();
+  const sockets = new Set();
+  let discardPrimaryResponses = false;
+  const proxy = net.createServer({ allowHalfOpen: true }, client => {
+    sockets.add(client);
+    let prefix = Buffer.alloc(0);
+    const classify = chunk => {
+      prefix = Buffer.concat([prefix, chunk]);
+      if (prefix.length < 8) return;
+      const cancelRequest = prefix.readInt32BE(4) === 80877102;
+      if (cancelRequest && prefix.length < prefix.readInt32BE(0)) return;
+      client.off('data', classify);
+      const upstream = net.createConnection({ host: target.hostname, port: Number(target.port) });
+      sockets.add(upstream);
+      let primaryRetired = false;
+      const retirePrimary = () => {
+        if (primaryRetired) return;
+        primaryRetired = true;
+        sockets.delete(client);
+        upstream.destroy();
+        if (!cancelRequest) primaryClosed.resolve();
+      };
+      client.once('end', retirePrimary);
+      client.once('close', retirePrimary);
+      upstream.once('close', () => {
+        sockets.delete(upstream);
+        if (cancelRequest) cancelDelivered.resolve();
+        client.destroy();
+      });
+      upstream.once('connect', () => {
+        upstream.write(prefix);
+        client.on('data', chunk => upstream.write(chunk));
+        upstream.on('data', chunk => {
+          if (cancelRequest || !discardPrimaryResponses) client.write(chunk);
+        });
+      });
+    };
+    client.on('data', classify);
+  });
+  await new Promise((resolve, reject) => {
+    proxy.once('error', reject);
+    proxy.listen(0, '127.0.0.1', resolve);
+  });
+  const proxyAddress = proxy.address();
+  const proxiedUrl = new URL(postgresTestUrl());
+  proxiedUrl.hostname = '127.0.0.1';
+  proxiedUrl.port = String(proxyAddress.port);
+  const connection = await createPostgresDatabaseAdapter({ url: proxiedUrl });
+  const control = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  const advisoryLock = 8_742_014;
+  let blocked;
+  let cancellation;
+  let controlOwnsLock = false;
+  try {
+    const backendId = Number((await connection.prepare('SELECT pg_backend_pid() AS pid').get()).pid);
+    await connection.exec('BEGIN');
+    await connection.exec(`SELECT pg_advisory_xact_lock(${advisoryLock})`);
+    assert.equal(Boolean((await control.prepare(`SELECT pg_try_advisory_lock(${advisoryLock}) AS acquired`).get()).acquired), false,
+      'the control connection must observe the old transaction lock before cancellation');
+
+    discardPrimaryResponses = true;
+    blocked = connection.exec('SELECT 1');
+    void blocked.catch(() => {});
+    const idleDeadline = Date.now() + 750;
+    let primaryState;
+    while (Date.now() < idleDeadline) {
+      primaryState = (await control.prepare('SELECT state FROM pg_stat_activity WHERE pid=?').get(backendId))?.state;
+      if (primaryState === 'idle in transaction') break;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(primaryState, 'idle in transaction',
+      'the original query must finish on PostgreSQL while its primary response remains lost');
+    cancellation = connection[Symbol.for('sporades.database.resourceCancelActiveQuery')]();
+    assert.equal(await Promise.race([
+      cancellation,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('CancelRequest delivery remained unbounded')), 750)),
+    ]), true);
+    await Promise.race([
+      cancelDelivered.promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('CancelRequest did not reach PostgreSQL')), 750)),
+    ]);
+    await Promise.race([
+      primaryClosed.promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('quarantined primary socket remained open')), 750)),
+    ]);
+
+    const deadline = Date.now() + 750;
+    while (Date.now() < deadline) {
+      controlOwnsLock = Boolean((await control.prepare(`SELECT pg_try_advisory_lock(${advisoryLock}) AS acquired`).get()).acquired);
+      if (controlOwnsLock) break;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(controlOwnsLock, true,
+      'quarantining a cancelled primary must release its abandoned transaction lock without its response');
+    await assert.rejects(Promise.race([
+      blocked,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('cancelled primary query remained unbounded')), 250)),
+    ]));
+  } finally {
+    if (controlOwnsLock) await control.exec(`SELECT pg_advisory_unlock(${advisoryLock})`).catch(() => {});
+    for (const socket of sockets) socket.destroy();
+    await Promise.allSettled([blocked, cancellation].filter(Boolean));
+    await connection.close().catch(() => {});
+    await control.close();
+    await new Promise(resolve => proxy.close(resolve));
+  }
+});
+
 test('Postgres deadline cancellation quarantines its backend before a delayed CancelRequest can reach later work', { skip: POSTGRES_SKIP_REASON }, async () => {
   const target = new URL(postgresTestUrl());
   const cancelCaptured = Promise.withResolvers();
