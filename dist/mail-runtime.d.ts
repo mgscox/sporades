@@ -38,6 +38,8 @@ export declare function createMailRuntime(mailConfig: any, serverEnv: RuntimeEnv
             email: string;
         }[];
     };
+    connectionTimeoutMs: any;
+    socketTimeoutMs: any;
     send(input: any, deliveryLog?: any): Promise<{
         messageId: string;
         accepted: any;

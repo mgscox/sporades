@@ -1025,8 +1025,25 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             await refreshIngressMaintenanceState(database, { discoverInterruptedDelivery: true });
             const notificationDeliveryEnabled = database.mail.enabled || await notificationIntentStorageExists(database.adapter);
             database.__notificationDeliveryEnabled = notificationDeliveryEnabled;
-            if (database.mail.enabled)
-                await ensureNotificationIntentStorage(database.adapter);
+            // A PostgreSQL storage bootstrap failure here (RESOURCE_BUSY from
+            // pg_try_advisory_xact_lock contention with another replica restarting
+            // concurrently, or RESOURCE_STORAGE_ERROR) must not be fatal to init():
+            // every PostgreSQL resource-scope acquisition already runs this exact
+            // idempotent bootstrap lazily as its own retryable caller
+            // (src/resource-runtime.ts), and the delivery worker started below fails
+            // closed and retries on its own recovery-scan interval regardless. This
+            // mirrors the fire-and-forget treatment activateNotificationIntentWorker
+            // already gives the worker itself, but stays awaited (not detached) so a
+            // non-PostgreSQL bootstrap's synchronous CREATE TABLE still completes
+            // before the worker starts immediately after it.
+            if (database.mail.enabled) {
+                try {
+                    await ensureNotificationIntentStorage(database.adapter);
+                }
+                catch (error) {
+                    void Promise.resolve(database.log?.emit?.({ category: "platform", event: "notification.storage.bootstrap_failed", level: "error", message: "Notification storage bootstrap failed", data: { code: String(error?.code ?? "NOTIFICATION_STORAGE_BOOTSTRAP_FAILED").slice(0, 80) } })).catch(() => { });
+                }
+            }
             if (ingressAuditMaintenanceIsDue(database))
                 await runIngressAuditOutboxDrain(database);
             // Recovery may classify durable state while the candidate is stopped,

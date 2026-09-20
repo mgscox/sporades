@@ -5,6 +5,13 @@ type RecordValue = Record<string, any>;
 export const NOTIFICATION_RESERVATION_MS = 30_000;
 export const NOTIFICATION_RECOVERY_SCAN_MS = 30_000;
 export const NOTIFICATION_MAX_BACKOFF_MS = 3_600_000;
+// A single-recipient sendIntent conversation exchanges at most: greeting,
+// EHLO, STARTTLS, EHLO again, up to 3 AUTH LOGIN steps, MAIL FROM, RCPT TO,
+// DATA and its final response after the connect itself — 12 socket-timeout-
+// bounded reads. The reservation must outlive that worst case, or a live (not
+// crashed) send on a slow-but-configured-that-way server gets treated as
+// abandoned and reserved again elsewhere while still in flight.
+const NOTIFICATION_SMTP_ROUNDTRIP_MARGIN = 12;
 
 export const notificationIntentSchemas = [
   {
@@ -145,15 +152,23 @@ async function recoverExpiredReservations(database: RecordValue, now: Date) {
       const next = new Date(now.getTime() + notificationRetryDelay(attempt)).toISOString();
       await tx.prepare(sql(tx, "UPDATE [sporades_notification_attempts] SET [completedAt]=?,[outcomeCategory]='unknown' WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [attemptToken]=? AND [outcomeCategory]='submitting'"))
         .run(now.toISOString(), ...key, token);
-      await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]='unknown',[currentAttemptToken]='',[currentAttemptDeadline]='',[nextAttemptAt]=?,[lastOutcomeCategory]='unknown',[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state]='submitting' AND [currentAttemptToken]=?"))
+      // The state lands directly on 'retry-wait' (not the transient 'unknown'
+      // label): reservation and wake queries already treat both identically,
+      // and setting it here — where the exact key is already known — avoids a
+      // separate unfiltered UPDATE...WHERE [state]='unknown' full-table scan
+      // once per pass to normalize it (the [sporades_notification_recipients]
+      // schema carries no secondary index; the PostgreSQL schema verifier
+      // rejects any beyond the primary key).
+      await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]='retry-wait',[currentAttemptToken]='',[currentAttemptDeadline]='',[nextAttemptAt]=?,[lastOutcomeCategory]='unknown',[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state]='submitting' AND [currentAttemptToken]=?"))
         .run(next, now.toISOString(), ...key, token);
     }
   });
 }
 
-async function moveUnknownRecipientsToRetryWait(database: RecordValue) {
-  await database.adapter.prepare(sql(database.adapter,
-    "UPDATE [sporades_notification_recipients] SET [state]='retry-wait' WHERE [state]='unknown'" )).run();
+function notificationReservationWindowMs(database: RecordValue) {
+  const connectionTimeoutMs = Number(database.mail?.connectionTimeoutMs) || 0;
+  const socketTimeoutMs = Number(database.mail?.socketTimeoutMs) || 0;
+  return Math.max(NOTIFICATION_RESERVATION_MS, connectionTimeoutMs + socketTimeoutMs * NOTIFICATION_SMTP_ROUNDTRIP_MARGIN);
 }
 
 async function reserveDueRecipient(database: RecordValue, now: Date) {
@@ -162,7 +177,7 @@ async function reserveDueRecipient(database: RecordValue, now: Date) {
     if (!row) return null;
     const key = recipientKey(row); const token = randomUUID();
     const sequence = Number(row.attemptCount ?? row.attemptcount) + 1;
-    const deadline = new Date(now.getTime() + NOTIFICATION_RESERVATION_MS).toISOString();
+    const deadline = new Date(now.getTime() + notificationReservationWindowMs(database)).toISOString();
     const changed = await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]='submitting',[attemptCount]=?,[currentAttemptToken]=?,[currentAttemptDeadline]=?,[nextAttemptAt]='',[lastOutcomeCategory]='',[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state] IN ('accepted','retry-wait','unknown') AND [nextAttemptAt]<=?"))
       .run(String(sequence), token, deadline, now.toISOString(), ...key, now.toISOString());
     if (Number(changed?.changes ?? 0) !== 1) return null;
@@ -192,7 +207,12 @@ async function settleAttempt(database: RecordValue, reservation: RecordValue, ou
         .run(now.toISOString(), ...reservation.key, ...reservation.key, reservation.token);
       return;
     }
-    const state = outcome === "rejected" ? "rejected" : "unknown";
+    // 'unknown' settles straight to 'retry-wait' (the queryable state
+    // reservation/wake already accept identically for it) rather than the
+    // transient 'unknown' label a separate unfiltered UPDATE would otherwise
+    // have to sweep on every pass; `lastOutcomeCategory` keeps reporting the
+    // true outcome for observability.
+    const state = outcome === "rejected" ? "rejected" : "retry-wait";
     const next = outcome === "unknown" ? new Date(now.getTime() + notificationRetryDelay(reservation.sequence)).toISOString() : "";
     await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]=?,[currentAttemptToken]='',[currentAttemptDeadline]='',[nextAttemptAt]=?,[lastOutcomeCategory]=?,[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state]='submitting' AND [currentAttemptToken]=?"))
       .run(state, next, outcome, now.toISOString(), ...reservation.key, reservation.token);
@@ -205,7 +225,6 @@ export async function runNotificationIntentDeliveryPass(database: RecordValue) {
   // intents, but must not couple that scan back to unrelated resource-table
   // validation: the intent tables themselves are the worker's authority.
   await recoverExpiredReservations(database, database.clock.now());
-  await moveUnknownRecipientsToRetryWait(database);
   const reservation = await reserveDueRecipient(database, database.clock.now());
   if (!reservation) return false;
   await database.notificationIntentFault?.("after-reservation", reservation);
@@ -220,7 +239,6 @@ export async function runNotificationIntentDeliveryPass(database: RecordValue) {
     if (error?.notificationIntentCrash === true) throw error;
     const outcome = error?.smtpOutcome === "rejected" ? "rejected" : "unknown";
     await settleAttempt(database, reservation, outcome);
-    if (outcome === "unknown") await moveUnknownRecipientsToRetryWait(database);
   }
   return true;
 }
@@ -249,6 +267,11 @@ export function startNotificationIntentWorker(database: RecordValue) {
         while (!database.__notificationIntentStopped && await runNotificationIntentDeliveryPass(database)) {}
         if (database.__notificationIntentStopped) return;
         const wakeAt = await nextWakeAt(database);
+        // stopNotificationIntentWorker can land while the lookup above is in
+        // flight; re-check before arming rather than trusting the check made
+        // before that await, or a stop request loses the race and a timer
+        // gets armed (and never cleared) after shutdown already ran.
+        if (database.__notificationIntentStopped) return;
         // Durable scanning, not a volatile post-commit notification, is the
         // authority. An unref'ed native idle poll discovers commits made by a
         // different process without making a virtual application clock perform

@@ -174,6 +174,12 @@ export function createMailRuntime(mailConfig, serverEnv, options = {}) {
     return {
         enabled: true,
         validateIntent,
+        // Internal-only (not part of MailApi/ctx.mail): lets the durable
+        // notification worker size its reservation deadline off the same
+        // timeouts a single sendIntent's SMTP conversation is actually bounded
+        // by, instead of an unrelated fixed constant.
+        connectionTimeoutMs: resolvedSmtp.connectionTimeoutMs,
+        socketTimeoutMs: resolvedSmtp.socketTimeoutMs,
         async send(input, deliveryLog = options.mailLog) {
             const message = normalizeMailMessage(input, resolvedSmtp.defaultFrom, resolvedSmtp.vendor);
             return deliver(message, deliveryLog);

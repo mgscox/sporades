@@ -67977,6 +67977,7 @@ import { createHash as createHash7, randomUUID as randomUUID6 } from "node:crypt
 var NOTIFICATION_RESERVATION_MS = 3e4;
 var NOTIFICATION_RECOVERY_SCAN_MS = 3e4;
 var NOTIFICATION_MAX_BACKOFF_MS = 36e5;
+var NOTIFICATION_SMTP_ROUNDTRIP_MARGIN = 12;
 var notificationIntentSchemas = [
   {
     table: "sporades_notification_intents",
@@ -68104,15 +68105,14 @@ async function recoverExpiredReservations(database, now2) {
       const attempt = Number(row.attemptCount ?? row.attemptcount);
       const next = new Date(now2.getTime() + notificationRetryDelay(attempt)).toISOString();
       await tx.prepare(sql(tx, "UPDATE [sporades_notification_attempts] SET [completedAt]=?,[outcomeCategory]='unknown' WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [attemptToken]=? AND [outcomeCategory]='submitting'")).run(now2.toISOString(), ...key, token);
-      await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]='unknown',[currentAttemptToken]='',[currentAttemptDeadline]='',[nextAttemptAt]=?,[lastOutcomeCategory]='unknown',[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state]='submitting' AND [currentAttemptToken]=?")).run(next, now2.toISOString(), ...key, token);
+      await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]='retry-wait',[currentAttemptToken]='',[currentAttemptDeadline]='',[nextAttemptAt]=?,[lastOutcomeCategory]='unknown',[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state]='submitting' AND [currentAttemptToken]=?")).run(next, now2.toISOString(), ...key, token);
     }
   });
 }
-async function moveUnknownRecipientsToRetryWait(database) {
-  await database.adapter.prepare(sql(
-    database.adapter,
-    "UPDATE [sporades_notification_recipients] SET [state]='retry-wait' WHERE [state]='unknown'"
-  )).run();
+function notificationReservationWindowMs(database) {
+  const connectionTimeoutMs = Number(database.mail?.connectionTimeoutMs) || 0;
+  const socketTimeoutMs = Number(database.mail?.socketTimeoutMs) || 0;
+  return Math.max(NOTIFICATION_RESERVATION_MS, connectionTimeoutMs + socketTimeoutMs * NOTIFICATION_SMTP_ROUNDTRIP_MARGIN);
 }
 async function reserveDueRecipient(database, now2) {
   return database.adapter.withTransaction(async (tx) => {
@@ -68121,7 +68121,7 @@ async function reserveDueRecipient(database, now2) {
     const key = recipientKey(row);
     const token = randomUUID6();
     const sequence = Number(row.attemptCount ?? row.attemptcount) + 1;
-    const deadline = new Date(now2.getTime() + NOTIFICATION_RESERVATION_MS).toISOString();
+    const deadline = new Date(now2.getTime() + notificationReservationWindowMs(database)).toISOString();
     const changed = await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]='submitting',[attemptCount]=?,[currentAttemptToken]=?,[currentAttemptDeadline]=?,[nextAttemptAt]='',[lastOutcomeCategory]='',[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state] IN ('accepted','retry-wait','unknown') AND [nextAttemptAt]<=?")).run(String(sequence), token, deadline, now2.toISOString(), ...key, now2.toISOString());
     if (Number(changed?.changes ?? 0) !== 1) return null;
     await tx.prepare(sql(tx, "INSERT INTO [sporades_notification_attempts] ([resourceTable],[resourceId],[operationId],[intentId],[recipient],[attemptToken],[sequence],[reservedAt],[deadline],[completedAt],[outcomeCategory]) VALUES (?,?,?,?,?,?,?,?,?,?,?)")).run(...key, token, String(sequence), now2.toISOString(), deadline, "", "submitting");
@@ -68151,14 +68151,13 @@ async function settleAttempt(database, reservation, outcome) {
       await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]='acknowledged',[currentAttemptToken]='',[currentAttemptDeadline]='',[nextAttemptAt]='',[lastOutcomeCategory]='acknowledged',[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state]<>'acknowledged' AND EXISTS (SELECT 1 FROM [sporades_notification_attempts] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [attemptToken]=?)")).run(now2.toISOString(), ...reservation.key, ...reservation.key, reservation.token);
       return;
     }
-    const state = outcome === "rejected" ? "rejected" : "unknown";
+    const state = outcome === "rejected" ? "rejected" : "retry-wait";
     const next = outcome === "unknown" ? new Date(now2.getTime() + notificationRetryDelay(reservation.sequence)).toISOString() : "";
     await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]=?,[currentAttemptToken]='',[currentAttemptDeadline]='',[nextAttemptAt]=?,[lastOutcomeCategory]=?,[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state]='submitting' AND [currentAttemptToken]=?")).run(state, next, outcome, now2.toISOString(), ...reservation.key, reservation.token);
   });
 }
 async function runNotificationIntentDeliveryPass(database) {
   await recoverExpiredReservations(database, database.clock.now());
-  await moveUnknownRecipientsToRetryWait(database);
   const reservation = await reserveDueRecipient(database, database.clock.now());
   if (!reservation) return false;
   await database.notificationIntentFault?.("after-reservation", reservation);
@@ -68176,7 +68175,6 @@ async function runNotificationIntentDeliveryPass(database) {
     if (error?.notificationIntentCrash === true) throw error;
     const outcome = error?.smtpOutcome === "rejected" ? "rejected" : "unknown";
     await settleAttempt(database, reservation, outcome);
-    if (outcome === "unknown") await moveUnknownRecipientsToRetryWait(database);
   }
   return true;
 }
@@ -68205,6 +68203,7 @@ function startNotificationIntentWorker(database) {
         }
         if (database.__notificationIntentStopped) return;
         const wakeAt = await nextWakeAt(database);
+        if (database.__notificationIntentStopped) return;
         const delay = wakeAt ? Math.max(0, Date.parse(wakeAt) - database.clock.now().getTime()) : null;
         if (delay === null || !Number.isFinite(delay) || delay >= NOTIFICATION_RECOVERY_SCAN_MS) scheduleRecoveryScan();
         else {
@@ -95507,6 +95506,12 @@ function createMailRuntime(mailConfig, serverEnv, options = {}) {
   return {
     enabled: true,
     validateIntent,
+    // Internal-only (not part of MailApi/ctx.mail): lets the durable
+    // notification worker size its reservation deadline off the same
+    // timeouts a single sendIntent's SMTP conversation is actually bounded
+    // by, instead of an unrelated fixed constant.
+    connectionTimeoutMs: resolvedSmtp.connectionTimeoutMs,
+    socketTimeoutMs: resolvedSmtp.socketTimeoutMs,
     async send(input, deliveryLog = options.mailLog) {
       const message = normalizeMailMessage(input, resolvedSmtp.defaultFrom, resolvedSmtp.vendor);
       return deliver(message, deliveryLog);
@@ -101364,7 +101369,14 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       await refreshIngressMaintenanceState(database, { discoverInterruptedDelivery: true });
       const notificationDeliveryEnabled = database.mail.enabled || await notificationIntentStorageExists(database.adapter);
       database.__notificationDeliveryEnabled = notificationDeliveryEnabled;
-      if (database.mail.enabled) await ensureNotificationIntentStorage(database.adapter);
+      if (database.mail.enabled) {
+        try {
+          await ensureNotificationIntentStorage(database.adapter);
+        } catch (error) {
+          void Promise.resolve(database.log?.emit?.({ category: "platform", event: "notification.storage.bootstrap_failed", level: "error", message: "Notification storage bootstrap failed", data: { code: String(error?.code ?? "NOTIFICATION_STORAGE_BOOTSTRAP_FAILED").slice(0, 80) } })).catch(() => {
+          });
+        }
+      }
       if (ingressAuditMaintenanceIsDue(database)) await runIngressAuditOutboxDrain(database);
       const earliestFutureLeaseAt = await recoverExpiredJobLeases(database);
       await recoverPendingScheduleOccurrences(database, { validateOnly: true });

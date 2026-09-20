@@ -20,11 +20,11 @@ const mailConfig = {
   mail: { smtp: { vendor: 'generic', host: '127.0.0.1', port: 2525, tls: { mode: 'disabled' }, auth: { method: 'none' }, defaultFrom: 'sender@example.com', connectionTimeoutMs: 100, socketTimeoutMs: 100 } },
 };
 
-async function fixture({ outcomes = [], fault, extra = {}, smtpPort = null } = {}) {
+async function fixture({ outcomes = [], fault, extra = {}, smtpPort = null, smtp = {} } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), 'notification-intents-'));
   const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
   const deliveries = [];
-  const config = smtpPort === null ? mailConfig : { ...mailConfig, mail: { smtp: { ...mailConfig.mail.smtp, port: smtpPort } } };
+  const config = { ...mailConfig, mail: { smtp: { ...mailConfig.mail.smtp, ...(smtpPort === null ? {} : { port: smtpPort }), ...smtp } } };
   const database = await openDevDatabase(path.join(dir, 'data.db'), '', {}, config, {
     schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
     mutations: {
@@ -357,6 +357,35 @@ test('SMTP 4xx remains uncertain and revocation after acceptance does not retrac
   } finally { await f.close(); }
 });
 
+test('an uncertain settle lands on retry-wait without an unfiltered full-table UPDATE', async () => {
+  const transient = Object.assign(new Error('temporary SMTP rejection'), { code: 'EREJECTED', smtpCode: 451 });
+  const f = await fixture({ outcomes: [transient] });
+  const originalPrepare = f.database.adapter.prepare;
+  const unfilteredStatements = [];
+  try {
+    assert.equal((await runMutation(f.database, actor, 'accept', [notification()])).ok, true);
+    f.database.adapter.prepare = function (sqlText, ...args) {
+      // Identifiers reach adapter.prepare already quoted (dialect.sql() turns
+      // `[state]` into `"state"`), so match the quoted form. This WHERE
+      // clause shape — bare on `state`, no key predicate — is unique to the
+      // old full-table sweep; every keyed update in this file filters on
+      // resourceTable/resourceId/operationId/intentId/recipient first.
+      if (typeof sqlText === 'string' && sqlText.includes('WHERE "state"=\'unknown\'')) {
+        unfilteredStatements.push(sqlText);
+      }
+      return originalPrepare.call(this, sqlText, ...args);
+    };
+    assert.equal(await runNotificationIntentDeliveryPass(f.database), true);
+    const recipient = f.database.adapter.prepare('SELECT state,lastOutcomeCategory FROM sporades_notification_recipients').get();
+    assert.equal(recipient.state, 'retry-wait', 'an uncertain outcome still lands on the reservation-eligible state');
+    assert.equal(recipient.lastOutcomeCategory, 'unknown');
+    assert.deepEqual(unfilteredStatements, [], 'no UPDATE ... WHERE state=\'unknown\' full-table scan runs during the pass');
+  } finally {
+    f.database.adapter.prepare = originalPrepare;
+    await f.close();
+  }
+});
+
 test('source Job exhaustion after committed acceptance does not discard delivery work', async () => {
   const f = await fixture({ extra: {
     mutations: {
@@ -421,6 +450,32 @@ test('a rejected startup notification scan neither blocks nor aborts Capsule ini
   } finally { await f.close(); }
 });
 
+test('a failed notification storage bootstrap does not reject init()', async () => {
+  const f = await fixture();
+  const originalExec = f.database.adapter.exec;
+  try {
+    assert.equal((await runMutation(f.database, actor, 'accept', [notification()])).ok, true);
+    await f.database.shutdown();
+    let broken = true;
+    f.database.adapter.exec = async (sqlText, ...args) => {
+      if (broken && typeof sqlText === 'string' && sqlText.includes('sporades_notification_intents')) {
+        broken = false;
+        throw Object.assign(new Error('storage bootstrap contention'), { code: 'RESOURCE_BUSY', retryable: true });
+      }
+      return originalExec.call(f.database.adapter, sqlText, ...args);
+    };
+    await f.database.init();
+    assert.equal(f.database.__runtimeInitialized, true, 'a failed storage bootstrap is not a fatal startup failure');
+    assert.equal(broken, false, 'the injected failure actually fired');
+    f.database.adapter.exec = originalExec;
+    assert.equal((await runMutation(f.database, actor, 'status', [])).ok, true, 'init did not close the database');
+  } finally {
+    f.database.adapter.exec = originalExec;
+    await stopNotificationIntentWorker(f.database);
+    await f.close();
+  }
+});
+
 test('a repeated recipient address is invalid input, not an opaque storage failure', async () => {
   const f = await fixture();
   try {
@@ -454,4 +509,53 @@ test('the post-drain wake is bounded by the recovery scan interval', async () =>
     await startNotificationIntentWorker(f.database);
     assert.equal(f.database.__notificationIntentNativeTimer, false, 'the bound is a ceiling, not a replacement');
   } finally { await stopNotificationIntentWorker(f.database); await f.close(); }
+});
+
+test('the reservation deadline is derived from the configured SMTP timeouts, not a fixed constant', async () => {
+  const f = await fixture({
+    smtp: { connectionTimeoutMs: 5_000, socketTimeoutMs: 50_000 },
+    fault: phase => { if (phase === 'before-submit') throw Object.assign(new Error('crash before submit'), { notificationIntentCrash: true }); },
+  });
+  try {
+    assert.equal((await runMutation(f.database, actor, 'accept', [notification()])).ok, true);
+    await assert.rejects(runNotificationIntentDeliveryPass(f.database), /crash before submit/);
+    const row = f.database.adapter.prepare('SELECT state,currentAttemptDeadline FROM sporades_notification_recipients').get();
+    assert.equal(row.state, 'submitting');
+    const windowMs = Date.parse(row.currentAttemptDeadline) - f.clock.now().getTime();
+    assert.ok(windowMs > 30_000, `a slow-but-configured-that-way SMTP conversation must outlive the fixed 30s constant, got ${windowMs}ms`);
+    assert.equal(windowMs, 5_000 + 50_000 * 12, 'the window is derived from connectionTimeoutMs + socketTimeoutMs * round-trip margin');
+  } finally { await f.close(); }
+});
+
+test('stopping the worker during the near-wake lookup wins the race against arming a stray timer', async () => {
+  const f = await fixture();
+  const originalPrepare = f.database.adapter.prepare;
+  try {
+    assert.equal((await runMutation(f.database, actor, 'accept', [notification()])).ok, true);
+    const near = new Date(f.clock.now().getTime() + 5_000).toISOString();
+    f.database.adapter.prepare("UPDATE sporades_notification_recipients SET state='retry-wait',nextAttemptAt=?").run(near);
+
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    f.database.adapter.prepare = function (sqlText, ...args) {
+      const statement = originalPrepare.call(this, sqlText, ...args);
+      if (typeof sqlText === 'string' && sqlText.includes('ORDER BY CASE WHEN') && sqlText.includes('currentAttemptDeadline')) {
+        return { ...statement, get: async (...getArgs) => { await gate; return statement.get(...getArgs); } };
+      }
+      return statement;
+    };
+
+    const runPromise = startNotificationIntentWorker(f.database);
+    // Let the drain loop reach and block inside the near-wake lookup before requesting a stop.
+    for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
+    stopNotificationIntentWorker(f.database);
+    release();
+    await runPromise;
+
+    assert.equal(f.database.__notificationIntentTimer, null, 'a stop request must not be clobbered by a timer armed after it landed');
+  } finally {
+    f.database.adapter.prepare = originalPrepare;
+    await stopNotificationIntentWorker(f.database);
+    await f.close();
+  }
 });
