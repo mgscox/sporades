@@ -593,18 +593,26 @@ canonical payload deduplicates; changing it returns
 and recipient rows commit atomically; outer rollback removes all of them.
 
 After commit, an independent runtime worker durably scans accepted recipients.
-Each attempt first commits a random reservation token, sequence, and 30-second
-deadline, then submits exactly one SMTP envelope for one recipient using the
-intent's stable Message-ID. The transport does not auto-retry. Recipient states
+Each attempt first commits a random reservation token, sequence, and deadline,
+then submits exactly one SMTP envelope for one recipient using the intent's
+stable Message-ID. The reservation window is
+`max(30_000ms, connectionTimeoutMs + 12 * socketTimeoutMs)`, using the same
+configured SMTP timeouts as the transport. The default 10-second connection and
+30-second socket timeouts therefore produce a 370-second reservation rather
+than a 30-second one. The transport does not auto-retry. Recipient states
 are `accepted`, `submitting`, `unknown`, `retry-wait`, `acknowledged`, or
 `rejected`. A positive final DATA reply acknowledges SMTP submission, not inbox
 delivery. Definitive 5xx or invalid configuration/address failures remain
 rejected for operator correction. 4xx, timeout, connection loss, lost reply,
 crashed sender, or failed outcome persistence remain uncertain and retry on the
-runtime-owned schedule. Expired reservations become unknown and wait
-`min(30s * 2^(min(attempt - 1, 7)), 1h)`; persisted backoff has no finite attempt
-cutoff. Restart scanning preserves retry state, due times, and compact attempt
-authentication without depending on a volatile post-commit wakeup.
+runtime-owned schedule. The first delivery pass that observes an expired
+reservation recovers it as unknown and starts its retry delay from that recovery
+observation: `min(30s * 2^(min(attempt - 1, 7)), 1h)`. An idle worker caps
+its durable recovery scan sleep at 30 seconds, while restart runs a pass
+immediately; scheduling delay can make observation later than the stored
+deadline. Persisted backoff has no finite attempt cutoff. Restart scanning
+preserves retry state, due times, and compact attempt authentication without
+depending on a volatile post-commit wakeup.
 
 A positive report from any durably issued attempt token is monotonic and suppresses
 future reservations. Each random token carries a keyed authenticator bound to its

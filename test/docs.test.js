@@ -1034,6 +1034,21 @@ test("canonical, feature, and reference Job docs describe transaction-bound enqu
   }
 });
 
+test("canonical notification-intent docs match the timeout-derived reservation and recovery contract", async () => {
+  const [reference, adr] = await Promise.all([
+    readProjectFile("docs/reference/jobs-and-schedules.md"),
+    readProjectFile("docs/adr/0054-ordinary-job-authority-does-not-fence-smtp-acceptance.md"),
+  ]);
+
+  for (const document of [reference, adr]) {
+    assert.match(document, /max\(30_000ms, connectionTimeoutMs \+ 12 \* socketTimeoutMs\)/);
+    assert.match(document, /default[\s\S]*10(?:-second|,000ms) connection[\s\S]*30(?:-second|,000ms) socket[\s\S]*370(?:-second|,000ms) reservation/i);
+    assert.match(document, /first delivery pass[\s\S]*observ(?:es|ation)[\s\S]*expired\s+reservation[\s\S]*retry\s+delay/i);
+    assert.match(document, /recovery scan\s+sleep at 30(?: seconds|,000ms)/i);
+    assert.doesNotMatch(document, /(?:fixed )?30(?:-second|,000ms) (?:SMTP )?reservation/i);
+  }
+});
+
 test("canonical Job and architecture docs describe settled runtime shutdown", async () => {
   const [canonicalPrd, jobReference, architecture] = await Promise.all([
     readProjectFile("docs/PRD.md"),

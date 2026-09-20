@@ -431,7 +431,13 @@ reauthorization is needed to deliver an already accepted intent.
    completed predecessor diagnostics are removed. Never retain credentials or
    raw SMTP replies in diagnostics.
 2. A short engine transaction reserves one due recipient and persists a fresh
-   random token, incremented sequence and fixed 30,000ms deadline before I/O.
+   random token, incremented sequence and deadline before I/O. Its reservation
+   window is `max(30_000ms, connectionTimeoutMs + 12 * socketTimeoutMs)`, using
+   the configured transport timeouts. Thus the default 10,000ms connection and
+   30,000ms socket timeouts produce a 370,000ms reservation. The twelve-response
+   margin covers the bounded SMTP greeting, negotiation, authentication,
+   envelope, DATA and final-response reads; the 30,000ms floor preserves the
+   minimum crash-recovery window for shorter configurations.
    Only confirmed reservation commit permits that worker to submit. If its commit
    acknowledgement is lost, that worker sends nothing; recovery reads stored
    state and schedules an attempt after any extant reservation expires. Concurrent
@@ -443,9 +449,14 @@ reauthorization is needed to deliver an already accepted intent.
    for operator attention rather than retried unchanged forever. Retain original
    intent/receipt; correction uses an explicitly authorized new operation.
 4. On restart, scan pending recipients, preserve live reservations until their
-   deadline, and conditionally recover expired reservations as unknown. Schedule
-   retry with delay `min(30_000 * 2^(min(n - 1, 7)), 3_600_000)` milliseconds after
-   the failure/expiry time, where n is the completed/expired attempt number.
+   deadline, and conditionally recover expired reservations as unknown. The
+   first delivery pass that observes an expired reservation starts its retry
+   delay; an idle worker caps its durable recovery scan sleep at 30,000ms and a
+   restart runs a pass immediately, but scheduling delay can make observation
+   later than the stored deadline. Schedule retry with delay
+   `min(30_000 * 2^(min(n - 1, 7)), 3_600_000)` milliseconds after that recovery
+   observation (or after an immediately observed failure), where n is the
+   completed/expired attempt number.
    Persist `nextAttemptAt`; no busy-loop, finite retry-count cutoff, or payload
    cleanup may discard retryable work. Poll due rows by nextAttemptAt then stable
    ID and reserve conditionally so multiple workers cannot allocate the same

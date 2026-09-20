@@ -584,19 +584,24 @@ test('the post-drain wake is bounded by the recovery scan interval', async () =>
 });
 
 test('the reservation deadline is derived from the configured SMTP timeouts, not a fixed constant', async () => {
-  const f = await fixture({
-    smtp: { connectionTimeoutMs: 5_000, socketTimeoutMs: 50_000 },
-    fault: phase => { if (phase === 'before-submit') throw Object.assign(new Error('crash before submit'), { notificationIntentCrash: true }); },
-  });
-  try {
-    assert.equal((await runMutation(f.database, actor, 'accept', [notification()])).ok, true);
-    await assert.rejects(runNotificationIntentDeliveryPass(f.database), /crash before submit/);
-    const row = f.database.adapter.prepare('SELECT state,currentAttemptDeadline FROM sporades_notification_recipients').get();
-    assert.equal(row.state, 'submitting');
-    const windowMs = Date.parse(row.currentAttemptDeadline) - f.clock.now().getTime();
-    assert.ok(windowMs > 30_000, `a slow-but-configured-that-way SMTP conversation must outlive the fixed 30s constant, got ${windowMs}ms`);
-    assert.equal(windowMs, 5_000 + 50_000 * 12, 'the window is derived from connectionTimeoutMs + socketTimeoutMs * round-trip margin');
-  } finally { await f.close(); }
+  for (const [connectionTimeoutMs, socketTimeoutMs, expectedWindowMs] of [
+    [10_000, 30_000, 370_000],
+    [5_000, 50_000, 605_000],
+  ]) {
+    const f = await fixture({
+      smtp: { connectionTimeoutMs, socketTimeoutMs },
+      fault: phase => { if (phase === 'before-submit') throw Object.assign(new Error('crash before submit'), { notificationIntentCrash: true }); },
+    });
+    try {
+      assert.equal((await runMutation(f.database, actor, 'accept', [notification()])).ok, true);
+      await assert.rejects(runNotificationIntentDeliveryPass(f.database), /crash before submit/);
+      const row = f.database.adapter.prepare('SELECT state,currentAttemptDeadline FROM sporades_notification_recipients').get();
+      assert.equal(row.state, 'submitting');
+      const windowMs = Date.parse(row.currentAttemptDeadline) - f.clock.now().getTime();
+      assert.ok(windowMs > 30_000, `a slow-but-configured-that-way SMTP conversation must outlive the fixed 30s constant, got ${windowMs}ms`);
+      assert.equal(windowMs, expectedWindowMs, 'the window is derived from connectionTimeoutMs + socketTimeoutMs * round-trip margin');
+    } finally { await f.close(); }
+  }
 });
 
 test('stopping the worker during the near-wake lookup wins the race against arming a stray timer', async () => {
