@@ -131,6 +131,14 @@ test('Postgres resource notification acceptance and per-recipient delivery use t
     schema: { anchors: table({ value: Text() }) },
     mutations: {
       accept: mutation(ctx => ctx.resources.run({ resource: { table: 'anchors', id: 'anchor' }, operationId: 'notify', input: null }, scope => scope.notifications.accept({ id: 'notice', to: ['one@example.com'], subject: 'Notice', text: 'Body' }))),
+      acceptConcurrent: mutation(ctx => ctx.resources.run({ resource: { table: 'anchors', id: 'anchor' }, operationId: 'notify-concurrent', input: null }, scope => Promise.all([
+        scope.notifications.accept({ id: 'concurrent', to: ['one@example.com'], subject: 'Notice', text: 'Body' }),
+        scope.notifications.accept({ id: 'concurrent', to: ['one@example.com'], subject: 'Notice', text: 'Body' }),
+      ]))),
+      conflictConcurrent: mutation(ctx => ctx.resources.run({ resource: { table: 'anchors', id: 'anchor' }, operationId: 'notify-conflict', input: null }, scope => Promise.all([
+        scope.notifications.accept({ id: 'concurrent-conflict', to: ['one@example.com'], subject: 'Notice', text: 'Body' }),
+        scope.notifications.accept({ id: 'concurrent-conflict', to: ['one@example.com'], subject: 'Changed', text: 'Body' }),
+      ]))),
       status: mutation(ctx => ctx.resources.status({ resource: { table: 'anchors', id: 'anchor' }, operationId: 'notify' })),
     },
   }, { clock, mailTransportFactoryTrusted: true, mailTransportFactory: () => ({ async send(message) {
@@ -154,5 +162,15 @@ test('Postgres resource notification acceptance and per-recipient delivery use t
     const status = (await runMutation(database, actor, 'status', [])).data;
     assert.equal(status.intents[0].state, 'acknowledged');
     assert.equal(deliveries.length, 4);
+    assert.deepEqual(await runMutation(database, actor, 'acceptConcurrent', []), {
+      ok: true,
+      data: [{ id: 'concurrent', state: 'staged' }, { id: 'concurrent', state: 'staged' }],
+      error: null,
+    });
+    assert.equal(Number((await database.adapter.prepare("SELECT count(*) AS n FROM sporades_notification_intents WHERE \"operationId\"='notify-concurrent'").get()).n), 1);
+    const conflict = await runMutation(database, actor, 'conflictConcurrent', []);
+    assert.equal(conflict.ok, false);
+    assert.equal(conflict.error.code, 'RESOURCE_OPERATION_CONFLICT');
+    assert.equal(Number((await database.adapter.prepare("SELECT count(*) AS n FROM sporades_notification_intents WHERE \"operationId\"='notify-conflict'").get()).n), 0);
   } finally { await database.shutdown(); await database.close(); }
 });

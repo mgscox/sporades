@@ -124,8 +124,14 @@ export async function stageNotificationIntent(
   }
   const acceptedAt = database.clock.now().toISOString();
   const messageId = `<${randomUUID()}@sporades.local>`;
-  await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_intents] ([resourceTable],[resourceId],[operationId],[intentId],[payloadDigest],[payloadJson],[messageId],[acceptedAt]) VALUES (?,?,?,?,?,?,?,?)"))
+  const inserted = await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_intents] ([resourceTable],[resourceId],[operationId],[intentId],[payloadDigest],[payloadJson],[messageId],[acceptedAt]) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT ([resourceTable],[resourceId],[operationId],[intentId]) DO NOTHING"))
     .run(...key, payloadDigest, payloadJson, messageId, acceptedAt);
+  if (inserted.changes === 0) {
+    const raced = await adapter.prepare(sql(adapter, "SELECT [payloadDigest] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?" )).get(...key);
+    const digest = raced?.payloadDigest ?? raced?.payloaddigest;
+    if (digest !== payloadDigest) throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_OPERATION_CONFLICT" });
+    return { id: input.id, state: "staged" as const };
+  }
   await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_attempt_keys] ([resourceTable],[resourceId],[operationId],[intentId],[attemptKey]) VALUES (?,?,?,?,?)"))
     .run(...key, randomBytes(32).toString("hex"));
   for (const recipient of payload.to) {

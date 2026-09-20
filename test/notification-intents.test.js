@@ -143,6 +143,45 @@ test('resource notification acceptance is atomic, immutable, deduplicated, and s
   } finally { await f.close(); }
 });
 
+test('concurrent identical notification acceptance deduplicates without poisoning the resource transaction', async () => {
+  const f = await fixture({ extra: { mutations: { concurrentAccept: mutation(ctx => ctx.resources.run(
+    { resource, operationId: 'concurrent-accept', input: null },
+    async scope => Promise.all([
+      scope.notifications.accept(notification({ id: 'concurrent' })),
+      scope.notifications.accept(notification({ id: 'concurrent' })),
+    ]),
+  )) } } });
+  try {
+    const result = await runMutation(f.database, actor, 'concurrentAccept', []);
+    assert.deepEqual(result, {
+      ok: true,
+      data: [{ id: 'concurrent', state: 'staged' }, { id: 'concurrent', state: 'staged' }],
+      error: null,
+    });
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sporades_notification_intents WHERE operationId='concurrent-accept'").get().n, 1);
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sporades_notification_recipients WHERE operationId='concurrent-accept'").get().n, 1);
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sporades_notification_attempt_keys WHERE operationId='concurrent-accept'").get().n, 1);
+  } finally { await f.close(); }
+});
+
+test('concurrent differing notification acceptance reports an operation conflict and rolls back staging', async () => {
+  const f = await fixture({ extra: { mutations: { concurrentConflict: mutation(ctx => ctx.resources.run(
+    { resource, operationId: 'concurrent-conflict', input: null },
+    async scope => Promise.all([
+      scope.notifications.accept(notification({ id: 'concurrent-conflict' })),
+      scope.notifications.accept(notification({ id: 'concurrent-conflict', subject: 'Changed' })),
+    ]),
+  )) } } });
+  try {
+    const result = await runMutation(f.database, actor, 'concurrentConflict', []);
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, 'RESOURCE_OPERATION_CONFLICT');
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sporades_notification_intents WHERE operationId='concurrent-conflict'").get().n, 0);
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sporades_notification_recipients WHERE operationId='concurrent-conflict'").get().n, 0);
+    assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM sporades_notification_attempt_keys WHERE operationId='concurrent-conflict'").get().n, 0);
+  } finally { await f.close(); }
+});
+
 test('an explicitly undefined optional html body is accepted as omitted', async () => {
   const f = await fixture();
   try {
