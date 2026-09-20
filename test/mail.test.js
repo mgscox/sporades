@@ -1793,6 +1793,57 @@ test("runtime shutdown promptly aborts an active stalled SMTP delivery", async (
   }
 });
 
+test("mail transport close promptly aborts a pending implicit TLS connection", async () => {
+  let acceptConnection;
+  const serverSockets = new Set();
+  const accepted = new Promise((resolve) => {
+    acceptConnection = resolve;
+  });
+  const server = createNetServer((socket) => {
+    serverSockets.add(socket);
+    socket.once("close", () => serverSockets.delete(socket));
+    socket.on("error", () => {});
+    acceptConnection();
+    // Accept TCP, but never complete the TLS handshake.
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const transport = createMailTransport({
+    vendor: "generic",
+    host: "127.0.0.1",
+    port: server.address().port,
+    tls: { mode: "implicit", rejectUnauthorized: false },
+    auth: { method: "none" },
+    defaultFrom: "sender@example.com",
+    connectionTimeoutMs: 2_000,
+    socketTimeoutMs: 2_000,
+  });
+  try {
+    const pending = transport.send({
+      from: { email: "sender@example.com" },
+      to: [{ email: "recipient@example.com" }],
+      cc: [],
+      bcc: [],
+      subject: "pending implicit TLS",
+      textBody: "pending implicit TLS",
+    });
+    await accepted;
+    const startedAt = Date.now();
+    transport.close();
+    await assert.rejects(pending, (error) => {
+      assert.equal(error.code, "MAIL_CONNECTION_FAILED");
+      return true;
+    });
+    assert.ok(Date.now() - startedAt < 500, "close waited for the implicit TLS connection timeout");
+  } finally {
+    transport.close();
+    for (const socket of serverSockets) socket.destroy();
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
 test("a stalled SMTP greeting is bounded by the configured socket timeout", async () => {
   const server = createNetServer((socket) => socket.on("error", () => {}));
   await new Promise((resolve, reject) => {

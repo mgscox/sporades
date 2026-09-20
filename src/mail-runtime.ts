@@ -866,14 +866,17 @@ export function createMailTransport(smtp: any) {
           error.code = "ECONNECTION";
           throw error;
         }
-        socket = await connectSmtpSocket(smtp);
+        socket = await connectSmtpSocket(smtp, (connectingSocket: any) => {
+          socket = connectingSocket;
+          sockets.add(connectingSocket);
+          if (closed) connectingSocket.destroy();
+        });
         if (closed) {
           const error: any = new Error("closed");
           error.code = "ECONNECTION";
           socket.destroy(error);
           throw error;
         }
-        sockets.add(socket);
         reader = createSmtpResponseReader(socket, smtp.socketTimeoutMs);
         let encrypted = smtp.tls.mode === "implicit";
         await reader.expect([220]);
@@ -977,7 +980,7 @@ export function createMailTransport(smtp: any) {
   };
 }
 
-export async function connectSmtpSocket(smtp: any) {
+export async function connectSmtpSocket(smtp: any, onSocket?: (socket: any) => void) {
   let socket: any;
   if (smtp.tls.mode === "implicit") {
     const tls = await import("node:tls");
@@ -997,7 +1000,7 @@ export async function connectSmtpSocket(smtp: any) {
     socket.destroy(error);
   });
   const event = smtp.tls.mode === "implicit" ? "secureConnect" : "connect";
-  await new Promise((resolve, reject) => {
+  const connected = new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       const error: any = new Error("connection timeout");
       error.code = "ETIMEDOUT";
@@ -1011,7 +1014,15 @@ export async function connectSmtpSocket(smtp: any) {
       clearTimeout(timer);
       reject(error);
     });
+    socket.once("close", () => {
+      clearTimeout(timer);
+      const error: any = new Error("connection closed");
+      error.code = "ECONNECTION";
+      reject(error);
+    });
   });
+  onSocket?.(socket);
+  await connected;
   return socket;
 }
 
