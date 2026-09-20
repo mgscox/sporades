@@ -498,6 +498,61 @@ test('shutdown aborts an active SMTP send before awaiting its worker and retains
   } finally { await f.close(); }
 });
 
+test('shutdown begun during reservation validation prevents a later SMTP submission and retains restart recovery', async () => {
+  const f = await fixture();
+  let releaseValidation;
+  let markValidationStarted;
+  const validationStarted = new Promise(resolve => { markValidationStarted = resolve; });
+  const validationRelease = new Promise(resolve => { releaseValidation = resolve; });
+  let holdValidation = false;
+  let submissions = 0;
+  const prepare = f.database.adapter.prepare.bind(f.database.adapter);
+  try {
+    assert.equal((await runMutation(f.database, actor, 'accept', [notification()])).ok, true);
+    f.database.adapter.prepare = statement => {
+      const prepared = prepare(statement);
+      if (!holdValidation || !String(statement).includes('SELECT "state","currentAttemptToken" FROM "sporades_notification_recipients"')) return prepared;
+      holdValidation = false;
+      return {
+        ...prepared,
+        async get(...args) {
+          const row = await prepared.get(...args);
+          markValidationStarted();
+          await validationRelease;
+          return row;
+        },
+      };
+    };
+    f.database.mail = {
+      enabled: true,
+      async sendIntent() { submissions++; },
+      abortActiveDeliveries() {},
+      close() {},
+    };
+    holdValidation = true;
+    const deliveryPass = runNotificationIntentDeliveryPass(f.database);
+    f.database.__notificationIntentWorkerPromise = deliveryPass;
+    await settlesWithin(validationStarted);
+    const reserved = f.database.adapter.prepare('SELECT state,currentAttemptToken,currentAttemptDeadline FROM sporades_notification_recipients').get();
+    assert.equal(reserved.state, 'submitting');
+
+    const shutdown = f.database.shutdown();
+    releaseValidation();
+    await settlesWithin(shutdown);
+
+    assert.equal(submissions, 0, 'shutdown does not permit a validated reservation to submit afterward');
+    assert.deepEqual(
+      { ...f.database.adapter.prepare('SELECT state,currentAttemptToken,currentAttemptDeadline FROM sporades_notification_recipients').get() },
+      { ...reserved },
+      'the unsubmitted reservation remains durable for deadline-based restart recovery',
+    );
+  } finally {
+    releaseValidation?.();
+    f.database.adapter.prepare = prepare;
+    await f.close();
+  }
+});
+
 test('init-failure cleanup aborts an active SMTP send before awaiting its worker and preserves restart recovery', async () => {
   const f = await fixture();
   let rejectSend;

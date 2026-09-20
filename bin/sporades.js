@@ -68220,6 +68220,7 @@ async function runNotificationIntentDeliveryPass(database) {
   await database.notificationIntentFault?.("after-reservation", reservation);
   if (!await reservationIsCurrent(database, reservation)) return true;
   await database.notificationIntentFault?.("before-submit", reservation);
+  if (database.__notificationIntentShutdownAborting) return true;
   try {
     await database.mail.sendIntent(
       { ...reservation.payload, to: [reservation.recipient] },

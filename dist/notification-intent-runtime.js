@@ -298,6 +298,8 @@ export async function runNotificationIntentDeliveryPass(database) {
     if (!await reservationIsCurrent(database, reservation))
         return true;
     await database.notificationIntentFault?.("before-submit", reservation);
+    if (database.__notificationIntentShutdownAborting)
+        return true;
     try {
         await database.mail.sendIntent({ ...reservation.payload, to: [reservation.recipient] }, reservation.messageId, (event) => database.log?.emit(event));
         await database.notificationIntentFault?.("after-submit", reservation);
