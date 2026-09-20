@@ -1,4 +1,10 @@
 type RecordValue = Record<string, any>;
+/** V1 resource scopes are an explicit allowlist; SQL-dialect similarity is not support. */
+export declare const RESOURCE_ADAPTER_SUPPORT: Readonly<{
+    readonly sqlite: "supported";
+    readonly postgres: "supported";
+    readonly libsql: "unsupported";
+}>;
 /** Internal signal: settlement must also verify the exact claim's durable cancellation marker. */
 export declare function isResourceAbortError(error: any): boolean;
 /** Public errors never include caller data or engine diagnostics. */

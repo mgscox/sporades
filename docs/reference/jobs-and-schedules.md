@@ -550,7 +550,14 @@ to resemble a SQLSTATE. Cancellation keeps the existing Job cancellation
 outcome; authorization keeps opaque ACL errors.
 
 This slice supports ordinary Jobs, including the existing audited Privileged
-Job path, plus Custom mutations and Custom endpoints on file-backed SQLite.
+Job path, plus Custom mutations and Custom endpoints on file-backed SQLite and
+PostgreSQL. The v1 resource adapter matrix is explicit: SQLite is supported,
+PostgreSQL is supported, and libSQL is unsupported. Every libSQL `run` or
+`status` call returns `RESOURCE_ADAPTER_UNSUPPORTED` before callback execution,
+receipt lookup, application or intent writes, or network submission. Future
+libSQL support requires a separate approved proposal and real representative
+remote transaction expiry, connection loss, and restart conformance. This
+rejection gate does not certify libSQL support.
 Mutations/endpoints may call once as their first application database operation;
 they join the enclosing transaction, hold its SQLite writer authority after the
 scope callback returns, and return provisional data which becomes visible only
@@ -576,8 +583,7 @@ connection before the later receipt lookup reconnects. PostgreSQL lock contentio
 aborts its transaction, so a mutation or endpoint cannot catch `RESOURCE_BUSY`
 and still settle successfully: the outer transaction is poisoned, rolls back,
 and reports the same bounded error. This also rolls back runtime-owned work which
-preceded resource entry, such as reauthentication-proof consumption. libSQL fails closed
-before callback execution; its ticket is 05. The
+preceded resource entry, such as reauthentication-proof consumption. The
 `notifications.accept({id, to, subject, text, html?})` signature is reserved and
 always rejects `RESOURCE_EFFECT_UNSUPPORTED` until ticket 06; this slice stages
 no intent and adds no transport. Ordinary Jobs that never opt in retain their

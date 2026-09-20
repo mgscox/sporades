@@ -67971,6 +67971,14 @@ function safeJobFailure(error) {
 
 // src/resource-runtime.ts
 import { createHash as createHash7 } from "node:crypto";
+var RESOURCE_ADAPTER_SUPPORT = Object.freeze({
+  sqlite: "supported",
+  postgres: "supported",
+  libsql: "unsupported"
+});
+function resourceAdapterSupported(adapter) {
+  return RESOURCE_ADAPTER_SUPPORT[adapter.engine] === "supported";
+}
 var resourceAbort = Symbol("resourceAbort");
 function resourceAbortError() {
   return Object.assign(new Error("Job aborted."), { name: "AbortError", code: "ABORTED", [resourceAbort]: true });
@@ -68154,7 +68162,7 @@ function bindOuterResources(database, context, hooks) {
   const execute = async (options, callback, status) => {
     if (!invocationActive) throw resourceError("RESOURCE_SCOPE_INACTIVE");
     if (used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-    if (!["sqlite", "postgres"].includes(database.adapter.engine) || database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true) throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+    if (!resourceAdapterSupported(database.adapter) || database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true) throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
     const identity = optionsSnapshot(options, status);
     if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
     if (!database.schema.tables.some((table) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
@@ -68372,7 +68380,7 @@ function bindJobResources(database, context, claim, hooks) {
   }
   const execute = async (options, callback, status) => {
     if (!invocationActive || used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-    if (!["sqlite", "postgres"].includes(database.adapter.engine) || database.adapter.engine === "postgres" && database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true || typeof database.adapter.withResourceTransaction !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+    if (!resourceAdapterSupported(database.adapter) || database.adapter.engine === "postgres" && database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true || typeof database.adapter.withResourceTransaction !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
     const identity = optionsSnapshot(options, status);
     if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
     if (!database.schema.tables.some((table) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");

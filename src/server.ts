@@ -1,4 +1,4 @@
-export type { ResourceIdentity, ResourceRunOptions, ResourceStatusOptions, ResourceNotification, ResourceScope, ResourceStatus, ResourcesApi } from "../src/types/server.js";
+export type { ResourceIdentity, ResourceRunOptions, ResourceStatusOptions, ResourceNotification, ResourceScope, ResourceStatus, ResourceAdapterSupport, ResourcesApi } from "../src/types/server.js";
 import type {
   EndpointBodyBytes as CanonicalEndpointBodyBytes,
   EndpointContext as CanonicalEndpointContext,
