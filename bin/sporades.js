@@ -66755,7 +66755,7 @@ async function settleExhaustedTeamBillingErasureJob(database, payload, safeFailu
   if (replacementScheduled && !database.__transactionActive) database.scheduleTeamBillingJobDispatch?.();
   return result;
 }
-function createCurrentUserTeamBillingErasureApi(database, auth, contextGetter = () => null, isCurrentContext = () => false) {
+function createCurrentUserTeamBillingErasureApi(database, auth, contextGetter = () => null, isCurrentContext = () => false, trackOperation = (operation) => operation()) {
   const requireActiveContext = () => {
     const context = contextGetter();
     if (!context || !isCurrentContext(context) || context.signal?.aborted) {
@@ -66775,14 +66775,16 @@ function createCurrentUserTeamBillingErasureApi(database, auth, contextGetter = 
       requireActiveContext();
       return result;
     },
-    async admitLocalErasure(teamId) {
-      requireContext();
-      if (!TEAM_ID.test(String(teamId ?? ""))) throw unavailable();
-      await admitTeamBillingActor(database, database.adapter, auth, { operation: "erasure", teamId });
-      requireContext();
-      if (!await tombstone(database.adapter, teamBillingErasureKey(database, teamId))) throw unavailable();
-      requireContext();
-      return Object.freeze({ allowed: true });
+    admitLocalErasure(teamId) {
+      return trackOperation(async () => {
+        requireContext();
+        if (!TEAM_ID.test(String(teamId ?? ""))) throw unavailable();
+        await admitTeamBillingActor(database, database.adapter, auth, { operation: "erasure", teamId });
+        requireContext();
+        if (!await tombstone(database.adapter, teamBillingErasureKey(database, teamId))) throw unavailable();
+        requireContext();
+        return Object.freeze({ allowed: true });
+      });
     }
   });
 }
@@ -101634,12 +101636,12 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
         }
       }
       try {
-        await database.mail.close();
+        await shutdownClamavRuntime(database);
       } catch (error) {
         failures.push(error);
       }
       try {
-        await shutdownClamavRuntime(database);
+        await database.mail.close();
       } catch (error) {
         failures.push(error);
       }
@@ -104351,6 +104353,22 @@ function trackMutationContextWork(context, promise, requiresConsumption = false)
   trackPendingAclWrite(context, entry);
   return operation;
 }
+function trackObservedMutationContextWork(context, start) {
+  let operation;
+  const observed = () => operation ??= trackMutationContextWork(context, Promise.resolve().then(start));
+  return Object.freeze({
+    then(onFulfilled, onRejected) {
+      return observed().then(onFulfilled, onRejected);
+    },
+    catch(onRejected) {
+      return observed().catch(onRejected);
+    },
+    finally(onFinally) {
+      return observed().finally(onFinally);
+    },
+    [Symbol.toStringTag]: "Promise"
+  });
+}
 function resultContainsMutationSecret(value, token) {
   if (value === token) return true;
   if (!value || typeof value !== "object") return false;
@@ -106711,7 +106729,8 @@ function createMutationContext(database, auth, options = {}) {
     database,
     auth,
     () => holder.current,
-    (candidate) => database.__transactionActive ? handlerContextByDatabase.get(database)?.() === candidate : holder.current === candidate
+    (candidate) => database.__transactionActive ? handlerContextByDatabase.get(database)?.() === candidate : holder.current === candidate,
+    (operation) => trackObservedMutationContextWork(context, operation)
   );
   context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
   context.serviceUsers = createServiceUsersApi(
@@ -107324,9 +107343,9 @@ async function runCurrentUserJobWorker(database) {
         history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: "succeeded", completedAt });
         const payloadRetentionUntil = row.handler === STRIPE_EVENT_JOB ? stripeEventPayloadRetentionStorageValue(completedAt) : null;
         const settled = row.handler === STRIPE_EVENT_JOB ? await database.adapter.prepare(sql2(
-          "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ?, [payloadRetentionUntil] = ? WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ? AND [cancelRequestedAt] IS NULL"
+          "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ?, [payloadRetentionUntil] = ? WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?"
         )).run(resultJson, completedAt, JSON.stringify(history), payloadRetentionUntil, row.id, claimToken) : await database.adapter.prepare(sql2(
-          "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ? WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ? AND [cancelRequestedAt] IS NULL"
+          "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ? WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?"
         )).run(resultJson, completedAt, JSON.stringify(history), row.id, claimToken);
         if (Number(settled?.changes ?? 0) === 0) {
           const cancellation = await database.adapter.prepare(sql2(

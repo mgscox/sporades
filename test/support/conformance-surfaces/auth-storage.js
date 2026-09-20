@@ -999,6 +999,22 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
     },
   },
   {
+    name: "File authority lookups find and lock an active Auth user and return null for an absent user",
+    async run(adapter) {
+      const expected = {
+        id: SIGNED_IN_USER.id,
+        userKind: "human",
+        lifecycleStatus: "active",
+      };
+      const found = await adapter.findAuthUserFileAuthority(SIGNED_IN_USER.id);
+      assert.deepEqual({ id: found?.id, userKind: found?.userKind, lifecycleStatus: found?.lifecycleStatus }, expected);
+      assert.equal(await adapter.findAuthUserFileAuthority("auth-user-file-authority-absent"), null);
+      const locked = await adapter.lockAuthUserFileAuthority(SIGNED_IN_USER.id);
+      assert.deepEqual({ id: locked?.id, userKind: locked?.userKind, lifecycleStatus: locked?.lifecycleStatus }, expected);
+      assert.equal(await adapter.lockAuthUserFileAuthority("auth-user-file-authority-absent"), null);
+    },
+  },
+  {
     name: "updateAuthUserProfile rewrites profile attributes and linkAuthUser additionally rewrites the address",
     async run(adapter) {
       const updated = await adapter.updateAuthUserProfile({

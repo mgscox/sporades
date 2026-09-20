@@ -190,9 +190,11 @@ test("Dev runtime wires the Stripe Team Billing provider on initial start and ho
 
 function runCommand(command, args, options = {}) {
   return new Promise((resolve) => {
+    const env = { ...process.env, ...options.env };
+    for (const name of options.unsetEnv ?? []) delete env[name];
     const child = spawn(command, args, {
       cwd: options.cwd,
-      env: { ...process.env, ...options.env },
+      env,
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -243,8 +245,8 @@ async function installPackedCandidate(projectDir, tarballPath) {
   await writeFile(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
   const installed = await runCommand(
     "npm",
-    ["install", "--offline", "--include=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
-    { cwd: projectDir },
+    ["install", "--offline", "--include=dev", "--no-audit", "--no-fund"],
+    { cwd: projectDir, unsetEnv: ["npm_config_allow_scripts", "NPM_CONFIG_ALLOW_SCRIPTS"] },
   );
   assert.equal(installed.code, 0, installed.stderr);
   const packageRoot = path.join(projectDir, "node_modules", "sporades");
@@ -260,18 +262,30 @@ async function installPackedCandidateCli(dir, tarballPath) {
   await mkdir(runnerDir, { recursive: true });
   await writeFile(path.join(runnerDir, "package.json"), `${JSON.stringify({
     private: true,
+    allowScripts: {
+      esbuild: true,
+      fsevents: true,
+    },
     devDependencies: { sporades: `file:${tarballPath}` },
   }, null, 2)}\n`);
   const installed = await runCommand(
     "npm",
-    ["install", "--offline", "--include=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
-    { cwd: runnerDir },
+    ["install", "--offline", "--include=dev", "--no-audit", "--no-fund"],
+    { cwd: runnerDir, unsetEnv: ["npm_config_allow_scripts", "NPM_CONFIG_ALLOW_SCRIPTS"] },
   );
   assert.equal(installed.code, 0, installed.stderr);
   return {
     installed,
     cliPath: path.join(runnerDir, "node_modules", "sporades", "bin", "sporades.js"),
   };
+}
+
+async function assertGeneratedLifecycleScriptAllowlist(projectDir) {
+  const generatedPackage = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf8"));
+  assert.deepEqual(generatedPackage.allowScripts, {
+    esbuild: true,
+    fsevents: true,
+  }, "generated packed-install fixtures declare lifecycle-script authority in package.json");
 }
 
 async function installFakeDocker(dir) {
@@ -2163,6 +2177,7 @@ test("a packed credential-free blank Capsule installs, typechecks, builds, and b
     assert.equal(createResult.code, 0, createResult.stderr);
 
     const projectDir = path.join(dir, "packed-blank");
+    await assertGeneratedLifecycleScriptAllowlist(projectDir);
     const { installed, packageRoot: installedPackageRoot, cliPath: installedCliPath } = await installPackedCandidate(projectDir, tarballPath);
     const installedPackage = JSON.parse(await readFile(path.join(installedPackageRoot, "package.json"), "utf8"));
     assert.deepEqual(installedPackage.exports["./server/stripe"], {
@@ -2335,6 +2350,7 @@ test("a generated activated blank Capsule runs Checkout, Customer Portal, and si
       const createResult = await runCliFrom(candidateCli.cliPath, ["create", "checkout-blank", "--no-install", "--no-git", "--json"], { cwd: dir });
       assert.equal(createResult.code, 0, createResult.stderr);
       const projectDir = path.join(dir, "checkout-blank");
+      await assertGeneratedLifecycleScriptAllowlist(projectDir);
       const installedCandidate = await installPackedCandidate(projectDir, tarballPath);
       const installedCliPath = installedCandidate.cliPath;
       const installedManifest = await readFile(path.join(installedCandidate.packageRoot, "dist", "generated-source-manifest.json"), "utf8");
