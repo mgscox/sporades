@@ -274,6 +274,88 @@ test('Postgres cancellation delivery failure bounds the active query and closes 
   }
 });
 
+test('Postgres deadline cancellation quarantines its backend before a delayed CancelRequest can reach later work', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const target = new URL(postgresTestUrl());
+  const cancelCaptured = Promise.withResolvers();
+  const sockets = new Set();
+  let delayedCancelRequest;
+  let cancelClient;
+  const proxy = net.createServer({ allowHalfOpen: true }, client => {
+    sockets.add(client);
+    let prefix = Buffer.alloc(0);
+    const classify = chunk => {
+      prefix = Buffer.concat([prefix, chunk]);
+      if (prefix.length < 8) return;
+      const cancelRequest = prefix.readInt32BE(4) === 80877102;
+      if (cancelRequest && prefix.length < prefix.readInt32BE(0)) return;
+      client.off('data', classify);
+      if (cancelRequest) {
+        delayedCancelRequest = prefix;
+        cancelClient = client;
+        cancelCaptured.resolve();
+        return;
+      }
+      const upstream = net.createConnection({ host: target.hostname, port: Number(target.port) });
+      sockets.add(upstream);
+      client.once('close', () => { sockets.delete(client); upstream.destroy(); });
+      upstream.once('close', () => { sockets.delete(upstream); client.destroy(); });
+      upstream.once('connect', () => { upstream.write(prefix); client.pipe(upstream); upstream.pipe(client); });
+    };
+    client.on('data', classify);
+  });
+  await new Promise((resolve, reject) => {
+    proxy.once('error', reject);
+    proxy.listen(0, '127.0.0.1', resolve);
+  });
+  const blocker = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  const proxyAddress = proxy.address();
+  const proxiedUrl = new URL(postgresTestUrl());
+  proxiedUrl.hostname = '127.0.0.1';
+  proxiedUrl.port = String(proxyAddress.port);
+  const connection = await createPostgresDatabaseAdapter({ url: proxiedUrl });
+  const advisoryLock = 8_742_013;
+  let cancellation;
+  let later;
+  try {
+    const controlBackendId = Number((await connection.prepare('SELECT pg_backend_pid() AS pid').get()).pid);
+    const original = connection.prepare('SELECT pg_sleep(0.075), pg_backend_pid() AS pid').get();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    cancellation = connection[Symbol.for('sporades.database.resourceCancelActiveQuery')]();
+    await cancelCaptured.promise;
+
+    const originalResult = await original;
+    assert.equal(Number(originalResult.pid), controlBackendId, 'ordinary non-deadline work retains its backend');
+    cancelClient.end();
+    assert.equal(await cancellation, true);
+
+    await blocker.exec(`SELECT pg_advisory_lock(${advisoryLock})`);
+    later = connection.prepare(`SELECT pg_advisory_lock(${advisoryLock}), pg_backend_pid() AS pid`).get();
+    void later.catch(() => {});
+    await new Promise(resolve => setTimeout(resolve, 50));
+    await new Promise((resolve, reject) => {
+      const delayed = net.createConnection({ host: target.hostname, port: Number(target.port) });
+      sockets.add(delayed);
+      delayed.once('error', reject);
+      delayed.once('close', () => { sockets.delete(delayed); resolve(); });
+      delayed.once('connect', () => delayed.end(delayedCancelRequest));
+    });
+    await blocker.exec(`SELECT pg_advisory_unlock(${advisoryLock})`);
+
+    const laterResult = await Promise.race([
+      later,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('later work did not recover on a fresh backend')), 750)),
+    ]);
+    assert.notEqual(Number(laterResult.pid), controlBackendId, 'deadline cancellation must replace the quarantined backend');
+  } finally {
+    await blocker.exec(`SELECT pg_advisory_unlock(${advisoryLock})`).catch(() => {});
+    for (const socket of sockets) socket.destroy();
+    await Promise.allSettled([cancellation, later].filter(Boolean));
+    await connection.close().catch(() => {});
+    await blocker.close();
+    await new Promise(resolve => proxy.close(resolve));
+  }
+});
+
 test('Postgres connection readiness observes caller cancellation before publishing a connection', async () => {
   const accepted = Promise.withResolvers();
   const peerClosed = Promise.withResolvers();

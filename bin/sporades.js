@@ -99171,13 +99171,13 @@ async function createPostgresDatabaseAdapter(options) {
     [resourceConsumptionMechanics]: function() {
       return lockAndVerifyResourceSchema(this);
     },
-    [resourceCancelActiveQuery]: async () => {
-      try {
-        return await client[resourceCancelActiveQuery]();
-      } catch (error) {
-        needsReconnect = true;
-        throw error;
-      }
+    [resourceCancelActiveQuery]: () => {
+      const quarantinedClient = client;
+      needsReconnect = true;
+      const cancellation = quarantinedClient[resourceCancelActiveQuery]();
+      void quarantinedClient.close().catch(() => {
+      });
+      return cancellation;
     },
     dialect,
     normalization,

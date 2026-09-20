@@ -2138,15 +2138,17 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     [Symbol.for("sporades.database.resourceTransactionEligible")]: true,
     [resourceBootstrapMechanics]: ensureResourceSchemaPublished,
     [resourceConsumptionMechanics]: function() { return lockAndVerifyResourceSchema(this); },
-    [resourceCancelActiveQuery]: async () => {
-      try {
-        return await (client as any)[resourceCancelActiveQuery]();
-      } catch (error) {
-        // Cancel delivery failure destroys the primary connection. Mark it for
-        // replacement before rollback or any subsequent adapter operation.
-        needsReconnect = true;
-        throw error;
-      }
+    [resourceCancelActiveQuery]: () => {
+      const quarantinedClient = client;
+      // A PostgreSQL CancelRequest identifies only a backend PID and secret.
+      // The deadline watchdog deliberately does not await delivery before its
+      // transaction unwinds, so quarantine synchronously: rollback and later
+      // work must reconnect even when the original query finishes naturally
+      // while cancellation is still in flight.
+      needsReconnect = true;
+      const cancellation = (quarantinedClient as any)[resourceCancelActiveQuery]();
+      void quarantinedClient.close().catch(() => {});
+      return cancellation;
     },
     dialect,
     normalization,
