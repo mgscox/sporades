@@ -909,7 +909,7 @@ test("Access-key Job lifecycle is stable across SQLite restart", async () => {
   }
 });
 
-test("Access-key Job lifecycle is stable across service-backed libSQL restart", async () => {
+test("non-opt-in Access-key Job lifecycle remains stable across service-backed libSQL restart", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-lifecycle-libsql-"));
   try {
     await withFakeLibsqlService(path.join(dir, "data.db"), {}, async ({ url }) => {

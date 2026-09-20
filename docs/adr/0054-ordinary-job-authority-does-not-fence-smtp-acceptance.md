@@ -395,10 +395,14 @@ const result = await ctx.resources.run({
    surface that error rather than accept PostgreSQL's `COMMIT`-as-`ROLLBACK`
    response as success.
 
-libSQL is **unsupported in v1**: return `RESOURCE_ADAPTER_UNSUPPORTED` before scope
-callback/status work. No local mutex, autocommit or lease fallback. A future support
-proposal needs real remote transaction-expiry/connection-loss conformance; it is
-not an optional implementation choice for ticket 05. Non-opt-in APIs keep existing
+The v1 resource adapter matrix is explicit: SQLite is supported, PostgreSQL is
+supported, and libSQL is **unsupported**. libSQL `run` and `status` return
+`RESOURCE_ADAPTER_UNSUPPORTED` before callback execution, receipt lookup,
+application or intent writes, or network submission. No local mutex, autocommit
+or lease fallback exists. Future libSQL support requires a separate approved
+proposal and real representative remote transaction expiry, connection loss, and
+restart conformance. This rejection gate does not certify libSQL support, and
+support is not an optional implementation choice for ticket 05. Non-opt-in APIs keep existing
 semantics on all adapters. No public CAS or lease-renewal API is required. Lock/deadlock failure is
 `RESOURCE_BUSY`; insufficient/exhausted budget is `RESOURCE_DEADLINE_EXCEEDED`;
 lost/superseded Job ownership is `RESOURCE_CLAIM_LOST`. Committed cancellation

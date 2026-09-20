@@ -3,6 +3,17 @@ import { ensureNotificationIntentStorage, readNotificationIntentStatuses, stageN
 
 type RecordValue = Record<string, any>;
 
+/** V1 resource scopes are an explicit allowlist; SQL-dialect similarity is not support. */
+export const RESOURCE_ADAPTER_SUPPORT = Object.freeze({
+  sqlite: "supported",
+  postgres: "supported",
+  libsql: "unsupported",
+} as const);
+
+function resourceAdapterSupported(adapter: RecordValue): boolean {
+  return RESOURCE_ADAPTER_SUPPORT[adapter.engine as keyof typeof RESOURCE_ADAPTER_SUPPORT] === "supported";
+}
+
 const resourceAbort = Symbol("resourceAbort");
 function resourceAbortError() {
   return Object.assign(new Error("Job aborted."), { name: "AbortError", code: "ABORTED", [resourceAbort]: true });
@@ -213,7 +224,7 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
   const execute = async (options: any, callback: any, status: boolean) => {
     if (!invocationActive) throw resourceError("RESOURCE_SCOPE_INACTIVE");
     if (used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-    if (!(["sqlite", "postgres"].includes(database.adapter.engine)) || database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true) throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+    if (!resourceAdapterSupported(database.adapter) || database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true) throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
     const identity = optionsSnapshot(options, status);
     if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
     if (!database.schema.tables.some((table: any) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
@@ -445,7 +456,7 @@ export function bindJobResources(database: RecordValue, context: RecordValue, cl
 
   const execute = async (options: any, callback: any, status: boolean) => {
     if (!invocationActive || used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-    if (!(["sqlite", "postgres"].includes(database.adapter.engine)) || (database.adapter.engine === "postgres" && database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true) || typeof database.adapter.withResourceTransaction !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+    if (!resourceAdapterSupported(database.adapter) || (database.adapter.engine === "postgres" && database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true) || typeof database.adapter.withResourceTransaction !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
     const identity = optionsSnapshot(options, status);
     if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
     if (!database.schema.tables.some((table: any) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
