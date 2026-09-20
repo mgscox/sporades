@@ -603,19 +603,24 @@ rejected for operator correction. 4xx, timeout, connection loss, lost reply,
 crashed sender, or failed outcome persistence remain uncertain and retry on the
 runtime-owned schedule. Expired reservations become unknown and wait
 `min(30s * 2^(min(attempt - 1, 7)), 1h)`; persisted backoff has no finite attempt
-cutoff. Restart scanning preserves attempts and due times and does not depend on
-a volatile post-commit wakeup.
+cutoff. Restart scanning preserves retry state, due times, and compact attempt
+authentication without depending on a volatile post-commit wakeup.
 
-A positive report from any recorded attempt token is monotonic and suppresses
-future reservations. Token-conditional negative updates cannot regress it.
+A positive report from any durably issued attempt token is monotonic and suppresses
+future reservations. Each random token carries a keyed authenticator bound to its
+exact recipient, intent, Message-ID and sequence; the durable recipient attempt
+count proves the sequence was issued after its completed attempt row is compacted.
+Token-conditional negative updates cannot regress it.
 Reservation expiry cannot revoke SMTP bytes already in flight, so a late old
 sender and a retry may both be accepted. Source Job retry, cancellation,
 exhaustion, or later resource/Grant revocation never retracts a committed intent;
 an accepted intent may therefore send after revocation. Uncertainty and crashes
 are retried automatically, and duplicate receiver acceptance is possible. This
 is neither exactly-once delivery nor a promise of unconditional eventual
-delivery. Diagnostics retain only bounded attempt timing and outcome categories,
-never credentials, raw SMTP replies, recipients, subjects, or bodies. Ordinary Jobs that never opt in retain
+delivery. Persistent recipient-bearing attempt diagnostics are compacted to the
+current attempt; one per-intent MAC key and the recipient attempt-count high-watermark
+retain bounded late-acknowledgement authority. Diagnostics never retain credentials,
+raw SMTP replies, subjects, or bodies. Ordinary Jobs that never opt in retain
 their existing nontransactional behavior. See
 [ADR-0054](../adr/0054-ordinary-job-authority-does-not-fence-smtp-acceptance.md).
 

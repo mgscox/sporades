@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 export const NOTIFICATION_RESERVATION_MS = 30_000;
 export const NOTIFICATION_RECOVERY_SCAN_MS = 30_000;
 export const NOTIFICATION_MAX_BACKOFF_MS = 3_600_000;
@@ -27,6 +27,12 @@ export const notificationIntentSchemas = [
         columns: ["resourceTable", "resourceId", "operationId", "intentId", "recipient", "attemptToken", "sequence", "reservedAt", "deadline", "completedAt", "outcomeCategory"],
         primaryKey: ["resourceTable", "resourceId", "operationId", "intentId", "recipient", "attemptToken"],
         definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [recipient] TEXT NOT NULL, [attemptToken] TEXT NOT NULL, [sequence] TEXT NOT NULL, [reservedAt] TEXT NOT NULL, [deadline] TEXT NOT NULL, [completedAt] TEXT NOT NULL, [outcomeCategory] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId], [recipient], [attemptToken])",
+    },
+    {
+        table: "sporades_notification_attempt_keys",
+        columns: ["resourceTable", "resourceId", "operationId", "intentId", "attemptKey"],
+        primaryKey: ["resourceTable", "resourceId", "operationId", "intentId"],
+        definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [attemptKey] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId])",
     },
 ];
 const sql = (adapter, statement) => adapter.dialect.sql(statement);
@@ -108,6 +114,8 @@ export async function stageNotificationIntent(adapter, database, identity, input
     const messageId = `<${createHash("sha256").update(`${database.capsuleIdentity}\0${key.join("\0")}`).digest("hex")}@sporades.local>`;
     await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_intents] ([resourceTable],[resourceId],[operationId],[intentId],[payloadDigest],[payloadJson],[messageId],[acceptedAt]) VALUES (?,?,?,?,?,?,?,?)"))
         .run(...key, payloadDigest, payloadJson, messageId, acceptedAt);
+    await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_attempt_keys] ([resourceTable],[resourceId],[operationId],[intentId],[attemptKey]) VALUES (?,?,?,?,?)"))
+        .run(...key, randomBytes(32).toString("hex"));
     for (const recipient of payload.to) {
         await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_recipients] ([resourceTable],[resourceId],[operationId],[intentId],[recipient],[state],[attemptCount],[currentAttemptToken],[currentAttemptDeadline],[nextAttemptAt],[lastOutcomeCategory],[updatedAt]) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"))
             .run(...key, recipient, "accepted", "0", "", "", acceptedAt, "", acceptedAt);
@@ -137,6 +145,37 @@ export function notificationRetryDelay(attemptNumber) {
 }
 const recipientKey = (row) => [row.resourceTable ?? row.resourcetable, row.resourceId ?? row.resourceid,
     row.operationId ?? row.operationid, row.intentId ?? row.intentid, row.recipient];
+function notificationAttemptToken(attemptKey, key, sequence, messageId, nonce = randomUUID()) {
+    const authenticator = createHmac("sha256", attemptKey)
+        .update([...key, String(sequence), messageId, nonce].join("\0"))
+        .digest("hex");
+    return `${nonce}.${authenticator}`;
+}
+function notificationAttemptTokenIsValid(attemptKey, reservation, messageId) {
+    const token = String(reservation.token ?? "");
+    const separator = token.indexOf(".");
+    if (separator < 1 || token.indexOf(".", separator + 1) !== -1)
+        return false;
+    const nonce = token.slice(0, separator);
+    const actual = token.slice(separator + 1);
+    if (!/^[0-9a-f-]{36}$/.test(nonce) || !/^[0-9a-f]{64}$/.test(actual))
+        return false;
+    const expected = notificationAttemptToken(attemptKey, reservation.key, reservation.sequence, messageId, nonce).slice(separator + 1);
+    return timingSafeEqual(Buffer.from(actual, "hex"), Buffer.from(expected, "hex"));
+}
+async function notificationAttemptKey(adapter, key) {
+    const select = () => adapter.prepare(sql(adapter, "SELECT [attemptKey] FROM [sporades_notification_attempt_keys] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key.slice(0, 4));
+    let row = await select();
+    if (!row) {
+        await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_attempt_keys] ([resourceTable],[resourceId],[operationId],[intentId],[attemptKey]) VALUES (?,?,?,?,?) ON CONFLICT ([resourceTable],[resourceId],[operationId],[intentId]) DO NOTHING"))
+            .run(...key.slice(0, 4), randomBytes(32).toString("hex"));
+        row = await select();
+    }
+    const attemptKey = row?.attemptKey ?? row?.attemptkey;
+    if (typeof attemptKey !== "string" || !/^[0-9a-f]{64}$/.test(attemptKey))
+        throw new Error("notification attempt key missing");
+    return attemptKey;
+}
 async function recoverExpiredReservations(database, now) {
     await database.adapter.withTransaction(async (tx) => {
         const expired = await tx.prepare(sql(tx, "SELECT * FROM [sporades_notification_recipients] WHERE [state]='submitting' AND [currentAttemptDeadline]<>'' AND [currentAttemptDeadline]<=? ORDER BY [currentAttemptDeadline]")).all(now.toISOString());
@@ -170,20 +209,28 @@ async function reserveDueRecipient(database, now) {
         if (!row)
             return null;
         const key = recipientKey(row);
-        const token = randomUUID();
         const sequence = Number(row.attemptCount ?? row.attemptcount) + 1;
         const deadline = new Date(now.getTime() + notificationReservationWindowMs(database)).toISOString();
+        const intent = await tx.prepare(sql(tx, "SELECT [payloadJson],[messageId] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key.slice(0, 4));
+        if (!intent)
+            throw new Error("notification intent missing");
+        const messageId = intent.messageId ?? intent.messageid;
+        const attemptKey = await notificationAttemptKey(tx, key);
+        const token = notificationAttemptToken(attemptKey, key, sequence, messageId);
         const changed = await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]='submitting',[attemptCount]=?,[currentAttemptToken]=?,[currentAttemptDeadline]=?,[nextAttemptAt]='',[lastOutcomeCategory]='',[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state] IN ('accepted','retry-wait','unknown') AND [nextAttemptAt]<=?"))
             .run(String(sequence), token, deadline, now.toISOString(), ...key, now.toISOString());
         if (Number(changed?.changes ?? 0) !== 1)
             return null;
         await tx.prepare(sql(tx, "INSERT INTO [sporades_notification_attempts] ([resourceTable],[resourceId],[operationId],[intentId],[recipient],[attemptToken],[sequence],[reservedAt],[deadline],[completedAt],[outcomeCategory]) VALUES (?,?,?,?,?,?,?,?,?,?,?)"))
             .run(...key, token, String(sequence), now.toISOString(), deadline, "", "submitting");
-        const intent = await tx.prepare(sql(tx, "SELECT [payloadJson],[messageId] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key.slice(0, 4));
-        if (!intent)
-            throw new Error("notification intent missing");
+        // The recipient row is the durable retry ledger. The random attempt token is
+        // self-authenticating against durable intent identity and sequence, so completed
+        // diagnostics can be compacted without copying recipient PII into an unbounded
+        // failure history or preventing an older live sender from reporting success.
+        await tx.prepare(sql(tx, "DELETE FROM [sporades_notification_attempts] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [completedAt]<>'' AND [attemptToken]<>?"))
+            .run(...key, token);
         return { key, token, sequence, deadline, recipient: row.recipient,
-            payload: JSON.parse(intent.payloadJson ?? intent.payloadjson), messageId: intent.messageId ?? intent.messageid };
+            payload: JSON.parse(intent.payloadJson ?? intent.payloadjson), messageId };
     });
 }
 async function reservationIsCurrent(database, reservation) {
@@ -193,13 +240,20 @@ async function reservationIsCurrent(database, reservation) {
 async function settleAttempt(database, reservation, outcome) {
     const now = database.clock.now();
     await database.adapter.withTransaction(async (tx) => {
+        if (outcome === "acknowledged") {
+            const intent = await tx.prepare(sql(tx, "SELECT [messageId] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...reservation.key.slice(0, 4));
+            const messageId = intent?.messageId ?? intent?.messageid;
+            const attemptKey = await notificationAttemptKey(tx, reservation.key);
+            if (typeof messageId !== "string" || typeof attemptKey !== "string" || !notificationAttemptTokenIsValid(attemptKey, reservation, messageId))
+                return;
+        }
         const unfinishedOnly = outcome === "acknowledged" ? "" : " AND [outcomeCategory]='submitting'";
         await tx.prepare(sql(tx, `UPDATE [sporades_notification_attempts] SET [completedAt]=?,[outcomeCategory]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [attemptToken]=?${unfinishedOnly}`))
             .run(now.toISOString(), outcome, ...reservation.key, reservation.token);
         if (outcome === "acknowledged") {
-            // A positive DATA acknowledgement from any recorded attempt is monotonic.
-            await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]='acknowledged',[currentAttemptToken]='',[currentAttemptDeadline]='',[nextAttemptAt]='',[lastOutcomeCategory]='acknowledged',[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state]<>'acknowledged' AND EXISTS (SELECT 1 FROM [sporades_notification_attempts] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [attemptToken]=?)"))
-                .run(now.toISOString(), ...reservation.key, ...reservation.key, reservation.token);
+            // A positive DATA acknowledgement from any durably authenticated attempt is monotonic.
+            await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]='acknowledged',[currentAttemptToken]='',[currentAttemptDeadline]='',[nextAttemptAt]='',[lastOutcomeCategory]='acknowledged',[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state]<>'acknowledged' AND CAST([attemptCount] AS INTEGER)>=?"))
+                .run(now.toISOString(), ...reservation.key, reservation.sequence);
             return;
         }
         // 'unknown' settles straight to 'retry-wait' (the queryable state

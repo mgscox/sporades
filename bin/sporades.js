@@ -58890,7 +58890,7 @@ function validateAliasDomains(value) {
 
 // src/cli/sporades.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { createHash as createHash14, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes8, timingSafeEqual as timingSafeEqual4 } from "node:crypto";
+import { createHash as createHash14, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes9, timingSafeEqual as timingSafeEqual5 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer as createServer2 } from "node:http";
 import { appendFile, chmod as chmod2, cp, lstat as lstat8, mkdir as mkdir8, readdir as readdir3, readFile as readFile10, rename as rename6, rm as rm8, writeFile as writeFile7 } from "node:fs/promises";
@@ -63820,7 +63820,7 @@ function createPreferencesError(message, hint, code) {
 }
 
 // src/teams-runtime.ts
-import { createHash as createHash9, createHmac, randomBytes as randomBytes4, randomUUID as randomUUID7, timingSafeEqual } from "node:crypto";
+import { createHash as createHash9, createHmac as createHmac2, randomBytes as randomBytes5, randomUUID as randomUUID7, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 
 // src/maybe-promise.ts
 function isPromiseLike(value) {
@@ -67973,7 +67973,7 @@ function safeJobFailure(error) {
 import { createHash as createHash8 } from "node:crypto";
 
 // src/notification-intent-runtime.ts
-import { createHash as createHash7, randomUUID as randomUUID6 } from "node:crypto";
+import { createHash as createHash7, createHmac, randomBytes as randomBytes4, randomUUID as randomUUID6, timingSafeEqual } from "node:crypto";
 var NOTIFICATION_RESERVATION_MS = 3e4;
 var NOTIFICATION_RECOVERY_SCAN_MS = 3e4;
 var NOTIFICATION_MAX_BACKOFF_MS = 36e5;
@@ -67996,6 +67996,12 @@ var notificationIntentSchemas = [
     columns: ["resourceTable", "resourceId", "operationId", "intentId", "recipient", "attemptToken", "sequence", "reservedAt", "deadline", "completedAt", "outcomeCategory"],
     primaryKey: ["resourceTable", "resourceId", "operationId", "intentId", "recipient", "attemptToken"],
     definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [recipient] TEXT NOT NULL, [attemptToken] TEXT NOT NULL, [sequence] TEXT NOT NULL, [reservedAt] TEXT NOT NULL, [deadline] TEXT NOT NULL, [completedAt] TEXT NOT NULL, [outcomeCategory] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId], [recipient], [attemptToken])"
+  },
+  {
+    table: "sporades_notification_attempt_keys",
+    columns: ["resourceTable", "resourceId", "operationId", "intentId", "attemptKey"],
+    primaryKey: ["resourceTable", "resourceId", "operationId", "intentId"],
+    definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [attemptKey] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId])"
   }
 ];
 var sql = (adapter, statement) => adapter.dialect.sql(statement);
@@ -68064,6 +68070,7 @@ async function stageNotificationIntent(adapter, database, identity, input, canon
   const acceptedAt = database.clock.now().toISOString();
   const messageId = `<${createHash7("sha256").update(`${database.capsuleIdentity}\0${key.join("\0")}`).digest("hex")}@sporades.local>`;
   await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_intents] ([resourceTable],[resourceId],[operationId],[intentId],[payloadDigest],[payloadJson],[messageId],[acceptedAt]) VALUES (?,?,?,?,?,?,?,?)")).run(...key, payloadDigest, payloadJson, messageId, acceptedAt);
+  await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_attempt_keys] ([resourceTable],[resourceId],[operationId],[intentId],[attemptKey]) VALUES (?,?,?,?,?)")).run(...key, randomBytes4(32).toString("hex"));
   for (const recipient of payload.to) {
     await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_recipients] ([resourceTable],[resourceId],[operationId],[intentId],[recipient],[state],[attemptCount],[currentAttemptToken],[currentAttemptDeadline],[nextAttemptAt],[lastOutcomeCategory],[updatedAt]) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")).run(...key, recipient, "accepted", "0", "", "", acceptedAt, "", acceptedAt);
   }
@@ -68096,6 +68103,31 @@ var recipientKey = (row) => [
   row.intentId ?? row.intentid,
   row.recipient
 ];
+function notificationAttemptToken(attemptKey, key, sequence, messageId, nonce = randomUUID6()) {
+  const authenticator = createHmac("sha256", attemptKey).update([...key, String(sequence), messageId, nonce].join("\0")).digest("hex");
+  return `${nonce}.${authenticator}`;
+}
+function notificationAttemptTokenIsValid(attemptKey, reservation, messageId) {
+  const token = String(reservation.token ?? "");
+  const separator = token.indexOf(".");
+  if (separator < 1 || token.indexOf(".", separator + 1) !== -1) return false;
+  const nonce = token.slice(0, separator);
+  const actual = token.slice(separator + 1);
+  if (!/^[0-9a-f-]{36}$/.test(nonce) || !/^[0-9a-f]{64}$/.test(actual)) return false;
+  const expected = notificationAttemptToken(attemptKey, reservation.key, reservation.sequence, messageId, nonce).slice(separator + 1);
+  return timingSafeEqual(Buffer.from(actual, "hex"), Buffer.from(expected, "hex"));
+}
+async function notificationAttemptKey(adapter, key) {
+  const select = () => adapter.prepare(sql(adapter, "SELECT [attemptKey] FROM [sporades_notification_attempt_keys] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key.slice(0, 4));
+  let row = await select();
+  if (!row) {
+    await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_attempt_keys] ([resourceTable],[resourceId],[operationId],[intentId],[attemptKey]) VALUES (?,?,?,?,?) ON CONFLICT ([resourceTable],[resourceId],[operationId],[intentId]) DO NOTHING")).run(...key.slice(0, 4), randomBytes4(32).toString("hex"));
+    row = await select();
+  }
+  const attemptKey = row?.attemptKey ?? row?.attemptkey;
+  if (typeof attemptKey !== "string" || !/^[0-9a-f]{64}$/.test(attemptKey)) throw new Error("notification attempt key missing");
+  return attemptKey;
+}
 async function recoverExpiredReservations(database, now2) {
   await database.adapter.withTransaction(async (tx) => {
     const expired = await tx.prepare(sql(tx, "SELECT * FROM [sporades_notification_recipients] WHERE [state]='submitting' AND [currentAttemptDeadline]<>'' AND [currentAttemptDeadline]<=? ORDER BY [currentAttemptDeadline]")).all(now2.toISOString());
@@ -68119,14 +68151,17 @@ async function reserveDueRecipient(database, now2) {
     const row = await tx.prepare(sql(tx, "SELECT * FROM [sporades_notification_recipients] WHERE [state] IN ('accepted','retry-wait','unknown') AND [nextAttemptAt]<=? ORDER BY [nextAttemptAt],[resourceTable],[resourceId],[operationId],[intentId],[recipient] LIMIT 1")).get(now2.toISOString());
     if (!row) return null;
     const key = recipientKey(row);
-    const token = randomUUID6();
     const sequence = Number(row.attemptCount ?? row.attemptcount) + 1;
     const deadline = new Date(now2.getTime() + notificationReservationWindowMs(database)).toISOString();
+    const intent = await tx.prepare(sql(tx, "SELECT [payloadJson],[messageId] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key.slice(0, 4));
+    if (!intent) throw new Error("notification intent missing");
+    const messageId = intent.messageId ?? intent.messageid;
+    const attemptKey = await notificationAttemptKey(tx, key);
+    const token = notificationAttemptToken(attemptKey, key, sequence, messageId);
     const changed = await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]='submitting',[attemptCount]=?,[currentAttemptToken]=?,[currentAttemptDeadline]=?,[nextAttemptAt]='',[lastOutcomeCategory]='',[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state] IN ('accepted','retry-wait','unknown') AND [nextAttemptAt]<=?")).run(String(sequence), token, deadline, now2.toISOString(), ...key, now2.toISOString());
     if (Number(changed?.changes ?? 0) !== 1) return null;
     await tx.prepare(sql(tx, "INSERT INTO [sporades_notification_attempts] ([resourceTable],[resourceId],[operationId],[intentId],[recipient],[attemptToken],[sequence],[reservedAt],[deadline],[completedAt],[outcomeCategory]) VALUES (?,?,?,?,?,?,?,?,?,?,?)")).run(...key, token, String(sequence), now2.toISOString(), deadline, "", "submitting");
-    const intent = await tx.prepare(sql(tx, "SELECT [payloadJson],[messageId] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key.slice(0, 4));
-    if (!intent) throw new Error("notification intent missing");
+    await tx.prepare(sql(tx, "DELETE FROM [sporades_notification_attempts] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [completedAt]<>'' AND [attemptToken]<>?")).run(...key, token);
     return {
       key,
       token,
@@ -68134,7 +68169,7 @@ async function reserveDueRecipient(database, now2) {
       deadline,
       recipient: row.recipient,
       payload: JSON.parse(intent.payloadJson ?? intent.payloadjson),
-      messageId: intent.messageId ?? intent.messageid
+      messageId
     };
   });
 }
@@ -68145,10 +68180,16 @@ async function reservationIsCurrent(database, reservation) {
 async function settleAttempt(database, reservation, outcome) {
   const now2 = database.clock.now();
   await database.adapter.withTransaction(async (tx) => {
+    if (outcome === "acknowledged") {
+      const intent = await tx.prepare(sql(tx, "SELECT [messageId] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...reservation.key.slice(0, 4));
+      const messageId = intent?.messageId ?? intent?.messageid;
+      const attemptKey = await notificationAttemptKey(tx, reservation.key);
+      if (typeof messageId !== "string" || typeof attemptKey !== "string" || !notificationAttemptTokenIsValid(attemptKey, reservation, messageId)) return;
+    }
     const unfinishedOnly = outcome === "acknowledged" ? "" : " AND [outcomeCategory]='submitting'";
     await tx.prepare(sql(tx, `UPDATE [sporades_notification_attempts] SET [completedAt]=?,[outcomeCategory]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [attemptToken]=?${unfinishedOnly}`)).run(now2.toISOString(), outcome, ...reservation.key, reservation.token);
     if (outcome === "acknowledged") {
-      await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]='acknowledged',[currentAttemptToken]='',[currentAttemptDeadline]='',[nextAttemptAt]='',[lastOutcomeCategory]='acknowledged',[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state]<>'acknowledged' AND EXISTS (SELECT 1 FROM [sporades_notification_attempts] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [attemptToken]=?)")).run(now2.toISOString(), ...reservation.key, ...reservation.key, reservation.token);
+      await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]='acknowledged',[currentAttemptToken]='',[currentAttemptDeadline]='',[nextAttemptAt]='',[lastOutcomeCategory]='acknowledged',[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state]<>'acknowledged' AND CAST([attemptCount] AS INTEGER)>=?")).run(now2.toISOString(), ...reservation.key, reservation.sequence);
       return;
     }
     const state = outcome === "rejected" ? "rejected" : "retry-wait";
@@ -90978,8 +91019,8 @@ async function createTeamJoinLink(database, auth, teamId, email, options = {}, e
       await claimTeamJoinLinkCapacity(tx, teamId, nowIso2);
       const secret = await teamJoinSigningSecret(tx, nowIso2);
       const id2 = randomUUID7();
-      const selector = randomBytes4(16).toString("base64url");
-      const verifier = randomBytes4(32).toString("base64url");
+      const selector = randomBytes5(16).toString("base64url");
+      const verifier = randomBytes5(32).toString("base64url");
       const expiresAt = new Date(now2.getTime() + ttlSeconds * 1e3).toISOString();
       const signature = teamJoinSignature(secret, id2, selector, verifier, expiresAt);
       await tx.prepare(tx.dialect.sql(
@@ -91052,8 +91093,8 @@ async function inspectTeamJoinLinkWithActivity(database, code, assertActive = vo
       const actualVerifier = Buffer.from(hashTeamJoinVerifier(parsed.verifier), "base64url");
       const expectedSignature = Buffer.from(candidate && secretRow ? teamJoinSignature(String(secretRow.secret), String(candidate.id), parsed.selector, parsed.verifier, String(candidate.expiresAt)) : teamJoinSignature("absent", "absent", parsed.selector, parsed.verifier, "absent"), "base64url");
       const actualSignature = Buffer.from(parsed.signature, "base64url");
-      const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual(actualVerifier, expectedVerifier);
-      const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual(actualSignature, expectedSignature);
+      const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual2(actualVerifier, expectedVerifier);
+      const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual2(actualSignature, expectedSignature);
       return Boolean(candidate && verifierMatches && signatureMatches && !candidate.consumedAt && !candidate.revokedAt && Date.parse(candidate.expiresAt) > (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).getTime());
     };
     if (!usable(row)) return { team: null, expiresAt: null, usable: false };
@@ -91150,8 +91191,8 @@ async function validateTeamJoinLink(database, auth, code) {
     "base64url"
   );
   const actualSignature = Buffer.from(parsed.signature, "base64url");
-  const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual(actualVerifier, expectedVerifier);
-  const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual(actualSignature, expectedSignature);
+  const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual2(actualVerifier, expectedVerifier);
+  const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual2(actualSignature, expectedSignature);
   const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).getTime();
   const expiresAt = Date.parse(row?.expiresAt ?? "");
   if (!row || !verifierMatches || !signatureMatches || row.consumedAt || row.revokedAt || !Number.isFinite(expiresAt) || expiresAt <= now2) return { valid: false };
@@ -91192,8 +91233,8 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
         "base64url"
       );
       const actualSignature = Buffer.from(parsed.signature, "base64url");
-      const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual(actualVerifier, expectedVerifier);
-      const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual(actualSignature, expectedSignature);
+      const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual2(actualVerifier, expectedVerifier);
+      const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual2(actualSignature, expectedSignature);
       const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
       const expiresAt = Date.parse(row?.expiresAt ?? "");
       if (!row || !verifierMatches || !signatureMatches || row.revokedAt || !Number.isFinite(expiresAt) || expiresAt <= Date.parse(now2)) throw invalidTeamJoinLink();
@@ -91324,12 +91365,12 @@ function hashTeamJoinVerifier(verifier) {
   return createHash9("sha256").update(verifier).digest("base64url");
 }
 function teamJoinSignature(secret, id2, selector, verifier, expiresAt) {
-  return createHmac("sha256", secret).update(`v1.${id2}.${selector}.${verifier}.${expiresAt}`).digest("base64url");
+  return createHmac2("sha256", secret).update(`v1.${id2}.${selector}.${verifier}.${expiresAt}`).digest("base64url");
 }
 async function teamJoinSigningSecret(tx, createdAt) {
   const existing = await tx.prepare(tx.dialect.sql("SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?")).get(TEAM_JOIN_LINK_SECRET_ID);
   if (existing?.secret) return String(existing.secret);
-  const secret = randomBytes4(32).toString("base64url");
+  const secret = randomBytes5(32).toString("base64url");
   await tx.prepare(tx.dialect.sql("INSERT INTO [sporades_team_join_link_secrets] ([id], [secret], [createdAt]) VALUES (?, ?, ?) ON CONFLICT ([id]) DO NOTHING")).run(TEAM_JOIN_LINK_SECRET_ID, secret, createdAt);
   const claimed = await tx.prepare(tx.dialect.sql("SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?")).get(TEAM_JOIN_LINK_SECRET_ID);
   return String(claimed?.secret ?? secret);
@@ -95123,7 +95164,7 @@ function restartPolicyStatus(mode, overrides2 = {}) {
 }
 
 // src/server-runtime-source.ts
-import { createHash as createHash11, randomBytes as randomBytes5, randomUUID as randomUUID10 } from "node:crypto";
+import { createHash as createHash11, randomBytes as randomBytes6, randomUUID as randomUUID10 } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 
 // src/log-envelope.ts
@@ -96498,7 +96539,7 @@ function encodeMimeBase64(value) {
 }
 
 // src/email-events-runtime.ts
-import { createHash as createHash10, createHmac as createHmac2, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+import { createHash as createHash10, createHmac as createHmac3, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
 var MAILJET_EVENT_KINDS = {
   sent: "delivered",
   open: "opened",
@@ -96525,7 +96566,7 @@ function text(value) {
 function secureEqual(left, right) {
   const leftBytes = Buffer.from(left);
   const rightBytes = Buffer.from(right);
-  return leftBytes.length === rightBytes.length && timingSafeEqual2(leftBytes, rightBytes);
+  return leftBytes.length === rightBytes.length && timingSafeEqual3(leftBytes, rightBytes);
 }
 function mailjetBasicPassword(authorization) {
   if (typeof authorization !== "string" || !authorization.startsWith("Basic ")) return "";
@@ -96568,7 +96609,7 @@ function verifiedMailgunRequest(ctx, secret) {
   const timestamp = text(signature?.timestamp);
   const token = text(signature?.token);
   if (!timestamp || !token) return false;
-  const expected = createHmac2("sha256", secret).update(`${timestamp}${token}`).digest("hex");
+  const expected = createHmac3("sha256", secret).update(`${timestamp}${token}`).digest("hex");
   return [signature?.signature, signature?.["parent-signature"]].some((candidate) => typeof candidate === "string" && secureEqual(candidate, expected));
 }
 function mailjetMessageIdentity(raw) {
@@ -101369,7 +101410,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       await refreshIngressMaintenanceState(database, { discoverInterruptedDelivery: true });
       const notificationDeliveryEnabled = database.mail.enabled || await notificationIntentStorageExists(database.adapter);
       database.__notificationDeliveryEnabled = notificationDeliveryEnabled;
-      if (database.mail.enabled) {
+      if (notificationDeliveryEnabled) {
         try {
           await ensureNotificationIntentStorage(database.adapter);
         } catch (error) {
@@ -104806,7 +104847,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
         if (typeof oldestToken !== "string") break;
         connectionTokens.delete(oldestToken);
       }
-      const token = randomBytes5(32).toString("base64url");
+      const token = randomBytes6(32).toString("base64url");
       connectionTokens.set(token, Date.now() + connectionTokenTtlMs);
       return token;
     },
@@ -105642,7 +105683,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
         const nowDate = database.clock.now();
         const inactivityMs = database.journeySessionInactivityMinutes * 6e4;
         if (!client.journey.sessionId || client.journey.lastActivityAt !== null && nowDate.getTime() - client.journey.lastActivityAt >= inactivityMs) {
-          client.journey.sessionId = randomBytes5(24).toString("base64url");
+          client.journey.sessionId = randomBytes6(24).toString("base64url");
           client.journey.sessionIds.add(client.journey.sessionId);
         }
         const previous = journeys.get(client.journey.sessionId);
@@ -105943,7 +105984,7 @@ async function sendEmailPasswordResetLink(database, session, email, options = {}
     return { ok: true };
   }
   recordFailedEmailSignInAttempt(database, cleanEmail, session, PASSWORD_RESET_THROTTLE_FIELD);
-  const code = `${randomBytes5(16).toString("base64url")}.${randomBytes5(32).toString("base64url")}`;
+  const code = `${randomBytes6(16).toString("base64url")}.${randomBytes6(32).toString("base64url")}`;
   await enqueueRuntimeJob(database, PASSWORD_RESET_REQUEST_JOB, {
     email: cleanEmail,
     code,
@@ -110581,7 +110622,7 @@ function escapeHtml(value) {
 
 // src/dev-clamav-sidecar.ts
 import { spawn } from "node:child_process";
-import { createHash as createHash12, randomBytes as randomBytes6 } from "node:crypto";
+import { createHash as createHash12, randomBytes as randomBytes7 } from "node:crypto";
 import { mkdir as mkdir5, mkdtemp, rm as rm6 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
@@ -110766,7 +110807,7 @@ async function startDevClamavSidecar(options) {
   const dataRoot = path9.join(options.projectDir, ".sporades", "clamav");
   await mkdir5(path9.join(dataRoot, "clamav"), { recursive: true });
   const socketDir = await mkdtemp(path9.join(tmpdir(), "sporades-dev-clamav-"));
-  const identity = createHash12("sha256").update(`${path9.resolve(options.projectDir)}\0${process.pid}\0${randomBytes6(8).toString("hex")}`).digest("hex").slice(0, 20);
+  const identity = createHash12("sha256").update(`${path9.resolve(options.projectDir)}\0${process.pid}\0${randomBytes7(8).toString("hex")}`).digest("hex").slice(0, 20);
   const containerName = `sporades-dev-clamav-${identity}`;
   const socketPath = path9.join(socketDir, "clamd.sock");
   let child;
@@ -110956,7 +110997,7 @@ ${removed.stderr}`)) failures.push(new Error("Dev File inspection container clea
 }
 
 // src/capsule-services.ts
-import { randomBytes as randomBytes7 } from "node:crypto";
+import { randomBytes as randomBytes8 } from "node:crypto";
 import { mkdir as mkdir6, readFile as readFile7, rm as rm7, writeFile as writeFile5 } from "node:fs/promises";
 import path10 from "node:path";
 var SUPPORTED_SERVICE_KEYS = /* @__PURE__ */ new Set(["database", "storage"]);
@@ -111030,9 +111071,9 @@ async function loadOrCreateCapsuleServiceCredentials(projectDir) {
   }
   const credentials = {
     databaseUser: typeof existing.databaseUser === "string" && existing.databaseUser ? existing.databaseUser : POSTGRES_USER,
-    databasePassword: typeof existing.databasePassword === "string" && existing.databasePassword ? existing.databasePassword : randomBytes7(24).toString("base64url"),
+    databasePassword: typeof existing.databasePassword === "string" && existing.databasePassword ? existing.databasePassword : randomBytes8(24).toString("base64url"),
     storageAccessKey: typeof existing.storageAccessKey === "string" && existing.storageAccessKey ? existing.storageAccessKey : MINIO_ROOT_USER,
-    storageSecretKey: typeof existing.storageSecretKey === "string" && existing.storageSecretKey ? existing.storageSecretKey : randomBytes7(24).toString("base64url")
+    storageSecretKey: typeof existing.storageSecretKey === "string" && existing.storageSecretKey ? existing.storageSecretKey : randomBytes8(24).toString("base64url")
   };
   if (credentials.databaseUser !== existing.databaseUser || credentials.databasePassword !== existing.databasePassword || credentials.storageAccessKey !== existing.storageAccessKey || credentials.storageSecretKey !== existing.storageSecretKey) {
     await mkdir6(path10.dirname(credentialsPath), { recursive: true });
@@ -116287,7 +116328,7 @@ function capsuleReloadSurface(database, config = {}) {
   return surface;
 }
 function createDevInspectionToken() {
-  return randomBytes8(32).toString("hex");
+  return randomBytes9(32).toString("hex");
 }
 function requireDevInspectionToken(request, response, expectedToken) {
   if (devInspectionTokenMatches(request.headers[DEV_INSPECTION_TOKEN_HEADER], expectedToken)) {
@@ -116310,7 +116351,7 @@ function devInspectionTokenMatches(header2, expectedToken) {
   }
   const actual = Buffer.from(actualToken);
   const expected = Buffer.from(expectedToken);
-  return actual.length === expected.length && timingSafeEqual4(actual, expected);
+  return actual.length === expected.length && timingSafeEqual5(actual, expected);
 }
 async function importCapsuleDefinition(moduleSource) {
   const encodedModule = Buffer.from(moduleSource, "utf8").toString("base64");
@@ -117618,7 +117659,7 @@ async function startContainerSession(options) {
     await mkdir8(path13.join(runtimeDir, "deploy-files"), { recursive: true, mode: 448 });
     await chmod2(path13.join(runtimeDir, "deploy-files"), 448);
   }
-  const deployReleaseRoot = path13.join(runtimeDir, "deploy-files", randomBytes8(16).toString("hex"));
+  const deployReleaseRoot = path13.join(runtimeDir, "deploy-files", randomBytes9(16).toString("hex"));
   const preservedRoot = path13.join(runtimeDir, "preserved-files");
   const createdSeeds = [];
   const seedJournal = await beginPreservedFileAttempt(preservedRoot, deployReleaseRoot, bundle.deployFiles.length > 0);
@@ -117649,8 +117690,8 @@ async function startContainerSession(options) {
   }
   const additionalMounts = deployFileMounts(bundle.deployFiles, deployReleaseRoot, preservedRoot);
   const bundleMountArgs = [...bundle.containerMounts.files, ...additionalMounts].flatMap((mount) => ["--volume", formatMount(mount)]);
-  const containerTransactionToken = randomBytes8(16).toString("hex");
-  const runtimeProbeToken = randomBytes8(32).toString("hex");
+  const containerTransactionToken = randomBytes9(16).toString("hex");
+  const runtimeProbeToken = randomBytes9(32).toString("hex");
   const capsuleServicesNetworkArgs = capsuleServices ? ["--network", capsuleServices.networks.services] : [];
   const capsuleServicesEnvArgs = Object.entries(containerCapsuleServices.env ?? {}).flatMap(([key, value]) => [
     "--env",
@@ -117698,7 +117739,7 @@ async function startContainerSession(options) {
     SPORADES_BASE_IMAGE.image,
     ...sshAccess.enabled ? ["/usr/local/bin/sporades-start"] : ["node", "/app/server.mjs"]
   ];
-  const rollbackName = `${containerName}-rollback-${process.pid}-${randomBytes8(4).toString("hex")}`;
+  const rollbackName = `${containerName}-rollback-${process.pid}-${randomBytes9(4).toString("hex")}`;
   const oldName = String(existingContainer?.Name ?? existingBinding?.containerName ?? containerName).replace(/^\//, "");
   const oldWasRunning = Boolean(existingContainer?.State?.Running);
   let oldRenamed = false;
@@ -118971,7 +119012,7 @@ function uploadHostReleaseArchive(options) {
 }
 function createHostReleaseId(now2 = /* @__PURE__ */ new Date()) {
   const timestamp = now2.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
-  return `${timestamp}-${randomBytes8(4).toString("hex")}`;
+  return `${timestamp}-${randomBytes9(4).toString("hex")}`;
 }
 function normaliseHostLogEntries(data2) {
   if (!Array.isArray(data2?.entries)) {
@@ -120248,7 +120289,7 @@ function runDockerCleanup(args, cwd, message, hint, force = false) {
   throw commandError(message, hint);
 }
 async function replaceContainerBinding(bindingPath, binding) {
-  const temporaryPath = `${bindingPath}.${process.pid}-${randomBytes8(8).toString("hex")}.tmp`;
+  const temporaryPath = `${bindingPath}.${process.pid}-${randomBytes9(8).toString("hex")}.tmp`;
   try {
     await writeFile7(temporaryPath, `${JSON.stringify(binding, null, 2)}
 `, { flag: "wx" });
@@ -120272,7 +120313,7 @@ function verifyContainerReplacementOwnership(binding, consumer, expectedContaine
 async function acquireContainerLifecycleLock(projectDir) {
   const lockDir = path13.join(projectDir, ".sporades", ".container-lifecycle-lock");
   await mkdir8(path13.dirname(lockDir), { recursive: true });
-  const token = randomBytes8(16).toString("hex");
+  const token = randomBytes9(16).toString("hex");
   const ownerPath = path13.join(lockDir, "owner.json");
   for (let attempt = 0; attempt < 500; attempt += 1) {
     try {

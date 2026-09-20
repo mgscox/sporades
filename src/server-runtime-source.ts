@@ -1138,7 +1138,7 @@ export async function openDevDatabase(
       // already gives the worker itself, but stays awaited (not detached) so a
       // non-PostgreSQL bootstrap's synchronous CREATE TABLE still completes
       // before the worker starts immediately after it.
-      if (database.mail.enabled) {
+      if (notificationDeliveryEnabled) {
         try {
           await ensureNotificationIntentStorage(database.adapter);
         } catch (error: any) {

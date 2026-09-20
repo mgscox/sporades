@@ -254,6 +254,8 @@ test('a late positive report from an expired attempt wins over a newer stale fai
     f.clock.advanceBy(30_000);
     const newerAttempt = runNotificationIntentDeliveryPass(f.database);
     while (f.deliveries.length < 2) await new Promise(resolve => setImmediate(resolve));
+    const attempts = f.database.adapter.prepare('SELECT attemptToken,sequence FROM sporades_notification_attempts ORDER BY sequence').all();
+    assert.deepEqual(attempts.map(row => row.sequence), ['2'], 'the previous recipient-bearing diagnostic is compacted');
     resolveFirst({ messageId: f.deliveries[0].messageId, accepted: ['one@example.com'], rejected: [] });
     await oldAttempt;
     rejectSecond(Object.assign(new Error('stale failure'), { code: 'ECONNECTION' }));
@@ -262,6 +264,57 @@ test('a late positive report from an expired attempt wins over a newer stale fai
     assert.equal(row.state, 'acknowledged');
     assert.equal(row.lastOutcomeCategory, 'acknowledged');
     assert.equal(await runNotificationIntentDeliveryPass(f.database), false, 'late success suppresses future reservation');
+  } finally { await f.close(); }
+});
+
+test('persistent completed SMTP failures retain one bounded attempt diagnostic per recipient', async () => {
+  const uncertain = () => Object.assign(new Error('SMTP unavailable'), { code: 'ECONNECTION' });
+  const f = await fixture({ outcomes: Array.from({ length: 20 }, uncertain) });
+  try {
+    await runMutation(f.database, actor, 'accept', [notification()]);
+    for (let attempt = 1; attempt <= 20; attempt += 1) {
+      assert.equal(await runNotificationIntentDeliveryPass(f.database), true);
+      const diagnostics = f.database.adapter.prepare('SELECT sequence,outcomeCategory FROM sporades_notification_attempts ORDER BY CAST(sequence AS INTEGER)').all()
+        .map(row => ({ sequence: row.sequence, outcomeCategory: row.outcomeCategory }));
+      assert.deepEqual(diagnostics, [{ sequence: String(attempt), outcomeCategory: 'unknown' }]);
+      if (attempt < 20) f.clock.advanceBy(notificationRetryDelay(attempt));
+    }
+    const recipient = f.database.adapter.prepare('SELECT state,attemptCount,lastOutcomeCategory FROM sporades_notification_recipients').get();
+    assert.deepEqual(
+      { state: recipient.state, attemptCount: recipient.attemptCount, lastOutcomeCategory: recipient.lastOutcomeCategory },
+      { state: 'retry-wait', attemptCount: '20', lastOutcomeCategory: 'unknown' },
+    );
+  } finally { await f.close(); }
+});
+
+test('compaction retains bounded durable authentication for an arbitrarily late positive acknowledgement', async () => {
+  const pending = Array.from({ length: 3 }, () => Promise.withResolvers());
+  const f = await fixture({ outcomes: pending.map(item => () => item.promise) });
+  try {
+    await runMutation(f.database, actor, 'accept', [notification()]);
+    const passes = [];
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      passes.push(runNotificationIntentDeliveryPass(f.database));
+      while (f.deliveries.length < attempt) await new Promise(resolve => setImmediate(resolve));
+      if (attempt < 3) {
+        f.clock.advanceBy(30_000);
+        assert.equal(await runNotificationIntentDeliveryPass(f.database), false);
+        f.clock.advanceBy(notificationRetryDelay(attempt));
+      }
+    }
+    assert.deepEqual(
+      f.database.adapter.prepare('SELECT sequence,completedAt FROM sporades_notification_attempts ORDER BY CAST(sequence AS INTEGER)').all()
+        .map(row => [row.sequence, row.completedAt]),
+      [['3', '']],
+      'expired recipient-bearing diagnostics compact while durable recipient sequence remains',
+    );
+    pending[0].resolve({ messageId: f.deliveries[0].messageId, accepted: ['one@example.com'], rejected: [] });
+    await passes[0];
+    pending[1].reject(Object.assign(new Error('late stale failure'), { code: 'ECONNECTION' }));
+    pending[2].reject(Object.assign(new Error('newer stale failure'), { code: 'ECONNECTION' }));
+    await Promise.all([passes[1], passes[2]]);
+    assert.equal(f.database.adapter.prepare('SELECT state FROM sporades_notification_recipients').get().state, 'acknowledged');
+    assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM sporades_notification_attempts').get().n, 1, 'terminal late settlements leave bounded diagnostics');
   } finally { await f.close(); }
 });
 
@@ -291,6 +344,25 @@ test('restart retains uncertain attempt identity, due time, and accepted receipt
     assert.equal(retry.nextAttemptAt, '2030-01-01T00:01:00.000Z');
     await f.database.shutdown(); await f.database.init(); await stopNotificationIntentWorker(f.database);
     assert.deepEqual(f.database.adapter.prepare('SELECT state,nextAttemptAt FROM sporades_notification_recipients').get(), retry);
+  } finally { await f.close(); }
+});
+
+test('restart additively upgrades a pre-authenticator notification database without losing pending work', async () => {
+  const f = await fixture();
+  try {
+    await runMutation(f.database, actor, 'accept', [notification()]);
+    await f.database.adapter.exec('DROP TABLE sporades_notification_attempt_keys');
+    await f.database.shutdown();
+    f.database.mail = {
+      enabled: false,
+      async sendIntent() { throw Object.assign(new Error('mail disabled'), { smtpOutcome: 'rejected' }); },
+      close() {},
+    };
+    await f.database.init();
+    await stopNotificationIntentWorker(f.database);
+    assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM sporades_notification_attempt_keys').get().n, 1, 'the first post-upgrade reservation seeds one durable authenticator');
+    assert.equal(f.database.adapter.prepare('SELECT state FROM sporades_notification_recipients').get().state, 'rejected');
+    assert.equal(f.deliveries.length, 0);
   } finally { await f.close(); }
 });
 

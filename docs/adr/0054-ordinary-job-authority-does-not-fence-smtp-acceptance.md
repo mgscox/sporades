@@ -425,8 +425,11 @@ reauthorization is needed to deliver an already accepted intent.
    already acknowledged merely because another recipient failed. Each recipient
    has `accepted`, `submitting`, `unknown`, `retry-wait`, `acknowledged` or `rejected`
    state, attempt count, current attempt token/deadline and next-attempt timestamp.
-   Preserve bounded outcome records for each attempt (token, sequence, times,
-   outcome/error class), never credentials or raw SMTP replies in diagnostics.
+   Preserve one bounded recipient-bearing attempt diagnostic (token, sequence,
+   times, outcome/error class). A per-intent random MAC key and the recipient's
+   monotonic attempt count retain compact proof of earlier issued tokens after
+   completed predecessor diagnostics are removed. Never retain credentials or
+   raw SMTP replies in diagnostics.
 2. A short engine transaction reserves one due recipient and persists a fresh
    random token, incremented sequence and fixed 30,000ms deadline before I/O.
    Only confirmed reservation commit permits that worker to submit. If its commit
@@ -447,9 +450,12 @@ reauthorization is needed to deliver an already accepted intent.
    cleanup may discard retryable work. Poll due rows by nextAttemptAt then stable
    ID and reserve conditionally so multiple workers cannot allocate the same
    generation. Backoff caps at one hour; retryable work survives arbitrary restarts.
-5. A late **positive** acknowledgement from any durably recorded attempt token
+5. A late **positive** acknowledgement from any durably issued attempt token
    for that exact immutable recipient/intent marks the recipient acknowledged and
-   suppresses future reservations. Positive acknowledgement is monotonic. Late
+   suppresses future reservations. The token's keyed authenticator binds the exact
+   intent, recipient, sequence and Message-ID; the durable recipient attempt count
+   proves that sequence was issued even after its completed diagnostic is compacted.
+   Positive acknowledgement is monotonic. Late
    negative/unknown outcomes may append attempt evidence but cannot overwrite a
    newer attempt's state or regress acknowledgement. Current-token predicates
    govern failure/retry transitions. Only runtime-owned sender reports are trusted.
@@ -469,8 +475,9 @@ reauthorization is needed to deliver an already accepted intent.
 
 SQLite and PostgreSQL must implement this same reservation/recovery contract.
 Delivery retries use their own durable schedule and are not exhausted by the
-source Job's retry limit. Keep unresolved payloads and attempt identities for
-recovery; no retention rule may remove pending work. Successful delivery policy
+source Job's retry limit. Keep unresolved payloads and compact durable attempt
+authentication state for recovery; no retention rule may remove pending work.
+Successful delivery policy
 means acknowledged SMTP submission, not inbox receipt or message reading. No
 claim of exactly-once or unconditional eventual delivery is made.
 
