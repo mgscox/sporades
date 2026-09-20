@@ -99,35 +99,18 @@ export declare function createTableAclContext(context: any, database: any): {
     credential: any;
     acl: Readonly<{
         db: Readonly<{
-            get(tableName: any, id: any): {
-                [x: string]: any;
-            } | null;
-            exists(tableName: any, id: any): boolean;
+            get(tableName: any, id: any): any;
+            exists(tableName: any, id: any): any;
         }>;
         storage: Readonly<{
-            get(resourceName: any, reference: any): {
-                originalName: any;
-                owner: any;
-                ownerId: any;
-                status: any;
-                createdAt: any;
-                updatedAt: any;
-                deletedAt: any;
-                id: any;
-                bucket: any;
-                size: number;
-                type: any;
-                name: any;
-                path: any;
-                version: any;
-            } | null;
-            exists(resourceName: any, reference: any): boolean;
+            get(resourceName: any, reference: any): any;
+            exists(resourceName: any, reference: any): any;
         }>;
         teams: Readonly<{
-            isMember(teamId: any): boolean;
-            isAdmin(teamId: any): boolean;
-            hasRole(teamId: any, role: any): boolean;
-            hasAnyRole(teamId: any, roles: any): boolean;
+            isMember(teamId: any): any;
+            isAdmin(teamId: any): any;
+            hasRole(teamId: any, role: any): any;
+            hasAnyRole(teamId: any, roles: any): any;
         }>;
     }>;
 };
@@ -142,35 +125,18 @@ export declare function createFileAclContext(auth: LooseRecord, database: LooseR
     }>;
     acl: Readonly<{
         db: Readonly<{
-            get(tableName: any, id: any): {
-                [x: string]: any;
-            } | null;
-            exists(tableName: any, id: any): boolean;
+            get(tableName: any, id: any): any;
+            exists(tableName: any, id: any): any;
         }>;
         storage: Readonly<{
-            get(resourceName: any, reference: any): {
-                originalName: any;
-                owner: any;
-                ownerId: any;
-                status: any;
-                createdAt: any;
-                updatedAt: any;
-                deletedAt: any;
-                id: any;
-                bucket: any;
-                size: number;
-                type: any;
-                name: any;
-                path: any;
-                version: any;
-            } | null;
-            exists(resourceName: any, reference: any): boolean;
+            get(resourceName: any, reference: any): any;
+            exists(resourceName: any, reference: any): any;
         }>;
         teams: Readonly<{
-            isMember(teamId: any): boolean;
-            isAdmin(teamId: any): boolean;
-            hasRole(teamId: any, role: any): boolean;
-            hasAnyRole(teamId: any, roles: any): boolean;
+            isMember(teamId: any): any;
+            isAdmin(teamId: any): any;
+            hasRole(teamId: any, role: any): any;
+            hasAnyRole(teamId: any, roles: any): any;
         }>;
     }>;
 }>;
@@ -181,6 +147,7 @@ export declare function runTableWriteWithAcl(database: any, table: LooseRecord, 
 export declare function applyReadAcl(database: any, table: LooseRecord, row: any, context: any): boolean | Promise<boolean>;
 export declare function filterRowsByReadAcl(database: any, table: any, rows: any[], context: any): any[] | Promise<any[]>;
 export declare const ACL_HELPER_STATE: unique symbol;
+export declare function bindPostgresAclDependencyLocking(database: LooseRecord, adapter: LooseRecord): void;
 export declare function emitAclDeniedLog(database: LooseRecord, details: LooseRecord): void;
 export declare function assertActivePrivilegedJobAccess(contextGetter: () => LooseRecord): void;
 export declare function drainPendingAclWrites(context: LooseRecord): Promise<void>;

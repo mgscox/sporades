@@ -136,7 +136,7 @@ import { deserializeFieldValue, deserializeRow, normalizeDateValue, serializeFie
 // `test/mail.test.js` — and reach them through the `export *` below rather than through a binding
 // here, so importing them would declare a name nothing in this file reads.
 import {
-  applyReadAcl, assertActivePrivilegedJobAccess, bindPendingAclWrites, createPrivilegedAuditEmitter,
+  applyReadAcl, assertActivePrivilegedJobAccess, bindPendingAclWrites, bindPostgresAclDependencyLocking, createPrivilegedAuditEmitter,
   createPrivilegedAuditEmissionPublicError, createPrivilegedFileApi, createPrivilegedRunAbortError,
   createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi,
   drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit,
@@ -3843,6 +3843,7 @@ function createTransactionDatabase(database: LooseRecord, transactionAdapter: an
     [Symbol.for("sporades.database.outerTransactionAdapter")]: transactionAdapter,
     __pendingLogWrites: pendingLogWrites,
   };
+  bindPostgresAclDependencyLocking(transactionDatabase, adapter);
   transactionDatabase.stageTeamBillingMembershipChange = (teamId: string) =>
     stageTeamBillingMembershipChange(transactionDatabase, teamId);
   transactionDatabase.scheduleTeamBillingJobDispatch = () => deferOrScheduleJobDispatch(
@@ -3926,7 +3927,17 @@ function bindOrdinaryJobResourceContext(database: LooseRecord, context: LooseRec
     async authorize(scoped: LooseRecord, identity: LooseRecord) {
       const scopedDatabase = scopeDatabases.get(scoped)!;
       const table = database.schema.tables.find((candidate: LooseRecord) => candidate.name === identity.table);
-      const stored = await scopedDatabase.adapter.selectAppRowById(table, identity.id);
+      // PostgreSQL needs the anchor lock before its current ACL decision.  The
+      // resource and Job rows are already locked by the owning resource
+      // transaction; keeping this final authorization row lock through commit
+      // prevents a concurrent revocation from winning between authorization and
+      // the protected write. SQLite's BEGIN IMMEDIATE writer already supplies
+      // that exclusion, so retain its ordinary lookup and ACL behaviour.
+      const stored = database.adapter.engine === "postgres"
+        ? await scopedDatabase.adapter.prepare(
+          `SELECT * FROM ${scopedDatabase.adapter.dialect.quoteIdentifier(table.name)} WHERE ${scopedDatabase.adapter.dialect.quoteIdentifier("id")} = ? FOR UPDATE NOWAIT`,
+        ).get(identity.id)
+        : await scopedDatabase.adapter.selectAppRowById(table, identity.id);
       const row = stored ? deserializeRow(table, stored) : null;
       if (!row || !await applyReadAcl(scopedDatabase, table, row, scoped)) {
         throw commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
@@ -7496,12 +7507,26 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
         const settled = row.handler === STRIPE_EVENT_JOB
           ? await database.adapter.prepare(sql(
             "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ?, [payloadRetentionUntil] = ? " +
-            "WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?",
+            "WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ? AND [cancelRequestedAt] IS NULL",
           )).run(resultJson, completedAt, JSON.stringify(history), payloadRetentionUntil, row.id, claimToken)
           : await database.adapter.prepare(sql(
             "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ? " +
-            "WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?",
+            "WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ? AND [cancelRequestedAt] IS NULL",
           )).run(resultJson, completedAt, JSON.stringify(history), row.id, claimToken);
+        if (Number(settled?.changes ?? 0) === 0) {
+          const cancellation = await database.adapter.prepare(sql(
+            "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?",
+          )).get(row.id, claimToken);
+          if (cancellation?.cancelRequestedAt) {
+            const cancelledAt = database.clock.now().toISOString();
+            const cancellationHistory = JSON.parse(row.attemptHistory || "[]");
+            cancellationHistory.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: "cancelled", code: "ABORTED", completedAt: cancelledAt });
+            await database.adapter.prepare(sql(
+              "UPDATE [sporades_jobs] SET [status]='cancelled', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
+              "WHERE [id]=? AND [status]='running' AND [claimToken]=? AND [cancelRequestedAt] IS NOT NULL",
+            )).run(JSON.stringify({ code: "ABORTED", message: "Job aborted." }), cancelledAt, JSON.stringify(cancellationHistory), row.id, claimToken);
+          }
+        }
         if (row.handler === STRIPE_EVENT_JOB && Number(settled?.changes ?? 0) === 1 && typeof payloadRetentionUntil === "string" && isCanonicalJobTimestamp(payloadRetentionUntil)) {
           scheduleStripeEventPayloadCleanup(database, Date.parse(payloadRetentionUntil));
         }

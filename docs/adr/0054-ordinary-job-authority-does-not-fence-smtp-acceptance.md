@@ -345,11 +345,18 @@ const result = await ctx.resources.run({
    uses a dedicated connection at READ COMMITTED, a runtime-owned unique resource
    row locked `FOR UPDATE NOWAIT`, and the Job row `FOR UPDATE NOWAIT`. Initial lock
    row creation must handle unique-key contention without waiting (bounded server
-   lock timeout, reported as `RESOURCE_BUSY`). All protected reads follow acquisition.
+   lock timeout, reported as `RESOURCE_BUSY`). Resource-schema readiness and any
+   required publication run on a separate bootstrap connection, never on the
+   primary connection that may own an unrelated root transaction. All protected reads follow acquisition.
    Only writers using this protocol receive same-resource serial ordering; existing
    ordinary table updates do not magically participate. No global serializable
    snapshot or parallel throughput promise is added. Constraint/deadlock/connection
-   errors roll back; never automatically rerun a callback.
+   errors roll back; never automatically rerun a callback. Constraint and
+   pre-COMMIT connection diagnostics from dedicated Job connections, tracked
+   outer scoped Database operations, and runtime-owned receipt statements are
+   reported only as the fixed `RESOURCE_STORAGE_ERROR`, including to a callback
+   which awaits and catches a tracked scoped operation; deliberate callback
+   errors and the separate unknown COMMIT outcome retain their own identities.
 5. Engine commit/rollback or engine-confirmed connection/process death releases
    authority. There is no durable resource lease to expire or reset on restart.
    Receipt rows are outcomes, not locks. PG backend loss invalidates all old scoped
@@ -383,6 +390,10 @@ const result = await ctx.resources.run({
    reserve. `resources.status({resource, operationId})` performs an authorized
    receipt read through the resource lock, returning committed result/intent IDs
    or `absent`; busy/denied remain errors. It does not run an application callback.
+   PostgreSQL marks the outer transaction failed when `NOWAIT` acquisition loses;
+   even if the handler catches `RESOURCE_BUSY`, settlement must roll back and
+   surface that error rather than accept PostgreSQL's `COMMIT`-as-`ROLLBACK`
+   response as success.
 
 libSQL is **unsupported in v1**: return `RESOURCE_ADAPTER_UNSUPPORTED` before scope
 callback/status work. No local mutex, autocommit or lease fallback. A future support

@@ -63820,7 +63820,7 @@ function createPreferencesError(message, hint, code) {
 }
 
 // src/teams-runtime.ts
-import { createHash as createHash7, createHmac, randomBytes as randomBytes4, randomUUID as randomUUID6, timingSafeEqual } from "node:crypto";
+import { createHash as createHash8, createHmac, randomBytes as randomBytes4, randomUUID as randomUUID6, timingSafeEqual } from "node:crypto";
 
 // src/maybe-promise.ts
 function isPromiseLike(value) {
@@ -67969,6 +67969,585 @@ function safeJobFailure(error) {
   return { code, message: messages[code] ?? "Resource operation could not complete." };
 }
 
+// src/resource-runtime.ts
+import { createHash as createHash7 } from "node:crypto";
+var resourceAbort = Symbol("resourceAbort");
+function resourceAbortError() {
+  return Object.assign(new Error("Job aborted."), { name: "AbortError", code: "ABORTED", [resourceAbort]: true });
+}
+function isResourceAbortError(error) {
+  return error?.[resourceAbort] === true;
+}
+function resourceError(code) {
+  return Object.assign(new Error(code === "RESOURCE_BUSY" ? "Resource transaction is busy." : "Resource operation could not complete."), {
+    code,
+    ...code === "RESOURCE_BUSY" ? { retryable: true } : {}
+  });
+}
+async function acquirePostgresResourceBootstrapLock(adapter) {
+  if (adapter.engine !== "postgres") return;
+  try {
+    const row = await adapter.prepare(adapter.dialect.sql("SELECT pg_try_advisory_xact_lock(hashtext(?)) AS [acquired]")).get("sporades.resource.bootstrap.v1");
+    const acquired = row?.acquired ?? row?.pg_try_advisory_xact_lock;
+    if (acquired !== true && acquired !== "t" && acquired !== 1) throw resourceError("RESOURCE_BUSY");
+  } catch (error) {
+    if (error?.code === "RESOURCE_BUSY" || error?.code === "55P03" || error?.code === "57014") throw resourceError("RESOURCE_BUSY");
+    throw error;
+  }
+}
+function resourceCanonicalJson(value) {
+  const ancestors = /* @__PURE__ */ new Set();
+  const visit = (input, depth) => {
+    if (depth > 64) throw resourceError("RESOURCE_INVALID_INPUT");
+    if (input === null || typeof input === "boolean" || typeof input === "string") return input;
+    if (typeof input === "number" && Number.isFinite(input)) return input === 0 ? 0 : input;
+    if (typeof input !== "object" || ancestors.has(input)) throw resourceError("RESOURCE_INVALID_INPUT");
+    const prototype = Object.getPrototypeOf(input);
+    if (!Array.isArray(input) && prototype !== Object.prototype && prototype !== null) throw resourceError("RESOURCE_INVALID_INPUT");
+    if (Object.getOwnPropertySymbols(input).length) throw resourceError("RESOURCE_INVALID_INPUT");
+    ancestors.add(input);
+    const output = Array.isArray(input) ? [] : /* @__PURE__ */ Object.create(null);
+    const keys = Array.isArray(input) ? Array.from({ length: input.length }, (_, i) => String(i)) : Object.keys(input).sort();
+    if (Array.isArray(input) && Object.keys(input).length !== input.length) throw resourceError("RESOURCE_INVALID_INPUT");
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(input, key);
+      if (!descriptor || !Object.hasOwn(descriptor, "value")) throw resourceError("RESOURCE_INVALID_INPUT");
+      output[key] = visit(descriptor.value, depth + 1);
+    }
+    ancestors.delete(input);
+    return output;
+  };
+  const json = JSON.stringify(visit(value, 0));
+  if (Buffer.byteLength(json, "utf8") > 65536) throw resourceError("RESOURCE_INVALID_INPUT");
+  return json;
+}
+function boundedIdentity(value) {
+  if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > 128 || Buffer.from(value, "utf8").toString("utf8") !== value) throw resourceError("RESOURCE_INVALID_INPUT");
+  return value;
+}
+function optionsSnapshot(options, status) {
+  if (!options || Object.getPrototypeOf(options) !== Object.prototype || Object.getOwnPropertySymbols(options).length || Object.values(Object.getOwnPropertyDescriptors(options)).some((descriptor) => !Object.hasOwn(descriptor, "value")) || Object.keys(options).sort().join(",") !== (status ? "operationId,resource" : "input,operationId,resource") || !options.resource || Object.getPrototypeOf(options.resource) !== Object.prototype || Object.getOwnPropertySymbols(options.resource).length || Object.values(Object.getOwnPropertyDescriptors(options.resource)).some((descriptor) => !Object.hasOwn(descriptor, "value")) || Object.keys(options.resource).sort().join(",") !== "id,table") throw resourceError("RESOURCE_INVALID_INPUT");
+  const table = boundedIdentity(options.resource.table);
+  const id2 = boundedIdentity(options.resource.id);
+  const operationId = boundedIdentity(options.operationId);
+  return { table, id: id2, operationId, digest: status ? null : createHash7("sha256").update(resourceCanonicalJson(options.input)).digest("hex") };
+}
+function resourceReceiptRow(adapter, row) {
+  if (!row || adapter.engine !== "postgres") return row;
+  return {
+    ...row,
+    inputDigest: row.inputDigest ?? row.inputdigest,
+    actorDigest: row.actorDigest ?? row.actordigest,
+    resultJson: row.resultJson ?? row.resultjson,
+    intentIdsJson: row.intentIdsJson ?? row.intentidsjson
+  };
+}
+async function upgradeFoldedResourceColumns(adapter, table, columns) {
+  if (adapter.engine !== "postgres") return;
+  const readColumns = async () => new Set((await adapter.prepare(adapter.dialect.sql(
+    "SELECT [column_name] FROM [information_schema].[columns] WHERE [table_schema]=current_schema() AND [table_name]=?"
+  )).all(table)).map((row) => row.column_name));
+  let existing = await readColumns();
+  if (!columns.some((column) => existing.has(column.toLowerCase()) && !existing.has(column))) return;
+  await adapter.exec("SAVEPOINT sporades_resource_schema_upgrade");
+  try {
+    await adapter.exec(`LOCK TABLE ${adapter.dialect.quoteIdentifier(table)} IN ACCESS EXCLUSIVE MODE`);
+    existing = await readColumns();
+    for (const column of columns) {
+      const folded = column.toLowerCase();
+      if (existing.has(folded) && !existing.has(column)) {
+        await adapter.exec(`ALTER TABLE ${adapter.dialect.quoteIdentifier(table)} RENAME COLUMN ${adapter.dialect.quoteIdentifier(folded)} TO ${adapter.dialect.quoteIdentifier(column)}`);
+        existing.delete(folded);
+        existing.add(column);
+      }
+    }
+    await adapter.exec("RELEASE SAVEPOINT sporades_resource_schema_upgrade");
+  } catch (error) {
+    try {
+      await adapter.exec("ROLLBACK TO SAVEPOINT sporades_resource_schema_upgrade");
+      await adapter.exec("RELEASE SAVEPOINT sporades_resource_schema_upgrade");
+    } catch {
+    }
+    if (error?.code === "55P03" || error?.code === "57014") throw resourceError("RESOURCE_BUSY");
+    throw error;
+  }
+}
+var unsupportedResources = Object.freeze({
+  async run() {
+    throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
+  },
+  async status() {
+    throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
+  }
+});
+function bindOuterResources(database, context, hooks) {
+  let invocationActive = true;
+  let used = false;
+  let scopeActive = false;
+  let admission = false;
+  let touched = false;
+  let terminalError;
+  let outerDeadline = 0;
+  let watchdog;
+  let rejectOuterAbort = () => {
+  };
+  const outerAborted = new Promise((_, reject) => {
+    rejectOuterAbort = reject;
+  });
+  void outerAborted.catch(() => {
+  });
+  const parentDb = context.db;
+  const parentJobs = context.jobs;
+  const pending = /* @__PURE__ */ new Set();
+  const executions = /* @__PURE__ */ new Set();
+  const normalizeStorageError = (error) => error?.code === "RESOURCE_BUSY" || error?.code === "SQLITE_BUSY" || error?.errcode === 5 || error?.errcode === 6 ? resourceError("RESOURCE_BUSY") : error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== void 0 ? resourceError("RESOURCE_STORAGE_ERROR") : error;
+  const normalizeDatabaseOperationError = (error, definiteStorageOperation = false) => {
+    if (typeof error?.code === "string" && error.code.startsWith("RESOURCE_")) return normalizeStorageError(error);
+    if (error?.code === "55P03" || error?.code === "57014") return resourceError("RESOURCE_BUSY");
+    const normalized = normalizeStorageError(error);
+    if (normalized !== error) return normalized;
+    if (database.adapter.engine === "postgres" && (definiteStorageOperation || typeof error?.code === "string" && (/^[0-9A-Z]{5}$/.test(error.code) || ["ECONNRESET", "ECONNREFUSED", "EPIPE", "ETIMEDOUT"].includes(error.code)) || error?.message === "database is not open")) return resourceError("RESOURCE_STORAGE_ERROR");
+    return error;
+  };
+  const track = (operation) => {
+    let value;
+    try {
+      value = operation();
+    } catch (error) {
+      terminalError ??= normalizeDatabaseOperationError(error);
+      throw error;
+    }
+    if (!value || typeof value.then !== "function") return value;
+    const promise = Promise.resolve(value).catch((error) => {
+      const normalized = normalizeDatabaseOperationError(error);
+      terminalError ??= normalized;
+      throw normalized;
+    });
+    pending.add(promise);
+    void promise.catch(() => {
+    });
+    return promise;
+  };
+  const trackExecution = (operation, poison = true) => {
+    let value;
+    try {
+      value = operation();
+    } catch (error) {
+      if (poison) terminalError ??= error;
+      throw error;
+    }
+    const promise = Promise.resolve(value);
+    executions.add(promise);
+    void promise.catch(() => {
+    });
+    return promise;
+  };
+  const actorDigest = createHash7("sha256").update(resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged: false })).digest("hex");
+  const guardCapability = (name2, value) => wrapCapability(value, (path14) => {
+    if (used) throw resourceError(!invocationActive || !scopeActive || !admission ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
+    if (!["where", "orderBy", "limit"].includes(path14.at(-1))) touched = true;
+  });
+  for (const name2 of ["db", "log", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
+    if (!context[name2]) continue;
+    context[name2] = guardCapability(name2, context[name2]);
+  }
+  const execute = async (options, callback, status) => {
+    if (!invocationActive) throw resourceError("RESOURCE_SCOPE_INACTIVE");
+    if (used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
+    if (!["sqlite", "postgres"].includes(database.adapter.engine) || database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true) throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+    const identity = optionsSnapshot(options, status);
+    if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
+    if (!database.schema.tables.some((table) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
+    used = true;
+    scopeActive = true;
+    admission = true;
+    hooks.resourceEntered?.();
+    (database[Symbol.for("sporades.database.outerTransactionAdapter")] ?? database.adapter)[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
+    const deadline = hooks.startedAt + 3e4;
+    outerDeadline = deadline;
+    const beforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
+    const checks = database.adapter[beforeCommitChecks] ?? (database.adapter[beforeCommitChecks] = []);
+    checks.push(() => {
+      if (terminalError) throw terminalError;
+      if (database.clock.now().getTime() >= deadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+    });
+    const controller = new AbortController();
+    const revoke = (error) => {
+      terminalError ??= error;
+      scopeActive = false;
+      admission = false;
+      controller.abort(terminalError);
+      rejectOuterAbort(terminalError);
+    };
+    const expire = () => {
+      const error = resourceError("RESOURCE_DEADLINE_EXCEEDED");
+      terminalError ??= error;
+      const cancel = database.adapter[Symbol.for("sporades.database.resourceCancelActiveQuery")];
+      if (typeof cancel === "function") void Promise.resolve(cancel()).catch(() => {
+      });
+      revoke(error);
+    };
+    const assertLive = (requireAdmission = false) => {
+      if (!invocationActive || !scopeActive || requireAdmission && !admission) throw resourceError("RESOURCE_SCOPE_INACTIVE");
+      if (terminalError) throw terminalError;
+      if (database.clock.now().getTime() >= deadline - (admission ? 1e3 : 0)) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+    };
+    watchdog ??= database.clock.setTimer(expire, Math.max(0, deadline - database.clock.now().getTime()));
+    let acquired = false;
+    try {
+      assertLive(true);
+      try {
+        if (database.adapter.engine === "postgres") {
+          await database.adapter.exec("SET LOCAL lock_timeout = '100ms'");
+          const bootstrap = database.adapter[Symbol.for("sporades.database.resourceBootstrapMechanics")];
+          if (typeof bootstrap !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+          await bootstrap(controller.signal);
+          const consume = database.adapter[Symbol.for("sporades.database.resourceConsumptionMechanics")];
+          if (typeof consume !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+          await Reflect.apply(consume, database.adapter, []);
+          await database.adapter.prepare(database.adapter.dialect.sql("INSERT INTO [sporades_resource_locks] ([resourceTable], [resourceId]) VALUES (?, ?) ON CONFLICT ([resourceTable], [resourceId]) DO NOTHING")).run(identity.table, identity.id);
+          const resourceLock = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [resourceTable] FROM [sporades_resource_locks] WHERE [resourceTable]=? AND [resourceId]=? FOR UPDATE NOWAIT")).get(identity.table, identity.id);
+          if (!resourceLock) throw resourceError("RESOURCE_STORAGE_ERROR");
+          const anchor = await database.adapter.prepare(
+            `SELECT ${database.adapter.dialect.quoteIdentifier("id")} FROM ${database.adapter.dialect.quoteIdentifier(identity.table)} WHERE ${database.adapter.dialect.quoteIdentifier("id")}=? FOR UPDATE NOWAIT`
+          ).get(identity.id);
+          if (!anchor) throw resourceError("RESOURCE_STORAGE_ERROR");
+          await database.adapter.exec("SET LOCAL lock_timeout = DEFAULT");
+        } else {
+          await database.adapter.exec(database.adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_outer_fence] ([id] INTEGER PRIMARY KEY, [epoch] INTEGER NOT NULL)"));
+          await database.adapter.prepare(database.adapter.dialect.sql("INSERT OR IGNORE INTO [sporades_resource_outer_fence] ([id], [epoch]) VALUES (1, 0)")).run();
+          await database.adapter.prepare(database.adapter.dialect.sql("UPDATE [sporades_resource_outer_fence] SET [epoch]=[epoch]+1 WHERE [id]=1")).run();
+        }
+      } catch (error) {
+        if (terminalError) throw terminalError;
+        const normalized = error?.code === "RESOURCE_BUSY" || error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY" || error?.code === "55P03" || error?.code === "57014" ? resourceError("RESOURCE_BUSY") : resourceError("RESOURCE_STORAGE_ERROR");
+        if (database.adapter.engine === "postgres") terminalError ??= normalized;
+        throw normalized;
+      }
+      acquired = true;
+      assertLive(true);
+      try {
+        await hooks.authorize(context, parentDb, identity);
+      } catch (error) {
+        throw database.adapter.engine === "postgres" ? normalizeDatabaseOperationError(error) : error;
+      }
+      assertLive(true);
+      let receipt2;
+      try {
+        if (database.adapter.engine !== "postgres") {
+          await database.adapter.exec(database.adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_receipts] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId]))"));
+          await upgradeFoldedResourceColumns(database.adapter, "sporades_resource_receipts", ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"]);
+        }
+        receipt2 = resourceReceiptRow(database.adapter, await database.adapter.prepare(database.adapter.dialect.sql("SELECT * FROM [sporades_resource_receipts] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=?")).get(identity.table, identity.id, identity.operationId));
+      } catch (error) {
+        throw normalizeDatabaseOperationError(error, true);
+      }
+      if (receipt2) {
+        if (receipt2.actorDigest !== actorDigest || !status && receipt2.inputDigest !== identity.digest) throw resourceError("RESOURCE_OPERATION_CONFLICT");
+        return status ? { state: "committed", result: JSON.parse(receipt2.resultJson), intentIds: JSON.parse(receipt2.intentIdsJson) } : JSON.parse(receipt2.resultJson);
+      }
+      if (status) return { state: "absent" };
+      const scopeDb = wrapCapability(parentDb, () => assertLive(true), [], /* @__PURE__ */ new WeakMap(), track);
+      const logs = [];
+      const scope = Object.freeze({
+        db: scopeDb,
+        jobs: Object.freeze({ enqueue: (...args) => track(() => {
+          assertLive(true);
+          return parentJobs.enqueue(...args);
+        }) }),
+        log: Object.freeze(Object.fromEntries(["info", "warn", "error"].map((level) => [level, () => {
+          assertLive(true);
+          if (logs.length >= 100) throw resourceError("RESOURCE_INVALID_INPUT");
+          logs.push(level);
+        }]))),
+        signal: controller.signal,
+        notifications: Object.freeze({ accept: () => {
+          assertLive(true);
+          return track(() => Promise.resolve().then(() => {
+            terminalError ??= resourceError("RESOURCE_EFFECT_UNSUPPORTED");
+            throw terminalError;
+          }));
+        } })
+      });
+      let result;
+      try {
+        result = await Promise.race([Promise.resolve().then(() => callback(scope)), outerAborted]);
+      } catch (error) {
+        terminalError ??= error;
+        throw error;
+      }
+      if (terminalError) throw terminalError;
+      admission = false;
+      let resultJson;
+      try {
+        resultJson = resourceCanonicalJson(result);
+        await Promise.all([...pending]);
+        if (terminalError) throw terminalError;
+        await hooks.drain(context);
+        await hooks.stageLogs?.(logs);
+      } catch (error) {
+        terminalError ??= error;
+        throw error;
+      }
+      assertLive();
+      try {
+        await database.adapter.prepare(database.adapter.dialect.sql("INSERT INTO [sporades_resource_receipts] VALUES (?,?,?,?,?,?,?,?)")).run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
+      } catch (error) {
+        throw normalizeDatabaseOperationError(error, true);
+      }
+      assertLive();
+      return JSON.parse(resultJson);
+    } catch (error) {
+      const normalized = normalizeStorageError(error);
+      if (acquired || normalized?.code === "RESOURCE_STORAGE_ERROR") terminalError ??= normalized;
+      throw normalized;
+    } finally {
+      scopeActive = false;
+      admission = false;
+      if (!controller.signal.aborted) controller.abort();
+    }
+  };
+  context.resources = Object.freeze({ run: (options, callback) => trackExecution(() => execute(options, callback, false)), status: (options) => trackExecution(() => execute(options, void 0, true), false) });
+  const release = () => {
+    invocationActive = false;
+    if (watchdog !== void 0) database.clock.clearTimer(watchdog);
+  };
+  release.assertOuterLive = () => {
+    if (terminalError) throw terminalError;
+    if (outerDeadline && database.clock.now().getTime() >= outerDeadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+  };
+  release.aborted = () => outerAborted;
+  release.drain = async () => {
+    await Promise.allSettled([...executions]);
+    if (terminalError) throw terminalError;
+  };
+  release.race = (operation) => Promise.race([operation, outerAborted]);
+  release.guardCapability = guardCapability;
+  return release;
+}
+function wrapCapability(value, before, path14 = [], cache = /* @__PURE__ */ new WeakMap(), afterCall) {
+  if (!value || typeof value !== "object") return value;
+  if (cache.has(value)) return cache.get(value);
+  const functions = /* @__PURE__ */ new Map();
+  const proxy = new Proxy({}, {
+    ownKeys: () => Reflect.ownKeys(value),
+    set: (_target, key, member) => Reflect.set(value, key, member),
+    has: (_target, key) => Reflect.has(value, key),
+    getOwnPropertyDescriptor: () => ({ configurable: true, enumerable: true }),
+    get(_target, key) {
+      const member = Reflect.get(value, key);
+      if (typeof key !== "string") return member;
+      if (typeof member === "function") {
+        if (functions.has(key)) return functions.get(key);
+        const wrapped = (...args) => {
+          const next = [...path14, key];
+          before(next);
+          const invoke = () => Reflect.apply(member, value, args);
+          const result = afterCall && !["where", "orderBy", "limit"].includes(key) ? afterCall(invoke) : invoke();
+          return ["where", "orderBy", "limit"].includes(key) ? wrapCapability(result, before, path14, cache, afterCall) : result;
+        };
+        functions.set(key, wrapped);
+        return wrapped;
+      }
+      return wrapCapability(member, before, [...path14, key], cache, afterCall);
+    }
+  });
+  cache.set(value, proxy);
+  return proxy;
+}
+function bindJobResources(database, context, claim, hooks) {
+  let invocationActive = true;
+  let used = false;
+  let scopeRunning = false;
+  let touched = false;
+  const privileged = hooks.privileged === true;
+  const actorBinding = resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged });
+  const actorDigest = createHash7("sha256").update(actorBinding).digest("hex");
+  for (const name2 of ["db", "log", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
+    if (!context[name2]) continue;
+    context[name2] = wrapCapability(context[name2], (path14) => {
+      if (used && (name2 !== "log" || scopeRunning || !invocationActive)) throw resourceError(!invocationActive ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
+      if (name2 !== "log" && !["where", "orderBy", "limit"].includes(path14.at(-1))) touched = true;
+    });
+  }
+  const execute = async (options, callback, status) => {
+    if (!invocationActive || used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
+    if (!["sqlite", "postgres"].includes(database.adapter.engine) || database.adapter.engine === "postgres" && database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true || typeof database.adapter.withResourceTransaction !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+    const identity = optionsSnapshot(options, status);
+    if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
+    if (!database.schema.tables.some((table) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
+    used = true;
+    scopeRunning = true;
+    let scopeContext;
+    let engineCommitted = false;
+    let active = true;
+    let admission = true;
+    let terminalError;
+    const controller = new AbortController();
+    const deadline = Date.parse(claim.leaseExpiresAt);
+    const pending = /* @__PURE__ */ new Set();
+    const logs = [];
+    let resourceAdapter;
+    let rejectAbort = () => {
+    };
+    const aborted = new Promise((_, reject) => {
+      rejectAbort = reject;
+    });
+    void aborted.catch(() => {
+    });
+    const revoke = (error) => {
+      terminalError ??= error;
+      active = false;
+      admission = false;
+      controller.abort(terminalError);
+      rejectAbort(terminalError);
+    };
+    const assertLive = (admit = false) => {
+      if (!active || admit && !admission) throw resourceError("RESOURCE_SCOPE_INACTIVE");
+      if (terminalError) throw terminalError;
+      if (context.signal?.aborted || database.__jobStopped) throw resourceAbortError();
+      if (database.clock.now().getTime() >= deadline - (admit ? 1e3 : 0)) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+    };
+    const abort = () => revoke(resourceAbortError());
+    context.signal?.addEventListener("abort", abort, { once: true });
+    const watchdog = database.clock.setTimer(() => {
+      const error = resourceError("RESOURCE_DEADLINE_EXCEEDED");
+      terminalError ??= error;
+      const cancel = resourceAdapter?.[Symbol.for("sporades.database.resourceCancelActiveQuery")];
+      if (typeof cancel === "function") void Promise.resolve(cancel()).catch(() => {
+      });
+      revoke(error);
+    }, Math.max(0, deadline - database.clock.now().getTime()));
+    const checkClaim = async (adapter, entry = false) => {
+      assertLive(entry);
+      const row = await adapter.prepare(adapter.dialect.sql(database.adapter.engine === "postgres" ? "SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? FOR UPDATE NOWAIT" : "SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=?")).get(claim.id);
+      if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
+      if (row.cancelRequestedAt) throw resourceAbortError();
+      assertLive(entry);
+    };
+    const track = (operation) => {
+      assertLive(true);
+      const promise = Promise.resolve().then(() => {
+        assertLive();
+        return operation();
+      });
+      pending.add(promise);
+      void promise.catch((error) => {
+        terminalError ??= error;
+      });
+      return promise;
+    };
+    try {
+      assertLive(true);
+      const result = await database.adapter.withResourceTransaction(async (adapter) => {
+        resourceAdapter = adapter;
+        const guarded = Object.create(adapter);
+        guarded.prepare = (sql) => {
+          assertLive();
+          const statement = adapter.prepare(sql);
+          return Object.fromEntries(["get", "all", "run", "columns"].map((method) => [method, (...args) => {
+            assertLive();
+            return statement[method](...args);
+          }]));
+        };
+        guarded.exec = (sql) => {
+          assertLive();
+          return adapter.exec(sql);
+        };
+        await checkClaim(guarded, true);
+        scopeContext = hooks.createContext(guarded, controller.signal, privileged);
+        await Promise.race([hooks.authorize(scopeContext, identity), aborted]);
+        assertLive(true);
+        if (database.adapter.engine !== "postgres") {
+          await guarded.exec(adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_receipts] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId]))"));
+          await upgradeFoldedResourceColumns(guarded, "sporades_resource_receipts", ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"]);
+        }
+        const receipt2 = resourceReceiptRow(database.adapter, await guarded.prepare(adapter.dialect.sql("SELECT * FROM [sporades_resource_receipts] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=?")).get(identity.table, identity.id, identity.operationId));
+        if (receipt2) {
+          if (receipt2.actorDigest !== actorDigest || !status && receipt2.inputDigest !== identity.digest) throw resourceError("RESOURCE_OPERATION_CONFLICT");
+          await checkClaim(guarded);
+          return status ? { state: "committed", result: JSON.parse(receipt2.resultJson), intentIds: JSON.parse(receipt2.intentIdsJson) } : JSON.parse(receipt2.resultJson);
+        }
+        if (status) {
+          await checkClaim(guarded);
+          return { state: "absent" };
+        }
+        const db = Object.fromEntries(Object.entries(scopeContext.db).map(([name2, table]) => {
+          const wrapTable = (api) => Object.fromEntries(Object.keys(api).map((method) => [method, (...args) => {
+            assertLive(true);
+            if (["where", "orderBy", "limit"].includes(method)) return wrapTable(api[method](...args));
+            return track(() => api[method](...args));
+          }]));
+          return [name2, wrapTable(table)];
+        }));
+        const rejectEffect = () => {
+          assertLive(true);
+          throw resourceError("RESOURCE_EFFECT_UNSUPPORTED");
+        };
+        const scope = Object.freeze({
+          db: Object.freeze(db),
+          signal: controller.signal,
+          jobs: Object.freeze({ enqueue: (...args) => track(() => scopeContext.jobs.enqueue(...args)) }),
+          log: Object.freeze(Object.fromEntries(["info", "warn", "error"].map((level) => [level, () => {
+            assertLive(true);
+            if (logs.length >= 100) throw resourceError("RESOURCE_INVALID_INPUT");
+            logs.push(level);
+          }]))),
+          notifications: Object.freeze({ accept: () => track(rejectEffect) })
+        });
+        const value = await Promise.race([Promise.resolve().then(() => callback(scope)), aborted]);
+        admission = false;
+        await Promise.race([Promise.all([...pending]), aborted]);
+        await Promise.race([hooks.drain(scopeContext), aborted]);
+        const resultJson = resourceCanonicalJson(value);
+        await hooks.stageLogs(scopeContext, logs);
+        await checkClaim(guarded);
+        await guarded.prepare(adapter.dialect.sql("INSERT INTO [sporades_resource_receipts] VALUES (?,?,?,?,?,?,?,?)")).run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
+        await checkClaim(guarded);
+        active = false;
+        return JSON.parse(resultJson);
+      }, database.adapter.engine === "postgres" ? async (adapter) => {
+        if (context.signal?.aborted || database.__jobStopped) throw resourceAbortError();
+        if (database.clock.now().getTime() >= deadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+        const row = await adapter.prepare(adapter.dialect.sql("SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? FOR UPDATE NOWAIT")).get(claim.id);
+        if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
+        if (row.cancelRequestedAt) throw resourceAbortError();
+      } : (adapter) => {
+        if (context.signal?.aborted || database.__jobStopped) throw resourceAbortError();
+        if (database.clock.now().getTime() >= deadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+        const row = adapter.prepare(adapter.dialect.sql("SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=?")).get(claim.id);
+        if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
+        if (row.cancelRequestedAt) throw resourceAbortError();
+      }, { table: identity.table, id: identity.id }, controller.signal);
+      engineCommitted = true;
+      active = false;
+      await hooks.committed(scopeContext, logs);
+      return result;
+    } catch (error) {
+      active = false;
+      if (engineCommitted) throw resourceError("RESOURCE_STORAGE_ERROR");
+      hooks.rolledBack(scopeContext);
+      throw error;
+    } finally {
+      scopeRunning = false;
+      active = false;
+      admission = false;
+      if (!controller.signal.aborted) controller.abort();
+      resourceAdapter = void 0;
+      database.clock.clearTimer(watchdog);
+      context.signal?.removeEventListener("abort", abort);
+      hooks.release(scopeContext);
+    }
+  };
+  context.resources = Object.freeze({
+    run: (options, callback) => execute(options, callback, false),
+    status: (options) => execute(options, void 0, true)
+  });
+  return () => {
+    invocationActive = false;
+  };
+}
+
 // src/runtime-log-policy.ts
 function logIndexLimit(config = {}) {
   const configured = Number(config.logs?.indexLimit ?? config.logging?.indexLimit);
@@ -68057,6 +68636,139 @@ function dateValueError(fieldName) {
     `Invalid date value for field: ${fieldName}`,
     "Pass an ISO 8601 date string or JavaScript Date value."
   );
+}
+
+// src/promise-coordinator.ts
+var nodePromiseHooks = process.getBuiltinModule("node:v8")?.promiseHooks;
+var observerRetainers = /* @__PURE__ */ new Map();
+var promiseParents = /* @__PURE__ */ new WeakMap();
+var promiseSettlementCauses = /* @__PURE__ */ new WeakMap();
+var promiseCombinatorInputs = /* @__PURE__ */ new WeakMap();
+var settledPromises = /* @__PURE__ */ new WeakSet();
+var promiseHookStack = [];
+var promiseHookStop;
+var compositionRootCandidates = [];
+var thenableWrapperRoots = /* @__PURE__ */ new WeakSet();
+var promiseCombinatorKinds = /* @__PURE__ */ new WeakMap();
+var compositionRootClearQueued = false;
+function retainCompositionRootCandidate(promise) {
+  compositionRootCandidates.push(promise);
+  if (compositionRootClearQueued) return;
+  compositionRootClearQueued = true;
+  queueMicrotask(() => {
+    compositionRootCandidates = [];
+    compositionRootClearQueued = false;
+  });
+}
+function installPromiseHook() {
+  if (promiseHookStop || !nodePromiseHooks?.createHook) return;
+  promiseHookStop = nodePromiseHooks.createHook({
+    init(promise, parent) {
+      if (parent) promiseParents.set(promise, parent);
+      else retainCompositionRootCandidate(promise);
+      const match = parent && (new Error().stack ?? "").match(/at (?:Promise|Function)\.(all|allSettled|any|race)\b/);
+      if (parent && match) {
+        const root = [...compositionRootCandidates].reverse().find((candidate) => !thenableWrapperRoots.has(candidate));
+        if (root) {
+          promiseCombinatorKinds.set(root, match[1]);
+          const inputs = promiseCombinatorInputs.get(root) ?? /* @__PURE__ */ new Set();
+          inputs.add(parent);
+          promiseCombinatorInputs.set(root, inputs);
+        }
+      }
+      for (const observer of observerRetainers.keys()) observer.init?.(promise, parent);
+    },
+    before(promise) {
+      promiseHookStack.push(promise);
+      for (const observer of observerRetainers.keys()) observer.before?.(promise);
+    },
+    after(promise) {
+      for (const observer of observerRetainers.keys()) observer.after?.(promise);
+      promiseHookStack.pop();
+    },
+    settled(promise) {
+      settledPromises.add(promise);
+      const cause = promiseHookStack.at(-1);
+      if (cause && cause !== promise) promiseSettlementCauses.set(promise, cause);
+      for (const observer of observerRetainers.keys()) observer.settled?.(promise);
+    }
+  });
+}
+function retainPromiseObserver(observer) {
+  observerRetainers.set(observer, (observerRetainers.get(observer) ?? 0) + 1);
+  installPromiseHook();
+}
+function releasePromiseObserver(observer) {
+  const retained = observerRetainers.get(observer) ?? 0;
+  if (retained <= 1) observerRetainers.delete(observer);
+  else observerRetainers.set(observer, retained - 1);
+  if (observerRetainers.size !== 0) return;
+  promiseHookStop?.();
+  promiseHookStop = void 0;
+  promiseHookStack = [];
+  compositionRootCandidates = [];
+  thenableWrapperRoots = /* @__PURE__ */ new WeakSet();
+  settledPromises = /* @__PURE__ */ new WeakSet();
+  compositionRootClearQueued = false;
+}
+function activePromise() {
+  return promiseHookStack.at(-1);
+}
+function promiseSettlementCause(promise) {
+  return promiseSettlementCauses.get(promise);
+}
+function promiseDescendsFrom(promise, ancestor) {
+  const visited = /* @__PURE__ */ new Set();
+  for (let current2 = promise; current2 && !visited.has(current2); current2 = promiseParents.get(current2)) {
+    if (current2 === ancestor) return true;
+    visited.add(current2);
+  }
+  return false;
+}
+function promiseDependsOn(promise, dependency) {
+  const pending = promise ? [promise] : [];
+  const visited = /* @__PURE__ */ new Set();
+  while (pending.length > 0) {
+    const current2 = pending.pop();
+    if (current2 === dependency) return true;
+    if (visited.has(current2)) continue;
+    visited.add(current2);
+    const parent = promiseParents.get(current2);
+    if (parent) pending.push(parent);
+    if (["all", "allSettled"].includes(promiseCombinatorKinds.get(current2) ?? "")) {
+      pending.push(...promiseCombinatorInputs.get(current2) ?? []);
+    }
+  }
+  return false;
+}
+function promiseCompositionRootCandidate() {
+  const wrapper = compositionRootCandidates.at(-1);
+  if (!wrapper) return void 0;
+  thenableWrapperRoots.add(wrapper);
+  const stack = new Error().stack ?? "";
+  const match = stack.match(/at (?:Promise|Function)\.(all|allSettled|any|race)\b/);
+  if (!match) return void 0;
+  for (let index = compositionRootCandidates.length - 2; index >= 0; index -= 1) {
+    const candidate = compositionRootCandidates[index];
+    if (!thenableWrapperRoots.has(candidate)) {
+      promiseCombinatorKinds.set(candidate, match[1]);
+      return candidate;
+    }
+  }
+  promiseCombinatorKinds.set(wrapper, match[1]);
+  return wrapper;
+}
+function promiseCombinatorKind(promise) {
+  return promiseCombinatorKinds.get(promise);
+}
+function enclosingPromiseCombinatorRoot() {
+  const stack = new Error().stack ?? "";
+  if (!/at (?:Promise|Function)\.(?:all|allSettled|any|race)\b/.test(stack)) return void 0;
+  for (let index = compositionRootCandidates.length - 1; index >= 0; index -= 1) {
+    const candidate = compositionRootCandidates[index];
+    if (!settledPromises.has(candidate)) return candidate;
+  }
+  return void 0;
 }
 
 // src/acl-runtime.ts
@@ -68524,11 +69236,17 @@ function applyFileAcl(database, operation, row, auth, credential = { kind: "sess
     emitFileAclDeniedLog(database, { context, operation, row });
     return false;
   };
-  const result = rule(input);
+  const result = invokeAclRule(context, () => rule(input));
   if (!isPromiseLike(result)) {
-    return result && !aclRuleTouchedAsyncHelperRead(context) ? true : deny();
+    if (result && !aclRuleTouchedAsyncHelperRead(context, true)) return true;
+    const settlement = settleAclHelperReads(context);
+    return settlement ? settlement.then(deny) : deny();
   }
-  return Promise.resolve(result).then((allowed) => allowed && !aclRuleTouchedAsyncHelperRead(context) ? true : deny());
+  return Promise.resolve(result).then((allowed) => {
+    if (allowed && !aclRuleTouchedAsyncHelperRead(context)) return true;
+    const settlement = settleAclHelperReads(context);
+    return settlement ? settlement.then(deny) : deny();
+  });
 }
 function privilegedDbAccessContextSet() {
   const holder = privilegedDbAccessContextSet;
@@ -68579,22 +69297,24 @@ function runTableWriteWithAcl(database, table, operation, previous, next, contex
     throw createAclDeniedError(denialLogData);
   };
   const aclContext = createTableAclContext(context, database);
-  const result = rule({
+  const result = invokeAclRule(aclContext, () => rule({
     ctx: aclContext,
     operation,
     table: table.name,
     previous,
     next
-  });
+  }));
   if (!isPromiseLike(result)) {
-    if (!result || aclRuleTouchedAsyncHelperRead(aclContext)) {
-      deny();
+    if (!result || aclRuleTouchedAsyncHelperRead(aclContext, true)) {
+      const settlement = settleAclHelperReads(aclContext);
+      return settlement ? settlement.then(deny) : deny();
     }
     return write();
   }
   const pending = Promise.resolve(result).then((allowed) => {
     if (!allowed || aclRuleTouchedAsyncHelperRead(aclContext)) {
-      deny();
+      const settlement = settleAclHelperReads(aclContext);
+      return settlement ? settlement.then(deny) : deny();
     }
     return write();
   });
@@ -68610,12 +69330,12 @@ function applyReadAcl(database, table, row, context) {
     return true;
   }
   const aclContext = createTableAclContext(context, database);
-  const result = rule({
+  const result = invokeAclRule(aclContext, () => rule({
     ctx: aclContext,
     operation: "read",
     table: table.name,
     row
-  });
+  }));
   const deny = () => {
     emitAclDeniedLog(database, {
       context,
@@ -68626,9 +69346,15 @@ function applyReadAcl(database, table, row, context) {
     return false;
   };
   if (!isPromiseLike(result)) {
-    return result && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny();
+    if (result && !aclRuleTouchedAsyncHelperRead(aclContext, true)) return true;
+    const settlement = settleAclHelperReads(aclContext);
+    return settlement ? settlement.then(deny) : deny();
   }
-  return Promise.resolve(result).then((allowed) => allowed && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny());
+  return Promise.resolve(result).then((allowed) => {
+    if (allowed && !aclRuleTouchedAsyncHelperRead(aclContext)) return true;
+    const settlement = settleAclHelperReads(aclContext);
+    return settlement ? settlement.then(deny) : deny();
+  });
 }
 function filterRowsByReadAcl(database, table, rows, context) {
   const decisions = rows.map((row) => applyReadAcl(database, table, row, context));
@@ -68638,8 +69364,28 @@ function filterRowsByReadAcl(database, table, rows, context) {
   return rows.filter((_, index) => decisions[index]);
 }
 var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
+var aclPromiseObserver = {};
+function retainAclPromiseHook(state) {
+  if (state.promiseHookRetained) return;
+  state.promiseHookRetained = true;
+  retainPromiseObserver(aclPromiseObserver);
+}
+function releaseAclPromiseHook(state) {
+  if (!state.promiseHookRetained) return;
+  state.promiseHookRetained = false;
+  releasePromiseObserver(aclPromiseObserver);
+}
 function createAclHelpers(database, context) {
-  const state = { readCount: 0, maxReads: 32, touchedAsyncRead: false };
+  const state = {
+    readCount: 0,
+    maxReads: 32,
+    touchedAsyncRead: false,
+    rulePromise: void 0,
+    promiseHookRetained: false,
+    unconsumedAsyncReads: /* @__PURE__ */ new Set(),
+    pendingAsyncReads: /* @__PURE__ */ new Set(),
+    helperPromiseDependencies: /* @__PURE__ */ new WeakMap()
+  };
   const helpers = {
     db: createAclDbHelpers(database, state),
     storage: createAclStorageHelpers(database, state),
@@ -68655,21 +69401,20 @@ function createAclTeamHelpers(database, context, state) {
   return Object.freeze({
     isMember(teamId) {
       const membership = readAclTeamMembership(database, context, state, teamId);
-      return membership?.role === "admin" || membership?.role === "member";
+      return resolveAclHelperRead(state, membership, (resolved) => resolved?.role === "admin" || resolved?.role === "member");
     },
     isAdmin(teamId) {
-      return readAclTeamMembership(database, context, state, teamId)?.role === "admin";
+      return resolveAclHelperRead(state, readAclTeamMembership(database, context, state, teamId), (membership) => membership?.role === "admin");
     },
     hasRole(teamId, role) {
       assertAclHelperReadAllowed(state);
       if (!isActiveAclTeamApplicationRole(database, role)) return false;
       const actorUserId = aclTeamActorUserId(context);
       if (!actorUserId || !isAclTeamId(teamId)) return false;
-      const selected = database.adapter.prepare(database.adapter.dialect.sql(
+      const selected = readWithAclHelperDependencies(database, ["sporades_team_memberships", "sporades_team_membership_application_roles"], () => database.adapter.prepare(database.adapter.dialect.sql(
         "SELECT [r].[role] FROM [sporades_team_memberships] [m] JOIN [sporades_team_membership_application_roles] [r] ON [r].[teamId] = [m].[teamId] AND [r].[userId] = [m].[userId] WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] = ?"
-      )).get(teamId, actorUserId, role);
-      if (markAsyncAclHelperRead(state, selected)) return false;
-      return selected?.role === role;
+      )).get(teamId, actorUserId, role));
+      return resolveAclHelperRead(state, selected, (resolved) => resolved?.role === role);
     },
     hasAnyRole(teamId, roles) {
       assertAclHelperReadAllowed(state);
@@ -68679,11 +69424,10 @@ function createAclTeamHelpers(database, context, state) {
       const actorUserId = aclTeamActorUserId(context);
       if (!actorUserId || !isAclTeamId(teamId)) return false;
       const placeholders = activeRoles.map(() => "?").join(", ");
-      const selected = database.adapter.prepare(database.adapter.dialect.sql(
+      const selected = readWithAclHelperDependencies(database, ["sporades_team_memberships", "sporades_team_membership_application_roles"], () => database.adapter.prepare(database.adapter.dialect.sql(
         `SELECT [r].[role] FROM [sporades_team_memberships] [m] JOIN [sporades_team_membership_application_roles] [r] ON [r].[teamId] = [m].[teamId] AND [r].[userId] = [m].[userId] WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] IN (${placeholders})`
-      )).all(teamId, actorUserId, ...activeRoles);
-      if (markAsyncAclHelperRead(state, selected)) return false;
-      return Array.isArray(selected) && selected.some((row) => activeRoles.includes(row?.role));
+      )).all(teamId, actorUserId, ...activeRoles));
+      return resolveAclHelperRead(state, selected, (resolved) => Array.isArray(resolved) && resolved.some((row) => activeRoles.includes(row?.role)));
     }
   });
 }
@@ -68691,11 +69435,29 @@ function readAclTeamMembership(database, context, state, teamId) {
   assertAclHelperReadAllowed(state);
   const actorUserId = aclTeamActorUserId(context);
   if (!actorUserId || !isAclTeamId(teamId)) return null;
-  const selected = database.adapter.prepare(database.adapter.dialect.sql(
+  const selected = readWithAclHelperDependencies(database, ["sporades_team_memberships"], () => database.adapter.prepare(database.adapter.dialect.sql(
     "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
-  )).get(teamId, actorUserId);
-  if (markAsyncAclHelperRead(state, selected)) return null;
-  return selected ?? null;
+  )).get(teamId, actorUserId));
+  return selected;
+}
+function readWithAclHelperDependencies(database, tableNames, read) {
+  const lock = database.lockAclHelperDependencies?.(tableNames);
+  return isPromiseLike(lock) ? Promise.resolve(lock).then(read) : read();
+}
+function bindPostgresAclDependencyLocking(database, adapter) {
+  if (adapter?.engine !== "postgres" || typeof database.lockAclHelperDependencies === "function") return;
+  const lockedTables = /* @__PURE__ */ new Set();
+  database.lockAclHelperDependencies = async (tableNames) => {
+    const pending = [...new Set(tableNames)].filter((tableName) => !lockedTables.has(tableName)).sort();
+    if (pending.length === 0) return;
+    try {
+      await adapter.exec(`LOCK TABLE ${pending.map((tableName) => adapter.dialect.quoteIdentifier(tableName)).join(", ")} IN SHARE ROW EXCLUSIVE MODE NOWAIT`);
+    } catch (error) {
+      if (error?.code === "55P03") throw resourceError("RESOURCE_BUSY");
+      throw error;
+    }
+    for (const tableName of pending) lockedTables.add(tableName);
+  };
 }
 function aclTeamActorUserId(context) {
   const auth = context?.auth;
@@ -68708,37 +69470,121 @@ function isAclTeamId(value) {
 function isActiveAclTeamApplicationRole(database, role) {
   return typeof role === "string" && Array.isArray(database.teamApplicationRoles) && database.teamApplicationRoles.includes(role);
 }
-function aclRuleTouchedAsyncHelperRead(aclContext) {
-  return aclContext?.acl?.[ACL_HELPER_STATE]?.touchedAsyncRead === true;
+function aclRuleTouchedAsyncHelperRead(aclContext, synchronousRule = false) {
+  const state = aclContext?.acl?.[ACL_HELPER_STATE];
+  if (!synchronousRule) consumeParticipatingAclHelperReads(state);
+  return synchronousRule ? state?.touchedAsyncRead === true : (state?.unconsumedAsyncReads?.size ?? 0) > 0;
 }
-function markAsyncAclHelperRead(state, result) {
-  if (isPromiseLike(result)) {
-    state.touchedAsyncRead = true;
-    Promise.resolve(result).catch(() => {
-    });
-    return true;
+function consumeParticipatingAclHelperReads(state) {
+  if (!state?.rulePromise) return;
+  const settlementCause = promiseSettlementCause(state.rulePromise);
+  for (const dependency of state.unconsumedAsyncReads ?? []) {
+    if (dependency.settled && [...dependency.assimilationPromises ?? []].some((promise) => !["race", "any"].includes(dependency.compositionKinds?.get(promise)) && (promiseDescendsFrom(promise, state.rulePromise) || promiseDependsOn(settlementCause, promise)))) {
+      state.unconsumedAsyncReads.delete(dependency);
+    }
   }
-  return false;
+}
+function invokeAclRule(aclContext, invoke) {
+  const state = aclContext?.acl?.[ACL_HELPER_STATE];
+  if (!state) return invoke();
+  retainAclPromiseHook(state);
+  let result;
+  try {
+    result = invoke();
+    state.rulePromise = isPromiseLike(result) ? result : void 0;
+    consumeAclHelperPromiseDependencies(state, result);
+    return result;
+  } finally {
+    if (isPromiseLike(result)) {
+      void Promise.resolve(result).then(
+        () => releaseAclPromiseHook(state),
+        () => releaseAclPromiseHook(state)
+      );
+    } else releaseAclPromiseHook(state);
+  }
+}
+function consumeAclHelperPromiseDependencies(state, promise) {
+  if (!promise || typeof promise !== "object") return;
+  const dependencies = state.helperPromiseDependencies.get(promise);
+  if (!dependencies) return;
+  for (const dependency of dependencies) state.unconsumedAsyncReads.delete(dependency);
+}
+function isPromiseAssimilationContinuation(args) {
+  return args.length === 2 && args.every((callback) => typeof callback === "function" && Function.prototype.toString.call(callback).includes("[native code]"));
+}
+function trackAclHelperPromise(state, promise, dependencies) {
+  let tracked;
+  tracked = new Proxy(promise, {
+    get(target, property) {
+      if (property === "then" || property === "catch" || property === "finally") {
+        if (property === "then") {
+          const compositionRoot = promiseCompositionRootCandidate();
+          if (compositionRoot) {
+            for (const dependency of dependencies) {
+              dependency.assimilationPromises.add(compositionRoot);
+              dependency.compositionKinds.set(compositionRoot, promiseCombinatorKind(compositionRoot));
+            }
+          }
+        }
+        return (...args) => {
+          const active = activePromise();
+          if (property === "then" && isPromiseAssimilationContinuation(args) && active) {
+            for (const dependency of dependencies) dependency.assimilationPromises.add(active);
+          }
+          const derived = target[property](...args);
+          return trackAclHelperPromise(state, derived, dependencies);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+  state.helperPromiseDependencies.set(tracked, dependencies);
+  return tracked;
+}
+function settleAclHelperReads(aclContext) {
+  const pending = [...aclContext?.acl?.[ACL_HELPER_STATE]?.pendingAsyncReads ?? []];
+  return pending.length > 0 ? Promise.allSettled(pending) : null;
+}
+function resolveAclHelperRead(state, result, resolve) {
+  if (!isPromiseLike(result)) return resolve(result);
+  state.touchedAsyncRead = true;
+  const pending = Promise.resolve(result).then(resolve);
+  const dependency = {
+    assimilationPromises: /* @__PURE__ */ new Set(),
+    compositionKinds: /* @__PURE__ */ new WeakMap(),
+    settled: false
+  };
+  const dependencies = /* @__PURE__ */ new Set([dependency]);
+  state.unconsumedAsyncReads.add(dependency);
+  state.pendingAsyncReads.add(pending);
+  void pending.then(
+    () => {
+      dependency.settled = true;
+      state.pendingAsyncReads.delete(pending);
+    },
+    () => {
+      dependency.settled = true;
+      state.pendingAsyncReads.delete(pending);
+    }
+  );
+  pending.catch(() => {
+  });
+  return trackAclHelperPromise(state, pending, dependencies);
 }
 function createAclDbHelpers(database, state) {
   return Object.freeze({
     get(tableName, id2) {
       assertAclHelperReadAllowed(state);
       const table = resolveAclAppTable(database, tableName);
-      const selected = database.adapter.selectAppRowById(table, id2);
-      if (markAsyncAclHelperRead(state, selected)) {
-        return null;
-      }
-      return selected ? deserializeRow(table, selected) : null;
+      const selected = readWithAclHelperDependencies(database, [table.name], () => database.adapter.selectAppRowById(table, id2));
+      return resolveAclHelperRead(state, selected, (resolved) => resolved ? deserializeRow(table, resolved) : null);
     },
     exists(tableName, id2) {
       assertAclHelperReadAllowed(state);
       const table = resolveAclAppTable(database, tableName);
-      const selected = database.adapter.selectAppRowById(table, id2);
-      if (markAsyncAclHelperRead(state, selected)) {
-        return false;
-      }
-      return Boolean(selected);
+      const selected = readWithAclHelperDependencies(database, [table.name], () => database.adapter.selectAppRowById(table, id2));
+      return resolveAclHelperRead(state, selected, Boolean);
     }
   });
 }
@@ -68748,8 +69594,8 @@ function createAclStorageHelpers(database, state) {
       assertAclHelperReadAllowed(state);
       const resource = resolveAclStorageResource(resourceName);
       if (resource === "files") {
-        const row = resolveAclStorageFileReference(database, state, reference);
-        return row ? aclStorageMetadataFromFileRow(row) : null;
+        const row = readWithAclHelperDependencies(database, ["sporades_files"], () => resolveAclStorageFileReference(database, reference));
+        return resolveAclHelperRead(state, row, (resolved) => resolved ? aclStorageMetadataFromFileRow(resolved) : null);
       }
       return null;
     },
@@ -68757,13 +69603,14 @@ function createAclStorageHelpers(database, state) {
       assertAclHelperReadAllowed(state);
       const resource = resolveAclStorageResource(resourceName);
       if (resource === "files") {
-        return Boolean(resolveAclStorageFileReference(database, state, reference));
+        const row = readWithAclHelperDependencies(database, ["sporades_files"], () => resolveAclStorageFileReference(database, reference));
+        return resolveAclHelperRead(state, row, Boolean);
       }
       return false;
     }
   });
 }
-function resolveAclStorageFileReference(database, state, reference) {
+function resolveAclStorageFileReference(database, reference) {
   const value = String(reference ?? "");
   if (isAbsoluteFilePath(value)) {
     let path14;
@@ -68773,20 +69620,16 @@ function resolveAclStorageFileReference(database, state, reference) {
       return null;
     }
     const selected2 = database.adapter.selectLiveFileByPath(path14);
-    if (markAsyncAclHelperRead(state, selected2)) {
-      return null;
-    }
-    const resolved = selected2.length > 1 ? { ambiguous: true } : selected2[0] ?? null;
-    return resolved?.ambiguous ? null : resolved;
+    return thenIfPromise(selected2, (rows) => {
+      const resolved = rows.length > 1 ? { ambiguous: true } : rows[0] ?? null;
+      return resolved?.ambiguous ? null : resolved;
+    });
   }
   const selected = database.adapter.selectFileById(value);
-  if (markAsyncAclHelperRead(state, selected)) {
-    return null;
-  }
-  if (!selected || selected.deletedAt !== null || selected.status !== "uploaded") {
-    return null;
-  }
-  return selected;
+  return thenIfPromise(selected, (resolved) => {
+    if (!resolved || resolved.deletedAt !== null || resolved.status !== "uploaded") return null;
+    return resolved;
+  });
 }
 function assertAclHelperReadAllowed(state) {
   state.readCount += 1;
@@ -69564,7 +70407,8 @@ async function createPublicFileUrl(database, auth, fileReference, options = {}) 
   }
   return await runFileMetadataTransaction(database, async (sqlite) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
-    const resolved = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "publicUrl");
+    bindPostgresAclDependencyLocking(transactionDatabase, sqlite);
+    const resolved = await resolveLockedAccessibleFileReference(transactionDatabase, auth, fileReference, "publicUrl");
     if (!resolved.ok) {
       return resolved;
     }
@@ -69620,113 +70464,18 @@ async function revokePublicFileUrl(database, auth, publicUrlId) {
   };
 }
 var currentUserFileApiState = /* @__PURE__ */ new WeakMap();
-var nodePromiseHooks = process.getBuiltinModule("node:v8")?.promiseHooks;
 var forwardedFilePromiseChildren = /* @__PURE__ */ new WeakMap();
 var forwardedFilePromiseNodes = /* @__PURE__ */ new WeakMap();
-var forwardedFilePromiseHookStop;
 var forwardedFilePromiseHookRetainers = 0;
 var forwardedFilePromiseHookStack = [];
 var forwardedFileResolverOperations = /* @__PURE__ */ new WeakMap();
 var forwardedFileRootPromises = /* @__PURE__ */ new WeakSet();
 var forwardedFileCallbackOperationSets = [];
-var forwardedFileCombinatorOperationSets = [];
-var forwardedFilePromiseCombinatorNames = ["all", "allSettled", "any", "race"];
-var forwardedFilePromiseCombinatorDescriptors;
-var forwardedFilePromiseThenDescriptor;
-var forwardedFilePromiseFinallyDescriptor;
 var observingForwardedFilePromise = false;
 var forwardedFileRejectionSettlementTimeoutMs = 1e3;
 var forwardedFileActiveContinuationTimeoutMs = 2e3;
 function isNativePromiseResolverPair(onFulfilled, onRejected) {
   return typeof onFulfilled === "function" && typeof onRejected === "function" && onFulfilled.name === "" && onRejected.name === "" && Function.prototype.toString.call(onFulfilled).includes("[native code]") && Function.prototype.toString.call(onRejected).includes("[native code]");
-}
-function installForwardedFilePromiseCombinators() {
-  if (forwardedFilePromiseCombinatorDescriptors) return;
-  const thenDescriptor = Object.getOwnPropertyDescriptor(Promise.prototype, "then");
-  if (thenDescriptor?.configurable && typeof thenDescriptor.value === "function") {
-    forwardedFilePromiseThenDescriptor = thenDescriptor;
-    const originalThen = thenDescriptor.value;
-    Object.defineProperty(Promise.prototype, "then", {
-      ...thenDescriptor,
-      value: function forwardedFilePromiseThen(onFulfilled, onRejected) {
-        if (observingForwardedFilePromise || !isNativePromiseResolverPair(onFulfilled, onRejected)) {
-          return Reflect.apply(originalThen, this, [onFulfilled, onRejected]);
-        }
-        const invokeResolver = (resolver, value) => {
-          const operations = forwardedFileResolverOperations.get(onRejected) ?? forwardedFileResolverOperations.get(onFulfilled);
-          if (!operations?.size) return resolver(value);
-          forwardedFileCallbackOperationSets.push([...operations]);
-          try {
-            return resolver(value);
-          } finally {
-            forwardedFileCallbackOperationSets.pop();
-          }
-        };
-        return Reflect.apply(originalThen, this, [
-          (value) => invokeResolver(onFulfilled, value),
-          (reason) => invokeResolver(onRejected, reason)
-        ]);
-      }
-    });
-  }
-  forwardedFilePromiseCombinatorDescriptors = /* @__PURE__ */ new Map();
-  for (const name2 of forwardedFilePromiseCombinatorNames) {
-    const descriptor = Object.getOwnPropertyDescriptor(Promise, name2);
-    if (!descriptor?.configurable || typeof descriptor.value !== "function") continue;
-    forwardedFilePromiseCombinatorDescriptors.set(name2, descriptor);
-    const original = descriptor.value;
-    Object.defineProperty(Promise, name2, {
-      ...descriptor,
-      value: function forwardedFilePromiseCombinator(values) {
-        if (observingForwardedFilePromise) return Reflect.apply(original, this, [values]);
-        const operations = /* @__PURE__ */ new Set();
-        forwardedFileCombinatorOperationSets.push(operations);
-        try {
-          const trackedValues = {
-            *[Symbol.iterator]() {
-              for (const value of values) {
-                for (const operation of forwardedFilePromiseNodes.get(value)?.keys() ?? []) {
-                  operations.add(operation);
-                }
-                yield value;
-              }
-            }
-          };
-          const aggregate = Reflect.apply(original, this, [trackedValues]);
-          for (const operation of operations) {
-            registerForwardedFilePromiseNode(aggregate, operation).forwarded = true;
-            operation.exactForwardingPromiseObserved = true;
-          }
-          return aggregate;
-        } finally {
-          forwardedFileCombinatorOperationSets.pop();
-        }
-      }
-    });
-  }
-  const finallyDescriptor = Object.getOwnPropertyDescriptor(Promise.prototype, "finally");
-  if (finallyDescriptor?.configurable && typeof finallyDescriptor.value === "function") {
-    forwardedFilePromiseFinallyDescriptor = finallyDescriptor;
-    const originalFinally = finallyDescriptor.value;
-    Object.defineProperty(Promise.prototype, "finally", {
-      ...finallyDescriptor,
-      value: function forwardedFilePromiseFinally(onFinally) {
-        const operations = [...forwardedFilePromiseNodes.get(this)?.values() ?? []].map((node) => node.operation);
-        const priorForwarding = new Map(operations.map((operation) => [operation, operation.forwardedRejection]));
-        const continuation = Reflect.apply(originalFinally, this, [onFinally]);
-        for (const operation of operations) {
-          operation.forwardedRejection = priorForwarding.get(operation) ?? false;
-          const parentNode = getForwardedFilePromiseNode(this, operation);
-          const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
-          continuationNode.userContinuation = true;
-          continuationNode.propagatesRejection = true;
-          continuationNode.forwarded = false;
-          parentNode?.userChildren.add(continuationNode);
-        }
-        return continuation;
-      }
-    });
-  }
 }
 function registerForwardedFilePromiseNode(promise, operation, parent) {
   let nodes = forwardedFilePromiseNodes.get(promise);
@@ -69743,6 +70492,7 @@ function registerForwardedFilePromiseNode(promise, operation, parent) {
       userChildren: /* @__PURE__ */ new Set(),
       userContinuation: false,
       callbackStarted: false,
+      composition: false,
       propagatesRejection: false,
       forwarded: false,
       outcome: "pending"
@@ -69771,98 +70521,77 @@ function registerForwardedFilePromiseNode(promise, operation, parent) {
 function getForwardedFilePromiseNode(promise, operation) {
   return forwardedFilePromiseNodes.get(promise)?.get(operation);
 }
-function retainForwardedFilePromiseHook(state) {
-  if (!nodePromiseHooks?.createHook || state.promiseHookRetained) return;
-  state.promiseHookRetained = true;
-  forwardedFilePromiseHookRetainers += 1;
-  if (forwardedFilePromiseHookStop) return;
-  installForwardedFilePromiseCombinators();
-  forwardedFilePromiseHookStop = nodePromiseHooks.createHook({
-    init(promise, parent) {
-      if (observingForwardedFilePromise) return;
-      if (!parent) {
-        forwardedFileRootPromises.add(promise);
+var forwardedFilePromiseObserver = {
+  init(promise, parent) {
+    if (observingForwardedFilePromise) return;
+    if (!parent) {
+      forwardedFileRootPromises.add(promise);
+    }
+    if (parent) {
+      let children = forwardedFilePromiseChildren.get(parent);
+      if (!children) {
+        children = /* @__PURE__ */ new Set();
+        forwardedFilePromiseChildren.set(parent, children);
       }
-      if (parent) {
-        let children = forwardedFilePromiseChildren.get(parent);
-        if (!children) {
-          children = /* @__PURE__ */ new Set();
-          forwardedFilePromiseChildren.set(parent, children);
-        }
-        for (const childReference of children) {
-          if (!childReference.deref()) children.delete(childReference);
-        }
-        children.add(new WeakRef(promise));
+      for (const childReference of children) {
+        if (!childReference.deref()) children.delete(childReference);
       }
-      const parentNodes = parent ? forwardedFilePromiseNodes.get(parent)?.values() : void 0;
-      for (const parentNode of parentNodes ?? []) {
-        const childNode = registerForwardedFilePromiseNode(promise, parentNode.operation, parentNode);
-        const activePromise = forwardedFilePromiseHookStack.at(-1);
-        if (!activePromise || !forwardedFilePromiseNodes.has(activePromise)) {
-          childNode.userContinuation = true;
-          parentNode.userChildren.add(childNode);
-        }
-      }
-    },
-    before(promise) {
-      for (const node of forwardedFilePromiseNodes.get(promise)?.values() ?? []) {
-        node.callbackStarted = true;
-      }
-      forwardedFilePromiseHookStack.push(promise);
-    },
-    after() {
-      forwardedFilePromiseHookStack.pop();
-    },
-    settled(promise) {
-      if (observingForwardedFilePromise) return;
-      const activePromise = forwardedFilePromiseHookStack.at(-1);
-      const callbackOperations = forwardedFileCallbackOperationSets.at(-1);
-      const activeNodes = activePromise ? forwardedFilePromiseNodes.get(activePromise) : void 0;
-      const operations = callbackOperations?.length ? callbackOperations : [...new Set([...activeNodes?.values() ?? []].map((node) => node.operation))];
-      for (const operation of operations) {
-        if (callbackOperations?.includes(operation) && forwardedFileRootPromises.has(promise)) {
-          operation.exactForwardingPromiseObserved = true;
-        }
-        if (getForwardedFilePromiseNode(promise, operation)) continue;
-        registerForwardedFilePromiseNode(
-          promise,
-          operation,
-          activePromise ? getForwardedFilePromiseNode(activePromise, operation) : void 0
-        );
+      children.add(new WeakRef(promise));
+    }
+    const parentNodes = parent ? forwardedFilePromiseNodes.get(parent)?.values() : void 0;
+    for (const parentNode of parentNodes ?? []) {
+      const childNode = registerForwardedFilePromiseNode(promise, parentNode.operation, parentNode);
+      const activePromise2 = forwardedFilePromiseHookStack.at(-1);
+      if (!activePromise2 || !forwardedFilePromiseNodes.has(activePromise2)) {
+        childNode.userContinuation = true;
+        parentNode.userChildren.add(childNode);
       }
     }
-  });
+  },
+  before(promise) {
+    for (const node of forwardedFilePromiseNodes.get(promise)?.values() ?? []) {
+      node.callbackStarted = true;
+    }
+    forwardedFilePromiseHookStack.push(promise);
+  },
+  after() {
+    forwardedFilePromiseHookStack.pop();
+  },
+  settled(promise) {
+    if (observingForwardedFilePromise) return;
+    const activePromise2 = forwardedFilePromiseHookStack.at(-1);
+    const callbackOperations = forwardedFileCallbackOperationSets.at(-1);
+    const activeNodes = activePromise2 ? forwardedFilePromiseNodes.get(activePromise2) : void 0;
+    const operations = callbackOperations?.length ? callbackOperations : [...new Set([...activeNodes?.values() ?? []].map((node) => node.operation))];
+    for (const operation of operations) {
+      if (callbackOperations?.includes(operation) && forwardedFileRootPromises.has(promise)) {
+        operation.exactForwardingPromiseObserved = true;
+      }
+      if (getForwardedFilePromiseNode(promise, operation)) continue;
+      registerForwardedFilePromiseNode(
+        promise,
+        operation,
+        activePromise2 ? getForwardedFilePromiseNode(activePromise2, operation) : void 0
+      );
+    }
+  }
+};
+function retainForwardedFilePromiseHook(state) {
+  if (state.promiseHookRetained) return;
+  state.promiseHookRetained = true;
+  forwardedFilePromiseHookRetainers += 1;
+  retainPromiseObserver(forwardedFilePromiseObserver);
 }
 function releaseForwardedFilePromiseHook(state) {
   if (!state.promiseHookRetained) return;
   state.promiseHookRetained = false;
   forwardedFilePromiseHookRetainers -= 1;
+  releasePromiseObserver(forwardedFilePromiseObserver);
   if (forwardedFilePromiseHookRetainers === 0) {
-    forwardedFilePromiseHookStop?.();
-    forwardedFilePromiseHookStop = void 0;
     forwardedFilePromiseHookStack = [];
     forwardedFileCallbackOperationSets.length = 0;
     forwardedFileResolverOperations = /* @__PURE__ */ new WeakMap();
     forwardedFileRootPromises = /* @__PURE__ */ new WeakSet();
-    forwardedFileCombinatorOperationSets.length = 0;
-    for (const [name2, descriptor] of forwardedFilePromiseCombinatorDescriptors ?? []) {
-      if (Object.getOwnPropertyDescriptor(Promise, name2)?.configurable) {
-        Object.defineProperty(Promise, name2, descriptor);
-      }
-    }
-    forwardedFilePromiseCombinatorDescriptors = void 0;
-    if (forwardedFilePromiseThenDescriptor) {
-      if (Object.getOwnPropertyDescriptor(Promise.prototype, "then")?.configurable) {
-        Object.defineProperty(Promise.prototype, "then", forwardedFilePromiseThenDescriptor);
-      }
-      forwardedFilePromiseThenDescriptor = void 0;
-    }
-    if (forwardedFilePromiseFinallyDescriptor) {
-      if (Object.getOwnPropertyDescriptor(Promise.prototype, "finally")?.configurable) {
-        Object.defineProperty(Promise.prototype, "finally", forwardedFilePromiseFinallyDescriptor);
-      }
-      forwardedFilePromiseFinallyDescriptor = void 0;
-    }
     forwardedFilePromiseChildren = /* @__PURE__ */ new WeakMap();
   }
 }
@@ -69907,12 +70636,24 @@ function findDiscardedForwardedFileRejection(operation) {
   const discardedComponent = components.find((component) => component.some((node) => node.outcome === "rejected") && !component.some((node) => [...node.children].some((child) => componentByNode.get(child) !== component)));
   return discardedComponent?.find((node) => node.outcome === "rejected");
 }
+function descendsFromFilePromiseComposition(operation, target) {
+  const pending = [...operation.promiseNodes].filter((node) => node.composition);
+  const visited = /* @__PURE__ */ new Set();
+  while (pending.length > 0) {
+    const node = pending.pop();
+    if (node === target) return true;
+    if (visited.has(node)) continue;
+    visited.add(node);
+    pending.push(...node.children);
+  }
+  return false;
+}
 async function settleForwardedFileRejectionGraph(operation) {
   let deadline;
   let activeContinuationDeadline;
   const settledUserContinuations = /* @__PURE__ */ new Set();
   while (true) {
-    const pendingNodes = [...operation.promiseNodes].filter((node) => node.outcome === "pending");
+    const pendingNodes = [...operation.promiseNodes].filter((node) => node.outcome === "pending" && (node.userContinuation || node.composition));
     if (pendingNodes.length === 0) return true;
     const userContinuations = pendingNodes.filter((node) => node.userContinuation && node.callbackStarted && !node.forwarded);
     if (userContinuations.length > 0) {
@@ -69961,76 +70702,88 @@ async function settleForwardedFileRejectionGraph(operation) {
 function trackCurrentUserFileOperation(operation) {
   const decorate = (promise) => {
     Object.defineProperties(promise, {
-      then: { configurable: true, value: (onFulfilled, onRejected) => {
-        let promiseResolveForwarding = false;
-        let trackPromiseResolveForwarding = false;
-        if (typeof onRejected === "function") {
-          promiseResolveForwarding = isNativePromiseResolverPair(onFulfilled, onRejected);
+      then: { configurable: true, get: () => {
+        if (!observingForwardedFilePromise) {
+          const compositionRoot = operation.enclosingCompositionRoot ?? promiseCompositionRootCandidate();
+          if (compositionRoot && compositionRoot !== promise) {
+            const parentNode = getForwardedFilePromiseNode(promise, operation);
+            const aggregateNode = registerForwardedFilePromiseNode(compositionRoot, operation, parentNode);
+            aggregateNode.forwarded = true;
+            aggregateNode.composition = true;
+            operation.exactForwardingPromiseObserved = true;
+          }
+        }
+        return (onFulfilled, onRejected) => {
+          let promiseResolveForwarding = false;
+          let trackPromiseResolveForwarding = false;
+          if (typeof onRejected === "function") {
+            promiseResolveForwarding = isNativePromiseResolverPair(onFulfilled, onRejected);
+            if (promiseResolveForwarding) {
+              trackPromiseResolveForwarding = !observingForwardedFilePromise;
+              if (trackPromiseResolveForwarding) operation.forwardedRejection = true;
+            }
+            if (trackPromiseResolveForwarding) {
+              let resolverOperations = forwardedFileResolverOperations.get(onRejected);
+              if (!resolverOperations) {
+                resolverOperations = /* @__PURE__ */ new Set();
+                forwardedFileResolverOperations.set(onRejected, resolverOperations);
+              }
+              resolverOperations.add(operation);
+              forwardedFileResolverOperations.set(onFulfilled, resolverOperations);
+              const targetNode = getForwardedFilePromiseNode(promise, operation);
+              if (targetNode) targetNode.forwarded = true;
+            } else if (!promiseResolveForwarding) {
+              operation.explicitRejectionHandler = true;
+            }
+          }
+          let continuation;
+          const fulfillmentHandler = trackPromiseResolveForwarding ? (value) => {
+            const resolverOperations = forwardedFileResolverOperations.get(onFulfilled) ?? /* @__PURE__ */ new Set([operation]);
+            forwardedFileCallbackOperationSets.push([...resolverOperations]);
+            try {
+              return onFulfilled(value);
+            } finally {
+              forwardedFileCallbackOperationSets.pop();
+            }
+          } : onFulfilled;
+          const rejectionHandler = trackPromiseResolveForwarding ? (reason) => {
+            const resolverOperations = forwardedFileResolverOperations.get(onRejected) ?? /* @__PURE__ */ new Set([operation]);
+            forwardedFileCallbackOperationSets.push([...resolverOperations]);
+            let forwardedResult;
+            try {
+              forwardedResult = onRejected(reason);
+            } finally {
+              forwardedFileCallbackOperationSets.pop();
+            }
+            if (forwardedResult && typeof forwardedResult.then === "function") {
+              for (const resolverOperation of resolverOperations) {
+                const parentNode2 = getForwardedFilePromiseNode(promise, resolverOperation);
+                const continuationNode = registerForwardedFilePromiseNode(continuation, resolverOperation, parentNode2);
+                continuationNode.userContinuation = true;
+                continuationNode.propagatesRejection = true;
+                continuationNode.forwarded = false;
+                parentNode2?.userChildren.add(continuationNode);
+                resolverOperation.exactForwardingPromiseObserved = true;
+              }
+            }
+            return forwardedResult;
+          } : onRejected;
+          continuation = Promise.prototype.then.call(promise, fulfillmentHandler, rejectionHandler);
+          const parentNode = getForwardedFilePromiseNode(promise, operation);
           if (promiseResolveForwarding) {
-            trackPromiseResolveForwarding = !observingForwardedFilePromise;
-            if (trackPromiseResolveForwarding) operation.forwardedRejection = true;
-          }
-          if (trackPromiseResolveForwarding) {
-            let resolverOperations = forwardedFileResolverOperations.get(onRejected);
-            if (!resolverOperations) {
-              resolverOperations = /* @__PURE__ */ new Set();
-              forwardedFileResolverOperations.set(onRejected, resolverOperations);
+            const continuationNode = getForwardedFilePromiseNode(continuation, operation);
+            if (continuationNode) {
+              continuationNode.forwarded = true;
+              continuationNode.userContinuation = false;
+              parentNode?.userChildren.delete(continuationNode);
             }
-            resolverOperations.add(operation);
-            forwardedFileResolverOperations.set(onFulfilled, resolverOperations);
-            const targetNode = getForwardedFilePromiseNode(promise, operation);
-            if (targetNode) targetNode.forwarded = true;
-          } else if (!promiseResolveForwarding) {
-            operation.explicitRejectionHandler = true;
+          } else {
+            const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
+            continuationNode.userContinuation = true;
+            if (parentNode) parentNode.userChildren.add(continuationNode);
           }
-        }
-        let continuation;
-        const fulfillmentHandler = trackPromiseResolveForwarding ? (value) => {
-          const resolverOperations = forwardedFileResolverOperations.get(onFulfilled) ?? /* @__PURE__ */ new Set([operation]);
-          forwardedFileCallbackOperationSets.push([...resolverOperations]);
-          try {
-            return onFulfilled(value);
-          } finally {
-            forwardedFileCallbackOperationSets.pop();
-          }
-        } : onFulfilled;
-        const rejectionHandler = trackPromiseResolveForwarding ? (reason) => {
-          const resolverOperations = forwardedFileResolverOperations.get(onRejected) ?? /* @__PURE__ */ new Set([operation]);
-          forwardedFileCallbackOperationSets.push([...resolverOperations]);
-          let forwardedResult;
-          try {
-            forwardedResult = onRejected(reason);
-          } finally {
-            forwardedFileCallbackOperationSets.pop();
-          }
-          if (forwardedResult && typeof forwardedResult.then === "function") {
-            for (const resolverOperation of resolverOperations) {
-              const parentNode2 = getForwardedFilePromiseNode(promise, resolverOperation);
-              const continuationNode = registerForwardedFilePromiseNode(continuation, resolverOperation, parentNode2);
-              continuationNode.userContinuation = true;
-              continuationNode.propagatesRejection = true;
-              continuationNode.forwarded = false;
-              parentNode2?.userChildren.add(continuationNode);
-              resolverOperation.exactForwardingPromiseObserved = true;
-            }
-          }
-          return forwardedResult;
-        } : onRejected;
-        continuation = Promise.prototype.then.call(promise, fulfillmentHandler, rejectionHandler);
-        const parentNode = getForwardedFilePromiseNode(promise, operation);
-        if (promiseResolveForwarding) {
-          const continuationNode = getForwardedFilePromiseNode(continuation, operation);
-          if (continuationNode) {
-            continuationNode.forwarded = true;
-            continuationNode.userContinuation = false;
-            parentNode?.userChildren.delete(continuationNode);
-          }
-        } else {
-          const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
-          continuationNode.userContinuation = true;
-          if (parentNode) parentNode.userChildren.add(continuationNode);
-        }
-        return decorate(continuation);
+          return decorate(continuation);
+        };
       } },
       catch: { configurable: true, value: (onRejected) => {
         if (typeof onRejected === "function") operation.explicitRejectionHandler = true;
@@ -70074,9 +70827,10 @@ function createCurrentUserFileApi(database, contextGetter, options = {}) {
   if (admittedCredential) retainForwardedFilePromiseHook(state);
   return Object.freeze({
     delete(fileReference) {
+      const enclosingCompositionRoot = enclosingPromiseCombinatorRoot();
       const context = contextGetter?.();
-      const activePromise = forwardedFilePromiseHookStack.at(-1);
-      const registeredDrainContinuation = state.drainActive && !state.active && activePromise ? [...forwardedFilePromiseNodes.get(activePromise)?.values() ?? []].some((node) => node.operation.state === state) : false;
+      const activePromise2 = forwardedFilePromiseHookStack.at(-1);
+      const registeredDrainContinuation = state.drainActive && !state.active && activePromise2 ? [...forwardedFilePromiseNodes.get(activePromise2)?.values() ?? []].some((node) => node.operation.state === state) : false;
       if (!state.active && !registeredDrainContinuation || !context) {
         return Promise.reject(createStructuredFileError(
           "File access is no longer active.",
@@ -70109,10 +70863,10 @@ function createCurrentUserFileApi(database, contextGetter, options = {}) {
         explicitRejectionHandler: false,
         forwardedRejection: false,
         exactForwardingPromiseObserved: false,
+        enclosingCompositionRoot,
         promiseNodes: /* @__PURE__ */ new Set()
       };
       registerForwardedFilePromiseNode(operation, trackedOperation);
-      for (const operations of forwardedFileCombinatorOperationSets) operations.add(trackedOperation);
       state.pendingOperations.push(trackedOperation);
       return trackCurrentUserFileOperation(trackedOperation);
     }
@@ -70151,7 +70905,7 @@ async function drainCurrentUserFileOperations(context) {
       });
       if (rejectedIndex !== -1) {
         const discardedForwarding = discardedRejections[rejectedIndex];
-        if (discardedForwarding && !discardedForwarding.forwarded) {
+        if (discardedForwarding && !discardedForwarding.forwarded && !descendsFromFilePromiseComposition(operations[rejectedIndex], discardedForwarding)) {
           throw discardedForwarding.rejectionReason;
         }
         const rejected = outcomes[rejectedIndex];
@@ -70201,6 +70955,7 @@ async function deletePrivateFile(database, auth, fileReference, credential = { k
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const result = await runFileMetadataTransaction(database, async (sqlite) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+    bindPostgresAclDependencyLocking(transactionDatabase, sqlite);
     if (requireLiveActor) {
       const actor = await sqlite.lockAuthUserFileAuthority(auth?.userId);
       if (!actor || actor.userKind === "service" && actor.lifecycleStatus !== "active") {
@@ -70210,7 +70965,7 @@ async function deletePrivateFile(database, auth, fileReference, credential = { k
         };
       }
     }
-    const resolved = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "delete", credential);
+    const resolved = await resolveLockedAccessibleFileReference(transactionDatabase, auth, fileReference, "delete", credential);
     if (!resolved.ok) return {
       ok: false,
       error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
@@ -70398,6 +71153,26 @@ async function resolveAccessibleFileReference(database, auth, reference, operati
   if (resolved.row.ownerId === auth?.userId) return resolved;
   const allowed = await applyFileAcl(database, operation, resolved.row, auth, credential);
   return { ok: true, row: allowed ? resolved.row : null };
+}
+async function resolveLockedAccessibleFileReference(database, auth, reference, operation, credential = { kind: "session" }) {
+  const resolved = await resolvePrivilegedLiveFileReference(database, reference);
+  if (!resolved.ok || !resolved.row) return resolved;
+  const row = await database.adapter.lockFileById(resolved.row.id);
+  if (!row || row.deletedAt !== null || row.status !== "uploaded") {
+    return { ok: true, row: null };
+  }
+  if (isAbsoluteFilePath(String(reference ?? ""))) {
+    let normalizedPath;
+    try {
+      normalizedPath = normalizeAbsoluteFilePath(String(reference));
+    } catch {
+      return { ok: true, row: null };
+    }
+    if (row.path !== normalizedPath) return { ok: true, row: null };
+  }
+  if (row.ownerId === auth?.userId) return { ok: true, row };
+  const allowed = await applyFileAcl(database, operation, row, auth, credential);
+  return { ok: true, row: allowed ? row : null };
 }
 async function resolvePrivilegedLiveFileReference(database, reference) {
   const value = String(reference ?? "");
@@ -90256,7 +91031,7 @@ function parseTeamJoinCode(code) {
   return { selector, verifier, signature };
 }
 function hashTeamJoinVerifier(verifier) {
-  return createHash7("sha256").update(verifier).digest("base64url");
+  return createHash8("sha256").update(verifier).digest("base64url");
 }
 function teamJoinSignature(secret, id2, selector, verifier, expiresAt) {
   return createHmac("sha256", secret).update(`v1.${id2}.${selector}.${verifier}.${expiresAt}`).digest("base64url");
@@ -94057,471 +94832,6 @@ function restartPolicyStatus(mode, overrides2 = {}) {
   };
 }
 
-// src/resource-runtime.ts
-import { createHash as createHash8 } from "node:crypto";
-var resourceAbort = Symbol("resourceAbort");
-function resourceAbortError() {
-  return Object.assign(new Error("Job aborted."), { name: "AbortError", code: "ABORTED", [resourceAbort]: true });
-}
-function isResourceAbortError(error) {
-  return error?.[resourceAbort] === true;
-}
-function resourceError(code) {
-  return Object.assign(new Error(code === "RESOURCE_BUSY" ? "Resource transaction is busy." : "Resource operation could not complete."), {
-    code,
-    ...code === "RESOURCE_BUSY" ? { retryable: true } : {}
-  });
-}
-function resourceCanonicalJson(value) {
-  const ancestors = /* @__PURE__ */ new Set();
-  const visit = (input, depth) => {
-    if (depth > 64) throw resourceError("RESOURCE_INVALID_INPUT");
-    if (input === null || typeof input === "boolean" || typeof input === "string") return input;
-    if (typeof input === "number" && Number.isFinite(input)) return input === 0 ? 0 : input;
-    if (typeof input !== "object" || ancestors.has(input)) throw resourceError("RESOURCE_INVALID_INPUT");
-    const prototype = Object.getPrototypeOf(input);
-    if (!Array.isArray(input) && prototype !== Object.prototype && prototype !== null) throw resourceError("RESOURCE_INVALID_INPUT");
-    if (Object.getOwnPropertySymbols(input).length) throw resourceError("RESOURCE_INVALID_INPUT");
-    ancestors.add(input);
-    const output = Array.isArray(input) ? [] : /* @__PURE__ */ Object.create(null);
-    const keys = Array.isArray(input) ? Array.from({ length: input.length }, (_, i) => String(i)) : Object.keys(input).sort();
-    if (Array.isArray(input) && Object.keys(input).length !== input.length) throw resourceError("RESOURCE_INVALID_INPUT");
-    for (const key of keys) {
-      const descriptor = Object.getOwnPropertyDescriptor(input, key);
-      if (!descriptor || !Object.hasOwn(descriptor, "value")) throw resourceError("RESOURCE_INVALID_INPUT");
-      output[key] = visit(descriptor.value, depth + 1);
-    }
-    ancestors.delete(input);
-    return output;
-  };
-  const json = JSON.stringify(visit(value, 0));
-  if (Buffer.byteLength(json, "utf8") > 65536) throw resourceError("RESOURCE_INVALID_INPUT");
-  return json;
-}
-function boundedIdentity(value) {
-  if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > 128 || Buffer.from(value, "utf8").toString("utf8") !== value) throw resourceError("RESOURCE_INVALID_INPUT");
-  return value;
-}
-function optionsSnapshot(options, status) {
-  if (!options || Object.getPrototypeOf(options) !== Object.prototype || Object.getOwnPropertySymbols(options).length || Object.values(Object.getOwnPropertyDescriptors(options)).some((descriptor) => !Object.hasOwn(descriptor, "value")) || Object.keys(options).sort().join(",") !== (status ? "operationId,resource" : "input,operationId,resource") || !options.resource || Object.getPrototypeOf(options.resource) !== Object.prototype || Object.getOwnPropertySymbols(options.resource).length || Object.values(Object.getOwnPropertyDescriptors(options.resource)).some((descriptor) => !Object.hasOwn(descriptor, "value")) || Object.keys(options.resource).sort().join(",") !== "id,table") throw resourceError("RESOURCE_INVALID_INPUT");
-  const table = boundedIdentity(options.resource.table);
-  const id2 = boundedIdentity(options.resource.id);
-  const operationId = boundedIdentity(options.operationId);
-  return { table, id: id2, operationId, digest: status ? null : createHash8("sha256").update(resourceCanonicalJson(options.input)).digest("hex") };
-}
-var unsupportedResources = Object.freeze({
-  async run() {
-    throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-  },
-  async status() {
-    throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-  }
-});
-function bindOuterResources(database, context, hooks) {
-  let invocationActive = true;
-  let used = false;
-  let scopeActive = false;
-  let admission = false;
-  let touched = false;
-  let terminalError;
-  let outerDeadline = 0;
-  let watchdog;
-  let rejectOuterAbort = () => {
-  };
-  const outerAborted = new Promise((_, reject) => {
-    rejectOuterAbort = reject;
-  });
-  void outerAborted.catch(() => {
-  });
-  const parentDb = context.db;
-  const parentJobs = context.jobs;
-  const pending = /* @__PURE__ */ new Set();
-  const executions = /* @__PURE__ */ new Set();
-  const normalizeStorageError = (error) => error?.code === "RESOURCE_BUSY" || error?.code === "SQLITE_BUSY" || error?.errcode === 5 || error?.errcode === 6 ? resourceError("RESOURCE_BUSY") : error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== void 0 ? resourceError("RESOURCE_STORAGE_ERROR") : error;
-  const track = (operation) => {
-    let value;
-    try {
-      value = operation();
-    } catch (error) {
-      terminalError ??= normalizeStorageError(error);
-      throw error;
-    }
-    if (!value || typeof value.then !== "function") return value;
-    const promise = Promise.resolve(value);
-    pending.add(promise);
-    void promise.catch((error) => {
-      terminalError ??= normalizeStorageError(error);
-    });
-    return promise;
-  };
-  const trackExecution = (operation, poison = true) => {
-    let value;
-    try {
-      value = operation();
-    } catch (error) {
-      if (poison) terminalError ??= error;
-      throw error;
-    }
-    const promise = Promise.resolve(value);
-    executions.add(promise);
-    void promise.catch(() => {
-    });
-    return promise;
-  };
-  const actorDigest = createHash8("sha256").update(resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged: false })).digest("hex");
-  const guardCapability = (name2, value) => wrapCapability(value, (path14) => {
-    if (used) throw resourceError(!invocationActive || !scopeActive || !admission ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
-    if (!["where", "orderBy", "limit"].includes(path14.at(-1))) touched = true;
-  });
-  for (const name2 of ["db", "log", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
-    if (!context[name2]) continue;
-    context[name2] = guardCapability(name2, context[name2]);
-  }
-  const execute = async (options, callback, status) => {
-    if (!invocationActive) throw resourceError("RESOURCE_SCOPE_INACTIVE");
-    if (used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-    if (database.adapter.engine !== "sqlite" || database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true) throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
-    const identity = optionsSnapshot(options, status);
-    if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
-    if (!database.schema.tables.some((table) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
-    used = true;
-    scopeActive = true;
-    admission = true;
-    hooks.resourceEntered?.();
-    (database[Symbol.for("sporades.database.outerTransactionAdapter")] ?? database.adapter)[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
-    const deadline = hooks.startedAt + 3e4;
-    outerDeadline = deadline;
-    const beforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
-    const checks = database.adapter[beforeCommitChecks] ?? (database.adapter[beforeCommitChecks] = []);
-    checks.push(() => {
-      if (terminalError) throw terminalError;
-      if (database.clock.now().getTime() >= deadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
-    });
-    const controller = new AbortController();
-    const revoke = (error) => {
-      terminalError ??= error;
-      scopeActive = false;
-      admission = false;
-      controller.abort();
-      rejectOuterAbort(terminalError);
-    };
-    const assertLive = (requireAdmission = false) => {
-      if (!invocationActive || !scopeActive || requireAdmission && !admission) throw resourceError("RESOURCE_SCOPE_INACTIVE");
-      if (terminalError) throw terminalError;
-      if (database.clock.now().getTime() >= deadline - (admission ? 1e3 : 0)) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
-    };
-    watchdog ??= database.clock.setTimer(() => revoke(resourceError("RESOURCE_DEADLINE_EXCEEDED")), Math.max(0, deadline - database.clock.now().getTime()));
-    let acquired = false;
-    try {
-      assertLive(true);
-      try {
-        await database.adapter.exec("CREATE TABLE IF NOT EXISTS sporades_resource_outer_fence (id INTEGER PRIMARY KEY, epoch INTEGER NOT NULL)");
-        await database.adapter.prepare("INSERT OR IGNORE INTO sporades_resource_outer_fence (id, epoch) VALUES (1, 0)").run();
-        await database.adapter.prepare("UPDATE sporades_resource_outer_fence SET epoch=epoch+1 WHERE id=1").run();
-      } catch (error) {
-        if (error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY") throw resourceError("RESOURCE_BUSY");
-        throw resourceError("RESOURCE_STORAGE_ERROR");
-      }
-      acquired = true;
-      assertLive(true);
-      await hooks.authorize(context, parentDb, identity);
-      assertLive(true);
-      let receipt2;
-      try {
-        await database.adapter.exec("CREATE TABLE IF NOT EXISTS sporades_resource_receipts (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, operationId TEXT NOT NULL, inputDigest TEXT NOT NULL, actorDigest TEXT NOT NULL, resultJson TEXT NOT NULL, intentIdsJson TEXT NOT NULL, committedAt TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId, operationId))");
-        receipt2 = await database.adapter.prepare("SELECT * FROM sporades_resource_receipts WHERE resourceTable=? AND resourceId=? AND operationId=?").get(identity.table, identity.id, identity.operationId);
-      } catch (error) {
-        if (error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== void 0) throw resourceError("RESOURCE_STORAGE_ERROR");
-        throw error;
-      }
-      if (receipt2) {
-        if (receipt2.actorDigest !== actorDigest || !status && receipt2.inputDigest !== identity.digest) throw resourceError("RESOURCE_OPERATION_CONFLICT");
-        return status ? { state: "committed", result: JSON.parse(receipt2.resultJson), intentIds: JSON.parse(receipt2.intentIdsJson) } : JSON.parse(receipt2.resultJson);
-      }
-      if (status) return { state: "absent" };
-      const scopeDb = wrapCapability(parentDb, () => assertLive(true), [], /* @__PURE__ */ new WeakMap(), track);
-      const logs = [];
-      const scope = Object.freeze({
-        db: scopeDb,
-        jobs: Object.freeze({ enqueue: (...args) => track(() => {
-          assertLive(true);
-          return parentJobs.enqueue(...args);
-        }) }),
-        log: Object.freeze(Object.fromEntries(["info", "warn", "error"].map((level) => [level, () => {
-          assertLive(true);
-          if (logs.length >= 100) throw resourceError("RESOURCE_INVALID_INPUT");
-          logs.push(level);
-        }]))),
-        signal: controller.signal,
-        notifications: Object.freeze({ accept: () => {
-          assertLive(true);
-          return track(() => Promise.resolve().then(() => {
-            terminalError ??= resourceError("RESOURCE_EFFECT_UNSUPPORTED");
-            throw terminalError;
-          }));
-        } })
-      });
-      let result;
-      try {
-        result = await Promise.race([Promise.resolve().then(() => callback(scope)), outerAborted]);
-      } catch (error) {
-        terminalError ??= error;
-        throw error;
-      }
-      if (terminalError) throw terminalError;
-      admission = false;
-      let resultJson;
-      try {
-        resultJson = resourceCanonicalJson(result);
-        await Promise.all([...pending]);
-        if (terminalError) throw terminalError;
-        await hooks.drain(context);
-        await hooks.stageLogs?.(logs);
-      } catch (error) {
-        terminalError ??= error;
-        throw error;
-      }
-      assertLive();
-      try {
-        await database.adapter.prepare("INSERT INTO sporades_resource_receipts VALUES (?,?,?,?,?,?,?,?)").run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
-      } catch (error) {
-        if (error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== void 0) throw resourceError("RESOURCE_STORAGE_ERROR");
-        throw error;
-      }
-      assertLive();
-      return JSON.parse(resultJson);
-    } catch (error) {
-      const normalized = normalizeStorageError(error);
-      if (acquired || normalized?.code === "RESOURCE_STORAGE_ERROR") terminalError ??= normalized;
-      throw normalized;
-    } finally {
-      scopeActive = false;
-      admission = false;
-      controller.abort();
-    }
-  };
-  context.resources = Object.freeze({ run: (options, callback) => trackExecution(() => execute(options, callback, false)), status: (options) => trackExecution(() => execute(options, void 0, true), false) });
-  const release = () => {
-    invocationActive = false;
-    if (watchdog !== void 0) database.clock.clearTimer(watchdog);
-  };
-  release.assertOuterLive = () => {
-    if (terminalError) throw terminalError;
-    if (outerDeadline && database.clock.now().getTime() >= outerDeadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
-  };
-  release.aborted = () => outerAborted;
-  release.drain = async () => {
-    await Promise.allSettled([...executions]);
-    if (terminalError) throw terminalError;
-  };
-  release.race = (operation) => Promise.race([operation, outerAborted]);
-  release.guardCapability = guardCapability;
-  return release;
-}
-function wrapCapability(value, before, path14 = [], cache = /* @__PURE__ */ new WeakMap(), afterCall) {
-  if (!value || typeof value !== "object") return value;
-  if (cache.has(value)) return cache.get(value);
-  const functions = /* @__PURE__ */ new Map();
-  const proxy = new Proxy({}, {
-    ownKeys: () => Reflect.ownKeys(value),
-    set: (_target, key, member) => Reflect.set(value, key, member),
-    has: (_target, key) => Reflect.has(value, key),
-    getOwnPropertyDescriptor: () => ({ configurable: true, enumerable: true }),
-    get(_target, key) {
-      const member = Reflect.get(value, key);
-      if (typeof key !== "string") return member;
-      if (typeof member === "function") {
-        if (functions.has(key)) return functions.get(key);
-        const wrapped = (...args) => {
-          const next = [...path14, key];
-          before(next);
-          const invoke = () => Reflect.apply(member, value, args);
-          const result = afterCall && !["where", "orderBy", "limit"].includes(key) ? afterCall(invoke) : invoke();
-          return ["where", "orderBy", "limit"].includes(key) ? wrapCapability(result, before, path14, cache, afterCall) : result;
-        };
-        functions.set(key, wrapped);
-        return wrapped;
-      }
-      return wrapCapability(member, before, [...path14, key], cache, afterCall);
-    }
-  });
-  cache.set(value, proxy);
-  return proxy;
-}
-function bindJobResources(database, context, claim, hooks) {
-  let invocationActive = true;
-  let used = false;
-  let scopeRunning = false;
-  let touched = false;
-  const privileged = hooks.privileged === true;
-  const actorBinding = resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged });
-  const actorDigest = createHash8("sha256").update(actorBinding).digest("hex");
-  for (const name2 of ["db", "log", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
-    if (!context[name2]) continue;
-    context[name2] = wrapCapability(context[name2], (path14) => {
-      if (used && (name2 !== "log" || scopeRunning || !invocationActive)) throw resourceError(!invocationActive ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
-      if (name2 !== "log" && !["where", "orderBy", "limit"].includes(path14.at(-1))) touched = true;
-    });
-  }
-  const execute = async (options, callback, status) => {
-    if (!invocationActive || used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-    if (database.adapter.engine !== "sqlite" || typeof database.adapter.withResourceTransaction !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
-    const identity = optionsSnapshot(options, status);
-    if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
-    if (!database.schema.tables.some((table) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
-    used = true;
-    scopeRunning = true;
-    let scopeContext;
-    let engineCommitted = false;
-    let active = true;
-    let admission = true;
-    let terminalError;
-    const controller = new AbortController();
-    const deadline = Date.parse(claim.leaseExpiresAt);
-    const pending = /* @__PURE__ */ new Set();
-    const logs = [];
-    let rejectAbort = () => {
-    };
-    const aborted = new Promise((_, reject) => {
-      rejectAbort = reject;
-    });
-    void aborted.catch(() => {
-    });
-    const revoke = (error) => {
-      terminalError ??= error;
-      active = false;
-      admission = false;
-      controller.abort();
-      rejectAbort(error);
-    };
-    const assertLive = (admit = false) => {
-      if (!active || admit && !admission) throw resourceError("RESOURCE_SCOPE_INACTIVE");
-      if (terminalError) throw terminalError;
-      if (context.signal?.aborted || database.__jobStopped) throw resourceAbortError();
-      if (database.clock.now().getTime() >= deadline - (admit ? 1e3 : 0)) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
-    };
-    const abort = () => revoke(resourceAbortError());
-    context.signal?.addEventListener("abort", abort, { once: true });
-    const watchdog = database.clock.setTimer(() => revoke(resourceError("RESOURCE_DEADLINE_EXCEEDED")), Math.max(0, deadline - database.clock.now().getTime()));
-    const checkClaim = async (adapter, entry = false) => {
-      assertLive(entry);
-      const row = await adapter.prepare("SELECT status, claimToken, leaseExpiresAt, cancelRequestedAt FROM sporades_jobs WHERE id=?").get(claim.id);
-      if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
-      if (row.cancelRequestedAt) throw resourceAbortError();
-      assertLive(entry);
-    };
-    const track = (operation) => {
-      assertLive(true);
-      const promise = Promise.resolve().then(() => {
-        assertLive();
-        return operation();
-      });
-      pending.add(promise);
-      void promise.catch((error) => {
-        terminalError ??= error;
-      });
-      return promise;
-    };
-    try {
-      assertLive(true);
-      const result = await database.adapter.withResourceTransaction(async (adapter) => {
-        const guarded = Object.create(adapter);
-        guarded.prepare = (sql) => {
-          assertLive();
-          const statement = adapter.prepare(sql);
-          return Object.fromEntries(["get", "all", "run", "columns"].map((method) => [method, (...args) => {
-            assertLive();
-            return statement[method](...args);
-          }]));
-        };
-        guarded.exec = (sql) => {
-          assertLive();
-          return adapter.exec(sql);
-        };
-        await checkClaim(guarded, true);
-        scopeContext = hooks.createContext(guarded, controller.signal, privileged);
-        await Promise.race([hooks.authorize(scopeContext, identity), aborted]);
-        assertLive(true);
-        await guarded.exec("CREATE TABLE IF NOT EXISTS sporades_resource_receipts (resourceTable TEXT NOT NULL, resourceId TEXT NOT NULL, operationId TEXT NOT NULL, inputDigest TEXT NOT NULL, actorDigest TEXT NOT NULL, resultJson TEXT NOT NULL, intentIdsJson TEXT NOT NULL, committedAt TEXT NOT NULL, PRIMARY KEY (resourceTable, resourceId, operationId))");
-        const receipt2 = await guarded.prepare("SELECT * FROM sporades_resource_receipts WHERE resourceTable=? AND resourceId=? AND operationId=?").get(identity.table, identity.id, identity.operationId);
-        if (receipt2) {
-          if (receipt2.actorDigest !== actorDigest || !status && receipt2.inputDigest !== identity.digest) throw resourceError("RESOURCE_OPERATION_CONFLICT");
-          await checkClaim(guarded);
-          return status ? { state: "committed", result: JSON.parse(receipt2.resultJson), intentIds: JSON.parse(receipt2.intentIdsJson) } : JSON.parse(receipt2.resultJson);
-        }
-        if (status) {
-          await checkClaim(guarded);
-          return { state: "absent" };
-        }
-        const db = Object.fromEntries(Object.entries(scopeContext.db).map(([name2, table]) => {
-          const wrapTable = (api) => Object.fromEntries(Object.keys(api).map((method) => [method, (...args) => {
-            assertLive(true);
-            if (["where", "orderBy", "limit"].includes(method)) return wrapTable(api[method](...args));
-            return track(() => api[method](...args));
-          }]));
-          return [name2, wrapTable(table)];
-        }));
-        const rejectEffect = () => {
-          assertLive(true);
-          throw resourceError("RESOURCE_EFFECT_UNSUPPORTED");
-        };
-        const scope = Object.freeze({
-          db: Object.freeze(db),
-          signal: controller.signal,
-          jobs: Object.freeze({ enqueue: (...args) => track(() => scopeContext.jobs.enqueue(...args)) }),
-          log: Object.freeze(Object.fromEntries(["info", "warn", "error"].map((level) => [level, () => {
-            assertLive(true);
-            if (logs.length >= 100) throw resourceError("RESOURCE_INVALID_INPUT");
-            logs.push(level);
-          }]))),
-          notifications: Object.freeze({ accept: () => track(rejectEffect) })
-        });
-        const value = await Promise.race([Promise.resolve().then(() => callback(scope)), aborted]);
-        admission = false;
-        await Promise.race([Promise.all([...pending]), aborted]);
-        await Promise.race([hooks.drain(scopeContext), aborted]);
-        const resultJson = resourceCanonicalJson(value);
-        await hooks.stageLogs(scopeContext, logs);
-        await checkClaim(guarded);
-        await guarded.prepare("INSERT INTO sporades_resource_receipts VALUES (?,?,?,?,?,?,?,?)").run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
-        await checkClaim(guarded);
-        active = false;
-        return JSON.parse(resultJson);
-      }, (adapter) => {
-        if (context.signal?.aborted || database.__jobStopped) throw resourceAbortError();
-        if (database.clock.now().getTime() >= deadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
-        const row = adapter.prepare("SELECT status, claimToken, leaseExpiresAt, cancelRequestedAt FROM sporades_jobs WHERE id=?").get(claim.id);
-        if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
-        if (row.cancelRequestedAt) throw resourceAbortError();
-      });
-      engineCommitted = true;
-      active = false;
-      await hooks.committed(scopeContext, logs);
-      return result;
-    } catch (error) {
-      active = false;
-      if (engineCommitted) throw resourceError("RESOURCE_STORAGE_ERROR");
-      hooks.rolledBack(scopeContext);
-      throw error;
-    } finally {
-      scopeRunning = false;
-      active = false;
-      admission = false;
-      controller.abort();
-      database.clock.clearTimer(watchdog);
-      context.signal?.removeEventListener("abort", abort);
-      hooks.release(scopeContext);
-    }
-  };
-  context.resources = Object.freeze({
-    run: (options, callback) => execute(options, callback, false),
-    status: (options) => execute(options, void 0, true)
-  });
-  return () => {
-    invocationActive = false;
-  };
-}
-
 // src/server-runtime-source.ts
 import { createHash as createHash10, randomBytes as randomBytes5, randomUUID as randomUUID9 } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
@@ -97281,7 +97591,8 @@ function createTransactionScopedAdapter(adapter, operations, owner, kind) {
   };
   const scopedAdapter = Object.assign(Object.create(adapter), guardedOperations, {
     withTransaction: rejectNestedTransactionScope,
-    withReadOnlySnapshot: rejectNestedTransactionScope
+    withReadOnlySnapshot: rejectNestedTransactionScope,
+    withResourceTransaction: rejectNestedTransactionScope
   });
   transactionScopes.set(scopedAdapter, {
     revoke: () => {
@@ -97298,6 +97609,11 @@ function revokeTransactionScopedAdapter(adapter) {
 }
 var transactionOperations = Symbol.for("sporades.database.transactionOperations");
 var transactionBeforeCommitChecks2 = Symbol.for("sporades.database.transactionBeforeCommitChecks");
+var resourceTransactionMechanics = Symbol.for("sporades.database.resourceTransactionMechanics");
+var resourceBootstrapMechanics = Symbol.for("sporades.database.resourceBootstrapMechanics");
+var resourceConsumptionMechanics = Symbol.for("sporades.database.resourceConsumptionMechanics");
+var resourceCancelActiveQuery = Symbol.for("sporades.database.resourceCancelActiveQuery");
+var postgresCancelDeliveryTimeoutMs = 250;
 async function runTransactionBeforeCommitChecks(transactionAdapter) {
   for (const check of transactionAdapter[transactionBeforeCommitChecks2] ?? []) await check();
 }
@@ -97461,6 +97777,13 @@ function createSharedDatabaseAdapterMethods(dialect) {
     "SELECT [s].[token] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = ? AND [u].[isGuest] = ?"
   );
   return {
+    // Public resource-transaction behaviour is shared. Engines contribute a
+    // symbol-keyed dedicated-session primitive, not a second adapter method.
+    withResourceTransaction(fn, beforeCommit, resource, signal) {
+      const run2 = this[resourceTransactionMechanics];
+      if (typeof run2 !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+      return Reflect.apply(run2, this, [fn, beforeCommit, resource, signal]);
+    },
     ensureSystemTable() {
       return this.exec(sql("CREATE TABLE IF NOT EXISTS [sporades] ([key] TEXT PRIMARY KEY, [value] TEXT NOT NULL)"));
     },
@@ -97624,6 +97947,16 @@ function createSharedDatabaseAdapterMethods(dialect) {
     selectFileById(fileId) {
       return this.prepare(sql("SELECT * FROM [sporades_files] WHERE [id] = ?")).get(fileId) ?? null;
     },
+    lockFileById(fileId) {
+      const select = sql("SELECT * FROM [sporades_files] WHERE [id] = ?");
+      if (dialect.name === "postgres") {
+        return thenIfPromise(this.prepare(`${select} FOR UPDATE`).get(fileId), (row) => row ?? null);
+      }
+      return thenIfPromise(
+        this.prepare(sql("UPDATE [sporades_files] SET [id] = [id] WHERE [id] = ?")).run(fileId),
+        () => thenIfPromise(this.prepare(select).get(fileId), (row) => row ?? null)
+      );
+    },
     selectLiveFileByPath(path14) {
       return this.prepare(
         sql("SELECT * FROM [sporades_files] WHERE [path] = ? AND [deletedAt] IS NULL AND [status] = ?")
@@ -97648,16 +97981,17 @@ function createSharedDatabaseAdapterMethods(dialect) {
     },
     completeFileUpload(upload, size, updatedAt) {
       return thenIfPromise(
-        this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [id] = ? AND [fileId] = ? AND [version] = ?")).run(
-          upload.id,
-          upload.fileId,
-          upload.version
-        ),
-        (consumed) => {
-          if (consumed.changes === 0) {
-            return consumed;
-          }
-          return thenIfPromise(this.selectFileById(upload.fileId), (existing) => {
+        this.lockFileById(upload.fileId),
+        (existing) => thenIfPromise(
+          this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [id] = ? AND [fileId] = ? AND [version] = ?")).run(
+            upload.id,
+            upload.fileId,
+            upload.version
+          ),
+          (consumed) => {
+            if (consumed.changes === 0) {
+              return consumed;
+            }
             if (existing) {
               if (existing.deletedAt !== null && existing.deletedAt !== void 0) {
                 return { changes: 0 };
@@ -97693,8 +98027,8 @@ function createSharedDatabaseAdapterMethods(dialect) {
               createdAt: upload.createdAt,
               updatedAt
             });
-          });
-        }
+          }
+        )
       );
     },
     deleteFileUploadsForPath(path14) {
@@ -98521,7 +98855,7 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     [Symbol.for("sporades.database.resourceTransactionEligible")]: !options.readOnly && String(databasePath) !== ":memory:",
     dialect,
     normalization: sqliteRowNormalization(),
-    async withResourceTransaction(fn, beforeCommit) {
+    [resourceTransactionMechanics]: async function(fn, beforeCommit) {
       if (options.readOnly || String(databasePath) === ":memory:") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
       if (connectionGate.isBusy()) throw resourceError("RESOURCE_BUSY");
       return connectionGate.runTransaction(async () => {
@@ -98653,12 +98987,131 @@ async function createPostgresDatabaseAdapter(options) {
       "Start a Dev session or local Container session with services.database.engine set to postgres."
     );
   }
-  const client = await createPostgresConnection(url);
+  let client = await createPostgresConnection(url);
+  let needsReconnect = false;
+  let reconnecting;
   const connectionGate = createConnectionTransactionGate();
   const runDirectly = (operation) => operation();
   let closed = false;
   const dialect = postgresDatabaseDialect();
   const normalization = postgresRowNormalization();
+  const commitWasRejected = (error) => postgresRejectedTransactions.has(error);
+  const resourceSchemas = [
+    { table: "sporades_resource_locks", columns: ["resourceTable", "resourceId"], primaryKey: ["resourceTable", "resourceId"], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId])" },
+    { table: "sporades_resource_receipts", columns: ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"], primaryKey: ["resourceTable", "resourceId", "operationId"], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId])" }
+  ];
+  const resourceSchemaReady = async (query) => {
+    for (const schema of resourceSchemas) {
+      const relations = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("relation")}.${dialect.quoteIdentifier("relkind")}, ${dialect.quoteIdentifier("relation")}.${dialect.quoteIdentifier("relpersistence")}, ${dialect.quoteIdentifier("relation")}.${dialect.quoteIdentifier("relhassubclass")}, ${dialect.quoteIdentifier("relation")}.${dialect.quoteIdentifier("relispartition")}, ${dialect.quoteIdentifier("relation")}.${dialect.quoteIdentifier("relrowsecurity")}, ${dialect.quoteIdentifier("relation")}.${dialect.quoteIdentifier("relforcerowsecurity")}, EXISTS (SELECT 1 FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_inherits")} AS ${dialect.quoteIdentifier("inheritance")} WHERE ${dialect.quoteIdentifier("inheritance")}.${dialect.quoteIdentifier("inhrelid")}=${dialect.quoteIdentifier("relation")}.${dialect.quoteIdentifier("oid")}) AS ${dialect.quoteIdentifier("inherits_parent")}, EXISTS (SELECT 1 FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_policy")} AS ${dialect.quoteIdentifier("policy")} WHERE ${dialect.quoteIdentifier("policy")}.${dialect.quoteIdentifier("polrelid")}=${dialect.quoteIdentifier("relation")}.${dialect.quoteIdentifier("oid")}) AS ${dialect.quoteIdentifier("has_policies")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_class")} AS ${dialect.quoteIdentifier("relation")} WHERE ${dialect.quoteIdentifier("relation")}.${dialect.quoteIdentifier("oid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?))`,
+        [schema.table]
+      ));
+      if (relations.length !== 1 || relations[0].relkind !== "r" || relations[0].relpersistence !== "p" || relations[0].relhassubclass || relations[0].relispartition || relations[0].inherits_parent || relations[0].relrowsecurity || relations[0].relforcerowsecurity || relations[0].has_policies) return false;
+      const rows = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("column_name")}, ${dialect.quoteIdentifier("data_type")}, ${dialect.quoteIdentifier("is_nullable")}, ${dialect.quoteIdentifier("is_generated")}, ${dialect.quoteIdentifier("ordinal_position")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("columns")} WHERE ${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("table_name")}=? ORDER BY ${dialect.quoteIdentifier("ordinal_position")}`,
+        [schema.table]
+      ));
+      if (rows.length !== schema.columns.length || rows.some(
+        (row, index) => row.column_name !== schema.columns[index] || row.data_type !== "text" || row.is_nullable !== "NO" || row.is_generated !== "NEVER" || Number(row.ordinal_position) !== index + 1
+      )) return false;
+      const primaryKey = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("column_name")}, ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("is_deferrable")}, ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("initially_deferred")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("table_constraints")} AS ${dialect.quoteIdentifier("tc")} JOIN ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("key_column_usage")} AS ${dialect.quoteIdentifier("kcu")} ON ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("constraint_catalog")}=${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("constraint_catalog")} AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("constraint_schema")}=${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("constraint_schema")} AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("constraint_name")}=${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("constraint_name")} AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("table_schema")}=${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("table_schema")} AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("table_name")}=${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("table_name")} WHERE ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("table_name")}=? AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("constraint_type")}='PRIMARY KEY' ORDER BY ${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("ordinal_position")}`,
+        [schema.table]
+      ));
+      if (primaryKey.length !== schema.primaryKey.length || primaryKey.some(
+        (row, index) => row.column_name !== schema.primaryKey[index] || row.is_deferrable !== "NO" || row.initially_deferred !== "NO"
+      )) return false;
+      const primaryKeyCollations = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attname")}, ${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attcollation")}, ${dialect.quoteIdentifier("type")}.${dialect.quoteIdentifier("typcollation")}, ${dialect.quoteIdentifier("collation")}.${dialect.quoteIdentifier("collisdeterministic")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_attribute")} AS ${dialect.quoteIdentifier("attribute")} JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_type")} AS ${dialect.quoteIdentifier("type")} ON ${dialect.quoteIdentifier("type")}.${dialect.quoteIdentifier("oid")}=${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("atttypid")} LEFT JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_collation")} AS ${dialect.quoteIdentifier("collation")} ON ${dialect.quoteIdentifier("collation")}.${dialect.quoteIdentifier("oid")}=${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attcollation")} WHERE ${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND ${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attname")} IN (${schema.primaryKey.map(() => "?").join(", ")}) AND ${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attnum")}>0 AND NOT ${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attisdropped")}`,
+        [schema.table, ...schema.primaryKey]
+      ));
+      if (primaryKeyCollations.length !== schema.primaryKey.length || primaryKeyCollations.some(
+        (row) => !schema.primaryKey.includes(row.attname) || Number(row.attcollation) !== Number(row.typcollation) || row.collisdeterministic !== true
+      )) return false;
+      const extraConstraints = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("contype")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_constraint")} WHERE ${dialect.quoteIdentifier("conrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND ${dialect.quoteIdentifier("contype")} NOT IN ('p', 'n')`,
+        [schema.table]
+      ));
+      if (extraConstraints.length !== 0) return false;
+      const unexpectedIndexes = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexrelid")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_index")} AS ${dialect.quoteIdentifier("index")} LEFT JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_constraint")} AS ${dialect.quoteIdentifier("constraint")} ON ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("conindid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexrelid")} AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("conrelid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indrelid")} AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("contype")}='p' WHERE ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("oid")} IS NULL`,
+        [schema.table]
+      ));
+      if (unexpectedIndexes.length !== 0) return false;
+      const userTriggers = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("oid")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_trigger")} AS ${dialect.quoteIdentifier("trigger")} WHERE ${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("tgrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND NOT ${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("tgisinternal")}`,
+        [schema.table]
+      ));
+      if (userTriggers.length !== 0) return false;
+      const rewriteRules = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("rewrite")}.${dialect.quoteIdentifier("oid")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_rewrite")} AS ${dialect.quoteIdentifier("rewrite")} WHERE ${dialect.quoteIdentifier("rewrite")}.${dialect.quoteIdentifier("ev_class")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?))`,
+        [schema.table]
+      ));
+      if (rewriteRules.length !== 0) return false;
+    }
+    return true;
+  };
+  const lockAndVerifyResourceSchema = async (transactionAdapter) => {
+    const tables = resourceSchemas.map(({ table }) => dialect.quoteIdentifier(table)).join(", ");
+    await transactionAdapter.exec(`LOCK TABLE ${tables} IN ROW EXCLUSIVE MODE NOWAIT`);
+    const query = async (statement, params = []) => ({
+      rows: await transactionAdapter.prepare(statement).all(...params)
+    });
+    if (!await resourceSchemaReady(query)) throw resourceError("RESOURCE_STORAGE_ERROR");
+  };
+  const ensureResourceSchemaPublished = async (signal) => {
+    let bootstrap;
+    let begun = false;
+    try {
+      bootstrap = await createPostgresConnection(url, signal);
+      const query = async (statement, params = []) => await bootstrap.query(postgresInterpolate(statement, params));
+      if (await resourceSchemaReady(query)) return;
+      await query("BEGIN ISOLATION LEVEL READ COMMITTED");
+      begun = true;
+      await query("SET LOCAL lock_timeout = '100ms'");
+      await acquirePostgresResourceBootstrapLock({ engine: "postgres", dialect, prepare: (statement) => ({ get: (...args) => query(statement, args).then((result) => postgresRowsFromResult(normalization, result)[0] ?? null) }) });
+      if (!await resourceSchemaReady(query)) {
+        for (const schema of resourceSchemas) {
+          const table = dialect.quoteIdentifier(schema.table);
+          await query(`CREATE TABLE IF NOT EXISTS ${table} (${dialect.sql(schema.definition)})`);
+          let columns = new Set(postgresRowsFromResult(normalization, await query(
+            `SELECT ${dialect.quoteIdentifier("column_name")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("columns")} WHERE ${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("table_name")}=?`,
+            [schema.table]
+          )).map((row) => row.column_name));
+          if (schema.columns.some((column) => columns.has(column.toLowerCase()) && !columns.has(column))) {
+            await query(`LOCK TABLE ${table} IN ACCESS EXCLUSIVE MODE`);
+            columns = new Set(postgresRowsFromResult(normalization, await query(
+              `SELECT ${dialect.quoteIdentifier("column_name")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("columns")} WHERE ${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("table_name")}=?`,
+              [schema.table]
+            )).map((row) => row.column_name));
+            for (const column of schema.columns) {
+              const folded = column.toLowerCase();
+              if (columns.has(folded) && !columns.has(column)) {
+                await query(`ALTER TABLE ${table} RENAME COLUMN ${dialect.quoteIdentifier(folded)} TO ${dialect.quoteIdentifier(column)}`);
+                columns.delete(folded);
+                columns.add(column);
+              }
+            }
+          }
+        }
+        if (!await resourceSchemaReady(query)) throw resourceError("RESOURCE_STORAGE_ERROR");
+      }
+      await query("COMMIT");
+      begun = false;
+    } catch (error) {
+      if (begun) {
+        try {
+          await bootstrap.query("ROLLBACK");
+        } catch {
+        }
+      }
+      if (error?.code === "RESOURCE_BUSY" || error?.code === "55P03" || error?.code === "57014") throw resourceError("RESOURCE_BUSY");
+      throw error;
+    } finally {
+      if (bootstrap) await bootstrap.close().catch(() => {
+      });
+    }
+  };
   const assertOpen = () => {
     if (closed) {
       throw new Error("database is not open");
@@ -98666,6 +99119,20 @@ async function createPostgresDatabaseAdapter(options) {
   };
   const rawQuery = async (sql, params = []) => {
     assertOpen();
+    if (needsReconnect) {
+      reconnecting ??= createPostgresConnection(url).then(async (connection) => {
+        if (closed) {
+          await connection.close();
+          assertOpen();
+        }
+        client = connection;
+        needsReconnect = false;
+      }).finally(() => {
+        reconnecting = void 0;
+      });
+      await reconnecting;
+      assertOpen();
+    }
     return await client.query(postgresInterpolate(sql, params));
   };
   const createOperations = (run2) => ({
@@ -98699,8 +99166,109 @@ async function createPostgresDatabaseAdapter(options) {
     ...createSharedDatabaseAdapterMethods(dialect),
     ...createOperations(connectionGate.runOperation),
     engine: "postgres",
+    [Symbol.for("sporades.database.resourceTransactionEligible")]: true,
+    [resourceBootstrapMechanics]: ensureResourceSchemaPublished,
+    [resourceConsumptionMechanics]: function() {
+      return lockAndVerifyResourceSchema(this);
+    },
+    [resourceCancelActiveQuery]: () => {
+      const quarantinedClient = client;
+      needsReconnect = true;
+      const cancellation = quarantinedClient[resourceCancelActiveQuery](true);
+      void quarantinedClient.close().catch(() => {
+      });
+      return cancellation;
+    },
     dialect,
     normalization,
+    // A resource scope owns an independent READ COMMITTED backend.  Closing it
+    // on every exit also quarantines a connection whose COMMIT acknowledgement
+    // was lost; ordinary work can never reuse that backend.
+    [resourceTransactionMechanics]: async function(fn, beforeCommit, resource, signal) {
+      if (!resource || typeof resource.table !== "string" || typeof resource.id !== "string") throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_STORAGE_ERROR" });
+      let dedicated;
+      let begun = false;
+      let commitIssued = false;
+      try {
+        try {
+          await ensureResourceSchemaPublished(signal);
+        } catch (error) {
+          if (typeof error?.code === "string" && error.code.startsWith("RESOURCE_")) throw error;
+          throw resourceError("RESOURCE_STORAGE_ERROR");
+        }
+        try {
+          dedicated = await createPostgresConnection(url, signal);
+        } catch (error) {
+          if (signal?.aborted && signal.reason) throw signal.reason;
+          throw resourceError("RESOURCE_STORAGE_ERROR");
+        }
+        const query = async (statement, params = []) => {
+          try {
+            return await dedicated.query(postgresInterpolate(statement, params));
+          } catch (error) {
+            if (signal?.aborted && signal.reason) throw signal.reason;
+            if (error?.code === "55P03" || error?.code === "57014") throw resourceError("RESOURCE_BUSY");
+            throw resourceError("RESOURCE_STORAGE_ERROR");
+          }
+        };
+        const operations = {
+          exec: async (statement) => {
+            await query(statement);
+          },
+          prepare: (statement) => ({
+            all: async (...params) => postgresRowsFromResult(normalization, await query(statement, params)),
+            get: async (...params) => postgresRowsFromResult(normalization, await query(statement, params))[0] ?? null,
+            run: async (...params) => {
+              const result = await query(statement, params);
+              return { changes: Number(result.rowCount ?? 0), lastInsertRowid: void 0 };
+            },
+            columns: async () => (await query(`SELECT * FROM (${sqlWithoutTrailingTerminator(statement)}) AS __sporades_columns LIMIT 0`)).fields.map((field) => ({ name: normalization.columnName(field.name) }))
+          })
+        };
+        await query("BEGIN ISOLATION LEVEL READ COMMITTED");
+        begun = true;
+        await query("SET LOCAL lock_timeout = '100ms'");
+        await lockAndVerifyResourceSchema(operations);
+        const resourceLockTable = dialect.quoteIdentifier("sporades_resource_locks");
+        const resourceTableColumn = dialect.quoteIdentifier("resourceTable");
+        const resourceIdColumn = dialect.quoteIdentifier("resourceId");
+        await query(`INSERT INTO ${resourceLockTable} (${resourceTableColumn}, ${resourceIdColumn}) VALUES (?, ?) ON CONFLICT (${resourceTableColumn}, ${resourceIdColumn}) DO NOTHING`, [resource.table, resource.id]);
+        await query(`SELECT ${resourceTableColumn} FROM ${resourceLockTable} WHERE ${resourceTableColumn}=? AND ${resourceIdColumn}=? FOR UPDATE NOWAIT`, [resource.table, resource.id]);
+        await query("SET LOCAL lock_timeout = DEFAULT");
+        const transaction = createTransactionScopedAdapter(adapter, operations, adapter, "transaction");
+        Object.defineProperty(transaction, resourceCancelActiveQuery, {
+          configurable: true,
+          value: () => dedicated[resourceCancelActiveQuery]()
+        });
+        try {
+          const result = await fn(transaction);
+          await beforeCommit?.(transaction);
+          revokeTransactionScopedAdapter(transaction);
+          commitIssued = true;
+          await dedicated.query("COMMIT");
+          begun = false;
+          return result;
+        } catch (error) {
+          revokeTransactionScopedAdapter(transaction);
+          if (begun && !commitIssued) {
+            try {
+              await query("ROLLBACK");
+            } catch {
+            }
+          }
+          if (commitIssued) {
+            if (commitWasRejected(error)) throw resourceError("RESOURCE_STORAGE_ERROR");
+            throw Object.assign(new Error("Resource commit outcome is unknown."), { code: "RESOURCE_COMMIT_UNKNOWN" });
+          }
+          throw error;
+        }
+      } catch (error) {
+        throw error;
+      } finally {
+        if (dedicated) await dedicated.close().catch(() => {
+        });
+      }
+    },
     // Postgres has no way to ask a statement for its result shape without running something,
     // so the statement is wrapped and bounded to no rows. Wrapping is not syntax-transparent,
     // and that is a trap rather than a detail: a trailing `;` becomes a syntax error inside
@@ -98733,6 +99301,7 @@ async function createPostgresDatabaseAdapter(options) {
     // that silently never ran ADR-0036's ordering migration.
     async withTransaction(fn, options2 = {}) {
       return await connectionGate.runTransaction(async () => {
+        let resourceCommitIssued = false;
         await rawQuery("BEGIN");
         try {
           const transactionAdapter = createTransactionScopedAdapter(adapter, createOperations(runDirectly), adapter, "transaction");
@@ -98740,12 +99309,22 @@ async function createPostgresDatabaseAdapter(options) {
           try {
             result = await fn(transactionAdapter);
             await runTransactionBeforeCommitChecks(transactionAdapter);
+            resourceCommitIssued = Boolean(transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")]);
           } finally {
             revokeTransactionScopedAdapter(transactionAdapter);
           }
           await rawQuery("COMMIT");
           return result;
         } catch (error) {
+          if (resourceCommitIssued) {
+            if (commitWasRejected(error)) throw resourceError("RESOURCE_STORAGE_ERROR");
+            needsReconnect = true;
+            try {
+              await client.close();
+            } catch {
+            }
+            throw resourceError("RESOURCE_COMMIT_UNKNOWN");
+          }
           try {
             await rawQuery("ROLLBACK");
           } catch {
@@ -98783,16 +99362,22 @@ async function createPostgresDatabaseAdapter(options) {
   };
   return adapter;
 }
-async function createPostgresConnection(url) {
+var postgresRejectedTransactions = /* @__PURE__ */ new WeakSet();
+async function createPostgresConnection(url, signal) {
   const net2 = await import("node:net");
   const crypto3 = await import("node:crypto");
   const options = postgresUrlOptions(url);
   const socket = net2.createConnection({ host: options.host, port: options.port });
   socket.setNoDelay(true);
+  const abortConnection = () => socket.destroy(postgresConnectionAbortError(signal));
+  if (signal?.aborted) abortConnection();
+  else signal?.addEventListener("abort", abortConnection, { once: true });
   let buffer = Buffer.alloc(0);
   let ready = false;
   let closed = false;
   let backendKeyData = null;
+  let queryActive = false;
+  let cancellationGeneration = 0;
   let queryQueue = Promise.resolve();
   const waiters = [];
   socket.on("data", (chunk) => {
@@ -98806,6 +99391,7 @@ async function createPostgresConnection(url) {
   });
   socket.on("close", () => {
     closed = true;
+    signal?.removeEventListener("abort", abortConnection);
     for (const waiter of waiters.splice(0)) {
       waiter.reject(new Error("database is not open"));
     }
@@ -98869,7 +99455,7 @@ async function createPostgresConnection(url) {
       ready = true;
     }
   }
-  return {
+  return Object.defineProperty({
     get backendKeyData() {
       return backendKeyData;
     },
@@ -98877,9 +99463,10 @@ async function createPostgresConnection(url) {
       if (closed) {
         throw new Error("database is not open");
       }
+      const generation = cancellationGeneration;
       const pending = queryQueue.then(
-        () => executePostgresQuery(sql),
-        () => executePostgresQuery(sql)
+        () => executeQueuedPostgresQuery(sql, generation),
+        () => executeQueuedPostgresQuery(sql, generation)
       );
       queryQueue = pending.catch(() => {
       });
@@ -98892,43 +99479,99 @@ async function createPostgresConnection(url) {
         return;
       }
       closed = true;
+      signal?.removeEventListener("abort", abortConnection);
       socket.write(Buffer.from([88, 0, 0, 0, 4]));
       socket.end();
     }
-  };
+  }, resourceCancelActiveQuery, { value: cancelActiveQuery });
+  async function cancelActiveQuery(destroyAfterDelivery = false) {
+    if (closed) return false;
+    cancellationGeneration += 1;
+    if (!queryActive || !backendKeyData) return false;
+    const cancelSocket = net2.createConnection({ host: options.host, port: options.port });
+    const request = Buffer.concat([
+      postgresInt32(16),
+      postgresInt32(80877102),
+      backendKeyData
+    ]);
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (!error) {
+          resolve();
+          return;
+        }
+        cancelSocket.destroy();
+        socket.destroy(error);
+        reject(error);
+      };
+      const deliveryFailed = () => finish(Object.assign(
+        new Error("Postgres query cancellation could not be delivered."),
+        { code: "POSTGRES_CANCEL_DELIVERY_FAILED" }
+      ));
+      const timer = setTimeout(deliveryFailed, postgresCancelDeliveryTimeoutMs);
+      timer.unref?.();
+      cancelSocket.once("error", deliveryFailed);
+      cancelSocket.once("close", () => finish());
+      cancelSocket.once("connect", () => cancelSocket.end(request));
+    });
+    if (destroyAfterDelivery) {
+      closed = true;
+      signal?.removeEventListener("abort", abortConnection);
+      socket.destroy();
+    }
+    return true;
+  }
+  function executeQueuedPostgresQuery(sql, generation) {
+    if (generation !== cancellationGeneration) {
+      throw Object.assign(new Error("canceling statement due to user request"), { code: "57014" });
+    }
+    return executePostgresQuery(sql);
+  }
   async function executePostgresQuery(sql) {
     if (closed) {
       throw new Error("database is not open");
     }
-    socket.write(postgresQueryMessage(sql));
-    const fields = [];
-    const rows = [];
-    let rowCount = 0;
-    let queryError = null;
-    while (true) {
-      const message = await readPostgresMessage();
-      if (message.type === "T") {
-        fields.splice(0, fields.length, ...postgresParseRowDescription(message.body));
-        continue;
-      }
-      if (message.type === "D") {
-        rows.push(postgresParseDataRow(message.body, fields));
-        continue;
-      }
-      if (message.type === "C") {
-        rowCount = postgresRowCountFromCommand(message.body.toString("utf8").replace(/\0$/, ""));
-        continue;
-      }
-      if (message.type === "E") {
-        queryError = postgresErrorFromBody(message.body);
-        continue;
-      }
-      if (message.type === "Z") {
-        if (queryError) {
-          throw queryError;
+    queryActive = true;
+    try {
+      socket.write(postgresQueryMessage(sql));
+      const fields = [];
+      const rows = [];
+      let rowCount = 0;
+      let queryError = null;
+      while (true) {
+        const message = await readPostgresMessage();
+        if (message.type === "T") {
+          fields.splice(0, fields.length, ...postgresParseRowDescription(message.body));
+          continue;
         }
-        return { fields, rows, rowCount };
+        if (message.type === "D") {
+          rows.push(postgresParseDataRow(message.body, fields));
+          continue;
+        }
+        if (message.type === "C") {
+          rowCount = postgresRowCountFromCommand(message.body.toString("utf8").replace(/\0$/, ""));
+          continue;
+        }
+        if (message.type === "E") {
+          queryError = postgresErrorFromBody(message.body);
+          continue;
+        }
+        if (message.type === "Z") {
+          if (queryError) {
+            if (message.body[0] === 73 && queryError.code && !queryError.code.startsWith("08") && queryError.code !== "40003") {
+              postgresRejectedTransactions.add(queryError);
+            }
+            throw queryError;
+          }
+          return { fields, rows, rowCount };
+        }
       }
+    } finally {
+      queryActive = false;
     }
   }
   async function readPostgresMessage() {
@@ -98944,6 +99587,10 @@ async function createPostgresConnection(url) {
     buffer = buffer.subarray(1 + length);
     return { type, body };
   }
+}
+function postgresConnectionAbortError(signal) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  return Object.assign(new Error("Postgres connection was cancelled."), { code: "ABORT_ERR" });
 }
 function postgresUrlOptions(url) {
   const parsed = new URL(String(url));
@@ -102730,6 +103377,7 @@ function createTransactionDatabase(database, transactionAdapter, writeState) {
     [Symbol.for("sporades.database.outerTransactionAdapter")]: transactionAdapter,
     __pendingLogWrites: pendingLogWrites
   };
+  bindPostgresAclDependencyLocking(transactionDatabase, adapter);
   transactionDatabase.stageTeamBillingMembershipChange = (teamId) => stageTeamBillingMembershipChange(transactionDatabase, teamId);
   transactionDatabase.scheduleTeamBillingJobDispatch = () => deferOrScheduleJobDispatch(
     transactionDatabase,
@@ -102807,7 +103455,9 @@ function bindOrdinaryJobResourceContext(database, context, claim, privileged = f
     async authorize(scoped, identity) {
       const scopedDatabase = scopeDatabases.get(scoped);
       const table = database.schema.tables.find((candidate) => candidate.name === identity.table);
-      const stored = await scopedDatabase.adapter.selectAppRowById(table, identity.id);
+      const stored = database.adapter.engine === "postgres" ? await scopedDatabase.adapter.prepare(
+        `SELECT * FROM ${scopedDatabase.adapter.dialect.quoteIdentifier(table.name)} WHERE ${scopedDatabase.adapter.dialect.quoteIdentifier("id")} = ? FOR UPDATE NOWAIT`
+      ).get(identity.id) : await scopedDatabase.adapter.selectAppRowById(table, identity.id);
       const row = stored ? deserializeRow(table, stored) : null;
       if (!row || !await applyReadAcl(scopedDatabase, table, row, scoped)) {
         throw commandError2("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
@@ -106141,10 +106791,23 @@ async function runCurrentUserJobWorker(database) {
         history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: "succeeded", completedAt });
         const payloadRetentionUntil = row.handler === STRIPE_EVENT_JOB ? stripeEventPayloadRetentionStorageValue(completedAt) : null;
         const settled = row.handler === STRIPE_EVENT_JOB ? await database.adapter.prepare(sql(
-          "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ?, [payloadRetentionUntil] = ? WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?"
+          "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ?, [payloadRetentionUntil] = ? WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ? AND [cancelRequestedAt] IS NULL"
         )).run(resultJson, completedAt, JSON.stringify(history), payloadRetentionUntil, row.id, claimToken) : await database.adapter.prepare(sql(
-          "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ? WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?"
+          "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ? WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ? AND [cancelRequestedAt] IS NULL"
         )).run(resultJson, completedAt, JSON.stringify(history), row.id, claimToken);
+        if (Number(settled?.changes ?? 0) === 0) {
+          const cancellation = await database.adapter.prepare(sql(
+            "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?"
+          )).get(row.id, claimToken);
+          if (cancellation?.cancelRequestedAt) {
+            const cancelledAt = database.clock.now().toISOString();
+            const cancellationHistory = JSON.parse(row.attemptHistory || "[]");
+            cancellationHistory.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: "cancelled", code: "ABORTED", completedAt: cancelledAt });
+            await database.adapter.prepare(sql(
+              "UPDATE [sporades_jobs] SET [status]='cancelled', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? WHERE [id]=? AND [status]='running' AND [claimToken]=? AND [cancelRequestedAt] IS NOT NULL"
+            )).run(JSON.stringify({ code: "ABORTED", message: "Job aborted." }), cancelledAt, JSON.stringify(cancellationHistory), row.id, claimToken);
+          }
+        }
         if (row.handler === STRIPE_EVENT_JOB && Number(settled?.changes ?? 0) === 1 && typeof payloadRetentionUntil === "string" && isCanonicalJobTimestamp(payloadRetentionUntil)) {
           scheduleStripeEventPayloadCleanup(database, Date.parse(payloadRetentionUntil));
         }

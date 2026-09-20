@@ -141,6 +141,9 @@ server authority. A membership or active application-role change is evaluated
 again for subsequent private URL requests, including a previously returned
 private URL.
 
+For portable File ACL rules, declare callbacks `async` and await ACL helper
+results.
+
 For example, a Capsule can share files whose paths carry an explicit Team ID:
 
 ```ts
@@ -149,9 +152,9 @@ export default capsule({
   teams: { appRoles: ["editor", "reviewer"] },
   files: {
     acl: {
-      read: ({ file, ctx }) => ctx.acl.teams.isMember(file.path.split("/")[2]),
-      publicUrl: ({ file, ctx }) => ctx.acl.teams.isAdmin(file.path.split("/")[2]),
-      delete: ({ file, ctx }) => ctx.acl.teams.hasAnyRole(file.path.split("/")[2], ["editor", "reviewer"]),
+      read: async ({ file, ctx }) => await ctx.acl.teams.isMember(file.path.split("/")[2]),
+      publicUrl: async ({ file, ctx }) => await ctx.acl.teams.isAdmin(file.path.split("/")[2]),
+      delete: async ({ file, ctx }) => await ctx.acl.teams.hasAnyRole(file.path.split("/")[2], ["editor", "reviewer"]),
     },
   },
 });

@@ -84,26 +84,27 @@ export type AclStorageFileMetadata = {
   deletedAt: string | null;
 };
 
+/** Adapter-neutral ACL reads resolve synchronously on SQLite and asynchronously on remote database engines. Await them in portable ACL rules. */
 export type AclDatabaseHelpers = {
-  get(tableName: string, id: string): Record<string, unknown> | null;
-  exists(tableName: string, id: string): boolean;
+  get(tableName: string, id: string): MaybePromise<Record<string, unknown> | null>;
+  exists(tableName: string, id: string): MaybePromise<boolean>;
 };
 
 export type AclStorageHelpers = {
-  get(resourceName: "files", reference: string): AclStorageFileMetadata | null;
-  exists(resourceName: "files", reference: string): boolean;
+  get(resourceName: "files", reference: string): MaybePromise<AclStorageFileMetadata | null>;
+  exists(resourceName: "files", reference: string): MaybePromise<boolean>;
 };
 
 /** Read-only Team decisions available while evaluating table and File ACL rules. */
 export type AclTeamHelpers = {
   /** True when the current linked actor belongs to the explicitly identified Team. */
-  isMember(teamId: string): boolean;
+  isMember(teamId: string): MaybePromise<boolean>;
   /** True when the current linked actor is an admin of the explicitly identified Team. */
-  isAdmin(teamId: string): boolean;
+  isAdmin(teamId: string): MaybePromise<boolean>;
   /** True when the current linked actor holds this currently declared application role in the explicitly identified Team. */
-  hasRole(teamId: string, role: string): boolean;
+  hasRole(teamId: string, role: string): MaybePromise<boolean>;
   /** True when the current linked actor holds any role in this non-empty, bounded (32 maximum) declared-role set for the explicitly identified Team. */
-  hasAnyRole(teamId: string, roles: readonly string[]): boolean;
+  hasAnyRole(teamId: string, roles: readonly string[]): MaybePromise<boolean>;
 };
 
 export type AclHelpers = {

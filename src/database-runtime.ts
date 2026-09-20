@@ -1,4 +1,4 @@
-import { resourceError } from "./resource-runtime.js";
+import { acquirePostgresResourceBootstrapLock, resourceError } from "./resource-runtime.js";
 // The Capsule runtime's Database adapters and dialect: the three engines, the seam they answer, the
 // one shared method set every behavioural call goes through, and the app-schema DDL that method set
 // emits. Batch 9 of the migration ADR-0041 records, and the last domain to leave
@@ -322,6 +322,7 @@ function createTransactionScopedAdapter(adapter: LooseRecord, operations: LooseR
   const scopedAdapter = Object.assign(Object.create(adapter), guardedOperations, {
     withTransaction: rejectNestedTransactionScope,
     withReadOnlySnapshot: rejectNestedTransactionScope,
+    withResourceTransaction: rejectNestedTransactionScope,
   });
   transactionScopes.set(scopedAdapter, {
     revoke: () => { active = false; },
@@ -338,6 +339,11 @@ function revokeTransactionScopedAdapter(adapter: LooseRecord) {
 
 const transactionOperations = Symbol.for("sporades.database.transactionOperations");
 const transactionBeforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
+const resourceTransactionMechanics = Symbol.for("sporades.database.resourceTransactionMechanics");
+const resourceBootstrapMechanics = Symbol.for("sporades.database.resourceBootstrapMechanics");
+const resourceConsumptionMechanics = Symbol.for("sporades.database.resourceConsumptionMechanics");
+const resourceCancelActiveQuery = Symbol.for("sporades.database.resourceCancelActiveQuery");
+const postgresCancelDeliveryTimeoutMs = 250;
 
 async function runTransactionBeforeCommitChecks(transactionAdapter: LooseRecord) {
   for (const check of (transactionAdapter as any)[transactionBeforeCommitChecks] ?? []) await check();
@@ -616,6 +622,13 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
     "AND [u].[isAuthenticated] = ? AND [u].[isGuest] = ?",
   );
   return {
+    // Public resource-transaction behaviour is shared. Engines contribute a
+    // symbol-keyed dedicated-session primitive, not a second adapter method.
+    withResourceTransaction(fn: (transactionAdapter: LooseRecord) => any, beforeCommit?: (adapter: LooseRecord) => any, resource?: { table: string; id: string }, signal?: AbortSignal) {
+      const run = (this as any)[resourceTransactionMechanics];
+      if (typeof run !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+      return Reflect.apply(run, this, [fn, beforeCommit, resource, signal]);
+    },
     ensureSystemTable() {
       return this.exec(sql("CREATE TABLE IF NOT EXISTS [sporades] ([key] TEXT PRIMARY KEY, [value] TEXT NOT NULL)"));
     },
@@ -790,6 +803,18 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
     selectFileById(fileId: any) {
       return this.prepare(sql("SELECT * FROM [sporades_files] WHERE [id] = ?")).get(fileId) ?? null;
     },
+    lockFileById(fileId: any) {
+      const select = sql("SELECT * FROM [sporades_files] WHERE [id] = ?");
+      if (dialect.name === "postgres") {
+        return thenIfPromise(this.prepare(`${select} FOR UPDATE`).get(fileId), (row: any) => row ?? null);
+      }
+      // SQLite and libSQL have no row-level FOR UPDATE. A no-op write acquires
+      // their transaction writer before the authoritative reread instead.
+      return thenIfPromise(
+        this.prepare(sql("UPDATE [sporades_files] SET [id] = [id] WHERE [id] = ?")).run(fileId),
+        () => thenIfPromise(this.prepare(select).get(fileId), (row: any) => row ?? null),
+      );
+    },
     selectLiveFileByPath(path: any) {
       return this.prepare(
         sql("SELECT * FROM [sporades_files] WHERE [path] = ? AND [deletedAt] IS NULL AND [status] = ?"),
@@ -815,17 +840,21 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
       return this.prepare(sql("SELECT * FROM [sporades_file_uploads] WHERE [id] = ?")).get(uploadId) ?? null;
     },
     completeFileUpload(upload: { id: any; fileId: any; version: any; bucketId: any; bucketName: any; path: any; name: any; type: any; ownerId: any; createdAt: any; }, size: any, updatedAt: any) {
+      // File deletion takes this lock before removing pending uploads. Keep
+      // replacement completion in the same order so the two paths wait rather
+      // than deadlock while an asynchronous delete ACL is settling.
       return thenIfPromise(
-        this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [id] = ? AND [fileId] = ? AND [version] = ?")).run(
-          upload.id,
-          upload.fileId,
-          upload.version,
-        ),
-        (consumed: any) => {
-          if (consumed.changes === 0) {
-            return consumed;
-          }
-          return thenIfPromise(this.selectFileById(upload.fileId), (existing: any) => {
+        this.lockFileById(upload.fileId),
+        (existing: any) => thenIfPromise(
+          this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [id] = ? AND [fileId] = ? AND [version] = ?")).run(
+            upload.id,
+            upload.fileId,
+            upload.version,
+          ),
+          (consumed: any) => {
+            if (consumed.changes === 0) {
+              return consumed;
+            }
             if (existing) {
               if (existing.deletedAt !== null && existing.deletedAt !== undefined) {
                 return { changes: 0 };
@@ -862,8 +891,8 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
               createdAt: upload.createdAt,
               updatedAt,
             });
-          });
-        },
+          },
+        ),
       );
     },
     deleteFileUploadsForPath(path: any) {
@@ -1790,7 +1819,7 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
     [Symbol.for("sporades.database.resourceTransactionEligible")]: !options.readOnly && String(databasePath) !== ":memory:",
     dialect,
     normalization: sqliteRowNormalization(),
-    async withResourceTransaction(fn: (transactionAdapter: LooseRecord) => any, beforeCommit?: (adapter: LooseRecord) => void) {
+    [resourceTransactionMechanics]: async function(fn: (transactionAdapter: LooseRecord) => any, beforeCommit?: (adapter: LooseRecord) => void) {
       if (options.readOnly || String(databasePath) === ":memory:") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
       if (connectionGate.isBusy()) throw resourceError("RESOURCE_BUSY");
       // The gate protects this runtime's ordinary connection; SQLite itself
@@ -1909,12 +1938,149 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     );
   }
 
-  const client = await createPostgresConnection(url);
+  let client = await createPostgresConnection(url);
+  let needsReconnect = false;
+  let reconnecting: Promise<void> | undefined;
   const connectionGate = createConnectionTransactionGate();
   const runDirectly = (operation: () => any) => operation();
   let closed = false;
   const dialect = postgresDatabaseDialect();
   const normalization = postgresRowNormalization();
+  const commitWasRejected = (error: any) => postgresRejectedTransactions.has(error);
+
+  const resourceSchemas = [
+    { table: "sporades_resource_locks", columns: ["resourceTable", "resourceId"], primaryKey: ["resourceTable", "resourceId"], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId])" },
+    { table: "sporades_resource_receipts", columns: ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"], primaryKey: ["resourceTable", "resourceId", "operationId"], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId])" },
+  ];
+
+  const resourceSchemaReady = async (query: (sql: string, params?: any[]) => Promise<any>) => {
+    for (const schema of resourceSchemas) {
+      const relations = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("relation")}.${dialect.quoteIdentifier("relkind")}, ${dialect.quoteIdentifier("relation")}.${dialect.quoteIdentifier("relpersistence")}, ${dialect.quoteIdentifier("relation")}.${dialect.quoteIdentifier("relhassubclass")}, ${dialect.quoteIdentifier("relation")}.${dialect.quoteIdentifier("relispartition")}, ${dialect.quoteIdentifier("relation")}.${dialect.quoteIdentifier("relrowsecurity")}, ${dialect.quoteIdentifier("relation")}.${dialect.quoteIdentifier("relforcerowsecurity")}, EXISTS (SELECT 1 FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_inherits")} AS ${dialect.quoteIdentifier("inheritance")} WHERE ${dialect.quoteIdentifier("inheritance")}.${dialect.quoteIdentifier("inhrelid")}=${dialect.quoteIdentifier("relation")}.${dialect.quoteIdentifier("oid")}) AS ${dialect.quoteIdentifier("inherits_parent")}, EXISTS (SELECT 1 FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_policy")} AS ${dialect.quoteIdentifier("policy")} WHERE ${dialect.quoteIdentifier("policy")}.${dialect.quoteIdentifier("polrelid")}=${dialect.quoteIdentifier("relation")}.${dialect.quoteIdentifier("oid")}) AS ${dialect.quoteIdentifier("has_policies")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_class")} AS ${dialect.quoteIdentifier("relation")} WHERE ${dialect.quoteIdentifier("relation")}.${dialect.quoteIdentifier("oid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?))`,
+        [schema.table],
+      ));
+      if (relations.length !== 1
+        || relations[0].relkind !== "r"
+        || relations[0].relpersistence !== "p"
+        || relations[0].relhassubclass
+        || relations[0].relispartition
+        || relations[0].inherits_parent
+        || relations[0].relrowsecurity
+        || relations[0].relforcerowsecurity
+        || relations[0].has_policies
+      ) return false;
+      const rows = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("column_name")}, ${dialect.quoteIdentifier("data_type")}, ${dialect.quoteIdentifier("is_nullable")}, ${dialect.quoteIdentifier("is_generated")}, ${dialect.quoteIdentifier("ordinal_position")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("columns")} WHERE ${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("table_name")}=? ORDER BY ${dialect.quoteIdentifier("ordinal_position")}`,
+        [schema.table],
+      ));
+      if (rows.length !== schema.columns.length || rows.some((row: any, index: number) =>
+        row.column_name !== schema.columns[index]
+        || row.data_type !== "text"
+        || row.is_nullable !== "NO"
+        || row.is_generated !== "NEVER"
+        || Number(row.ordinal_position) !== index + 1
+      )) return false;
+      const primaryKey = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("column_name")}, ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("is_deferrable")}, ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("initially_deferred")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("table_constraints")} AS ${dialect.quoteIdentifier("tc")} JOIN ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("key_column_usage")} AS ${dialect.quoteIdentifier("kcu")} ON ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("constraint_catalog")}=${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("constraint_catalog")} AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("constraint_schema")}=${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("constraint_schema")} AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("constraint_name")}=${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("constraint_name")} AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("table_schema")}=${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("table_schema")} AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("table_name")}=${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("table_name")} WHERE ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("table_name")}=? AND ${dialect.quoteIdentifier("tc")}.${dialect.quoteIdentifier("constraint_type")}='PRIMARY KEY' ORDER BY ${dialect.quoteIdentifier("kcu")}.${dialect.quoteIdentifier("ordinal_position")}`,
+        [schema.table],
+      ));
+      if (primaryKey.length !== schema.primaryKey.length || primaryKey.some((row: any, index: number) =>
+        row.column_name !== schema.primaryKey[index]
+        || row.is_deferrable !== "NO"
+        || row.initially_deferred !== "NO"
+      )) return false;
+      const primaryKeyCollations = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attname")}, ${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attcollation")}, ${dialect.quoteIdentifier("type")}.${dialect.quoteIdentifier("typcollation")}, ${dialect.quoteIdentifier("collation")}.${dialect.quoteIdentifier("collisdeterministic")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_attribute")} AS ${dialect.quoteIdentifier("attribute")} JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_type")} AS ${dialect.quoteIdentifier("type")} ON ${dialect.quoteIdentifier("type")}.${dialect.quoteIdentifier("oid")}=${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("atttypid")} LEFT JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_collation")} AS ${dialect.quoteIdentifier("collation")} ON ${dialect.quoteIdentifier("collation")}.${dialect.quoteIdentifier("oid")}=${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attcollation")} WHERE ${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND ${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attname")} IN (${schema.primaryKey.map(() => "?").join(", ")}) AND ${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attnum")}>0 AND NOT ${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attisdropped")}`,
+        [schema.table, ...schema.primaryKey],
+      ));
+      if (primaryKeyCollations.length !== schema.primaryKey.length || primaryKeyCollations.some((row: any) =>
+        !schema.primaryKey.includes(row.attname)
+        || Number(row.attcollation) !== Number(row.typcollation)
+        || row.collisdeterministic !== true
+      )) return false;
+      const extraConstraints = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("contype")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_constraint")} WHERE ${dialect.quoteIdentifier("conrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND ${dialect.quoteIdentifier("contype")} NOT IN ('p', 'n')`,
+        [schema.table],
+      ));
+      if (extraConstraints.length !== 0) return false;
+      const unexpectedIndexes = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexrelid")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_index")} AS ${dialect.quoteIdentifier("index")} LEFT JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_constraint")} AS ${dialect.quoteIdentifier("constraint")} ON ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("conindid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexrelid")} AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("conrelid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indrelid")} AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("contype")}='p' WHERE ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("oid")} IS NULL`,
+        [schema.table],
+      ));
+      if (unexpectedIndexes.length !== 0) return false;
+      const userTriggers = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("oid")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_trigger")} AS ${dialect.quoteIdentifier("trigger")} WHERE ${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("tgrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND NOT ${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("tgisinternal")}`,
+        [schema.table],
+      ));
+      if (userTriggers.length !== 0) return false;
+      const rewriteRules = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("rewrite")}.${dialect.quoteIdentifier("oid")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_rewrite")} AS ${dialect.quoteIdentifier("rewrite")} WHERE ${dialect.quoteIdentifier("rewrite")}.${dialect.quoteIdentifier("ev_class")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?))`,
+        [schema.table],
+      ));
+      if (rewriteRules.length !== 0) return false;
+    }
+    return true;
+  };
+
+  const lockAndVerifyResourceSchema = async (transactionAdapter: LooseRecord) => {
+    const tables = resourceSchemas.map(({ table }) => dialect.quoteIdentifier(table)).join(", ");
+    await transactionAdapter.exec(`LOCK TABLE ${tables} IN ROW EXCLUSIVE MODE NOWAIT`);
+    const query = async (statement: string, params: any[] = []) => ({
+      rows: await transactionAdapter.prepare(statement).all(...params),
+    });
+    if (!await resourceSchemaReady(query)) throw resourceError("RESOURCE_STORAGE_ERROR");
+  };
+
+  // Schema publication is separate from a resource or outer-handler
+  // transaction. A transaction-scoped advisory lock remains held through this
+  // transaction's COMMIT, so a losing initializer cannot observe uncommitted
+  // fresh or legacy-upgrade DDL. The cheap catalog check is the normal path.
+  const ensureResourceSchemaPublished = async (signal?: AbortSignal) => {
+    let bootstrap: any;
+    let begun = false;
+    try {
+      bootstrap = await createPostgresConnection(url, signal);
+      const query = async (statement: string, params: any[] = []) => await bootstrap.query(postgresInterpolate(statement, params));
+      // Even the normal readiness probe stays off the primary client. That
+      // client may currently own an unrelated root transaction whose failed
+      // statement is queued ahead of rollback; catalog work there would inherit
+      // its aborted state instead of remaining an independent resource concern.
+      if (await resourceSchemaReady(query)) return;
+      await query("BEGIN ISOLATION LEVEL READ COMMITTED"); begun = true;
+      await query("SET LOCAL lock_timeout = '100ms'");
+      await acquirePostgresResourceBootstrapLock({ engine: "postgres", dialect, prepare: (statement: string) => ({ get: (...args: any[]) => query(statement, args).then((result: any) => postgresRowsFromResult(normalization, result)[0] ?? null) }) });
+      if (!await resourceSchemaReady(query)) {
+        for (const schema of resourceSchemas) {
+          const table = dialect.quoteIdentifier(schema.table);
+          await query(`CREATE TABLE IF NOT EXISTS ${table} (${dialect.sql(schema.definition)})`);
+          let columns = new Set(postgresRowsFromResult(normalization, await query(
+            `SELECT ${dialect.quoteIdentifier("column_name")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("columns")} WHERE ${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("table_name")}=?`,
+            [schema.table],
+          )).map((row: any) => row.column_name));
+          if (schema.columns.some(column => columns.has(column.toLowerCase()) && !columns.has(column))) {
+            await query(`LOCK TABLE ${table} IN ACCESS EXCLUSIVE MODE`);
+            columns = new Set(postgresRowsFromResult(normalization, await query(
+              `SELECT ${dialect.quoteIdentifier("column_name")} FROM ${dialect.quoteIdentifier("information_schema")}.${dialect.quoteIdentifier("columns")} WHERE ${dialect.quoteIdentifier("table_schema")}=current_schema() AND ${dialect.quoteIdentifier("table_name")}=?`,
+              [schema.table],
+            )).map((row: any) => row.column_name));
+            for (const column of schema.columns) {
+              const folded = column.toLowerCase();
+              if (columns.has(folded) && !columns.has(column)) {
+                await query(`ALTER TABLE ${table} RENAME COLUMN ${dialect.quoteIdentifier(folded)} TO ${dialect.quoteIdentifier(column)}`);
+                columns.delete(folded); columns.add(column);
+              }
+            }
+          }
+        }
+        if (!await resourceSchemaReady(query)) throw resourceError("RESOURCE_STORAGE_ERROR");
+      }
+      await query("COMMIT"); begun = false;
+    } catch (error: any) {
+      if (begun) { try { await bootstrap.query("ROLLBACK"); } catch {} }
+      if (error?.code === "RESOURCE_BUSY" || error?.code === "55P03" || error?.code === "57014") throw resourceError("RESOURCE_BUSY");
+      throw error;
+    } finally { if (bootstrap) await bootstrap.close().catch(() => {}); }
+  };
 
   const assertOpen = () => {
     if (closed) {
@@ -1924,6 +2090,18 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
 
   const rawQuery = async (sql: string, params: any[] = []) => {
     assertOpen();
+    if (needsReconnect) {
+      reconnecting ??= createPostgresConnection(url).then(async connection => {
+        if (closed) {
+          await connection.close();
+          assertOpen();
+        }
+        client = connection;
+        needsReconnect = false;
+      }).finally(() => { reconnecting = undefined; });
+      await reconnecting;
+      assertOpen();
+    }
     return await client.query(postgresInterpolate(sql, params));
   };
 
@@ -1959,8 +2137,100 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     ...createSharedDatabaseAdapterMethods(dialect),
     ...createOperations(connectionGate.runOperation),
     engine: "postgres",
+    [Symbol.for("sporades.database.resourceTransactionEligible")]: true,
+    [resourceBootstrapMechanics]: ensureResourceSchemaPublished,
+    [resourceConsumptionMechanics]: function() { return lockAndVerifyResourceSchema(this); },
+    [resourceCancelActiveQuery]: () => {
+      const quarantinedClient = client;
+      // A PostgreSQL CancelRequest identifies only a backend PID and secret.
+      // The deadline watchdog deliberately does not await delivery before its
+      // transaction unwinds, so quarantine synchronously: rollback and later
+      // work must reconnect even when the original query finishes naturally
+      // while cancellation is still in flight.
+      needsReconnect = true;
+      const cancellation = (quarantinedClient as any)[resourceCancelActiveQuery](true);
+      // A CancelRequest can reach PostgreSQL after the active query has already
+      // completed while its response was lost in transit. Delivery then
+      // succeeds without ending the old transaction, whose locks remain held.
+      // This cancellation mode forcibly retires the already-quarantined primary
+      // after delivery, so graceful close cannot wait forever on its active
+      // query queue.
+      void quarantinedClient.close().catch(() => {});
+      return cancellation;
+    },
     dialect,
     normalization,
+    // A resource scope owns an independent READ COMMITTED backend.  Closing it
+    // on every exit also quarantines a connection whose COMMIT acknowledgement
+    // was lost; ordinary work can never reuse that backend.
+    [resourceTransactionMechanics]: async function(fn: (transactionAdapter: LooseRecord) => any, beforeCommit?: (adapter: LooseRecord) => any, resource?: { table: string; id: string }, signal?: AbortSignal) {
+      if (!resource || typeof resource.table !== "string" || typeof resource.id !== "string") throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_STORAGE_ERROR" });
+      let dedicated: any; let begun = false; let commitIssued = false;
+      try {
+        try { await ensureResourceSchemaPublished(signal); }
+        catch (error: any) {
+          if (typeof error?.code === "string" && error.code.startsWith("RESOURCE_")) throw error;
+          throw resourceError("RESOURCE_STORAGE_ERROR");
+        }
+        try { dedicated = await createPostgresConnection(url, signal); }
+        catch (error) {
+          if (signal?.aborted && signal.reason) throw signal.reason;
+          throw resourceError("RESOURCE_STORAGE_ERROR");
+        }
+        const query = async (statement: string, params: any[] = []) => {
+          try { return await dedicated.query(postgresInterpolate(statement, params)); }
+          catch (error: any) {
+            if (signal?.aborted && signal.reason) throw signal.reason;
+            if (error?.code === "55P03" || error?.code === "57014") throw resourceError("RESOURCE_BUSY");
+            throw resourceError("RESOURCE_STORAGE_ERROR");
+          }
+        };
+        const operations = {
+          exec: async (statement: string) => { await query(statement); },
+          prepare: (statement: string) => ({
+            all: async (...params: any[]) => postgresRowsFromResult(normalization, await query(statement, params)),
+            get: async (...params: any[]) => (postgresRowsFromResult(normalization, await query(statement, params))[0] ?? null),
+            run: async (...params: any[]) => { const result = await query(statement, params); return { changes: Number(result.rowCount ?? 0), lastInsertRowid: undefined as any }; },
+            columns: async () => (await query(`SELECT * FROM (${sqlWithoutTrailingTerminator(statement)}) AS __sporades_columns LIMIT 0`)).fields.map((field: any) => ({ name: normalization.columnName(field.name) })),
+          }),
+        };
+        await query("BEGIN ISOLATION LEVEL READ COMMITTED"); begun = true;
+        await query("SET LOCAL lock_timeout = '100ms'");
+        await lockAndVerifyResourceSchema(operations);
+        const resourceLockTable = dialect.quoteIdentifier("sporades_resource_locks");
+        const resourceTableColumn = dialect.quoteIdentifier("resourceTable");
+        const resourceIdColumn = dialect.quoteIdentifier("resourceId");
+        await query(`INSERT INTO ${resourceLockTable} (${resourceTableColumn}, ${resourceIdColumn}) VALUES (?, ?) ON CONFLICT (${resourceTableColumn}, ${resourceIdColumn}) DO NOTHING`, [resource.table, resource.id]);
+        await query(`SELECT ${resourceTableColumn} FROM ${resourceLockTable} WHERE ${resourceTableColumn}=? AND ${resourceIdColumn}=? FOR UPDATE NOWAIT`, [resource.table, resource.id]);
+        // The short timeout bounds admission only. Callback application writes
+        // retain the connection's normal lock-wait policy inside this resource
+        // transaction rather than inheriting the 100ms admission setting.
+        await query("SET LOCAL lock_timeout = DEFAULT");
+        const transaction = createTransactionScopedAdapter(adapter, operations, adapter, "transaction");
+        Object.defineProperty(transaction, resourceCancelActiveQuery, {
+          configurable: true,
+          value: () => dedicated[resourceCancelActiveQuery](),
+        });
+        try {
+          const result = await fn(transaction);
+          await beforeCommit?.(transaction);
+          revokeTransactionScopedAdapter(transaction);
+          commitIssued = true;
+          await dedicated.query("COMMIT"); begun = false;
+          return result;
+        } catch (error: any) {
+          revokeTransactionScopedAdapter(transaction);
+          if (begun && !commitIssued) { try { await query("ROLLBACK"); } catch {} }
+          if (commitIssued) {
+            if (commitWasRejected(error)) throw resourceError("RESOURCE_STORAGE_ERROR");
+            throw Object.assign(new Error("Resource commit outcome is unknown."), { code: "RESOURCE_COMMIT_UNKNOWN" });
+          }
+          throw error;
+        }
+      } catch (error: any) {
+        throw error;
+      } finally { if (dedicated) await dedicated.close().catch(() => {}); }
+    },
     // Postgres has no way to ask a statement for its result shape without running something,
         // so the statement is wrapped and bounded to no rows. Wrapping is not syntax-transparent,
         // and that is a trap rather than a detail: a trailing `;` becomes a syntax error inside
@@ -1993,6 +2263,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     // that silently never ran ADR-0036's ordering migration.
     async withTransaction(fn: (transactionAdapter: LooseRecord) => any, options: { signal?: AbortSignal } = {}) {
       return await connectionGate.runTransaction(async () => {
+        let resourceCommitIssued = false;
         await rawQuery("BEGIN");
         try {
           const transactionAdapter = createTransactionScopedAdapter(adapter, createOperations(runDirectly), adapter, "transaction");
@@ -2000,11 +2271,19 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
           try {
             result = await fn(transactionAdapter);
             await runTransactionBeforeCommitChecks(transactionAdapter);
+            resourceCommitIssued = Boolean((transactionAdapter as any)[Symbol.for("sporades.database.resourceOuterTransaction")]);
           }
           finally { revokeTransactionScopedAdapter(transactionAdapter); }
           await rawQuery("COMMIT");
           return result;
         } catch (error) {
+          if (resourceCommitIssued) {
+            if (commitWasRejected(error)) throw resourceError("RESOURCE_STORAGE_ERROR");
+            needsReconnect = true;
+            try { await client.close(); }
+            catch {}
+            throw resourceError("RESOURCE_COMMIT_UNKNOWN");
+          }
           try {
             await rawQuery("ROLLBACK");
           } catch { }
@@ -2029,17 +2308,25 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
   return adapter;
 }
 
-export async function createPostgresConnection(url: any) {
+const postgresRejectedTransactions = new WeakSet<Error>();
+
+export async function createPostgresConnection(url: any, signal?: AbortSignal) {
   const net = await import("node:net");
   const crypto = await import("node:crypto");
   const options = postgresUrlOptions(url);
   const socket = net.createConnection({ host: options.host, port: options.port });
   socket.setNoDelay(true);
 
+  const abortConnection = () => socket.destroy(postgresConnectionAbortError(signal));
+  if (signal?.aborted) abortConnection();
+  else signal?.addEventListener("abort", abortConnection, { once: true });
+
   let buffer = Buffer.alloc(0);
   let ready = false;
   let closed = false;
-  let backendKeyData = null;
+  let backendKeyData: Buffer<ArrayBuffer> | null = null;
+  let queryActive = false;
+  let cancellationGeneration = 0;
   let queryQueue: Promise<any> = Promise.resolve();
   const waiters: any[] = [];
 
@@ -2054,6 +2341,7 @@ export async function createPostgresConnection(url: any) {
   });
   socket.on("close", () => {
     closed = true;
+    signal?.removeEventListener("abort", abortConnection);
     for (const waiter of waiters.splice(0)) {
       waiter.reject(new Error("database is not open"));
     }
@@ -2120,7 +2408,7 @@ export async function createPostgresConnection(url: any) {
     }
   }
 
-  return {
+  return Object.defineProperty({
     get backendKeyData() {
       return backendKeyData;
     },
@@ -2128,9 +2416,10 @@ export async function createPostgresConnection(url: any) {
       if (closed) {
         throw new Error("database is not open");
       }
+      const generation = cancellationGeneration;
       const pending = queryQueue.then(
-        () => executePostgresQuery(sql),
-        () => executePostgresQuery(sql),
+        () => executeQueuedPostgresQuery(sql, generation),
+        () => executeQueuedPostgresQuery(sql, generation),
       );
       queryQueue = pending.catch(() => { });
       return pending;
@@ -2141,46 +2430,108 @@ export async function createPostgresConnection(url: any) {
         return;
       }
       closed = true;
+      signal?.removeEventListener("abort", abortConnection);
       socket.write(Buffer.from([0x58, 0, 0, 0, 4]));
       socket.end();
     },
-  };
+  }, resourceCancelActiveQuery, { value: cancelActiveQuery });
+
+  async function cancelActiveQuery(destroyAfterDelivery = false) {
+    if (closed) return false;
+    cancellationGeneration += 1;
+    if (!queryActive || !backendKeyData) return false;
+    const cancelSocket = net.createConnection({ host: options.host, port: options.port });
+    const request = Buffer.concat([
+      postgresInt32(16),
+      postgresInt32(80877102),
+      backendKeyData,
+    ]);
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (!error) {
+          resolve();
+          return;
+        }
+        cancelSocket.destroy();
+        // A failed CancelRequest cannot prove that PostgreSQL released the
+        // active statement or its locks. Quarantine the primary connection so
+        // rollback/close and later queued work cannot remain behind it.
+        socket.destroy(error);
+        reject(error);
+      };
+      const deliveryFailed = () => finish(Object.assign(
+        new Error("Postgres query cancellation could not be delivered."),
+        { code: "POSTGRES_CANCEL_DELIVERY_FAILED" },
+      ));
+      const timer = setTimeout(deliveryFailed, postgresCancelDeliveryTimeoutMs);
+      timer.unref?.();
+      cancelSocket.once("error", deliveryFailed);
+      cancelSocket.once("close", () => finish());
+      cancelSocket.once("connect", () => cancelSocket.end(request));
+    });
+    if (destroyAfterDelivery) {
+      closed = true;
+      signal?.removeEventListener("abort", abortConnection);
+      socket.destroy();
+    }
+    return true;
+  }
+
+  function executeQueuedPostgresQuery(sql: any, generation: number) {
+    if (generation !== cancellationGeneration) {
+      throw Object.assign(new Error("canceling statement due to user request"), { code: "57014" });
+    }
+    return executePostgresQuery(sql);
+  }
 
   async function executePostgresQuery(sql: any) {
     if (closed) {
       throw new Error("database is not open");
     }
-    socket.write(postgresQueryMessage(sql));
-    const fields: any[] = [];
-    const rows = [];
-    let rowCount = 0;
-    let queryError = null;
-    while (true) {
-      const message = await readPostgresMessage();
-      if (message.type === "T") {
-        fields.splice(0, fields.length, ...postgresParseRowDescription(message.body));
-        continue;
-      }
-      if (message.type === "D") {
-        rows.push(postgresParseDataRow(message.body, fields));
-        continue;
-      }
-      if (message.type === "C") {
-        rowCount = postgresRowCountFromCommand(message.body.toString("utf8").replace(/\0$/, ""));
-        continue;
-      }
-      if (message.type === "E") {
-        // Keep reading to the ReadyForQuery message so the next queued query
-        // does not consume this query's remaining response messages.
-        queryError = postgresErrorFromBody(message.body);
-        continue;
-      }
-      if (message.type === "Z") {
-        if (queryError) {
-          throw queryError;
+    queryActive = true;
+    try {
+      socket.write(postgresQueryMessage(sql));
+      const fields: any[] = [];
+      const rows = [];
+      let rowCount = 0;
+      let queryError = null;
+      while (true) {
+        const message = await readPostgresMessage();
+        if (message.type === "T") {
+          fields.splice(0, fields.length, ...postgresParseRowDescription(message.body));
+          continue;
         }
-        return { fields, rows, rowCount };
+        if (message.type === "D") {
+          rows.push(postgresParseDataRow(message.body, fields));
+          continue;
+        }
+        if (message.type === "C") {
+          rowCount = postgresRowCountFromCommand(message.body.toString("utf8").replace(/\0$/, ""));
+          continue;
+        }
+        if (message.type === "E") {
+          // Keep reading to the ReadyForQuery message so the next queued query
+          // does not consume this query's remaining response messages.
+          queryError = postgresErrorFromBody(message.body);
+          continue;
+        }
+        if (message.type === "Z") {
+          if (queryError) {
+            if (message.body[0] === 0x49 && queryError.code
+              && !queryError.code.startsWith("08") && queryError.code !== "40003") {
+              postgresRejectedTransactions.add(queryError);
+            }
+            throw queryError;
+          }
+          return { fields, rows, rowCount };
+        }
       }
+    } finally {
+      queryActive = false;
     }
   }
 
@@ -2197,6 +2548,11 @@ export async function createPostgresConnection(url: any) {
     buffer = buffer.subarray(1 + length);
     return { type, body };
   }
+}
+
+function postgresConnectionAbortError(signal?: AbortSignal) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  return Object.assign(new Error("Postgres connection was cancelled."), { code: "ABORT_ERR" });
 }
 
 function postgresUrlOptions(url: any) {

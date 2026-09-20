@@ -17,7 +17,7 @@ export declare function createSqliteDatabaseAdapter(databasePath: PathLike, opti
 export declare function createPostgresDatabaseAdapter(options: {
     url: any;
 }): Promise<LooseRecord>;
-export declare function createPostgresConnection(url: any): Promise<{
+export declare function createPostgresConnection(url: any, signal?: AbortSignal): Promise<{
     readonly backendKeyData: Buffer<ArrayBuffer> | null;
     query(sql: string): Promise<{
         fields: any[];

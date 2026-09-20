@@ -164,6 +164,33 @@ a dialect entry, not a method body: a method body is how a behavioural divergenc
 gets in, and how the shared definition it shadows stays wrong and dormant until
 the next engine borrows it.
 
+`withResourceTransaction(fn, beforeCommit, resource)` is a shared public method
+in that set. Its engine-specific dedicated connection lifecycle is an internal
+transaction-session primitive: create the independent connection, acquire its
+resource lock, normalize pre-COMMIT engine and connection failures to the fixed
+resource storage error, commit or roll back, quarantine an unknown commit, and
+close. PostgreSQL resource-schema readiness and publication both use a separate
+bootstrap connection, so their catalog statements cannot enter an unrelated
+failed root transaction while its rollback is still queued. Errors deliberately
+thrown by the shared callback remain callback errors;
+only the engine boundary classifies storage failures.
+The shared method delegates to that primitive rather than allowing a public
+PostgreSQL or SQLite adapter override. Authorization, claim, receipt, and
+settlement therefore remain one Resource-runtime behaviour, while the engine
+supplies only the session mechanics it uniquely controls.
+
+Mutation and Custom-endpoint resource scopes retain their existing outer
+transaction rather than opening that dedicated connection. Their Resource
+runtime boundary therefore normalizes PostgreSQL failures where they are known
+to come from a tracked scoped Database operation or a runtime-owned receipt
+read/write. The promise returned to the callback rejects with that same fixed
+error, while the enclosing transaction retains the normalized terminal poison
+even when the callback catches it or detaches a rejection handler. It does not
+classify the callback's thrown value by shape: even a
+deliberate callback error carrying a SQLSTATE-like `code` remains the callback
+error. This keeps engine diagnostics out of public mutation and endpoint results
+without turning arbitrary Capsule errors into storage failures.
+
 The specification to build against is ADR-0035's, not a reading of any adapter.
 Add the engine to the conformance engine list and the suite tells you what is
 still missing, which is what a new engine wants and what reverse-engineering the

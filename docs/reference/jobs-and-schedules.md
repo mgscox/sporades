@@ -439,9 +439,9 @@ renderer, filters, pagination, or offline inspection.
 
 <a id="sqlite-resource-transactions-ticket-02"></a>
 
-## SQLite resource transactions (ticket 03)
+## SQLite and PostgreSQL resource transactions (tickets 03–04)
 
-An ordinary SQLite Job can call the server-only `ctx.resources.run` once, as
+An ordinary SQLite or PostgreSQL Job can call the server-only `ctx.resources.run` once, as
 its first application database or framework provider operation. It uses a
 pre-existing app row as the authorization anchor:
 
@@ -537,8 +537,17 @@ Other fixed resource errors are `RESOURCE_INVALID_INPUT`,
 `RESOURCE_CONTEXT_UNSUPPORTED`, `RESOURCE_ADAPTER_UNSUPPORTED`,
 `RESOURCE_EFFECT_UNSUPPORTED`, `RESOURCE_DEADLINE_EXCEEDED`,
 `RESOURCE_CLAIM_LOST`, `RESOURCE_SCOPE_INACTIVE`, `RESOURCE_COMMIT_UNKNOWN`, and
-`RESOURCE_STORAGE_ERROR`. They omit caller values. Cancellation keeps the
-existing Job cancellation outcome; authorization keeps opaque ACL errors.
+`RESOURCE_STORAGE_ERROR`. They omit caller values. PostgreSQL constraint,
+connection, and other storage failures before COMMIT, including tracked
+mutation/endpoint scoped Database operations and runtime-owned receipt
+statements, use the fixed `RESOURCE_STORAGE_ERROR` code and message without
+SQLSTATE, constraint, or engine metadata. The tracked operation promise itself
+rejects with this fixed error, so awaiting and catching it inside the resource
+callback cannot inspect engine metadata; detached failures remain drained and
+poison outer settlement. An error deliberately thrown by the
+resource callback remains that callback error, including when its `code` happens
+to resemble a SQLSTATE. Cancellation keeps the existing Job cancellation
+outcome; authorization keeps opaque ACL errors.
 
 This slice supports ordinary Jobs, including the existing audited Privileged
 Job path, plus Custom mutations and Custom endpoints on file-backed SQLite.
@@ -553,8 +562,22 @@ check at the actual commit decision. A lost outer COMMIT acknowledgement reports
 by a later authorized receipt read; it is never reported as rollback. Resource
 log index events and their bounded payload-free JSONL copies publish only after a
 known outer commit, so an unknown outcome intentionally has no JSONL publication
-claim. PostgreSQL and libSQL fail
-closed before callback execution; their tickets are 04 and 05. The
+claim. PostgreSQL Jobs and outer scopes first verify the exact ordered resource
+lock and receipt columns, text types, nullability, absence of extras, primary
+keys, ordinary permanent-table identity without partitioning or inheritance,
+and absence of every index except the primary-key backing index. The readiness query uses a separate bootstrap connection so it remains
+independent of any root transaction awaiting rollback. A missing or folded legacy schema is published by a separate
+short transaction whose transaction-scoped advisory guard remains held through
+its commit; initialized scopes take no bootstrap guard and lock the same
+`FOR UPDATE NOWAIT` resource row in their respective transaction. They then
+lock the authorization anchor before evaluating its current ACL and retain both
+locks through settlement. A PostgreSQL COMMIT acknowledgement loss discards that
+connection before the later receipt lookup reconnects. PostgreSQL lock contention
+aborts its transaction, so a mutation or endpoint cannot catch `RESOURCE_BUSY`
+and still settle successfully: the outer transaction is poisoned, rolls back,
+and reports the same bounded error. This also rolls back runtime-owned work which
+preceded resource entry, such as reauthentication-proof consumption. libSQL fails closed
+before callback execution; its ticket is 05. The
 `notifications.accept({id, to, subject, text, html?})` signature is reserved and
 always rejects `RESOURCE_EFFECT_UNSUPPORTED` until ticket 06; this slice stages
 no intent and adds no transport. Ordinary Jobs that never opt in retain their
