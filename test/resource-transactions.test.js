@@ -1813,6 +1813,57 @@ test('Postgres endpoint resource scopes reconcile a lost outer COMMIT acknowledg
   }
 });
 
+test('Postgres schema reset clears durable notification state before the next hostile resource shape', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const runtimeTables = [
+    'sporades_notification_attempt_keys',
+    'sporades_notification_attempts',
+    'sporades_notification_recipients',
+    'sporades_notification_intents',
+    'sporades_resource_receipts',
+    'sporades_resource_locks',
+  ];
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  const bootstrap = reset[Symbol.for('sporades.database.resourceBootstrapMechanics')];
+  try {
+    await resetPostgresSchema(reset, ['anchors', 'writes']);
+    await reset.exec(`DROP TABLE IF EXISTS ${runtimeTables.join(', ')}`);
+    await bootstrap();
+    assert.ok((await reset.prepare("SELECT to_regclass('sporades_notification_intents') AS present").get()).present,
+      'the preceding case leaves durable notification storage');
+    await resetPostgresSchema(reset, ['anchors', 'writes']);
+    await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks');
+  } finally { await reset.close(); }
+
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  let callbacks = 0;
+  const database = await openDevDatabase('postgres-resource-reset-notification-state', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, { name: 'postgres-resource-reset-notification-state', services: { database: { engine: 'postgres' } } }, {
+    schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
+    mutations: { write: mutation(ctx => ctx.resources.run(options(), async scope => {
+      callbacks++;
+      await scope.db.writes.insert({ value: 'must-not-run' });
+      return { committed: true };
+    })) },
+  }, { clock });
+  try {
+    await database.init();
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'ready');
+    await database.adapter.exec('CREATE TABLE sporades_resource_locks ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId"), UNIQUE ("resourceTable"))');
+    await database.adapter.exec('CREATE TABLE sporades_resource_receipts ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, "operationId" TEXT NOT NULL, "inputDigest" TEXT NOT NULL, "actorDigest" TEXT NOT NULL, "resultJson" TEXT NOT NULL, "intentIdsJson" TEXT NOT NULL, "committedAt" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId", "operationId"))');
+    const result = await runMutation(database, actor, 'write', []);
+    assert.equal(result.ok, false);
+    assert.deepEqual({ code: result.error.code, message: result.error.message }, { code: 'RESOURCE_STORAGE_ERROR', message: 'Resource operation could not complete.' });
+    assert.equal(callbacks, 0, 'the malformed relation is rejected before protected work starts');
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM writes').get()).n), 0);
+    assert.equal(Number((await database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get()).n), 0);
+  } finally {
+    await database.shutdown();
+    await database.close();
+    const cleanup = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    try { await cleanup.exec(`DROP TABLE IF EXISTS ${runtimeTables.join(', ')}`); }
+    finally { await cleanup.close(); }
+  }
+});
+
 test('Postgres resource readiness rejects malformed relations and accepts correctly-shaped tables', { skip: POSTGRES_SKIP_REASON }, async t => {
   const cases = [
     ...['locks', 'receipts'].flatMap(tableName => ['unique', 'check', 'foreign-key'].map(constraint => ({ tableName, constraint }))),
