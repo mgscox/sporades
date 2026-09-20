@@ -196,8 +196,14 @@ export function createMailRuntime(mailConfig: any, serverEnv: RuntimeEnv, option
       return deliver(message, deliveryLog);
     },
     async sendIntent(input: any, stableMessageId: string, deliveryLog: any = options.mailLog) {
-      const message = validateIntent(input);
-      if (message.to.length !== 1) throw mailError("INVALID_MAIL_MESSAGE", "Invalid mail message.", "Pass exactly one intent recipient.");
+      let message;
+      try {
+        message = validateIntent(input);
+        if (message.to.length !== 1) throw mailError("INVALID_MAIL_MESSAGE", "Invalid mail message.", "Pass exactly one intent recipient.");
+      } catch (error: any) {
+        if (error?.code === "INVALID_MAIL_MESSAGE") error.smtpOutcome = "rejected";
+        throw error;
+      }
       return deliver(message, deliveryLog, stableMessageId);
     },
     close() {

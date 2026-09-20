@@ -7,6 +7,7 @@ import { test } from 'node:test';
 
 import { openDevDatabase, resolveAnonymousSession, runCurrentUserJobWorker, runEndpoint, runMutation, createControllableRuntimeClock } from '../dist/server-runtime-source.js';
 import { endpoint, job, mutation, String as Text, table } from '../dist/server.js';
+import { createMailRuntime } from '../dist/mail-runtime.js';
 import { NOTIFICATION_MAX_BACKOFF_MS, notificationRetryDelay, runNotificationIntentDeliveryPass, startNotificationIntentWorker, stopNotificationIntentWorker } from '../dist/notification-intent-runtime.js';
 
 const actor = { userId: 'notification-actor', displayName: 'Notification actor', email: null, picture: null, isAuthenticated: false, isGuest: true, provider: 'anonymous' };
@@ -441,6 +442,29 @@ test('restart additively upgrades a pre-authenticator notification database with
     assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM sporades_notification_attempt_keys').get().n, 1, 'the first post-upgrade reservation seeds one durable authenticator');
     assert.equal(f.database.adapter.prepare('SELECT state FROM sporades_notification_recipients').get().state, 'rejected');
     assert.equal(f.deliveries.length, 0);
+  } finally { await f.close(); }
+});
+
+test('restart terminally rejects an accepted intent when the SMTP sender is no longer configured', async () => {
+  const f = await fixture();
+  try {
+    assert.equal((await runMutation(f.database, actor, 'accept', [notification()])).ok, true);
+    await f.database.shutdown();
+    f.database.mail = createMailRuntime(
+      { smtp: { ...mailConfig.mail.smtp, defaultFrom: undefined } },
+      {},
+      { mailTransportFactoryTrusted: true, mailTransportFactory: () => ({
+        async send() { throw new Error('invalid intent must not reach SMTP'); },
+        close() {},
+      }) },
+    );
+    await f.database.init();
+    await stopNotificationIntentWorker(f.database);
+    assert.deepEqual(
+      { ...f.database.adapter.prepare('SELECT state,lastOutcomeCategory,nextAttemptAt FROM sporades_notification_recipients').get() },
+      { state: 'rejected', lastOutcomeCategory: 'rejected', nextAttemptAt: '' },
+      'pre-send validation is permanent and must not enter the retry loop',
+    );
   } finally { await f.close(); }
 });
 
