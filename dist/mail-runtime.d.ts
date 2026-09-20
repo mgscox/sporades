@@ -60,7 +60,7 @@ export declare function createMailTransport(smtp: any): {
     }>;
     close(): void;
 };
-export declare function connectSmtpSocket(smtp: any): Promise<any>;
+export declare function connectSmtpSocket(smtp: any, onSocket?: (socket: any) => void): Promise<any>;
 export declare function buildSmtpMessage(message: any): string;
 export {};
 //# sourceMappingURL=mail-runtime.d.ts.map

@@ -849,14 +849,18 @@ export function createMailTransport(smtp) {
                     error.code = "ECONNECTION";
                     throw error;
                 }
-                socket = await connectSmtpSocket(smtp);
+                socket = await connectSmtpSocket(smtp, (connectingSocket) => {
+                    socket = connectingSocket;
+                    sockets.add(connectingSocket);
+                    if (closed)
+                        connectingSocket.destroy();
+                });
                 if (closed) {
                     const error = new Error("closed");
                     error.code = "ECONNECTION";
                     socket.destroy(error);
                     throw error;
                 }
-                sockets.add(socket);
                 reader = createSmtpResponseReader(socket, smtp.socketTimeoutMs);
                 let encrypted = smtp.tls.mode === "implicit";
                 await reader.expect([220]);
@@ -967,7 +971,7 @@ export function createMailTransport(smtp) {
         },
     };
 }
-export async function connectSmtpSocket(smtp) {
+export async function connectSmtpSocket(smtp, onSocket) {
     let socket;
     if (smtp.tls.mode === "implicit") {
         const tls = await import("node:tls");
@@ -988,7 +992,7 @@ export async function connectSmtpSocket(smtp) {
         socket.destroy(error);
     });
     const event = smtp.tls.mode === "implicit" ? "secureConnect" : "connect";
-    await new Promise((resolve, reject) => {
+    const connected = new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
             const error = new Error("connection timeout");
             error.code = "ETIMEDOUT";
@@ -1002,7 +1006,15 @@ export async function connectSmtpSocket(smtp) {
             clearTimeout(timer);
             reject(error);
         });
+        socket.once("close", () => {
+            clearTimeout(timer);
+            const error = new Error("connection closed");
+            error.code = "ECONNECTION";
+            reject(error);
+        });
     });
+    onSocket?.(socket);
+    await connected;
     return socket;
 }
 function createSmtpResponseReader(initialSocket, timeoutMs) {

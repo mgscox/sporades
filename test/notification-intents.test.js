@@ -225,6 +225,18 @@ test('notification intent identity rejects an unpaired UTF-16 surrogate before s
   } finally { await f.close(); }
 });
 
+test('notification intent identity rejects NUL before staging', async () => {
+  const f = await fixture();
+  try {
+    const rejected = await runMutation(f.database, actor, 'accept', [notification({ id: 'welcome\0hidden' })]);
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.error.code, 'RESOURCE_INVALID_INPUT');
+    assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM sporades_notification_intents').get().n, 0);
+    assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM writes').get().n, 0,
+      'invalid notification identity rolls back before staging or protected writes');
+  } finally { await f.close(); }
+});
+
 test('independent intent acceptances mint globally unique persisted Message-IDs', async () => {
   const first = await fixture();
   const second = await fixture();

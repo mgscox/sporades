@@ -68044,7 +68044,7 @@ async function stageNotificationIntent(adapter, database, identity, input, canon
   if (!database.mail?.enabled) throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_EFFECT_UNSUPPORTED" });
   const allowed = Object.hasOwn(input ?? {}, "html") ? ["html", "id", "subject", "text", "to"] : ["id", "subject", "text", "to"];
   if (!exactPlainObject(input, allowed)) invalid();
-  if (typeof input.id !== "string" || input.id.length === 0 || Buffer.byteLength(input.id, "utf8") > 128 || Buffer.from(input.id, "utf8").toString("utf8") !== input.id) invalid();
+  if (typeof input.id !== "string" || input.id.length === 0 || input.id.includes("\0") || Buffer.byteLength(input.id, "utf8") > 128 || Buffer.from(input.id, "utf8").toString("utf8") !== input.id) invalid();
   if (!Array.isArray(input.to) || input.to.length < 1 || input.to.length > 100 || input.to.some((value) => typeof value !== "string")) invalid();
   if (typeof input.subject !== "string" || typeof input.text !== "string" || input.html !== void 0 && typeof input.html !== "string") invalid();
   if (input.text.length === 0 && (input.html === void 0 || input.html.length === 0)) invalid();
@@ -96190,14 +96190,17 @@ function createMailTransport(smtp) {
           error.code = "ECONNECTION";
           throw error;
         }
-        socket = await connectSmtpSocket(smtp);
+        socket = await connectSmtpSocket(smtp, (connectingSocket) => {
+          socket = connectingSocket;
+          sockets.add(connectingSocket);
+          if (closed) connectingSocket.destroy();
+        });
         if (closed) {
           const error = new Error("closed");
           error.code = "ECONNECTION";
           socket.destroy(error);
           throw error;
         }
-        sockets.add(socket);
         reader = createSmtpResponseReader(socket, smtp.socketTimeoutMs);
         let encrypted = smtp.tls.mode === "implicit";
         await reader.expect([220]);
@@ -96295,7 +96298,7 @@ function createMailTransport(smtp) {
     }
   };
 }
-async function connectSmtpSocket(smtp) {
+async function connectSmtpSocket(smtp, onSocket) {
   let socket;
   if (smtp.tls.mode === "implicit") {
     const tls = await import("node:tls");
@@ -96315,7 +96318,7 @@ async function connectSmtpSocket(smtp) {
     socket.destroy(error);
   });
   const event = smtp.tls.mode === "implicit" ? "secureConnect" : "connect";
-  await new Promise((resolve, reject) => {
+  const connected = new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       const error = new Error("connection timeout");
       error.code = "ETIMEDOUT";
@@ -96329,7 +96332,15 @@ async function connectSmtpSocket(smtp) {
       clearTimeout(timer);
       reject(error);
     });
+    socket.once("close", () => {
+      clearTimeout(timer);
+      const error = new Error("connection closed");
+      error.code = "ECONNECTION";
+      reject(error);
+    });
   });
+  onSocket?.(socket);
+  await connected;
   return socket;
 }
 function createSmtpResponseReader(initialSocket, timeoutMs) {

@@ -91,7 +91,7 @@ export async function stageNotificationIntent(
   if (!database.mail?.enabled) throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_EFFECT_UNSUPPORTED" });
   const allowed = Object.hasOwn(input ?? {}, "html") ? ["html", "id", "subject", "text", "to"] : ["id", "subject", "text", "to"];
   if (!exactPlainObject(input, allowed)) invalid();
-  if (typeof input.id !== "string" || input.id.length === 0 || Buffer.byteLength(input.id, "utf8") > 128
+  if (typeof input.id !== "string" || input.id.length === 0 || input.id.includes("\0") || Buffer.byteLength(input.id, "utf8") > 128
     || Buffer.from(input.id, "utf8").toString("utf8") !== input.id) invalid();
   if (!Array.isArray(input.to) || input.to.length < 1 || input.to.length > 100 || input.to.some((value: any) => typeof value !== "string")) invalid();
   if (typeof input.subject !== "string" || typeof input.text !== "string" || (input.html !== undefined && typeof input.html !== "string")) invalid();
