@@ -19,7 +19,7 @@ one commit; CAS alone would leave recovery to each Capsule. See the
 email attempts with accepted duplicate risk. See the [approval record](maintainer-approval.md)
 for the conversation quotation and scope. Ticket 01's amendment gate is cleared;
 **tickets 02, 03 and 04 are merged and their integration gates have passed**.
-Tickets 05–07 remain pending; parent #52 stays open.
+Ticket 05 is complete ([PR #74](https://github.com/mgscox/sporades/pull/74), squash d9f036d5, merged 2026-09-20). Tickets 06–07 remain pending; parent #52 stays open.
 Original strict SMTP criteria remain disproved; the explicitly accepted amendment
 is the implementation contract, not a retroactive proof of those criteria.
 
@@ -32,7 +32,7 @@ provenance, not a frozen world view: current Grant checks still occur on acquisi
 ## Revised tickets and frontier
 
 The filenames are retained for stable links; the current titles/scopes below
-now supersede their old contents under approved M1. Tickets 02, 03 and 04 are complete. Tickets 05 and 06 are ready; 07 requires the remaining implementation slices (05, 06).
+now supersede their old contents under approved M1. Tickets 02, 03 and 04 are complete. Ticket 06 is ready; 07 requires the remaining implementation slice (06).
 
 | Ticket | Approved responsibility | Remaining gate |
 | --- | --- | --- |
@@ -40,7 +40,7 @@ now supersede their old contents under approved M1. Tickets 02, 03 and 04 are co
 | [02](issues/02-run-resource-transactions-on-sqlite.md) | SQLite scope, exact Job ownership, receipt replay/recovery | Complete: [PR #61](https://github.com/mgscox/sporades/pull/61) |
 | [03](issues/03-coordinate-jobs-mutations-and-endpoints.md) | Shared outer transaction and current authority ordering | Complete: [PR #63](https://github.com/mgscox/sporades/pull/63) |
 | [04](issues/04-support-resource-transactions-on-postgresql.md) | Real PG locks, connection loss, receipt conformance | Complete: [PR #65](https://github.com/mgscox/sporades/pull/65) |
-| [05](issues/05-enforce-libsql-compatibility.md) | Explicit libSQL unsupported gate, no exploratory support branch | Ready |
+| [05](issues/05-enforce-libsql-compatibility.md) | Explicit libSQL unsupported gate, no exploratory support branch | Complete: [PR #74](https://github.com/mgscox/sporades/pull/74) |
 | [06](issues/06-support-proven-external-handoff.md) | Durable intent acceptance, automatic retry, accepted duplicates | Ready |
 | [07](issues/07-verify-grant-coordination-workflow.md) | Complete amended workflow and original-requirement gap map | 05, 06 |
 
