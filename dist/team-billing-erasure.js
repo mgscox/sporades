@@ -213,7 +213,7 @@ export async function settleExhaustedTeamBillingErasureJob(database, payload, sa
     return result;
 }
 /** Transaction-bound admission for the Capsule's separate local deletion mutation. */
-export function createCurrentUserTeamBillingErasureApi(database, auth, contextGetter = () => null, isCurrentContext = () => false) {
+export function createCurrentUserTeamBillingErasureApi(database, auth, contextGetter = () => null, isCurrentContext = () => false, trackOperation = (operation) => operation()) {
     const requireActiveContext = () => {
         const context = contextGetter();
         if (!context || !isCurrentContext(context) || context.signal?.aborted) {
@@ -236,16 +236,18 @@ export function createCurrentUserTeamBillingErasureApi(database, auth, contextGe
             requireActiveContext();
             return result;
         },
-        async admitLocalErasure(teamId) {
-            requireContext();
-            if (!TEAM_ID.test(String(teamId ?? "")))
-                throw unavailable();
-            await admitTeamBillingActor(database, database.adapter, auth, { operation: "erasure", teamId });
-            requireContext();
-            if (!await tombstone(database.adapter, teamBillingErasureKey(database, teamId)))
-                throw unavailable();
-            requireContext();
-            return Object.freeze({ allowed: true });
+        admitLocalErasure(teamId) {
+            return trackOperation(async () => {
+                requireContext();
+                if (!TEAM_ID.test(String(teamId ?? "")))
+                    throw unavailable();
+                await admitTeamBillingActor(database, database.adapter, auth, { operation: "erasure", teamId });
+                requireContext();
+                if (!await tombstone(database.adapter, teamBillingErasureKey(database, teamId)))
+                    throw unavailable();
+                requireContext();
+                return Object.freeze({ allowed: true });
+            });
         },
     });
 }

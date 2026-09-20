@@ -278,6 +278,7 @@ export function createCurrentUserTeamBillingErasureApi(
   auth: LooseRecord,
   contextGetter: () => LooseRecord | null = () => null,
   isCurrentContext: (context: LooseRecord) => boolean = () => false,
+  trackOperation: <T>(operation: () => Promise<T>) => Promise<T> = (operation) => operation(),
 ) {
   const requireActiveContext = () => {
     const context = contextGetter();
@@ -301,14 +302,16 @@ export function createCurrentUserTeamBillingErasureApi(
       requireActiveContext();
       return result;
     },
-    async admitLocalErasure(teamId: any) {
-      requireContext();
-      if (!TEAM_ID.test(String(teamId ?? ""))) throw unavailable();
-      await admitTeamBillingActor(database, database.adapter, auth, { operation: "erasure", teamId });
-      requireContext();
-      if (!await tombstone(database.adapter, teamBillingErasureKey(database, teamId))) throw unavailable();
-      requireContext();
-      return Object.freeze({ allowed: true as const });
+    admitLocalErasure(teamId: any) {
+      return trackOperation(async () => {
+        requireContext();
+        if (!TEAM_ID.test(String(teamId ?? ""))) throw unavailable();
+        await admitTeamBillingActor(database, database.adapter, auth, { operation: "erasure", teamId });
+        requireContext();
+        if (!await tombstone(database.adapter, teamBillingErasureKey(database, teamId))) throw unavailable();
+        requireContext();
+        return Object.freeze({ allowed: true as const });
+      });
     },
   });
 }

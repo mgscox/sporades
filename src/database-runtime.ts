@@ -343,6 +343,10 @@ const transactionBeforeCommitChecks = Symbol.for("sporades.database.transactionB
 const resourceTransactionMechanics = Symbol.for("sporades.database.resourceTransactionMechanics");
 const resourceBootstrapMechanics = Symbol.for("sporades.database.resourceBootstrapMechanics");
 const resourceConsumptionMechanics = Symbol.for("sporades.database.resourceConsumptionMechanics");
+// Bootstrap always revalidates when called directly. Resource consumers may
+// skip only the duplicate preflight after one successful publication; their
+// locked consumption check still verifies every protected transaction.
+const resourceSchemaPublished = Symbol.for("sporades.database.resourceSchemaPublished");
 const resourceCancelActiveQuery = Symbol.for("sporades.database.resourceCancelActiveQuery");
 const postgresCancelDeliveryTimeoutMs = 250;
 
@@ -625,10 +629,10 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
   return {
     // Public resource-transaction behaviour is shared. Engines contribute a
     // symbol-keyed dedicated-session primitive, not a second adapter method.
-    withResourceTransaction(fn: (transactionAdapter: LooseRecord) => any, beforeCommit?: (adapter: LooseRecord) => any, resource?: { table: string; id: string }, signal?: AbortSignal) {
+    withResourceTransaction(fn: (transactionAdapter: LooseRecord) => any, beforeCommit?: (adapter: LooseRecord) => any, resource?: { table: string; id: string }, signal?: AbortSignal, retainAdmissionTimeout = false) {
       const run = (this as any)[resourceTransactionMechanics];
       if (typeof run !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
-      return Reflect.apply(run, this, [fn, beforeCommit, resource, signal]);
+      return Reflect.apply(run, this, [fn, beforeCommit, resource, signal, retainAdmissionTimeout]);
     },
     ensureSystemTable() {
       return this.exec(sql("CREATE TABLE IF NOT EXISTS [sporades] ([key] TEXT PRIMARY KEY, [value] TEXT NOT NULL)"));
@@ -2061,7 +2065,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
       // client may currently own an unrelated root transaction whose failed
       // statement is queued ahead of rollback; catalog work there would inherit
       // its aborted state instead of remaining an independent resource concern.
-      if (await resourceSchemaReady(query)) return;
+      if (await resourceSchemaReady(query)) { (adapter as any)[resourceSchemaPublished] = true; return; }
       await query("BEGIN ISOLATION LEVEL READ COMMITTED"); begun = true;
       await query("SET LOCAL lock_timeout = '100ms'");
       await acquirePostgresResourceBootstrapLock({ engine: "postgres", dialect, prepare: (statement: string) => ({ get: (...args: any[]) => query(statement, args).then((result: any) => postgresRowsFromResult(normalization, result)[0] ?? null) }) });
@@ -2093,7 +2097,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
         }
         if (!await resourceSchemaReady(query)) throw resourceError("RESOURCE_STORAGE_ERROR");
       }
-      await query("COMMIT"); begun = false;
+      await query("COMMIT"); begun = false; (adapter as any)[resourceSchemaPublished] = true;
     } catch (error: any) {
       if (begun) { try { await bootstrap.query("ROLLBACK"); } catch {} }
       if (error?.code === "RESOURCE_BUSY" || error?.code === "55P03" || error?.code === "57014") throw resourceError("RESOURCE_BUSY");
@@ -2182,11 +2186,11 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     // A resource scope owns an independent READ COMMITTED backend.  Closing it
     // on every exit also quarantines a connection whose COMMIT acknowledgement
     // was lost; ordinary work can never reuse that backend.
-    [resourceTransactionMechanics]: async function(fn: (transactionAdapter: LooseRecord) => any, beforeCommit?: (adapter: LooseRecord) => any, resource?: { table: string; id: string }, signal?: AbortSignal) {
+    [resourceTransactionMechanics]: async function(fn: (transactionAdapter: LooseRecord) => any, beforeCommit?: (adapter: LooseRecord) => any, resource?: { table: string; id: string }, signal?: AbortSignal, retainAdmissionTimeout = false) {
       if (!resource || typeof resource.table !== "string" || typeof resource.id !== "string") throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_STORAGE_ERROR" });
       let dedicated: any; let begun = false; let commitIssued = false;
       try {
-        try { await ensureResourceSchemaPublished(signal); }
+        try { if (!(this as any)[resourceSchemaPublished]) await ensureResourceSchemaPublished(signal); }
         catch (error: any) {
           if (typeof error?.code === "string" && error.code.startsWith("RESOURCE_")) throw error;
           throw resourceError("RESOURCE_STORAGE_ERROR");
@@ -2224,7 +2228,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
         // The short timeout bounds admission only. Callback application writes
         // retain the connection's normal lock-wait policy inside this resource
         // transaction rather than inheriting the 100ms admission setting.
-        await query("SET LOCAL lock_timeout = DEFAULT");
+        if (!retainAdmissionTimeout) await query("SET LOCAL lock_timeout = DEFAULT");
         const transaction = createTransactionScopedAdapter(adapter, operations, adapter, "transaction");
         Object.defineProperty(transaction, resourceCancelActiveQuery, {
           configurable: true,

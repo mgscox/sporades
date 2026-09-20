@@ -278,7 +278,9 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
           // runtime schema is not already published. Do not put bootstrap DDL
           // in this outer handler transaction: returning from this scope is
           // deliberately still provisional until the outer COMMIT.
-          await bootstrap(controller.signal);
+          if ((database.adapter as any)[Symbol.for("sporades.database.resourceSchemaPublished")] !== true) {
+            await bootstrap(controller.signal);
+          }
           const consume = (database.adapter as any)[Symbol.for("sporades.database.resourceConsumptionMechanics")];
           if (typeof consume !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
           await Reflect.apply(consume, database.adapter, []);
@@ -289,9 +291,6 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
             `SELECT ${database.adapter.dialect.quoteIdentifier("id")} FROM ${database.adapter.dialect.quoteIdentifier(identity.table)} WHERE ${database.adapter.dialect.quoteIdentifier("id")}=? FOR UPDATE NOWAIT`,
           ).get(identity.id);
           if (!anchor) throw resourceError("RESOURCE_STORAGE_ERROR");
-          // The short timeout bounds admission only. Authorization and callback
-          // application writes retain the connection's normal lock-wait policy.
-          await database.adapter.exec("SET LOCAL lock_timeout = DEFAULT");
         } else {
           await database.adapter.exec(database.adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_outer_fence] ([id] INTEGER PRIMARY KEY, [epoch] INTEGER NOT NULL)"));
           await database.adapter.prepare(database.adapter.dialect.sql("INSERT OR IGNORE INTO [sporades_resource_outer_fence] ([id], [epoch]) VALUES (1, 0)")).run();
@@ -315,6 +314,12 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
         await hooks.authorize(context, parentDb, identity);
       } catch (error) {
         throw database.adapter.engine === "postgres" ? normalizeDatabaseOperationError(error) : error;
+      }
+      if (database.adapter.engine === "postgres") {
+        // Admission includes the ACL reads that justify entering protected
+        // work. Restore ordinary PostgreSQL waits only after authorization so
+        // callback application writes retain their historical wait policy.
+        await database.adapter.exec("SET LOCAL lock_timeout = DEFAULT");
       }
       assertLive(true);
       let receipt: any;
@@ -530,6 +535,7 @@ export function bindJobResources(database: RecordValue, context: RecordValue, cl
         await checkClaim(guarded, true);
         scopeContext = hooks.createContext(guarded, controller.signal, privileged);
         await Promise.race([hooks.authorize(scopeContext, identity), aborted]);
+        if (database.adapter.engine === "postgres") await guarded.exec("SET LOCAL lock_timeout = DEFAULT");
         assertLive(true);
         if (database.adapter.engine !== "postgres") {
           await guarded.exec(adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_receipts] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId]))"));
@@ -593,14 +599,32 @@ export function bindJobResources(database: RecordValue, context: RecordValue, cl
         const row = adapter.prepare(adapter.dialect.sql("SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=?")).get(claim.id);
         if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
         if (row.cancelRequestedAt) throw resourceAbortError();
-      }, { table: identity.table, id: identity.id }, controller.signal);
+      }, { table: identity.table, id: identity.id }, controller.signal, database.adapter.engine === "postgres");
       engineCommitted = true;
       active = false;
       await hooks.committed(scopeContext, logs);
+      // A PostgreSQL cancellation can be durably queued behind the exact Job
+      // claim lock held by the resource transaction. Read through the primary
+      // adapter after commit so that queued cancellation wins before the Job
+      // worker records success, while an ordinary handler that already
+      // completed retains Unit A's successful-settlement semantics.
+      if (database.adapter.engine === "postgres") {
+        const cancellation = await database.adapter.prepare(database.adapter.dialect.sql(
+          // A plain MVCC read could take its snapshot while the cancellation
+          // updater is still queued on the resource transaction's former row
+          // lock. The locking read follows PostgreSQL's row-lock wait order and
+          // rechecks the updated tuple before this worker may publish success.
+          "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=? FOR UPDATE",
+        )).get(claim.id, claim.claimToken);
+        if (cancellation?.cancelRequestedAt) throw resourceAbortError();
+      }
       return result;
     } catch (error) {
       active = false;
-      if (engineCommitted) throw resourceError("RESOURCE_STORAGE_ERROR");
+      if (engineCommitted) {
+        if (isResourceAbortError(error)) throw error;
+        throw resourceError("RESOURCE_STORAGE_ERROR");
+      }
       hooks.rolledBack(scopeContext);
       throw error;
     } finally {

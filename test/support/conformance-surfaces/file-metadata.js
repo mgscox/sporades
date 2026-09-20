@@ -62,6 +62,7 @@ function fileIdsOf(rows) {
 }
 
 async function prepareFileMetadataStorage(adapter) {
+  await adapter.ensureSystemTable();
   await adapter.ensureFileStorage();
   await adapter.createFileBucket({ id: BUCKET_ID, ownerId: OWNER_ID, name: BUCKET_NAME, createdAt: NOW });
 }
@@ -628,6 +629,57 @@ const FILE_METADATA_CONFORMANCE_CASES = [
       await adapter.enqueueIngressClaimAudit({ claimId: "retained-audit-conformance", createdAt: NOW });
       assert.equal(await adapter.hasPendingIngressMaintenance(), true, "an undelivered audit intent keeps maintenance live");
       assert.deepEqual(await adapter.readIngressMaintenanceState(), { ingressRequired: false, auditDeliveryRequired: true, earliestDeliveredAt: null });
+    },
+  },
+  {
+    name: "lockFileById returns stored File metadata and null for an absent identifier",
+    async run(adapter) {
+      await adapter.insertFileRow(fileRow({
+        id: "file-lock-authority",
+        path: "/media/lock-authority.txt",
+        name: "lock-authority.txt",
+      }));
+      const stored = await adapter.lockFileById("file-lock-authority");
+      assert.deepEqual(
+        { id: stored?.id, ownerId: stored?.ownerId, path: stored?.path, status: stored?.status },
+        { id: "file-lock-authority", ownerId: OWNER_ID, path: "/media/lock-authority.txt", status: "uploaded" },
+      );
+      assert.equal(await adapter.lockFileById("file-lock-authority-absent"), null);
+    },
+  },
+  {
+    name: "withResourceTransaction commits a successful callback and rolls back a failed callback, or fails closed before either callback",
+    async run(adapter) {
+      const resource = { table: "conformance-files", id: "file-resource-transaction" };
+      let callbacks = 0;
+      const commit = Promise.resolve().then(() => adapter.withResourceTransaction(async (transaction) => {
+        callbacks += 1;
+        await transaction.writeSystemMetadata("resource-conformance", "committed");
+        return "committed-result";
+      }, undefined, resource));
+      if (adapter.engine === "libsql") {
+        await assert.rejects(commit, { code: "RESOURCE_ADAPTER_UNSUPPORTED" });
+        await assert.rejects(
+          Promise.resolve().then(() => adapter.withResourceTransaction(async () => { callbacks += 1; }, undefined, resource)),
+          { code: "RESOURCE_ADAPTER_UNSUPPORTED" },
+        );
+        assert.equal(callbacks, 0);
+        return;
+      }
+      assert.equal(await commit, "committed-result");
+      assert.equal((await adapter.readSystemMetadata("resource-conformance"))?.value, "committed");
+
+      const failed = new Error("conformance rollback");
+      await assert.rejects(
+        adapter.withResourceTransaction(async (transaction) => {
+          callbacks += 1;
+          await transaction.writeSystemMetadata("resource-conformance", "must-roll-back");
+          throw failed;
+        }, undefined, resource),
+        (error) => error === failed,
+      );
+      assert.equal(callbacks, 2);
+      assert.equal((await adapter.readSystemMetadata("resource-conformance"))?.value, "committed");
     },
   },
   {

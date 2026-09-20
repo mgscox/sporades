@@ -66755,7 +66755,7 @@ async function settleExhaustedTeamBillingErasureJob(database, payload, safeFailu
   if (replacementScheduled && !database.__transactionActive) database.scheduleTeamBillingJobDispatch?.();
   return result;
 }
-function createCurrentUserTeamBillingErasureApi(database, auth, contextGetter = () => null, isCurrentContext = () => false) {
+function createCurrentUserTeamBillingErasureApi(database, auth, contextGetter = () => null, isCurrentContext = () => false, trackOperation = (operation) => operation()) {
   const requireActiveContext = () => {
     const context = contextGetter();
     if (!context || !isCurrentContext(context) || context.signal?.aborted) {
@@ -66775,14 +66775,16 @@ function createCurrentUserTeamBillingErasureApi(database, auth, contextGetter = 
       requireActiveContext();
       return result;
     },
-    async admitLocalErasure(teamId) {
-      requireContext();
-      if (!TEAM_ID.test(String(teamId ?? ""))) throw unavailable();
-      await admitTeamBillingActor(database, database.adapter, auth, { operation: "erasure", teamId });
-      requireContext();
-      if (!await tombstone(database.adapter, teamBillingErasureKey(database, teamId))) throw unavailable();
-      requireContext();
-      return Object.freeze({ allowed: true });
+    admitLocalErasure(teamId) {
+      return trackOperation(async () => {
+        requireContext();
+        if (!TEAM_ID.test(String(teamId ?? ""))) throw unavailable();
+        await admitTeamBillingActor(database, database.adapter, auth, { operation: "erasure", teamId });
+        requireContext();
+        if (!await tombstone(database.adapter, teamBillingErasureKey(database, teamId))) throw unavailable();
+        requireContext();
+        return Object.freeze({ allowed: true });
+      });
     }
   });
 }
@@ -68542,7 +68544,9 @@ function bindOuterResources(database, context, hooks) {
           await database.adapter.exec("SET LOCAL lock_timeout = '100ms'");
           const bootstrap = database.adapter[Symbol.for("sporades.database.resourceBootstrapMechanics")];
           if (typeof bootstrap !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
-          await bootstrap(controller.signal);
+          if (database.adapter[Symbol.for("sporades.database.resourceSchemaPublished")] !== true) {
+            await bootstrap(controller.signal);
+          }
           const consume = database.adapter[Symbol.for("sporades.database.resourceConsumptionMechanics")];
           if (typeof consume !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
           await Reflect.apply(consume, database.adapter, []);
@@ -68553,7 +68557,6 @@ function bindOuterResources(database, context, hooks) {
             `SELECT ${database.adapter.dialect.quoteIdentifier("id")} FROM ${database.adapter.dialect.quoteIdentifier(identity.table)} WHERE ${database.adapter.dialect.quoteIdentifier("id")}=? FOR UPDATE NOWAIT`
           ).get(identity.id);
           if (!anchor) throw resourceError("RESOURCE_STORAGE_ERROR");
-          await database.adapter.exec("SET LOCAL lock_timeout = DEFAULT");
         } else {
           await database.adapter.exec(database.adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_outer_fence] ([id] INTEGER PRIMARY KEY, [epoch] INTEGER NOT NULL)"));
           await database.adapter.prepare(database.adapter.dialect.sql("INSERT OR IGNORE INTO [sporades_resource_outer_fence] ([id], [epoch]) VALUES (1, 0)")).run();
@@ -68571,6 +68574,9 @@ function bindOuterResources(database, context, hooks) {
         await hooks.authorize(context, parentDb, identity);
       } catch (error) {
         throw database.adapter.engine === "postgres" ? normalizeDatabaseOperationError(error) : error;
+      }
+      if (database.adapter.engine === "postgres") {
+        await database.adapter.exec("SET LOCAL lock_timeout = DEFAULT");
       }
       assertLive(true);
       let receipt2;
@@ -68809,6 +68815,7 @@ function bindJobResources(database, context, claim, hooks) {
         await checkClaim(guarded, true);
         scopeContext = hooks.createContext(guarded, controller.signal, privileged);
         await Promise.race([hooks.authorize(scopeContext, identity), aborted]);
+        if (database.adapter.engine === "postgres") await guarded.exec("SET LOCAL lock_timeout = DEFAULT");
         assertLive(true);
         if (database.adapter.engine !== "postgres") {
           await guarded.exec(adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_receipts] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId]))"));
@@ -68880,14 +68887,27 @@ function bindJobResources(database, context, claim, hooks) {
         const row = adapter.prepare(adapter.dialect.sql("SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=?")).get(claim.id);
         if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
         if (row.cancelRequestedAt) throw resourceAbortError();
-      }, { table: identity.table, id: identity.id }, controller.signal);
+      }, { table: identity.table, id: identity.id }, controller.signal, database.adapter.engine === "postgres");
       engineCommitted = true;
       active = false;
       await hooks.committed(scopeContext, logs);
+      if (database.adapter.engine === "postgres") {
+        const cancellation = await database.adapter.prepare(database.adapter.dialect.sql(
+          // A plain MVCC read could take its snapshot while the cancellation
+          // updater is still queued on the resource transaction's former row
+          // lock. The locking read follows PostgreSQL's row-lock wait order and
+          // rechecks the updated tuple before this worker may publish success.
+          "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=? FOR UPDATE"
+        )).get(claim.id, claim.claimToken);
+        if (cancellation?.cancelRequestedAt) throw resourceAbortError();
+      }
       return result;
     } catch (error) {
       active = false;
-      if (engineCommitted) throw resourceError("RESOURCE_STORAGE_ERROR");
+      if (engineCommitted) {
+        if (isResourceAbortError(error)) throw error;
+        throw resourceError("RESOURCE_STORAGE_ERROR");
+      }
       hooks.rolledBack(scopeContext);
       throw error;
     } finally {
@@ -98060,6 +98080,7 @@ var transactionBeforeCommitChecks2 = Symbol.for("sporades.database.transactionBe
 var resourceTransactionMechanics = Symbol.for("sporades.database.resourceTransactionMechanics");
 var resourceBootstrapMechanics = Symbol.for("sporades.database.resourceBootstrapMechanics");
 var resourceConsumptionMechanics = Symbol.for("sporades.database.resourceConsumptionMechanics");
+var resourceSchemaPublished = Symbol.for("sporades.database.resourceSchemaPublished");
 var resourceCancelActiveQuery = Symbol.for("sporades.database.resourceCancelActiveQuery");
 var postgresCancelDeliveryTimeoutMs = 250;
 async function runTransactionBeforeCommitChecks(transactionAdapter) {
@@ -98227,10 +98248,10 @@ function createSharedDatabaseAdapterMethods(dialect) {
   return {
     // Public resource-transaction behaviour is shared. Engines contribute a
     // symbol-keyed dedicated-session primitive, not a second adapter method.
-    withResourceTransaction(fn, beforeCommit, resource, signal) {
+    withResourceTransaction(fn, beforeCommit, resource, signal, retainAdmissionTimeout = false) {
       const run2 = this[resourceTransactionMechanics];
       if (typeof run2 !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
-      return Reflect.apply(run2, this, [fn, beforeCommit, resource, signal]);
+      return Reflect.apply(run2, this, [fn, beforeCommit, resource, signal, retainAdmissionTimeout]);
     },
     ensureSystemTable() {
       return this.exec(sql2("CREATE TABLE IF NOT EXISTS [sporades] ([key] TEXT PRIMARY KEY, [value] TEXT NOT NULL)"));
@@ -99517,7 +99538,10 @@ async function createPostgresDatabaseAdapter(options) {
     try {
       bootstrap = await createPostgresConnection(url, signal);
       const query = async (statement, params = []) => await bootstrap.query(postgresInterpolate(statement, params));
-      if (await resourceSchemaReady(query)) return;
+      if (await resourceSchemaReady(query)) {
+        adapter[resourceSchemaPublished] = true;
+        return;
+      }
       await query("BEGIN ISOLATION LEVEL READ COMMITTED");
       begun = true;
       await query("SET LOCAL lock_timeout = '100ms'");
@@ -99553,6 +99577,7 @@ async function createPostgresDatabaseAdapter(options) {
       }
       await query("COMMIT");
       begun = false;
+      adapter[resourceSchemaPublished] = true;
     } catch (error) {
       if (begun) {
         try {
@@ -99639,14 +99664,14 @@ async function createPostgresDatabaseAdapter(options) {
     // A resource scope owns an independent READ COMMITTED backend.  Closing it
     // on every exit also quarantines a connection whose COMMIT acknowledgement
     // was lost; ordinary work can never reuse that backend.
-    [resourceTransactionMechanics]: async function(fn, beforeCommit, resource, signal) {
+    [resourceTransactionMechanics]: async function(fn, beforeCommit, resource, signal, retainAdmissionTimeout = false) {
       if (!resource || typeof resource.table !== "string" || typeof resource.id !== "string") throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_STORAGE_ERROR" });
       let dedicated;
       let begun = false;
       let commitIssued = false;
       try {
         try {
-          await ensureResourceSchemaPublished(signal);
+          if (!this[resourceSchemaPublished]) await ensureResourceSchemaPublished(signal);
         } catch (error) {
           if (typeof error?.code === "string" && error.code.startsWith("RESOURCE_")) throw error;
           throw resourceError("RESOURCE_STORAGE_ERROR");
@@ -99689,7 +99714,7 @@ async function createPostgresDatabaseAdapter(options) {
         const resourceIdColumn = dialect.quoteIdentifier("resourceId");
         await query(`INSERT INTO ${resourceLockTable} (${resourceTableColumn}, ${resourceIdColumn}) VALUES (?, ?) ON CONFLICT (${resourceTableColumn}, ${resourceIdColumn}) DO NOTHING`, [resource.table, resource.id]);
         await query(`SELECT ${resourceTableColumn} FROM ${resourceLockTable} WHERE ${resourceTableColumn}=? AND ${resourceIdColumn}=? FOR UPDATE NOWAIT`, [resource.table, resource.id]);
-        await query("SET LOCAL lock_timeout = DEFAULT");
+        if (!retainAdmissionTimeout) await query("SET LOCAL lock_timeout = DEFAULT");
         const transaction = createTransactionScopedAdapter(adapter, operations, adapter, "transaction");
         Object.defineProperty(transaction, resourceCancelActiveQuery, {
           configurable: true,
@@ -101634,12 +101659,12 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
         }
       }
       try {
-        await database.mail.close();
+        await shutdownClamavRuntime(database);
       } catch (error) {
         failures.push(error);
       }
       try {
-        await shutdownClamavRuntime(database);
+        await database.mail.close();
       } catch (error) {
         failures.push(error);
       }
@@ -104351,6 +104376,22 @@ function trackMutationContextWork(context, promise, requiresConsumption = false)
   trackPendingAclWrite(context, entry);
   return operation;
 }
+function trackObservedMutationContextWork(context, start) {
+  let operation;
+  const observed = () => operation ??= trackMutationContextWork(context, Promise.resolve().then(start));
+  return Object.freeze({
+    then(onFulfilled, onRejected) {
+      return observed().then(onFulfilled, onRejected);
+    },
+    catch(onRejected) {
+      return observed().catch(onRejected);
+    },
+    finally(onFinally) {
+      return observed().finally(onFinally);
+    },
+    [Symbol.toStringTag]: "Promise"
+  });
+}
 function resultContainsMutationSecret(value, token) {
   if (value === token) return true;
   if (!value || typeof value !== "object") return false;
@@ -106711,7 +106752,8 @@ function createMutationContext(database, auth, options = {}) {
     database,
     auth,
     () => holder.current,
-    (candidate) => database.__transactionActive ? handlerContextByDatabase.get(database)?.() === candidate : holder.current === candidate
+    (candidate) => database.__transactionActive ? handlerContextByDatabase.get(database)?.() === candidate : holder.current === candidate,
+    (operation) => trackObservedMutationContextWork(context, operation)
   );
   context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
   context.serviceUsers = createServiceUsersApi(
@@ -107324,9 +107366,9 @@ async function runCurrentUserJobWorker(database) {
         history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: "succeeded", completedAt });
         const payloadRetentionUntil = row.handler === STRIPE_EVENT_JOB ? stripeEventPayloadRetentionStorageValue(completedAt) : null;
         const settled = row.handler === STRIPE_EVENT_JOB ? await database.adapter.prepare(sql2(
-          "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ?, [payloadRetentionUntil] = ? WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ? AND [cancelRequestedAt] IS NULL"
+          "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ?, [payloadRetentionUntil] = ? WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?"
         )).run(resultJson, completedAt, JSON.stringify(history), payloadRetentionUntil, row.id, claimToken) : await database.adapter.prepare(sql2(
-          "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ? WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ? AND [cancelRequestedAt] IS NULL"
+          "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ? WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?"
         )).run(resultJson, completedAt, JSON.stringify(history), row.id, claimToken);
         if (Number(settled?.changes ?? 0) === 0) {
           const cancellation = await database.adapter.prepare(sql2(

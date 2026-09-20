@@ -1,4 +1,6 @@
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { gunzipSync } from "node:zlib";
 
 import { PUBLIC_TREE_LIMITS, validatePublicTreeFileSet } from "../public-tree-contract.js";
 import { helperError } from "./cli-support.js";
@@ -83,28 +85,85 @@ export function validateReleaseArchive(request: HostHelperRequest, archivePath =
 }
 
 function listArchiveEntries(archivePath: string) {
+  const literalMetadataEntries = inspectLiteralArchiveMetadata(archivePath);
+  if (literalMetadataEntries.length > 0) {
+    validateArchiveBounds(literalMetadataEntries);
+    throw helperError(
+      "Hosted Capsule release archive contains unsupported metadata.",
+      "Push again without __MACOSX or AppleDouble metadata entries.",
+    );
+  }
+  // macOS bsdtar otherwise interprets AppleDouble entries as copyfile metadata:
+  // it reports a platform-specific truncation error while still printing the
+  // literal entries. Classify that bounded partial listing before falling back
+  // to the generic inspector failure; extraction must never become the first
+  // place an AppleDouble-only archive is diagnosed.
   const namesResult = spawnSync("tar", ["-tzf", archivePath], { encoding: "utf8" });
   const verboseResult = spawnSync("tar", ["-tvzf", archivePath], { encoding: "utf8" });
+  const names = namesResult.stdout.trim().split("\n").filter(Boolean);
+  const verboseLines = verboseResult.stdout.trim().split("\n").filter(Boolean);
+  const entries = names.length === verboseLines.length
+    ? names.map((name, index) => ({
+      name,
+      type: verboseLines[index]?.[0],
+      size: archiveEntrySize(verboseLines[index] ?? ""),
+    }))
+    : [];
   if (namesResult.error || namesResult.status !== 0 || verboseResult.error || verboseResult.status !== 0) {
+    if (entries.some((entry) => isDiscardableArchiveMetadata(entry.name))) {
+      validateArchiveBounds(entries);
+      throw helperError(
+        "Hosted Capsule release archive contains unsupported metadata.",
+        "Push again without __MACOSX or AppleDouble metadata entries.",
+      );
+    }
     throw helperError(
       "Failed to inspect Hosted Capsule release archive.",
       "Upload the release again with `sporades host push` and check that tar is installed on the Host server.",
     );
   }
 
-  const names = namesResult.stdout.trim().split("\n").filter(Boolean);
-  const verboseLines = verboseResult.stdout.trim().split("\n").filter(Boolean);
   if (names.length !== verboseLines.length) {
     throw helperError(
       "Hosted Capsule release archive could not be validated.",
       "Push again so Sporades can package a clean runtime archive.",
     );
   }
-  return names.map((name, index) => ({
-    name,
-    type: verboseLines[index]?.[0],
-    size: archiveEntrySize(verboseLines[index] ?? ""),
-  }));
+  return entries;
+}
+
+function inspectLiteralArchiveMetadata(archivePath: string) {
+  let archive: Buffer;
+  try {
+    archive = gunzipSync(readFileSync(archivePath), {
+      maxOutputLength: HOST_RELEASE_ARCHIVE_LIMITS.totalBytes + ((HOST_RELEASE_ARCHIVE_LIMITS.entries + 1) * 1024),
+    });
+  } catch (error: any) {
+    if (error?.code === "ERR_BUFFER_TOO_LARGE") {
+      throw helperError("Hosted Capsule release archive exceeds bounds.", "Reduce total release bytes and push again.");
+    }
+    return [];
+  }
+  const entries: Array<{ name: string; type?: string; size: number }> = [];
+  let offset = 0;
+  while (offset + 512 <= archive.length) {
+    const header = archive.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) break;
+    const name = tarHeaderText(header, 0, 100);
+    const prefix = tarHeaderText(header, 345, 155);
+    const sizeText = tarHeaderText(header, 124, 12).trim();
+    if (!/^[0-7]+$/.test(sizeText)) return [];
+    const size = Number.parseInt(sizeText, 8);
+    if (!Number.isSafeInteger(size) || size < 0) return [];
+    entries.push({ name: prefix ? `${prefix}/${name}` : name, type: String.fromCharCode(header[156] || 48) === "0" ? "-" : String.fromCharCode(header[156]) || "-", size });
+    offset += 512 + (Math.ceil(size / 512) * 512);
+  }
+  return entries.some((entry) => isDiscardableArchiveMetadata(entry.name)) ? entries : [];
+}
+
+function tarHeaderText(header: Buffer, offset: number, length: number) {
+  const end = header.indexOf(0, offset);
+  return header.toString("utf8", offset, end >= offset && end < offset + length ? end : offset + length);
 }
 
 function archiveEntrySize(line: string) {

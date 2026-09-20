@@ -1270,9 +1270,9 @@ export async function openDevDatabase(
           await runLifecycleHook(database.lifecycleHooks.shutdown, context);
         } catch (error) { failures.push(error); }
       }
-      try { await database.mail.close(); }
-      catch (error) { failures.push(error); }
       try { await shutdownClamavRuntime(database); }
+      catch (error) { failures.push(error); }
+      try { await database.mail.close(); }
       catch (error) { failures.push(error); }
       database.__runtimeInitialized = false;
       if (failures.length === 1) throw failures[0];
@@ -4427,6 +4427,17 @@ function trackMutationContextWork(context: LooseRecord, promise: Promise<any>, r
   return operation;
 }
 
+function trackObservedMutationContextWork<T>(context: LooseRecord, start: () => Promise<T>): Promise<T> {
+  let operation: Promise<T> | undefined;
+  const observed = () => operation ??= trackMutationContextWork(context, Promise.resolve().then(start));
+  return Object.freeze({
+    then(onFulfilled: any, onRejected: any) { return observed().then(onFulfilled, onRejected); },
+    catch(onRejected: any) { return observed().catch(onRejected); },
+    finally(onFinally: any) { return observed().finally(onFinally); },
+    [Symbol.toStringTag]: "Promise",
+  }) as Promise<T>;
+}
+
 function resultContainsMutationSecret(value: any, token: string): boolean {
   if (value === token) return true;
   if (!value || typeof value !== "object") return false;
@@ -7003,6 +7014,7 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
     (candidate) => database.__transactionActive
       ? handlerContextByDatabase.get(database)?.() === candidate
       : holder.current === candidate,
+    (operation) => trackObservedMutationContextWork(context, operation),
   );
   context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
   context.serviceUsers = createServiceUsersApi(
@@ -7596,11 +7608,11 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
         const settled = row.handler === STRIPE_EVENT_JOB
           ? await database.adapter.prepare(sql(
             "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ?, [payloadRetentionUntil] = ? " +
-            "WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ? AND [cancelRequestedAt] IS NULL",
+            "WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?",
           )).run(resultJson, completedAt, JSON.stringify(history), payloadRetentionUntil, row.id, claimToken)
           : await database.adapter.prepare(sql(
             "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ? " +
-            "WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ? AND [cancelRequestedAt] IS NULL",
+            "WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?",
           )).run(resultJson, completedAt, JSON.stringify(history), row.id, claimToken);
         if (Number(settled?.changes ?? 0) === 0) {
           const cancellation = await database.adapter.prepare(sql(
