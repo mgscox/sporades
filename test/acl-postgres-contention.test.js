@@ -131,6 +131,49 @@ for (const operation of ['publicUrl', 'delete']) {
   });
 }
 
+test('Postgres public URL creation locks and rereads the File before a non-owner ACL decision', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, []);
+  await reset.close();
+  const aclEntered = Promise.withResolvers();
+  const database = await openAclDatabase('file-public-url-row-lock', {
+    files: {
+      acl: {
+        publicUrl: () => { aclEntered.resolve(); return true; },
+      },
+    },
+  });
+  let replacement;
+  let creating;
+  try {
+    const now = '2030-01-01T00:00:00.000Z';
+    await database.adapter.createFileBucket({ id: 'bucket-public-row-lock', ownerId: 'owner', name: 'default', createdAt: now });
+    await database.adapter.insertFileRow({ id: 'file-public-row-lock', ownerId: 'owner', bucketId: 'bucket-public-row-lock', bucketName: 'default', path: '/shared/public-row-lock.txt', name: 'public-row-lock.txt', type: 'text/plain', size: 5, version: 'version-1', status: 'uploaded', createdAt: now, updatedAt: now });
+    replacement = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    await replacement.exec('BEGIN');
+    await replacement.prepare('UPDATE sporades_files SET version=?, "updatedAt"=? WHERE id=?').run('version-2', '2030-01-01T00:00:01.000Z', 'file-public-row-lock');
+
+    creating = createPublicFileUrl(database, actor, 'file-public-row-lock', { noExpiry: true });
+    assert.equal(await Promise.race([
+      aclEntered.promise.then(() => 'acl-entered'),
+      new Promise(resolve => setTimeout(() => resolve('blocked-on-file'), 500)),
+    ]), 'blocked-on-file', 'the ACL must not evaluate against the pre-replacement File row');
+
+    await replacement.exec('COMMIT');
+    await aclEntered.promise;
+    const result = await settlePromptly(creating, 'File public URL row lock');
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(new URL(result.data.publicUrl.url, 'http://capsule.test').searchParams.get('v'), 'version-2');
+    assert.equal((await database.adapter.prepare('SELECT version FROM sporades_file_public_urls WHERE id=?').get(result.data.publicUrl.id)).version, 'version-2');
+  } finally {
+    await replacement?.exec('ROLLBACK').catch(() => {});
+    await creating?.catch(() => {});
+    await replacement?.close();
+    await database.shutdown();
+    await database.close();
+  }
+});
+
 test('an unrelated Postgres 55P03 raised after ACL dependency locking retains its existing mutation error', { skip: POSTGRES_SKIP_REASON }, async () => {
   const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
   await resetPostgresSchema(reset, ['documents', 'policies']);

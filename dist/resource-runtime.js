@@ -273,7 +273,7 @@ export function bindOuterResources(database, context, hooks) {
             terminalError ??= error;
             scopeActive = false;
             admission = false;
-            controller.abort();
+            controller.abort(terminalError);
             rejectOuterAbort(terminalError);
         };
         const expire = () => {
@@ -309,7 +309,7 @@ export function bindOuterResources(database, context, hooks) {
                     // runtime schema is not already published. Do not put bootstrap DDL
                     // in this outer handler transaction: returning from this scope is
                     // deliberately still provisional until the outer COMMIT.
-                    await bootstrap();
+                    await bootstrap(controller.signal);
                     const consume = database.adapter[Symbol.for("sporades.database.resourceConsumptionMechanics")];
                     if (typeof consume !== "function")
                         throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
@@ -332,6 +332,8 @@ export function bindOuterResources(database, context, hooks) {
                 }
             }
             catch (error) {
+                if (terminalError)
+                    throw terminalError;
                 const normalized = error?.code === "RESOURCE_BUSY" || error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY" || error?.code === "55P03" || error?.code === "57014"
                     ? resourceError("RESOURCE_BUSY")
                     : resourceError("RESOURCE_STORAGE_ERROR");
@@ -436,7 +438,8 @@ export function bindOuterResources(database, context, hooks) {
         finally {
             scopeActive = false;
             admission = false;
-            controller.abort();
+            if (!controller.signal.aborted)
+                controller.abort();
         }
     };
     context.resources = Object.freeze({ run: (options, callback) => trackExecution(() => execute(options, callback, false)), status: (options) => trackExecution(() => execute(options, undefined, true), false) });
@@ -542,8 +545,8 @@ export function bindJobResources(database, context, claim, hooks) {
             terminalError ??= error;
             active = false;
             admission = false;
-            controller.abort();
-            rejectAbort(error);
+            controller.abort(terminalError);
+            rejectAbort(terminalError);
         };
         const assertLive = (admit = false) => {
             if (!active || admit && !admission)
@@ -672,7 +675,7 @@ export function bindJobResources(database, context, claim, hooks) {
                     throw resourceError("RESOURCE_CLAIM_LOST");
                 if (row.cancelRequestedAt)
                     throw resourceAbortError();
-            }, { table: identity.table, id: identity.id });
+            }, { table: identity.table, id: identity.id }, controller.signal);
             engineCommitted = true;
             active = false;
             await hooks.committed(scopeContext, logs);
@@ -689,7 +692,8 @@ export function bindJobResources(database, context, claim, hooks) {
             scopeRunning = false;
             active = false;
             admission = false;
-            controller.abort();
+            if (!controller.signal.aborted)
+                controller.abort();
             resourceAdapter = undefined;
             database.clock.clearTimer(watchdog);
             context.signal?.removeEventListener("abort", abort);

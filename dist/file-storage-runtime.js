@@ -748,7 +748,7 @@ export async function createPublicFileUrl(database, auth, fileReference, options
     return await runFileMetadataTransaction(database, async (sqlite) => {
         const transactionDatabase = { ...database, sqlite, adapter: sqlite };
         bindPostgresAclDependencyLocking(transactionDatabase, sqlite);
-        const resolved = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "publicUrl");
+        const resolved = await resolveLockedAccessibleFileReference(transactionDatabase, auth, fileReference, "publicUrl");
         if (!resolved.ok) {
             return resolved;
         }

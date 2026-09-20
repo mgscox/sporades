@@ -623,10 +623,10 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
   return {
     // Public resource-transaction behaviour is shared. Engines contribute a
     // symbol-keyed dedicated-session primitive, not a second adapter method.
-    withResourceTransaction(fn: (transactionAdapter: LooseRecord) => any, beforeCommit?: (adapter: LooseRecord) => any, resource?: { table: string; id: string }) {
+    withResourceTransaction(fn: (transactionAdapter: LooseRecord) => any, beforeCommit?: (adapter: LooseRecord) => any, resource?: { table: string; id: string }, signal?: AbortSignal) {
       const run = (this as any)[resourceTransactionMechanics];
       if (typeof run !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
-      return Reflect.apply(run, this, [fn, beforeCommit, resource]);
+      return Reflect.apply(run, this, [fn, beforeCommit, resource, signal]);
     },
     ensureSystemTable() {
       return this.exec(sql("CREATE TABLE IF NOT EXISTS [sporades] ([key] TEXT PRIMARY KEY, [value] TEXT NOT NULL)"));
@@ -2032,11 +2032,11 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
   // transaction. A transaction-scoped advisory lock remains held through this
   // transaction's COMMIT, so a losing initializer cannot observe uncommitted
   // fresh or legacy-upgrade DDL. The cheap catalog check is the normal path.
-  const ensureResourceSchemaPublished = async () => {
+  const ensureResourceSchemaPublished = async (signal?: AbortSignal) => {
     let bootstrap: any;
     let begun = false;
     try {
-      bootstrap = await createPostgresConnection(url);
+      bootstrap = await createPostgresConnection(url, signal);
       const query = async (statement: string, params: any[] = []) => await bootstrap.query(postgresInterpolate(statement, params));
       // Even the normal readiness probe stays off the primary client. That
       // client may currently own an unrelated root transaction whose failed
@@ -2143,20 +2143,24 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     // A resource scope owns an independent READ COMMITTED backend.  Closing it
     // on every exit also quarantines a connection whose COMMIT acknowledgement
     // was lost; ordinary work can never reuse that backend.
-    [resourceTransactionMechanics]: async function(fn: (transactionAdapter: LooseRecord) => any, beforeCommit?: (adapter: LooseRecord) => any, resource?: { table: string; id: string }) {
+    [resourceTransactionMechanics]: async function(fn: (transactionAdapter: LooseRecord) => any, beforeCommit?: (adapter: LooseRecord) => any, resource?: { table: string; id: string }, signal?: AbortSignal) {
       if (!resource || typeof resource.table !== "string" || typeof resource.id !== "string") throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_STORAGE_ERROR" });
       let dedicated: any; let begun = false; let commitIssued = false;
       try {
-        try { await ensureResourceSchemaPublished(); }
+        try { await ensureResourceSchemaPublished(signal); }
         catch (error: any) {
           if (typeof error?.code === "string" && error.code.startsWith("RESOURCE_")) throw error;
           throw resourceError("RESOURCE_STORAGE_ERROR");
         }
-        try { dedicated = await createPostgresConnection(url); }
-        catch { throw resourceError("RESOURCE_STORAGE_ERROR"); }
+        try { dedicated = await createPostgresConnection(url, signal); }
+        catch (error) {
+          if (signal?.aborted && signal.reason) throw signal.reason;
+          throw resourceError("RESOURCE_STORAGE_ERROR");
+        }
         const query = async (statement: string, params: any[] = []) => {
           try { return await dedicated.query(postgresInterpolate(statement, params)); }
           catch (error: any) {
+            if (signal?.aborted && signal.reason) throw signal.reason;
             if (error?.code === "55P03" || error?.code === "57014") throw resourceError("RESOURCE_BUSY");
             throw resourceError("RESOURCE_STORAGE_ERROR");
           }
@@ -2286,12 +2290,16 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
 
 const postgresRejectedTransactions = new WeakSet<Error>();
 
-export async function createPostgresConnection(url: any) {
+export async function createPostgresConnection(url: any, signal?: AbortSignal) {
   const net = await import("node:net");
   const crypto = await import("node:crypto");
   const options = postgresUrlOptions(url);
   const socket = net.createConnection({ host: options.host, port: options.port });
   socket.setNoDelay(true);
+
+  const abortConnection = () => socket.destroy(postgresConnectionAbortError(signal));
+  if (signal?.aborted) abortConnection();
+  else signal?.addEventListener("abort", abortConnection, { once: true });
 
   let buffer = Buffer.alloc(0);
   let ready = false;
@@ -2313,6 +2321,7 @@ export async function createPostgresConnection(url: any) {
   });
   socket.on("close", () => {
     closed = true;
+    signal?.removeEventListener("abort", abortConnection);
     for (const waiter of waiters.splice(0)) {
       waiter.reject(new Error("database is not open"));
     }
@@ -2401,6 +2410,7 @@ export async function createPostgresConnection(url: any) {
         return;
       }
       closed = true;
+      signal?.removeEventListener("abort", abortConnection);
       socket.write(Buffer.from([0x58, 0, 0, 0, 4]));
       socket.end();
     },
@@ -2491,6 +2501,11 @@ export async function createPostgresConnection(url: any) {
     buffer = buffer.subarray(1 + length);
     return { type, body };
   }
+}
+
+function postgresConnectionAbortError(signal?: AbortSignal) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  return Object.assign(new Error("Postgres connection was cancelled."), { code: "ABORT_ERR" });
 }
 
 function postgresUrlOptions(url: any) {

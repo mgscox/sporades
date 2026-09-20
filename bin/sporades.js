@@ -68176,7 +68176,7 @@ function bindOuterResources(database, context, hooks) {
       terminalError ??= error;
       scopeActive = false;
       admission = false;
-      controller.abort();
+      controller.abort(terminalError);
       rejectOuterAbort(terminalError);
     };
     const expire = () => {
@@ -68201,7 +68201,7 @@ function bindOuterResources(database, context, hooks) {
           await database.adapter.exec("SET LOCAL lock_timeout = '100ms'");
           const bootstrap = database.adapter[Symbol.for("sporades.database.resourceBootstrapMechanics")];
           if (typeof bootstrap !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
-          await bootstrap();
+          await bootstrap(controller.signal);
           const consume = database.adapter[Symbol.for("sporades.database.resourceConsumptionMechanics")];
           if (typeof consume !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
           await Reflect.apply(consume, database.adapter, []);
@@ -68219,6 +68219,7 @@ function bindOuterResources(database, context, hooks) {
           await database.adapter.prepare(database.adapter.dialect.sql("UPDATE [sporades_resource_outer_fence] SET [epoch]=[epoch]+1 WHERE [id]=1")).run();
         }
       } catch (error) {
+        if (terminalError) throw terminalError;
         const normalized = error?.code === "RESOURCE_BUSY" || error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY" || error?.code === "55P03" || error?.code === "57014" ? resourceError("RESOURCE_BUSY") : resourceError("RESOURCE_STORAGE_ERROR");
         if (database.adapter.engine === "postgres") terminalError ??= normalized;
         throw normalized;
@@ -68303,7 +68304,7 @@ function bindOuterResources(database, context, hooks) {
     } finally {
       scopeActive = false;
       admission = false;
-      controller.abort();
+      if (!controller.signal.aborted) controller.abort();
     }
   };
   context.resources = Object.freeze({ run: (options, callback) => trackExecution(() => execute(options, callback, false)), status: (options) => trackExecution(() => execute(options, void 0, true), false) });
@@ -68398,8 +68399,8 @@ function bindJobResources(database, context, claim, hooks) {
       terminalError ??= error;
       active = false;
       admission = false;
-      controller.abort();
-      rejectAbort(error);
+      controller.abort(terminalError);
+      rejectAbort(terminalError);
     };
     const assertLive = (admit = false) => {
       if (!active || admit && !admission) throw resourceError("RESOURCE_SCOPE_INACTIVE");
@@ -68517,7 +68518,7 @@ function bindJobResources(database, context, claim, hooks) {
         const row = adapter.prepare(adapter.dialect.sql("SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=?")).get(claim.id);
         if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
         if (row.cancelRequestedAt) throw resourceAbortError();
-      }, { table: identity.table, id: identity.id });
+      }, { table: identity.table, id: identity.id }, controller.signal);
       engineCommitted = true;
       active = false;
       await hooks.committed(scopeContext, logs);
@@ -68531,7 +68532,7 @@ function bindJobResources(database, context, claim, hooks) {
       scopeRunning = false;
       active = false;
       admission = false;
-      controller.abort();
+      if (!controller.signal.aborted) controller.abort();
       resourceAdapter = void 0;
       database.clock.clearTimer(watchdog);
       context.signal?.removeEventListener("abort", abort);
@@ -70407,7 +70408,7 @@ async function createPublicFileUrl(database, auth, fileReference, options = {}) 
   return await runFileMetadataTransaction(database, async (sqlite) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
     bindPostgresAclDependencyLocking(transactionDatabase, sqlite);
-    const resolved = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "publicUrl");
+    const resolved = await resolveLockedAccessibleFileReference(transactionDatabase, auth, fileReference, "publicUrl");
     if (!resolved.ok) {
       return resolved;
     }
@@ -97777,10 +97778,10 @@ function createSharedDatabaseAdapterMethods(dialect) {
   return {
     // Public resource-transaction behaviour is shared. Engines contribute a
     // symbol-keyed dedicated-session primitive, not a second adapter method.
-    withResourceTransaction(fn, beforeCommit, resource) {
+    withResourceTransaction(fn, beforeCommit, resource, signal) {
       const run2 = this[resourceTransactionMechanics];
       if (typeof run2 !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
-      return Reflect.apply(run2, this, [fn, beforeCommit, resource]);
+      return Reflect.apply(run2, this, [fn, beforeCommit, resource, signal]);
     },
     ensureSystemTable() {
       return this.exec(sql("CREATE TABLE IF NOT EXISTS [sporades] ([key] TEXT PRIMARY KEY, [value] TEXT NOT NULL)"));
@@ -99057,11 +99058,11 @@ async function createPostgresDatabaseAdapter(options) {
     });
     if (!await resourceSchemaReady(query)) throw resourceError("RESOURCE_STORAGE_ERROR");
   };
-  const ensureResourceSchemaPublished = async () => {
+  const ensureResourceSchemaPublished = async (signal) => {
     let bootstrap;
     let begun = false;
     try {
-      bootstrap = await createPostgresConnection(url);
+      bootstrap = await createPostgresConnection(url, signal);
       const query = async (statement, params = []) => await bootstrap.query(postgresInterpolate(statement, params));
       if (await resourceSchemaReady(query)) return;
       await query("BEGIN ISOLATION LEVEL READ COMMITTED");
@@ -99175,27 +99176,29 @@ async function createPostgresDatabaseAdapter(options) {
     // A resource scope owns an independent READ COMMITTED backend.  Closing it
     // on every exit also quarantines a connection whose COMMIT acknowledgement
     // was lost; ordinary work can never reuse that backend.
-    [resourceTransactionMechanics]: async function(fn, beforeCommit, resource) {
+    [resourceTransactionMechanics]: async function(fn, beforeCommit, resource, signal) {
       if (!resource || typeof resource.table !== "string" || typeof resource.id !== "string") throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_STORAGE_ERROR" });
       let dedicated;
       let begun = false;
       let commitIssued = false;
       try {
         try {
-          await ensureResourceSchemaPublished();
+          await ensureResourceSchemaPublished(signal);
         } catch (error) {
           if (typeof error?.code === "string" && error.code.startsWith("RESOURCE_")) throw error;
           throw resourceError("RESOURCE_STORAGE_ERROR");
         }
         try {
-          dedicated = await createPostgresConnection(url);
-        } catch {
+          dedicated = await createPostgresConnection(url, signal);
+        } catch (error) {
+          if (signal?.aborted && signal.reason) throw signal.reason;
           throw resourceError("RESOURCE_STORAGE_ERROR");
         }
         const query = async (statement, params = []) => {
           try {
             return await dedicated.query(postgresInterpolate(statement, params));
           } catch (error) {
+            if (signal?.aborted && signal.reason) throw signal.reason;
             if (error?.code === "55P03" || error?.code === "57014") throw resourceError("RESOURCE_BUSY");
             throw resourceError("RESOURCE_STORAGE_ERROR");
           }
@@ -99352,12 +99355,15 @@ async function createPostgresDatabaseAdapter(options) {
   return adapter;
 }
 var postgresRejectedTransactions = /* @__PURE__ */ new WeakSet();
-async function createPostgresConnection(url) {
+async function createPostgresConnection(url, signal) {
   const net2 = await import("node:net");
   const crypto3 = await import("node:crypto");
   const options = postgresUrlOptions(url);
   const socket = net2.createConnection({ host: options.host, port: options.port });
   socket.setNoDelay(true);
+  const abortConnection = () => socket.destroy(postgresConnectionAbortError(signal));
+  if (signal?.aborted) abortConnection();
+  else signal?.addEventListener("abort", abortConnection, { once: true });
   let buffer = Buffer.alloc(0);
   let ready = false;
   let closed = false;
@@ -99377,6 +99383,7 @@ async function createPostgresConnection(url) {
   });
   socket.on("close", () => {
     closed = true;
+    signal?.removeEventListener("abort", abortConnection);
     for (const waiter of waiters.splice(0)) {
       waiter.reject(new Error("database is not open"));
     }
@@ -99464,6 +99471,7 @@ async function createPostgresConnection(url) {
         return;
       }
       closed = true;
+      signal?.removeEventListener("abort", abortConnection);
       socket.write(Buffer.from([88, 0, 0, 0, 4]));
       socket.end();
     }
@@ -99547,6 +99555,10 @@ async function createPostgresConnection(url) {
     buffer = buffer.subarray(1 + length);
     return { type, body };
   }
+}
+function postgresConnectionAbortError(signal) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  return Object.assign(new Error("Postgres connection was cancelled."), { code: "ABORT_ERR" });
 }
 function postgresUrlOptions(url) {
   const parsed = new URL(String(url));

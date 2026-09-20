@@ -207,6 +207,42 @@ test('Postgres cancellation rejects every query already waiting in the connectio
   }
 });
 
+test('Postgres connection readiness observes caller cancellation before publishing a connection', async () => {
+  const accepted = Promise.withResolvers();
+  const peerClosed = Promise.withResolvers();
+  const sockets = new Set();
+  const server = net.createServer(socket => {
+    sockets.add(socket);
+    socket.on('close', () => { sockets.delete(socket); peerClosed.resolve(); });
+    accepted.resolve();
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const controller = new AbortController();
+  const deadline = Object.assign(new Error('Resource deadline exceeded.'), { code: 'RESOURCE_DEADLINE_EXCEEDED' });
+  let opening;
+  try {
+    const address = server.address();
+    opening = createPostgresConnection(new URL(`postgresql://127.0.0.1:${address.port}/database`), controller.signal);
+    await accepted.promise;
+    controller.abort(deadline);
+    await assert.rejects(Promise.race([
+      opening,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('cancelled readiness remained pending')), 250)),
+    ]), error => error === deadline);
+    await Promise.race([
+      peerClosed.promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('cancelled readiness left its socket open')), 250)),
+    ]);
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await opening?.catch(() => {});
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test('Postgres resource deadlines cancel blocked callback writes and release protected transactions', { skip: POSTGRES_SKIP_REASON }, async t => {
   const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
   await resetPostgresSchema(reset, ['anchors', 'writes']); await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks'); await reset.close();
@@ -3499,6 +3535,72 @@ test('unsupported adapter discriminators reject run and status before opening a 
     bindJobResources({ adapter: { engine, withResourceTransaction() { assert.fail('unsupported connection opened'); } } }, context, {}, {});
     await assert.rejects(context.resources.run(options(), () => assert.fail('unsupported callback entered')), { code: 'RESOURCE_ADAPTER_UNSUPPORTED' });
     await assert.rejects(context.resources.status({ resource: options().resource, operationId: 'operation' }), { code: 'RESOURCE_ADAPTER_UNSUPPORTED' });
+  }
+});
+
+test('a Job resource deadline aborts connection acquisition before the transaction adapter exists', async () => {
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  const acquisition = Promise.withResolvers();
+  const releaseAcquisition = Promise.withResolvers();
+  const adapter = {
+    engine: 'postgres',
+    [Symbol.for('sporades.database.resourceTransactionEligible')]: true,
+    async withResourceTransaction(_callback, _beforeCommit, _resource, signal) {
+      acquisition.resolve(signal);
+      if (!signal) await releaseAcquisition.promise;
+      else if (!signal.aborted) await new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+      throw signal?.reason ?? new Error('released test acquisition');
+    },
+  };
+  const context = { auth: actor };
+  bindJobResources({ adapter, clock, schema: { tables: [{ name: 'anchors' }] } }, context, {
+    id: 'job', claimToken: 'claim', leaseExpiresAt: '2030-01-01T00:00:30.000Z',
+  }, { rolledBack() {}, release() {} });
+  const running = context.resources.run(options(), () => assert.fail('callback entered'));
+  try {
+    const signal = await acquisition.promise;
+    assert.ok(signal instanceof AbortSignal, 'dedicated acquisition must receive the resource signal');
+    const [watchdog] = clock.pendingTimerIds();
+    clock.advanceBy(30_000); await clock.runTimer(watchdog);
+    await assert.rejects(running, { code: 'RESOURCE_DEADLINE_EXCEEDED' });
+  } finally {
+    releaseAcquisition.resolve();
+    await running.catch(() => {});
+  }
+});
+
+test('an outer resource deadline aborts readiness bootstrap instead of only its primary client', async () => {
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  const bootstrapStarted = Promise.withResolvers();
+  const releaseBootstrap = Promise.withResolvers();
+  const adapter = {
+    engine: 'postgres',
+    dialect: { quoteIdentifier: value => `"${value}"`, sql: value => value.replaceAll('[', '"').replaceAll(']', '"') },
+    [Symbol.for('sporades.database.resourceTransactionEligible')]: true,
+    [Symbol.for('sporades.database.resourceCancelActiveQuery')]: async () => false,
+    [Symbol.for('sporades.database.resourceBootstrapMechanics')]: async signal => {
+      bootstrapStarted.resolve(signal);
+      if (!signal) await releaseBootstrap.promise;
+      else if (!signal.aborted) await new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+      throw signal?.reason ?? new Error('released test bootstrap');
+    },
+    async exec() {},
+  };
+  const context = { auth: actor, db: {}, jobs: {} };
+  const release = bindOuterResources({ adapter, clock, schema: { tables: [{ name: 'anchors' }] } }, context, {
+    startedAt: clock.now().getTime(), authorize: async () => null, drain: async () => null,
+  });
+  const running = context.resources.run(options(), () => assert.fail('callback entered'));
+  try {
+    const signal = await bootstrapStarted.promise;
+    assert.ok(signal instanceof AbortSignal, 'bootstrap must receive the outer resource signal');
+    const [watchdog] = clock.pendingTimerIds();
+    clock.advanceBy(30_000); await clock.runTimer(watchdog);
+    await assert.rejects(running, { code: 'RESOURCE_DEADLINE_EXCEEDED' });
+  } finally {
+    releaseBootstrap.resolve();
+    release();
+    await running.catch(() => {});
   }
 });
 

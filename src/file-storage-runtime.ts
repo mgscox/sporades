@@ -883,7 +883,7 @@ export async function createPublicFileUrl(database: LooseRecord, auth: LooseReco
   return await runFileMetadataTransaction(database, async (sqlite: LooseRecord) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
     bindPostgresAclDependencyLocking(transactionDatabase, sqlite);
-    const resolved: any = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "publicUrl");
+    const resolved: any = await resolveLockedAccessibleFileReference(transactionDatabase, auth, fileReference, "publicUrl");
     if (!resolved.ok) {
       return resolved;
     }

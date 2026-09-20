@@ -236,7 +236,7 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
     const revoke = (error: any) => {
       terminalError ??= error;
       scopeActive = false; admission = false;
-      controller.abort(); rejectOuterAbort(terminalError);
+      controller.abort(terminalError); rejectOuterAbort(terminalError);
     };
     const expire = () => {
       const error = resourceError("RESOURCE_DEADLINE_EXCEEDED");
@@ -266,7 +266,7 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
           // runtime schema is not already published. Do not put bootstrap DDL
           // in this outer handler transaction: returning from this scope is
           // deliberately still provisional until the outer COMMIT.
-          await bootstrap();
+          await bootstrap(controller.signal);
           const consume = (database.adapter as any)[Symbol.for("sporades.database.resourceConsumptionMechanics")];
           if (typeof consume !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
           await Reflect.apply(consume, database.adapter, []);
@@ -286,6 +286,7 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
           await database.adapter.prepare(database.adapter.dialect.sql("UPDATE [sporades_resource_outer_fence] SET [epoch]=[epoch]+1 WHERE [id]=1")).run();
         }
       } catch (error: any) {
+        if (terminalError) throw terminalError;
         const normalized = error?.code === "RESOURCE_BUSY" || error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY" || error?.code === "55P03" || error?.code === "57014"
           ? resourceError("RESOURCE_BUSY")
           : resourceError("RESOURCE_STORAGE_ERROR");
@@ -365,7 +366,8 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
       if (acquired || normalized?.code === "RESOURCE_STORAGE_ERROR") terminalError ??= normalized;
       throw normalized;
     } finally {
-      scopeActive = false; admission = false; controller.abort();
+      scopeActive = false; admission = false;
+      if (!controller.signal.aborted) controller.abort();
     }
   };
   context.resources = Object.freeze({ run: (options: any, callback: any) => trackExecution(() => execute(options, callback, false)), status: (options: any) => trackExecution(() => execute(options, undefined, true), false) });
@@ -458,7 +460,7 @@ export function bindJobResources(database: RecordValue, context: RecordValue, cl
     const revoke = (error: any) => {
       terminalError ??= error;
       active = false; admission = false;
-      controller.abort(); rejectAbort(error);
+      controller.abort(terminalError); rejectAbort(terminalError);
     };
     const assertLive = (admit = false) => {
       if (!active || admit && !admission) throw resourceError("RESOURCE_SCOPE_INACTIVE");
@@ -563,7 +565,7 @@ export function bindJobResources(database: RecordValue, context: RecordValue, cl
         const row = adapter.prepare(adapter.dialect.sql("SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=?")).get(claim.id);
         if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
         if (row.cancelRequestedAt) throw resourceAbortError();
-      }, { table: identity.table, id: identity.id });
+      }, { table: identity.table, id: identity.id }, controller.signal);
       engineCommitted = true;
       active = false;
       await hooks.committed(scopeContext, logs);
@@ -575,7 +577,8 @@ export function bindJobResources(database: RecordValue, context: RecordValue, cl
       throw error;
     } finally {
       scopeRunning = false;
-      active = false; admission = false; controller.abort();
+      active = false; admission = false;
+      if (!controller.signal.aborted) controller.abort();
       resourceAdapter = undefined;
       database.clock.clearTimer(watchdog);
       context.signal?.removeEventListener("abort", abort);
