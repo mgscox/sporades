@@ -8,10 +8,10 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { openDevDatabase, runMutation, runEndpoint, runCurrentUserJobWorker, createControllableRuntimeClock } from '../dist/server-runtime-source.js';
 import { table, String as Text, endpoint, job, mutation, requireAuth, schedule } from '../dist/server.js';
-import { createPostgresConnection, createSqliteDatabaseAdapter } from '../dist/database-runtime.js';
+import { createPostgresConnection, createRuntimeDatabaseAdapter, createSqliteDatabaseAdapter } from '../dist/database-runtime.js';
 import { completePendingFileUpload, createPendingFileUpload, createPublicFileUrl, deletePrivateFile } from '../dist/file-storage-runtime.js';
 import { resolveAnonymousSession } from '../dist/auth-runtime.js';
-import { resourceCanonicalJson, bindJobResources, bindOuterResources } from '../dist/resource-runtime.js';
+import { RESOURCE_ADAPTER_SUPPORT, resourceCanonicalJson, bindJobResources, bindOuterResources } from '../dist/resource-runtime.js';
 import { POSTGRES_SKIP_REASON, postgresTestUrl, resetPostgresSchema } from './support/database-adapter-engines.js';
 import { createPostgresDatabaseAdapter } from '../dist/server-runtime-source.js';
 
@@ -3795,6 +3795,79 @@ test('unsupported adapter discriminators reject run and status before opening a 
     bindJobResources({ adapter: { engine, withResourceTransaction() { assert.fail('unsupported connection opened'); } } }, context, {}, {});
     await assert.rejects(context.resources.run(options(), () => assert.fail('unsupported callback entered')), { code: 'RESOURCE_ADAPTER_UNSUPPORTED' });
     await assert.rejects(context.resources.status({ resource: options().resource, operationId: 'operation' }), { code: 'RESOURCE_ADAPTER_UNSUPPORTED' });
+  }
+});
+
+test('local and remote libSQL resource entry surfaces fail closed without callbacks, writes, network, or fallbacks', async () => {
+  assert.deepEqual(RESOURCE_ADAPTER_SUPPORT, {
+    sqlite: 'supported',
+    postgres: 'supported',
+    libsql: 'unsupported',
+  });
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  let networkSubmissions = 0;
+  let expiryTimers = 0;
+  let callbacks = 0;
+  globalThis.fetch = async () => {
+    networkSubmissions++;
+    assert.fail('libSQL resource rejection reached receipt, application, intent, or network work');
+  };
+  globalThis.setTimeout = () => {
+    expiryTimers++;
+    assert.fail('libSQL resource rejection installed an expiring claim or mutex timer');
+  };
+  try {
+    for (const [configuration, url] of [
+      ['local', 'http://127.0.0.1:1'],
+      ['remote', 'libsql://unreachable.invalid'],
+    ]) {
+      const adapter = await createRuntimeDatabaseAdapter('unused.db', {
+        SPORADES_SERVICE_DATABASE_ENGINE: 'libsql',
+        SPORADES_SERVICE_DATABASE_URL: url,
+      }, { services: { database: { engine: 'libsql' } } });
+      assert.equal(adapter.engine, 'libsql', `${configuration} configuration selected the real libSQL adapter`);
+      const guardedAdapter = new Proxy(adapter, {
+        get(target, property) {
+          if (property === 'engine') return target.engine;
+          assert.fail(`libSQL resource rejection touched fallback adapter mechanic ${String(property)}`);
+        },
+      });
+      try {
+        for (const kind of ['job', 'outer']) {
+          const context = { auth: actor };
+          let release = () => {};
+          const database = new Proxy({ adapter: guardedAdapter }, {
+            get(target, property) {
+              if (property === 'adapter') return target.adapter;
+              assert.fail(`libSQL resource rejection touched fallback database state ${String(property)}`);
+            },
+          });
+          const claim = new Proxy({}, { get(_target, property) { assert.fail(`libSQL resource rejection read expiring claim ${String(property)}`); } });
+          if (kind === 'job') bindJobResources(database, context, claim, {});
+          else release = bindOuterResources(database, context, { startedAt: Date.parse('2030-01-01T00:00:00.000Z') });
+          for (const invoke of [
+            () => context.resources.run(options(), () => { callbacks++; return null; }),
+            () => context.resources.status({ resource: options().resource, operationId: 'operation' }),
+          ]) await assert.rejects(invoke(), error => {
+            assert.deepEqual({ code: error.code, message: error.message }, {
+              code: 'RESOURCE_ADAPTER_UNSUPPORTED',
+              message: 'Resource operation could not complete.',
+            });
+            return true;
+          });
+          release();
+        }
+      } finally {
+        await adapter.close();
+      }
+    }
+    assert.equal(callbacks, 0);
+    assert.equal(networkSubmissions, 0);
+    assert.equal(expiryTimers, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
   }
 });
 

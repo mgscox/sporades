@@ -70,6 +70,10 @@ test("sporades api bindings compile representative strict TypeScript app code", 
       `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, requireUserAuth, schedule, stripeEvent, table, type TableApi, type TableDefinition } from "sporades/server";
 import * as publicServerApi from "sporades/server";
 async function resourceContract(ctx: publicServerApi.CapsuleContext) {
+  const support: publicServerApi.ResourceAdapterSupport = { sqlite: "supported", postgres: "supported", libsql: "unsupported" };
+  // @ts-expect-error libSQL resource scopes are explicitly unsupported in v1.
+  const inventedLibsqlSupport: publicServerApi.ResourceAdapterSupport = { sqlite: "supported", postgres: "supported", libsql: "supported" };
+  void support; void inventedLibsqlSupport;
   const answer = await ctx.resources.run({ resource: { table: "anchors", id: "existing" }, operationId: "stable", input: null }, async scope => {
     await scope.jobs.enqueue("child", null);
     // @ts-expect-error no provider authority in a resource scope.

@@ -1034,6 +1034,26 @@ test("canonical, feature, and reference Job docs describe transaction-bound enqu
   }
 });
 
+test("resource contracts publish the v1 adapter support matrix and future libSQL gate", async () => {
+  const [types, context, canonicalPrd, jobReference, adr] = await Promise.all([
+    readProjectFile("src/types/server.d.ts"),
+    readProjectFile("CONTEXT.md"),
+    readProjectFile("docs/PRD.md"),
+    readProjectFile("docs/reference/jobs-and-schedules.md"),
+    readProjectFile("docs/adr/0054-ordinary-job-authority-does-not-fence-smtp-acceptance.md"),
+  ]);
+  assert.match(types, /ResourceAdapterSupport[\s\S]*sqlite:\s*"supported"[\s\S]*postgres:\s*"supported"[\s\S]*libsql:\s*"unsupported"/i);
+  for (const document of [context, canonicalPrd, jobReference, adr]) {
+    assert.match(document, /SQLite[\s\S]{0,160}PostgreSQL[\s\S]{0,240}(?:libSQL[\s\S]{0,80}unsupported|libSQL fails closed)/i);
+    assert.match(document, /RESOURCE_ADAPTER_UNSUPPORTED/);
+  }
+  for (const document of [canonicalPrd, jobReference, adr]) {
+    assert.match(document, /future\s+libSQL support[\s\S]{0,240}separate\s+approved\s+proposal/i);
+    assert.match(document, /real\s+representative\s+remote[\s\S]{0,160}transaction expiry[\s\S]{0,160}connection loss[\s\S]{0,160}restart/i);
+    assert.match(document, /rejection\s+gate[\s\S]{0,120}(?:does not|doesn't)[\s\S]{0,80}certif(?:y|ies)[\s\S]{0,80}support/i);
+  }
+});
+
 test("canonical Job and architecture docs describe settled runtime shutdown", async () => {
   const [canonicalPrd, jobReference, architecture] = await Promise.all([
     readProjectFile("docs/PRD.md"),
