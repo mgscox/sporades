@@ -2,7 +2,7 @@
 
 **What to build:** Validate the complete reference Capsule against explicitly approved M1, preserving a visible mapping of original #52 guarantees that were dropped.
 
-**Blocked by:** 03, 04, 05, 06.
+**Blocked by:** 05, 06.
 
 **Status:** blocked — implementation-dependencies
 

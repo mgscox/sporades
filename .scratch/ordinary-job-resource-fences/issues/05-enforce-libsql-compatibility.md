@@ -2,9 +2,9 @@
 
 **What to build:** Implement an explicit unsupported-adapter gate for the proposed resource API. The original optional libSQL support investigation is unnecessary in this implementation plan.
 
-**Blocked by:** 02.
+**Blocked by:** None.
 
-**Status:** blocked — implementation-dependencies
+**Status:** ready-for-agent
 
 **Parent:** https://github.com/mgscox/sporades/issues/52
 
