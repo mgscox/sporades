@@ -722,7 +722,12 @@ export function bindJobResources(database, context, claim, hooks) {
             // worker records success, while an ordinary handler that already
             // completed retains Unit A's successful-settlement semantics.
             if (database.adapter.engine === "postgres") {
-                const cancellation = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?")).get(claim.id, claim.claimToken);
+                const cancellation = await database.adapter.prepare(database.adapter.dialect.sql(
+                // A plain MVCC read could take its snapshot while the cancellation
+                // updater is still queued on the resource transaction's former row
+                // lock. The locking read follows PostgreSQL's row-lock wait order and
+                // rechecks the updated tuple before this worker may publish success.
+                "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=? FOR UPDATE")).get(claim.id, claim.claimToken);
                 if (cancellation?.cancelRequestedAt)
                     throw resourceAbortError();
             }

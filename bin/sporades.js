@@ -68893,7 +68893,11 @@ function bindJobResources(database, context, claim, hooks) {
       await hooks.committed(scopeContext, logs);
       if (database.adapter.engine === "postgres") {
         const cancellation = await database.adapter.prepare(database.adapter.dialect.sql(
-          "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?"
+          // A plain MVCC read could take its snapshot while the cancellation
+          // updater is still queued on the resource transaction's former row
+          // lock. The locking read follows PostgreSQL's row-lock wait order and
+          // rechecks the updated tuple before this worker may publish success.
+          "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=? FOR UPDATE"
         )).get(claim.id, claim.claimToken);
         if (cancellation?.cancelRequestedAt) throw resourceAbortError();
       }
