@@ -68544,7 +68544,9 @@ function bindOuterResources(database, context, hooks) {
           await database.adapter.exec("SET LOCAL lock_timeout = '100ms'");
           const bootstrap = database.adapter[Symbol.for("sporades.database.resourceBootstrapMechanics")];
           if (typeof bootstrap !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
-          await bootstrap(controller.signal);
+          if (database.adapter[Symbol.for("sporades.database.resourceSchemaPublished")] !== true) {
+            await bootstrap(controller.signal);
+          }
           const consume = database.adapter[Symbol.for("sporades.database.resourceConsumptionMechanics")];
           if (typeof consume !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
           await Reflect.apply(consume, database.adapter, []);
@@ -68555,7 +68557,6 @@ function bindOuterResources(database, context, hooks) {
             `SELECT ${database.adapter.dialect.quoteIdentifier("id")} FROM ${database.adapter.dialect.quoteIdentifier(identity.table)} WHERE ${database.adapter.dialect.quoteIdentifier("id")}=? FOR UPDATE NOWAIT`
           ).get(identity.id);
           if (!anchor) throw resourceError("RESOURCE_STORAGE_ERROR");
-          await database.adapter.exec("SET LOCAL lock_timeout = DEFAULT");
         } else {
           await database.adapter.exec(database.adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_outer_fence] ([id] INTEGER PRIMARY KEY, [epoch] INTEGER NOT NULL)"));
           await database.adapter.prepare(database.adapter.dialect.sql("INSERT OR IGNORE INTO [sporades_resource_outer_fence] ([id], [epoch]) VALUES (1, 0)")).run();
@@ -68573,6 +68574,9 @@ function bindOuterResources(database, context, hooks) {
         await hooks.authorize(context, parentDb, identity);
       } catch (error) {
         throw database.adapter.engine === "postgres" ? normalizeDatabaseOperationError(error) : error;
+      }
+      if (database.adapter.engine === "postgres") {
+        await database.adapter.exec("SET LOCAL lock_timeout = DEFAULT");
       }
       assertLive(true);
       let receipt2;
@@ -68811,6 +68815,7 @@ function bindJobResources(database, context, claim, hooks) {
         await checkClaim(guarded, true);
         scopeContext = hooks.createContext(guarded, controller.signal, privileged);
         await Promise.race([hooks.authorize(scopeContext, identity), aborted]);
+        if (database.adapter.engine === "postgres") await guarded.exec("SET LOCAL lock_timeout = DEFAULT");
         assertLive(true);
         if (database.adapter.engine !== "postgres") {
           await guarded.exec(adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_receipts] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId]))"));
@@ -68882,14 +68887,23 @@ function bindJobResources(database, context, claim, hooks) {
         const row = adapter.prepare(adapter.dialect.sql("SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=?")).get(claim.id);
         if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
         if (row.cancelRequestedAt) throw resourceAbortError();
-      }, { table: identity.table, id: identity.id }, controller.signal);
+      }, { table: identity.table, id: identity.id }, controller.signal, database.adapter.engine === "postgres");
       engineCommitted = true;
       active = false;
       await hooks.committed(scopeContext, logs);
+      if (database.adapter.engine === "postgres") {
+        const cancellation = await database.adapter.prepare(database.adapter.dialect.sql(
+          "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?"
+        )).get(claim.id, claim.claimToken);
+        if (cancellation?.cancelRequestedAt) throw resourceAbortError();
+      }
       return result;
     } catch (error) {
       active = false;
-      if (engineCommitted) throw resourceError("RESOURCE_STORAGE_ERROR");
+      if (engineCommitted) {
+        if (isResourceAbortError(error)) throw error;
+        throw resourceError("RESOURCE_STORAGE_ERROR");
+      }
       hooks.rolledBack(scopeContext);
       throw error;
     } finally {
@@ -98062,6 +98076,7 @@ var transactionBeforeCommitChecks2 = Symbol.for("sporades.database.transactionBe
 var resourceTransactionMechanics = Symbol.for("sporades.database.resourceTransactionMechanics");
 var resourceBootstrapMechanics = Symbol.for("sporades.database.resourceBootstrapMechanics");
 var resourceConsumptionMechanics = Symbol.for("sporades.database.resourceConsumptionMechanics");
+var resourceSchemaPublished = Symbol.for("sporades.database.resourceSchemaPublished");
 var resourceCancelActiveQuery = Symbol.for("sporades.database.resourceCancelActiveQuery");
 var postgresCancelDeliveryTimeoutMs = 250;
 async function runTransactionBeforeCommitChecks(transactionAdapter) {
@@ -98229,10 +98244,10 @@ function createSharedDatabaseAdapterMethods(dialect) {
   return {
     // Public resource-transaction behaviour is shared. Engines contribute a
     // symbol-keyed dedicated-session primitive, not a second adapter method.
-    withResourceTransaction(fn, beforeCommit, resource, signal) {
+    withResourceTransaction(fn, beforeCommit, resource, signal, retainAdmissionTimeout = false) {
       const run2 = this[resourceTransactionMechanics];
       if (typeof run2 !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
-      return Reflect.apply(run2, this, [fn, beforeCommit, resource, signal]);
+      return Reflect.apply(run2, this, [fn, beforeCommit, resource, signal, retainAdmissionTimeout]);
     },
     ensureSystemTable() {
       return this.exec(sql2("CREATE TABLE IF NOT EXISTS [sporades] ([key] TEXT PRIMARY KEY, [value] TEXT NOT NULL)"));
@@ -99519,7 +99534,10 @@ async function createPostgresDatabaseAdapter(options) {
     try {
       bootstrap = await createPostgresConnection(url, signal);
       const query = async (statement, params = []) => await bootstrap.query(postgresInterpolate(statement, params));
-      if (await resourceSchemaReady(query)) return;
+      if (await resourceSchemaReady(query)) {
+        adapter[resourceSchemaPublished] = true;
+        return;
+      }
       await query("BEGIN ISOLATION LEVEL READ COMMITTED");
       begun = true;
       await query("SET LOCAL lock_timeout = '100ms'");
@@ -99555,6 +99573,7 @@ async function createPostgresDatabaseAdapter(options) {
       }
       await query("COMMIT");
       begun = false;
+      adapter[resourceSchemaPublished] = true;
     } catch (error) {
       if (begun) {
         try {
@@ -99641,14 +99660,14 @@ async function createPostgresDatabaseAdapter(options) {
     // A resource scope owns an independent READ COMMITTED backend.  Closing it
     // on every exit also quarantines a connection whose COMMIT acknowledgement
     // was lost; ordinary work can never reuse that backend.
-    [resourceTransactionMechanics]: async function(fn, beforeCommit, resource, signal) {
+    [resourceTransactionMechanics]: async function(fn, beforeCommit, resource, signal, retainAdmissionTimeout = false) {
       if (!resource || typeof resource.table !== "string" || typeof resource.id !== "string") throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_STORAGE_ERROR" });
       let dedicated;
       let begun = false;
       let commitIssued = false;
       try {
         try {
-          await ensureResourceSchemaPublished(signal);
+          if (!this[resourceSchemaPublished]) await ensureResourceSchemaPublished(signal);
         } catch (error) {
           if (typeof error?.code === "string" && error.code.startsWith("RESOURCE_")) throw error;
           throw resourceError("RESOURCE_STORAGE_ERROR");
@@ -99691,7 +99710,7 @@ async function createPostgresDatabaseAdapter(options) {
         const resourceIdColumn = dialect.quoteIdentifier("resourceId");
         await query(`INSERT INTO ${resourceLockTable} (${resourceTableColumn}, ${resourceIdColumn}) VALUES (?, ?) ON CONFLICT (${resourceTableColumn}, ${resourceIdColumn}) DO NOTHING`, [resource.table, resource.id]);
         await query(`SELECT ${resourceTableColumn} FROM ${resourceLockTable} WHERE ${resourceTableColumn}=? AND ${resourceIdColumn}=? FOR UPDATE NOWAIT`, [resource.table, resource.id]);
-        await query("SET LOCAL lock_timeout = DEFAULT");
+        if (!retainAdmissionTimeout) await query("SET LOCAL lock_timeout = DEFAULT");
         const transaction = createTransactionScopedAdapter(adapter, operations, adapter, "transaction");
         Object.defineProperty(transaction, resourceCancelActiveQuery, {
           configurable: true,

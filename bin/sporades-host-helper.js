@@ -42880,6 +42880,7 @@ var transactionBeforeCommitChecks2 = Symbol.for("sporades.database.transactionBe
 var resourceTransactionMechanics = Symbol.for("sporades.database.resourceTransactionMechanics");
 var resourceBootstrapMechanics = Symbol.for("sporades.database.resourceBootstrapMechanics");
 var resourceConsumptionMechanics = Symbol.for("sporades.database.resourceConsumptionMechanics");
+var resourceSchemaPublished = Symbol.for("sporades.database.resourceSchemaPublished");
 var resourceCancelActiveQuery = Symbol.for("sporades.database.resourceCancelActiveQuery");
 
 // src/server-runtime-source.ts
