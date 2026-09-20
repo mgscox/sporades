@@ -23,10 +23,11 @@ const mailConfig = {
 
 async function fixture({ outcomes = [], fault, extra = {}, smtpPort = null, smtp = {} } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), 'notification-intents-'));
+  const databasePath = path.join(dir, 'data.db');
   const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
   const deliveries = [];
   const config = { ...mailConfig, mail: { smtp: { ...mailConfig.mail.smtp, ...(smtpPort === null ? {} : { port: smtpPort }), ...smtp } } };
-  const database = await openDevDatabase(path.join(dir, 'data.db'), '', {}, config, {
+  const capsuleDefinition = {
     schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) },
     mutations: {
       accept: mutation((ctx, input = notification()) => ctx.resources.run({ resource, operationId: 'accept', input: { version: 1 } }, async scope => {
@@ -52,7 +53,8 @@ async function fixture({ outcomes = [], fault, extra = {}, smtpPort = null, smtp
       ...extra.jobs,
     },
     endpoints: extra.endpoints,
-  }, {
+  };
+  const runtimeOptions = {
     clock,
     notificationIntentFault: fault,
     ...(smtpPort === null ? { mailTransportFactoryTrusted: true, mailTransportFactory: () => ({
@@ -65,11 +67,28 @@ async function fixture({ outcomes = [], fault, extra = {}, smtpPort = null, smtp
       },
       close() {},
     }) } : {}),
-  });
+  };
+  const database = await openDevDatabase(databasePath, '', {}, config, capsuleDefinition, runtimeOptions);
   database.adapter.prepare('INSERT INTO anchors (id,createdAt,updatedAt,value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'anchor');
   await database.init();
   await stopNotificationIntentWorker(database);
-  return { database, clock, deliveries, close: async () => { await database.shutdown(); await database.close(); await rm(dir, { recursive: true, force: true }); } };
+  return {
+    database, clock, deliveries, dir,
+    reopen: () => openDevDatabase(databasePath, '', {}, config, capsuleDefinition, runtimeOptions),
+    close: async () => { await database.shutdown(); await database.close(); await rm(dir, { recursive: true, force: true }); },
+  };
+}
+
+async function settlesWithin(promise, timeoutMs = 1_000) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`cleanup did not settle within ${timeoutMs}ms`)), timeoutMs); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function controlledReceiver(modes) {
@@ -461,6 +480,97 @@ test('shutdown aborts an active SMTP send before awaiting its worker and retains
       'shutdown leaves the uncertain reservation for deadline-based restart recovery',
     );
   } finally { await f.close(); }
+});
+
+test('init-failure cleanup aborts an active SMTP send before awaiting its worker and preserves restart recovery', async () => {
+  const f = await fixture();
+  let rejectSend;
+  let markSendStarted;
+  const sendStarted = new Promise(resolve => { markSendStarted = resolve; });
+  const initFailure = new Error('injected publication failure');
+  try {
+    assert.equal((await runMutation(f.database, actor, 'accept', [notification()])).ok, true);
+    await f.database.shutdown();
+    f.database.mail = {
+      enabled: true,
+      sendIntent() {
+        markSendStarted();
+        return new Promise((_, reject) => { rejectSend = reject; });
+      },
+      close() {
+        rejectSend(Object.assign(new Error('SMTP transport closed for failed init'), { code: 'ECONNECTION' }));
+      },
+    };
+    f.database.__publishAccessKeyScopes = async () => {
+      await sendStarted;
+      throw initFailure;
+    };
+
+    await assert.rejects(settlesWithin(f.database.init()), error => error === initFailure);
+    const reserved = f.database.adapter.prepare('SELECT state,currentAttemptToken,currentAttemptDeadline FROM sporades_notification_recipients').get();
+    assert.equal(reserved.state, 'submitting', 'failed init leaves the active reservation uncertain');
+    assert.ok(reserved.currentAttemptToken);
+
+    f.database.__deferJobExecution();
+    f.database.__publishAccessKeyScopes = async () => {};
+    f.database.mail = { enabled: true, async sendIntent() {}, close() {} };
+    f.clock.advanceBy(30_000);
+    await f.database.init();
+    assert.equal(await runNotificationIntentDeliveryPass(f.database), false);
+    assert.deepEqual(
+      { ...f.database.adapter.prepare('SELECT state,nextAttemptAt FROM sporades_notification_recipients').get() },
+      { state: 'retry-wait', nextAttemptAt: '2030-01-01T00:01:00.000Z' },
+      'the retained reservation recovers after its durable deadline',
+    );
+  } finally {
+    rejectSend?.(Object.assign(new Error('test cleanup'), { code: 'ECONNECTION' }));
+    await f.close();
+  }
+});
+
+test('direct database close aborts an active SMTP send before awaiting its worker and preserves restart recovery', async () => {
+  const f = await fixture();
+  let rejectSend;
+  let markSendStarted;
+  let closePromise;
+  let restarted;
+  const sendStarted = new Promise(resolve => { markSendStarted = resolve; });
+  try {
+    assert.equal((await runMutation(f.database, actor, 'accept', [notification()])).ok, true);
+    f.database.mail = {
+      enabled: true,
+      sendIntent() {
+        markSendStarted();
+        return new Promise((_, reject) => { rejectSend = reject; });
+      },
+      close() {
+        rejectSend(Object.assign(new Error('SMTP transport closed for database close'), { code: 'ECONNECTION' }));
+      },
+    };
+    void startNotificationIntentWorker(f.database);
+    await sendStarted;
+    const reserved = f.database.adapter.prepare('SELECT state,currentAttemptToken,currentAttemptDeadline FROM sporades_notification_recipients').get();
+    assert.equal(reserved.state, 'submitting');
+
+    closePromise = f.database.close();
+    await settlesWithin(closePromise);
+
+    f.clock.advanceBy(30_000);
+    restarted = await f.reopen();
+    restarted.__deferJobExecution();
+    await restarted.init();
+    assert.equal(await runNotificationIntentDeliveryPass(restarted), false);
+    assert.deepEqual(
+      { ...restarted.adapter.prepare('SELECT state,nextAttemptAt FROM sporades_notification_recipients').get() },
+      { state: 'retry-wait', nextAttemptAt: '2030-01-01T00:01:00.000Z' },
+      'the retained reservation recovers after reopening the database',
+    );
+  } finally {
+    rejectSend?.(Object.assign(new Error('test cleanup'), { code: 'ECONNECTION' }));
+    await closePromise?.catch(() => {});
+    if (restarted) { await restarted.shutdown(); await restarted.close(); }
+    await rm(f.dir, { recursive: true, force: true });
+  }
 });
 
 test('restart additively upgrades a pre-authenticator notification database without losing pending work', async () => {

@@ -1033,14 +1033,26 @@ export async function openDevDatabase(
       for (const timer of database.__scheduleTimers ?? []) database.clock.clearTimer(timer);
       database.__scheduleTimers?.clear?.();
       const workerSettlement = stopCurrentUserJobWorker(database);
+      database.__notificationIntentShutdownAborting = true;
       const notificationSettlement = stopNotificationIntentWorker(database);
       const scheduleSettlement = settleActiveScheduleWork(database);
+      let mailSettlement: Promise<unknown> | undefined;
+      let mailStartError: unknown;
+      try {
+        mailSettlement = Promise.resolve(database.mail.close());
+        void mailSettlement.catch(() => {});
+      } catch (error) {
+        mailStartError = error;
+      }
       const closeResources = () => {
         const failures: Array<{ index: number; error: unknown }> = [];
         const pending: Promise<void>[] = [];
-    const resources = [
+        const resources = [
           () => shutdownClamavRuntime(database),
-          () => database.mail.close(),
+          () => {
+            if (mailStartError !== undefined) throw mailStartError;
+            return mailSettlement;
+          },
           () => database.adapter.close(),
           () => database.fileStorage.close(),
         ];
@@ -1180,7 +1192,16 @@ export async function openDevDatabase(
       database.__scheduleRecoveryTimer = null;
       database.__scheduleRecoveryDueAt = null;
       database.__scheduleLegacyDiscoveryTimer = null;
-      const settlements = [stopCurrentUserJobWorker(database), stopNotificationIntentWorker(database), settleActiveScheduleWork(database), shutdownClamavRuntime(database)]
+      database.__notificationIntentShutdownAborting = true;
+      const notificationSettlement = stopNotificationIntentWorker(database);
+      let mailSettlement: Promise<unknown>;
+      try {
+        mailSettlement = Promise.resolve(database.mail.close());
+      } catch (cleanupError) {
+        mailSettlement = Promise.reject(cleanupError);
+      }
+      void mailSettlement.catch(() => {});
+      const settlements = [stopCurrentUserJobWorker(database), notificationSettlement, mailSettlement, settleActiveScheduleWork(database), shutdownClamavRuntime(database)]
         .filter(Boolean)
         .map((pending) => Promise.resolve(pending));
       const cleanup = await Promise.allSettled(settlements);
