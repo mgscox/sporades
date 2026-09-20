@@ -193,6 +193,45 @@ test("Postgres resource transactions reject malformed runtime schemas before pro
   }
 });
 
+test("Postgres resource transactions reject leaf partitions before protected work", { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  const dropFixture = () => reset.exec('DROP TABLE IF EXISTS "sporades_resource_receipts", "ticket04_resource_receipts_parent", "sporades_resource_locks" CASCADE');
+  try {
+    await dropFixture();
+    await reset.exec('CREATE TABLE "sporades_resource_locks" ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId"))');
+    await reset.exec('CREATE TABLE "ticket04_resource_receipts_parent" ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, "operationId" TEXT NOT NULL, "inputDigest" TEXT NOT NULL, "actorDigest" TEXT NOT NULL, "resultJson" TEXT NOT NULL, "intentIdsJson" TEXT NOT NULL, "committedAt" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId", "operationId")) PARTITION BY LIST ("resourceTable")');
+    await reset.exec('CREATE TABLE "sporades_resource_receipts" PARTITION OF "ticket04_resource_receipts_parent" FOR VALUES IN (\'partition-bound-only\')');
+
+    const partitioned = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    let partitionCallbacks = 0;
+    try {
+      await assert.rejects(
+        partitioned.withResourceTransaction(
+          async () => { partitionCallbacks++; },
+          transaction => transaction.prepare('INSERT INTO "sporades_resource_receipts" VALUES (?,?,?,?,?,?,?,?)').run('anchors', 'leaf-partition', 'leaf-partition', 'input', 'actor', '{}', '[]', '2030-01-01T00:00:00.000Z'),
+          { table: "anchors", id: "leaf-partition" },
+        ),
+        { code: "RESOURCE_STORAGE_ERROR" },
+      );
+      assert.equal(partitionCallbacks, 0, "a leaf partition must fail readiness before protected work");
+      assert.equal(Number((await reset.prepare('SELECT count(*) AS n FROM "sporades_resource_locks"').get()).n), 0);
+    } finally { await partitioned.close(); }
+
+    await dropFixture();
+    await reset.exec('CREATE TABLE "sporades_resource_locks" ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId"))');
+    await reset.exec('CREATE TABLE "sporades_resource_receipts" ("resourceTable" TEXT NOT NULL, "resourceId" TEXT NOT NULL, "operationId" TEXT NOT NULL, "inputDigest" TEXT NOT NULL, "actorDigest" TEXT NOT NULL, "resultJson" TEXT NOT NULL, "intentIdsJson" TEXT NOT NULL, "committedAt" TEXT NOT NULL, PRIMARY KEY ("resourceTable", "resourceId", "operationId"))');
+    const ordinary = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    let ordinaryCallbacks = 0;
+    try {
+      assert.equal(await ordinary.withResourceTransaction(async () => ++ordinaryCallbacks, undefined, { table: "anchors", id: "ordinary-table" }), 1);
+      assert.equal(ordinaryCallbacks, 1, "an ordinary runtime table remains admissible");
+    } finally { await ordinary.close(); }
+  } finally {
+    await dropFixture();
+    await reset.close();
+  }
+});
+
 test("Postgres resource precommit connection failures are redacted while callback errors remain unchanged", { skip: POSTGRES_SKIP_REASON }, async () => {
   const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
   await resetPostgresSchema(reset, ["anchors"]);
