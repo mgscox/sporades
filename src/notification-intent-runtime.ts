@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 type RecordValue = Record<string, any>;
 
 export const NOTIFICATION_RESERVATION_MS = 30_000;
+export const NOTIFICATION_RECOVERY_SCAN_MS = 30_000;
 export const NOTIFICATION_MAX_BACKOFF_MS = 3_600_000;
 
 export const notificationIntentSchemas = [
@@ -80,7 +81,13 @@ export async function stageNotificationIntent(
     invalid();
   }
   if (normalized.to.length !== input.to.length) invalid();
-  const payload = { id: input.id, to: normalized.to.map((entry: any) => entry.email), subject: normalized.subject,
+  const recipients = normalized.to.map((entry: any) => entry.email);
+  // One recipient row per address is the durable identity. A repeated address
+  // would violate the recipient primary key mid-insert, and that engine error
+  // normalizes to an opaque terminal RESOURCE_STORAGE_ERROR that poisons the
+  // whole enclosing transaction. Reject it here as ordinary invalid input.
+  if (new Set(recipients).size !== recipients.length) invalid();
+  const payload = { id: input.id, to: recipients, subject: normalized.subject,
     text: input.text, ...(input.html === undefined ? {} : { html: input.html }) };
   const payloadJson = canonicalJson(payload);
   if (Buffer.byteLength(payloadJson, "utf8") > 65_536) invalid();
@@ -230,7 +237,7 @@ export function startNotificationIntentWorker(database: RecordValue) {
     const timer: any = setTimeout(() => {
       database.__notificationIntentTimer = null;
       void run().catch(() => {});
-    }, 30_000);
+    }, NOTIFICATION_RECOVERY_SCAN_MS);
     timer.unref?.();
     database.__notificationIntentTimer = timer;
     database.__notificationIntentNativeTimer = true;
@@ -242,13 +249,19 @@ export function startNotificationIntentWorker(database: RecordValue) {
         while (!database.__notificationIntentStopped && await runNotificationIntentDeliveryPass(database)) {}
         if (database.__notificationIntentStopped) return;
         const wakeAt = await nextWakeAt(database);
-      // Durable scanning, not a volatile post-commit notification, is the
-      // authority. An unref'ed native idle poll discovers commits made by a
-      // different process without making a virtual application clock perform
-      // unexpected storage work when tests or operators advance it.
-        if (!wakeAt) scheduleRecoveryScan();
+        // Durable scanning, not a volatile post-commit notification, is the
+        // authority. An unref'ed native idle poll discovers commits made by a
+        // different process without making a virtual application clock perform
+        // unexpected storage work when tests or operators advance it.
+        // The wake is bounded by that same poll: a recipient backed off by up
+        // to NOTIFICATION_MAX_BACKOFF_MS must not shadow an intent committed a
+        // second later whose nextAttemptAt is already past. Waits at or beyond
+        // the recovery interval take the native poll, which rediscovers durable
+        // work and recomputes the wake on every pass; only a nearer wake earns
+        // its own application-clock timer.
+        const delay = wakeAt ? Math.max(0, Date.parse(wakeAt) - database.clock.now().getTime()) : null;
+        if (delay === null || !Number.isFinite(delay) || delay >= NOTIFICATION_RECOVERY_SCAN_MS) scheduleRecoveryScan();
         else {
-          const delay = Math.max(0, Date.parse(wakeAt) - database.clock.now().getTime());
           database.__notificationIntentTimer = database.clock.setTimer(() => {
             database.__notificationIntentTimer = null; void run().catch(() => {});
           }, delay);

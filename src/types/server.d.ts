@@ -479,7 +479,17 @@ export type MailSendInput = {
   provider?: JsonObject;
 };
 
-/** Stable SMTP delivery result. */
+/**
+ * Stable SMTP delivery result.
+ *
+ * Delivery is partial by recipient: any address the server rejects at RCPT
+ * appears in `rejected`, the message is still delivered to everyone in
+ * `accepted`, and the call resolves. It rejects only when no recipient was
+ * accepted or the conversation itself failed — with `MAIL_REJECTED` when every
+ * rejection was definitive (5xx) and `MAIL_CONNECTION_FAILED` when any was
+ * transient (4xx greylisting, rate limiting, temporary unavailability), which a
+ * later attempt may still deliver.
+ */
 export type MailSendResult = {
   messageId: string;
   accepted: string[];

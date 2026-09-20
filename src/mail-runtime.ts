@@ -903,13 +903,21 @@ export function createMailTransport(smtp: any) {
         await smtpCommand(activeSocket, reader, `MAIL FROM:<${message.from.email}>`, [250]);
         const accepted = [];
         const rejected = [];
+        let transientCode = 0;
         for (const recipient of [...message.to, ...message.cc, ...message.bcc]) {
-          if (await smtpRecipientCommand(activeSocket, reader, recipient.email)) accepted.push(recipient.email);
-          else rejected.push(recipient.email);
+          const reply = await smtpRecipientCommand(activeSocket, reader, recipient.email);
+          if (reply.accepted) accepted.push(recipient.email);
+          else {
+            rejected.push(recipient.email);
+            if (reply.transient && transientCode === 0) transientCode = reply.smtpCode;
+          }
         }
         if (accepted.length === 0) {
           const error: any = new Error("all recipients rejected");
           error.code = "EREJECTED";
+          // Retain the first transient class so normalization reports a
+          // retryable failure rather than a definitive rejection.
+          if (transientCode !== 0) error.smtpCode = transientCode;
           throw error;
         }
         await smtpCommand(activeSocket, reader, "DATA", [354]);
@@ -1076,9 +1084,17 @@ async function smtpRecipientCommand(socket: any, reader: any, email: string) {
   socket.write(`RCPT TO:<${email}>\r\n`);
   try {
     await reader.expect([250, 251], "EREJECTED");
-    return true;
+    return { accepted: true, transient: false, smtpCode: 0 };
   } catch (error: any) {
-    if (error?.code === "EREJECTED" && error?.smtpCode >= 500 && error?.smtpCode <= 599) return false;
+    const smtpCode = Number(error?.smtpCode);
+    // A RCPT rejection is per-recipient, never per-message: the send continues
+    // to DATA for whoever was accepted, which is what MailSendResult.rejected
+    // documents. The 4xx class is reported separately because it is transient
+    // (greylisting, rate limiting, a temporarily unavailable mailbox) and a
+    // wholly-rejected message must stay uncertain so intent delivery retries.
+    if (error?.code === "EREJECTED" && smtpCode >= 400 && smtpCode <= 599) {
+      return { accepted: false, transient: smtpCode <= 499, smtpCode };
+    }
     throw error;
   }
 }

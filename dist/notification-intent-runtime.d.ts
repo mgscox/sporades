@@ -1,5 +1,6 @@
 type RecordValue = Record<string, any>;
 export declare const NOTIFICATION_RESERVATION_MS = 30000;
+export declare const NOTIFICATION_RECOVERY_SCAN_MS = 30000;
 export declare const NOTIFICATION_MAX_BACKOFF_MS = 3600000;
 export declare const notificationIntentSchemas: readonly [{
     readonly table: "sporades_notification_intents";

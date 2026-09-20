@@ -1095,7 +1095,7 @@ export async function openDevDatabase(
     __activateJobExecution: async (recoveryAt: number | null) => {
       database.__jobActivationDeferred = false;
       activateCurrentUserJobExecution(database, recoveryAt);
-      if (database.__notificationDeliveryEnabled) await startNotificationIntentWorker(database);
+      if (database.__notificationDeliveryEnabled) activateNotificationIntentWorker(database);
     },
     __preflightJobExecutionActivation: () => {
       preflightCurrentUserJobExecution(database);
@@ -1148,7 +1148,7 @@ export async function openDevDatabase(
         // fresh runtime has no inherited worker/wake timer, so activation
         // releases recovery plus one normal pass to rediscover durable work.
         activateCurrentUserJobExecution(database, earliestFutureLeaseAt);
-        if (notificationDeliveryEnabled) await startNotificationIntentWorker(database);
+        if (notificationDeliveryEnabled) activateNotificationIntentWorker(database);
       }
       await recoverReconciledSchedules(database, reconciled.recoveredOccurrences);
       // A fresh initial runtime publishes here. Dev replacement candidates are
@@ -2132,6 +2132,20 @@ function activateCurrentUserJobExecution(database: LooseRecord, recoveryAt: numb
   catch (error) { failures.push(error); }
   if (failures.length > 1) throw new AggregateError(failures, "Job activation scheduling failed.");
   if (failures.length === 1) throw failures[0];
+}
+
+function activateNotificationIntentWorker(database: LooseRecord) {
+  // Durable notification delivery is fire-and-forget, exactly like the Job
+  // worker above it. Awaiting the returned scan would serialize the whole
+  // durable backlog into startup (one SMTP conversation per due recipient) and
+  // would let a single transient adapter or mail failure reject init(), whose
+  // catch block then closes the database. The worker arms its own recovery
+  // scan before it rejects, so the rejection is logged and dropped here.
+  void Promise.resolve(startNotificationIntentWorker(database)).catch((error: any) => {
+    try {
+      void Promise.resolve(database.log?.emit?.({ category: "platform", event: "notification.delivery.scan_failed", level: "error", message: "Notification delivery scan failed", data: { code: String(error?.code ?? "NOTIFICATION_DELIVERY_SCAN_FAILED").slice(0, 80) } })).catch(() => {});
+    } catch {}
+  });
 }
 
 function preflightCurrentUserJobExecution(database: LooseRecord) {

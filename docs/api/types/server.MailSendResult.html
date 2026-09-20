@@ -13,10 +13,17 @@
 <h1>Type Alias MailSendResult</h1></div>
 <section class="tsd-panel tsd-comment">
 <div class="tsd-comment tsd-typography"><p>Stable SMTP delivery result.</p>
+<p>Delivery is partial by recipient: any address the server rejects at RCPT
+appears in <code>rejected</code>, the message is still delivered to everyone in
+<code>accepted</code>, and the call resolves. It rejects only when no recipient was
+accepted or the conversation itself failed — with <code>MAIL_REJECTED</code> when every
+rejection was definitive (5xx) and <code>MAIL_CONNECTION_FAILED</code> when any was
+transient (4xx greylisting, rate limiting, temporary unavailability), which a
+later attempt may still deliver.</p>
 </div></section>
 <div class="tsd-signature"><span class="tsd-signature-keyword">type</span> <span class="tsd-kind-type-alias">MailSendResult</span> <span class="tsd-signature-symbol">=</span> <span class="tsd-signature-symbol">{</span><br/>    <a class="tsd-kind-property" href="#accepted">accepted</a><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">[]</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-property" href="#messageid">messageId</a><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-property" href="#rejected">rejected</a><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">[]</span><span class="tsd-signature-symbol">;</span><br/><span class="tsd-signature-symbol">}</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L483">server.d.ts:483</a></li></ul></aside>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L493">server.d.ts:493</a></li></ul></aside>
 <section class="tsd-panel-group tsd-index-group">
 <section class="tsd-panel tsd-index-panel">
 <details class="tsd-index-content tsd-accordion" open><summary class="tsd-accordion-summary tsd-index-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
@@ -35,17 +42,17 @@
 <h3 class="tsd-anchor-link" id="accepted"><span>accepted</span><a href="#accepted" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-property">accepted</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">[]</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L485">server.d.ts:485</a></li></ul></aside></section>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L495">server.d.ts:495</a></li></ul></aside></section>
 <section class="tsd-panel tsd-member">
 <h3 class="tsd-anchor-link" id="messageid"><span>message<wbr/>Id</span><a href="#messageid" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-property">messageId</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L484">server.d.ts:484</a></li></ul></aside></section>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L494">server.d.ts:494</a></li></ul></aside></section>
 <section class="tsd-panel tsd-member">
 <h3 class="tsd-anchor-link" id="rejected"><span>rejected</span><a href="#rejected" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-property">rejected</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">[]</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L486">server.d.ts:486</a></li></ul></aside></section></section></details></div>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L496">server.d.ts:496</a></li></ul></aside></section></section></details></div>
 <div class="col-sidebar">
 <div class="page-menu">
 <div class="tsd-navigation settings">

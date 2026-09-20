@@ -7,11 +7,14 @@ import { test } from 'node:test';
 
 import { openDevDatabase, resolveAnonymousSession, runCurrentUserJobWorker, runEndpoint, runMutation, createControllableRuntimeClock } from '../dist/server-runtime-source.js';
 import { endpoint, job, mutation, String as Text, table } from '../dist/server.js';
-import { notificationRetryDelay, runNotificationIntentDeliveryPass, startNotificationIntentWorker, stopNotificationIntentWorker } from '../dist/notification-intent-runtime.js';
+import { NOTIFICATION_MAX_BACKOFF_MS, notificationRetryDelay, runNotificationIntentDeliveryPass, startNotificationIntentWorker, stopNotificationIntentWorker } from '../dist/notification-intent-runtime.js';
 
 const actor = { userId: 'notification-actor', displayName: 'Notification actor', email: null, picture: null, isAuthenticated: false, isGuest: true, provider: 'anonymous' };
 const resource = { table: 'anchors', id: 'anchor' };
 const notification = (overrides = {}) => ({ id: 'welcome', to: ['one@example.com'], subject: 'Welcome', text: 'Hello', ...overrides });
+// The worker's recovery poll interval, asserted here rather than imported so
+// the wake-bound test fails on behavior instead of on a missing export.
+const recoveryScanMs = 30_000;
 const mailConfig = {
   name: 'notification-intents',
   mail: { smtp: { vendor: 'generic', host: '127.0.0.1', port: 2525, tls: { mode: 'disabled' }, auth: { method: 'none' }, defaultFrom: 'sender@example.com', connectionTimeoutMs: 100, socketTimeoutMs: 100 } },
@@ -395,4 +398,60 @@ test('a persistence failure rejects the observed scan but arms another durable r
     await stopNotificationIntentWorker(f.database);
     await f.close();
   }
+});
+
+test('a rejected startup notification scan neither blocks nor aborts Capsule init', async () => {
+  let faulted = false;
+  const f = await fixture({ fault: phase => {
+    if (phase === 'after-reservation' && !faulted) {
+      faulted = true;
+      throw Object.assign(new Error('startup scan failure'), { notificationIntentCrash: true });
+    }
+  } });
+  try {
+    assert.equal((await runMutation(f.database, actor, 'accept', [notification()])).ok, true);
+    await f.database.shutdown();
+    faulted = false;
+    await f.database.init();
+    assert.equal(f.database.__runtimeInitialized, true, 'a failing mail scan is not a fatal startup failure');
+    while (!faulted) await new Promise(resolve => setImmediate(resolve));
+    await stopNotificationIntentWorker(f.database);
+    assert.equal(f.database.adapter.prepare('SELECT state FROM sporades_notification_recipients').get().state, 'submitting');
+    assert.equal((await runMutation(f.database, actor, 'status', [])).ok, true, 'init did not close the database');
+  } finally { await f.close(); }
+});
+
+test('a repeated recipient address is invalid input, not an opaque storage failure', async () => {
+  const f = await fixture();
+  try {
+    const duplicate = await runMutation(f.database, actor, 'accept', [notification({ to: ['one@example.com', 'one@example.com'] })]);
+    assert.equal(duplicate.ok, false);
+    assert.equal(duplicate.error.code, 'RESOURCE_INVALID_INPUT');
+    assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM sporades_notification_recipients').get().n, 0);
+    assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM writes').get().n, 0, 'the outer transaction rolled back intact');
+    const accepted = await runMutation(f.database, actor, 'accept', [notification()]);
+    assert.equal(accepted.ok, true, 'the enclosing transaction was never poisoned');
+    assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM sporades_notification_recipients').get().n, 1);
+  } finally { await f.close(); }
+});
+
+test('the post-drain wake is bounded by the recovery scan interval', async () => {
+  const f = await fixture();
+  try {
+    assert.equal((await runMutation(f.database, actor, 'accept', [notification()])).ok, true);
+    const farFuture = new Date(f.clock.now().getTime() + NOTIFICATION_MAX_BACKOFF_MS).toISOString();
+    f.database.adapter.prepare("UPDATE sporades_notification_recipients SET state='retry-wait',nextAttemptAt=?").run(farFuture);
+
+    await startNotificationIntentWorker(f.database);
+    assert.equal(f.deliveries.length, 0, 'the backed-off recipient is not due');
+    assert.ok(f.database.__notificationIntentTimer);
+    assert.equal(f.database.__notificationIntentNativeTimer, true,
+      'an hour of backoff must not shadow an intent committed a second later');
+    await stopNotificationIntentWorker(f.database);
+
+    const near = new Date(f.clock.now().getTime() + recoveryScanMs - 5_000).toISOString();
+    f.database.adapter.prepare("UPDATE sporades_notification_recipients SET state='retry-wait',nextAttemptAt=?").run(near);
+    await startNotificationIntentWorker(f.database);
+    assert.equal(f.database.__notificationIntentNativeTimer, false, 'the bound is a ceiling, not a replacement');
+  } finally { await stopNotificationIntentWorker(f.database); await f.close(); }
 });

@@ -134,7 +134,7 @@ async function withDatabase(config, capsule, options, run) {
   }
 }
 
-async function startTestSmtpServer({ implicitTls = false, authReject = false, recipientReject = false } = {}) {
+async function startTestSmtpServer({ implicitTls = false, authReject = false, recipientReject = false, recipientReply = null } = {}) {
   const commands = [];
   const messages = [];
   const tlsOptions = implicitTls ? {
@@ -168,7 +168,11 @@ async function startTestSmtpServer({ implicitTls = false, authReject = false, re
         commands.push(command);
         if (/^EHLO /i.test(command)) socket.write("250-smtp.test\r\n250 PIPELINING\r\n");
         else if (/^MAIL FROM:/i.test(command)) socket.write("250 ok\r\n");
-        else if (/^RCPT TO:/i.test(command)) socket.write(recipientReject ? "550 rejected\r\n" : "250 ok\r\n");
+        else if (/^RCPT TO:/i.test(command)) {
+          const address = command.slice(command.indexOf("<") + 1, command.lastIndexOf(">"));
+          const reply = recipientReply ? recipientReply(address) : recipientReject ? "550 rejected" : "250 ok";
+          socket.write(`${reply}\r\n`);
+        }
         else if (command === "DATA") {
           inData = true;
           socket.write("354 end with dot\r\n");
@@ -1906,5 +1910,72 @@ test("owned SMTP transport preserves stable connection, authentication, and reje
   } finally {
     await authServer.close();
     await rejectionServer.close();
+  }
+});
+
+test("owned SMTP transport keeps a 4xx RCPT rejection partial and transient", async () => {
+  // A 4xx RCPT reply is routine — greylisting, rate limiting, a temporarily
+  // unavailable mailbox — and is per recipient, not per message. The durable
+  // notification intent path needs that class to stay uncertain so it retries,
+  // which must not cost `mail.send` its documented partial delivery.
+  const deferred = new Set(["greylisted@example.com"]);
+  const server = await startTestSmtpServer({
+    recipientReply: (address) => deferred.has(address) ? "451 4.7.1 greylisted, try again later" : "250 ok",
+  });
+  const transport = createMailTransport({
+    vendor: "generic",
+    host: "127.0.0.1",
+    port: server.port,
+    tls: { mode: "disabled" },
+    auth: { method: "none" },
+    defaultFrom: "sender@example.com",
+    connectionTimeoutMs: 1_000,
+    socketTimeoutMs: 1_000,
+  });
+  const message = (to) => ({
+    from: { email: "sender@example.com" },
+    to: to.map((email) => ({ email })),
+    cc: [],
+    bcc: [],
+    subject: "rcpt classification",
+    textBody: "rcpt classification",
+  });
+  try {
+    const partial = await transport.send(message(["a@example.com", "greylisted@example.com", "c@example.com"]));
+    assert.deepEqual(partial.accepted, ["a@example.com", "c@example.com"]);
+    assert.deepEqual(partial.rejected, ["greylisted@example.com"]);
+    assert.equal(server.messages.length, 1, "DATA still ran for the accepted recipients");
+
+    await assert.rejects(transport.send(message(["greylisted@example.com"])), (error) => {
+      assert.equal(error.code, "MAIL_CONNECTION_FAILED", "a wholly deferred message stays uncertain");
+      return true;
+    });
+
+    const definitive = await startTestSmtpServer({
+      recipientReply: (address) => address === "blocked@example.com" ? "550 5.1.1 no such mailbox" : "250 ok",
+    });
+    const definitiveTransport = createMailTransport({
+      vendor: "generic",
+      host: "127.0.0.1",
+      port: definitive.port,
+      tls: { mode: "disabled" },
+      auth: { method: "none" },
+      defaultFrom: "sender@example.com",
+      connectionTimeoutMs: 1_000,
+      socketTimeoutMs: 1_000,
+    });
+    try {
+      await assert.rejects(definitiveTransport.send(message(["blocked@example.com"])), (error) => {
+        assert.equal(error.code, "MAIL_REJECTED", "a wholly 5xx message stays definitive");
+        return true;
+      });
+      assert.equal(server.messages.length, 1, "no message body reached a wholly rejected conversation");
+    } finally {
+      definitiveTransport.close();
+      await definitive.close();
+    }
+  } finally {
+    transport.close();
+    await server.close();
   }
 });

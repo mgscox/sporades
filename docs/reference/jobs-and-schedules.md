@@ -582,7 +582,8 @@ preceded resource entry, such as reauthentication-proof consumption. libSQL fail
 before callback execution; its ticket is 05.
 
 `scope.notifications.accept({id, to, subject, text, html?})` validates one to
-100 existing-mail-compatible ASCII recipient addresses, a 1–128-byte ID, a
+100 distinct existing-mail-compatible ASCII recipient addresses — a repeated
+address is `RESOURCE_INVALID_INPUT` — a 1–128-byte ID, a
 subject, at least one nonempty text or HTML body, and canonical notification JSON
 of at most 65,536 bytes. It uses only the configured sender and SMTP authority.
 It returns `{id, state: "staged"}`: no SMTP socket opens in the resource

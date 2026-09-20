@@ -67975,6 +67975,7 @@ import { createHash as createHash8 } from "node:crypto";
 // src/notification-intent-runtime.ts
 import { createHash as createHash7, randomUUID as randomUUID6 } from "node:crypto";
 var NOTIFICATION_RESERVATION_MS = 3e4;
+var NOTIFICATION_RECOVERY_SCAN_MS = 3e4;
 var NOTIFICATION_MAX_BACKOFF_MS = 36e5;
 var notificationIntentSchemas = [
   {
@@ -68040,9 +68041,11 @@ async function stageNotificationIntent(adapter, database, identity, input, canon
     invalid();
   }
   if (normalized.to.length !== input.to.length) invalid();
+  const recipients = normalized.to.map((entry) => entry.email);
+  if (new Set(recipients).size !== recipients.length) invalid();
   const payload = {
     id: input.id,
-    to: normalized.to.map((entry) => entry.email),
+    to: recipients,
     subject: normalized.subject,
     text: input.text,
     ...input.html === void 0 ? {} : { html: input.html }
@@ -68189,7 +68192,7 @@ function startNotificationIntentWorker(database) {
       database.__notificationIntentTimer = null;
       void run2().catch(() => {
       });
-    }, 3e4);
+    }, NOTIFICATION_RECOVERY_SCAN_MS);
     timer.unref?.();
     database.__notificationIntentTimer = timer;
     database.__notificationIntentNativeTimer = true;
@@ -68202,9 +68205,9 @@ function startNotificationIntentWorker(database) {
         }
         if (database.__notificationIntentStopped) return;
         const wakeAt = await nextWakeAt(database);
-        if (!wakeAt) scheduleRecoveryScan();
+        const delay = wakeAt ? Math.max(0, Date.parse(wakeAt) - database.clock.now().getTime()) : null;
+        if (delay === null || !Number.isFinite(delay) || delay >= NOTIFICATION_RECOVERY_SCAN_MS) scheduleRecoveryScan();
         else {
-          const delay = Math.max(0, Date.parse(wakeAt) - database.clock.now().getTime());
           database.__notificationIntentTimer = database.clock.setTimer(() => {
             database.__notificationIntentTimer = null;
             void run2().catch(() => {
@@ -96170,13 +96173,19 @@ function createMailTransport(smtp) {
         await smtpCommand(activeSocket, reader, `MAIL FROM:<${message.from.email}>`, [250]);
         const accepted = [];
         const rejected = [];
+        let transientCode = 0;
         for (const recipient of [...message.to, ...message.cc, ...message.bcc]) {
-          if (await smtpRecipientCommand(activeSocket, reader, recipient.email)) accepted.push(recipient.email);
-          else rejected.push(recipient.email);
+          const reply = await smtpRecipientCommand(activeSocket, reader, recipient.email);
+          if (reply.accepted) accepted.push(recipient.email);
+          else {
+            rejected.push(recipient.email);
+            if (reply.transient && transientCode === 0) transientCode = reply.smtpCode;
+          }
         }
         if (accepted.length === 0) {
           const error = new Error("all recipients rejected");
           error.code = "EREJECTED";
+          if (transientCode !== 0) error.smtpCode = transientCode;
           throw error;
         }
         await smtpCommand(activeSocket, reader, "DATA", [354]);
@@ -96344,9 +96353,12 @@ async function smtpRecipientCommand(socket, reader, email) {
 `);
   try {
     await reader.expect([250, 251], "EREJECTED");
-    return true;
+    return { accepted: true, transient: false, smtpCode: 0 };
   } catch (error) {
-    if (error?.code === "EREJECTED" && error?.smtpCode >= 500 && error?.smtpCode <= 599) return false;
+    const smtpCode = Number(error?.smtpCode);
+    if (error?.code === "EREJECTED" && smtpCode >= 400 && smtpCode <= 599) {
+      return { accepted: false, transient: smtpCode <= 499, smtpCode };
+    }
     throw error;
   }
 }
@@ -101320,7 +101332,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     __activateJobExecution: async (recoveryAt) => {
       database.__jobActivationDeferred = false;
       activateCurrentUserJobExecution(database, recoveryAt);
-      if (database.__notificationDeliveryEnabled) await startNotificationIntentWorker(database);
+      if (database.__notificationDeliveryEnabled) activateNotificationIntentWorker(database);
     },
     __preflightJobExecutionActivation: () => {
       preflightCurrentUserJobExecution(database);
@@ -101367,7 +101379,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       scheduleIngressAuditOutboxMaintenance(database);
       if (!database.__jobActivationDeferred) {
         activateCurrentUserJobExecution(database, earliestFutureLeaseAt);
-        if (notificationDeliveryEnabled) await startNotificationIntentWorker(database);
+        if (notificationDeliveryEnabled) activateNotificationIntentWorker(database);
       }
       await recoverReconciledSchedules(database, reconciled.recoveredOccurrences);
       if (!database.__jobActivationDeferred) await database.__publishAccessKeyScopes();
@@ -102248,6 +102260,15 @@ function activateCurrentUserJobExecution(database, recoveryAt) {
   }
   if (failures.length > 1) throw new AggregateError(failures, "Job activation scheduling failed.");
   if (failures.length === 1) throw failures[0];
+}
+function activateNotificationIntentWorker(database) {
+  void Promise.resolve(startNotificationIntentWorker(database)).catch((error) => {
+    try {
+      void Promise.resolve(database.log?.emit?.({ category: "platform", event: "notification.delivery.scan_failed", level: "error", message: "Notification delivery scan failed", data: { code: String(error?.code ?? "NOTIFICATION_DELIVERY_SCAN_FAILED").slice(0, 80) } })).catch(() => {
+      });
+    } catch {
+    }
+  });
 }
 function preflightCurrentUserJobExecution(database) {
   const timer = database.clock.setTimer(() => {

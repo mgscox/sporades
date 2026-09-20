@@ -993,7 +993,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             database.__jobActivationDeferred = false;
             activateCurrentUserJobExecution(database, recoveryAt);
             if (database.__notificationDeliveryEnabled)
-                await startNotificationIntentWorker(database);
+                activateNotificationIntentWorker(database);
         },
         __preflightJobExecutionActivation: () => {
             preflightCurrentUserJobExecution(database);
@@ -1049,7 +1049,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 // releases recovery plus one normal pass to rediscover durable work.
                 activateCurrentUserJobExecution(database, earliestFutureLeaseAt);
                 if (notificationDeliveryEnabled)
-                    await startNotificationIntentWorker(database);
+                    activateNotificationIntentWorker(database);
             }
             await recoverReconciledSchedules(database, reconciled.recoveredOccurrences);
             // A fresh initial runtime publishes here. Dev replacement candidates are
@@ -2064,6 +2064,20 @@ function activateCurrentUserJobExecution(database, recoveryAt) {
         throw new AggregateError(failures, "Job activation scheduling failed.");
     if (failures.length === 1)
         throw failures[0];
+}
+function activateNotificationIntentWorker(database) {
+    // Durable notification delivery is fire-and-forget, exactly like the Job
+    // worker above it. Awaiting the returned scan would serialize the whole
+    // durable backlog into startup (one SMTP conversation per due recipient) and
+    // would let a single transient adapter or mail failure reject init(), whose
+    // catch block then closes the database. The worker arms its own recovery
+    // scan before it rejects, so the rejection is logged and dropped here.
+    void Promise.resolve(startNotificationIntentWorker(database)).catch((error) => {
+        try {
+            void Promise.resolve(database.log?.emit?.({ category: "platform", event: "notification.delivery.scan_failed", level: "error", message: "Notification delivery scan failed", data: { code: String(error?.code ?? "NOTIFICATION_DELIVERY_SCAN_FAILED").slice(0, 80) } })).catch(() => { });
+        }
+        catch { }
+    });
 }
 function preflightCurrentUserJobExecution(database) {
     const timer = database.clock.setTimer(() => { }, MAX_NATIVE_TIMER_DELAY_MS);
