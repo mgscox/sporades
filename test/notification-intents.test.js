@@ -467,14 +467,17 @@ test('shutdown aborts an active SMTP send before awaiting its worker and retains
     assert.equal((await runMutation(f.database, actor, 'accept', [notification()])).ok, true);
     f.database.mail = {
       enabled: true,
-      sendIntent() {
+      sendIntent(_input, _messageId, _log, options) {
         events.push('send-started');
         markSendStarted();
         return new Promise((_, reject) => { rejectSend = reject; });
       },
+      abortActiveDeliveries() {
+        events.push('delivery-aborted');
+        rejectSend(Object.assign(new Error('SMTP delivery aborted for shutdown'), { code: 'ECONNECTION' }));
+      },
       close() {
         events.push('transport-closed');
-        rejectSend(Object.assign(new Error('SMTP transport closed for shutdown'), { code: 'ECONNECTION' }));
       },
     };
     void startNotificationIntentWorker(f.database);
@@ -485,7 +488,8 @@ test('shutdown aborts an active SMTP send before awaiting its worker and retains
 
     await f.database.shutdown();
 
-    assert.deepEqual(events, ['send-started', 'transport-closed'], 'transport closure releases the active worker during shutdown');
+    assert.deepEqual(events, ['send-started', 'delivery-aborted', 'transport-closed'],
+      'delivery abort releases the active worker before the transport closes at the end of shutdown');
     assert.deepEqual(
       { ...f.database.adapter.prepare('SELECT state,currentAttemptToken,currentAttemptDeadline FROM sporades_notification_recipients').get() },
       { ...reserved },

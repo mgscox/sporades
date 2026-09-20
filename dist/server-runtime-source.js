@@ -1142,11 +1142,12 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             catch (error) {
                 failures.push(error);
             }
-            // Closing the transport is what aborts a slow active SMTP conversation.
-            // Start it before awaiting the notification worker or shutdown can wait
-            // for the entire reservation window while the transport remains open.
+            // Abort deliveries which began before shutdown without terminally
+            // closing mail: the Capsule shutdown hook retains ctx.mail authority.
+            // The global close follows the hook after every earlier delivery and
+            // durable notification reservation has settled.
             try {
-                mailSettlement = Promise.resolve(database.mail.close());
+                mailSettlement = Promise.resolve(database.mail.abortActiveDeliveries?.());
                 void mailSettlement.catch(() => { });
             }
             catch (error) {
@@ -1204,6 +1205,12 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 catch (error) {
                     failures.push(error);
                 }
+            }
+            try {
+                await database.mail.close();
+            }
+            catch (error) {
+                failures.push(error);
             }
             try {
                 await shutdownClamavRuntime(database);

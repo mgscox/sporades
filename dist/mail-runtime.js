@@ -111,6 +111,7 @@ export function createMailRuntime(mailConfig, serverEnv, options = {}) {
     }
     let closeStarted = false;
     let closeResult;
+    const activeDeliveryAborts = new Set();
     const validateIntent = (input) => normalizeMailMessage({
         to: input.to,
         subject: input.subject,
@@ -118,13 +119,15 @@ export function createMailRuntime(mailConfig, serverEnv, options = {}) {
         ...(input.html === undefined ? {} : { htmlBody: input.html }),
     }, resolvedSmtp.defaultFrom, resolvedSmtp.vendor);
     const deliver = async (message, deliveryLog, stableMessageId) => {
+        const deliveryAbort = new AbortController();
+        activeDeliveryAborts.add(deliveryAbort);
         const outbound = stableMessageId ? { ...message, messageId: stableMessageId } : message;
         const messageIdentity = stableMessageId
             ? `intent_${stableMessageId.replace(/[^a-f0-9]/gi, "").slice(0, 16)}`
             : `mail_${crypto.randomUUID()}`;
         const startedAt = Date.now();
         try {
-            const result = await transport.send(outbound);
+            const result = await transport.send(outbound, { signal: deliveryAbort.signal });
             const normalizedResult = {
                 messageId: String(result?.messageId ?? stableMessageId ?? ""),
                 accepted: Array.isArray(result?.accepted) ? result.accepted.map(String) : [],
@@ -170,6 +173,9 @@ export function createMailRuntime(mailConfig, serverEnv, options = {}) {
             catch { }
             throw normalizedError;
         }
+        finally {
+            activeDeliveryAborts.delete(deliveryAbort);
+        }
     };
     return {
         enabled: true,
@@ -198,10 +204,19 @@ export function createMailRuntime(mailConfig, serverEnv, options = {}) {
             }
             return deliver(message, deliveryLog, stableMessageId);
         },
+        // Internal-only: interrupt deliveries which began before shutdown without
+        // terminally closing mail. A Capsule shutdown hook may still send mail;
+        // the global transport closes only after that hook has settled.
+        abortActiveDeliveries() {
+            for (const deliveryAbort of activeDeliveryAborts)
+                deliveryAbort.abort();
+        },
         close() {
             if (closeStarted)
                 return closeResult;
             closeStarted = true;
+            for (const deliveryAbort of activeDeliveryAborts)
+                deliveryAbort.abort();
             closeResult = transport.close?.();
             return closeResult;
         },
@@ -840,10 +855,21 @@ export function createMailTransport(smtp) {
     const sockets = new Set();
     let closed = false;
     return {
-        async send(message) {
+        async send(message, options = {}) {
             let socket;
             let reader;
+            const abortDelivery = () => {
+                const activeSocket = reader?.socket?.() ?? socket;
+                if (!activeSocket?.destroyed)
+                    activeSocket?.destroy();
+            };
             try {
+                if (options.signal?.aborted) {
+                    const error = new Error("aborted");
+                    error.code = "ECONNECTION";
+                    throw error;
+                }
+                options.signal?.addEventListener?.("abort", abortDelivery, { once: true });
                 if (closed) {
                     const error = new Error("closed");
                     error.code = "ECONNECTION";
@@ -852,10 +878,10 @@ export function createMailTransport(smtp) {
                 socket = await connectSmtpSocket(smtp, (connectingSocket) => {
                     socket = connectingSocket;
                     sockets.add(connectingSocket);
-                    if (closed)
+                    if (closed || options.signal?.aborted)
                         connectingSocket.destroy();
                 });
-                if (closed) {
+                if (closed || options.signal?.aborted) {
                     const error = new Error("closed");
                     error.code = "ECONNECTION";
                     socket.destroy(error);
@@ -954,6 +980,7 @@ export function createMailTransport(smtp) {
                 throw normalizeMailTransportError(error);
             }
             finally {
+                options.signal?.removeEventListener?.("abort", abortDelivery);
                 reader?.close();
                 for (const candidate of [...sockets]) {
                     if (candidate === socket || candidate === reader?.socket()) {

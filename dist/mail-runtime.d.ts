@@ -50,10 +50,11 @@ export declare function createMailRuntime(mailConfig: any, serverEnv: RuntimeEnv
         accepted: any;
         rejected: any;
     }>;
+    abortActiveDeliveries(): void;
     close(): any;
 };
 export declare function createMailTransport(smtp: any): {
-    send(message: any): Promise<{
+    send(message: any, options?: any): Promise<{
         messageId: any;
         accepted: any[];
         rejected: any[];

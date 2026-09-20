@@ -95504,6 +95504,7 @@ function createMailRuntime(mailConfig, serverEnv, options = {}) {
   }
   let closeStarted = false;
   let closeResult;
+  const activeDeliveryAborts = /* @__PURE__ */ new Set();
   const validateIntent = (input) => normalizeMailMessage({
     to: input.to,
     subject: input.subject,
@@ -95511,11 +95512,13 @@ function createMailRuntime(mailConfig, serverEnv, options = {}) {
     ...input.html === void 0 ? {} : { htmlBody: input.html }
   }, resolvedSmtp.defaultFrom, resolvedSmtp.vendor);
   const deliver = async (message, deliveryLog, stableMessageId) => {
+    const deliveryAbort = new AbortController();
+    activeDeliveryAborts.add(deliveryAbort);
     const outbound = stableMessageId ? { ...message, messageId: stableMessageId } : message;
     const messageIdentity = stableMessageId ? `intent_${stableMessageId.replace(/[^a-f0-9]/gi, "").slice(0, 16)}` : `mail_${crypto.randomUUID()}`;
     const startedAt = Date.now();
     try {
-      const result = await transport.send(outbound);
+      const result = await transport.send(outbound, { signal: deliveryAbort.signal });
       const normalizedResult = {
         messageId: String(result?.messageId ?? stableMessageId ?? ""),
         accepted: Array.isArray(result?.accepted) ? result.accepted.map(String) : [],
@@ -95560,6 +95563,8 @@ function createMailRuntime(mailConfig, serverEnv, options = {}) {
       } catch {
       }
       throw normalizedError;
+    } finally {
+      activeDeliveryAborts.delete(deliveryAbort);
     }
   };
   return {
@@ -95586,9 +95591,16 @@ function createMailRuntime(mailConfig, serverEnv, options = {}) {
       }
       return deliver(message, deliveryLog, stableMessageId);
     },
+    // Internal-only: interrupt deliveries which began before shutdown without
+    // terminally closing mail. A Capsule shutdown hook may still send mail;
+    // the global transport closes only after that hook has settled.
+    abortActiveDeliveries() {
+      for (const deliveryAbort of activeDeliveryAborts) deliveryAbort.abort();
+    },
     close() {
       if (closeStarted) return closeResult;
       closeStarted = true;
+      for (const deliveryAbort of activeDeliveryAborts) deliveryAbort.abort();
       closeResult = transport.close?.();
       return closeResult;
     }
@@ -96181,10 +96193,20 @@ function createMailTransport(smtp) {
   const sockets = /* @__PURE__ */ new Set();
   let closed = false;
   return {
-    async send(message) {
+    async send(message, options = {}) {
       let socket;
       let reader;
+      const abortDelivery = () => {
+        const activeSocket = reader?.socket?.() ?? socket;
+        if (!activeSocket?.destroyed) activeSocket?.destroy();
+      };
       try {
+        if (options.signal?.aborted) {
+          const error = new Error("aborted");
+          error.code = "ECONNECTION";
+          throw error;
+        }
+        options.signal?.addEventListener?.("abort", abortDelivery, { once: true });
         if (closed) {
           const error = new Error("closed");
           error.code = "ECONNECTION";
@@ -96193,9 +96215,9 @@ function createMailTransport(smtp) {
         socket = await connectSmtpSocket(smtp, (connectingSocket) => {
           socket = connectingSocket;
           sockets.add(connectingSocket);
-          if (closed) connectingSocket.destroy();
+          if (closed || options.signal?.aborted) connectingSocket.destroy();
         });
-        if (closed) {
+        if (closed || options.signal?.aborted) {
           const error = new Error("closed");
           error.code = "ECONNECTION";
           socket.destroy(error);
@@ -96282,6 +96304,7 @@ function createMailTransport(smtp) {
       } catch (error) {
         throw normalizeMailTransportError(error);
       } finally {
+        options.signal?.removeEventListener?.("abort", abortDelivery);
         reader?.close();
         for (const candidate of [...sockets]) {
           if (candidate === socket || candidate === reader?.socket()) {
@@ -101544,7 +101567,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
         failures.push(error);
       }
       try {
-        mailSettlement = Promise.resolve(database.mail.close());
+        mailSettlement = Promise.resolve(database.mail.abortActiveDeliveries?.());
         void mailSettlement.catch(() => {
         });
       } catch (error) {
@@ -101594,6 +101617,11 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
         } catch (error) {
           failures.push(error);
         }
+      }
+      try {
+        await database.mail.close();
+      } catch (error) {
+        failures.push(error);
       }
       try {
         await shutdownClamavRuntime(database);
