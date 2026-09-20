@@ -76,6 +76,8 @@ async function resourceContract(ctx: publicServerApi.CapsuleContext) {
   void support; void inventedLibsqlSupport;
   const answer = await ctx.resources.run({ resource: { table: "anchors", id: "existing" }, operationId: "stable", input: null }, async scope => {
     await scope.jobs.enqueue("child", null);
+    const staged = await scope.notifications.accept({ id: "notice", to: ["recipient@example.com"], subject: "Notice", text: "Body" });
+    const stagedState: "staged" = staged.state;
     // @ts-expect-error no provider authority in a resource scope.
     scope.mail.send({});
     // @ts-expect-error no nested privileged authority.
@@ -83,7 +85,8 @@ async function resourceContract(ctx: publicServerApi.CapsuleContext) {
     return { committed: true };
   });
   const checked: boolean = answer.committed;
-  await ctx.resources.status({ resource: { table: "anchors", id: "existing" }, operationId: "stable" });
+  const status = await ctx.resources.status({ resource: { table: "anchors", id: "existing" }, operationId: "stable" });
+  if (status.state === "committed") status.intents?.[0]?.recipients[0]?.attemptCount.toFixed();
   // @ts-expect-error resource callbacks must return JSON.
   ctx.resources.run({ resource: { table: "anchors", id: "existing" }, operationId: "stable", input: null }, () => new Date());
   return checked;

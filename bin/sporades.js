@@ -58890,7 +58890,7 @@ function validateAliasDomains(value) {
 
 // src/cli/sporades.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { createHash as createHash13, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes8, timingSafeEqual as timingSafeEqual4 } from "node:crypto";
+import { createHash as createHash14, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes9, timingSafeEqual as timingSafeEqual5 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer as createServer2 } from "node:http";
 import { appendFile, chmod as chmod2, cp, lstat as lstat8, mkdir as mkdir8, readdir as readdir3, readFile as readFile10, rename as rename6, rm as rm8, writeFile as writeFile7 } from "node:fs/promises";
@@ -63820,7 +63820,7 @@ function createPreferencesError(message, hint, code) {
 }
 
 // src/teams-runtime.ts
-import { createHash as createHash8, createHmac, randomBytes as randomBytes4, randomUUID as randomUUID6, timingSafeEqual } from "node:crypto";
+import { createHash as createHash9, createHmac as createHmac2, randomBytes as randomBytes5, randomUUID as randomUUID7, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 
 // src/maybe-promise.ts
 function isPromiseLike(value) {
@@ -63885,27 +63885,27 @@ function publicAccessKeyManagementError(error) {
   };
 }
 function createAccessKeyTables(adapter) {
-  const sql = adapter.dialect.sql;
+  const sql2 = adapter.dialect.sql;
   return chainMaybePromise([
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_auth_access_keys] ([id] TEXT PRIMARY KEY, [ownerUserId] TEXT NOT NULL, [name] TEXT NOT NULL, [reservedName] TEXT, [grantsJson] TEXT NOT NULL, [secretVersion] INTEGER NOT NULL, [selector] TEXT, [verifierDigest] TEXT, [lifecycleRevision] INTEGER NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT, [rotatedAt] TEXT, [revokedAt] TEXT, [revocationCause] TEXT, [lastUsedAt] TEXT)"
     )),
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_auth_access_keys_secret] ON [sporades_auth_access_keys] ([secretVersion], [selector])"
     )),
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_auth_access_keys_current_name] ON [sporades_auth_access_keys] ([ownerUserId], [reservedName])"
     )),
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE INDEX IF NOT EXISTS [sporades_auth_access_keys_owner_listing] ON [sporades_auth_access_keys] ([ownerUserId], [createdAt], [id])"
     )),
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_auth_access_key_owners] ([ownerUserId] TEXT PRIMARY KEY, [currentCount] INTEGER NOT NULL, [totalCount] INTEGER NOT NULL, [operationRevision] INTEGER NOT NULL)"
     )),
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_auth_access_key_locks] ([name] TEXT PRIMARY KEY, [operationRevision] INTEGER NOT NULL)"
     )),
-    () => adapter.prepare(sql(
+    () => adapter.prepare(sql2(
       "INSERT INTO [sporades_auth_access_key_locks] ([name], [operationRevision]) VALUES (?, ?) ON CONFLICT ([name]) DO NOTHING"
     )).run("selector", 0)
   ]);
@@ -64675,8 +64675,8 @@ async function requestTeamBillingPlanTransition(database, auth, teamId, requestI
   const result = await inTransaction(database, async (transaction) => {
     await admitPlanTransition(database, transaction, auth, teamId, productKey);
     await assertTeamBillingErasureInactive(database, transaction, teamId);
-    const sql = transaction.dialect.sql;
-    const repeated = await transaction.prepare(sql(
+    const sql2 = transaction.dialect.sql;
+    const repeated = await transaction.prepare(sql2(
       "SELECT [id], [kind], [productKey], [status], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?"
     )).get(teamId, requestId);
     if (repeated) {
@@ -64700,10 +64700,10 @@ async function requestTeamBillingPlanTransition(database, auth, teamId, requestI
       targetQuantity: quantity,
       effectiveAt
     });
-    await transaction.prepare(sql(
+    await transaction.prepare(sql2(
       "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [teamId] = ? AND [kind] = 'plan-transition' AND [status] IN ('queued', 'running', 'awaiting-observation')"
     )).run(now2, teamId);
-    await transaction.prepare(sql(
+    await transaction.prepare(sql2(
       "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity]) VALUES (?, ?, ?, ?, 'plan-transition', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?)"
     )).run(operationId, requestId, teamId, auth.userId, productKey, operationIdempotency(database, operationId), now2, now2, subscription.mode, quantity);
     await enqueueIntent(database, transaction, staged);
@@ -64877,8 +64877,8 @@ async function settleVerifiedTeamBillingTarget(database, accepted) {
   if (!accepted || typeof accepted.teamId !== "string" || typeof accepted.productKey !== "string" || !Number.isSafeInteger(accepted.quantity) || typeof accepted.subscriptionId !== "string") return { settled: false };
   let enqueued = false;
   const result = await inTransaction(database, async (transaction) => {
-    const sql = transaction.dialect.sql;
-    const subscription = await transaction.prepare(sql(
+    const sql2 = transaction.dialect.sql;
+    const subscription = await transaction.prepare(sql2(
       "SELECT [providerSubscriptionId] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [providerSubscriptionId] = ?"
     )).get(accepted.teamId, accepted.subscriptionId);
     if (!subscription) return { settled: false };
@@ -64892,7 +64892,7 @@ async function settleVerifiedTeamBillingTarget(database, accepted) {
           await countAcceptedTeamMembers(transaction, accepted.teamId, denied)
         );
         if (billableQuantity !== accepted.quantity) {
-          if (desired.operationId) await transaction.prepare(sql(
+          if (desired.operationId) await transaction.prepare(sql2(
             "UPDATE [sporades_team_billing_operations] SET [status] = 'completed', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [id] = ?"
           )).run(accepted.occurredAt ?? nowIso(database), desired.operationId);
           const replacement = await stageDesired(transaction, database, {
@@ -64908,17 +64908,17 @@ async function settleVerifiedTeamBillingTarget(database, accepted) {
           return { settled: true, repairRequired: true };
         }
       }
-      await transaction.prepare(sql("DELETE FROM [sporades_team_billing_desired_state] WHERE [intentId] = ?")).run(desired.intentId);
-      await transaction.prepare(sql(
+      await transaction.prepare(sql2("DELETE FROM [sporades_team_billing_desired_state] WHERE [intentId] = ?")).run(desired.intentId);
+      await transaction.prepare(sql2(
         "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ?"
       )).run(accepted.occurredAt ?? nowIso(database), accepted.teamId);
-      if (desired.operationId) await transaction.prepare(sql(
+      if (desired.operationId) await transaction.prepare(sql2(
         "UPDATE [sporades_team_billing_operations] SET [status] = 'completed', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [id] = ?"
       )).run(accepted.occurredAt ?? nowIso(database), desired.operationId);
       return { settled: true };
     }
     if (desired.status === "awaiting-observation") {
-      await transaction.prepare(sql(
+      await transaction.prepare(sql2(
         "UPDATE [sporades_team_billing_desired_state] SET [status] = 'queued', [safeFailureCode] = 'PROVIDER_DRIFT', [providerAcknowledgedAt] = NULL, [updatedAt] = ? WHERE [intentId] = ?"
       )).run(accepted.occurredAt ?? nowIso(database), desired.intentId);
       await enqueueIntent(database, transaction, { ...desired, enqueue: true });
@@ -65559,9 +65559,9 @@ async function inferTeamId(tx, event) {
   return null;
 }
 async function assertCustomerAssociation(tx, teamId, mode, customerId) {
-  const sql = tx.dialect.sql;
-  const byTeam = await tx.prepare(sql("SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?")).get(teamId);
-  const byProvider = await tx.prepare(sql("SELECT [teamId], [mode] FROM [sporades_team_billing_customers] WHERE [providerCustomerId] = ?")).get(customerId);
+  const sql2 = tx.dialect.sql;
+  const byTeam = await tx.prepare(sql2("SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?")).get(teamId);
+  const byProvider = await tx.prepare(sql2("SELECT [teamId], [mode] FROM [sporades_team_billing_customers] WHERE [providerCustomerId] = ?")).get(customerId);
   if (byTeam && (byTeam.mode !== mode || byTeam.providerCustomerId !== customerId) || byProvider && (byProvider.teamId !== teamId || byProvider.mode !== mode)) throw new Quarantine("provider-state-ambiguous", teamId);
 }
 async function bindCustomer(tx, teamId, mode, customerId, now2) {
@@ -65636,36 +65636,36 @@ var CANONICAL_TIMESTAMP_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[0
 var FIXED_QUANTITY_MAX = 999999;
 var TEAM_ID_PATTERN2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function createTeamBillingTables(adapter) {
-  const sql = adapter.dialect.sql;
+  const sql2 = adapter.dialect.sql;
   return chainMaybePromise([
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_team_billing_customers] ([teamId] TEXT PRIMARY KEY, [mode] TEXT NOT NULL, [providerCustomerId] TEXT NOT NULL UNIQUE, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
     )),
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_team_billing_subscriptions] ([id] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [mode] TEXT NOT NULL, [providerSubscriptionId] TEXT NOT NULL UNIQUE, [providerPriceId] TEXT NOT NULL, [providerSubscriptionItemId] TEXT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, [cancelAtPeriodEnd] INTEGER NOT NULL, [currentPeriodStart] TEXT NULL, [currentPeriodEnd] TEXT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [lastEventOccurredAt] TEXT NULL, [lastEventKind] TEXT NULL, [lastEventRank] INTEGER NULL, [terminalLatch] INTEGER NOT NULL DEFAULT 0)"
     )),
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_team_billing_operations] ([id] TEXT PRIMARY KEY, [requestId] TEXT NOT NULL, [teamId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [kind] TEXT NOT NULL, [productKey] TEXT NULL, [status] TEXT NOT NULL, [providerObjectId] TEXT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, UNIQUE ([teamId], [requestId]))"
     )),
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_team_billing_observations] ([id] TEXT PRIMARY KEY, [teamId] TEXT NULL, [mode] TEXT NOT NULL, [providerEventId] TEXT NOT NULL UNIQUE, [providerObjectId] TEXT NULL, [payloadDigest] TEXT NOT NULL, [observedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [eventType] TEXT NULL, [eventRank] INTEGER NULL, [outcome] TEXT NULL, [safeReason] TEXT NULL)"
     )),
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_team_billing_replay] ([providerEventId] TEXT PRIMARY KEY, [payloadDigest] TEXT NOT NULL, [settledAt] TEXT NOT NULL, [retainedUntil] TEXT NOT NULL)"
     )),
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_team_billing_desired_state] ([teamId] TEXT PRIMARY KEY, [intentId] TEXT NOT NULL UNIQUE, [kind] TEXT NOT NULL, [operationId] TEXT NULL, [targetProductKey] TEXT NOT NULL, [targetQuantity] INTEGER NOT NULL, [effectiveAt] INTEGER NOT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [providerAcknowledgedAt] TEXT NULL, [activeJobGenerationId] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
     )),
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_team_billing_provider_lanes] ([teamId] TEXT PRIMARY KEY, [claimToken] TEXT NULL, [claimExpiresAt] TEXT NULL, [updatedAt] TEXT NOT NULL)"
     )),
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_team_billing_erasure_state] ([teamId] TEXT PRIMARY KEY, [erasureKey] TEXT NOT NULL UNIQUE, [operationId] TEXT NOT NULL UNIQUE, [activeJobGenerationId] TEXT NOT NULL, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
     )),
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_team_billing_erasure_tombstones] ([erasureKey] TEXT PRIMARY KEY, [evidenceDigest] TEXT NOT NULL, [providerQuiescedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
     )),
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_team_billing_erasure_object_tombstones] ([objectKey] TEXT PRIMARY KEY, [kind] TEXT NOT NULL, [terminalState] TEXT NOT NULL, [providerQuiescedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
     )),
     ...["mode", "quantity", "continuationUrl", "continuationExpiresAt", "attemptedAt", "providerExpiresAt", "terminalObservedAt", "providerCustomerId", "providerSubscriptionId", "providerPriceId", "configurationId", "returnPath"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", name2, name2 === "quantity" || name2 === "providerExpiresAt" ? "INTEGER" : "TEXT")),
@@ -65792,8 +65792,8 @@ async function startTeamBillingCheckout(database, auth, teamId, requestId, produ
   const result = await withTeamBillingAdmissionTransaction(database, async (transaction) => {
     await admitTeamBillingActor(database, transaction, auth, { operation: "checkout", teamId, productKey });
     await assertTeamBillingErasureInactive(database, transaction, teamId);
-    const sql = transaction.dialect.sql;
-    const existing = await transaction.prepare(sql(
+    const sql2 = transaction.dialect.sql;
+    const existing = await transaction.prepare(sql2(
       "SELECT [requestId], [productKey], [status], [providerObjectId], [continuationUrl], [continuationExpiresAt], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?"
     )).get(teamId, requestId);
     if (existing) {
@@ -65802,11 +65802,11 @@ async function startTeamBillingCheckout(database, auth, teamId, requestId, produ
     }
     const desired = await checkoutDesiredState(database, transaction, teamId, productKey);
     const now2 = database.clock.now().toISOString();
-    const active = await transaction.prepare(sql(
+    const active = await transaction.prepare(sql2(
       "SELECT [id], [status], [continuationExpiresAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] = 'checkout' AND [status] IN ('running', 'retrying', 'ready') ORDER BY [createdAt] LIMIT 1"
     )).get(teamId);
     if (active?.status === "ready" && (!canonicalTimestamp2(active.continuationExpiresAt) || active.continuationExpiresAt <= now2)) {
-      await transaction.prepare(sql(
+      await transaction.prepare(sql2(
         "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] = 'ready'"
       )).run(now2, active.id);
     } else if (active) {
@@ -65815,10 +65815,10 @@ async function startTeamBillingCheckout(database, auth, teamId, requestId, produ
     const operationId = randomUUID4();
     const idempotencyKey = checkoutIdempotencyKey(database.capsuleIdentity, teamId, requestId);
     const providerExpiresAt = Math.floor((database.clock.now().getTime() + 23 * 60 * 60 * 1e3) / 1e3);
-    await transaction.prepare(sql(
+    await transaction.prepare(sql2(
       "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [teamId] = ? AND [kind] = 'checkout' AND [status] = 'queued' AND [providerObjectId] IS NULL"
     )).run(now2, teamId);
-    await transaction.prepare(sql(
+    await transaction.prepare(sql2(
       "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [continuationUrl], [continuationExpiresAt], [attemptedAt], [providerExpiresAt]) VALUES (?, ?, ?, ?, 'checkout', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)"
     )).run(operationId, requestId, teamId, auth.userId, productKey, idempotencyKey, now2, now2, desired.mode, desired.quantity, desired.priceId, providerExpiresAt);
     if (typeof database.enqueueTeamBillingCheckoutJob !== "function") throw checkoutUnavailable();
@@ -65837,8 +65837,8 @@ async function startTeamBillingPortal(database, auth, teamId, requestId) {
   const result = await withTeamBillingAdmissionTransaction(database, async (transaction) => {
     await admitTeamBillingActor(database, transaction, auth, { operation: "portal", teamId });
     await assertTeamBillingErasureInactive(database, transaction, teamId);
-    const sql = transaction.dialect.sql;
-    const existing = await transaction.prepare(sql(
+    const sql2 = transaction.dialect.sql;
+    const existing = await transaction.prepare(sql2(
       "SELECT [requestId], [kind], [productKey], [status], [mode], [quantity], [providerObjectId], [providerCustomerId], [configurationId], [returnPath], [continuationUrl], [continuationExpiresAt], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?"
     )).get(teamId, requestId);
     if (existing) {
@@ -65847,20 +65847,20 @@ async function startTeamBillingPortal(database, auth, teamId, requestId) {
     }
     const desired = await portalDesiredState(database, transaction, teamId);
     const now2 = database.clock.now().toISOString();
-    const active = await transaction.prepare(sql(
+    const active = await transaction.prepare(sql2(
       "SELECT [id], [status], [continuationExpiresAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] = 'portal' AND [status] IN ('running', 'retrying', 'ready') ORDER BY [createdAt] LIMIT 1"
     )).get(teamId);
     if (active?.status === "ready" && (!canonicalTimestamp2(active.continuationExpiresAt) || active.continuationExpiresAt <= now2)) {
-      await transaction.prepare(sql(
+      await transaction.prepare(sql2(
         "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] = 'ready'"
       )).run(now2, active.id);
     } else if (active) throw checkoutActive();
     const operationId = randomUUID4();
     const idempotencyKey = teamBillingOperationIdempotencyKey(database.capsuleIdentity, "portal", teamId, requestId);
-    await transaction.prepare(sql(
+    await transaction.prepare(sql2(
       "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [teamId] = ? AND [kind] = 'portal' AND [status] = 'queued' AND [providerObjectId] IS NULL"
     )).run(now2, teamId);
-    await transaction.prepare(sql(
+    await transaction.prepare(sql2(
       "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [continuationUrl], [continuationExpiresAt], [attemptedAt], [providerExpiresAt], [providerCustomerId], [configurationId], [returnPath]) VALUES (?, ?, ?, ?, 'portal', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?)"
     )).run(operationId, requestId, teamId, auth.userId, desired.productKey, idempotencyKey, now2, now2, desired.mode, desired.quantity, desired.customerId, desired.configurationId, desired.returnPath);
     if (typeof database.enqueueTeamBillingPortalJob !== "function") throw checkoutUnavailable();
@@ -65891,13 +65891,13 @@ async function performTeamBillingCheckout(database, context, payload, attempt = 
   let providerLane = null;
   try {
     providerInput = await database.adapter.withTransaction(async (transaction) => {
-      const sql = transaction.dialect.sql;
-      const operation = await transaction.prepare(sql(
+      const sql2 = transaction.dialect.sql;
+      const operation = await transaction.prepare(sql2(
         "SELECT [id], [teamId], [actorUserId], [productKey], [status], [mode], [quantity], [idempotencyKey], [providerExpiresAt] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'"
       )).get(operationId);
       if (!operation || !["queued", "running", "retrying"].includes(operation.status)) return null;
       await assertTeamBillingErasureInactive(database, transaction, operation.teamId);
-      const actor = await transaction.prepare(sql(
+      const actor = await transaction.prepare(sql2(
         "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind] FROM [sporades_auth_users] WHERE [id] = ?"
       )).get(operation.actorUserId);
       if (!actor) throw teamBillingDenied();
@@ -65914,33 +65914,33 @@ async function performTeamBillingCheckout(database, context, payload, attempt = 
       await admitTeamBillingActor(database, transaction, auth, { operation: "checkout", teamId: operation.teamId, productKey: operation.productKey });
       const desired = await checkoutDesiredState(database, transaction, operation.teamId, operation.productKey);
       if (operation.mode !== desired.mode || operation.quantity !== desired.quantity) {
-        await transaction.prepare(sql(
+        await transaction.prepare(sql2(
           "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [safeFailureCode] = 'DESIRED_STATE_CHANGED', [updatedAt] = ? WHERE [id] = ?"
         )).run(database.clock.now().toISOString(), operationId);
         return null;
       }
       if (!Number.isSafeInteger(operation.providerExpiresAt) || operation.providerExpiresAt <= Math.floor(database.clock.now().getTime() / 1e3)) {
-        await transaction.prepare(sql(
+        await transaction.prepare(sql2(
           "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [updatedAt] = ? WHERE [id] = ?"
         )).run(database.clock.now().toISOString(), operationId);
         return null;
       }
-      const customer = await transaction.prepare(sql(
+      const customer = await transaction.prepare(sql2(
         "SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?"
       )).get(operation.teamId);
       if (customer && customer.mode !== desired.mode) throw checkoutUnavailable();
       const attemptedAt = database.clock.now().toISOString();
       const claimToken = randomUUID4();
       const claimExpiresAt = new Date(database.clock.now().getTime() + 5 * 6e4).toISOString();
-      await transaction.prepare(sql(
+      await transaction.prepare(sql2(
         "INSERT INTO [sporades_team_billing_provider_lanes] ([teamId], [claimToken], [claimExpiresAt], [updatedAt]) VALUES (?, NULL, NULL, ?) ON CONFLICT DO NOTHING"
       )).run(operation.teamId, attemptedAt);
-      const claimed = await transaction.prepare(sql(
+      const claimed = await transaction.prepare(sql2(
         "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = ?, [claimExpiresAt] = ?, [updatedAt] = ? WHERE [teamId] = ? AND ([claimToken] IS NULL OR [claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)"
       )).run(claimToken, claimExpiresAt, attemptedAt, operation.teamId, attemptedAt);
       if (Number(claimed?.changes ?? claimed?.changesCount ?? 0) !== 1) throw providerLaneBusy();
       providerLane = { teamId: operation.teamId, claimToken };
-      await transaction.prepare(sql(
+      await transaction.prepare(sql2(
         "UPDATE [sporades_team_billing_operations] SET [status] = 'running', [attemptedAt] = COALESCE([attemptedAt], ?), [updatedAt] = ? WHERE [id] = ?"
       )).run(attemptedAt, attemptedAt, operationId);
       return {
@@ -66150,8 +66150,8 @@ async function settleExhaustedTeamBillingCheckoutJob(transaction, handler, paylo
 async function admitTeamBillingActor(database, transaction, auth, input) {
   requireAuth({ auth }, { linked: true });
   await lockTeamLifecycle(transaction, input.teamId, teamBillingDenied);
-  const sql = transaction.dialect.sql;
-  const membership = await transaction.prepare(sql(
+  const sql2 = transaction.dialect.sql;
+  const membership = await transaction.prepare(sql2(
     "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
   )).get(input.teamId, auth.userId);
   if (membership?.role !== "admin") throw teamBillingDenied();
@@ -66180,8 +66180,8 @@ async function assertTeamBillingErasureInactive(database, transaction, teamId) {
   if (active || erased) throw teamBillingDenied();
 }
 async function safeTeamBillingProjection(transaction, definition, teamId) {
-  const sql = transaction.dialect.sql;
-  const desired = await transaction.prepare(sql(
+  const sql2 = transaction.dialect.sql;
+  const desired = await transaction.prepare(sql2(
     "SELECT [kind], [targetProductKey], [status], [safeFailureCode], [createdAt] FROM [sporades_team_billing_desired_state] WHERE [teamId] = ?"
   )).get(teamId);
   if (desired && ["queued", "running", "awaiting-observation"].includes(desired.status)) {
@@ -66202,7 +66202,7 @@ async function safeTeamBillingProjection(transaction, definition, teamId) {
       reason: desired.safeFailureCode === "CATALOGUE_MISMATCH" ? "catalogue-mismatch" : "provider-state-ambiguous"
     });
   }
-  const operation = await transaction.prepare(sql(
+  const operation = await transaction.prepare(sql2(
     "SELECT [kind], [productKey], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [status] IN ('queued', 'running', 'retrying', 'awaiting-observation') ORDER BY [createdAt] DESC, [id] DESC LIMIT 1"
   )).get(teamId);
   if (operation) {
@@ -66219,16 +66219,16 @@ async function safeTeamBillingProjection(transaction, definition, teamId) {
       requestedAt
     });
   }
-  const currentRows = await transaction.prepare(sql(
+  const currentRows = await transaction.prepare(sql2(
     "SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('active', 'past-due') ORDER BY [lastEventOccurredAt] DESC, [id] DESC"
   )).all(teamId);
   if (currentRows.length > 1) {
     return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
   }
-  const row = currentRows[0] ?? await transaction.prepare(sql(
+  const row = currentRows[0] ?? await transaction.prepare(sql2(
     "SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [lastEventOccurredAt] DESC, [observedAt] DESC, [id] DESC LIMIT 1"
   )).get(teamId);
-  const quarantine = await transaction.prepare(sql(
+  const quarantine = await transaction.prepare(sql2(
     "SELECT [observedAt], [eventRank], [safeReason] FROM [sporades_team_billing_observations] WHERE [teamId] = ? AND [outcome] = 'quarantined' ORDER BY [observedAt] DESC, [eventRank] DESC, [id] DESC LIMIT 1"
   )).get(teamId);
   if (quarantine && (!row || !canonicalTimestamp2(row.lastEventOccurredAt) || quarantine.observedAt > row.lastEventOccurredAt || quarantine.observedAt === row.lastEventOccurredAt && Number(quarantine.eventRank ?? 0) >= Number(row.lastEventRank ?? 0))) {
@@ -66341,18 +66341,18 @@ async function checkoutDesiredState(database, transaction, teamId, productKey) {
   return { mode, quantity, priceId: product.stripe[mode].priceId };
 }
 async function portalDesiredState(database, transaction, teamId) {
-  const sql = transaction.dialect.sql;
+  const sql2 = transaction.dialect.sql;
   const mode = database.paymentsConfig.stripe.livemode ? "live" : "sandbox";
-  const customer = await transaction.prepare(sql(
+  const customer = await transaction.prepare(sql2(
     "SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?"
   )).get(teamId);
-  const subscriptions = await transaction.prepare(sql(
+  const subscriptions = await transaction.prepare(sql2(
     "SELECT [mode], [providerPriceId], [productKey], [quantity], [state] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('active', 'cancelling', 'past-due') ORDER BY [observedAt] DESC, [id] DESC"
   )).all(teamId);
   const subscription = subscriptions.length === 1 ? subscriptions[0] : null;
   const product = database.teamBillingDefinition.catalogue[subscription?.productKey];
   const binding = product?.stripe?.[mode];
-  const expectedQuantity = product?.quantity?.kind === "fixed" ? product.quantity.value : billableTeamMemberQuantity(product?.quantity, Number((await transaction.prepare(sql(
+  const expectedQuantity = product?.quantity?.kind === "fixed" ? product.quantity.value : billableTeamMemberQuantity(product?.quantity, Number((await transaction.prepare(sql2(
     "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
   )).get(teamId))?.count ?? 0));
   if (!customer || customer.mode !== mode || !/^cus_[A-Za-z0-9_]{1,120}$/.test(String(customer.providerCustomerId ?? "")) || !subscription || subscription.mode !== mode || !["active", "cancelling", "past-due"].includes(subscription.state) || !binding?.productId || !binding?.portalConfigurationId || subscription.providerPriceId !== binding.priceId || !Number.isSafeInteger(subscription.quantity) || subscription.quantity !== expectedQuantity) throw checkoutUnavailable();
@@ -66892,7 +66892,7 @@ async function cleanupExpiredStripeEventPayloads(database, options = {}) {
     throw jobError("STRIPE_EVENT_PAYLOAD_CLEANUP_INVALID", "Invalid Stripe Event payload cleanup batch.", "Use the runtime-owned bounded cleanup batch.");
   }
   const adapter = database.adapter;
-  const sql = adapter.dialect.sql;
+  const sql2 = adapter.dialect.sql;
   const nowIso2 = database.clock.now().toISOString();
   let assignedCount = 0;
   let classifiedCount = 0;
@@ -66900,25 +66900,25 @@ async function cleanupExpiredStripeEventPayloads(database, options = {}) {
   let remaining = batchSize;
   let sentinelScanPending = false;
   let sentinelRecheckAt = null;
-  const due = await adapter.prepare(sql(
+  const due = await adapter.prepare(sql2(
     "SELECT [id], [completedAt], [payloadRetentionUntil] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NOT NULL AND [payloadRetentionUntil] <> '' AND [payloadRetentionUntil] <= ? ORDER BY [payloadRetentionUntil] ASC, [id] ASC LIMIT ?"
   )).all(STRIPE_EVENT_JOB, nowIso2, remaining);
   for (const row of due) {
-    const changed = await adapter.prepare(sql(
+    const changed = await adapter.prepare(sql2(
       "UPDATE [sporades_jobs] SET [payload]=?, [result]=NULL, [payloadRedactedAt]=? WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND [completedAt]=? AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]=? AND [payloadRetentionUntil] <= ? AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
     )).run(REDACTED_STRIPE_EVENT_PAYLOAD, nowIso2, row.id, STRIPE_EVENT_JOB, row.completedAt, row.payloadRetentionUntil, nowIso2);
     const mutations = Number(changed?.changes ?? 0);
     redactedCount += mutations;
     remaining -= mutations;
   }
-  const cursorRow = await adapter.prepare(sql(
+  const cursorRow = await adapter.prepare(sql2(
     "SELECT [value] FROM [sporades] WHERE [key]=?"
   )).get(STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY);
   let observedMaintenanceValue = typeof cursorRow?.value === "string" ? cursorRow.value : serializeStripeEventPayloadSentinelMaintenance("", null);
   let sentinelMaintenance = parseStripeEventPayloadSentinelMaintenance(observedMaintenanceValue);
   const recheckIsWaiting = sentinelMaintenance.afterId === "" && isCanonicalJobTimestamp(sentinelMaintenance.recheckAt) && String(sentinelMaintenance.recheckAt) > nowIso2;
   if (recheckIsWaiting) sentinelRecheckAt = sentinelMaintenance.recheckAt;
-  const sentinelCandidates = remaining === 0 || recheckIsWaiting ? [] : await adapter.prepare(sql(
+  const sentinelCandidates = remaining === 0 || recheckIsWaiting ? [] : await adapter.prepare(sql2(
     "SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' AND [id]>? ORDER BY [id] ASC LIMIT ?"
   )).all(STRIPE_EVENT_JOB, sentinelMaintenance.afterId, STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE + 1);
   let processedSentinelCount = 0;
@@ -66932,7 +66932,7 @@ async function cleanupExpiredStripeEventPayloads(database, options = {}) {
     while (row && remaining > 0) {
       const deadline = stripeEventPayloadRetentionDeadline(row.completedAt);
       if (deadline === null) break;
-      const changed = await adapter.prepare(sql(
+      const changed = await adapter.prepare(sql2(
         "UPDATE [sporades_jobs] SET [payloadRetentionUntil]=? WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND [completedAt]=? AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
       )).run(deadline, row.id, STRIPE_EVENT_JOB, row.completedAt);
       const mutations = Number(changed?.changes ?? 0);
@@ -66942,25 +66942,25 @@ async function cleanupExpiredStripeEventPayloads(database, options = {}) {
         break;
       }
       if (retried) break;
-      row = await adapter.prepare(sql(
+      row = await adapter.prepare(sql2(
         "SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
       )).get(observed.id, STRIPE_EVENT_JOB);
       retried = true;
     }
   }
   if (remaining === 0 && processedSentinelCount === 0) {
-    sentinelScanPending = recheckIsWaiting ? false : Boolean(await adapter.prepare(sql(
+    sentinelScanPending = recheckIsWaiting ? false : Boolean(await adapter.prepare(sql2(
       "SELECT [id] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' LIMIT 1"
     )).get(STRIPE_EVENT_JOB));
   } else if (processedSentinelCount > 0) {
     const pageHasMore = sentinelCandidates.length > processedSentinelCount;
-    const unresolvedSentinel = pageHasMore || Boolean(await adapter.prepare(sql(
+    const unresolvedSentinel = pageHasMore || Boolean(await adapter.prepare(sql2(
       "SELECT [id] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' LIMIT 1"
     )).get(STRIPE_EVENT_JOB));
     const nextCursor = pageHasMore ? processedSentinelCursor : "";
     const nextRecheckAt = !pageHasMore && unresolvedSentinel ? jobTimestampAfter(database.clock.now(), STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS) : null;
     const nextMaintenanceValue = serializeStripeEventPayloadSentinelMaintenance(nextCursor, nextRecheckAt);
-    const advanced = await adapter.prepare(sql(
+    const advanced = await adapter.prepare(sql2(
       "UPDATE [sporades] SET [value]=? WHERE [key]=? AND [value]=?"
     )).run(nextMaintenanceValue, STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY, observedMaintenanceValue);
     if (Number(advanced?.changes ?? 0) === 0) sentinelScanPending = true;
@@ -66971,12 +66971,12 @@ async function cleanupExpiredStripeEventPayloads(database, options = {}) {
       sentinelRecheckAt = nextRecheckAt;
     }
   } else if (!recheckIsWaiting && (sentinelMaintenance.afterId !== "" || sentinelMaintenance.recheckAt !== null)) {
-    const unresolvedSentinel = Boolean(await adapter.prepare(sql(
+    const unresolvedSentinel = Boolean(await adapter.prepare(sql2(
       "SELECT [id] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' LIMIT 1"
     )).get(STRIPE_EVENT_JOB));
     const nextRecheckAt = unresolvedSentinel ? jobTimestampAfter(database.clock.now(), STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS) : null;
     const nextMaintenanceValue = serializeStripeEventPayloadSentinelMaintenance("", nextRecheckAt);
-    const wrapped = await adapter.prepare(sql(
+    const wrapped = await adapter.prepare(sql2(
       "UPDATE [sporades] SET [value]=? WHERE [key]=? AND [value]=?"
     )).run(nextMaintenanceValue, STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY, observedMaintenanceValue);
     if (Number(wrapped?.changes ?? 0) === 0) sentinelScanPending = true;
@@ -66986,7 +66986,7 @@ async function cleanupExpiredStripeEventPayloads(database, options = {}) {
       sentinelRecheckAt = nextRecheckAt;
     }
   }
-  const unassigned = remaining === 0 ? [] : await adapter.prepare(sql(
+  const unassigned = remaining === 0 ? [] : await adapter.prepare(sql2(
     "SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL ORDER BY [completedAt] ASC, [id] ASC LIMIT ?"
   )).all(STRIPE_EVENT_JOB, remaining);
   for (const observed of unassigned) {
@@ -66996,9 +66996,9 @@ async function cleanupExpiredStripeEventPayloads(database, options = {}) {
     while (row && remaining > 0) {
       const deadline = stripeEventPayloadRetentionDeadline(row.completedAt);
       const unresolvedDeadline = stripeEventPayloadRetentionStorageValue(row.completedAt);
-      const changed = deadline === null ? await adapter.prepare(sql(
+      const changed = deadline === null ? await adapter.prepare(sql2(
         "UPDATE [sporades_jobs] SET [payloadRetentionUntil]=? WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND ([completedAt]=? OR ([completedAt] IS NULL AND ? IS NULL)) AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
-      )).run(unresolvedDeadline, row.id, STRIPE_EVENT_JOB, row.completedAt, row.completedAt) : await adapter.prepare(sql(
+      )).run(unresolvedDeadline, row.id, STRIPE_EVENT_JOB, row.completedAt, row.completedAt) : await adapter.prepare(sql2(
         "UPDATE [sporades_jobs] SET [payloadRetentionUntil]=? WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND ([completedAt]=? OR ([completedAt] IS NULL AND ? IS NULL)) AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
       )).run(deadline, row.id, STRIPE_EVENT_JOB, row.completedAt, row.completedAt);
       const mutations = Number(changed?.changes ?? 0);
@@ -67009,25 +67009,25 @@ async function cleanupExpiredStripeEventPayloads(database, options = {}) {
         break;
       }
       if (retried) break;
-      row = await adapter.prepare(sql(
+      row = await adapter.prepare(sql2(
         "SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
       )).get(observed.id, STRIPE_EVENT_JOB);
       retried = true;
     }
   }
-  const moreUnassigned = await adapter.prepare(sql(
+  const moreUnassigned = await adapter.prepare(sql2(
     "SELECT [id] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL LIMIT 1"
   )).get(STRIPE_EVENT_JOB);
   if (!sentinelScanPending && sentinelMaintenance.afterId === "" && sentinelRecheckAt === null && classifiedCount > 0) {
     const nextRecheckAt = jobTimestampAfter(database.clock.now(), STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS);
     const nextMaintenanceValue = serializeStripeEventPayloadSentinelMaintenance("", nextRecheckAt);
-    const scheduled = await adapter.prepare(sql(
+    const scheduled = await adapter.prepare(sql2(
       "UPDATE [sporades] SET [value]=? WHERE [key]=? AND [value]=?"
     )).run(nextMaintenanceValue, STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY, observedMaintenanceValue);
     if (Number(scheduled?.changes ?? 0) === 0) sentinelScanPending = true;
     else sentinelRecheckAt = nextRecheckAt;
   }
-  const next = await adapter.prepare(sql(
+  const next = await adapter.prepare(sql2(
     "SELECT [payloadRetentionUntil] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NOT NULL AND [payloadRetentionUntil] <> '' ORDER BY [payloadRetentionUntil] ASC, [id] ASC LIMIT 1"
   )).get(STRIPE_EVENT_JOB);
   const nextDeadline = isCanonicalJobTimestamp(next?.payloadRetentionUntil) ? String(next.payloadRetentionUntil) : null;
@@ -67234,19 +67234,19 @@ function nextScheduleOccurrence(fields, after, timezone) {
   throw commandError2("Schedule has no future occurrence.", "Check the Schedule cron expression.");
 }
 async function ensureScheduleStorage(sqlite, scheduleStorageFault) {
-  const sql = sqlite.dialect.sql;
+  const sql2 = sqlite.dialect.sql;
   await sqlite.exec(
-    sql(
+    sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_schedules] ([name] TEXT PRIMARY KEY, [definitionFingerprint] TEXT NOT NULL, [generationToken] TEXT NOT NULL, [expression] TEXT NOT NULL, [effectiveTimezone] TEXT NOT NULL, [missedRunPolicy] TEXT NOT NULL, [enabled] INTEGER NOT NULL, [exhausted] INTEGER NOT NULL DEFAULT 0, [nextOccurrence] TEXT, [latestScheduledFor] TEXT, [latestOutcome] TEXT, [latestJobId] TEXT, [latestErrorCode] TEXT)"
     )
   );
   await sqlite.exec(
-    sql(
+    sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_schedule_legacy_adoption] ([scheduleName] TEXT PRIMARY KEY, [definitionFingerprint] TEXT NOT NULL, [adoptionOpen] INTEGER NOT NULL)"
     )
   );
   await sqlite.exec(
-    sql(
+    sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_schedule_occurrences] ([id] TEXT PRIMARY KEY, [scheduleName] TEXT NOT NULL, [definitionFingerprint] TEXT, [generationToken] TEXT, [scheduledFor] TEXT NOT NULL, [status] TEXT NOT NULL, [claimToken] TEXT, [claimExpiresAt] TEXT, [jobId] TEXT, [errorCode] TEXT, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
     )
   );
@@ -67254,7 +67254,7 @@ async function ensureScheduleStorage(sqlite, scheduleStorageFault) {
   await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedules", "exhausted", "INTEGER NOT NULL DEFAULT 0");
   await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedule_occurrences", "definitionFingerprint", "TEXT");
   await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedule_occurrences", "generationToken", "TEXT");
-  await sqlite.prepare(sql(
+  await sqlite.prepare(sql2(
     "INSERT INTO [sporades] ([key], [value]) VALUES ('schedule-reconciliation-lock', 'v1') ON CONFLICT ([key]) DO NOTHING"
   )).run();
   const migrateLegacyScheduleIdentity = async (adapter) => {
@@ -67332,12 +67332,12 @@ async function ensureScheduleStorage(sqlite, scheduleStorageFault) {
     }
   } else await migrateLegacyScheduleIdentity(sqlite);
   await sqlite.exec(
-    sql(
+    sql2(
       "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_schedule_occurrence_identity] ON [sporades_schedule_occurrences]([scheduleName], [scheduledFor])"
     )
   );
   await sqlite.exec(
-    sql(
+    sql2(
       "CREATE INDEX IF NOT EXISTS [sporades_schedule_legacy_pending_discovery] ON [sporades_schedule_occurrences]([status], [definitionFingerprint], [generationToken], [scheduledFor], [scheduleName])"
     )
   );
@@ -67347,16 +67347,16 @@ async function finishFailedScheduledOccurrence(database, definition, occurrence,
   const id2 = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
   const completedAt = database.clock.now().toISOString();
   const code = "SCHEDULE_ENQUEUE_FAILED";
-  const sql = database.adapter.dialect.sql;
-  const generation = await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?")).run(definition.name, definition.fingerprint, definition.generationToken);
+  const sql2 = database.adapter.dialect.sql;
+  const generation = await database.adapter.prepare(sql2("UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?")).run(definition.name, definition.fingerprint, definition.generationToken);
   if (Number(generation.changes) !== 1) {
-    await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=NULL, [errorCode]='SCHEDULE_OCCURRENCE_SUPERSEDED', [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?")).run(completedAt, id2, claimToken, definition.fingerprint, definition.generationToken);
+    await database.adapter.prepare(sql2("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=NULL, [errorCode]='SCHEDULE_OCCURRENCE_SUPERSEDED', [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?")).run(completedAt, id2, claimToken, definition.fingerprint, definition.generationToken);
     return { finished: false, nextOccurrence: null, superseded: true };
   }
-  const terminal = await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?")).run(code, completedAt, id2, claimToken, definition.fingerprint, definition.generationToken);
+  const terminal = await database.adapter.prepare(sql2("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?")).run(code, completedAt, id2, claimToken, definition.fingerprint, definition.generationToken);
   if (Number(terminal.changes) !== 1) return { finished: false, nextOccurrence: null };
   const successor = nextScheduleCursor(definition, occurrence);
-  const summary = await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [exhausted]=?, [latestScheduledFor]=?, [latestOutcome]='payload-failed', [latestJobId]=NULL, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?")).run(successor.nextOccurrence, successor.exhausted ? 1 : 0, scheduledFor, code, definition.name, definition.fingerprint, definition.generationToken);
+  const summary = await database.adapter.prepare(sql2("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [exhausted]=?, [latestScheduledFor]=?, [latestOutcome]='payload-failed', [latestJobId]=NULL, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?")).run(successor.nextOccurrence, successor.exhausted ? 1 : 0, scheduledFor, code, definition.name, definition.fingerprint, definition.generationToken);
   if (Number(summary.changes) !== 1) throw new Error("Schedule definition changed during occurrence failure finalization.");
   return { finished: true, ...successor };
 }
@@ -67552,30 +67552,30 @@ function jobHandlersFromCapsuleDefinition(capsuleDefinition) {
   return handlers;
 }
 async function ensureJobStorage(sqlite) {
-  const sql = sqlite.dialect.sql;
-  await sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades] ([key] TEXT PRIMARY KEY, [value] TEXT NOT NULL)"));
-  await sqlite.prepare(sql(
+  const sql2 = sqlite.dialect.sql;
+  await sqlite.exec(sql2("CREATE TABLE IF NOT EXISTS [sporades] ([key] TEXT PRIMARY KEY, [value] TEXT NOT NULL)"));
+  await sqlite.prepare(sql2(
     "INSERT INTO [sporades] ([key], [value]) VALUES (?, ?) ON CONFLICT ([key]) DO NOTHING"
   )).run(STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY, serializeStripeEventPayloadSentinelMaintenance("", null));
   await sqlite.exec(
-    sql(
+    sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_jobs] ([id] TEXT PRIMARY KEY, [handler] TEXT NOT NULL, [enqueuedByUserId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [actorProvider] TEXT, [payload] TEXT NOT NULL, [status] TEXT NOT NULL, [availableAt] TEXT NOT NULL, [attempts] INTEGER NOT NULL, [idempotencyKey] TEXT, [result] TEXT, [failure] TEXT, [createdAt] TEXT NOT NULL, [startedAt] TEXT, [completedAt] TEXT, [failedAt] TEXT)"
     )
   );
   await sqlite.exec(
-    sql(
+    sql2(
       "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_jobs_idempotency] ON [sporades_jobs]([handler], [actorUserId], [idempotencyKey]) WHERE [idempotencyKey] IS NOT NULL"
     )
   );
   await sqlite.exec(
-    sql("CREATE INDEX IF NOT EXISTS [sporades_jobs_runnable] ON [sporades_jobs]([status], [availableAt], [id])")
+    sql2("CREATE INDEX IF NOT EXISTS [sporades_jobs_runnable] ON [sporades_jobs]([status], [availableAt], [id])")
   );
   for (const [name2, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["claimToken", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"], ["authSnapshotJson", "TEXT"], ["credentialJson", "TEXT"], ["payloadRetentionUntil", "TEXT"], ["payloadRedactedAt", "TEXT"]]) await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name2, type);
-  await sqlite.exec(sql(
+  await sqlite.exec(sql2(
     "CREATE INDEX IF NOT EXISTS [sporades_jobs_stripe_payload_retention] ON [sporades_jobs]([handler], [status], [payloadRetentionUntil], [id])"
   ));
   await sqlite.exec(
-    sql("UPDATE [sporades_jobs] SET [actorProvider] = 'anonymous' WHERE [actorProvider] IS NULL OR [actorProvider] = ''")
+    sql2("UPDATE [sporades_jobs] SET [actorProvider] = 'anonymous' WHERE [actorProvider] IS NULL OR [actorProvider] = ''")
   );
   const legacyRows = await sqlite.prepare(sqlite.dialect.sql(
     "SELECT [id], [actorUserId], [enqueuedByUserId], [actorProvider] FROM [sporades_jobs] WHERE [scheduleName] IS NULL AND [actorUserId] <> ? AND ([authSnapshotJson] IS NULL OR [credentialJson] IS NULL)"
@@ -67859,14 +67859,14 @@ function invalidJobRetryPolicyFailure() {
   return { code: "JOB_RETRY_POLICY_INVALID", message: "The stored Job retry policy is invalid." };
 }
 async function cancelJob(database, context, id2) {
-  const sql = database.adapter.dialect.sql;
-  const read = () => context.__privilegedJobAccess ? database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id2) : database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [id] = ? AND [actorUserId] = ?")).get(id2, context.auth.userId);
+  const sql2 = database.adapter.dialect.sql;
+  const read = () => context.__privilegedJobAccess ? database.adapter.prepare(sql2("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id2) : database.adapter.prepare(sql2("SELECT * FROM [sporades_jobs] WHERE [id] = ? AND [actorUserId] = ?")).get(id2, context.auth.userId);
   for (let transition = 0; transition < 8; transition += 1) {
     const row = await read();
     if (!row) return null;
     const now2 = database.clock.now().toISOString();
     if (["queued", "delayed"].includes(row.status)) {
-      const changed = await database.adapter.prepare(sql(
+      const changed = await database.adapter.prepare(sql2(
         "UPDATE [sporades_jobs] SET [status]='cancelled', [completedAt]=?, [startedAt]=NULL, [leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]=?"
       )).run(now2, id2, row.status);
       if (Number(changed?.changes ?? 0) === 1) return jobState({ ...row, status: "cancelled", completedAt: now2, startedAt: null, leaseExpiresAt: null }, true);
@@ -67874,7 +67874,7 @@ async function cancelJob(database, context, id2) {
     }
     if (row.status === "running") {
       const hasClaimToken = typeof row.claimToken === "string" && row.claimToken.length > 0;
-      const changed = await database.adapter.prepare(sql(
+      const changed = await database.adapter.prepare(sql2(
         "UPDATE [sporades_jobs] SET [cancelRequestedAt]=? WHERE [id]=? AND [status]='running' AND " + (hasClaimToken ? "[claimToken]=?" : "[claimToken] IS NULL")
       )).run(now2, id2, ...hasClaimToken ? [row.claimToken] : []);
       if (Number(changed?.changes ?? 0) !== 1) continue;
@@ -67970,7 +67970,340 @@ function safeJobFailure(error) {
 }
 
 // src/resource-runtime.ts
-import { createHash as createHash7 } from "node:crypto";
+import { createHash as createHash8 } from "node:crypto";
+
+// src/notification-intent-runtime.ts
+import { createHash as createHash7, createHmac, randomBytes as randomBytes4, randomUUID as randomUUID6, timingSafeEqual } from "node:crypto";
+var NOTIFICATION_RESERVATION_MS = 3e4;
+var NOTIFICATION_RECOVERY_SCAN_MS = 3e4;
+var NOTIFICATION_MAX_BACKOFF_MS = 36e5;
+var NOTIFICATION_SMTP_ROUNDTRIP_MARGIN = 12;
+var notificationIntentSchemas = [
+  {
+    table: "sporades_notification_intents",
+    columns: ["resourceTable", "resourceId", "operationId", "intentId", "payloadDigest", "payloadJson", "messageId", "acceptedAt"],
+    primaryKey: ["resourceTable", "resourceId", "operationId", "intentId"],
+    indexes: [],
+    definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [payloadDigest] TEXT NOT NULL, [payloadJson] TEXT NOT NULL, [messageId] TEXT NOT NULL, [acceptedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId])"
+  },
+  {
+    table: "sporades_notification_recipients",
+    columns: ["resourceTable", "resourceId", "operationId", "intentId", "recipient", "state", "attemptCount", "currentAttemptToken", "currentAttemptDeadline", "nextAttemptAt", "lastOutcomeCategory", "updatedAt"],
+    primaryKey: ["resourceTable", "resourceId", "operationId", "intentId", "recipient"],
+    indexes: [
+      { name: "sporades_notification_recipients_due", columns: ["state", "nextAttemptAt", "resourceTable", "resourceId", "operationId", "intentId", "recipient"] },
+      { name: "sporades_notification_recipients_reservations", columns: ["state", "currentAttemptDeadline", "resourceTable", "resourceId", "operationId", "intentId", "recipient"] }
+    ],
+    definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [recipient] TEXT NOT NULL, [state] TEXT NOT NULL, [attemptCount] TEXT NOT NULL, [currentAttemptToken] TEXT NOT NULL, [currentAttemptDeadline] TEXT NOT NULL, [nextAttemptAt] TEXT NOT NULL, [lastOutcomeCategory] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId], [recipient])"
+  },
+  {
+    table: "sporades_notification_attempts",
+    columns: ["resourceTable", "resourceId", "operationId", "intentId", "recipient", "attemptToken", "sequence", "reservedAt", "deadline", "completedAt", "outcomeCategory"],
+    primaryKey: ["resourceTable", "resourceId", "operationId", "intentId", "recipient", "attemptToken"],
+    indexes: [],
+    definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [recipient] TEXT NOT NULL, [attemptToken] TEXT NOT NULL, [sequence] TEXT NOT NULL, [reservedAt] TEXT NOT NULL, [deadline] TEXT NOT NULL, [completedAt] TEXT NOT NULL, [outcomeCategory] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId], [recipient], [attemptToken])"
+  },
+  {
+    table: "sporades_notification_attempt_keys",
+    columns: ["resourceTable", "resourceId", "operationId", "intentId", "attemptKey"],
+    primaryKey: ["resourceTable", "resourceId", "operationId", "intentId"],
+    indexes: [],
+    definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [attemptKey] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId])"
+  }
+];
+var sql = (adapter, statement) => adapter.dialect.sql(statement);
+async function ensureNotificationIntentStorage(adapter) {
+  if (adapter.engine === "postgres") {
+    const bootstrap = adapter[Symbol.for("sporades.database.resourceBootstrapMechanics")];
+    if (typeof bootstrap !== "function") throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_ADAPTER_UNSUPPORTED" });
+    await bootstrap();
+    return;
+  }
+  for (const schema of notificationIntentSchemas) {
+    await adapter.exec(sql(adapter, `CREATE TABLE IF NOT EXISTS [${schema.table}] (${schema.definition})`));
+    for (const index of schema.indexes) {
+      await adapter.exec(sql(adapter, `CREATE INDEX IF NOT EXISTS [${index.name}] ON [${schema.table}] (${index.columns.map((column) => `[${column}]`).join(", ")})`));
+    }
+  }
+}
+async function notificationIntentStorageExists(adapter) {
+  if (adapter.engine === "postgres") {
+    const row2 = await adapter.prepare("SELECT to_regclass('sporades_notification_intents') AS present").get();
+    return Boolean(row2?.present);
+  }
+  const row = await adapter.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE type='table' AND name='sporades_notification_intents'").get();
+  return Number(row?.n ?? 0) === 1;
+}
+function exactPlainObject(input, allowed) {
+  return input && Object.getPrototypeOf(input) === Object.prototype && Object.getOwnPropertySymbols(input).length === 0 && Object.values(Object.getOwnPropertyDescriptors(input)).every((descriptor) => Object.hasOwn(descriptor, "value")) && Object.keys(input).sort().join(",") === allowed.sort().join(",");
+}
+async function stageNotificationIntent(adapter, database, identity, input, canonicalJson) {
+  const invalid = () => {
+    throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_INVALID_INPUT" });
+  };
+  if (!database.mail?.enabled) throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_EFFECT_UNSUPPORTED" });
+  const allowed = Object.hasOwn(input ?? {}, "html") ? ["html", "id", "subject", "text", "to"] : ["id", "subject", "text", "to"];
+  if (!exactPlainObject(input, allowed)) invalid();
+  if (typeof input.id !== "string" || input.id.length === 0 || input.id.includes("\0") || Buffer.byteLength(input.id, "utf8") > 128 || Buffer.from(input.id, "utf8").toString("utf8") !== input.id) invalid();
+  if (!Array.isArray(input.to) || input.to.length < 1 || input.to.length > 100 || input.to.some((value) => typeof value !== "string")) invalid();
+  if (typeof input.subject !== "string" || typeof input.text !== "string" || input.html !== void 0 && typeof input.html !== "string") invalid();
+  if (input.text.length === 0 && (input.html === void 0 || input.html.length === 0)) invalid();
+  let normalized;
+  try {
+    normalized = database.mail.validateIntent(input);
+  } catch (error) {
+    if (error?.code === "MAIL_DISABLED" || error?.code === "MAIL_CREDENTIAL_MISSING") {
+      throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_EFFECT_UNSUPPORTED" });
+    }
+    invalid();
+  }
+  if (normalized.to.length !== input.to.length) invalid();
+  const recipients = normalized.to.map((entry) => entry.email);
+  if (new Set(recipients).size !== recipients.length) invalid();
+  const payload = {
+    id: input.id,
+    to: recipients,
+    subject: normalized.subject,
+    text: input.text,
+    ...input.html === void 0 ? {} : { html: input.html }
+  };
+  const payloadJson = canonicalJson(payload);
+  if (Buffer.byteLength(payloadJson, "utf8") > 65536) invalid();
+  const payloadDigest = createHash7("sha256").update(payloadJson).digest("hex");
+  const key = [identity.table, identity.id, identity.operationId, input.id];
+  const existing = await adapter.prepare(sql(adapter, "SELECT [payloadDigest] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key);
+  if (existing) {
+    const digest = existing.payloadDigest ?? existing.payloaddigest;
+    if (digest !== payloadDigest) throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_OPERATION_CONFLICT" });
+    return { id: input.id, state: "staged" };
+  }
+  const acceptedAt = database.clock.now().toISOString();
+  const messageId = `<${randomUUID6()}@sporades.local>`;
+  const inserted = await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_intents] ([resourceTable],[resourceId],[operationId],[intentId],[payloadDigest],[payloadJson],[messageId],[acceptedAt]) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT ([resourceTable],[resourceId],[operationId],[intentId]) DO NOTHING")).run(...key, payloadDigest, payloadJson, messageId, acceptedAt);
+  if (inserted.changes === 0) {
+    const raced = await adapter.prepare(sql(adapter, "SELECT [payloadDigest] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key);
+    const digest = raced?.payloadDigest ?? raced?.payloaddigest;
+    if (digest !== payloadDigest) throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_OPERATION_CONFLICT" });
+    return { id: input.id, state: "staged" };
+  }
+  await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_attempt_keys] ([resourceTable],[resourceId],[operationId],[intentId],[attemptKey]) VALUES (?,?,?,?,?)")).run(...key, randomBytes4(32).toString("hex"));
+  for (const recipient of payload.to) {
+    await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_recipients] ([resourceTable],[resourceId],[operationId],[intentId],[recipient],[state],[attemptCount],[currentAttemptToken],[currentAttemptDeadline],[nextAttemptAt],[lastOutcomeCategory],[updatedAt]) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")).run(...key, recipient, "accepted", "0", "", "", acceptedAt, "", acceptedAt);
+  }
+  return { id: input.id, state: "staged" };
+}
+async function readNotificationIntentStatuses(adapter, identity, intentIds) {
+  const intents = [];
+  for (const intentId of intentIds) {
+    const recipients = await adapter.prepare(sql(adapter, "SELECT [recipient],[state],[attemptCount],[nextAttemptAt],[lastOutcomeCategory] FROM [sporades_notification_recipients] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? ORDER BY [recipient]")).all(identity.table, identity.id, identity.operationId, intentId);
+    const publicRecipients = recipients.map((row) => ({
+      recipient: row.recipient,
+      state: row.state,
+      attemptCount: Number(row.attemptCount ?? row.attemptcount ?? 0),
+      nextAttemptAt: (row.nextAttemptAt ?? row.nextattemptat) || null,
+      lastOutcomeCategory: (row.lastOutcomeCategory ?? row.lastoutcomecategory) || null
+    }));
+    const pending = publicRecipients.some((row) => ["accepted", "submitting", "unknown", "retry-wait"].includes(row.state));
+    const allAcknowledged = publicRecipients.length > 0 && publicRecipients.every((row) => row.state === "acknowledged");
+    intents.push({ id: intentId, state: pending ? "pending" : allAcknowledged ? "acknowledged" : "rejected", recipients: publicRecipients });
+  }
+  return intents;
+}
+function notificationRetryDelay(attemptNumber) {
+  return Math.min(3e4 * 2 ** Math.min(Math.max(1, attemptNumber) - 1, 7), NOTIFICATION_MAX_BACKOFF_MS);
+}
+var recipientKey = (row) => [
+  row.resourceTable ?? row.resourcetable,
+  row.resourceId ?? row.resourceid,
+  row.operationId ?? row.operationid,
+  row.intentId ?? row.intentid,
+  row.recipient
+];
+function notificationAttemptToken(attemptKey, key, sequence, messageId, nonce = randomUUID6()) {
+  const authenticator = createHmac("sha256", attemptKey).update([...key, String(sequence), messageId, nonce].join("\0")).digest("hex");
+  return `${nonce}.${authenticator}`;
+}
+function notificationAttemptTokenIsValid(attemptKey, reservation, messageId) {
+  const token = String(reservation.token ?? "");
+  const separator = token.indexOf(".");
+  if (separator < 1 || token.indexOf(".", separator + 1) !== -1) return false;
+  const nonce = token.slice(0, separator);
+  const actual = token.slice(separator + 1);
+  if (!/^[0-9a-f-]{36}$/.test(nonce) || !/^[0-9a-f]{64}$/.test(actual)) return false;
+  const expected = notificationAttemptToken(attemptKey, reservation.key, reservation.sequence, messageId, nonce).slice(separator + 1);
+  return timingSafeEqual(Buffer.from(actual, "hex"), Buffer.from(expected, "hex"));
+}
+async function notificationAttemptKey(adapter, key) {
+  const select = () => adapter.prepare(sql(adapter, "SELECT [attemptKey] FROM [sporades_notification_attempt_keys] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key.slice(0, 4));
+  let row = await select();
+  if (!row) {
+    await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_attempt_keys] ([resourceTable],[resourceId],[operationId],[intentId],[attemptKey]) VALUES (?,?,?,?,?) ON CONFLICT ([resourceTable],[resourceId],[operationId],[intentId]) DO NOTHING")).run(...key.slice(0, 4), randomBytes4(32).toString("hex"));
+    row = await select();
+  }
+  const attemptKey = row?.attemptKey ?? row?.attemptkey;
+  if (typeof attemptKey !== "string" || !/^[0-9a-f]{64}$/.test(attemptKey)) throw new Error("notification attempt key missing");
+  return attemptKey;
+}
+async function recoverExpiredReservations(database, now2) {
+  await database.adapter.withTransaction(async (tx) => {
+    const expired = await tx.prepare(sql(tx, "SELECT * FROM [sporades_notification_recipients] WHERE [state]='submitting' AND [currentAttemptDeadline]<>'' AND [currentAttemptDeadline]<=? ORDER BY [currentAttemptDeadline]")).all(now2.toISOString());
+    for (const row of expired) {
+      const key = recipientKey(row);
+      const token = row.currentAttemptToken ?? row.currentattempttoken;
+      const attempt = Number(row.attemptCount ?? row.attemptcount);
+      const next = new Date(now2.getTime() + notificationRetryDelay(attempt)).toISOString();
+      await tx.prepare(sql(tx, "UPDATE [sporades_notification_attempts] SET [completedAt]=?,[outcomeCategory]='unknown' WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [attemptToken]=? AND [outcomeCategory]='submitting'")).run(now2.toISOString(), ...key, token);
+      await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]='retry-wait',[currentAttemptToken]='',[currentAttemptDeadline]='',[nextAttemptAt]=?,[lastOutcomeCategory]='unknown',[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state]='submitting' AND [currentAttemptToken]=?")).run(next, now2.toISOString(), ...key, token);
+    }
+  });
+}
+function notificationReservationWindowMs(database) {
+  const connectionTimeoutMs = Number(database.mail?.connectionTimeoutMs) || 0;
+  const socketTimeoutMs = Number(database.mail?.socketTimeoutMs) || 0;
+  return Math.max(NOTIFICATION_RESERVATION_MS, connectionTimeoutMs + socketTimeoutMs * NOTIFICATION_SMTP_ROUNDTRIP_MARGIN);
+}
+async function reserveDueRecipient(database, now2) {
+  return database.adapter.withTransaction(async (tx) => {
+    const row = await tx.prepare(sql(tx, "SELECT * FROM [sporades_notification_recipients] WHERE [state] IN ('accepted','retry-wait','unknown') AND [nextAttemptAt]<=? ORDER BY [nextAttemptAt],[resourceTable],[resourceId],[operationId],[intentId],[recipient] LIMIT 1")).get(now2.toISOString());
+    if (!row) return null;
+    const key = recipientKey(row);
+    const sequence = Number(row.attemptCount ?? row.attemptcount) + 1;
+    const deadline = new Date(now2.getTime() + notificationReservationWindowMs(database)).toISOString();
+    const intent = await tx.prepare(sql(tx, "SELECT [payloadJson],[messageId] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key.slice(0, 4));
+    if (!intent) throw new Error("notification intent missing");
+    const messageId = intent.messageId ?? intent.messageid;
+    const attemptKey = await notificationAttemptKey(tx, key);
+    const token = notificationAttemptToken(attemptKey, key, sequence, messageId);
+    const changed = await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]='submitting',[attemptCount]=?,[currentAttemptToken]=?,[currentAttemptDeadline]=?,[nextAttemptAt]='',[lastOutcomeCategory]='',[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state] IN ('accepted','retry-wait','unknown') AND [nextAttemptAt]<=?")).run(String(sequence), token, deadline, now2.toISOString(), ...key, now2.toISOString());
+    if (Number(changed?.changes ?? 0) !== 1) return null;
+    await tx.prepare(sql(tx, "INSERT INTO [sporades_notification_attempts] ([resourceTable],[resourceId],[operationId],[intentId],[recipient],[attemptToken],[sequence],[reservedAt],[deadline],[completedAt],[outcomeCategory]) VALUES (?,?,?,?,?,?,?,?,?,?,?)")).run(...key, token, String(sequence), now2.toISOString(), deadline, "", "submitting");
+    await tx.prepare(sql(tx, "DELETE FROM [sporades_notification_attempts] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [completedAt]<>'' AND [attemptToken]<>?")).run(...key, token);
+    return {
+      key,
+      token,
+      sequence,
+      deadline,
+      recipient: row.recipient,
+      payload: JSON.parse(intent.payloadJson ?? intent.payloadjson),
+      messageId
+    };
+  });
+}
+async function reservationIsCurrent(database, reservation) {
+  const row = await database.adapter.prepare(sql(database.adapter, "SELECT [state],[currentAttemptToken] FROM [sporades_notification_recipients] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=?")).get(...reservation.key);
+  return row?.state === "submitting" && (row.currentAttemptToken ?? row.currentattempttoken) === reservation.token;
+}
+async function settleAttempt(database, reservation, outcome) {
+  const now2 = database.clock.now();
+  await database.adapter.withTransaction(async (tx) => {
+    if (outcome === "acknowledged") {
+      const intent = await tx.prepare(sql(tx, "SELECT [messageId] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...reservation.key.slice(0, 4));
+      const messageId = intent?.messageId ?? intent?.messageid;
+      const attemptKey = await notificationAttemptKey(tx, reservation.key);
+      if (typeof messageId !== "string" || typeof attemptKey !== "string" || !notificationAttemptTokenIsValid(attemptKey, reservation, messageId)) return;
+    }
+    const unfinishedOnly = outcome === "acknowledged" ? "" : " AND [outcomeCategory]='submitting'";
+    await tx.prepare(sql(tx, `UPDATE [sporades_notification_attempts] SET [completedAt]=?,[outcomeCategory]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [attemptToken]=?${unfinishedOnly}`)).run(now2.toISOString(), outcome, ...reservation.key, reservation.token);
+    if (outcome === "acknowledged") {
+      await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]='acknowledged',[currentAttemptToken]='',[currentAttemptDeadline]='',[nextAttemptAt]='',[lastOutcomeCategory]='acknowledged',[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state]<>'acknowledged' AND CAST([attemptCount] AS INTEGER)>=?")).run(now2.toISOString(), ...reservation.key, reservation.sequence);
+      return;
+    }
+    const state = outcome === "rejected" ? "rejected" : "retry-wait";
+    const next = outcome === "unknown" ? new Date(now2.getTime() + notificationRetryDelay(reservation.sequence)).toISOString() : "";
+    await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]=?,[currentAttemptToken]='',[currentAttemptDeadline]='',[nextAttemptAt]=?,[lastOutcomeCategory]=?,[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state]='submitting' AND [currentAttemptToken]=?")).run(state, next, outcome, now2.toISOString(), ...reservation.key, reservation.token);
+  });
+}
+async function runNotificationIntentDeliveryPass(database) {
+  await recoverExpiredReservations(database, database.clock.now());
+  const reservation = await reserveDueRecipient(database, database.clock.now());
+  if (!reservation) return false;
+  await database.notificationIntentFault?.("after-reservation", reservation);
+  if (!await reservationIsCurrent(database, reservation)) return true;
+  await database.notificationIntentFault?.("before-submit", reservation);
+  if (database.__notificationIntentShutdownAborting) return true;
+  try {
+    await database.mail.sendIntent(
+      { ...reservation.payload, to: [reservation.recipient] },
+      reservation.messageId,
+      (event) => database.log?.emit(event)
+    );
+    await database.notificationIntentFault?.("after-submit", reservation);
+    await settleAttempt(database, reservation, "acknowledged");
+  } catch (error) {
+    if (error?.notificationIntentCrash === true) throw error;
+    if (database.__notificationIntentShutdownAborting) return true;
+    const outcome = error?.smtpOutcome === "rejected" ? "rejected" : "unknown";
+    await settleAttempt(database, reservation, outcome);
+  }
+  return true;
+}
+async function nextWakeAt(database) {
+  const row = await database.adapter.prepare(sql(database.adapter, "SELECT [nextAttemptAt],[currentAttemptDeadline] FROM [sporades_notification_recipients] WHERE [state] IN ('accepted','retry-wait','unknown','submitting') ORDER BY CASE WHEN [state]='submitting' THEN [currentAttemptDeadline] ELSE [nextAttemptAt] END LIMIT 1")).get();
+  return row ? (row.currentAttemptDeadline ?? row.currentattemptdeadline) || (row.nextAttemptAt ?? row.nextattemptat) : null;
+}
+function startNotificationIntentWorker(database) {
+  database.__notificationIntentShutdownAborting = false;
+  database.__notificationIntentStopped = false;
+  const scheduleRecoveryScan = () => {
+    if (database.__notificationIntentStopped || database.__notificationIntentTimer) return;
+    const timer = setTimeout(() => {
+      database.__notificationIntentTimer = null;
+      void run2().catch(() => {
+      });
+    }, NOTIFICATION_RECOVERY_SCAN_MS);
+    timer.unref?.();
+    database.__notificationIntentTimer = timer;
+    database.__notificationIntentNativeTimer = true;
+  };
+  const run2 = async () => {
+    if (database.__notificationIntentStopped || database.__notificationIntentWorkerPromise) return;
+    const work = (async () => {
+      try {
+        if (database.__notificationIntentStorageVerified !== true) {
+          await ensureNotificationIntentStorage(database.adapter);
+          database.__notificationIntentStorageVerified = true;
+        }
+        while (!database.__notificationIntentStopped && await runNotificationIntentDeliveryPass(database)) {
+        }
+        if (database.__notificationIntentStopped) return;
+        const wakeAt = await nextWakeAt(database);
+        if (database.__notificationIntentStopped) return;
+        const delay = wakeAt ? Math.max(0, Date.parse(wakeAt) - database.clock.now().getTime()) : null;
+        if (delay === null || !Number.isFinite(delay) || delay >= NOTIFICATION_RECOVERY_SCAN_MS) scheduleRecoveryScan();
+        else {
+          database.__notificationIntentTimer = database.clock.setTimer(() => {
+            database.__notificationIntentTimer = null;
+            void run2().catch(() => {
+            });
+          }, delay);
+          database.__notificationIntentNativeTimer = false;
+        }
+      } catch (error) {
+        scheduleRecoveryScan();
+        throw error;
+      }
+    })();
+    database.__notificationIntentWorkerPromise = work;
+    try {
+      await work;
+    } finally {
+      if (database.__notificationIntentWorkerPromise === work) database.__notificationIntentWorkerPromise = null;
+    }
+  };
+  return run2();
+}
+function stopNotificationIntentWorker(database) {
+  database.__notificationIntentStopped = true;
+  if (database.__notificationIntentTimer) {
+    if (database.__notificationIntentNativeTimer) clearTimeout(database.__notificationIntentTimer);
+    else database.clock.clearTimer(database.__notificationIntentTimer);
+  }
+  database.__notificationIntentTimer = null;
+  database.__notificationIntentNativeTimer = false;
+  return database.__notificationIntentWorkerPromise;
+}
+
+// src/resource-runtime.ts
 var RESOURCE_ADAPTER_SUPPORT = Object.freeze({
   sqlite: "supported",
   postgres: "supported",
@@ -68038,7 +68371,7 @@ function optionsSnapshot(options, status) {
   const table = boundedIdentity(options.resource.table);
   const id2 = boundedIdentity(options.resource.id);
   const operationId = boundedIdentity(options.operationId);
-  return { table, id: id2, operationId, digest: status ? null : createHash7("sha256").update(resourceCanonicalJson(options.input)).digest("hex") };
+  return { table, id: id2, operationId, digest: status ? null : createHash8("sha256").update(resourceCanonicalJson(options.input)).digest("hex") };
 }
 function resourceReceiptRow(adapter, row) {
   if (!row || adapter.engine !== "postgres") return row;
@@ -68150,7 +68483,7 @@ function bindOuterResources(database, context, hooks) {
     });
     return promise;
   };
-  const actorDigest = createHash7("sha256").update(resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged: false })).digest("hex");
+  const actorDigest = createHash8("sha256").update(resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged: false })).digest("hex");
   const guardCapability = (name2, value) => wrapCapability(value, (path14) => {
     if (used) throw resourceError(!invocationActive || !scopeActive || !admission ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
     if (!["where", "orderBy", "limit"].includes(path14.at(-1))) touched = true;
@@ -68245,6 +68578,7 @@ function bindOuterResources(database, context, hooks) {
         if (database.adapter.engine !== "postgres") {
           await database.adapter.exec(database.adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_receipts] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId]))"));
           await upgradeFoldedResourceColumns(database.adapter, "sporades_resource_receipts", ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"]);
+          await ensureNotificationIntentStorage(database.adapter);
         }
         receipt2 = resourceReceiptRow(database.adapter, await database.adapter.prepare(database.adapter.dialect.sql("SELECT * FROM [sporades_resource_receipts] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=?")).get(identity.table, identity.id, identity.operationId));
       } catch (error) {
@@ -68252,11 +68586,19 @@ function bindOuterResources(database, context, hooks) {
       }
       if (receipt2) {
         if (receipt2.actorDigest !== actorDigest || !status && receipt2.inputDigest !== identity.digest) throw resourceError("RESOURCE_OPERATION_CONFLICT");
-        return status ? { state: "committed", result: JSON.parse(receipt2.resultJson), intentIds: JSON.parse(receipt2.intentIdsJson) } : JSON.parse(receipt2.resultJson);
+        if (!status) return JSON.parse(receipt2.resultJson);
+        const intentIds2 = JSON.parse(receipt2.intentIdsJson);
+        return {
+          state: "committed",
+          result: JSON.parse(receipt2.resultJson),
+          intentIds: intentIds2,
+          ...intentIds2.length ? { intents: await readNotificationIntentStatuses(database.adapter, identity, intentIds2) } : {}
+        };
       }
       if (status) return { state: "absent" };
       const scopeDb = wrapCapability(parentDb, () => assertLive(true), [], /* @__PURE__ */ new WeakMap(), track);
       const logs = [];
+      const intentIds = [];
       const scope = Object.freeze({
         db: scopeDb,
         jobs: Object.freeze({ enqueue: (...args) => track(() => {
@@ -68269,12 +68611,13 @@ function bindOuterResources(database, context, hooks) {
           logs.push(level);
         }]))),
         signal: controller.signal,
-        notifications: Object.freeze({ accept: () => {
+        notifications: Object.freeze({ accept: (input) => {
           assertLive(true);
-          return track(() => Promise.resolve().then(() => {
-            terminalError ??= resourceError("RESOURCE_EFFECT_UNSUPPORTED");
-            throw terminalError;
-          }));
+          return track(async () => {
+            const staged = await stageNotificationIntent(database.adapter, database, identity, input, resourceCanonicalJson);
+            if (!intentIds.includes(staged.id)) intentIds.push(staged.id);
+            return staged;
+          });
         } })
       });
       let result;
@@ -68299,7 +68642,8 @@ function bindOuterResources(database, context, hooks) {
       }
       assertLive();
       try {
-        await database.adapter.prepare(database.adapter.dialect.sql("INSERT INTO [sporades_resource_receipts] VALUES (?,?,?,?,?,?,?,?)")).run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
+        intentIds.sort();
+        await database.adapter.prepare(database.adapter.dialect.sql("INSERT INTO [sporades_resource_receipts] VALUES (?,?,?,?,?,?,?,?)")).run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, JSON.stringify(intentIds), database.clock.now().toISOString());
       } catch (error) {
         throw normalizeDatabaseOperationError(error, true);
       }
@@ -68370,7 +68714,7 @@ function bindJobResources(database, context, claim, hooks) {
   let touched = false;
   const privileged = hooks.privileged === true;
   const actorBinding = resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged });
-  const actorDigest = createHash7("sha256").update(actorBinding).digest("hex");
+  const actorDigest = createHash8("sha256").update(actorBinding).digest("hex");
   for (const name2 of ["db", "log", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
     if (!context[name2]) continue;
     context[name2] = wrapCapability(context[name2], (path14) => {
@@ -68450,17 +68794,17 @@ function bindJobResources(database, context, claim, hooks) {
       const result = await database.adapter.withResourceTransaction(async (adapter) => {
         resourceAdapter = adapter;
         const guarded = Object.create(adapter);
-        guarded.prepare = (sql) => {
+        guarded.prepare = (sql2) => {
           assertLive();
-          const statement = adapter.prepare(sql);
+          const statement = adapter.prepare(sql2);
           return Object.fromEntries(["get", "all", "run", "columns"].map((method) => [method, (...args) => {
             assertLive();
             return statement[method](...args);
           }]));
         };
-        guarded.exec = (sql) => {
+        guarded.exec = (sql2) => {
           assertLive();
-          return adapter.exec(sql);
+          return adapter.exec(sql2);
         };
         await checkClaim(guarded, true);
         scopeContext = hooks.createContext(guarded, controller.signal, privileged);
@@ -68469,12 +68813,20 @@ function bindJobResources(database, context, claim, hooks) {
         if (database.adapter.engine !== "postgres") {
           await guarded.exec(adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_receipts] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId]))"));
           await upgradeFoldedResourceColumns(guarded, "sporades_resource_receipts", ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"]);
+          await ensureNotificationIntentStorage(guarded);
         }
         const receipt2 = resourceReceiptRow(database.adapter, await guarded.prepare(adapter.dialect.sql("SELECT * FROM [sporades_resource_receipts] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=?")).get(identity.table, identity.id, identity.operationId));
         if (receipt2) {
           if (receipt2.actorDigest !== actorDigest || !status && receipt2.inputDigest !== identity.digest) throw resourceError("RESOURCE_OPERATION_CONFLICT");
           await checkClaim(guarded);
-          return status ? { state: "committed", result: JSON.parse(receipt2.resultJson), intentIds: JSON.parse(receipt2.intentIdsJson) } : JSON.parse(receipt2.resultJson);
+          if (!status) return JSON.parse(receipt2.resultJson);
+          const intentIds2 = JSON.parse(receipt2.intentIdsJson);
+          return {
+            state: "committed",
+            result: JSON.parse(receipt2.resultJson),
+            intentIds: intentIds2,
+            ...intentIds2.length ? { intents: await readNotificationIntentStatuses(guarded, identity, intentIds2) } : {}
+          };
         }
         if (status) {
           await checkClaim(guarded);
@@ -68488,10 +68840,7 @@ function bindJobResources(database, context, claim, hooks) {
           }]));
           return [name2, wrapTable(table)];
         }));
-        const rejectEffect = () => {
-          assertLive(true);
-          throw resourceError("RESOURCE_EFFECT_UNSUPPORTED");
-        };
+        const intentIds = [];
         const scope = Object.freeze({
           db: Object.freeze(db),
           signal: controller.signal,
@@ -68501,7 +68850,11 @@ function bindJobResources(database, context, claim, hooks) {
             if (logs.length >= 100) throw resourceError("RESOURCE_INVALID_INPUT");
             logs.push(level);
           }]))),
-          notifications: Object.freeze({ accept: () => track(rejectEffect) })
+          notifications: Object.freeze({ accept: (input) => track(async () => {
+            const staged = await stageNotificationIntent(guarded, database, identity, input, resourceCanonicalJson);
+            if (!intentIds.includes(staged.id)) intentIds.push(staged.id);
+            return staged;
+          }) })
         });
         const value = await Promise.race([Promise.resolve().then(() => callback(scope)), aborted]);
         admission = false;
@@ -68510,7 +68863,8 @@ function bindJobResources(database, context, claim, hooks) {
         const resultJson = resourceCanonicalJson(value);
         await hooks.stageLogs(scopeContext, logs);
         await checkClaim(guarded);
-        await guarded.prepare(adapter.dialect.sql("INSERT INTO [sporades_resource_receipts] VALUES (?,?,?,?,?,?,?,?)")).run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
+        intentIds.sort();
+        await guarded.prepare(adapter.dialect.sql("INSERT INTO [sporades_resource_receipts] VALUES (?,?,?,?,?,?,?,?)")).run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, JSON.stringify(intentIds), database.clock.now().toISOString());
         await checkClaim(guarded);
         active = false;
         return JSON.parse(resultJson);
@@ -70129,46 +70483,46 @@ async function checkRuntimeFileStorage(database) {
   return await database.fileStorage.checkHealth();
 }
 function createFileStorageTables(sqlite) {
-  const sql = sqlite.dialect.sql;
+  const sql2 = sqlite.dialect.sql;
   return chainMaybePromise([
     () => sqlite.exec(
-      sql(
+      sql2(
         "CREATE TABLE IF NOT EXISTS [sporades_file_buckets] ([id] TEXT PRIMARY KEY, [ownerId] TEXT NOT NULL, [name] TEXT NOT NULL, [createdAt] TEXT NOT NULL, UNIQUE([ownerId], [name]))"
       )
     ),
     () => sqlite.exec(
-      sql(
+      sql2(
         "CREATE TABLE IF NOT EXISTS [sporades_files] ([id] TEXT PRIMARY KEY, [ownerId] TEXT NOT NULL, [bucketId] TEXT NOT NULL, [bucketName] TEXT NOT NULL, [path] TEXT NOT NULL, [name] TEXT NOT NULL, [type] TEXT NOT NULL, [size] INTEGER NOT NULL, [version] TEXT NOT NULL, [status] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [deletedAt] TEXT)"
       )
     ),
     () => sqlite.dialect.addMissingColumn(sqlite, "sporades_files", "path", "TEXT"),
-    () => sqlite.exec(sql(filePathBackfillSql())),
-    () => sqlite.exec(sql(activeFilePathDedupeSql())),
+    () => sqlite.exec(sql2(filePathBackfillSql())),
+    () => sqlite.exec(sql2(activeFilePathDedupeSql())),
     () => sqlite.exec(
-      sql("CREATE INDEX IF NOT EXISTS [sporades_files_path_live] ON [sporades_files] ([path], [deletedAt], [status])")
+      sql2("CREATE INDEX IF NOT EXISTS [sporades_files_path_live] ON [sporades_files] ([path], [deletedAt], [status])")
     ),
     () => sqlite.exec(
-      sql(
+      sql2(
         "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_files_path_active_unique] ON [sporades_files] ([path]) WHERE [deletedAt] IS NULL AND [status] IN ('pending', 'uploaded')"
       )
     ),
     () => sqlite.exec(
-      sql(
+      sql2(
         "CREATE TABLE IF NOT EXISTS [sporades_file_uploads] ([id] TEXT PRIMARY KEY, [fileId] TEXT NOT NULL, [ownerId] TEXT NOT NULL, [bucketId] TEXT NOT NULL, [bucketName] TEXT NOT NULL, [path] TEXT NOT NULL, [name] TEXT NOT NULL, [type] TEXT NOT NULL, [version] TEXT NOT NULL, [expectedSize] INTEGER NOT NULL, [createdAt] TEXT NOT NULL)"
       )
     ),
     () => ensureFileUploadTargetColumns(sqlite),
     () => sqlite.exec(
-      sql(
+      sql2(
         "CREATE TABLE IF NOT EXISTS [sporades_file_public_urls] ([id] TEXT PRIMARY KEY, [fileId] TEXT NOT NULL, [ownerId] TEXT NOT NULL, [version] TEXT NOT NULL, [expiresAt] TEXT, [createdAt] TEXT NOT NULL, [revokedAt] TEXT)"
       )
     ),
     // Runtime-private ingress receipts. The identity columns are intentionally queryable:
     // endpoint transactions lock and classify a lease without scanning JSON payloads.
-    () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_file_ingress] ([key] TEXT PRIMARY KEY, [leaseId] TEXT, [state] TEXT, [actorId] TEXT, [authorityKind] TEXT, [authorityId] TEXT, [ownerId] TEXT, [principalNamespace] TEXT, [principalKeyDigest] TEXT, [endpointMethod] TEXT, [endpointPath] TEXT, [requestKey] TEXT, [partKey] TEXT, [expiresAt] TEXT, [sweepToken] TEXT, [payload] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)")),
+    () => sqlite.exec(sql2("CREATE TABLE IF NOT EXISTS [sporades_file_ingress] ([key] TEXT PRIMARY KEY, [leaseId] TEXT, [state] TEXT, [actorId] TEXT, [authorityKind] TEXT, [authorityId] TEXT, [ownerId] TEXT, [principalNamespace] TEXT, [principalKeyDigest] TEXT, [endpointMethod] TEXT, [endpointPath] TEXT, [requestKey] TEXT, [partKey] TEXT, [expiresAt] TEXT, [sweepToken] TEXT, [payload] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)")),
     () => ensureFileIngressColumns(sqlite),
-    () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_file_ingress_audit_outbox] ([claimId] TEXT PRIMARY KEY, [state] TEXT NOT NULL, [claimToken] TEXT, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [deliveredAt] TEXT)")),
-    () => sqlite.exec(sql("CREATE INDEX IF NOT EXISTS [sporades_file_ingress_audit_outbox_pending] ON [sporades_file_ingress_audit_outbox] ([state], [createdAt], [claimId])"))
+    () => sqlite.exec(sql2("CREATE TABLE IF NOT EXISTS [sporades_file_ingress_audit_outbox] ([claimId] TEXT PRIMARY KEY, [state] TEXT NOT NULL, [claimToken] TEXT, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [deliveredAt] TEXT)")),
+    () => sqlite.exec(sql2("CREATE INDEX IF NOT EXISTS [sporades_file_ingress_audit_outbox_pending] ON [sporades_file_ingress_audit_outbox] ([state], [createdAt], [claimId])"))
   ]);
 }
 async function readRequestBytes(request, maxBytes) {
@@ -86911,8 +87265,8 @@ function ingressAuditNow(database) {
   return (now2 instanceof Date ? now2 : /* @__PURE__ */ new Date()).toISOString();
 }
 async function receipt(database, key) {
-  const sql = database.adapter.dialect.sql("SELECT [payload] FROM [sporades_file_ingress] WHERE [key] = ?");
-  const row = await database.adapter.prepare(sql).get(key);
+  const sql2 = database.adapter.dialect.sql("SELECT [payload] FROM [sporades_file_ingress] WHERE [key] = ?");
+  const row = await database.adapter.prepare(sql2).get(key);
   return row ? JSON.parse(row.payload) : null;
 }
 async function receiptByLease(database, leaseId) {
@@ -86922,13 +87276,13 @@ async function receiptByLease(database, leaseId) {
 async function publishStagedReceipt(database, row) {
   const leased = { ...row, state: "leased" };
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
-  const sql = database.adapter.dialect.sql("UPDATE [sporades_file_ingress] SET [state]='leased', [payload]=?, [updatedAt]=? WHERE [key]=? AND [leaseId]=? AND [state]='staging' AND [expiresAt]>?");
-  const result = await database.adapter.prepare(sql).run(JSON.stringify(leased), now2, row.key, row.leaseId, now2);
+  const sql2 = database.adapter.dialect.sql("UPDATE [sporades_file_ingress] SET [state]='leased', [payload]=?, [updatedAt]=? WHERE [key]=? AND [leaseId]=? AND [state]='staging' AND [expiresAt]>?");
+  const result = await database.adapter.prepare(sql2).run(JSON.stringify(leased), now2, row.key, row.leaseId, now2);
   return Number(result?.changes ?? 0) > 0 ? leased : null;
 }
 async function acquireReceipt(database, candidate) {
-  const sql = database.adapter.dialect.sql("INSERT INTO [sporades_file_ingress] ([key], [leaseId], [state], [actorId], [authorityKind], [authorityId], [ownerId], [principalNamespace], [principalKeyDigest], [endpointMethod], [endpointPath], [requestKey], [partKey], [expiresAt], [sweepToken], [payload], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT([key]) DO NOTHING");
-  const inserted = await database.adapter.prepare(sql).run(candidate.key, candidate.leaseId, candidate.state, candidate.actorId, candidate.authorityKind, candidate.authorityId, candidate.ownerId, candidate.principalNamespace ?? null, candidate.principalKeyDigest ?? null, candidate.endpointMethod, candidate.endpointPath, candidate.requestKey, candidate.partKey, candidate.expiresAt, null, JSON.stringify(candidate), (/* @__PURE__ */ new Date()).toISOString());
+  const sql2 = database.adapter.dialect.sql("INSERT INTO [sporades_file_ingress] ([key], [leaseId], [state], [actorId], [authorityKind], [authorityId], [ownerId], [principalNamespace], [principalKeyDigest], [endpointMethod], [endpointPath], [requestKey], [partKey], [expiresAt], [sweepToken], [payload], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT([key]) DO NOTHING");
+  const inserted = await database.adapter.prepare(sql2).run(candidate.key, candidate.leaseId, candidate.state, candidate.actorId, candidate.authorityKind, candidate.authorityId, candidate.ownerId, candidate.principalNamespace ?? null, candidate.principalKeyDigest ?? null, candidate.endpointMethod, candidate.endpointPath, candidate.requestKey, candidate.partKey, candidate.expiresAt, null, JSON.stringify(candidate), (/* @__PURE__ */ new Date()).toISOString());
   if (Number(inserted?.changes ?? 0) > 0) return { row: candidate, winner: true };
   const row = await receipt(database, candidate.key);
   if (!row) throw new Error("Ingress receipt acquisition did not return a winner.");
@@ -86940,8 +87294,8 @@ function sameIngressRetryDescriptor(left, right) {
 async function refreshReceiptInspection(database, row, inspection) {
   const refreshed = { ...row, inspection };
   const updatedAt = (/* @__PURE__ */ new Date()).toISOString();
-  const sql = database.adapter.dialect.sql("UPDATE [sporades_file_ingress] SET [payload] = ?, [updatedAt] = ? WHERE [key] = ? AND [leaseId] = ? AND [state] = ? AND [payload] = ?");
-  const updated = await database.adapter.prepare(sql).run(JSON.stringify(refreshed), updatedAt, row.key, row.leaseId, row.state, JSON.stringify(row));
+  const sql2 = database.adapter.dialect.sql("UPDATE [sporades_file_ingress] SET [payload] = ?, [updatedAt] = ? WHERE [key] = ? AND [leaseId] = ? AND [state] = ? AND [payload] = ?");
+  const updated = await database.adapter.prepare(sql2).run(JSON.stringify(refreshed), updatedAt, row.key, row.leaseId, row.state, JSON.stringify(row));
   if (Number(updated?.changes ?? 0) > 0) return refreshed;
   const current2 = await receipt(database, row.key);
   if (!current2 || !sameIngressRetryDescriptor(current2, row) || current2.leaseId !== row.leaseId || !["leased", "complete"].includes(current2.state)) throw idempotencyConflict("Ingress receipt changed while inspection evidence was refreshed.");
@@ -90531,36 +90885,36 @@ var TEAM_APPLICATION_ROLE_MAX = 32;
 var TEAM_APPLICATION_ROLE_PATCH_MAX = 16;
 var TEAM_APPLICATION_ROLE_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 function createTeamTables(adapter) {
-  const sql = adapter.dialect.sql;
+  const sql2 = adapter.dialect.sql;
   return chainMaybePromise([
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_teams] ([id] TEXT PRIMARY KEY, [name] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [createdByUserId] TEXT NOT NULL)"
     )),
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_team_memberships] ([teamId] TEXT NOT NULL, [userId] TEXT NOT NULL, [role] TEXT NOT NULL, [createdAt] TEXT NOT NULL, PRIMARY KEY ([teamId], [userId]))"
     )),
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_team_membership_application_roles] ([teamId] TEXT NOT NULL, [userId] TEXT NOT NULL, [role] TEXT NOT NULL, [createdAt] TEXT NOT NULL, PRIMARY KEY ([teamId], [userId], [role]))"
     )),
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_team_bootstrap] ([userId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
     )),
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_team_membership_counters] ([userId] TEXT PRIMARY KEY, [membershipCount] INTEGER NOT NULL)"
     )),
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_team_join_link_secrets] ([id] TEXT PRIMARY KEY, [secret] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
     )),
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_team_join_links] ([id] TEXT PRIMARY KEY, [selector] TEXT NOT NULL UNIQUE, [verifierHash] TEXT NOT NULL, [teamId] TEXT NOT NULL, [email] TEXT NOT NULL, [createdByUserId] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL, [consumedAt] TEXT NULL, [revokedAt] TEXT NULL)"
     )),
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_team_join_link_throttles] ([teamId] TEXT NOT NULL, [adminUserId] TEXT NOT NULL, [windowStartedAt] TEXT NOT NULL, [count] INTEGER NOT NULL, PRIMARY KEY ([teamId], [adminUserId]))"
     )),
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_team_join_link_counters] ([teamId] TEXT PRIMARY KEY, [activeCount] INTEGER NOT NULL)"
     )),
-    () => adapter.exec(sql(
+    () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_team_join_link_redemptions] ([joinLinkId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [userId] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
     ))
   ]);
@@ -90695,9 +91049,9 @@ async function createTeamJoinLink(database, auth, teamId, email, options = {}, e
       await claimTeamJoinLinkCreationSlot(tx, teamId, auth.userId, nowIso2);
       await claimTeamJoinLinkCapacity(tx, teamId, nowIso2);
       const secret = await teamJoinSigningSecret(tx, nowIso2);
-      const id2 = randomUUID6();
-      const selector = randomBytes4(16).toString("base64url");
-      const verifier = randomBytes4(32).toString("base64url");
+      const id2 = randomUUID7();
+      const selector = randomBytes5(16).toString("base64url");
+      const verifier = randomBytes5(32).toString("base64url");
       const expiresAt = new Date(now2.getTime() + ttlSeconds * 1e3).toISOString();
       const signature = teamJoinSignature(secret, id2, selector, verifier, expiresAt);
       await tx.prepare(tx.dialect.sql(
@@ -90770,8 +91124,8 @@ async function inspectTeamJoinLinkWithActivity(database, code, assertActive = vo
       const actualVerifier = Buffer.from(hashTeamJoinVerifier(parsed.verifier), "base64url");
       const expectedSignature = Buffer.from(candidate && secretRow ? teamJoinSignature(String(secretRow.secret), String(candidate.id), parsed.selector, parsed.verifier, String(candidate.expiresAt)) : teamJoinSignature("absent", "absent", parsed.selector, parsed.verifier, "absent"), "base64url");
       const actualSignature = Buffer.from(parsed.signature, "base64url");
-      const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual(actualVerifier, expectedVerifier);
-      const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual(actualSignature, expectedSignature);
+      const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual2(actualVerifier, expectedVerifier);
+      const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual2(actualSignature, expectedSignature);
       return Boolean(candidate && verifierMatches && signatureMatches && !candidate.consumedAt && !candidate.revokedAt && Date.parse(candidate.expiresAt) > (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).getTime());
     };
     if (!usable(row)) return { team: null, expiresAt: null, usable: false };
@@ -90807,18 +91161,18 @@ async function countAcceptedTeamMembers(transaction, teamId, denied2 = privilege
 }
 async function listPrivilegedTeamMembers(database, teamId, options = {}, assertActive) {
   return withTeamTransaction(database, async (tx) => {
-    const sql = tx.dialect.sql;
+    const sql2 = tx.dialect.sql;
     assertActive();
     await lockTeamLifecycle(tx, teamId, privilegedTeamNotFound);
     assertActive();
     const page = normalizeTeamMemberPage(options);
-    const total = await tx.prepare(sql(
+    const total = await tx.prepare(sql2(
       "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
     )).get(teamId);
     assertActive();
     const cursorClause = page.cursor ? "AND ([m].[createdAt] > ? OR ([m].[createdAt] = ? AND [m].[userId] > ?)) " : "";
     const params = page.cursor ? [teamId, page.cursor.createdAt, page.cursor.createdAt, page.cursor.userId, page.limit + 1] : [teamId, page.limit + 1];
-    const rows = await tx.prepare(sql(
+    const rows = await tx.prepare(sql2(
       "SELECT [m].[userId], [u].[displayName], [u].[picture], [m].[role], [m].[createdAt] FROM [sporades_team_memberships] [m] JOIN [sporades_auth_users] [u] ON [u].[id] = [m].[userId] WHERE [m].[teamId] = ? " + cursorClause + "ORDER BY [m].[createdAt] ASC, [m].[userId] ASC LIMIT ?"
     )).all(...params);
     assertActive();
@@ -90868,8 +91222,8 @@ async function validateTeamJoinLink(database, auth, code) {
     "base64url"
   );
   const actualSignature = Buffer.from(parsed.signature, "base64url");
-  const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual(actualVerifier, expectedVerifier);
-  const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual(actualSignature, expectedSignature);
+  const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual2(actualVerifier, expectedVerifier);
+  const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual2(actualSignature, expectedSignature);
   const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).getTime();
   const expiresAt = Date.parse(row?.expiresAt ?? "");
   if (!row || !verifierMatches || !signatureMatches || row.consumedAt || row.revokedAt || !Number.isFinite(expiresAt) || expiresAt <= now2) return { valid: false };
@@ -90893,16 +91247,16 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
     const parsed = parseTeamJoinCode(code);
     if (!parsed) throw invalidTeamJoinLink();
     joined = await withTeamTransaction(database, async (tx) => {
-      const sql = tx.dialect.sql;
-      let row = await tx.prepare(sql(
+      const sql2 = tx.dialect.sql;
+      let row = await tx.prepare(sql2(
         "SELECT [id], [selector], [verifierHash], [teamId], [email], [expiresAt], [consumedAt], [revokedAt] FROM [sporades_team_join_links] WHERE [selector] = ?"
       )).get(parsed.selector);
       if (!row) throw invalidTeamJoinLink();
       await lockTeamLifecycle(tx, String(row.teamId));
-      row = await tx.prepare(sql(
+      row = await tx.prepare(sql2(
         "SELECT [id], [selector], [verifierHash], [teamId], [email], [expiresAt], [consumedAt], [revokedAt] FROM [sporades_team_join_links] WHERE [selector] = ?"
       )).get(parsed.selector);
-      const secretRow = await tx.prepare(sql("SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?")).get(TEAM_JOIN_LINK_SECRET_ID);
+      const secretRow = await tx.prepare(sql2("SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?")).get(TEAM_JOIN_LINK_SECRET_ID);
       const expectedVerifier = Buffer.from(row?.verifierHash ?? hashTeamJoinVerifier("\0absent"), "base64url");
       const actualVerifier = Buffer.from(hashTeamJoinVerifier(parsed.verifier), "base64url");
       const expectedSignature = Buffer.from(
@@ -90910,14 +91264,14 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
         "base64url"
       );
       const actualSignature = Buffer.from(parsed.signature, "base64url");
-      const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual(actualVerifier, expectedVerifier);
-      const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual(actualSignature, expectedSignature);
+      const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual2(actualVerifier, expectedVerifier);
+      const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual2(actualSignature, expectedSignature);
       const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
       const expiresAt = Date.parse(row?.expiresAt ?? "");
       if (!row || !verifierMatches || !signatureMatches || row.revokedAt || !Number.isFinite(expiresAt) || expiresAt <= Date.parse(now2)) throw invalidTeamJoinLink();
-      const team = await tx.prepare(sql("SELECT [id], [name] FROM [sporades_teams] WHERE [id] = ?")).get(row.teamId);
+      const team = await tx.prepare(sql2("SELECT [id], [name] FROM [sporades_teams] WHERE [id] = ?")).get(row.teamId);
       if (!team) throw invalidTeamJoinLink();
-      const attachedEmails = await tx.prepare(sql(
+      const attachedEmails = await tx.prepare(sql2(
         "SELECT [email] FROM [sporades_auth_email_credentials] WHERE [userId] = ? UNION ALL SELECT [email] FROM [sporades_auth_identities] WHERE [userId] = ? AND [email] IS NOT NULL"
       )).all(joiningUserId, joiningUserId);
       const targetEmail = normalizeTeamJoinIdentityEmail(row.email);
@@ -90925,48 +91279,48 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
         deniedTeamId = String(team.id);
         throw invalidTeamJoinLink();
       }
-      const redemption = await tx.prepare(sql(
+      const redemption = await tx.prepare(sql2(
         "SELECT [userId] FROM [sporades_team_join_link_redemptions] WHERE [joinLinkId] = ?"
       )).get(row.id);
       if (row.consumedAt) {
         if (redemption?.userId !== joiningUserId) throw invalidTeamJoinLink();
-        const membership2 = await tx.prepare(sql(
+        const membership2 = await tx.prepare(sql2(
           "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
         )).get(row.teamId, joiningUserId);
         if (!membership2) throw invalidTeamJoinLink();
         await ensureInitialTeamOnAdapter(tx, joiningUserId);
-        const count2 = await tx.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(row.teamId);
+        const count2 = await tx.prepare(sql2("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(row.teamId);
         return teamSummary({ id: team.id, name: team.name, role: membership2.role, memberCount: Number(count2?.count ?? 0) });
       }
       if (redemption) throw invalidTeamJoinLink();
-      const consumed = await tx.prepare(sql(
+      const consumed = await tx.prepare(sql2(
         "UPDATE [sporades_team_join_links] SET [consumedAt] = ? WHERE [id] = ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL AND [expiresAt] > ?"
       )).run(now2, row.id, now2);
       if (Number(consumed?.changes ?? 0) !== 1) throw invalidTeamJoinLink();
-      await tx.prepare(sql(
+      await tx.prepare(sql2(
         "INSERT INTO [sporades_team_join_link_redemptions] ([joinLinkId], [teamId], [userId], [createdAt]) VALUES (?, ?, ?, ?)"
       )).run(row.id, row.teamId, joiningUserId, now2);
       await ensureInitialTeamOnAdapter(tx, joiningUserId);
-      let membership = await tx.prepare(sql(
+      let membership = await tx.prepare(sql2(
         "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
       )).get(row.teamId, joiningUserId);
       if (!membership) {
         await enforceTeamJoinAdmission(database, tx, auth, joiningUserId, String(row.teamId), eventContext?.signal);
         registerTeamJoinCancellationBeforeCommit(tx, eventContext?.signal);
         await ensureMembershipCounterOnAdapter(tx, joiningUserId);
-        const claim = await tx.prepare(sql(
+        const claim = await tx.prepare(sql2(
           "UPDATE [sporades_team_membership_counters] SET [membershipCount] = [membershipCount] + 1 WHERE [userId] = ? AND [membershipCount] < ?"
         )).run(joiningUserId, TEAM_MEMBERSHIP_MAX);
         if (Number(claim?.changes ?? 0) !== 1) {
           throw commandError2("Team limit reached.", `A user can belong to at most ${TEAM_MEMBERSHIP_MAX} Teams.`, "TEAM_LIMIT_REACHED");
         }
-        await tx.prepare(sql(
+        await tx.prepare(sql2(
           "INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)"
         )).run(row.teamId, joiningUserId, now2);
         membership = { role: "member" };
       }
       await releaseTeamJoinLinkCapacity(tx, String(row.teamId));
-      const count = await tx.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(row.teamId);
+      const count = await tx.prepare(sql2("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(row.teamId);
       return teamSummary({ id: team.id, name: team.name, role: membership.role, memberCount: Number(count?.count ?? 0) });
     });
   } catch (error) {
@@ -91039,15 +91393,15 @@ function parseTeamJoinCode(code) {
   return { selector, verifier, signature };
 }
 function hashTeamJoinVerifier(verifier) {
-  return createHash8("sha256").update(verifier).digest("base64url");
+  return createHash9("sha256").update(verifier).digest("base64url");
 }
 function teamJoinSignature(secret, id2, selector, verifier, expiresAt) {
-  return createHmac("sha256", secret).update(`v1.${id2}.${selector}.${verifier}.${expiresAt}`).digest("base64url");
+  return createHmac2("sha256", secret).update(`v1.${id2}.${selector}.${verifier}.${expiresAt}`).digest("base64url");
 }
 async function teamJoinSigningSecret(tx, createdAt) {
   const existing = await tx.prepare(tx.dialect.sql("SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?")).get(TEAM_JOIN_LINK_SECRET_ID);
   if (existing?.secret) return String(existing.secret);
-  const secret = randomBytes4(32).toString("base64url");
+  const secret = randomBytes5(32).toString("base64url");
   await tx.prepare(tx.dialect.sql("INSERT INTO [sporades_team_join_link_secrets] ([id], [secret], [createdAt]) VALUES (?, ?, ?) ON CONFLICT ([id]) DO NOTHING")).run(TEAM_JOIN_LINK_SECRET_ID, secret, createdAt);
   const claimed = await tx.prepare(tx.dialect.sql("SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?")).get(TEAM_JOIN_LINK_SECRET_ID);
   return String(claimed?.secret ?? secret);
@@ -91148,8 +91502,8 @@ function teamMemberCountDenied() {
 async function listCurrentUserTeams(database, auth) {
   requireAuth({ auth }, { linked: true });
   await ensureInitialTeam(database, auth);
-  const sql = database.adapter.dialect.sql;
-  const rows = await database.adapter.prepare(sql(
+  const sql2 = database.adapter.dialect.sql;
+  const rows = await database.adapter.prepare(sql2(
     "SELECT [t].[id], [t].[name], [m].[role], CASE WHEN (SELECT COUNT(*) FROM [sporades_team_memberships] [counted] WHERE [counted].[teamId] = [t].[id]) > ? THEN ? ELSE (SELECT COUNT(*) FROM [sporades_team_memberships] [counted] WHERE [counted].[teamId] = [t].[id]) END AS [memberCount] FROM [sporades_team_memberships] [m] JOIN [sporades_teams] [t] ON [t].[id] = [m].[teamId] WHERE [m].[userId] = ? ORDER BY [t].[createdAt] ASC, [t].[id] ASC"
   )).all(TEAM_MEMBER_COUNT_MAX, TEAM_MEMBER_COUNT_MAX, auth.userId);
   return {
@@ -91178,7 +91532,7 @@ async function createAdditionalTeam(database, auth, name2, eventContext) {
         "TEAM_LIMIT_REACHED"
       );
     }
-    const id2 = randomUUID6();
+    const id2 = randomUUID7();
     const now2 = (/* @__PURE__ */ new Date()).toISOString();
     await tx.prepare(tx.dialect.sql(
       "INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)"
@@ -91226,17 +91580,17 @@ async function updateTeamMemberApplicationRoles(database, auth, teamId, userId, 
     if (!isOpaqueTeamId(teamId) || !isOpaqueTeamId(userId)) throw teamDenied();
     patch = normalizeTeamApplicationRolePatch(changes, database.teamApplicationRoles ?? []);
     await withTeamTransaction(database, async (tx) => {
-      const sql = tx.dialect.sql;
+      const sql2 = tx.dialect.sql;
       await lockTeamLifecycle(tx, teamId);
       if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
-      const target = await tx.prepare(sql("SELECT [userId] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, userId);
+      const target = await tx.prepare(sql2("SELECT [userId] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, userId);
       if (!target) throw teamDenied();
       for (const role of patch.remove) {
-        await tx.prepare(sql("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ? AND [role] = ?")).run(teamId, userId, role);
+        await tx.prepare(sql2("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ? AND [role] = ?")).run(teamId, userId, role);
       }
       const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
       for (const role of patch.add) {
-        await tx.prepare(sql("INSERT INTO [sporades_team_membership_application_roles] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, ?, ?) ON CONFLICT ([teamId], [userId], [role]) DO NOTHING")).run(teamId, userId, role, now2);
+        await tx.prepare(sql2("INSERT INTO [sporades_team_membership_application_roles] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, ?, ?) ON CONFLICT ([teamId], [userId], [role]) DO NOTHING")).run(teamId, userId, role, now2);
       }
     });
   } catch (error) {
@@ -91263,16 +91617,16 @@ async function changeTeamMemberRole(database, auth, teamId, userId, role, eventC
   try {
     if (!isOpaqueTeamId(teamId) || !isOpaqueTeamId(userId)) throw teamDenied();
     await withTeamTransaction(database, async (tx) => {
-      const sql = tx.dialect.sql;
+      const sql2 = tx.dialect.sql;
       await lockTeamLifecycle(tx, teamId);
       if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
-      const target = await tx.prepare(sql("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, userId);
+      const target = await tx.prepare(sql2("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, userId);
       if (!target) throw teamDenied();
       if (role === "member" && target.role === "admin") {
         const admins = await countTeamAdmins(tx, teamId);
         if (admins < 2) throw teamDenied();
       }
-      await tx.prepare(sql("UPDATE [sporades_team_memberships] SET [role] = ? WHERE [teamId] = ? AND [userId] = ?")).run(role, teamId, userId);
+      await tx.prepare(sql2("UPDATE [sporades_team_memberships] SET [role] = ? WHERE [teamId] = ? AND [userId] = ?")).run(role, teamId, userId);
     });
   } catch (error) {
     emitTeamSecurityEvent(database, eventContext, operation, auth.userId, isOpaqueTeamId(teamId) ? teamId : null, "denied", String(error?.code ?? "DENIED"));
@@ -91286,14 +91640,14 @@ async function removeTeamMember(database, auth, teamId, userId, eventContext) {
   try {
     if (!isOpaqueTeamId(teamId) || !isOpaqueTeamId(userId) || userId === auth.userId) throw teamDenied();
     await withTeamTransaction(database, async (tx) => {
-      const sql = tx.dialect.sql;
+      const sql2 = tx.dialect.sql;
       await lockTeamLifecycle(tx, teamId);
       if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
-      const target = await tx.prepare(sql("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, userId);
+      const target = await tx.prepare(sql2("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, userId);
       if (!target) throw teamDenied();
       if (target.role === "admin" && await countTeamAdmins(tx, teamId) < 2) throw teamDenied();
-      await tx.prepare(sql("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, userId);
-      const removed = await tx.prepare(sql("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, userId);
+      await tx.prepare(sql2("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, userId);
+      const removed = await tx.prepare(sql2("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, userId);
       if (Number(removed?.changes ?? 0) !== 1) throw teamDenied();
       await releaseTeamMembershipSlot(tx, userId);
     });
@@ -91310,12 +91664,12 @@ async function leaveCurrentUserTeam(database, auth, teamId, eventContext) {
   try {
     if (!isOpaqueTeamId(teamId)) throw teamDenied();
     await withTeamTransaction(database, async (tx) => {
-      const sql = tx.dialect.sql;
+      const sql2 = tx.dialect.sql;
       await lockTeamLifecycle(tx, teamId);
-      const membership = await tx.prepare(sql("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, auth.userId);
+      const membership = await tx.prepare(sql2("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, auth.userId);
       if (!membership || membership.role === "admin") throw teamDenied();
-      await tx.prepare(sql("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, auth.userId);
-      const removed = await tx.prepare(sql("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, auth.userId);
+      await tx.prepare(sql2("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, auth.userId);
+      const removed = await tx.prepare(sql2("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, auth.userId);
       if (Number(removed?.changes ?? 0) !== 1) throw teamDenied();
       await releaseTeamMembershipSlot(tx, auth.userId);
     });
@@ -91332,21 +91686,21 @@ async function deleteCurrentUserTeam(database, auth, teamId, eventContext) {
   try {
     if (!isOpaqueTeamId(teamId)) throw teamDenied();
     await withTeamTransaction(database, async (tx) => {
-      const sql = tx.dialect.sql;
+      const sql2 = tx.dialect.sql;
       await lockTeamLifecycle(tx, teamId);
       if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
-      const members = await tx.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(teamId);
+      const members = await tx.prepare(sql2("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(teamId);
       if (Number(members?.count ?? 0) !== 1) throw teamDenied();
-      const links = await tx.prepare(sql("SELECT [id] FROM [sporades_team_join_links] WHERE [teamId] = ?")).all(teamId);
+      const links = await tx.prepare(sql2("SELECT [id] FROM [sporades_team_join_links] WHERE [teamId] = ?")).all(teamId);
       for (const link2 of links) {
-        await tx.prepare(sql("DELETE FROM [sporades_team_join_link_redemptions] WHERE [joinLinkId] = ?")).run(link2.id);
+        await tx.prepare(sql2("DELETE FROM [sporades_team_join_link_redemptions] WHERE [joinLinkId] = ?")).run(link2.id);
       }
-      await tx.prepare(sql("DELETE FROM [sporades_team_join_links] WHERE [teamId] = ?")).run(teamId);
-      await tx.prepare(sql("DELETE FROM [sporades_team_join_link_throttles] WHERE [teamId] = ?")).run(teamId);
-      await tx.prepare(sql("DELETE FROM [sporades_team_join_link_counters] WHERE [teamId] = ?")).run(teamId);
-      await tx.prepare(sql("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ?")).run(teamId);
-      await tx.prepare(sql("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, auth.userId);
-      const deleted = await tx.prepare(sql("DELETE FROM [sporades_teams] WHERE [id] = ?")).run(teamId);
+      await tx.prepare(sql2("DELETE FROM [sporades_team_join_links] WHERE [teamId] = ?")).run(teamId);
+      await tx.prepare(sql2("DELETE FROM [sporades_team_join_link_throttles] WHERE [teamId] = ?")).run(teamId);
+      await tx.prepare(sql2("DELETE FROM [sporades_team_join_link_counters] WHERE [teamId] = ?")).run(teamId);
+      await tx.prepare(sql2("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ?")).run(teamId);
+      await tx.prepare(sql2("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, auth.userId);
+      const deleted = await tx.prepare(sql2("DELETE FROM [sporades_teams] WHERE [id] = ?")).run(teamId);
       if (Number(deleted?.changes ?? 0) !== 1) throw teamDenied();
       await releaseTeamMembershipSlot(tx, auth.userId);
     });
@@ -91361,19 +91715,19 @@ async function listTeamMembers(database, auth, teamId, options = {}) {
   requireAuth({ auth }, { linked: true });
   if (!isOpaqueTeamId(teamId)) throw teamDenied();
   return withTeamTransaction(database, async (tx) => {
-    const sql = tx.dialect.sql;
+    const sql2 = tx.dialect.sql;
     await lockTeamLifecycle(tx, teamId);
-    const callerMembership = await tx.prepare(sql(
+    const callerMembership = await tx.prepare(sql2(
       "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
     )).get(teamId, auth.userId);
     if (callerMembership?.role !== "admin") throw teamDenied();
     const page = normalizeTeamMemberPage(options);
-    const total = await tx.prepare(sql(
+    const total = await tx.prepare(sql2(
       "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
     )).get(teamId);
     const cursorClause = page.cursor ? "AND ([m].[createdAt] > ? OR ([m].[createdAt] = ? AND [m].[userId] > ?)) " : "";
     const params = page.cursor ? [teamId, page.cursor.createdAt, page.cursor.createdAt, page.cursor.userId, page.limit + 1] : [teamId, page.limit + 1];
-    const rows = await tx.prepare(sql(
+    const rows = await tx.prepare(sql2(
       "SELECT [m].[userId], [u].[displayName], [u].[picture], [m].[role] , [m].[createdAt] FROM [sporades_team_memberships] [m] JOIN [sporades_auth_users] [u] ON [u].[id] = [m].[userId] WHERE [m].[teamId] = ? " + cursorClause + "ORDER BY [m].[createdAt] ASC, [m].[userId] ASC LIMIT ?"
     )).all(...params);
     const hasMore = rows.length > page.limit;
@@ -91396,13 +91750,13 @@ async function countTeamMembers(database, auth, teamId) {
   requireAuth({ auth }, { linked: true });
   if (!isOpaqueTeamId(teamId)) throw teamMemberCountDenied();
   return withTeamTransaction(database, async (tx) => {
-    const sql = tx.dialect.sql;
+    const sql2 = tx.dialect.sql;
     await lockTeamLifecycle(tx, teamId, teamMemberCountDenied);
-    const callerMembership = await tx.prepare(sql(
+    const callerMembership = await tx.prepare(sql2(
       "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
     )).get(teamId, auth.userId);
     if (!callerMembership) throw teamMemberCountDenied();
-    const total = await tx.prepare(sql(
+    const total = await tx.prepare(sql2(
       "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
     )).get(teamId);
     return { totalCount: Number(total?.count ?? 0) };
@@ -91494,25 +91848,25 @@ async function bootstrapInitialTeamForLinkedUser(tx, userId) {
   return ensureInitialTeamOnAdapter(tx, userId);
 }
 async function ensureInitialTeamOnAdapter(tx, userId) {
-  const sql = tx.dialect.sql;
-  const id2 = randomUUID6();
+  const sql2 = tx.dialect.sql;
+  const id2 = randomUUID7();
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
-  const claim = await tx.prepare(sql(
+  const claim = await tx.prepare(sql2(
     "INSERT INTO [sporades_team_bootstrap] ([userId], [teamId], [createdAt]) VALUES (?, ?, ?) ON CONFLICT ([userId]) DO NOTHING"
   )).run(userId, id2, now2);
   if (Number(claim?.changes ?? 0) === 0) {
-    const existing = await tx.prepare(sql("SELECT [teamId] FROM [sporades_team_bootstrap] WHERE [userId] = ?")).get(userId);
+    const existing = await tx.prepare(sql2("SELECT [teamId] FROM [sporades_team_bootstrap] WHERE [userId] = ?")).get(userId);
     if (existing?.teamId) return String(existing.teamId);
     throw new Error("Team bootstrap claim was not committed.");
   }
-  await tx.prepare(sql("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)")).run(id2, INITIAL_TEAM_NAME, now2, userId);
-  await tx.prepare(sql("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)")).run(id2, userId, now2);
-  await tx.prepare(sql("INSERT INTO [sporades_team_membership_counters] ([userId], [membershipCount]) VALUES (?, 1)")).run(userId);
+  await tx.prepare(sql2("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)")).run(id2, INITIAL_TEAM_NAME, now2, userId);
+  await tx.prepare(sql2("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)")).run(id2, userId, now2);
+  await tx.prepare(sql2("INSERT INTO [sporades_team_membership_counters] ([userId], [membershipCount]) VALUES (?, 1)")).run(userId);
   return id2;
 }
 async function ensureMembershipCounterOnAdapter(tx, userId) {
-  const sql = tx.dialect.sql;
-  await tx.prepare(sql(
+  const sql2 = tx.dialect.sql;
+  await tx.prepare(sql2(
     "INSERT INTO [sporades_team_membership_counters] ([userId], [membershipCount]) SELECT ?, COUNT(*) FROM [sporades_team_memberships] WHERE [userId] = ? ON CONFLICT ([userId]) DO NOTHING"
   )).run(userId, userId);
 }
@@ -94622,46 +94976,46 @@ function resolvePasswordResetConfig(config) {
   };
 }
 function createAnonymousAuthTables(sqlite, _authConfig = null) {
-  const sql = sqlite.dialect.sql;
+  const sql2 = sqlite.dialect.sql;
   return chainMaybePromise([
     () => sqlite.exec(
-      sql(
+      sql2(
         "CREATE TABLE IF NOT EXISTS [sporades_auth_users] ([id] TEXT PRIMARY KEY, [createdAt] TEXT NOT NULL, [displayName] TEXT NOT NULL, [email] TEXT, [picture] TEXT, [isAuthenticated] INTEGER NOT NULL, [isGuest] INTEGER NOT NULL, [provider] TEXT NOT NULL, [userKind] TEXT NOT NULL DEFAULT 'human', [lifecycleStatus] TEXT NOT NULL DEFAULT 'active', [disabledAt] TEXT)"
       )
     ),
     () => ensureAuthUserKindColumns(sqlite),
-    () => sqlite.exec(sql(
+    () => sqlite.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_auth_service_user_locks] ([userId] TEXT PRIMARY KEY, [operationRevision] INTEGER NOT NULL)"
     )),
     () => createAccessKeyTables(sqlite),
     () => sqlite.exec(
-      sql(
+      sql2(
         "CREATE TABLE IF NOT EXISTS [sporades_auth_sessions] ([token] TEXT PRIMARY KEY, [userId] TEXT NOT NULL, [provider] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL)"
       )
     ),
     () => ensureSessionLifecycleColumns(sqlite),
     () => ensureSessionProvenanceColumn(sqlite),
-    () => sqlite.exec(sql(
+    () => sqlite.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_auth_reauthentication_proofs] ([id] TEXT PRIMARY KEY, [userId] TEXT NOT NULL, [sessionToken] TEXT NOT NULL, [purpose] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL, UNIQUE ([sessionToken], [purpose]))"
     )),
-    () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_auth_reauthentication_throttle_fence] ([id] TEXT PRIMARY KEY, [version] INTEGER NOT NULL)")),
-    () => sqlite.prepare(sql("INSERT INTO [sporades_auth_reauthentication_throttle_fence] ([id], [version]) VALUES ('email', 0) ON CONFLICT ([id]) DO NOTHING")).run(),
-    () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_auth_reauthentication_throttle] ([key] TEXT PRIMARY KEY, [count] INTEGER NOT NULL, [resetAt] TEXT NOT NULL)")),
-    () => sqlite.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [expiresAt] <= ? OR NOT EXISTS (SELECT 1 FROM [sporades_auth_sessions] [s] WHERE [s].[token] = [sporades_auth_reauthentication_proofs].[sessionToken])")).run((/* @__PURE__ */ new Date()).toISOString()),
+    () => sqlite.exec(sql2("CREATE TABLE IF NOT EXISTS [sporades_auth_reauthentication_throttle_fence] ([id] TEXT PRIMARY KEY, [version] INTEGER NOT NULL)")),
+    () => sqlite.prepare(sql2("INSERT INTO [sporades_auth_reauthentication_throttle_fence] ([id], [version]) VALUES ('email', 0) ON CONFLICT ([id]) DO NOTHING")).run(),
+    () => sqlite.exec(sql2("CREATE TABLE IF NOT EXISTS [sporades_auth_reauthentication_throttle] ([key] TEXT PRIMARY KEY, [count] INTEGER NOT NULL, [resetAt] TEXT NOT NULL)")),
+    () => sqlite.prepare(sql2("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [expiresAt] <= ? OR NOT EXISTS (SELECT 1 FROM [sporades_auth_sessions] [s] WHERE [s].[token] = [sporades_auth_reauthentication_proofs].[sessionToken])")).run((/* @__PURE__ */ new Date()).toISOString()),
     () => createProviderIdentityTables(sqlite),
     () => migrateAuthUserProviderLabels(sqlite),
     () => sqlite.exec(
-      sql(
+      sql2(
         "CREATE TABLE IF NOT EXISTS [sporades_auth_email_credentials] ([email] TEXT PRIMARY KEY, [userId] TEXT NOT NULL, [passwordHash] TEXT NOT NULL, [passwordSalt] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
       )
     ),
     () => sqlite.exec(
-      sql(
+      sql2(
         "CREATE TABLE IF NOT EXISTS [sporades_auth_password_reset_codes] ([selector] TEXT PRIMARY KEY, [verifierHash] TEXT NOT NULL, [email] TEXT NOT NULL, [userId] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL)"
       )
     ),
     () => sqlite.exec(
-      sql(
+      sql2(
         "CREATE TABLE IF NOT EXISTS [sporades_auth_oauth_states] ([state] TEXT PRIMARY KEY, [provider] TEXT NOT NULL, [sessionToken] TEXT NOT NULL, [returnTo] TEXT NOT NULL, [redirectUri] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL, [nonce] TEXT, [pkceVerifier] TEXT, [registrationCiphertext] TEXT, [reauthPurpose] TEXT, [reauthUserId] TEXT)"
       )
     ),
@@ -94669,17 +95023,17 @@ function createAnonymousAuthTables(sqlite, _authConfig = null) {
   ]);
 }
 function ensureAuthUserKindColumns(sqlite) {
-  const sql = sqlite.dialect.sql;
+  const sql2 = sqlite.dialect.sql;
   return chainMaybePromise([
     () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_users", "userKind", "TEXT"),
     () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_users", "lifecycleStatus", "TEXT"),
     () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_users", "disabledAt", "TEXT"),
-    () => sqlite.exec(sql("UPDATE [sporades_auth_users] SET [userKind] = 'human' WHERE [userKind] IS NULL")),
-    () => sqlite.exec(sql("UPDATE [sporades_auth_users] SET [lifecycleStatus] = 'active' WHERE [lifecycleStatus] IS NULL"))
+    () => sqlite.exec(sql2("UPDATE [sporades_auth_users] SET [userKind] = 'human' WHERE [userKind] IS NULL")),
+    () => sqlite.exec(sql2("UPDATE [sporades_auth_users] SET [lifecycleStatus] = 'active' WHERE [lifecycleStatus] IS NULL"))
   ]);
 }
 function ensureOAuthStateColumns(sqlite) {
-  const sql = sqlite.dialect.sql;
+  const sql2 = sqlite.dialect.sql;
   return chainMaybePromise([
     ...[
       ["provider", "TEXT"],
@@ -94690,25 +95044,25 @@ function ensureOAuthStateColumns(sqlite) {
       ["reauthPurpose", "TEXT"],
       ["reauthUserId", "TEXT"]
     ].map(([name2, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_oauth_states", name2, type)),
-    () => sqlite.exec(sql("UPDATE [sporades_auth_oauth_states] SET [provider] = 'google' WHERE [provider] IS NULL")),
-    () => sqlite.exec(sql("UPDATE [sporades_auth_oauth_states] SET [expiresAt] = [createdAt] WHERE [expiresAt] IS NULL"))
+    () => sqlite.exec(sql2("UPDATE [sporades_auth_oauth_states] SET [provider] = 'google' WHERE [provider] IS NULL")),
+    () => sqlite.exec(sql2("UPDATE [sporades_auth_oauth_states] SET [expiresAt] = [createdAt] WHERE [expiresAt] IS NULL"))
   ]);
 }
 function createProviderIdentityTables(sqlite) {
-  const sql = sqlite.dialect.sql;
+  const sql2 = sqlite.dialect.sql;
   return chainMaybePromise([
     () => sqlite.exec(
-      sql(
+      sql2(
         "CREATE TABLE IF NOT EXISTS [sporades_auth_identities] ([id] TEXT PRIMARY KEY, [userId] TEXT NOT NULL, [provider] TEXT NOT NULL, [subject] TEXT NOT NULL, [email] TEXT, [displayName] TEXT, [picture] TEXT, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, UNIQUE([provider], [subject]))"
       )
     ),
     // Both legacy identity backfill and provider-label repair look up identities by user.
     // Create this portable index before either migration, including on existing Capsules.
-    () => sqlite.exec(sql(
+    () => sqlite.exec(sql2(
       "CREATE INDEX IF NOT EXISTS [sporades_auth_identities_user_id] ON [sporades_auth_identities] ([userId])"
     )),
     () => sqlite.exec(
-      sql(
+      sql2(
         "INSERT INTO [sporades_auth_identities] ([id], [userId], [provider], [subject], [email], [displayName], [picture], [createdAt], [updatedAt]) SELECT 'legacy:' || [id], [id], [provider], 'legacy:' || [id], [email], [displayName], [picture], [createdAt], [createdAt] FROM [sporades_auth_users] [u] WHERE [provider] = 'google' AND [id] != '__privileged__' AND NOT EXISTS (SELECT 1 FROM [sporades_auth_identities] [i] WHERE [i].[userId] = [u].[id] AND [i].[provider] = [u].[provider])"
       )
     )
@@ -94841,11 +95195,11 @@ function restartPolicyStatus(mode, overrides2 = {}) {
 }
 
 // src/server-runtime-source.ts
-import { createHash as createHash10, randomBytes as randomBytes5, randomUUID as randomUUID9 } from "node:crypto";
+import { createHash as createHash11, randomBytes as randomBytes6, randomUUID as randomUUID10 } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 
 // src/log-envelope.ts
-import { randomUUID as randomUUID7 } from "node:crypto";
+import { randomUUID as randomUUID8 } from "node:crypto";
 function uncappedLogEnvelope(input) {
   const config = input.config ?? {};
   const capsuleName = String(config.name ?? "unknown");
@@ -94862,7 +95216,7 @@ function uncappedLogEnvelope(input) {
     },
     release: input.release ?? config.release ?? null,
     request: input.request ? {
-      id: input.request.id ?? randomUUID7(),
+      id: input.request.id ?? randomUUID8(),
       method: input.request.method ?? null,
       path: input.request.path ?? null
     } : null,
@@ -95095,10 +95449,22 @@ function mailError(code, message, hint) {
   return error;
 }
 function disabledMailRuntime(code, message, hint) {
+  const unavailable2 = () => {
+    throw mailError(code, message, hint);
+  };
+  const rejectIntent = () => {
+    const error = mailError(code, message, hint);
+    error.smtpOutcome = "rejected";
+    throw error;
+  };
   return {
     enabled: false,
+    validateIntent: unavailable2,
     async send() {
-      throw mailError(code, message, hint);
+      unavailable2();
+    },
+    async sendIntent() {
+      rejectIntent();
     },
     close() {
     }
@@ -95151,68 +95517,103 @@ function createMailRuntime(mailConfig, serverEnv, options = {}) {
   }
   let closeStarted = false;
   let closeResult;
+  const activeDeliveryAborts = /* @__PURE__ */ new Set();
+  const validateIntent = (input) => normalizeMailMessage({
+    to: input.to,
+    subject: input.subject,
+    textBody: input.text,
+    ...input.html === void 0 ? {} : { htmlBody: input.html }
+  }, resolvedSmtp.defaultFrom, resolvedSmtp.vendor);
+  const deliver = async (message, deliveryLog, stableMessageId) => {
+    const deliveryAbort = new AbortController();
+    activeDeliveryAborts.add(deliveryAbort);
+    const outbound = stableMessageId ? { ...message, messageId: stableMessageId } : message;
+    const messageIdentity = stableMessageId ? `intent_${stableMessageId.replace(/[^a-f0-9]/gi, "").slice(0, 16)}` : `mail_${crypto.randomUUID()}`;
+    const startedAt = Date.now();
+    try {
+      const result = await transport.send(outbound, { signal: deliveryAbort.signal });
+      const normalizedResult = {
+        messageId: String(result?.messageId ?? stableMessageId ?? ""),
+        accepted: Array.isArray(result?.accepted) ? result.accepted.map(String) : [],
+        rejected: Array.isArray(result?.rejected) ? result.rejected.map(String) : []
+      };
+      if (stableMessageId && (normalizedResult.accepted.length !== 1 || normalizedResult.rejected.length !== 0)) {
+        const rejection = mailError("MAIL_REJECTED", "The SMTP server rejected the message.", "Check the sender, recipient, and provider delivery policy.");
+        rejection.smtpOutcome = "rejected";
+        throw rejection;
+      }
+      const resultCategory = normalizedResult.rejected.length > 0 ? "partial" : "accepted";
+      try {
+        await deliveryLog?.({
+          category: "mail",
+          event: "mail.delivery",
+          level: "info",
+          message: "SMTP delivery completed.",
+          data: createMailDeliveryLogData(resolvedSmtp.vendor, message, messageIdentity, Date.now() - startedAt, resultCategory, normalizedResult),
+          request: null,
+          release: null,
+          correlation: { mail: messageIdentity }
+        });
+      } catch {
+      }
+      return normalizedResult;
+    } catch (error) {
+      const normalizedError = ownedTransportBoundary ? error : trustedTestTransportBoundary ? normalizeMailTransportError(error) : mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status.");
+      if (stableMessageId) {
+        normalizedError.smtpOutcome = normalizedError.code === "MAIL_REJECTED" || error?.smtpOutcome === "rejected" || Number(error?.smtpCode) >= 500 && Number(error?.smtpCode) <= 599 ? "rejected" : "unknown";
+      }
+      try {
+        await deliveryLog?.({
+          category: "mail",
+          event: "mail.delivery",
+          level: "error",
+          message: "SMTP delivery failed.",
+          data: createMailDeliveryLogData(resolvedSmtp.vendor, message, messageIdentity, Date.now() - startedAt, normalizedError.code),
+          request: null,
+          release: null,
+          correlation: { mail: messageIdentity }
+        });
+      } catch {
+      }
+      throw normalizedError;
+    } finally {
+      activeDeliveryAborts.delete(deliveryAbort);
+    }
+  };
   return {
     enabled: true,
+    validateIntent,
+    // Internal-only (not part of MailApi/ctx.mail): lets the durable
+    // notification worker size its reservation deadline off the same
+    // timeouts a single sendIntent's SMTP conversation is actually bounded
+    // by, instead of an unrelated fixed constant.
+    connectionTimeoutMs: resolvedSmtp.connectionTimeoutMs,
+    socketTimeoutMs: resolvedSmtp.socketTimeoutMs,
     async send(input, deliveryLog = options.mailLog) {
       const message = normalizeMailMessage(input, resolvedSmtp.defaultFrom, resolvedSmtp.vendor);
-      const messageIdentity = `mail_${crypto.randomUUID()}`;
-      const startedAt = Date.now();
+      return deliver(message, deliveryLog);
+    },
+    async sendIntent(input, stableMessageId, deliveryLog = options.mailLog) {
+      let message;
       try {
-        const result = await transport.send(message);
-        const normalizedResult = {
-          messageId: String(result?.messageId ?? ""),
-          accepted: Array.isArray(result?.accepted) ? result.accepted.map(String) : [],
-          rejected: Array.isArray(result?.rejected) ? result.rejected.map(String) : []
-        };
-        const resultCategory = normalizedResult.rejected.length > 0 ? "partial" : "accepted";
-        try {
-          await deliveryLog?.({
-            category: "mail",
-            event: "mail.delivery",
-            level: "info",
-            message: "SMTP delivery completed.",
-            data: createMailDeliveryLogData(
-              resolvedSmtp.vendor,
-              message,
-              messageIdentity,
-              Date.now() - startedAt,
-              resultCategory,
-              normalizedResult
-            ),
-            request: null,
-            release: null,
-            correlation: { mail: messageIdentity }
-          });
-        } catch {
-        }
-        return normalizedResult;
+        message = validateIntent(input);
+        if (message.to.length !== 1) throw mailError("INVALID_MAIL_MESSAGE", "Invalid mail message.", "Pass exactly one intent recipient.");
       } catch (error) {
-        const normalizedError = ownedTransportBoundary ? error : trustedTestTransportBoundary ? normalizeMailTransportError(error) : mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status.");
-        try {
-          await deliveryLog?.({
-            category: "mail",
-            event: "mail.delivery",
-            level: "error",
-            message: "SMTP delivery failed.",
-            data: createMailDeliveryLogData(
-              resolvedSmtp.vendor,
-              message,
-              messageIdentity,
-              Date.now() - startedAt,
-              normalizedError.code
-            ),
-            request: null,
-            release: null,
-            correlation: { mail: messageIdentity }
-          });
-        } catch {
-        }
-        throw normalizedError;
+        if (error?.code === "INVALID_MAIL_MESSAGE") error.smtpOutcome = "rejected";
+        throw error;
       }
+      return deliver(message, deliveryLog, stableMessageId);
+    },
+    // Internal-only: interrupt deliveries which began before shutdown without
+    // terminally closing mail. A Capsule shutdown hook may still send mail;
+    // the global transport closes only after that hook has settled.
+    abortActiveDeliveries() {
+      for (const deliveryAbort of activeDeliveryAborts) deliveryAbort.abort();
     },
     close() {
       if (closeStarted) return closeResult;
       closeStarted = true;
+      for (const deliveryAbort of activeDeliveryAborts) deliveryAbort.abort();
       closeResult = transport.close?.();
       return closeResult;
     }
@@ -95780,40 +96181,61 @@ function normalizeMailAddress(value, field) {
 }
 function normalizeMailTransportError(error) {
   const code = String(error?.code ?? "");
+  const smtpCode = Number(error?.smtpCode);
+  const normalized = (value) => {
+    if (smtpCode >= 500 && smtpCode <= 599 || error?.smtpOutcome === "rejected") value.smtpOutcome = "rejected";
+    return value;
+  };
   if (code === "ETIMEDOUT" || code === "ESOCKETTIMEDOUT") {
-    return mailError("MAIL_TIMEOUT", "SMTP delivery timed out.", "Check the SMTP host and timeout settings before retrying.");
+    return normalized(mailError("MAIL_TIMEOUT", "SMTP delivery timed out.", "Check the SMTP host and timeout settings before retrying."));
   }
-  if (code === "MAIL_TIMEOUT") return mailError("MAIL_TIMEOUT", "SMTP delivery timed out.", "Check the SMTP host and timeout settings before retrying.");
+  if (code === "MAIL_TIMEOUT") return normalized(mailError("MAIL_TIMEOUT", "SMTP delivery timed out.", "Check the SMTP host and timeout settings before retrying."));
   if (code === "EAUTH" || code === "MAIL_AUTH_FAILED") {
-    return mailError("MAIL_AUTH_FAILED", "SMTP authentication failed.", "Check the SMTP Server env credentials and authentication method.");
+    return normalized(mailError("MAIL_AUTH_FAILED", "SMTP authentication failed.", "Check the SMTP Server env credentials and authentication method."));
   }
-  if (code === "ETLS" || code.startsWith("CERT_") || code.startsWith("ERR_TLS_") || code.startsWith("ERR_SSL_") || ["DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY"].includes(code) || code === "MAIL_TLS_FAILED") return mailError("MAIL_TLS_FAILED", "SMTP TLS negotiation failed.", "Check the SMTP TLS mode, port, and certificate policy.");
+  if (code === "ETLS" || code.startsWith("CERT_") || code.startsWith("ERR_TLS_") || code.startsWith("ERR_SSL_") || ["DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY"].includes(code) || code === "MAIL_TLS_FAILED") return normalized(mailError("MAIL_TLS_FAILED", "SMTP TLS negotiation failed.", "Check the SMTP TLS mode, port, and certificate policy."));
+  if (code === "EREJECTED" && smtpCode >= 400 && smtpCode <= 499) {
+    return normalized(mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status."));
+  }
   if (code === "EREJECTED" || code === "MAIL_REJECTED") {
-    return mailError("MAIL_REJECTED", "The SMTP server rejected the message.", "Check the sender, recipients, and provider delivery policy.");
+    return normalized(mailError("MAIL_REJECTED", "The SMTP server rejected the message.", "Check the sender, recipients, and provider delivery policy."));
   }
-  return mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status.");
+  return normalized(mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status."));
 }
 function createMailTransport(smtp) {
   const sockets = /* @__PURE__ */ new Set();
   let closed = false;
   return {
-    async send(message) {
+    async send(message, options = {}) {
       let socket;
       let reader;
+      const abortDelivery = () => {
+        const activeSocket = reader?.socket?.() ?? socket;
+        if (!activeSocket?.destroyed) activeSocket?.destroy();
+      };
       try {
+        if (options.signal?.aborted) {
+          const error = new Error("aborted");
+          error.code = "ECONNECTION";
+          throw error;
+        }
+        options.signal?.addEventListener?.("abort", abortDelivery, { once: true });
         if (closed) {
           const error = new Error("closed");
           error.code = "ECONNECTION";
           throw error;
         }
-        socket = await connectSmtpSocket(smtp);
-        if (closed) {
+        socket = await connectSmtpSocket(smtp, (connectingSocket) => {
+          socket = connectingSocket;
+          sockets.add(connectingSocket);
+          if (closed || options.signal?.aborted) connectingSocket.destroy();
+        });
+        if (closed || options.signal?.aborted) {
           const error = new Error("closed");
           error.code = "ECONNECTION";
           socket.destroy(error);
           throw error;
         }
-        sockets.add(socket);
         reader = createSmtpResponseReader(socket, smtp.socketTimeoutMs);
         let encrypted = smtp.tls.mode === "implicit";
         await reader.expect([220]);
@@ -95864,17 +96286,23 @@ function createMailTransport(smtp) {
         await smtpCommand(activeSocket, reader, `MAIL FROM:<${message.from.email}>`, [250]);
         const accepted = [];
         const rejected = [];
+        let transientCode = 0;
         for (const recipient of [...message.to, ...message.cc, ...message.bcc]) {
-          if (await smtpRecipientCommand(activeSocket, reader, recipient.email)) accepted.push(recipient.email);
-          else rejected.push(recipient.email);
+          const reply = await smtpRecipientCommand(activeSocket, reader, recipient.email);
+          if (reply.accepted) accepted.push(recipient.email);
+          else {
+            rejected.push(recipient.email);
+            if (reply.transient && transientCode === 0) transientCode = reply.smtpCode;
+          }
         }
         if (accepted.length === 0) {
           const error = new Error("all recipients rejected");
           error.code = "EREJECTED";
+          if (transientCode !== 0) error.smtpCode = transientCode;
           throw error;
         }
         await smtpCommand(activeSocket, reader, "DATA", [354]);
-        const messageId = `<${crypto.randomUUID()}@sporades.local>`;
+        const messageId = typeof message.messageId === "string" && /^<[^<>\r\n]+>$/.test(message.messageId) ? message.messageId : `<${crypto.randomUUID()}@sporades.local>`;
         const raw = buildSmtpMessage({ ...message, messageId }).replace(/(^|\r\n)\./g, "$1..");
         activeSocket.write(`${raw}\r
 .\r
@@ -95889,6 +96317,7 @@ function createMailTransport(smtp) {
       } catch (error) {
         throw normalizeMailTransportError(error);
       } finally {
+        options.signal?.removeEventListener?.("abort", abortDelivery);
         reader?.close();
         for (const candidate of [...sockets]) {
           if (candidate === socket || candidate === reader?.socket()) {
@@ -95905,7 +96334,7 @@ function createMailTransport(smtp) {
     }
   };
 }
-async function connectSmtpSocket(smtp) {
+async function connectSmtpSocket(smtp, onSocket) {
   let socket;
   if (smtp.tls.mode === "implicit") {
     const tls = await import("node:tls");
@@ -95925,7 +96354,7 @@ async function connectSmtpSocket(smtp) {
     socket.destroy(error);
   });
   const event = smtp.tls.mode === "implicit" ? "secureConnect" : "connect";
-  await new Promise((resolve, reject) => {
+  const connected = new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       const error = new Error("connection timeout");
       error.code = "ETIMEDOUT";
@@ -95939,7 +96368,15 @@ async function connectSmtpSocket(smtp) {
       clearTimeout(timer);
       reject(error);
     });
+    socket.once("close", () => {
+      clearTimeout(timer);
+      const error = new Error("connection closed");
+      error.code = "ECONNECTION";
+      reject(error);
+    });
   });
+  onSocket?.(socket);
+  await connected;
   return socket;
 }
 function createSmtpResponseReader(initialSocket, timeoutMs) {
@@ -96038,9 +96475,12 @@ async function smtpRecipientCommand(socket, reader, email) {
 `);
   try {
     await reader.expect([250, 251], "EREJECTED");
-    return true;
+    return { accepted: true, transient: false, smtpCode: 0 };
   } catch (error) {
-    if (error?.code === "EREJECTED" && error?.smtpCode >= 400 && error?.smtpCode <= 599) return false;
+    const smtpCode = Number(error?.smtpCode);
+    if (error?.code === "EREJECTED" && smtpCode >= 400 && smtpCode <= 599) {
+      return { accepted: false, transient: smtpCode <= 499, smtpCode };
+    }
     throw error;
   }
 }
@@ -96175,7 +96615,7 @@ function encodeMimeBase64(value) {
 }
 
 // src/email-events-runtime.ts
-import { createHash as createHash9, createHmac as createHmac2, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+import { createHash as createHash10, createHmac as createHmac3, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
 var MAILJET_EVENT_KINDS = {
   sent: "delivered",
   open: "opened",
@@ -96202,7 +96642,7 @@ function text(value) {
 function secureEqual(left, right) {
   const leftBytes = Buffer.from(left);
   const rightBytes = Buffer.from(right);
-  return leftBytes.length === rightBytes.length && timingSafeEqual2(leftBytes, rightBytes);
+  return leftBytes.length === rightBytes.length && timingSafeEqual3(leftBytes, rightBytes);
 }
 function mailjetBasicPassword(authorization) {
   if (typeof authorization !== "string" || !authorization.startsWith("Basic ")) return "";
@@ -96245,7 +96685,7 @@ function verifiedMailgunRequest(ctx, secret) {
   const timestamp = text(signature?.timestamp);
   const token = text(signature?.token);
   if (!timestamp || !token) return false;
-  const expected = createHmac2("sha256", secret).update(`${timestamp}${token}`).digest("hex");
+  const expected = createHmac3("sha256", secret).update(`${timestamp}${token}`).digest("hex");
   return [signature?.signature, signature?.["parent-signature"]].some((candidate) => typeof candidate === "string" && secureEqual(candidate, expected));
 }
 function mailjetMessageIdentity(raw) {
@@ -96394,7 +96834,7 @@ function normalizePostmarkEvent(raw) {
   const metadata = data2.Metadata && typeof data2.Metadata === "object" && !Array.isArray(data2.Metadata) ? data2.Metadata : {};
   const correlationKey = Object.keys(metadata).find((key) => key.toLowerCase() === "correlationid");
   const correlationId = correlationKey ? text(metadata[correlationKey]).trim() : "";
-  const identity = createHash9("sha256").update(JSON.stringify([recordType, messageId || null, occurredAt, recipient, descriptor.identityDiscriminator])).digest("hex");
+  const identity = createHash10("sha256").update(JSON.stringify([recordType, messageId || null, occurredAt, recipient, descriptor.identityDiscriminator])).digest("hex");
   return {
     provider: "postmark",
     kind: descriptor.kind,
@@ -96428,7 +96868,7 @@ function normalizeMailgunWebhook(raw) {
   const accountId = text(account.id).trim();
   const domainName = text(domain.name).trim().toLowerCase();
   if (!accountId || !domainName) return false;
-  const providerScope = createHash9("sha256").update(JSON.stringify([accountId, domainName])).digest("hex").slice(0, 16);
+  const providerScope = createHash10("sha256").update(JSON.stringify([accountId, domainName])).digest("hex").slice(0, 16);
   return {
     provider: "mailgun",
     kind,
@@ -96546,11 +96986,11 @@ async function requireCurrentHumanSession(database, context, sessionToken) {
     throw serviceUserError("FORBIDDEN", "Service-User management requires a human Session.", "Sign in with a linked human account.");
   }
   const adapter = database.adapter;
-  const sql = adapter.dialect.sql;
-  await adapter.prepare(sql(
+  const sql2 = adapter.dialect.sql;
+  await adapter.prepare(sql2(
     "UPDATE [sporades_auth_sessions] SET [token] = [token] WHERE [token] = ? AND [userId] = ?"
   )).run(sessionToken, context.auth?.userId);
-  const row = await adapter.prepare(sql(
+  const row = await adapter.prepare(sql2(
     "SELECT [s].[token] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[userKind] = 'human' AND [u].[lifecycleStatus] = 'active' AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0"
   )).get(sessionToken, context.auth?.userId, database.clock.now().toISOString());
   if (!row) {
@@ -96562,14 +97002,14 @@ async function lockServiceUser(database, userId, requireActive = true) {
     throw serviceUserError("SERVICE_USER_NOT_FOUND", "Service User not found.", "Refresh the service-User list.");
   }
   const adapter = database.adapter;
-  const sql = adapter.dialect.sql;
-  const locked = await adapter.prepare(sql(
+  const sql2 = adapter.dialect.sql;
+  const locked = await adapter.prepare(sql2(
     "UPDATE [sporades_auth_service_user_locks] SET [operationRevision] = [operationRevision] + 1 WHERE [userId] = ?"
   )).run(userId);
   if (Number(locked?.changes ?? 0) !== 1) {
     throw serviceUserError("SERVICE_USER_NOT_FOUND", "Service User not found.", "Refresh the service-User list.");
   }
-  const row = await adapter.prepare(sql(
+  const row = await adapter.prepare(sql2(
     "SELECT [id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind], [lifecycleStatus], [disabledAt] FROM [sporades_auth_users] WHERE [id] = ?"
   )).get(userId);
   if (!row || row.userKind !== "service" || requireActive && row.lifecycleStatus !== "active") {
@@ -96641,11 +97081,11 @@ function createServiceUsersApi(database, contextGetter, sessionToken, options = 
         const displayName = normalizeDisplayName(input.displayName);
         const id2 = crypto.randomUUID();
         const createdAt = database.clock.now().toISOString();
-        const sql = database.adapter.dialect.sql;
-        await database.adapter.prepare(sql(
+        const sql2 = database.adapter.dialect.sql;
+        await database.adapter.prepare(sql2(
           "INSERT INTO [sporades_auth_users] ([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind], [lifecycleStatus], [disabledAt]) VALUES (?, ?, ?, NULL, NULL, 1, 0, 'service', 'service', 'active', NULL)"
         )).run(id2, createdAt, displayName);
-        await database.adapter.prepare(sql(
+        await database.adapter.prepare(sql2(
           "INSERT INTO [sporades_auth_service_user_locks] ([userId], [operationRevision]) VALUES (?, 0)"
         )).run(id2);
         const issued = await issueForOwner(database, context, id2, input.accessKey);
@@ -96724,8 +97164,8 @@ function createServiceUsersApi(database, contextGetter, sessionToken, options = 
           revocationCause: "service-user-disabled"
         });
         const disabledAt = database.clock.now().toISOString();
-        const sql = database.adapter.dialect.sql;
-        const result = await database.adapter.prepare(sql(
+        const sql2 = database.adapter.dialect.sql;
+        const result = await database.adapter.prepare(sql2(
           "UPDATE [sporades_auth_users] SET [lifecycleStatus] = 'disabled', [disabledAt] = ?, [isAuthenticated] = 0 WHERE [id] = ? AND [userKind] = 'service' AND [lifecycleStatus] = 'active'"
         )).run(disabledAt, serviceUser.id);
         if (Number(result?.changes ?? 0) !== 1) {
@@ -96928,11 +97368,11 @@ function sanitizeAccessKeyOperatorEnvelope(value, action, input, invalid) {
 }
 
 // src/database-runtime.ts
-import { randomUUID as randomUUID8 } from "node:crypto";
+import { randomUUID as randomUUID9 } from "node:crypto";
 
 // src/inspection-sql.ts
-function validateReadOnlyInspectionSql(sql) {
-  const text2 = String(sql ?? "");
+function validateReadOnlyInspectionSql(sql2) {
+  const text2 = String(sql2 ?? "");
   if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|\0/.test(text2)) {
     return unrepresentableInspectionSqlError();
   }
@@ -96983,40 +97423,40 @@ function ambiguousInspectionSqlError(hint) {
     }
   };
 }
-function sqlTheEnginesLexDifferently(sql) {
-  if (sqlContentFingerprint(sql, true) !== sqlContentFingerprint(sql, false)) {
+function sqlTheEnginesLexDifferently(sql2) {
+  if (sqlContentFingerprint(sql2, true) !== sqlContentFingerprint(sql2, false)) {
     return "Remove the carriage return from inside the `-- ...` comment in the `sporades db query` SQL \u2014 SQLite ends a line comment at a line feed and Postgres ends one at either.";
   }
   const dialect = sqlDialectEveryEngineQuotes(true);
   let index = 0;
-  while (index < sql.length) {
-    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
+  while (index < sql2.length) {
+    const skipped = skipSqlQuotedOrCommented(sql2, index, dialect);
     if (skipped > index) {
-      if (sql[index] === "/" && sql[index + 1] === "*") {
-        if (nestingBlockCommentEnd(sql, index) !== skipped) {
+      if (sql2[index] === "/" && sql2[index + 1] === "*") {
+        if (nestingBlockCommentEnd(sql2, index) !== skipped) {
           return "Remove the nested `/* ... */` comment from the `sporades db query` SQL \u2014 Postgres and SQLite disagree about where it ends.";
         }
       }
       index = skipped;
       continue;
     }
-    if (/\s/.test(sql[index]) && !/[ \t\n\r\f]/.test(sql[index])) {
+    if (/\s/.test(sql2[index]) && !/[ \t\n\r\f]/.test(sql2[index])) {
       return "Replace the invisible character outside quotes \u2014 a non-breaking space, a vertical tab, or another character the engines do not treat as whitespace \u2014 with an ordinary space.";
     }
     index += 1;
   }
   return null;
 }
-function nestingBlockCommentEnd(sql, index) {
+function nestingBlockCommentEnd(sql2, index) {
   let depth = 0;
   let cursor = index;
-  while (cursor < sql.length) {
-    if (sql[cursor] === "/" && sql[cursor + 1] === "*") {
+  while (cursor < sql2.length) {
+    if (sql2[cursor] === "/" && sql2[cursor + 1] === "*") {
       depth += 1;
       cursor += 2;
       continue;
     }
-    if (sql[cursor] === "*" && sql[cursor + 1] === "/") {
+    if (sql2[cursor] === "*" && sql2[cursor + 1] === "/") {
       depth -= 1;
       cursor += 2;
       if (depth === 0) {
@@ -97028,72 +97468,72 @@ function nestingBlockCommentEnd(sql, index) {
   }
   return cursor;
 }
-function sqlContentFingerprint(sql, lineCommentEndsAtCarriageReturn) {
+function sqlContentFingerprint(sql2, lineCommentEndsAtCarriageReturn) {
   const dialect = sqlDialectEveryEngineQuotes(lineCommentEndsAtCarriageReturn);
   let fingerprint = "";
   let index = 0;
-  while (index < sql.length) {
-    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
+  while (index < sql2.length) {
+    const skipped = skipSqlQuotedOrCommented(sql2, index, dialect);
     if (skipped > index) {
-      if (opensQuotedRun(sql, index)) {
+      if (opensQuotedRun(sql2, index)) {
         fingerprint += `q${index}-${skipped};`;
       }
       index = skipped;
       continue;
     }
-    if (!/[ \t\n\r\f]/.test(sql[index])) {
-      fingerprint += `${index}:${sql[index]};`;
+    if (!/[ \t\n\r\f]/.test(sql2[index])) {
+      fingerprint += `${index}:${sql2[index]};`;
     }
     index += 1;
   }
   return fingerprint;
 }
-function readFirstSqlToken(sql) {
-  return readBareSqlIdentifier(sql, skipSqlTrivia(sql, 0, true))?.value ?? null;
+function readFirstSqlToken(sql2) {
+  return readBareSqlIdentifier(sql2, skipSqlTrivia(sql2, 0, true))?.value ?? null;
 }
-function hasMultipleSqlStatements(sql) {
+function hasMultipleSqlStatements(sql2) {
   const dialect = sqlDialectEveryEngineQuotes(true);
   let index = 0;
-  while (index < sql.length) {
-    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
+  while (index < sql2.length) {
+    const skipped = skipSqlQuotedOrCommented(sql2, index, dialect);
     if (skipped > index) {
       index = skipped;
       continue;
     }
-    if (sql[index] === ";") {
-      return skipSqlTrivia(sql, index + 1, true) < sql.length;
+    if (sql2[index] === ";") {
+      return skipSqlTrivia(sql2, index + 1, true) < sql2.length;
     }
     index += 1;
   }
   return false;
 }
-function isSafeInspectionPragma(sql, pragmaTokenLength) {
-  let index = skipSqlTrivia(sql, skipSqlTrivia(sql, 0, true) + pragmaTokenLength, true);
-  let identifier = readBareSqlIdentifier(sql, index);
+function isSafeInspectionPragma(sql2, pragmaTokenLength) {
+  let index = skipSqlTrivia(sql2, skipSqlTrivia(sql2, 0, true) + pragmaTokenLength, true);
+  let identifier = readBareSqlIdentifier(sql2, index);
   if (!identifier) {
     return false;
   }
   let pragmaName = identifier.value.toLowerCase();
-  index = skipSqlTrivia(sql, identifier.nextIndex, true);
-  if (sql[index] === ".") {
-    identifier = readBareSqlIdentifier(sql, skipSqlTrivia(sql, index + 1, true));
+  index = skipSqlTrivia(sql2, identifier.nextIndex, true);
+  if (sql2[index] === ".") {
+    identifier = readBareSqlIdentifier(sql2, skipSqlTrivia(sql2, index + 1, true));
     if (!identifier) {
       return false;
     }
     pragmaName = identifier.value.toLowerCase();
-    index = skipSqlTrivia(sql, identifier.nextIndex, true);
+    index = skipSqlTrivia(sql2, identifier.nextIndex, true);
   }
   if (!SAFE_INSPECTION_PRAGMAS.has(pragmaName)) {
     return false;
   }
   const dialect = sqlDialectEveryEngineQuotes(true);
-  while (index < sql.length) {
-    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
+  while (index < sql2.length) {
+    const skipped = skipSqlQuotedOrCommented(sql2, index, dialect);
     if (skipped > index) {
       index = skipped;
       continue;
     }
-    if (sql[index] === "=") {
+    if (sql2[index] === "=") {
       return false;
     }
     index += 1;
@@ -97110,16 +97550,16 @@ var SAFE_INSPECTION_PRAGMAS = /* @__PURE__ */ new Set([
   "table_list",
   "table_xinfo"
 ]);
-function containsSideEffectSqlToken(sql) {
-  return containsSideEffectSqlTokenUnder(sql, true) || containsSideEffectSqlTokenUnder(sql, false);
+function containsSideEffectSqlToken(sql2) {
+  return containsSideEffectSqlTokenUnder(sql2, true) || containsSideEffectSqlTokenUnder(sql2, false);
 }
-function containsSideEffectSqlTokenUnder(sql, lineCommentEndsAtCarriageReturn) {
-  for (const token of readSqlTokens(sql, lineCommentEndsAtCarriageReturn)) {
+function containsSideEffectSqlTokenUnder(sql2, lineCommentEndsAtCarriageReturn) {
+  for (const token of readSqlTokens(sql2, lineCommentEndsAtCarriageReturn)) {
     const value = token.value.toLowerCase();
     if (SIDE_EFFECT_SQL_KEYWORDS.has(value)) {
       return true;
     }
-    if (SIDE_EFFECT_SQL_FUNCTIONS.has(value) && sql[skipSqlTrivia(sql, token.nextIndex, lineCommentEndsAtCarriageReturn)] === "(") {
+    if (SIDE_EFFECT_SQL_FUNCTIONS.has(value) && sql2[skipSqlTrivia(sql2, token.nextIndex, lineCommentEndsAtCarriageReturn)] === "(") {
       return true;
     }
   }
@@ -97146,17 +97586,17 @@ var SIDE_EFFECT_SQL_FUNCTIONS = /* @__PURE__ */ new Set([
   "set_config",
   "setval"
 ]);
-function readSqlTokens(sql, lineCommentEndsAtCarriageReturn) {
+function readSqlTokens(sql2, lineCommentEndsAtCarriageReturn) {
   const dialect = sqlDialectWithoutPostgresStringForms(lineCommentEndsAtCarriageReturn);
   const tokens = [];
   let index = 0;
-  while (index < sql.length) {
-    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
+  while (index < sql2.length) {
+    const skipped = skipSqlQuotedOrCommented(sql2, index, dialect);
     if (skipped > index) {
       index = skipped;
       continue;
     }
-    const identifier = readSqlTokenIdentifier(sql, index);
+    const identifier = readSqlTokenIdentifier(sql2, index);
     if (identifier) {
       tokens.push(identifier);
       index = identifier.nextIndex;
@@ -97166,22 +97606,22 @@ function readSqlTokens(sql, lineCommentEndsAtCarriageReturn) {
   }
   return tokens;
 }
-function readBareSqlIdentifier(sql, index) {
-  const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(index));
+function readBareSqlIdentifier(sql2, index) {
+  const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql2.slice(index));
   return match ? { value: match[0], nextIndex: index + match[0].length } : null;
 }
-function readSqlTokenIdentifier(sql, index) {
-  return readSqlQuotedIdentifier(sql, index, '"`[');
+function readSqlTokenIdentifier(sql2, index) {
+  return readSqlQuotedIdentifier(sql2, index, '"`[');
 }
-function readSqlQuotedIdentifier(sql, index, quotes) {
-  const end = skipSqlQuotedOrCommented(sql, index, sqlDialectQuotedIdentifiersOnly(quotes));
+function readSqlQuotedIdentifier(sql2, index, quotes) {
+  const end = skipSqlQuotedOrCommented(sql2, index, sqlDialectQuotedIdentifiersOnly(quotes));
   if (end === index) {
-    return readBareSqlIdentifier(sql, index);
+    return readBareSqlIdentifier(sql2, index);
   }
-  const closingQuote = sql[end - 1];
-  const value = sql.slice(index + 1, end - 1);
+  const closingQuote = sql2[end - 1];
+  const value = sql2.slice(index + 1, end - 1);
   return {
-    value: closingQuote === sql[index] ? value.replaceAll(closingQuote + closingQuote, closingQuote) : value,
+    value: closingQuote === sql2[index] ? value.replaceAll(closingQuote + closingQuote, closingQuote) : value,
     nextIndex: end
   };
 }
@@ -97235,33 +97675,33 @@ function sqlDialectQuotedIdentifiersOnly(quotes) {
     unterminatedQuotedRunReachesEndOfInput: false
   };
 }
-function skipSqlQuotedOrCommented(sql, index, dialect) {
-  if (dialect.comments && sql[index] === "/" && sql[index + 1] === "*") {
-    const end = sql.indexOf("*/", index + 2);
-    return end === -1 ? sql.length : end + 2;
+function skipSqlQuotedOrCommented(sql2, index, dialect) {
+  if (dialect.comments && sql2[index] === "/" && sql2[index + 1] === "*") {
+    const end = sql2.indexOf("*/", index + 2);
+    return end === -1 ? sql2.length : end + 2;
   }
-  if (dialect.comments && sql[index] === "-" && sql[index + 1] === "-") {
-    const end = (dialect.lineCommentEndsAtCarriageReturn ? /[\n\r]/ : /\n/).exec(sql.slice(index + 2));
-    return end ? index + 2 + end.index + 1 : sql.length;
+  if (dialect.comments && sql2[index] === "-" && sql2[index + 1] === "-") {
+    const end = (dialect.lineCommentEndsAtCarriageReturn ? /[\n\r]/ : /\n/).exec(sql2.slice(index + 2));
+    return end ? index + 2 + end.index + 1 : sql2.length;
   }
-  const opensToken = (dialect.dollarQuoting || dialect.escapeStrings) && !/[A-Za-z0-9_$\u0080-\uffff]/.test(sql[index - 1] ?? "");
-  if (dialect.dollarQuoting && sql[index] === "$" && opensToken) {
-    const delimiter = /^\$(?:[A-Za-z_\u0080-\uffff][A-Za-z0-9_\u0080-\uffff]*)?\$/.exec(sql.slice(index))?.[0];
+  const opensToken = (dialect.dollarQuoting || dialect.escapeStrings) && !/[A-Za-z0-9_$\u0080-\uffff]/.test(sql2[index - 1] ?? "");
+  if (dialect.dollarQuoting && sql2[index] === "$" && opensToken) {
+    const delimiter = /^\$(?:[A-Za-z_\u0080-\uffff][A-Za-z0-9_\u0080-\uffff]*)?\$/.exec(sql2.slice(index))?.[0];
     if (!delimiter) {
       return index;
     }
-    const end = sql.indexOf(delimiter, index + delimiter.length);
+    const end = sql2.indexOf(delimiter, index + delimiter.length);
     return end === -1 ? index : end + delimiter.length;
   }
-  if (dialect.escapeStrings && (sql[index] === "E" || sql[index] === "e") && sql[index + 1] === "'" && opensToken) {
+  if (dialect.escapeStrings && (sql2[index] === "E" || sql2[index] === "e") && sql2[index + 1] === "'" && opensToken) {
     let cursor2 = index + 2;
-    while (cursor2 < sql.length) {
-      if (sql[cursor2] === "\\") {
+    while (cursor2 < sql2.length) {
+      if (sql2[cursor2] === "\\") {
         cursor2 += 2;
         continue;
       }
-      if (sql[cursor2] === "'") {
-        if (sql[cursor2 + 1] === "'") {
+      if (sql2[cursor2] === "'") {
+        if (sql2[cursor2 + 1] === "'") {
           cursor2 += 2;
           continue;
         }
@@ -97271,15 +97711,15 @@ function skipSqlQuotedOrCommented(sql, index, dialect) {
     }
     return index;
   }
-  const quote = sql[index];
+  const quote = sql2[index];
   const closingQuote = quote === "[" ? "]" : quote;
   if (quote === void 0 || !dialect.quotes.includes(quote)) {
     return index;
   }
   let cursor = index + 1;
-  while (cursor < sql.length) {
-    if (sql[cursor] === closingQuote) {
-      if (quote !== "[" && sql[cursor + 1] === closingQuote) {
+  while (cursor < sql2.length) {
+    if (sql2[cursor] === closingQuote) {
+      if (quote !== "[" && sql2[cursor + 1] === closingQuote) {
         cursor += 2;
         continue;
       }
@@ -97287,13 +97727,13 @@ function skipSqlQuotedOrCommented(sql, index, dialect) {
     }
     cursor += 1;
   }
-  return dialect.unterminatedQuotedRunReachesEndOfInput ? sql.length : index;
+  return dialect.unterminatedQuotedRunReachesEndOfInput ? sql2.length : index;
 }
-function opensQuotedRun(sql, index) {
-  return skipSqlQuotedOrCommented(sql, index, sqlDialectQuotedRunsOnly()) > index;
+function opensQuotedRun(sql2, index) {
+  return skipSqlQuotedOrCommented(sql2, index, sqlDialectQuotedRunsOnly()) > index;
 }
-function sqlWithoutTrailingTerminator(sql) {
-  const text2 = String(sql ?? "");
+function sqlWithoutTrailingTerminator(sql2) {
+  const text2 = String(sql2 ?? "");
   const dialect = sqlDialectEveryEngineQuotes(true);
   let index = 0;
   let contentEnd = 0;
@@ -97316,17 +97756,17 @@ function sqlWithoutTrailingTerminator(sql) {
   }
   return text2.slice(0, contentEnd);
 }
-function skipSqlTrivia(sql, startIndex, lineCommentEndsAtCarriageReturn) {
+function skipSqlTrivia(sql2, startIndex, lineCommentEndsAtCarriageReturn) {
   const dialect = sqlDialectCommentsOnly(lineCommentEndsAtCarriageReturn);
   let index = startIndex;
   let advanced = true;
   while (advanced) {
     advanced = false;
-    while (/[ \t\n\r\f]/.test(sql[index] ?? "")) {
+    while (/[ \t\n\r\f]/.test(sql2[index] ?? "")) {
       index += 1;
       advanced = true;
     }
-    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
+    const skipped = skipSqlQuotedOrCommented(sql2, index, dialect);
     if (skipped > index) {
       index = skipped;
       advanced = true;
@@ -97336,8 +97776,8 @@ function skipSqlTrivia(sql, startIndex, lineCommentEndsAtCarriageReturn) {
 }
 
 // src/log-index-guard.ts
-function targetsInternalLogIndexTable(sql) {
-  const text2 = String(sql);
+function targetsInternalLogIndexTable(sql2) {
+  const text2 = String(sql2);
   const targetKeywords = /\b(?:from|join|update|into|table)\b/gi;
   let match;
   while (match = targetKeywords.exec(text2)) {
@@ -97348,32 +97788,32 @@ function targetsInternalLogIndexTable(sql) {
   }
   return false;
 }
-function readSqlTableReference(sql, startIndex) {
-  let index = skipSqlTrivia(sql, startIndex, true);
-  while (sql[index] === "(") {
+function readSqlTableReference(sql2, startIndex) {
+  let index = skipSqlTrivia(sql2, startIndex, true);
+  while (sql2[index] === "(") {
     index += 1;
-    index = skipSqlTrivia(sql, index, true);
+    index = skipSqlTrivia(sql2, index, true);
   }
   const parts = [];
-  while (index < sql.length) {
-    const identifier = readSqlIdentifier(sql, index);
+  while (index < sql2.length) {
+    const identifier = readSqlIdentifier(sql2, index);
     if (!identifier) {
       break;
     }
     parts.push(identifier.value);
-    index = skipSqlTrivia(sql, identifier.nextIndex, true);
-    if (sql[index] !== ".") {
+    index = skipSqlTrivia(sql2, identifier.nextIndex, true);
+    if (sql2[index] !== ".") {
       break;
     }
-    index = skipSqlTrivia(sql, index + 1, true);
+    index = skipSqlTrivia(sql2, index + 1, true);
   }
   return parts;
 }
-function readSqlIdentifier(sql, index) {
-  return readSqlQuotedIdentifier(sql, index, "'\"`[");
+function readSqlIdentifier(sql2, index) {
+  return readSqlQuotedIdentifier(sql2, index, "'\"`[");
 }
-function isInternalLogIndexMetadataRow(row, sql = "") {
-  const queriesSqliteSchema = /\bsqlite_(?:schema|master)\b/i.test(String(sql));
+function isInternalLogIndexMetadataRow(row, sql2 = "") {
+  const queriesSqliteSchema = /\bsqlite_(?:schema|master)\b/i.test(String(sql2));
   return ["name", "tbl_name", "table", "tableName"].some((key) => row?.[key] === "sporades_log_events") || Object.values(row ?? {}).some(
     (value) => typeof value === "string" && (/\bcreate\s+table\b[\s\S]*\bsporades_log_events\b/i.test(value) || queriesSqliteSchema && /\bsporades_log_events\b/i.test(value))
   );
@@ -97780,8 +98220,8 @@ function assertAuthUserProvider(row) {
   }
 }
 function createSharedDatabaseAdapterMethods(dialect) {
-  const sql = dialect.sql;
-  const eligibleAccessKeyOwnerSessionSql = sql(
+  const sql2 = dialect.sql;
+  const eligibleAccessKeyOwnerSessionSql = sql2(
     "SELECT [s].[token] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = ? AND [u].[isGuest] = ?"
   );
   return {
@@ -97793,10 +98233,10 @@ function createSharedDatabaseAdapterMethods(dialect) {
       return Reflect.apply(run2, this, [fn, beforeCommit, resource, signal]);
     },
     ensureSystemTable() {
-      return this.exec(sql("CREATE TABLE IF NOT EXISTS [sporades] ([key] TEXT PRIMARY KEY, [value] TEXT NOT NULL)"));
+      return this.exec(sql2("CREATE TABLE IF NOT EXISTS [sporades] ([key] TEXT PRIMARY KEY, [value] TEXT NOT NULL)"));
     },
     readSystemMetadata(key) {
-      return this.prepare(sql("SELECT [value] FROM [sporades] WHERE [key] = ?")).get(key) ?? null;
+      return this.prepare(sql2("SELECT [value] FROM [sporades] WHERE [key] = ?")).get(key) ?? null;
     },
     writeSystemMetadata(key, value) {
       return this.prepare(dialect.upsertSql("sporades", ["key", "value"], ["key"])).run(key, value);
@@ -97827,11 +98267,11 @@ function createSharedDatabaseAdapterMethods(dialect) {
       return createFileStorageTables(this);
     },
     findFileBucket(ownerId, name2) {
-      return this.prepare(sql("SELECT * FROM [sporades_file_buckets] WHERE [ownerId] = ? AND [name] = ?")).get(ownerId, name2) ?? null;
+      return this.prepare(sql2("SELECT * FROM [sporades_file_buckets] WHERE [ownerId] = ? AND [name] = ?")).get(ownerId, name2) ?? null;
     },
     createFileBucket(row) {
       return this.prepare(
-        sql("INSERT INTO [sporades_file_buckets] ([id], [ownerId], [name], [createdAt]) VALUES (?, ?, ?, ?)")
+        sql2("INSERT INTO [sporades_file_buckets] ([id], [ownerId], [name], [createdAt]) VALUES (?, ?, ?, ?)")
       ).run(
         row.id,
         row.ownerId,
@@ -97841,7 +98281,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
     },
     insertFileRow(row) {
       return this.prepare(
-        sql(
+        sql2(
           "INSERT INTO [sporades_files] ([id], [ownerId], [bucketId], [bucketName], [path], [name], [type], [size], [version], [status], [createdAt], [updatedAt], [deletedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)"
         )
       ).run(
@@ -97861,21 +98301,21 @@ function createSharedDatabaseAdapterMethods(dialect) {
     },
     insertFileRowIfAbsent(row) {
       return this.prepare(
-        sql(
+        sql2(
           "INSERT INTO [sporades_files] ([id], [ownerId], [bucketId], [bucketName], [path], [name], [type], [size], [version], [status], [createdAt], [updatedAt], [deletedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL) ON CONFLICT([id]) DO NOTHING"
         )
       ).run(row.id, row.ownerId, row.bucketId, row.bucketName, row.path, row.name, row.type, row.size, row.version, row.status, row.createdAt, row.updatedAt);
     },
     selectIngressByLease(leaseId) {
-      return this.prepare(sql("SELECT * FROM [sporades_file_ingress] WHERE [leaseId] = ?")).get(leaseId) ?? null;
+      return this.prepare(sql2("SELECT * FROM [sporades_file_ingress] WHERE [leaseId] = ?")).get(leaseId) ?? null;
     },
     hasPendingIngressMaintenance() {
-      return thenIfPromise(this.prepare(sql(
+      return thenIfPromise(this.prepare(sql2(
         "SELECT CASE WHEN EXISTS (SELECT 1 FROM [sporades_file_ingress] WHERE [state] IN ('staging', 'leased', 'sweeping')) OR EXISTS (SELECT 1 FROM [sporades_file_ingress_audit_outbox] WHERE [state] IN ('pending', 'delivering')) THEN 1 ELSE 0 END AS [required]"
       )).get(), (row) => Number(row?.required ?? 0) === 1);
     },
     readIngressMaintenanceState() {
-      return thenIfPromise(this.prepare(sql(
+      return thenIfPromise(this.prepare(sql2(
         "SELECT CASE WHEN EXISTS (SELECT 1 FROM [sporades_file_ingress] WHERE [state] IN ('staging', 'leased', 'sweeping')) THEN 1 ELSE 0 END AS [ingressRequired], CASE WHEN EXISTS (SELECT 1 FROM [sporades_file_ingress_audit_outbox] WHERE [state] IN ('pending', 'delivering')) THEN 1 ELSE 0 END AS [auditDeliveryRequired], (SELECT MIN([deliveredAt]) FROM [sporades_file_ingress_audit_outbox] WHERE [state] = 'delivered') AS [earliestDeliveredAt]"
       )).get(), (row) => ({
         ingressRequired: Number(row?.ingressRequired ?? 0) === 1,
@@ -97886,56 +98326,56 @@ function createSharedDatabaseAdapterMethods(dialect) {
     lockIngressReceipts(leaseIds) {
       const sorted = [...new Set(leaseIds.map(String))].sort();
       if (sorted.length === 0) return { changes: 0 };
-      return this.prepare(sql(`UPDATE [sporades_file_ingress] SET [updatedAt] = [updatedAt] WHERE [leaseId] IN (${sorted.map(() => "?").join(", ")})`)).run(...sorted);
+      return this.prepare(sql2(`UPDATE [sporades_file_ingress] SET [updatedAt] = [updatedAt] WHERE [leaseId] IN (${sorted.map(() => "?").join(", ")})`)).run(...sorted);
     },
     completeIngressClaim(row) {
       const updatedAt = (/* @__PURE__ */ new Date()).toISOString();
       return thenIfPromise(
-        this.prepare(sql("UPDATE [sporades_file_ingress] SET [payload] = ?, [state] = ?, [updatedAt] = ? WHERE [leaseId] = ? AND [state] = ?")).run(JSON.stringify(row), "complete", updatedAt, row.leaseId, "leased"),
+        this.prepare(sql2("UPDATE [sporades_file_ingress] SET [payload] = ?, [state] = ?, [updatedAt] = ? WHERE [leaseId] = ? AND [state] = ?")).run(JSON.stringify(row), "complete", updatedAt, row.leaseId, "leased"),
         () => this.selectIngressByLease(row.leaseId)
       );
     },
     enqueueIngressClaimAudit(row) {
-      return this.prepare(sql("INSERT INTO [sporades_file_ingress_audit_outbox] ([claimId], [state], [claimToken], [createdAt], [updatedAt], [deliveredAt]) VALUES (?, 'pending', NULL, ?, ?, NULL) ON CONFLICT([claimId]) DO NOTHING")).run(row.claimId, row.createdAt, row.createdAt);
+      return this.prepare(sql2("INSERT INTO [sporades_file_ingress_audit_outbox] ([claimId], [state], [claimToken], [createdAt], [updatedAt], [deliveredAt]) VALUES (?, 'pending', NULL, ?, ?, NULL) ON CONFLICT([claimId]) DO NOTHING")).run(row.claimId, row.createdAt, row.createdAt);
     },
     selectPendingIngressClaimAudits(limit) {
-      return this.prepare(sql("SELECT [claimId] FROM [sporades_file_ingress_audit_outbox] WHERE [state] = 'pending' ORDER BY [createdAt], [claimId] LIMIT ?")).all(limit);
+      return this.prepare(sql2("SELECT [claimId] FROM [sporades_file_ingress_audit_outbox] WHERE [state] = 'pending' ORDER BY [createdAt], [claimId] LIMIT ?")).all(limit);
     },
     claimIngressClaimAudit(claimId, claimToken, updatedAt) {
-      return this.prepare(sql("UPDATE [sporades_file_ingress_audit_outbox] SET [state] = 'delivering', [claimToken] = ?, [updatedAt] = ? WHERE [claimId] = ? AND [state] = 'pending'")).run(claimToken, updatedAt, claimId);
+      return this.prepare(sql2("UPDATE [sporades_file_ingress_audit_outbox] SET [state] = 'delivering', [claimToken] = ?, [updatedAt] = ? WHERE [claimId] = ? AND [state] = 'pending'")).run(claimToken, updatedAt, claimId);
     },
     deliverIngressClaimAudit(claimId, claimToken, deliveredAt) {
-      return this.prepare(sql("UPDATE [sporades_file_ingress_audit_outbox] SET [state] = 'delivered', [claimToken] = NULL, [updatedAt] = ?, [deliveredAt] = ? WHERE [claimId] = ? AND [state] = 'delivering' AND [claimToken] = ?")).run(deliveredAt, deliveredAt, claimId, claimToken);
+      return this.prepare(sql2("UPDATE [sporades_file_ingress_audit_outbox] SET [state] = 'delivered', [claimToken] = NULL, [updatedAt] = ?, [deliveredAt] = ? WHERE [claimId] = ? AND [state] = 'delivering' AND [claimToken] = ?")).run(deliveredAt, deliveredAt, claimId, claimToken);
     },
     releaseIngressClaimAudit(claimId, claimToken, updatedAt) {
-      return this.prepare(sql("UPDATE [sporades_file_ingress_audit_outbox] SET [state] = 'pending', [claimToken] = NULL, [updatedAt] = ? WHERE [claimId] = ? AND [state] = 'delivering' AND [claimToken] = ?")).run(updatedAt, claimId, claimToken);
+      return this.prepare(sql2("UPDATE [sporades_file_ingress_audit_outbox] SET [state] = 'pending', [claimToken] = NULL, [updatedAt] = ? WHERE [claimId] = ? AND [state] = 'delivering' AND [claimToken] = ?")).run(updatedAt, claimId, claimToken);
     },
     recoverIngressClaimAudits(updatedAt) {
-      return this.prepare(sql("UPDATE [sporades_file_ingress_audit_outbox] SET [state] = 'pending', [claimToken] = NULL, [updatedAt] = ? WHERE [state] = 'delivering'")).run(updatedAt);
+      return this.prepare(sql2("UPDATE [sporades_file_ingress_audit_outbox] SET [state] = 'pending', [claimToken] = NULL, [updatedAt] = ? WHERE [state] = 'delivering'")).run(updatedAt);
     },
     pruneDeliveredIngressClaimAudits(deliveredBefore, limit) {
-      return this.prepare(sql("DELETE FROM [sporades_file_ingress_audit_outbox] WHERE [claimId] IN (SELECT [claimId] FROM [sporades_file_ingress_audit_outbox] WHERE [state] = 'delivered' AND [deliveredAt] <= ? ORDER BY [deliveredAt], [claimId] LIMIT ?)")).run(deliveredBefore, limit);
+      return this.prepare(sql2("DELETE FROM [sporades_file_ingress_audit_outbox] WHERE [claimId] IN (SELECT [claimId] FROM [sporades_file_ingress_audit_outbox] WHERE [state] = 'delivered' AND [deliveredAt] <= ? ORDER BY [deliveredAt], [claimId] LIMIT ?)")).run(deliveredBefore, limit);
     },
     selectIngressSweepCandidates(now2, limit) {
-      return this.prepare(sql("SELECT * FROM [sporades_file_ingress] WHERE [state] = 'sweeping' OR ([state] IN ('leased', 'staging') AND [expiresAt] <= ?) ORDER BY CASE WHEN [state] = 'sweeping' THEN 0 ELSE 1 END, [expiresAt], [requestKey], [partKey], [key] LIMIT ?")).all(now2, limit);
+      return this.prepare(sql2("SELECT * FROM [sporades_file_ingress] WHERE [state] = 'sweeping' OR ([state] IN ('leased', 'staging') AND [expiresAt] <= ?) ORDER BY CASE WHEN [state] = 'sweeping' THEN 0 ELSE 1 END, [expiresAt], [requestKey], [partKey], [key] LIMIT ?")).all(now2, limit);
     },
     markIngressReceiptSweeping(row, sweepToken, now2) {
       const sweeping = { ...row, state: "sweeping", sweepToken };
-      return this.prepare(sql("UPDATE [sporades_file_ingress] SET [state] = 'sweeping', [sweepToken] = ?, [payload] = ?, [updatedAt] = ? WHERE [leaseId] = ? AND ([state] = 'sweeping' OR ([state] IN ('leased', 'staging') AND [expiresAt] <= ?))")).run(sweepToken, JSON.stringify(sweeping), now2, row.leaseId, now2);
+      return this.prepare(sql2("UPDATE [sporades_file_ingress] SET [state] = 'sweeping', [sweepToken] = ?, [payload] = ?, [updatedAt] = ? WHERE [leaseId] = ? AND ([state] = 'sweeping' OR ([state] IN ('leased', 'staging') AND [expiresAt] <= ?))")).run(sweepToken, JSON.stringify(sweeping), now2, row.leaseId, now2);
     },
     deleteIngressSweepingReceipt(leaseId, sweepToken) {
-      return this.prepare(sql("DELETE FROM [sporades_file_ingress] WHERE [leaseId] = ? AND [state] = 'sweeping' AND [sweepToken] = ?")).run(leaseId, sweepToken);
+      return this.prepare(sql2("DELETE FROM [sporades_file_ingress] WHERE [leaseId] = ? AND [state] = 'sweeping' AND [sweepToken] = ?")).run(leaseId, sweepToken);
     },
     updatePendingFileRow(row) {
       return this.prepare(
-        sql(
+        sql2(
           "UPDATE [sporades_files] SET [bucketId] = ?, [bucketName] = ?, [path] = ?, [name] = ?, [type] = ?, [size] = ?, [version] = ?, [status] = ?, [updatedAt] = ?, [deletedAt] = NULL WHERE [id] = ?"
         )
       ).run(row.bucketId, row.bucketName, row.path, row.name, row.type, row.size, row.version, row.status, row.updatedAt, row.id);
     },
     insertFileUpload(row) {
       return this.prepare(
-        sql(
+        sql2(
           "INSERT INTO [sporades_file_uploads] ([id], [fileId], [ownerId], [bucketId], [bucketName], [path], [name], [type], [version], [expectedSize], [createdAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
       ).run(
@@ -97953,26 +98393,26 @@ function createSharedDatabaseAdapterMethods(dialect) {
       );
     },
     selectFileById(fileId) {
-      return this.prepare(sql("SELECT * FROM [sporades_files] WHERE [id] = ?")).get(fileId) ?? null;
+      return this.prepare(sql2("SELECT * FROM [sporades_files] WHERE [id] = ?")).get(fileId) ?? null;
     },
     lockFileById(fileId) {
-      const select = sql("SELECT * FROM [sporades_files] WHERE [id] = ?");
+      const select = sql2("SELECT * FROM [sporades_files] WHERE [id] = ?");
       if (dialect.name === "postgres") {
         return thenIfPromise(this.prepare(`${select} FOR UPDATE`).get(fileId), (row) => row ?? null);
       }
       return thenIfPromise(
-        this.prepare(sql("UPDATE [sporades_files] SET [id] = [id] WHERE [id] = ?")).run(fileId),
+        this.prepare(sql2("UPDATE [sporades_files] SET [id] = [id] WHERE [id] = ?")).run(fileId),
         () => thenIfPromise(this.prepare(select).get(fileId), (row) => row ?? null)
       );
     },
     selectLiveFileByPath(path14) {
       return this.prepare(
-        sql("SELECT * FROM [sporades_files] WHERE [path] = ? AND [deletedAt] IS NULL AND [status] = ?")
+        sql2("SELECT * FROM [sporades_files] WHERE [path] = ? AND [deletedAt] IS NULL AND [status] = ?")
       ).all(path14, "uploaded");
     },
     selectActiveFileByPath(path14) {
       return this.prepare(
-        sql("SELECT * FROM [sporades_files] WHERE [path] = ? AND [deletedAt] IS NULL AND [status] IN (?, ?)")
+        sql2("SELECT * FROM [sporades_files] WHERE [path] = ? AND [deletedAt] IS NULL AND [status] IN (?, ?)")
       ).all(
         path14,
         "pending",
@@ -97981,17 +98421,17 @@ function createSharedDatabaseAdapterMethods(dialect) {
     },
     selectPendingFileUploadByPath(path14) {
       return this.prepare(
-        sql("SELECT * FROM [sporades_file_uploads] WHERE [path] = ? ORDER BY [createdAt] DESC, [id] DESC LIMIT 1")
+        sql2("SELECT * FROM [sporades_file_uploads] WHERE [path] = ? ORDER BY [createdAt] DESC, [id] DESC LIMIT 1")
       ).get(path14) ?? null;
     },
     selectFileUpload(uploadId) {
-      return this.prepare(sql("SELECT * FROM [sporades_file_uploads] WHERE [id] = ?")).get(uploadId) ?? null;
+      return this.prepare(sql2("SELECT * FROM [sporades_file_uploads] WHERE [id] = ?")).get(uploadId) ?? null;
     },
     completeFileUpload(upload, size, updatedAt) {
       return thenIfPromise(
         this.lockFileById(upload.fileId),
         (existing) => thenIfPromise(
-          this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [id] = ? AND [fileId] = ? AND [version] = ?")).run(
+          this.prepare(sql2("DELETE FROM [sporades_file_uploads] WHERE [id] = ? AND [fileId] = ? AND [version] = ?")).run(
             upload.id,
             upload.fileId,
             upload.version
@@ -98005,7 +98445,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
                 return { changes: 0 };
               }
               return this.prepare(
-                sql(
+                sql2(
                   "UPDATE [sporades_files] SET [bucketId] = ?, [bucketName] = ?, [path] = ?, [name] = ?, [type] = ?, [size] = ?, [version] = ?, [status] = ?, [updatedAt] = ? WHERE [id] = ? AND [deletedAt] IS NULL"
                 )
               ).run(
@@ -98040,31 +98480,31 @@ function createSharedDatabaseAdapterMethods(dialect) {
       );
     },
     deleteFileUploadsForPath(path14) {
-      return this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [path] = ?")).run(path14);
+      return this.prepare(sql2("DELETE FROM [sporades_file_uploads] WHERE [path] = ?")).run(path14);
     },
     deleteFileUploadsForFile(ownerId, fileId) {
-      return this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [ownerId] = ? AND [fileId] = ?")).run(ownerId, fileId);
+      return this.prepare(sql2("DELETE FROM [sporades_file_uploads] WHERE [ownerId] = ? AND [fileId] = ?")).run(ownerId, fileId);
     },
     deleteFileUpload(uploadId) {
-      return this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [id] = ?")).run(uploadId);
+      return this.prepare(sql2("DELETE FROM [sporades_file_uploads] WHERE [id] = ?")).run(uploadId);
     },
     selectPublicFileRow(publicUrlId) {
       return this.prepare(
-        sql(
+        sql2(
           "SELECT [p].[id] AS [publicUrlId], [p].[fileId], [p].[version] AS [publicVersion], [p].[expiresAt], [p].[revokedAt], [f].[id], [f].[ownerId], [f].[bucketId], [f].[bucketName], [f].[path], [f].[name], [f].[type], [f].[size], [f].[version], [f].[status], [f].[createdAt], [f].[updatedAt], [f].[deletedAt] FROM [sporades_file_public_urls] [p] JOIN [sporades_files] [f] ON [f].[id] = [p].[fileId] WHERE [p].[id] = ?"
         )
       ).get(publicUrlId) ?? null;
     },
     insertPublicFileUrl(row) {
       return this.prepare(
-        sql(
+        sql2(
           "INSERT INTO [sporades_file_public_urls] ([id], [fileId], [ownerId], [version], [expiresAt], [createdAt], [revokedAt]) VALUES (?, ?, ?, ?, ?, ?, NULL)"
         )
       ).run(row.id, row.fileId, row.ownerId, row.version, row.expiresAt, row.createdAt);
     },
     revokePublicFileUrl(publicUrlId, ownerId, revokedAt) {
       return this.prepare(
-        sql("UPDATE [sporades_file_public_urls] SET [revokedAt] = ? WHERE [id] = ? AND [ownerId] = ? AND [revokedAt] IS NULL")
+        sql2("UPDATE [sporades_file_public_urls] SET [revokedAt] = ? WHERE [id] = ? AND [ownerId] = ? AND [revokedAt] IS NULL")
       ).run(
         revokedAt,
         publicUrlId,
@@ -98073,18 +98513,18 @@ function createSharedDatabaseAdapterMethods(dialect) {
     },
     revokePublicFileUrlsForFile(fileId, revokedAt) {
       return this.prepare(
-        sql("UPDATE [sporades_file_public_urls] SET [revokedAt] = ? WHERE [fileId] = ? AND [revokedAt] IS NULL")
+        sql2("UPDATE [sporades_file_public_urls] SET [revokedAt] = ? WHERE [fileId] = ? AND [revokedAt] IS NULL")
       ).run(
         revokedAt,
         fileId
       );
     },
     markFileDeleted(fileId, deletedAt) {
-      return this.prepare(sql("UPDATE [sporades_files] SET [deletedAt] = ?, [updatedAt] = ? WHERE [id] = ?")).run(deletedAt, deletedAt, fileId);
+      return this.prepare(sql2("UPDATE [sporades_files] SET [deletedAt] = ?, [updatedAt] = ? WHERE [id] = ?")).run(deletedAt, deletedAt, fileId);
     },
     fileRowForOwner(fileId, ownerId) {
       return this.prepare(
-        sql("SELECT * FROM [sporades_files] WHERE [id] = ? AND [ownerId] = ? AND [deletedAt] IS NULL AND [status] = ?")
+        sql2("SELECT * FROM [sporades_files] WHERE [id] = ? AND [ownerId] = ? AND [deletedAt] IS NULL AND [status] = ?")
       ).get(
         fileId,
         ownerId,
@@ -98101,16 +98541,16 @@ function createSharedDatabaseAdapterMethods(dialect) {
       const sequence = chainMaybePromise([
         // Secret-bearing writes share one narrow lock so a rotation UPDATE can
         // never lose a cross-owner selector race by aborting its transaction.
-        () => this.prepare(sql(
+        () => this.prepare(sql2(
           "UPDATE [sporades_auth_access_key_locks] SET [operationRevision] = [operationRevision] + 1 WHERE [name] = ?"
         )).run("selector"),
         () => this.prepare(
-          sql(
+          sql2(
             "INSERT INTO [sporades_auth_access_key_owners] ([ownerUserId], [currentCount], [totalCount], [operationRevision]) VALUES (?, ?, ?, ?) ON CONFLICT ([ownerUserId]) DO NOTHING"
           )
         ).run(row.ownerUserId, 0, 0, 0),
         () => thenIfPromise(this.prepare(
-          sql(
+          sql2(
             "UPDATE [sporades_auth_access_key_owners] SET [currentCount] = [currentCount] + 1, [totalCount] = [totalCount] + 1, [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ? AND [currentCount] < ? AND [totalCount] < ?"
           )
         ).run(row.ownerUserId, ACCESS_KEY_CURRENT_LIMIT, ACCESS_KEY_RETAINED_LIMIT), (result) => {
@@ -98124,7 +98564,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
           }
         },
         () => outcome ?? thenIfPromise(this.prepare(
-          sql(
+          sql2(
             "SELECT [id] FROM [sporades_auth_users] WHERE [id] = ? AND [isAuthenticated] = ? AND [isGuest] = ?"
           )
         ).get(row.ownerUserId, 1, 0), (owner) => {
@@ -98138,7 +98578,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
           });
         },
         () => outcome ?? thenIfPromise(this.prepare(
-          sql(
+          sql2(
             "INSERT INTO [sporades_auth_access_keys] ([id], [ownerUserId], [name], [reservedName], [grantsJson], [secretVersion], [selector], [verifierDigest], [lifecycleRevision], [createdAt], [expiresAt], [rotatedAt], [revokedAt], [revocationCause], [lastUsedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL) ON CONFLICT DO NOTHING"
           )
         ).run(
@@ -98157,12 +98597,12 @@ function createSharedDatabaseAdapterMethods(dialect) {
           if (inserted.changes !== 0) outcome = { status: "issued" };
         }),
         () => outcome ?? thenIfPromise(this.prepare(
-          sql("SELECT [id] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [reservedName] = ?")
+          sql2("SELECT [id] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [reservedName] = ?")
         ).get(row.ownerUserId, row.reservedName), (nameCollision) => {
           outcome = { status: nameCollision ? "name-conflict" : "selector-conflict" };
         }),
         () => !reserved || outcome?.status === "issued" ? void 0 : this.prepare(
-          sql(
+          sql2(
             "UPDATE [sporades_auth_access_key_owners] SET [currentCount] = [currentCount] - 1, [totalCount] = [totalCount] - 1, [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?"
           )
         ).run(row.ownerUserId)
@@ -98181,7 +98621,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
           });
         },
         () => !sessionEligible ? void 0 : thenIfPromise(this.prepare(
-          sql(
+          sql2(
             "SELECT [id], [ownerUserId], [name], [grantsJson], [lifecycleRevision], [createdAt], [expiresAt], [rotatedAt], [revokedAt], [revocationCause], [lastUsedAt] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? ORDER BY [createdAt] DESC, [id] DESC"
           )
         ).all(ownerUserId), (result) => {
@@ -98192,21 +98632,21 @@ function createSharedDatabaseAdapterMethods(dialect) {
     },
     findAccessKeyRecordById(id2) {
       return this.prepare(
-        sql(
+        sql2(
           "SELECT [id], [ownerUserId], [name], [grantsJson], [lifecycleRevision], [createdAt], [expiresAt], [rotatedAt], [revokedAt], [revocationCause], [lastUsedAt] FROM [sporades_auth_access_keys] WHERE [id] = ?"
         )
       ).get(id2) ?? null;
     },
     findAccessKeyAuthenticationRecord(selector) {
       return this.prepare(
-        sql(
+        sql2(
           "SELECT [k].*, [u].[displayName] AS [ownerDisplayName], [u].[email] AS [ownerEmail], [u].[picture] AS [ownerPicture], [u].[isAuthenticated] AS [ownerIsAuthenticated], [u].[isGuest] AS [ownerIsGuest], [u].[userKind] AS [ownerUserKind], [u].[lifecycleStatus] AS [ownerLifecycleStatus] FROM [sporades_auth_access_keys] [k] LEFT JOIN [sporades_auth_users] [u] ON [u].[id] = [k].[ownerUserId] WHERE [k].[secretVersion] = ? AND [k].[selector] = ?"
         )
       ).get(1, selector) ?? null;
     },
     touchAccessKeyLastUsed(id2, usedAt, coalesceBefore) {
       return this.prepare(
-        sql(
+        sql2(
           "UPDATE [sporades_auth_access_keys] SET [lastUsedAt] = ? WHERE [id] = ? AND [revokedAt] IS NULL AND ([lastUsedAt] IS NULL OR [lastUsedAt] < ?)"
         )
       ).run(usedAt, id2, coalesceBefore);
@@ -98218,7 +98658,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
       let sessionEligible = true;
       const sequence = chainMaybePromise([
         () => this.prepare(
-          sql(
+          sql2(
             "UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?"
           )
         ).run(input.ownerUserId),
@@ -98233,24 +98673,24 @@ function createSharedDatabaseAdapterMethods(dialect) {
           });
         },
         () => !sessionEligible ? void 0 : thenIfPromise(this.prepare(
-          sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")
+          sql2("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")
         ).get(input.ownerUserId, input.id), (row) => {
           existing = row ?? null;
         }),
         () => !existing || existing.revokedAt ? existing : thenIfPromise(this.prepare(
-          sql(
+          sql2(
             "UPDATE [sporades_auth_access_keys] SET [reservedName] = NULL, [selector] = NULL, [verifierDigest] = NULL, [revokedAt] = ?, [revocationCause] = ?, [lifecycleRevision] = [lifecycleRevision] + 1 WHERE [ownerUserId] = ? AND [id] = ? AND [revokedAt] IS NULL"
           )
         ).run(revokedAt, input.revocationCause, input.ownerUserId, input.id), (result) => {
           revoked = result.changes !== 0;
         }),
         () => !revoked ? void 0 : this.prepare(
-          sql(
+          sql2(
             "UPDATE [sporades_auth_access_key_owners] SET [currentCount] = [currentCount] - 1 WHERE [ownerUserId] = ?"
           )
         ).run(input.ownerUserId),
         () => !existing ? void 0 : thenIfPromise(this.prepare(
-          sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")
+          sql2("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")
         ).get(input.ownerUserId, input.id), (row) => {
           existing = row ?? null;
         })
@@ -98262,10 +98702,10 @@ function createSharedDatabaseAdapterMethods(dialect) {
       let status = "not-found";
       let rotatedAt = input.rotatedAt;
       const sequence = chainMaybePromise([
-        () => this.prepare(sql(
+        () => this.prepare(sql2(
           "UPDATE [sporades_auth_access_key_locks] SET [operationRevision] = [operationRevision] + 1 WHERE [name] = ?"
         )).run("selector"),
-        () => this.prepare(sql(
+        () => this.prepare(sql2(
           "UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?"
         )).run(input.ownerUserId),
         () => {
@@ -98279,7 +98719,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
           });
         },
         () => status === "session-ineligible" ? void 0 : thenIfPromise(this.prepare(
-          sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")
+          sql2("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")
         ).get(input.ownerUserId, input.id), (row) => {
           existing = row ?? null;
           if (!existing) status = "not-found";
@@ -98288,11 +98728,11 @@ function createSharedDatabaseAdapterMethods(dialect) {
           else status = "ready";
         }),
         () => status !== "ready" ? void 0 : thenIfPromise(this.prepare(
-          sql("SELECT [id] FROM [sporades_auth_access_keys] WHERE [secretVersion] = ? AND [selector] = ?")
+          sql2("SELECT [id] FROM [sporades_auth_access_keys] WHERE [secretVersion] = ? AND [selector] = ?")
         ).get(input.secretVersion, input.selector), (collision) => {
           if (collision) status = "selector-conflict";
         }),
-        () => status !== "ready" ? void 0 : thenIfPromise(this.prepare(sql(
+        () => status !== "ready" ? void 0 : thenIfPromise(this.prepare(sql2(
           "UPDATE [sporades_auth_access_keys] SET [secretVersion] = ?, [selector] = ?, [verifierDigest] = ?, [rotatedAt] = ?, [lifecycleRevision] = [lifecycleRevision] + 1 WHERE [ownerUserId] = ? AND [id] = ? AND [lifecycleRevision] = ? AND [revokedAt] IS NULL"
         )).run(
           input.secretVersion,
@@ -98306,7 +98746,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
           status = result.changes === 1 ? "rotated" : "revision-conflict";
         }),
         () => status !== "rotated" ? void 0 : thenIfPromise(this.prepare(
-          sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")
+          sql2("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")
         ).get(input.ownerUserId, input.id), (row) => {
           existing = row ?? null;
         })
@@ -98317,7 +98757,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
       let existing = null;
       let status = "not-found";
       const sequence = chainMaybePromise([
-        () => this.prepare(sql(
+        () => this.prepare(sql2(
           "UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?"
         )).run(input.ownerUserId),
         () => {
@@ -98328,17 +98768,17 @@ function createSharedDatabaseAdapterMethods(dialect) {
           });
         },
         () => status === "session-ineligible" ? void 0 : thenIfPromise(this.prepare(
-          sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")
+          sql2("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")
         ).get(input.ownerUserId, input.id), (row) => {
           existing = row ?? null;
           status = !existing ? "not-found" : existing.revokedAt ? "ready" : "requires-revoked";
         }),
         () => status !== "ready" ? void 0 : thenIfPromise(this.prepare(
-          sql("DELETE FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ? AND [revokedAt] IS NOT NULL")
+          sql2("DELETE FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ? AND [revokedAt] IS NOT NULL")
         ).run(input.ownerUserId, input.id), (result) => {
           status = result.changes === 1 ? "deleted" : "not-found";
         }),
-        () => status !== "deleted" ? void 0 : this.prepare(sql(
+        () => status !== "deleted" ? void 0 : this.prepare(sql2(
           "UPDATE [sporades_auth_access_key_owners] SET [totalCount] = [totalCount] - 1 WHERE [ownerUserId] = ?"
         )).run(input.ownerUserId)
       ]);
@@ -98349,26 +98789,26 @@ function createSharedDatabaseAdapterMethods(dialect) {
       let records = [];
       let revokedAt = input.revokedAt;
       const sequence = chainMaybePromise([
-        () => this.prepare(sql(
+        () => this.prepare(sql2(
           "INSERT INTO [sporades_auth_access_key_owners] ([ownerUserId], [currentCount], [totalCount], [operationRevision]) VALUES (?, ?, ?, ?) ON CONFLICT ([ownerUserId]) DO NOTHING"
         )).run(input.ownerUserId, 0, 0, 0),
-        () => this.prepare(sql(
+        () => this.prepare(sql2(
           "UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?"
         )).run(input.ownerUserId),
         () => {
           revokedAt = typeof input.revocationTime === "function" ? input.revocationTime() : input.revokedAt;
         },
-        () => thenIfPromise(this.prepare(sql(
+        () => thenIfPromise(this.prepare(sql2(
           "SELECT [id], [ownerUserId], [name], [grantsJson], [lifecycleRevision], [createdAt], [expiresAt], [rotatedAt], [revokedAt], [revocationCause], [lastUsedAt] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [revokedAt] IS NULL ORDER BY [createdAt] DESC, [id] DESC"
         )).all(input.ownerUserId), (rows) => {
           records = rows;
         }),
-        () => thenIfPromise(this.prepare(sql(
+        () => thenIfPromise(this.prepare(sql2(
           "UPDATE [sporades_auth_access_keys] SET [reservedName] = NULL, [selector] = NULL, [verifierDigest] = NULL, [revokedAt] = ?, [revocationCause] = ?, [lifecycleRevision] = [lifecycleRevision] + 1 WHERE [ownerUserId] = ? AND [revokedAt] IS NULL"
         )).run(revokedAt, input.revocationCause, input.ownerUserId), (result) => {
           revokedCount = Number(result.changes ?? 0);
         }),
-        () => revokedCount === 0 ? void 0 : this.prepare(sql(
+        () => revokedCount === 0 ? void 0 : this.prepare(sql2(
           "UPDATE [sporades_auth_access_key_owners] SET [currentCount] = 0 WHERE [ownerUserId] = ?"
         )).run(input.ownerUserId)
       ]);
@@ -98385,7 +98825,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
     },
     readUserPreferences(userId) {
       return this.prepare(
-        sql("SELECT [userId], [value], [updatedAt] FROM [sporades_user_preferences] WHERE [userId] = ?")
+        sql2("SELECT [userId], [value], [updatedAt] FROM [sporades_user_preferences] WHERE [userId] = ?")
       ).get(userId) ?? null;
     },
     saveUserPreferences(row) {
@@ -98395,7 +98835,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
     },
     findAuthIdentityByProviderSubject(provider, subject) {
       const row = this.prepare(
-        sql(
+        sql2(
           "SELECT [id], [userId], [provider], [subject], [email], [displayName], [picture], [createdAt], [updatedAt] FROM [sporades_auth_identities] WHERE [provider] = ? AND [subject] = ?"
         )
       ).get(provider, subject) ?? null;
@@ -98403,7 +98843,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
     },
     findLegacyAuthIdentitiesByProviderEmail(provider, email) {
       const rows = this.prepare(
-        sql(
+        sql2(
           "SELECT [id], [userId], [provider], [subject], [email], [displayName], [picture], [createdAt], [updatedAt] FROM [sporades_auth_identities] WHERE [provider] = ? AND [email] = ? AND [subject] LIKE 'legacy:%' ORDER BY [createdAt], [id]"
         )
       ).all(provider, email);
@@ -98412,14 +98852,14 @@ function createSharedDatabaseAdapterMethods(dialect) {
     insertAuthIdentity(row) {
       assertNotReservedAuthUserId(row.userId);
       return this.prepare(
-        sql(
+        sql2(
           "INSERT INTO [sporades_auth_identities] ([id], [userId], [provider], [subject], [email], [displayName], [picture], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
       ).run(row.id, row.userId, row.provider, row.subject, row.email, row.displayName, row.picture, row.createdAt, row.updatedAt);
     },
     updateAuthIdentity(row) {
       return this.prepare(
-        sql(
+        sql2(
           "UPDATE [sporades_auth_identities] SET [subject] = ?, [email] = ?, [displayName] = ?, [picture] = ?, [updatedAt] = ? WHERE [id] = ?"
         )
       ).run(row.subject, row.email, row.displayName, row.picture, row.updatedAt, row.id);
@@ -98428,25 +98868,25 @@ function createSharedDatabaseAdapterMethods(dialect) {
       assertNotReservedAuthUserId(row.id);
       assertAuthUserProvider(row);
       return this.prepare(
-        sql(
+        sql2(
           "INSERT INTO [sporades_auth_users] ([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind], [lifecycleStatus], [disabledAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
       ).run(row.id, row.createdAt, row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider, row.userKind ?? "human", row.lifecycleStatus ?? "active", row.disabledAt ?? null);
     },
     findAuthUserFileAuthority(userId) {
-      return this.prepare(sql(
+      return this.prepare(sql2(
         "SELECT [id], [userKind], [lifecycleStatus] FROM [sporades_auth_users] WHERE [id] = ?"
       )).get(userId) ?? null;
     },
     lockAuthUserFileAuthority(userId) {
-      const select = sql(
+      const select = sql2(
         "SELECT [id], [userKind], [lifecycleStatus] FROM [sporades_auth_users] WHERE [id] = ?"
       );
       if (dialect.name === "postgres") {
         return thenIfPromise(this.prepare(`${select} FOR UPDATE`).get(userId), (row) => row ?? null);
       }
       return thenIfPromise(
-        this.prepare(sql("UPDATE [sporades_auth_users] SET [id] = [id] WHERE [id] = ?")).run(userId),
+        this.prepare(sql2("UPDATE [sporades_auth_users] SET [id] = [id] WHERE [id] = ?")).run(userId),
         () => this.prepare(select).get(userId) ?? null
       );
     },
@@ -98454,7 +98894,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
       assertNotReservedAuthUserId(row.id);
       assertAuthUserProvider(row);
       return this.prepare(
-        sql(
+        sql2(
           "UPDATE [sporades_auth_users] SET [displayName] = ?, [picture] = ?, [isAuthenticated] = ?, [isGuest] = ?, [provider] = ? WHERE [id] = ?"
         )
       ).run(row.displayName, row.picture, row.isAuthenticated, row.isGuest, row.provider, row.id);
@@ -98463,7 +98903,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
       assertNotReservedAuthUserId(row.id);
       assertAuthUserProvider(row);
       return this.prepare(
-        sql(
+        sql2(
           "UPDATE [sporades_auth_users] SET [displayName] = ?, [email] = ?, [picture] = ?, [isAuthenticated] = ?, [isGuest] = ?, [provider] = ? WHERE [id] = ?"
         )
       ).run(row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider, row.id);
@@ -98471,7 +98911,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
     insertAuthSession(row) {
       assertNotReservedAuthUserId(row.userId);
       return this.prepare(
-        sql(
+        sql2(
           "INSERT INTO [sporades_auth_sessions] ([token], [userId], [provider], [createdAt], [expiresAt]) VALUES (?, ?, ?, ?, ?)"
         )
       ).run(
@@ -98483,18 +98923,18 @@ function createSharedDatabaseAdapterMethods(dialect) {
       );
     },
     deleteAuthSession(token) {
-      return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ?")).run(token), () => this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [token] = ?")).run(token));
+      return thenIfPromise(this.prepare(sql2("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ?")).run(token), () => this.prepare(sql2("DELETE FROM [sporades_auth_sessions] WHERE [token] = ?")).run(token));
     },
     refreshAuthSession(token, expiresAt) {
-      return this.prepare(sql("UPDATE [sporades_auth_sessions] SET [expiresAt] = ? WHERE [token] = ?")).run(expiresAt, token);
+      return this.prepare(sql2("UPDATE [sporades_auth_sessions] SET [expiresAt] = ? WHERE [token] = ?")).run(expiresAt, token);
     },
     setAuthSessionProvider(token, provider) {
-      return this.prepare(sql("UPDATE [sporades_auth_sessions] SET [provider] = ? WHERE [token] = ?")).run(provider, token);
+      return this.prepare(sql2("UPDATE [sporades_auth_sessions] SET [provider] = ? WHERE [token] = ?")).run(provider, token);
     },
     rotateAuthSession(previousToken, row) {
       assertNotReservedAuthUserId(row.userId);
       const rotated = this.prepare(
-        sql(
+        sql2(
           "UPDATE [sporades_auth_sessions] SET [token] = ?, [userId] = ?, [provider] = ?, [createdAt] = ?, [expiresAt] = ? WHERE [token] = ?"
         )
       ).run(
@@ -98507,13 +98947,13 @@ function createSharedDatabaseAdapterMethods(dialect) {
       );
       return thenIfPromise(rotated, (result) => {
         if (result.changes !== 1 || previousToken === row.token) return result;
-        return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ?")).run(previousToken), () => result);
+        return thenIfPromise(this.prepare(sql2("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ?")).run(previousToken), () => result);
       });
     },
     readAuthSessionWithUser(token) {
       return thenIfPromise(
         this.prepare(
-          sql(
+          sql2(
             "SELECT [s].[token], [s].[expiresAt], [u].[id] AS [userId], [u].[userKind], [u].[displayName], [u].[email], [u].[picture], [u].[isAuthenticated], [u].[isGuest], [s].[provider] AS [provider] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ?"
           )
         ).get(token),
@@ -98524,7 +98964,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
       const provider = row.provider ?? "google";
       const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1e3).toISOString();
       return this.prepare(
-        sql(
+        sql2(
           "INSERT INTO [sporades_auth_oauth_states] ([state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier], [registrationCiphertext], [reauthPurpose], [reauthUserId]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
       ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null, row.registrationCiphertext ?? null, row.reauthPurpose ?? null, row.reauthUserId ?? null);
@@ -98537,7 +98977,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
     consumeOAuthState(state) {
       return thenIfPromise(
         this.prepare(
-          sql(
+          sql2(
             "DELETE FROM [sporades_auth_oauth_states] WHERE [state] = ? RETURNING [state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier], [registrationCiphertext], [reauthPurpose], [reauthUserId]"
           )
         ).get(state),
@@ -98546,27 +98986,27 @@ function createSharedDatabaseAdapterMethods(dialect) {
     },
     emailCredentialExists(email) {
       return thenIfPromise(
-        this.prepare(sql("SELECT [email] FROM [sporades_auth_email_credentials] WHERE [email] = ?")).get(email),
+        this.prepare(sql2("SELECT [email] FROM [sporades_auth_email_credentials] WHERE [email] = ?")).get(email),
         (row) => Boolean(row)
       );
     },
     insertEmailCredential(row) {
       assertNotReservedAuthUserId(row.userId);
       return this.prepare(
-        sql(
+        sql2(
           "INSERT INTO [sporades_auth_email_credentials] ([email], [userId], [passwordHash], [passwordSalt], [createdAt]) VALUES (?, ?, ?, ?, ?)"
         )
       ).run(row.email, row.userId, row.passwordHash, row.passwordSalt, row.createdAt);
     },
     updateEmailCredentialPassword(email, passwordHash, passwordSalt) {
       return this.prepare(
-        sql("UPDATE [sporades_auth_email_credentials] SET [passwordHash] = ?, [passwordSalt] = ? WHERE [email] = ?")
+        sql2("UPDATE [sporades_auth_email_credentials] SET [passwordHash] = ?, [passwordSalt] = ? WHERE [email] = ?")
       ).run(passwordHash, passwordSalt, email);
     },
     findEmailCredentialWithUser(email) {
       return thenIfPromise(
         this.prepare(
-          sql(
+          sql2(
             "SELECT [c].[email], [c].[userId], [c].[passwordHash], [c].[passwordSalt], [u].[displayName], [u].[picture], [u].[isAuthenticated], [u].[isGuest] FROM [sporades_auth_email_credentials] [c] JOIN [sporades_auth_users] [u] ON [u].[id] = [c].[userId] WHERE [c].[email] = ?"
           )
         ).get(email),
@@ -98575,66 +99015,66 @@ function createSharedDatabaseAdapterMethods(dialect) {
     },
     replaceReauthenticationProof(row) {
       return chainMaybePromise([
-        () => this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ? AND [purpose] = ?")).run(row.sessionToken, row.purpose),
-        () => this.prepare(sql("INSERT INTO [sporades_auth_reauthentication_proofs] ([id], [userId], [sessionToken], [purpose], [createdAt], [expiresAt]) VALUES (?, ?, ?, ?, ?, ?)")).run(row.id, row.userId, row.sessionToken, row.purpose, row.createdAt, row.expiresAt)
+        () => this.prepare(sql2("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [sessionToken] = ? AND [purpose] = ?")).run(row.sessionToken, row.purpose),
+        () => this.prepare(sql2("INSERT INTO [sporades_auth_reauthentication_proofs] ([id], [userId], [sessionToken], [purpose], [createdAt], [expiresAt]) VALUES (?, ?, ?, ?, ?, ?)")).run(row.id, row.userId, row.sessionToken, row.purpose, row.createdAt, row.expiresAt)
       ]);
     },
     async reserveEmailReauthenticationAttempt(input) {
-      await this.prepare(sql("UPDATE [sporades_auth_reauthentication_throttle_fence] SET [version] = [version] + 1 WHERE [id] = 'email'")).run();
-      await this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_throttle] WHERE [resetAt] <= ?")).run(input.now);
-      const rows = await Promise.all(input.keys.map((key) => this.prepare(sql("SELECT [count], [resetAt] FROM [sporades_auth_reauthentication_throttle] WHERE [key] = ?")).get(key)));
+      await this.prepare(sql2("UPDATE [sporades_auth_reauthentication_throttle_fence] SET [version] = [version] + 1 WHERE [id] = 'email'")).run();
+      await this.prepare(sql2("DELETE FROM [sporades_auth_reauthentication_throttle] WHERE [resetAt] <= ?")).run(input.now);
+      const rows = await Promise.all(input.keys.map((key) => this.prepare(sql2("SELECT [count], [resetAt] FROM [sporades_auth_reauthentication_throttle] WHERE [key] = ?")).get(key)));
       if (rows.some((row) => row && row.count >= input.limit)) return false;
-      const active = await this.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_auth_reauthentication_throttle]")).get();
+      const active = await this.prepare(sql2("SELECT COUNT(*) AS [count] FROM [sporades_auth_reauthentication_throttle]")).get();
       const missing = rows.filter((row) => !row).length;
       if (Number(active?.count ?? 0) + missing > input.maxEntries) return false;
       for (let index = 0; index < input.keys.length; index += 1) {
         const key = input.keys[index];
         const row = rows[index];
-        if (row) await this.prepare(sql("UPDATE [sporades_auth_reauthentication_throttle] SET [count] = [count] + 1 WHERE [key] = ?")).run(key);
-        else await this.prepare(sql("INSERT INTO [sporades_auth_reauthentication_throttle] ([key], [count], [resetAt]) VALUES (?, 1, ?)")).run(key, input.resetAt);
+        if (row) await this.prepare(sql2("UPDATE [sporades_auth_reauthentication_throttle] SET [count] = [count] + 1 WHERE [key] = ?")).run(key);
+        else await this.prepare(sql2("INSERT INTO [sporades_auth_reauthentication_throttle] ([key], [count], [resetAt]) VALUES (?, 1, ?)")).run(key, input.resetAt);
       }
       return true;
     },
     async clearEmailReauthenticationAttempts(keys) {
-      for (const key of keys) await this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_throttle] WHERE [key] = ?")).run(key);
+      for (const key of keys) await this.prepare(sql2("DELETE FROM [sporades_auth_reauthentication_throttle] WHERE [key] = ?")).run(key);
     },
     claimEmailCredentialVersion(email, passwordHash, passwordSalt) {
-      return thenIfPromise(this.prepare(sql("UPDATE [sporades_auth_email_credentials] SET [passwordHash] = [passwordHash] WHERE [email] = ? AND [passwordHash] = ? AND [passwordSalt] = ?")).run(email, passwordHash, passwordSalt), (result) => result.changes === 1);
+      return thenIfPromise(this.prepare(sql2("UPDATE [sporades_auth_email_credentials] SET [passwordHash] = [passwordHash] WHERE [email] = ? AND [passwordHash] = ? AND [passwordSalt] = ?")).run(email, passwordHash, passwordSalt), (result) => result.changes === 1);
     },
     deleteExpiredReauthenticationProofs(now2) {
-      return this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [expiresAt] <= ?")).run(now2);
+      return this.prepare(sql2("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [expiresAt] <= ?")).run(now2);
     },
     consumeReauthenticationProof(input) {
-      return thenIfPromise(this.prepare(sql("SELECT [p].[id] FROM [sporades_auth_reauthentication_proofs] [p] JOIN [sporades_auth_sessions] [s] ON [s].[token] = [p].[sessionToken] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [p].[sessionToken] = ? AND [p].[userId] = ? AND [p].[purpose] = ? AND [p].[expiresAt] > ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0")).get(input.sessionToken, input.userId, input.purpose, input.now, input.userId, input.now), (row) => {
+      return thenIfPromise(this.prepare(sql2("SELECT [p].[id] FROM [sporades_auth_reauthentication_proofs] [p] JOIN [sporades_auth_sessions] [s] ON [s].[token] = [p].[sessionToken] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [p].[sessionToken] = ? AND [p].[userId] = ? AND [p].[purpose] = ? AND [p].[expiresAt] > ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0")).get(input.sessionToken, input.userId, input.purpose, input.now, input.userId, input.now), (row) => {
         if (!row) return false;
-        return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [id] = ?")).run(row.id), (result) => result.changes === 1);
+        return thenIfPromise(this.prepare(sql2("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [id] = ?")).run(row.id), (result) => result.changes === 1);
       });
     },
     deleteAuthSessionsForUser(userId) {
-      return thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [userId] = ?")).run(userId), () => this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [userId] = ?")).run(userId));
+      return thenIfPromise(this.prepare(sql2("DELETE FROM [sporades_auth_reauthentication_proofs] WHERE [userId] = ?")).run(userId), () => this.prepare(sql2("DELETE FROM [sporades_auth_sessions] WHERE [userId] = ?")).run(userId));
     },
     insertPasswordResetCode(row) {
       assertNotReservedAuthUserId(row.userId);
       return this.prepare(
-        sql(
+        sql2(
           "INSERT INTO [sporades_auth_password_reset_codes] ([selector], [verifierHash], [email], [userId], [createdAt], [expiresAt]) VALUES (?, ?, ?, ?, ?, ?)"
         )
       ).run(row.selector, row.verifierHash, row.email, row.userId, row.createdAt, row.expiresAt);
     },
     findPasswordResetCode(selector) {
       return this.prepare(
-        sql(
+        sql2(
           "SELECT [selector], [verifierHash], [email], [userId], [createdAt], [expiresAt] FROM [sporades_auth_password_reset_codes] WHERE [selector] = ?"
         )
       ).get(selector) ?? null;
     },
     deletePasswordResetCode(selector) {
-      return this.prepare(sql("DELETE FROM [sporades_auth_password_reset_codes] WHERE [selector] = ?")).run(selector);
+      return this.prepare(sql2("DELETE FROM [sporades_auth_password_reset_codes] WHERE [selector] = ?")).run(selector);
     },
     countPasswordResetCodesForEmail(email, now2) {
       return thenIfPromise(
         this.prepare(
-          sql(
+          sql2(
             "SELECT COUNT(*) AS [count] FROM [sporades_auth_password_reset_codes] WHERE [email] = ? AND [expiresAt] > ?"
           )
         ).get(email, now2),
@@ -98642,10 +99082,10 @@ function createSharedDatabaseAdapterMethods(dialect) {
       );
     },
     deletePasswordResetCodesForUser(userId) {
-      return this.prepare(sql("DELETE FROM [sporades_auth_password_reset_codes] WHERE [userId] = ?")).run(userId);
+      return this.prepare(sql2("DELETE FROM [sporades_auth_password_reset_codes] WHERE [userId] = ?")).run(userId);
     },
     prunePasswordResetCodes(now2) {
-      return this.prepare(sql("DELETE FROM [sporades_auth_password_reset_codes] WHERE [expiresAt] <= ?")).run(now2);
+      return this.prepare(sql2("DELETE FROM [sporades_auth_password_reset_codes] WHERE [expiresAt] <= ?")).run(now2);
     },
     // ADR-0026: a schema migration is a multi-write workflow that has to succeed or fail as one
     // unit, so it runs inside the adapter's own transaction primitive rather than emitting BEGIN
@@ -98756,7 +99196,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
         )
       );
     },
-    runReadOnlyInspectionQuery(sql2) {
+    runReadOnlyInspectionQuery(sql3) {
       const inspectionQueryFailure = (error) => ({
         ok: false,
         data: null,
@@ -98766,11 +99206,11 @@ function createSharedDatabaseAdapterMethods(dialect) {
         }
       });
       try {
-        const validation = validateReadOnlyInspectionSql(sql2);
+        const validation = validateReadOnlyInspectionSql(sql3);
         if (!validation.ok) {
           return validation;
         }
-        if (targetsInternalLogIndexTable(sql2)) {
+        if (targetsInternalLogIndexTable(sql3)) {
           return {
             ok: false,
             data: null,
@@ -98780,14 +99220,14 @@ function createSharedDatabaseAdapterMethods(dialect) {
             }
           };
         }
-        const statement = this.prepare(sqlWithoutTrailingTerminator(sql2));
+        const statement = this.prepare(sqlWithoutTrailingTerminator(sql3));
         const result = thenIfPromise(
           statement.columns(),
           (columnMetadata) => thenIfPromise(statement.all(), (allRows) => ({
             ok: true,
             data: {
               columns: columnMetadata.map((column) => column.name),
-              rows: allRows.filter((row) => !isInternalLogIndexMetadataRow(row, sql2))
+              rows: allRows.filter((row) => !isInternalLogIndexMetadataRow(row, sql3))
             },
             error: null
           }))
@@ -98799,7 +99239,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
     },
     checkHealth() {
       try {
-        const probe = this.prepare(sql("SELECT 1 AS [ok]")).get();
+        const probe = this.prepare(sql2("SELECT 1 AS [ok]")).get();
         return isPromiseLike(probe) ? probe.then(() => ({ ok: true }), () => ({ ok: false })) : { ok: true };
       } catch {
         return { ok: false };
@@ -98832,22 +99272,22 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
       return operation();
     };
     return {
-      exec(sql) {
-        return run2(() => useConnection(() => connection.exec(sql)));
+      exec(sql2) {
+        return run2(() => useConnection(() => connection.exec(sql2)));
       },
-      prepare(sql) {
+      prepare(sql2) {
         return {
           all(...params) {
-            return run2(() => useConnection(() => connection.prepare(sql).all(...params)));
+            return run2(() => useConnection(() => connection.prepare(sql2).all(...params)));
           },
           get(...params) {
-            return run2(() => useConnection(() => connection.prepare(sql).get(...params)));
+            return run2(() => useConnection(() => connection.prepare(sql2).get(...params)));
           },
           run(...params) {
-            return run2(() => useConnection(() => connection.prepare(sql).run(...params)));
+            return run2(() => useConnection(() => connection.prepare(sql2).run(...params)));
           },
           columns() {
-            return run2(() => useConnection(() => connection.prepare(sql).columns()));
+            return run2(() => useConnection(() => connection.prepare(sql2).columns()));
           }
         };
       }
@@ -98876,8 +99316,8 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         let begun = false;
         let commitIssued = false;
         const operations = {
-          exec: (sql) => dedicated.exec(sql),
-          prepare: (sql) => dedicated.prepare(sql)
+          exec: (sql2) => dedicated.exec(sql2),
+          prepare: (sql2) => dedicated.prepare(sql2)
         };
         const transaction = createTransactionScopedAdapter(adapter, operations, adapter, "transaction");
         try {
@@ -99005,8 +99445,9 @@ async function createPostgresDatabaseAdapter(options) {
   const normalization = postgresRowNormalization();
   const commitWasRejected = (error) => postgresRejectedTransactions.has(error);
   const resourceSchemas = [
-    { table: "sporades_resource_locks", columns: ["resourceTable", "resourceId"], primaryKey: ["resourceTable", "resourceId"], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId])" },
-    { table: "sporades_resource_receipts", columns: ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"], primaryKey: ["resourceTable", "resourceId", "operationId"], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId])" }
+    { table: "sporades_resource_locks", columns: ["resourceTable", "resourceId"], primaryKey: ["resourceTable", "resourceId"], indexes: [], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId])" },
+    { table: "sporades_resource_receipts", columns: ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"], primaryKey: ["resourceTable", "resourceId", "operationId"], indexes: [], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId])" },
+    ...notificationIntentSchemas
   ];
   const resourceSchemaReady = async (query) => {
     for (const schema of resourceSchemas) {
@@ -99041,11 +99482,14 @@ async function createPostgresDatabaseAdapter(options) {
         [schema.table]
       ));
       if (extraConstraints.length !== 0) return false;
-      const unexpectedIndexes = postgresRowsFromResult(normalization, await query(
-        `SELECT ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexrelid")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_index")} AS ${dialect.quoteIdentifier("index")} LEFT JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_constraint")} AS ${dialect.quoteIdentifier("constraint")} ON ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("conindid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexrelid")} AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("conrelid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indrelid")} AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("contype")}='p' WHERE ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("oid")} IS NULL`,
+      const runtimeIndexes = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("index_relation")}.${dialect.quoteIdentifier("relname")} AS ${dialect.quoteIdentifier("name")}, array_to_string(array_agg(${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attname")} ORDER BY ${dialect.quoteIdentifier("key")}.${dialect.quoteIdentifier("ordinality")}), ',') AS ${dialect.quoteIdentifier("columns")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indisunique")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indisvalid")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indisready")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indpred")} IS NOT NULL AS ${dialect.quoteIdentifier("partial")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexprs")} IS NOT NULL AS ${dialect.quoteIdentifier("expressions")}, ${dialect.quoteIdentifier("access_method")}.${dialect.quoteIdentifier("amname")} AS ${dialect.quoteIdentifier("access_method")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indnkeyatts")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indnatts")} AS ${dialect.quoteIdentifier("keys_only")}, bool_and(${dialect.quoteIdentifier("operator_class")}.${dialect.quoteIdentifier("opcdefault")} AND ${dialect.quoteIdentifier("operator_class")}.${dialect.quoteIdentifier("opcmethod")}=${dialect.quoteIdentifier("index_relation")}.${dialect.quoteIdentifier("relam")}) AS ${dialect.quoteIdentifier("default_operator_classes")}, bool_and(${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indcollation")}[${dialect.quoteIdentifier("key")}.${dialect.quoteIdentifier("ordinality")}-1]=${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attcollation")}) AS ${dialect.quoteIdentifier("default_collations")}, bool_and(${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indoption")}[${dialect.quoteIdentifier("key")}.${dialect.quoteIdentifier("ordinality")}-1]=0) AS ${dialect.quoteIdentifier("default_options")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_index")} AS ${dialect.quoteIdentifier("index")} JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_class")} AS ${dialect.quoteIdentifier("index_relation")} ON ${dialect.quoteIdentifier("index_relation")}.${dialect.quoteIdentifier("oid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexrelid")} JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_am")} AS ${dialect.quoteIdentifier("access_method")} ON ${dialect.quoteIdentifier("access_method")}.${dialect.quoteIdentifier("oid")}=${dialect.quoteIdentifier("index_relation")}.${dialect.quoteIdentifier("relam")} LEFT JOIN LATERAL unnest(${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indkey")}) WITH ORDINALITY AS ${dialect.quoteIdentifier("key")}(${dialect.quoteIdentifier("attnum")}, ${dialect.quoteIdentifier("ordinality")}) ON TRUE LEFT JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_attribute")} AS ${dialect.quoteIdentifier("attribute")} ON ${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attrelid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indrelid")} AND ${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attnum")}=${dialect.quoteIdentifier("key")}.${dialect.quoteIdentifier("attnum")} LEFT JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_opclass")} AS ${dialect.quoteIdentifier("operator_class")} ON ${dialect.quoteIdentifier("operator_class")}.${dialect.quoteIdentifier("oid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indclass")}[${dialect.quoteIdentifier("key")}.${dialect.quoteIdentifier("ordinality")}-1] LEFT JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_constraint")} AS ${dialect.quoteIdentifier("constraint")} ON ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("conindid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexrelid")} AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("conrelid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indrelid")} AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("contype")}='p' WHERE ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("oid")} IS NULL GROUP BY ${dialect.quoteIdentifier("index_relation")}.${dialect.quoteIdentifier("relname")}, ${dialect.quoteIdentifier("index_relation")}.${dialect.quoteIdentifier("relam")}, ${dialect.quoteIdentifier("access_method")}.${dialect.quoteIdentifier("amname")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indisunique")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indisvalid")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indisready")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indpred")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexprs")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indnkeyatts")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indnatts")} ORDER BY ${dialect.quoteIdentifier("index_relation")}.${dialect.quoteIdentifier("relname")}`,
         [schema.table]
       ));
-      if (unexpectedIndexes.length !== 0) return false;
+      const expectedIndexes = [...schema.indexes].sort((left, right) => left.name.localeCompare(right.name));
+      if (runtimeIndexes.length !== expectedIndexes.length || runtimeIndexes.some(
+        (row, index) => row.name !== expectedIndexes[index].name || row.columns !== expectedIndexes[index].columns.join(",") || row.indisunique || !row.indisvalid || !row.indisready || row.partial || row.expressions || row.access_method !== "btree" || !row.keys_only || !row.default_operator_classes || !row.default_collations || !row.default_options
+      )) return false;
       const userTriggers = postgresRowsFromResult(normalization, await query(
         `SELECT ${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("oid")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_trigger")} AS ${dialect.quoteIdentifier("trigger")} WHERE ${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("tgrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND NOT ${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("tgisinternal")}`,
         [schema.table]
@@ -99101,6 +99545,9 @@ async function createPostgresDatabaseAdapter(options) {
               }
             }
           }
+          for (const index of schema.indexes) {
+            await query(`CREATE INDEX IF NOT EXISTS ${dialect.quoteIdentifier(index.name)} ON ${table} (${index.columns.map((column) => dialect.quoteIdentifier(column)).join(", ")})`);
+          }
         }
         if (!await resourceSchemaReady(query)) throw resourceError("RESOURCE_STORAGE_ERROR");
       }
@@ -99125,7 +99572,7 @@ async function createPostgresDatabaseAdapter(options) {
       throw new Error("database is not open");
     }
   };
-  const rawQuery = async (sql, params = []) => {
+  const rawQuery = async (sql2, params = []) => {
     assertOpen();
     if (needsReconnect) {
       reconnecting ??= createPostgresConnection(url).then(async (connection) => {
@@ -99141,30 +99588,30 @@ async function createPostgresDatabaseAdapter(options) {
       await reconnecting;
       assertOpen();
     }
-    return await client.query(postgresInterpolate(sql, params));
+    return await client.query(postgresInterpolate(sql2, params));
   };
   const createOperations = (run2) => ({
-    exec(sql) {
-      return run2(() => rawQuery(sql).then(() => void 0));
+    exec(sql2) {
+      return run2(() => rawQuery(sql2).then(() => void 0));
     },
-    prepare(sql) {
+    prepare(sql2) {
       assertOpen();
       return {
         all(...params) {
-          return run2(() => rawQuery(sql, params).then((result) => postgresRowsFromResult(normalization, result)));
+          return run2(() => rawQuery(sql2, params).then((result) => postgresRowsFromResult(normalization, result)));
         },
         get(...params) {
           return this.all(...params).then((rows) => rows[0] ?? null);
         },
         run(...params) {
-          return run2(() => rawQuery(sql, params).then((result) => ({
+          return run2(() => rawQuery(sql2, params).then((result) => ({
             changes: Number(result.rowCount ?? 0),
             lastInsertRowid: void 0
           })));
         },
         columns() {
           return run2(() => rawQuery(
-            `SELECT * FROM (${sqlWithoutTrailingTerminator(sql)}) AS __sporades_columns LIMIT 0`
+            `SELECT * FROM (${sqlWithoutTrailingTerminator(sql2)}) AS __sporades_columns LIMIT 0`
           ).then((result) => result.fields.map((field) => ({ name: normalization.columnName(field.name) }))));
         }
       };
@@ -99467,14 +99914,14 @@ async function createPostgresConnection(url, signal) {
     get backendKeyData() {
       return backendKeyData;
     },
-    query(sql) {
+    query(sql2) {
       if (closed) {
         throw new Error("database is not open");
       }
       const generation = cancellationGeneration;
       const pending = queryQueue.then(
-        () => executeQueuedPostgresQuery(sql, generation),
-        () => executeQueuedPostgresQuery(sql, generation)
+        () => executeQueuedPostgresQuery(sql2, generation),
+        () => executeQueuedPostgresQuery(sql2, generation)
       );
       queryQueue = pending.catch(() => {
       });
@@ -99533,19 +99980,19 @@ async function createPostgresConnection(url, signal) {
     }
     return true;
   }
-  function executeQueuedPostgresQuery(sql, generation) {
+  function executeQueuedPostgresQuery(sql2, generation) {
     if (generation !== cancellationGeneration) {
       throw Object.assign(new Error("canceling statement due to user request"), { code: "57014" });
     }
-    return executePostgresQuery(sql);
+    return executePostgresQuery(sql2);
   }
-  async function executePostgresQuery(sql) {
+  async function executePostgresQuery(sql2) {
     if (closed) {
       throw new Error("database is not open");
     }
     queryActive = true;
     try {
-      socket.write(postgresQueryMessage(sql));
+      socket.write(postgresQueryMessage(sql2));
       const fields = [];
       const rows = [];
       let rowCount = 0;
@@ -99660,8 +100107,8 @@ function postgresStartupMessage(options) {
   const body = Buffer.concat(bodyParts);
   return Buffer.concat([postgresInt32(body.length + 4), body]);
 }
-function postgresQueryMessage(sql) {
-  const body = Buffer.from(`${sql}\0`, "utf8");
+function postgresQueryMessage(sql2) {
+  const body = Buffer.from(`${sql2}\0`, "utf8");
   return Buffer.concat([Buffer.from("Q"), postgresInt32(body.length + 4), body]);
 }
 function postgresInt32(value) {
@@ -99747,14 +100194,14 @@ function postgresErrorFromBody(body) {
   if (fields.n) error.constraint = fields.n;
   return error;
 }
-function postgresInterpolate(sql, params = []) {
+function postgresInterpolate(sql2, params = []) {
   let index = 0;
   let quote = null;
   let escaped = false;
   let lineComment = false;
   let blockComment = false;
   let result = "";
-  const text2 = String(sql ?? "");
+  const text2 = String(sql2 ?? "");
   for (let position = 0; position < text2.length; position += 1) {
     const char = text2[position];
     const next = text2[position + 1];
@@ -99841,21 +100288,21 @@ async function createLibsqlDatabaseAdapter(options) {
   const dialect = sqliteDatabaseDialect();
   const normalization = libsqlRowNormalization();
   const createOperations = (transaction = null, run2 = runDirectly) => ({
-    exec(sql) {
+    exec(sql2) {
       assertLibsqlOpen(closed);
-      const request = libsqlHasMultipleStatements(sql) ? { type: "sequence", sql } : { type: "execute", stmt: { sql } };
+      const request = libsqlHasMultipleStatements(sql2) ? { type: "sequence", sql: sql2 } : { type: "execute", stmt: { sql: sql2 } };
       return run2(() => {
         assertLibsqlOpen(closed);
         return libsqlPipeline({ endpoint, authToken, transaction, requests: [request], close: !transaction }).then(() => void 0);
       });
     },
-    prepare(sql) {
+    prepare(sql2) {
       assertLibsqlOpen(closed);
       return {
         all(...params) {
           return run2(() => {
             assertLibsqlOpen(closed);
-            return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then(
+            return libsqlExecute({ endpoint, authToken, transaction, sql: sql2, params, close: !transaction }).then(
               (result) => libsqlRowsFromResult(normalization, result)
             );
           });
@@ -99866,7 +100313,7 @@ async function createLibsqlDatabaseAdapter(options) {
         run(...params) {
           return run2(() => {
             assertLibsqlOpen(closed);
-            return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) => ({
+            return libsqlExecute({ endpoint, authToken, transaction, sql: sql2, params, close: !transaction }).then((result) => ({
               changes: Number(result.affected_row_count ?? result.affectedRowCount ?? 0),
               lastInsertRowid: result.last_insert_rowid === null || result.last_insert_rowid === void 0 ? void 0 : BigInt(result.last_insert_rowid)
             }));
@@ -99875,7 +100322,7 @@ async function createLibsqlDatabaseAdapter(options) {
         columns() {
           return run2(() => {
             assertLibsqlOpen(closed);
-            return libsqlDescribe({ endpoint, authToken, transaction, sql, close: !transaction });
+            return libsqlDescribe({ endpoint, authToken, transaction, sql: sql2, close: !transaction });
           });
         }
       };
@@ -99987,25 +100434,25 @@ function assertLibsqlOpen(closed) {
     throw new Error("database is not open");
   }
 }
-function libsqlHasMultipleStatements(sql) {
-  return splitSqlStatements(sql).length > 1;
+function libsqlHasMultipleStatements(sql2) {
+  return splitSqlStatements(sql2).length > 1;
 }
-async function libsqlExecute({ endpoint, authToken, transaction, sql, params = [], close }) {
+async function libsqlExecute({ endpoint, authToken, transaction, sql: sql2, params = [], close }) {
   const [result] = await libsqlPipeline({
     endpoint,
     authToken,
     transaction,
-    requests: [{ type: "execute", stmt: { sql, args: params.map(libsqlValueFromJs) } }],
+    requests: [{ type: "execute", stmt: { sql: sql2, args: params.map(libsqlValueFromJs) } }],
     close
   });
   return result.result;
 }
-async function libsqlDescribe({ endpoint, authToken, transaction, sql, close }) {
+async function libsqlDescribe({ endpoint, authToken, transaction, sql: sql2, close }) {
   const [result] = await libsqlPipeline({
     endpoint,
     authToken,
     transaction,
-    requests: [{ type: "describe", sql }],
+    requests: [{ type: "describe", sql: sql2 }],
     close
   });
   return (result.result?.cols ?? []).map((column) => ({ name: column.name }));
@@ -100214,7 +100661,7 @@ function migrateExistingAppTableInTransaction(sqlite, existingTable, nextTable) 
     const occupiedNames = new Set(tableNames);
     let tempTableName;
     do {
-      tempTableName = `__sporades_migrating_${randomUUID8().replaceAll("-", "")}`;
+      tempTableName = `__sporades_migrating_${randomUUID9().replaceAll("-", "")}`;
     } while (occupiedNames.has(tempTableName));
     return chainMaybePromise([
       ...addedFieldsForTable(existingTable, nextTable).filter((field) => field.kind === "Reference" && field.defaultValue !== void 0 && field.defaultValue !== null).map(
@@ -100281,9 +100728,9 @@ function isDuplicateColumnError(error) {
   const text2 = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
   return /duplicate column|already exists/i.test(text2);
 }
-function runSchemaExecIgnoringDuplicateColumn(sqlite, sql) {
+function runSchemaExecIgnoringDuplicateColumn(sqlite, sql2) {
   try {
-    const result = sqlite.exec(sql);
+    const result = sqlite.exec(sql2);
     if (isPromiseLike(result)) {
       return result.catch((error) => {
         if (!isDuplicateColumnError(error)) throw error;
@@ -100320,17 +100767,17 @@ async function listDatabaseTables(database) {
 async function dumpDatabase(database) {
   return await (database.adapter ?? database.adapter).dumpInspectableDatabase();
 }
-async function runReadOnlyQuery(database, sql) {
-  return await (database.adapter ?? database.adapter).runReadOnlyInspectionQuery(sql);
+async function runReadOnlyQuery(database, sql2) {
+  return await (database.adapter ?? database.adapter).runReadOnlyInspectionQuery(sql2);
 }
-function splitSqlStatements(sql) {
+function splitSqlStatements(sql2) {
   const statements = [];
   let start = 0;
   let quote = null;
   let escaped = false;
   let lineComment = false;
   let blockComment = false;
-  const text2 = String(sql ?? "");
+  const text2 = String(sql2 ?? "");
   for (let index = 0; index < text2.length; index += 1) {
     const char = text2[index];
     const next = text2[index + 1];
@@ -100506,7 +100953,7 @@ async function replaceRuntimeDatabase(currentDatabase, candidateDatabase) {
   let activationError;
   try {
     if (typeof candidateDatabase.__activateJobExecution === "function") {
-      candidateDatabase.__activateJobExecution(candidateDatabase.clock.now().getTime());
+      await candidateDatabase.__activateJobExecution(candidateDatabase.clock.now().getTime());
     } else {
       scheduleJobLeaseRecoveryAt(candidateDatabase, candidateDatabase.clock.now().getTime());
       scheduleCurrentUserJobWorker(candidateDatabase);
@@ -100743,6 +101190,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     fileIngressEnabled,
     scheduleOccurrenceFault: options?.scheduleOccurrenceFault,
     scheduleReconciliationFault: options?.scheduleReconciliationFault,
+    notificationIntentFault: options?.notificationIntentFault,
     jobRecoveryFault: options?.jobRecoveryFault,
     schedulePayloadFactoryTimeoutMs,
     schedulePayloadFactoryActive: 0,
@@ -100946,13 +101394,27 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       for (const timer of database.__scheduleTimers ?? []) database.clock.clearTimer(timer);
       database.__scheduleTimers?.clear?.();
       const workerSettlement = stopCurrentUserJobWorker(database);
+      database.__notificationIntentShutdownAborting = true;
+      const notificationSettlement = stopNotificationIntentWorker(database);
       const scheduleSettlement = settleActiveScheduleWork(database);
+      let mailSettlement;
+      let mailStartError;
+      try {
+        mailSettlement = Promise.resolve(database.mail.close());
+        void mailSettlement.catch(() => {
+        });
+      } catch (error) {
+        mailStartError = error;
+      }
       const closeResources = () => {
         const failures = [];
         const pending = [];
         const resources = [
           () => shutdownClamavRuntime(database),
-          () => database.mail.close(),
+          () => {
+            if (mailStartError !== void 0) throw mailStartError;
+            return mailSettlement;
+          },
           () => database.adapter.close(),
           () => database.fileStorage.close()
         ];
@@ -100976,7 +101438,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
         };
         return pending.length > 0 ? Promise.all(pending).then(finish) : finish();
       };
-      const runtimeSettlements = [workerSettlement, scheduleSettlement].filter(Boolean).map((settlement) => Promise.resolve(settlement));
+      const runtimeSettlements = [workerSettlement, notificationSettlement, scheduleSettlement].filter(Boolean).map((settlement) => Promise.resolve(settlement));
       if (runtimeSettlements.length === 0) return closeResources();
       return (async () => {
         let workerError;
@@ -101008,9 +101470,10 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       });
       return activeWorker ? Promise.resolve(activeWorker) : void 0;
     },
-    __activateJobExecution: (recoveryAt) => {
+    __activateJobExecution: async (recoveryAt) => {
       database.__jobActivationDeferred = false;
       activateCurrentUserJobExecution(database, recoveryAt);
+      if (database.__notificationDeliveryEnabled) activateNotificationIntentWorker(database);
     },
     __preflightJobExecutionActivation: () => {
       preflightCurrentUserJobExecution(database);
@@ -101040,6 +101503,18 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       database.__scheduleRecoveryPromise = null;
       database.__scheduleLegacyDiscoveryTimer = null;
       await refreshIngressMaintenanceState(database, { discoverInterruptedDelivery: true });
+      const notificationDeliveryEnabled = database.mail.enabled || await notificationIntentStorageExists(database.adapter);
+      database.__notificationDeliveryEnabled = notificationDeliveryEnabled;
+      database.__notificationIntentStorageVerified = false;
+      if (notificationDeliveryEnabled) {
+        try {
+          await ensureNotificationIntentStorage(database.adapter);
+          database.__notificationIntentStorageVerified = true;
+        } catch (error) {
+          void Promise.resolve(database.log?.emit?.({ category: "platform", event: "notification.storage.bootstrap_failed", level: "error", message: "Notification storage bootstrap failed", data: { code: String(error?.code ?? "NOTIFICATION_STORAGE_BOOTSTRAP_FAILED").slice(0, 80) } })).catch(() => {
+          });
+        }
+      }
       if (ingressAuditMaintenanceIsDue(database)) await runIngressAuditOutboxDrain(database);
       const earliestFutureLeaseAt = await recoverExpiredJobLeases(database);
       await recoverPendingScheduleOccurrences(database, { validateOnly: true });
@@ -101054,6 +101529,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       scheduleIngressAuditOutboxMaintenance(database);
       if (!database.__jobActivationDeferred) {
         activateCurrentUserJobExecution(database, earliestFutureLeaseAt);
+        if (notificationDeliveryEnabled) activateNotificationIntentWorker(database);
       }
       await recoverReconciledSchedules(database, reconciled.recoveredOccurrences);
       if (!database.__jobActivationDeferred) await database.__publishAccessKeyScopes();
@@ -101066,7 +101542,17 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       database.__scheduleRecoveryTimer = null;
       database.__scheduleRecoveryDueAt = null;
       database.__scheduleLegacyDiscoveryTimer = null;
-      const settlements = [stopCurrentUserJobWorker(database), settleActiveScheduleWork(database), shutdownClamavRuntime(database)].filter(Boolean).map((pending) => Promise.resolve(pending));
+      database.__notificationIntentShutdownAborting = true;
+      const notificationSettlement = stopNotificationIntentWorker(database);
+      let mailSettlement;
+      try {
+        mailSettlement = Promise.resolve(database.mail.close());
+      } catch (cleanupError) {
+        mailSettlement = Promise.reject(cleanupError);
+      }
+      void mailSettlement.catch(() => {
+      });
+      const settlements = [stopCurrentUserJobWorker(database), notificationSettlement, mailSettlement, settleActiveScheduleWork(database), shutdownClamavRuntime(database)].filter(Boolean).map((pending) => Promise.resolve(pending));
       const cleanup = await Promise.allSettled(settlements);
       database.__runtimeInitialized = false;
       const cleanupFailures = cleanup.filter((result) => result.status === "rejected").map((result) => result.reason);
@@ -101086,6 +101572,35 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
         workerSettlement = stopCurrentUserJobWorker(database);
       } catch (error) {
         failures.push(error);
+      }
+      let notificationWorkerSettlement;
+      let mailSettlement;
+      try {
+        database.__notificationIntentShutdownAborting = true;
+        notificationWorkerSettlement = stopNotificationIntentWorker(database);
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        mailSettlement = Promise.resolve(database.mail.abortActiveDeliveries?.());
+        void mailSettlement.catch(() => {
+        });
+      } catch (error) {
+        failures.push(error);
+      }
+      if (notificationWorkerSettlement) {
+        try {
+          await notificationWorkerSettlement;
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (mailSettlement) {
+        try {
+          await mailSettlement;
+        } catch (error) {
+          failures.push(error);
+        }
       }
       try {
         abortSchedulePayloadFactories(database);
@@ -101119,16 +101634,16 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
         }
       }
       try {
+        await database.mail.close();
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
         await shutdownClamavRuntime(database);
       } catch (error) {
         failures.push(error);
       }
       database.__runtimeInitialized = false;
-      try {
-        await database.mail.close();
-      } catch (error) {
-        failures.push(error);
-      }
       if (failures.length === 1) throw failures[0];
       if (failures.length > 1) throw new AggregateError(failures, "Multiple runtime resources failed to shut down.");
     })();
@@ -101210,11 +101725,11 @@ async function reconcileSchedules(database) {
     let candidateArmed = false;
     try {
       return await database.adapter.withTransaction(async (transactionAdapter) => {
-        const sql = transactionAdapter.dialect.sql;
-        await transactionAdapter.prepare(sql(
+        const sql2 = transactionAdapter.dialect.sql;
+        await transactionAdapter.prepare(sql2(
           "UPDATE [sporades] SET [value]=[value] WHERE [key]='schedule-reconciliation-lock'"
         )).run();
-        const persisted = await transactionAdapter.prepare(sql("SELECT * FROM [sporades_schedules]")).all();
+        const persisted = await transactionAdapter.prepare(sql2("SELECT * FROM [sporades_schedules]")).all();
         for (const row of persisted) {
           if (!scheduleCursorStateIsConsistent(row.enabled, row.exhausted, row.nextOccurrence) || row.nextOccurrence !== null && row.nextOccurrence !== void 0 && !isCanonicalJobTimestamp(row.nextOccurrence)) {
             throw commandError2(
@@ -101224,7 +101739,7 @@ async function reconcileSchedules(database) {
             );
           }
         }
-        const legacyLineages = await transactionAdapter.prepare(sql(
+        const legacyLineages = await transactionAdapter.prepare(sql2(
           "SELECT [scheduleName], [definitionFingerprint], [adoptionOpen] FROM [sporades_schedule_legacy_adoption]"
         )).all();
         const legacyLineageByName = new Map(legacyLineages.map((lineage) => [String(lineage.scheduleName), lineage]));
@@ -101265,20 +101780,20 @@ async function reconcileSchedules(database) {
               }
             }
           }
-          plans.push({ definition, row, nextOccurrence, exhausted, recoveredOccurrence, generationToken: randomUUID9() });
+          plans.push({ definition, row, nextOccurrence, exhausted, recoveredOccurrence, generationToken: randomUUID10() });
         }
         for (const row of persisted) {
           if (!declaredNames.has(String(row.name))) {
-            await transactionAdapter.prepare(sql(
+            await transactionAdapter.prepare(sql2(
               "UPDATE [sporades_schedule_legacy_adoption] SET [definitionFingerprint]=?, [adoptionOpen]=0 WHERE [scheduleName]=?"
             )).run(row.definitionFingerprint, row.name);
-            await transactionAdapter.prepare(sql(
+            await transactionAdapter.prepare(sql2(
               "INSERT INTO [sporades_schedule_legacy_adoption] ([scheduleName], [definitionFingerprint], [adoptionOpen]) VALUES (?, ?, 0) ON CONFLICT ([scheduleName]) DO NOTHING"
             )).run(row.name, row.definitionFingerprint);
-            await transactionAdapter.prepare(sql("DELETE FROM [sporades_schedules] WHERE [name]=?")).run(row.name);
+            await transactionAdapter.prepare(sql2("DELETE FROM [sporades_schedules] WHERE [name]=?")).run(row.name);
           }
         }
-        const updateScheduleSql = sql(
+        const updateScheduleSql = sql2(
           "UPDATE [sporades_schedules] SET [definitionFingerprint]=?, [generationToken]=?, [expression]=?, [effectiveTimezone]=?, [missedRunPolicy]=?, [enabled]=?, [exhausted]=?, [nextOccurrence]=? WHERE [name]=?"
         );
         for (const { definition, row, nextOccurrence, exhausted, generationToken } of plans) {
@@ -101290,25 +101805,25 @@ async function reconcileSchedules(database) {
             await database.scheduleReconciliationFault?.("before-generation-lock", { scheduleName: definition.name });
             await transactionAdapter.prepare(updateScheduleSql).run(definition.fingerprint, generationToken, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, exhausted ? 1 : 0, nextOccurrence, definition.name);
           } else {
-            await transactionAdapter.prepare(sql(
+            await transactionAdapter.prepare(sql2(
               "INSERT INTO [sporades_schedules] ([name], [definitionFingerprint], [generationToken], [expression], [effectiveTimezone], [missedRunPolicy], [enabled], [exhausted], [nextOccurrence]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )).run(definition.name, definition.fingerprint, generationToken, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, exhausted ? 1 : 0, nextOccurrence);
           }
           if (!legacyAdoptionOpen) {
-            await transactionAdapter.prepare(sql(
+            await transactionAdapter.prepare(sql2(
               "UPDATE [sporades_schedule_legacy_adoption] SET [definitionFingerprint]=?, [adoptionOpen]=0 WHERE [scheduleName]=?"
             )).run(definition.fingerprint, definition.name);
-            await transactionAdapter.prepare(sql(
+            await transactionAdapter.prepare(sql2(
               "INSERT INTO [sporades_schedule_legacy_adoption] ([scheduleName], [definitionFingerprint], [adoptionOpen]) VALUES (?, ?, 0) ON CONFLICT ([scheduleName]) DO NOTHING"
             )).run(definition.name, definition.fingerprint);
           }
           if (sameEnabledDefinition) {
-            await transactionAdapter.prepare(sql(
+            await transactionAdapter.prepare(sql2(
               "UPDATE [sporades_schedule_occurrences] SET [definitionFingerprint]=?, [generationToken]=? WHERE [scheduleName]=? AND [status]='pending' AND [definitionFingerprint]=? AND ([generationToken]=? OR ([generationToken] IS NULL AND ? IS NULL))"
             )).run(definition.fingerprint, generationToken, definition.name, definition.fingerprint, row.generationToken ?? null, row.generationToken ?? null);
           }
           if (legacyAdoptionOpen) {
-            await transactionAdapter.prepare(sql(
+            await transactionAdapter.prepare(sql2(
               "UPDATE [sporades_schedule_occurrences] SET [definitionFingerprint]=?, [generationToken]=? WHERE [scheduleName]=? AND [status]='pending' AND [definitionFingerprint] IS NULL AND [generationToken] IS NULL"
             )).run(definition.fingerprint, generationToken, definition.name);
           }
@@ -101499,19 +102014,19 @@ async function recordScheduledOccurrence(database, definition, occurrence) {
     const payload = await resolveSchedulePayload(database, definition, scheduledFor, payloadContext);
     const committed = await database.adapter.withTransaction(async (transactionAdapter) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
-      const sql = transactionAdapter.dialect.sql;
-      const generation = await transactionAdapter.prepare(sql(
+      const sql2 = transactionAdapter.dialect.sql;
+      const generation = await transactionAdapter.prepare(sql2(
         "UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?"
       )).run(definition.name, definition.fingerprint, definition.generationToken);
       if (Number(generation.changes) !== 1) {
         const completedAt = database.clock.now().toISOString();
-        await transactionAdapter.prepare(sql(
+        await transactionAdapter.prepare(sql2(
           "UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=NULL, [errorCode]='SCHEDULE_OCCURRENCE_SUPERSEDED', [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?"
         )).run(completedAt, claim.id, claim.token, definition.fingerprint, definition.generationToken);
         return { owned: true, state: null, next: null, superseded: true };
       }
       await database.scheduleOccurrenceFault?.("after-finalization-generation-lock", { scheduleName: definition.name, scheduledFor });
-      const ownership = await transactionAdapter.prepare(sql(
+      const ownership = await transactionAdapter.prepare(sql2(
         "UPDATE [sporades_schedule_occurrences] SET [updatedAt]=[updatedAt] WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?"
       )).run(claim.id, claim.token, definition.fingerprint, definition.generationToken);
       if (Number(ownership.changes) !== 1) return { owned: false, state: null, next: null };
@@ -101526,12 +102041,12 @@ async function recordScheduledOccurrence(database, definition, occurrence) {
         const completedAt = database.clock.now().toISOString();
         const outcome = state ? "enqueued" : "payload-failed";
         const errorCode3 = state ? null : "SCHEDULE_PAYLOAD_FAILED";
-        const terminal = await transactionAdapter.prepare(sql(
+        const terminal = await transactionAdapter.prepare(sql2(
           "UPDATE [sporades_schedule_occurrences] SET [status]=?, [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=?, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?"
         )).run(outcome, state?.id ?? null, errorCode3, completedAt, claim.id, claim.token, definition.fingerprint, definition.generationToken);
         if (Number(terminal.changes) !== 1) throw new Error("Schedule occurrence ownership changed during its owned transaction.");
         const successor = nextScheduleCursor(definition, occurrence);
-        const summary = await transactionAdapter.prepare(sql(
+        const summary = await transactionAdapter.prepare(sql2(
           "UPDATE [sporades_schedules] SET [nextOccurrence]=?, [exhausted]=?, [latestScheduledFor]=?, [latestOutcome]=?, [latestJobId]=?, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?"
         )).run(successor.nextOccurrence, successor.exhausted ? 1 : 0, scheduledFor, outcome, state?.id ?? null, errorCode3, definition.name, definition.fingerprint, definition.generationToken);
         if (Number(summary.changes) !== 1) throw new Error("Schedule definition changed during occurrence finalization.");
@@ -101576,7 +102091,7 @@ async function recordScheduledOccurrence(database, definition, occurrence) {
 async function claimScheduledOccurrence(database, definition, occurrence) {
   const scheduledFor = occurrence.toISOString();
   const id2 = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
-  const token = randomUUID9();
+  const token = randomUUID10();
   const now2 = database.clock.now();
   const nowIso2 = now2.toISOString();
   const fullLeaseExpiresAt = jobTimestampAfter(now2, RUNTIME_CLAIM_LEASE_MS);
@@ -101586,19 +102101,19 @@ async function claimScheduledOccurrence(database, definition, occurrence) {
   }
   let recoveryAt = null;
   const claimed = await database.adapter.withTransaction(async (transactionAdapter) => {
-    const sql = transactionAdapter.dialect.sql;
-    const generation = await transactionAdapter.prepare(sql(
+    const sql2 = transactionAdapter.dialect.sql;
+    const generation = await transactionAdapter.prepare(sql2(
       "UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?"
     )).run(definition.name, definition.fingerprint, definition.generationToken);
     if (Number(generation.changes) !== 1) return { claim: null, superseded: true };
     await database.scheduleOccurrenceFault?.("after-generation-lock", { scheduleName: definition.name, scheduledFor });
-    const inserted = await transactionAdapter.prepare(sql(
+    const inserted = await transactionAdapter.prepare(sql2(
       "INSERT INTO [sporades_schedule_occurrences] ([id], [scheduleName], [definitionFingerprint], [generationToken], [scheduledFor], [status], [claimToken], [claimExpiresAt], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?) ON CONFLICT DO NOTHING"
     )).run(id2, definition.name, definition.fingerprint, definition.generationToken, scheduledFor, token, expiresAt, nowIso2, nowIso2);
     if (Number(inserted.changes) === 1) return { claim: { id: id2, token }, superseded: false };
-    let existing = await transactionAdapter.prepare(sql("SELECT [id], [status], [scheduleName], [definitionFingerprint], [generationToken], [scheduledFor], [claimToken], [claimExpiresAt], [errorCode] FROM [sporades_schedule_occurrences] WHERE [id]=?")).get(id2);
+    let existing = await transactionAdapter.prepare(sql2("SELECT [id], [status], [scheduleName], [definitionFingerprint], [generationToken], [scheduledFor], [claimToken], [claimExpiresAt], [errorCode] FROM [sporades_schedule_occurrences] WHERE [id]=?")).get(id2);
     if (!existing) {
-      existing = await transactionAdapter.prepare(sql("SELECT [id], [status], [scheduleName], [definitionFingerprint], [generationToken], [scheduledFor], [claimToken], [claimExpiresAt], [errorCode] FROM [sporades_schedule_occurrences] WHERE [scheduleName]=? AND [scheduledFor]=?")).get(definition.name, scheduledFor);
+      existing = await transactionAdapter.prepare(sql2("SELECT [id], [status], [scheduleName], [definitionFingerprint], [generationToken], [scheduledFor], [claimToken], [claimExpiresAt], [errorCode] FROM [sporades_schedule_occurrences] WHERE [scheduleName]=? AND [scheduledFor]=?")).get(definition.name, scheduledFor);
       if (!existing) throw new Error("Schedule occurrence conflict could not be resolved.");
     }
     if (!validRetainedScheduleOccurrenceIdentity(database, existing) || String(existing.scheduleName) !== definition.name || String(existing.scheduledFor) !== scheduledFor || existing.claimExpiresAt !== null && !isCanonicalJobTimestamp(existing.claimExpiresAt)) {
@@ -101607,13 +102122,13 @@ async function claimScheduledOccurrence(database, definition, occurrence) {
       return { claim: null, superseded: false };
     }
     if (existing.status === "pending" && existing.definitionFingerprint === null && existing.generationToken === null && definition.__adoptLegacyPendingOccurrences === true) {
-      const adopted = await transactionAdapter.prepare(sql(
+      const adopted = await transactionAdapter.prepare(sql2(
         "UPDATE [sporades_schedule_occurrences] SET [definitionFingerprint]=?, [generationToken]=?, [updatedAt]=? WHERE [id]=? AND [scheduleName]=? AND [scheduledFor]=? AND [status]='pending' AND [definitionFingerprint] IS NULL AND [generationToken] IS NULL"
       )).run(definition.fingerprint, definition.generationToken, nowIso2, existing.id, definition.name, scheduledFor);
       if (Number(adopted.changes) === 1) {
         existing = { ...existing, definitionFingerprint: definition.fingerprint, generationToken: definition.generationToken, updatedAt: nowIso2 };
       } else {
-        existing = await transactionAdapter.prepare(sql("SELECT [id], [status], [scheduleName], [definitionFingerprint], [generationToken], [scheduledFor], [claimToken], [claimExpiresAt], [errorCode] FROM [sporades_schedule_occurrences] WHERE [id]=?")).get(existing.id);
+        existing = await transactionAdapter.prepare(sql2("SELECT [id], [status], [scheduleName], [definitionFingerprint], [generationToken], [scheduledFor], [claimToken], [claimExpiresAt], [errorCode] FROM [sporades_schedule_occurrences] WHERE [id]=?")).get(existing.id);
         if (!existing) return { claim: null, superseded: false };
       }
     }
@@ -101629,7 +102144,7 @@ async function claimScheduledOccurrence(database, definition, occurrence) {
       recoveryAt = existing.claimExpiresAt;
       return { claim: null, superseded: false };
     }
-    const result = await transactionAdapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [claimToken]=?, [claimExpiresAt]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [definitionFingerprint]=? AND [generationToken]=? AND ([claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)")).run(token, expiresAt, nowIso2, id2, definition.fingerprint, definition.generationToken, nowIso2);
+    const result = await transactionAdapter.prepare(sql2("UPDATE [sporades_schedule_occurrences] SET [claimToken]=?, [claimExpiresAt]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [definitionFingerprint]=? AND [generationToken]=? AND ([claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)")).run(token, expiresAt, nowIso2, id2, definition.fingerprint, definition.generationToken, nowIso2);
     return { claim: Number(result.changes) === 1 ? { id: id2, token } : null, superseded: false };
   });
   if (claimed.superseded) definition.enabled = false;
@@ -101637,8 +102152,8 @@ async function claimScheduledOccurrence(database, definition, occurrence) {
   return claimed.claim;
 }
 async function recoverPendingScheduleOccurrences(database, options = {}) {
-  const sql = database.adapter.dialect.sql;
-  const rows = await database.adapter.prepare(sql("SELECT [id], [scheduleName], [definitionFingerprint], [generationToken], [scheduledFor], [claimToken], [claimExpiresAt] FROM [sporades_schedule_occurrences] WHERE [status]='pending' ORDER BY [scheduledFor] ASC, [scheduleName] ASC")).all();
+  const sql2 = database.adapter.dialect.sql;
+  const rows = await database.adapter.prepare(sql2("SELECT [id], [scheduleName], [definitionFingerprint], [generationToken], [scheduledFor], [claimToken], [claimExpiresAt] FROM [sporades_schedule_occurrences] WHERE [status]='pending' ORDER BY [scheduledFor] ASC, [scheduleName] ASC")).all();
   const nowMs = database.clock.now().getTime();
   let earliestFutureClaimAt = null;
   for (const row of rows) {
@@ -101646,7 +102161,7 @@ async function recoverPendingScheduleOccurrences(database, options = {}) {
       if (!options.validateOnly) await finishInvalidRetainedScheduleOccurrence(database, row);
       continue;
     }
-    const durable = await database.adapter.prepare(sql(
+    const durable = await database.adapter.prepare(sql2(
       "SELECT [definitionFingerprint], [generationToken], [enabled] FROM [sporades_schedules] WHERE [name]=?"
     )).get(row.scheduleName);
     if (options.validateOnly) continue;
@@ -101673,8 +102188,8 @@ async function recoverPendingScheduleOccurrences(database, options = {}) {
   if (earliestFutureClaimAt !== null) schedulePendingOccurrenceRecovery(database, new Date(earliestFutureClaimAt).toISOString());
 }
 async function recoverLateLegacyScheduleOccurrences(database) {
-  const sql = database.adapter.dialect.sql;
-  const rows = await database.adapter.prepare(sql(
+  const sql2 = database.adapter.dialect.sql;
+  const rows = await database.adapter.prepare(sql2(
     "SELECT [id], [scheduleName], [definitionFingerprint], [generationToken], [scheduledFor], [claimToken], [claimExpiresAt] FROM [sporades_schedule_occurrences] WHERE [status]='pending' AND [definitionFingerprint] IS NULL AND [generationToken] IS NULL ORDER BY [scheduledFor] ASC, [scheduleName] ASC LIMIT ?"
   )).all(LEGACY_SCHEDULE_DISCOVERY_LIMIT);
   for (const row of rows) {
@@ -101682,7 +102197,7 @@ async function recoverLateLegacyScheduleOccurrences(database) {
       await finishInvalidRetainedScheduleOccurrence(database, row);
       continue;
     }
-    const durable = await database.adapter.prepare(sql(
+    const durable = await database.adapter.prepare(sql2(
       "SELECT [definitionFingerprint], [generationToken], [enabled] FROM [sporades_schedules] WHERE [name]=?"
     )).get(row.scheduleName);
     const definition = database.schedules.find((candidate) => candidate.enabled && candidate.name === row.scheduleName);
@@ -101740,9 +102255,9 @@ function armRetainedScheduleRecoveryAfterCommit(database, recoveryAt) {
   if (recoveryAt !== null) schedulePendingOccurrenceRecovery(database, recoveryAt);
 }
 async function finishRetainedScheduleOccurrence(database, row, errorCode3, adapter) {
-  const sql = adapter.dialect.sql;
+  const sql2 = adapter.dialect.sql;
   if (typeof row.scheduleName === "string") {
-    await adapter.prepare(sql(
+    await adapter.prepare(sql2(
       "UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=?"
     )).run(row.scheduleName);
   }
@@ -101751,11 +102266,11 @@ async function finishRetainedScheduleOccurrence(database, row, errorCode3, adapt
   const generationToken = row.generationToken ?? null;
   const liveGenerationGuard = errorCode3 === "SCHEDULE_OCCURRENCE_SUPERSEDED" ? " AND NOT EXISTS (SELECT 1 FROM [sporades_schedules] WHERE [name]=? AND [enabled]=1 AND ([generationToken]=? OR ([generationToken] IS NULL AND ? IS NULL)))" : "";
   const liveGenerationParams = errorCode3 === "SCHEDULE_OCCURRENCE_SUPERSEDED" ? [row.scheduleName, generationToken, generationToken] : [];
-  const result = await adapter.prepare(sql(
+  const result = await adapter.prepare(sql2(
     "UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=NULL, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [scheduledFor]=? AND ([definitionFingerprint]=? OR ([definitionFingerprint] IS NULL AND ? IS NULL)) AND ([generationToken]=? OR ([generationToken] IS NULL AND ? IS NULL)) AND ([claimToken]=? OR ([claimToken] IS NULL AND ? IS NULL)) AND ([claimExpiresAt]=? OR ([claimExpiresAt] IS NULL AND ? IS NULL))" + liveGenerationGuard
   )).run(errorCode3, completedAt, row.id, row.scheduledFor, definitionFingerprint, definitionFingerprint, generationToken, generationToken, row.claimToken, row.claimToken, row.claimExpiresAt, row.claimExpiresAt, ...liveGenerationParams);
   if (Number(result.changes) === 1) return { finished: true, recoveryAt: null };
-  const current2 = await adapter.prepare(sql(
+  const current2 = await adapter.prepare(sql2(
     "SELECT [status], [claimExpiresAt] FROM [sporades_schedule_occurrences] WHERE [id]=?"
   )).get(row.id);
   if (current2?.status === "pending") {
@@ -101817,8 +102332,8 @@ async function enqueueResolvedScheduledOccurrence(database, definition, schedule
 async function recoverExpiredJobLeases(database) {
   const recoveredAt = database.clock.now();
   const recoveredIso = recoveredAt.toISOString();
-  const sql = database.adapter.dialect.sql;
-  const rows = await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [status]='running' ORDER BY [availableAt] ASC, [id] ASC")).all();
+  const sql2 = database.adapter.dialect.sql;
+  const rows = await database.adapter.prepare(sql2("SELECT * FROM [sporades_jobs] WHERE [status]='running' ORDER BY [availableAt] ASC, [id] ASC")).all();
   let earliestFutureLeaseAt = null;
   for (const row of rows) {
     if (jobClaimTokenIsMalformed(row.claimToken)) {
@@ -101826,7 +102341,7 @@ async function recoverExpiredJobLeases(database) {
       const ownership2 = jobClaimOwnership(row.claimToken);
       const leasePredicate = row.leaseExpiresAt === null ? "[leaseExpiresAt] IS NULL" : "[leaseExpiresAt] = ?";
       const leaseParams = row.leaseExpiresAt === null ? [] : [row.leaseExpiresAt];
-      await database.adapter.prepare(sql(
+      await database.adapter.prepare(sql2(
         "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]='running' AND " + leasePredicate + " AND " + ownership2.predicate
       )).run(JSON.stringify(failure), recoveredIso, row.id, ...leaseParams, ...ownership2.params);
       continue;
@@ -101836,7 +102351,7 @@ async function recoverExpiredJobLeases(database) {
       const ownership2 = jobClaimOwnership(row.claimToken);
       const leasePredicate = row.leaseExpiresAt === null ? "[leaseExpiresAt] IS NULL" : "[leaseExpiresAt] = ?";
       const leaseParams = row.leaseExpiresAt === null ? [] : [row.leaseExpiresAt];
-      await database.adapter.prepare(sql(
+      await database.adapter.prepare(sql2(
         "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]='running' AND " + leasePredicate + " AND " + ownership2.predicate
       )).run(JSON.stringify(failure), recoveredIso, row.id, ...leaseParams, ...ownership2.params);
       continue;
@@ -101844,7 +102359,7 @@ async function recoverExpiredJobLeases(database) {
     const provenanceFailure = invalidStoredJobFailure(row, recoveredAt);
     if (["JOB_ACTOR_SNAPSHOT_INVALID", "JOB_CREDENTIAL_INVALID"].includes(provenanceFailure?.code)) {
       const ownership2 = jobClaimOwnership(row.claimToken);
-      await database.adapter.prepare(sql(
+      await database.adapter.prepare(sql2(
         "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] = ? AND " + ownership2.predicate
       )).run(JSON.stringify(provenanceFailure), recoveredIso, row.id, row.leaseExpiresAt, ...ownership2.params);
       continue;
@@ -101863,7 +102378,7 @@ async function recoverExpiredJobLeases(database) {
     const retryAvailableAt = retryEligible ? jobTimestampAfter(recoveredAt, retry.delayMs) : null;
     const retryLeaseExpiresAt = retryAvailableAt === null ? null : jobTimestampAfter(new Date(retryAvailableAt), RUNTIME_CLAIM_LEASE_MS);
     if (retryAvailableAt !== null && retryLeaseExpiresAt !== null) {
-      await database.adapter.prepare(sql(
+      await database.adapter.prepare(sql2(
         "UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] = ? AND " + ownership.predicate
       )).run(retryAvailableAt, JSON.stringify(history), row.id, row.leaseExpiresAt, ...ownership.params);
     } else {
@@ -101929,6 +102444,15 @@ function activateCurrentUserJobExecution(database, recoveryAt) {
   }
   if (failures.length > 1) throw new AggregateError(failures, "Job activation scheduling failed.");
   if (failures.length === 1) throw failures[0];
+}
+function activateNotificationIntentWorker(database) {
+  void Promise.resolve(startNotificationIntentWorker(database)).catch((error) => {
+    try {
+      void Promise.resolve(database.log?.emit?.({ category: "platform", event: "notification.delivery.scan_failed", level: "error", message: "Notification delivery scan failed", data: { code: String(error?.code ?? "NOTIFICATION_DELIVERY_SCAN_FAILED").slice(0, 80) } })).catch(() => {
+      });
+    } catch {
+    }
+  });
 }
 function preflightCurrentUserJobExecution(database) {
   const timer = database.clock.setTimer(() => {
@@ -102043,23 +102567,23 @@ function jobRetryHorizonFits(firstAttempt, retry, attemptCount, allowShortFinalS
   return true;
 }
 async function failInvalidQueuedJob(database, row, failure) {
-  const sql = database.adapter.dialect.sql;
-  return await database.adapter.prepare(sql(
+  const sql2 = database.adapter.dialect.sql;
+  return await database.adapter.prepare(sql2(
     "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]=? AND [availableAt]=? AND COALESCE([retryJson], '') = COALESCE(?, '')"
   )).run(JSON.stringify(failure), database.clock.now().toISOString(), row.id, row.status, row.availableAt, row.retryJson);
 }
 async function recoverInvalidRetainedJobState(database) {
   const recoveredAt = database.clock.now();
   const failedAt = recoveredAt.toISOString();
-  const sql = database.adapter.dialect.sql;
-  const rows = await database.adapter.prepare(sql(
+  const sql2 = database.adapter.dialect.sql;
+  const rows = await database.adapter.prepare(sql2(
     "SELECT * FROM [sporades_jobs] WHERE [status] IN ('queued', 'delayed')"
   )).all();
   await database.jobRecoveryFault?.("after-scan", { jobIds: rows.map((row) => String(row.id)) });
   for (const row of rows) {
     const failure = invalidStoredJobFailure(row, recoveredAt);
     if (!failure) continue;
-    await database.adapter.prepare(sql(
+    await database.adapter.prepare(sql2(
       "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]=? AND [availableAt]=? AND COALESCE([retryJson], '') = COALESCE(?, '')"
     )).run(JSON.stringify(failure), failedAt, row.id, row.status, row.availableAt, row.retryJson);
   }
@@ -102445,10 +102969,11 @@ function normalizeUniqueConstraints(tableName, fields, declarations) {
   }).sort((left, right) => [...left].sort().join("\0").localeCompare([...right].sort().join("\0")));
 }
 function assertNotReservedTeamTableName(name2) {
-  if (name2.toLowerCase().startsWith("sporades_resource_")) {
+  const runtimeNamespace = ["sporades_resource_", "sporades_notification_"].find((prefix) => name2.toLowerCase().startsWith(prefix));
+  if (runtimeNamespace) {
     throw commandError2(
       `Reserved runtime table name: ${name2}`,
-      "Choose a Capsule table name outside the sporades_resource_ runtime namespace.",
+      `Choose a Capsule table name outside the ${runtimeNamespace} runtime namespace.`,
       "RESERVED_TABLE_NAME"
     );
   }
@@ -103069,7 +103594,7 @@ async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest,
   if (decision?.allow !== true || typeof namespace !== "string" || !definition.principalNamespaces.includes(namespace) || typeof key !== "string" || key.length === 0 || Buffer.byteLength(key, "utf8") > 256 || /[\x00-\x1f\x7f]/.test(key) || Buffer.byteLength(serialized, "utf8") > 4096) {
     throw commandError2("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
   }
-  return Object.freeze({ allowFiles, authority: Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash10("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId }) });
+  return Object.freeze({ allowFiles, authority: Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash11("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId }) });
 }
 var endpointMultipartAdmissionTimeoutMs = 5e3;
 function multipartAdmissionDenied() {
@@ -103342,8 +103867,8 @@ function createWriteTrackingAdapter(transactionAdapter, writeState) {
   return new Proxy(transactionAdapter, {
     get(target, property, receiver) {
       if (property === "prepare") {
-        return (sql) => {
-          const statement = Reflect.apply(Reflect.get(target, property, receiver), receiver, [sql]);
+        return (sql2) => {
+          const statement = Reflect.apply(Reflect.get(target, property, receiver), receiver, [sql2]);
           return Object.assign(Object.create(statement), {
             run(...params) {
               const result = Reflect.apply(statement.run, statement, params);
@@ -103356,8 +103881,8 @@ function createWriteTrackingAdapter(transactionAdapter, writeState) {
         };
       }
       if (property === "exec") {
-        return (sql) => thenIfPromise(
-          Reflect.apply(Reflect.get(target, property, receiver), receiver, [sql]),
+        return (sql2) => thenIfPromise(
+          Reflect.apply(Reflect.get(target, property, receiver), receiver, [sql2]),
           (result) => {
             writeState.didWrite = true;
             return result;
@@ -103412,13 +103937,13 @@ function atomicStripeAbortError() {
   return error;
 }
 async function acquireAtomicStripeConsequenceFence(adapter) {
-  const sql = adapter.dialect.sql;
+  const sql2 = adapter.dialect.sql;
   let acquired;
   try {
-    await adapter.prepare(sql(
+    await adapter.prepare(sql2(
       "INSERT INTO [sporades] ([key], [value]) VALUES (?, ?) ON CONFLICT ([key]) DO NOTHING"
     )).run("stripe-consequence-fence", "0");
-    acquired = await adapter.prepare(sql(
+    acquired = await adapter.prepare(sql2(
       "UPDATE [sporades] SET [value] = CAST([value] AS INTEGER) + 1 WHERE [key] = ?"
     )).run("stripe-consequence-fence");
   } catch (cause) {
@@ -104075,7 +104600,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
     insert(values) {
       const now2 = (/* @__PURE__ */ new Date()).toISOString();
       const row = {
-        id: randomUUID9(),
+        id: randomUUID10(),
         createdAt: now2,
         updatedAt: now2
       };
@@ -104112,7 +104637,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       }
       const now2 = (/* @__PURE__ */ new Date()).toISOString();
       const row = {
-        id: randomUUID9(),
+        id: randomUUID10(),
         createdAt: now2,
         updatedAt: now2
       };
@@ -104453,7 +104978,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
         if (typeof oldestToken !== "string") break;
         connectionTokens.delete(oldestToken);
       }
-      const token = randomBytes5(32).toString("base64url");
+      const token = randomBytes6(32).toString("base64url");
       connectionTokens.set(token, Date.now() + connectionTokenTtlMs);
       return token;
     },
@@ -104823,8 +105348,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       const emailProviderEnabled = database.authConfig.providers.email?.enabled === true;
       if (authorized && message.provider === "email" && emailProviderEnabled && normalized.ok && typeof normalized.password === "string") {
         const reauthenticationThrottleKeys = [
-          `email:${createHash10("sha256").update(normalized.email).digest("base64url")}`,
-          `session:${createHash10("sha256").update(client.session.token).digest("base64url")}`
+          `email:${createHash11("sha256").update(normalized.email).digest("base64url")}`,
+          `session:${createHash11("sha256").update(client.session.token).digest("base64url")}`
         ];
         const throttleNow = database.clock.now();
         let reserved = false;
@@ -104847,7 +105372,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
               const currentAuth = { userId: current2.userId, displayName: current2.displayName, email: current2.email, picture: current2.picture, isAuthenticated: Boolean(current2.isAuthenticated), isGuest: Boolean(current2.isGuest), provider: current2.provider };
               if (!await tx.claimEmailCredentialVersion(normalized.email, credential.passwordHash, credential.passwordSalt)) return;
               if (!await database.authorizeReauthentication(tx, currentAuth, purpose)) return;
-              await tx.replaceReauthenticationProof({ id: randomUUID9(), userId: current2.userId, sessionToken: current2.token, purpose, createdAt: now2.toISOString(), expiresAt });
+              await tx.replaceReauthenticationProof({ id: randomUUID10(), userId: current2.userId, sessionToken: current2.token, purpose, createdAt: now2.toISOString(), expiresAt });
               ok = true;
               await tx.clearEmailReauthenticationAttempts(reauthenticationThrottleKeys);
             });
@@ -105289,7 +105814,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
         const nowDate = database.clock.now();
         const inactivityMs = database.journeySessionInactivityMinutes * 6e4;
         if (!client.journey.sessionId || client.journey.lastActivityAt !== null && nowDate.getTime() - client.journey.lastActivityAt >= inactivityMs) {
-          client.journey.sessionId = randomBytes5(24).toString("base64url");
+          client.journey.sessionId = randomBytes6(24).toString("base64url");
           client.journey.sessionIds.add(client.journey.sessionId);
         }
         const previous = journeys.get(client.journey.sessionId);
@@ -105562,7 +106087,7 @@ async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey,
       "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, '[]', NULL, NULL)"
     )
   ).run(
-    randomUUID9(),
+    randomUUID10(),
     handlerName,
     PRIVILEGED_AUTH_USER_ID,
     PRIVILEGED_AUTH_USER_ID,
@@ -105590,7 +106115,7 @@ async function sendEmailPasswordResetLink(database, session, email, options = {}
     return { ok: true };
   }
   recordFailedEmailSignInAttempt(database, cleanEmail, session, PASSWORD_RESET_THROTTLE_FIELD);
-  const code = `${randomBytes5(16).toString("base64url")}.${randomBytes5(32).toString("base64url")}`;
+  const code = `${randomBytes6(16).toString("base64url")}.${randomBytes6(32).toString("base64url")}`;
   await enqueueRuntimeJob(database, PASSWORD_RESET_REQUEST_JOB, {
     email: cleanEmail,
     code,
@@ -105601,7 +106126,7 @@ async function sendEmailPasswordResetLink(database, session, email, options = {}
   return { ok: true };
 }
 function createWebSocketAccept(key) {
-  return createHash10("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+  return createHash11("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
 }
 function drainWebSocketFrames(client, onMessage) {
   while (client.buffer.length >= 2) {
@@ -106489,7 +107014,7 @@ function createCurrentUserJobApi(database, contextGetter) {
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job list limit.", "Pass a whole-number limit from 1 to 100.");
       const cursor = decodeJobCursor(options.cursor);
       const jobAdapter = database.adapter;
-      const sql = jobAdapter.dialect.sql;
+      const sql2 = jobAdapter.dialect.sql;
       const clauses = ["[actorUserId] = ?"];
       const params = [context.auth.userId];
       if (options.status) {
@@ -106512,7 +107037,7 @@ function createCurrentUserJobApi(database, contextGetter) {
         clauses.push("([createdAt] > ? OR ([createdAt] = ? AND [id] > ?))");
         params.push(cursor.createdAt, cursor.createdAt, cursor.id);
       }
-      const rows = await jobAdapter.prepare(sql(`SELECT * FROM [sporades_jobs] WHERE ${clauses.join(" AND ")} ORDER BY [createdAt] ASC, [id] ASC LIMIT ?`)).all(...params, limit + 1);
+      const rows = await jobAdapter.prepare(sql2(`SELECT * FROM [sporades_jobs] WHERE ${clauses.join(" AND ")} ORDER BY [createdAt] ASC, [id] ASC LIMIT ?`)).all(...params, limit + 1);
       const page = rows.slice(0, limit);
       return { jobs: page.map((row) => jobSummary(row)), nextCursor: rows.length > limit ? encodeJobCursor(page.at(-1)) : null };
     }
@@ -106538,7 +107063,7 @@ function createPrivilegedJobApi(database, contextGetter) {
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job list limit.", "Pass a whole-number limit from 1 to 100.");
       const cursor = decodeJobCursor(options.cursor);
       const sqlite = database.adapter;
-      const sql = sqlite.dialect.sql;
+      const sql2 = sqlite.dialect.sql;
       const clauses = [];
       const params = [];
       if (options.status) {
@@ -106561,7 +107086,7 @@ function createPrivilegedJobApi(database, contextGetter) {
         clauses.push("([createdAt] > ? OR ([createdAt] = ? AND [id] > ?))");
         params.push(cursor.createdAt, cursor.createdAt, cursor.id);
       }
-      const rows = await sqlite.prepare(sql(`SELECT * FROM [sporades_jobs]${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""} ORDER BY [createdAt] ASC, [id] ASC LIMIT ?`)).all(...params, limit + 1);
+      const rows = await sqlite.prepare(sql2(`SELECT * FROM [sporades_jobs]${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""} ORDER BY [createdAt] ASC, [id] ASC LIMIT ?`)).all(...params, limit + 1);
       const page = rows.slice(0, limit);
       return { jobs: page.map((row) => jobSummary(row)), nextCursor: rows.length > limit ? encodeJobCursor(page.at(-1)) : null };
     },
@@ -106650,25 +107175,25 @@ function scheduleJobWorkerWake(database, delayMs) {
   }, Math.min(MAX_NATIVE_TIMER_DELAY_MS, Math.max(0, delayMs)));
 }
 async function relinquishUnstartedJobClaim(database, jobId, claimToken) {
-  const sql = database.adapter.dialect.sql;
-  await database.adapter.prepare(sql(
+  const sql2 = database.adapter.dialect.sql;
+  await database.adapter.prepare(sql2(
     "UPDATE [sporades_jobs] SET [status] = CASE WHEN [cancelRequestedAt] IS NULL THEN 'queued' ELSE 'cancelled' END, [attempts] = CASE WHEN [attempts] > 0 THEN [attempts] - 1 ELSE 0 END, [startedAt] = NULL, [leaseExpiresAt] = NULL, [claimToken] = NULL, [completedAt] = CASE WHEN [cancelRequestedAt] IS NULL THEN [completedAt] ELSE [cancelRequestedAt] END WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?"
   )).run(jobId, claimToken);
 }
 async function deferAtomicStripeFenceContention(database, jobId, claimToken) {
-  const sql = database.adapter.dialect.sql;
-  const claimed = await database.adapter.prepare(sql(
+  const sql2 = database.adapter.dialect.sql;
+  const claimed = await database.adapter.prepare(sql2(
     "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?"
   )).get(jobId, claimToken);
   if (!claimed) return "lost";
   if (claimed.cancelRequestedAt) return "cancelled";
   const availableAt = jobTimestampAfter(database.clock.now(), 25);
   if (availableAt === null) return "lost";
-  const changed = await database.adapter.prepare(sql(
+  const changed = await database.adapter.prepare(sql2(
     "UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [attempts]=CASE WHEN [attempts] > 0 THEN [attempts] - 1 ELSE 0 END, [startedAt]=NULL, [leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]='running' AND [claimToken]=? AND [cancelRequestedAt] IS NULL"
   )).run(availableAt, jobId, claimToken);
   if (Number(changed?.changes ?? 0) !== 1) {
-    const currentClaim = await database.adapter.prepare(sql(
+    const currentClaim = await database.adapter.prepare(sql2(
       "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?"
     )).get(jobId, claimToken);
     if (currentClaim?.cancelRequestedAt) return "cancelled";
@@ -106693,15 +107218,15 @@ async function scheduleNextDelayedJob(database) {
 async function runCurrentUserJobWorker(database) {
   if (database.__jobStopped || database.__jobWorkerRunning) return;
   database.__jobWorkerRunning = true;
-  const sql = database.adapter.dialect.sql;
+  const sql2 = database.adapter.dialect.sql;
   try {
     while (true) {
       if (database.__jobStopped) return;
       const workerNow = database.clock.now();
       const workerNowIso = workerNow.toISOString();
-      await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='queued' WHERE [status]='delayed' AND [availableAt] <= ?")).run(workerNowIso);
+      await database.adapter.prepare(sql2("UPDATE [sporades_jobs] SET [status]='queued' WHERE [status]='delayed' AND [availableAt] <= ?")).run(workerNowIso);
       if (database.__jobStopped) return;
-      const row = await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [status] = 'queued' AND [availableAt] <= ? ORDER BY [availableAt] ASC, [id] ASC LIMIT 1")).get(workerNowIso);
+      const row = await database.adapter.prepare(sql2("SELECT * FROM [sporades_jobs] WHERE [status] = 'queued' AND [availableAt] <= ? ORDER BY [availableAt] ASC, [id] ASC LIMIT 1")).get(workerNowIso);
       if (database.__jobStopped) return;
       if (!row) {
         await scheduleNextDelayedJob(database);
@@ -106720,8 +107245,8 @@ async function runCurrentUserJobWorker(database) {
         await failInvalidQueuedJob(database, row, { code: "JOB_AVAILABLE_AT_INVALID", message: "The Job cannot acquire a canonical claim lease." });
         continue;
       }
-      const claimToken = randomUUID9();
-      const claimed = await database.adapter.prepare(sql(
+      const claimToken = randomUUID10();
+      const claimed = await database.adapter.prepare(sql2(
         "UPDATE [sporades_jobs] SET [status] = 'running', [attempts] = [attempts] + 1, [startedAt] = ?, [leaseExpiresAt] = ?, [claimToken] = ? WHERE [id] = ? AND [status] = 'queued' AND [availableAt] = ? AND COALESCE([retryJson], '') = COALESCE(?, '')"
       )).run(startedAt, leaseExpiresAt, claimToken, row.id, row.availableAt, row.retryJson);
       if (!claimed?.changes) continue;
@@ -106736,7 +107261,7 @@ async function runCurrentUserJobWorker(database) {
       let handlerStarted = false;
       try {
         const jobPayload = JSON.parse(row.payload);
-        const claimedState = await database.adapter.prepare(sql(
+        const claimedState = await database.adapter.prepare(sql2(
           "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?"
         )).get(row.id, claimToken);
         if (!claimedState) continue;
@@ -106798,20 +107323,20 @@ async function runCurrentUserJobWorker(database) {
         const history = JSON.parse(row.attemptHistory || "[]");
         history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: "succeeded", completedAt });
         const payloadRetentionUntil = row.handler === STRIPE_EVENT_JOB ? stripeEventPayloadRetentionStorageValue(completedAt) : null;
-        const settled = row.handler === STRIPE_EVENT_JOB ? await database.adapter.prepare(sql(
+        const settled = row.handler === STRIPE_EVENT_JOB ? await database.adapter.prepare(sql2(
           "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ?, [payloadRetentionUntil] = ? WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ? AND [cancelRequestedAt] IS NULL"
-        )).run(resultJson, completedAt, JSON.stringify(history), payloadRetentionUntil, row.id, claimToken) : await database.adapter.prepare(sql(
+        )).run(resultJson, completedAt, JSON.stringify(history), payloadRetentionUntil, row.id, claimToken) : await database.adapter.prepare(sql2(
           "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ? WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ? AND [cancelRequestedAt] IS NULL"
         )).run(resultJson, completedAt, JSON.stringify(history), row.id, claimToken);
         if (Number(settled?.changes ?? 0) === 0) {
-          const cancellation = await database.adapter.prepare(sql(
+          const cancellation = await database.adapter.prepare(sql2(
             "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?"
           )).get(row.id, claimToken);
           if (cancellation?.cancelRequestedAt) {
             const cancelledAt = database.clock.now().toISOString();
             const cancellationHistory = JSON.parse(row.attemptHistory || "[]");
             cancellationHistory.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: "cancelled", code: "ABORTED", completedAt: cancelledAt });
-            await database.adapter.prepare(sql(
+            await database.adapter.prepare(sql2(
               "UPDATE [sporades_jobs] SET [status]='cancelled', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? WHERE [id]=? AND [status]='running' AND [claimToken]=? AND [cancelRequestedAt] IS NOT NULL"
             )).run(JSON.stringify({ code: "ABORTED", message: "Job aborted." }), cancelledAt, JSON.stringify(cancellationHistory), row.id, claimToken);
           }
@@ -106840,7 +107365,7 @@ async function runCurrentUserJobWorker(database) {
         const retry = parsePersistedJobRetry(row.retryJson);
         const abortError = error?.cause ?? error;
         const abortShaped = (abortController.signal.aborted || isResourceAbortError(abortError)) && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR");
-        const cancellation = abortShaped ? await database.adapter.prepare(sql(
+        const cancellation = abortShaped ? await database.adapter.prepare(sql2(
           "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?"
         )).get(row.id, claimToken) : null;
         const cancelled = Boolean(cancellation?.cancelRequestedAt);
@@ -106852,16 +107377,16 @@ async function runCurrentUserJobWorker(database) {
         const failure = retryPolicyInvalid ? invalidJobRetryPolicyFailure() : handlerFailure;
         history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: cancelled ? "cancelled" : "failed", code: failure.code, completedAt: failedAt });
         if (cancelled) {
-          await database.adapter.prepare(sql(
+          await database.adapter.prepare(sql2(
             "UPDATE [sporades_jobs] SET [status]='cancelled', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? WHERE [id]=? AND [status]='running' AND [claimToken]=?"
           )).run(JSON.stringify(failure), failedAt, JSON.stringify(history), row.id, claimToken);
         } else if (retryAvailableAt !== null) {
-          const changed = await database.adapter.prepare(sql(
+          const changed = await database.adapter.prepare(sql2(
             "UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? WHERE [id]=? AND [status]='running' AND [claimToken]=?"
           )).run(retryAvailableAt, JSON.stringify(history), row.id, claimToken);
           if (Number(changed?.changes ?? 0) === 1) scheduleJobWorkerWake(database, retry.delayMs + 1);
         } else {
-          await database.adapter.prepare(sql(
+          await database.adapter.prepare(sql2(
             "UPDATE [sporades_jobs] SET [status] = 'failed', [failure] = ?, [failedAt] = ?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? WHERE [id] = ? AND [status]='running' AND [claimToken]=?"
           )).run(boundedJobJson(failure, 8 * 1024, "JOB_FAILURE_TOO_LARGE", "Job failure metadata"), failedAt, JSON.stringify(history), row.id, claimToken);
         }
@@ -106901,7 +107426,7 @@ async function runInsertMutation(database, context, mutationName, args) {
   }
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const values = {
-    id: randomUUID9(),
+    id: randomUUID10(),
     createdAt: now2,
     updatedAt: now2
   };
@@ -110228,7 +110753,7 @@ function escapeHtml(value) {
 
 // src/dev-clamav-sidecar.ts
 import { spawn } from "node:child_process";
-import { createHash as createHash11, randomBytes as randomBytes6 } from "node:crypto";
+import { createHash as createHash12, randomBytes as randomBytes7 } from "node:crypto";
 import { mkdir as mkdir5, mkdtemp, rm as rm6 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
@@ -110413,7 +110938,7 @@ async function startDevClamavSidecar(options) {
   const dataRoot = path9.join(options.projectDir, ".sporades", "clamav");
   await mkdir5(path9.join(dataRoot, "clamav"), { recursive: true });
   const socketDir = await mkdtemp(path9.join(tmpdir(), "sporades-dev-clamav-"));
-  const identity = createHash11("sha256").update(`${path9.resolve(options.projectDir)}\0${process.pid}\0${randomBytes6(8).toString("hex")}`).digest("hex").slice(0, 20);
+  const identity = createHash12("sha256").update(`${path9.resolve(options.projectDir)}\0${process.pid}\0${randomBytes7(8).toString("hex")}`).digest("hex").slice(0, 20);
   const containerName = `sporades-dev-clamav-${identity}`;
   const socketPath = path9.join(socketDir, "clamd.sock");
   let child;
@@ -110603,7 +111128,7 @@ ${removed.stderr}`)) failures.push(new Error("Dev File inspection container clea
 }
 
 // src/capsule-services.ts
-import { randomBytes as randomBytes7 } from "node:crypto";
+import { randomBytes as randomBytes8 } from "node:crypto";
 import { mkdir as mkdir6, readFile as readFile7, rm as rm7, writeFile as writeFile5 } from "node:fs/promises";
 import path10 from "node:path";
 var SUPPORTED_SERVICE_KEYS = /* @__PURE__ */ new Set(["database", "storage"]);
@@ -110677,9 +111202,9 @@ async function loadOrCreateCapsuleServiceCredentials(projectDir) {
   }
   const credentials = {
     databaseUser: typeof existing.databaseUser === "string" && existing.databaseUser ? existing.databaseUser : POSTGRES_USER,
-    databasePassword: typeof existing.databasePassword === "string" && existing.databasePassword ? existing.databasePassword : randomBytes7(24).toString("base64url"),
+    databasePassword: typeof existing.databasePassword === "string" && existing.databasePassword ? existing.databasePassword : randomBytes8(24).toString("base64url"),
     storageAccessKey: typeof existing.storageAccessKey === "string" && existing.storageAccessKey ? existing.storageAccessKey : MINIO_ROOT_USER,
-    storageSecretKey: typeof existing.storageSecretKey === "string" && existing.storageSecretKey ? existing.storageSecretKey : randomBytes7(24).toString("base64url")
+    storageSecretKey: typeof existing.storageSecretKey === "string" && existing.storageSecretKey ? existing.storageSecretKey : randomBytes8(24).toString("base64url")
   };
   if (credentials.databaseUser !== existing.databaseUser || credentials.databasePassword !== existing.databasePassword || credentials.storageAccessKey !== existing.storageAccessKey || credentials.storageSecretKey !== existing.storageSecretKey) {
     await mkdir6(path10.dirname(credentialsPath), { recursive: true });
@@ -111530,7 +112055,7 @@ import { connect } from "node:net";
 import path12 from "node:path";
 
 // src/cli/project-config.ts
-import { createHash as createHash12 } from "node:crypto";
+import { createHash as createHash13 } from "node:crypto";
 import { chmod, mkdir as mkdir7, readFile as readFile8, writeFile as writeFile6 } from "node:fs/promises";
 import path11 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
@@ -111820,7 +112345,7 @@ async function resolveAuthorizedKeyLines(ssh, projectDir) {
 function authorizedKeyFingerprint(line) {
   const parts = line.split(/\s+/);
   const keyTypeIndex = parts.findIndex((part) => isOpenSshPublicKeyType(part));
-  const digest = createHash12("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
+  const digest = createHash13("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
   return `SHA256:${digest}`;
 }
 function withRuntimeSecuritySession(config, session) {
@@ -115934,7 +116459,7 @@ function capsuleReloadSurface(database, config = {}) {
   return surface;
 }
 function createDevInspectionToken() {
-  return randomBytes8(32).toString("hex");
+  return randomBytes9(32).toString("hex");
 }
 function requireDevInspectionToken(request, response, expectedToken) {
   if (devInspectionTokenMatches(request.headers[DEV_INSPECTION_TOKEN_HEADER], expectedToken)) {
@@ -115957,7 +116482,7 @@ function devInspectionTokenMatches(header2, expectedToken) {
   }
   const actual = Buffer.from(actualToken);
   const expected = Buffer.from(expectedToken);
-  return actual.length === expected.length && timingSafeEqual4(actual, expected);
+  return actual.length === expected.length && timingSafeEqual5(actual, expected);
 }
 async function importCapsuleDefinition(moduleSource) {
   const encodedModule = Buffer.from(moduleSource, "utf8").toString("base64");
@@ -116495,7 +117020,7 @@ async function ensureHostProfileEnvKey(config, alias) {
   const hostKey = {
     publicKey,
     privateKey,
-    publicKeyFingerprint: createHash13("sha256").update(publicKey).digest("hex").slice(0, 16)
+    publicKeyFingerprint: createHash14("sha256").update(publicKey).digest("hex").slice(0, 16)
   };
   config.profiles[alias].sealedServerEnv = hostKey;
   return hostKey;
@@ -117265,7 +117790,7 @@ async function startContainerSession(options) {
     await mkdir8(path13.join(runtimeDir, "deploy-files"), { recursive: true, mode: 448 });
     await chmod2(path13.join(runtimeDir, "deploy-files"), 448);
   }
-  const deployReleaseRoot = path13.join(runtimeDir, "deploy-files", randomBytes8(16).toString("hex"));
+  const deployReleaseRoot = path13.join(runtimeDir, "deploy-files", randomBytes9(16).toString("hex"));
   const preservedRoot = path13.join(runtimeDir, "preserved-files");
   const createdSeeds = [];
   const seedJournal = await beginPreservedFileAttempt(preservedRoot, deployReleaseRoot, bundle.deployFiles.length > 0);
@@ -117296,8 +117821,8 @@ async function startContainerSession(options) {
   }
   const additionalMounts = deployFileMounts(bundle.deployFiles, deployReleaseRoot, preservedRoot);
   const bundleMountArgs = [...bundle.containerMounts.files, ...additionalMounts].flatMap((mount) => ["--volume", formatMount(mount)]);
-  const containerTransactionToken = randomBytes8(16).toString("hex");
-  const runtimeProbeToken = randomBytes8(32).toString("hex");
+  const containerTransactionToken = randomBytes9(16).toString("hex");
+  const runtimeProbeToken = randomBytes9(32).toString("hex");
   const capsuleServicesNetworkArgs = capsuleServices ? ["--network", capsuleServices.networks.services] : [];
   const capsuleServicesEnvArgs = Object.entries(containerCapsuleServices.env ?? {}).flatMap(([key, value]) => [
     "--env",
@@ -117345,7 +117870,7 @@ async function startContainerSession(options) {
     SPORADES_BASE_IMAGE.image,
     ...sshAccess.enabled ? ["/usr/local/bin/sporades-start"] : ["node", "/app/server.mjs"]
   ];
-  const rollbackName = `${containerName}-rollback-${process.pid}-${randomBytes8(4).toString("hex")}`;
+  const rollbackName = `${containerName}-rollback-${process.pid}-${randomBytes9(4).toString("hex")}`;
   const oldName = String(existingContainer?.Name ?? existingBinding?.containerName ?? containerName).replace(/^\//, "");
   const oldWasRunning = Boolean(existingContainer?.State?.Running);
   let oldRenamed = false;
@@ -118618,7 +119143,7 @@ function uploadHostReleaseArchive(options) {
 }
 function createHostReleaseId(now2 = /* @__PURE__ */ new Date()) {
   const timestamp = now2.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
-  return `${timestamp}-${randomBytes8(4).toString("hex")}`;
+  return `${timestamp}-${randomBytes9(4).toString("hex")}`;
 }
 function normaliseHostLogEntries(data2) {
   if (!Array.isArray(data2?.entries)) {
@@ -118829,7 +119354,7 @@ function upgradeHostHelper(options) {
     if (!statSync(localHelper).isFile()) {
       throw new Error("not a file");
     }
-    helperChecksum = createHash13("sha256").update(readFileSync2(localHelper)).digest("hex");
+    helperChecksum = createHash14("sha256").update(readFileSync2(localHelper)).digest("hex");
   } catch {
     throw commandError(
       "Local Host helper file was not found.",
@@ -119895,7 +120420,7 @@ function runDockerCleanup(args, cwd, message, hint, force = false) {
   throw commandError(message, hint);
 }
 async function replaceContainerBinding(bindingPath, binding) {
-  const temporaryPath = `${bindingPath}.${process.pid}-${randomBytes8(8).toString("hex")}.tmp`;
+  const temporaryPath = `${bindingPath}.${process.pid}-${randomBytes9(8).toString("hex")}.tmp`;
   try {
     await writeFile7(temporaryPath, `${JSON.stringify(binding, null, 2)}
 `, { flag: "wx" });
@@ -119919,7 +120444,7 @@ function verifyContainerReplacementOwnership(binding, consumer, expectedContaine
 async function acquireContainerLifecycleLock(projectDir) {
   const lockDir = path13.join(projectDir, ".sporades", ".container-lifecycle-lock");
   await mkdir8(path13.dirname(lockDir), { recursive: true });
-  const token = randomBytes8(16).toString("hex");
+  const token = randomBytes9(16).toString("hex");
   const ownerPath = path13.join(lockDir, "owner.json");
   for (let attempt = 0; attempt < 500; attempt += 1) {
     try {

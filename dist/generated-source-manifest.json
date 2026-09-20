@@ -60,6 +60,7 @@
       "src/mail-config.ts",
       "src/mail-runtime.ts",
       "src/maybe-promise.ts",
+      "src/notification-intent-runtime.ts",
       "src/package-root.ts",
       "src/promise-coordinator.ts",
       "src/public-tree-contract.ts",
@@ -100,7 +101,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "97a4f0cb52b1bf9966821df0c1b3a69e8c8ed790f725b64cbb6abd62f39d6e4a"
+    "digest": "cb8d741b9af818b568e32c41059ae79ff0084f0624c6ae53786e10ab6b061ded"
   },
   "outputs": {
     "files": [
@@ -310,6 +311,10 @@
       "dist/maybe-promise.d.ts.map",
       "dist/maybe-promise.js",
       "dist/maybe-promise.js.map",
+      "dist/notification-intent-runtime.d.ts",
+      "dist/notification-intent-runtime.d.ts.map",
+      "dist/notification-intent-runtime.js",
+      "dist/notification-intent-runtime.js.map",
       "dist/package-root.d.ts",
       "dist/package-root.d.ts.map",
       "dist/package-root.js",
@@ -439,6 +444,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "cd851f9f18feb53dadb7513a806410c0e31ca442fff1a4c86016559dbb379aaa"
+    "digest": "44ce5e7db5668652544c3d05fd4546a379564b15c8d05d574a4a8b4346019755"
   }
 }

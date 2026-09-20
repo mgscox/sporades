@@ -1,4 +1,5 @@
 import { acquirePostgresResourceBootstrapLock, resourceError } from "./resource-runtime.js";
+import { notificationIntentSchemas } from "./notification-intent-runtime.js";
 // The Capsule runtime's Database adapters and dialect: the three engines, the seam they answer, the
 // one shared method set every behavioural call goes through, and the app-schema DDL that method set
 // emits. Batch 9 of the migration ADR-0041 records, and the last domain to leave
@@ -1949,8 +1950,9 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
   const commitWasRejected = (error: any) => postgresRejectedTransactions.has(error);
 
   const resourceSchemas = [
-    { table: "sporades_resource_locks", columns: ["resourceTable", "resourceId"], primaryKey: ["resourceTable", "resourceId"], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId])" },
-    { table: "sporades_resource_receipts", columns: ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"], primaryKey: ["resourceTable", "resourceId", "operationId"], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId])" },
+    { table: "sporades_resource_locks", columns: ["resourceTable", "resourceId"], primaryKey: ["resourceTable", "resourceId"], indexes: [], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId])" },
+    { table: "sporades_resource_receipts", columns: ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"], primaryKey: ["resourceTable", "resourceId", "operationId"], indexes: [], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId])" },
+    ...notificationIntentSchemas,
   ];
 
   const resourceSchemaReady = async (query: (sql: string, params?: any[]) => Promise<any>) => {
@@ -2003,11 +2005,25 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
         [schema.table],
       ));
       if (extraConstraints.length !== 0) return false;
-      const unexpectedIndexes = postgresRowsFromResult(normalization, await query(
-        `SELECT ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexrelid")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_index")} AS ${dialect.quoteIdentifier("index")} LEFT JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_constraint")} AS ${dialect.quoteIdentifier("constraint")} ON ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("conindid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexrelid")} AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("conrelid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indrelid")} AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("contype")}='p' WHERE ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("oid")} IS NULL`,
+      const runtimeIndexes = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("index_relation")}.${dialect.quoteIdentifier("relname")} AS ${dialect.quoteIdentifier("name")}, array_to_string(array_agg(${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attname")} ORDER BY ${dialect.quoteIdentifier("key")}.${dialect.quoteIdentifier("ordinality")}), ',') AS ${dialect.quoteIdentifier("columns")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indisunique")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indisvalid")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indisready")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indpred")} IS NOT NULL AS ${dialect.quoteIdentifier("partial")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexprs")} IS NOT NULL AS ${dialect.quoteIdentifier("expressions")}, ${dialect.quoteIdentifier("access_method")}.${dialect.quoteIdentifier("amname")} AS ${dialect.quoteIdentifier("access_method")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indnkeyatts")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indnatts")} AS ${dialect.quoteIdentifier("keys_only")}, bool_and(${dialect.quoteIdentifier("operator_class")}.${dialect.quoteIdentifier("opcdefault")} AND ${dialect.quoteIdentifier("operator_class")}.${dialect.quoteIdentifier("opcmethod")}=${dialect.quoteIdentifier("index_relation")}.${dialect.quoteIdentifier("relam")}) AS ${dialect.quoteIdentifier("default_operator_classes")}, bool_and(${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indcollation")}[${dialect.quoteIdentifier("key")}.${dialect.quoteIdentifier("ordinality")}-1]=${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attcollation")}) AS ${dialect.quoteIdentifier("default_collations")}, bool_and(${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indoption")}[${dialect.quoteIdentifier("key")}.${dialect.quoteIdentifier("ordinality")}-1]=0) AS ${dialect.quoteIdentifier("default_options")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_index")} AS ${dialect.quoteIdentifier("index")} JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_class")} AS ${dialect.quoteIdentifier("index_relation")} ON ${dialect.quoteIdentifier("index_relation")}.${dialect.quoteIdentifier("oid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexrelid")} JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_am")} AS ${dialect.quoteIdentifier("access_method")} ON ${dialect.quoteIdentifier("access_method")}.${dialect.quoteIdentifier("oid")}=${dialect.quoteIdentifier("index_relation")}.${dialect.quoteIdentifier("relam")} LEFT JOIN LATERAL unnest(${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indkey")}) WITH ORDINALITY AS ${dialect.quoteIdentifier("key")}(${dialect.quoteIdentifier("attnum")}, ${dialect.quoteIdentifier("ordinality")}) ON TRUE LEFT JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_attribute")} AS ${dialect.quoteIdentifier("attribute")} ON ${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attrelid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indrelid")} AND ${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attnum")}=${dialect.quoteIdentifier("key")}.${dialect.quoteIdentifier("attnum")} LEFT JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_opclass")} AS ${dialect.quoteIdentifier("operator_class")} ON ${dialect.quoteIdentifier("operator_class")}.${dialect.quoteIdentifier("oid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indclass")}[${dialect.quoteIdentifier("key")}.${dialect.quoteIdentifier("ordinality")}-1] LEFT JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_constraint")} AS ${dialect.quoteIdentifier("constraint")} ON ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("conindid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexrelid")} AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("conrelid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indrelid")} AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("contype")}='p' WHERE ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("oid")} IS NULL GROUP BY ${dialect.quoteIdentifier("index_relation")}.${dialect.quoteIdentifier("relname")}, ${dialect.quoteIdentifier("index_relation")}.${dialect.quoteIdentifier("relam")}, ${dialect.quoteIdentifier("access_method")}.${dialect.quoteIdentifier("amname")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indisunique")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indisvalid")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indisready")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indpred")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexprs")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indnkeyatts")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indnatts")} ORDER BY ${dialect.quoteIdentifier("index_relation")}.${dialect.quoteIdentifier("relname")}`,
         [schema.table],
       ));
-      if (unexpectedIndexes.length !== 0) return false;
+      const expectedIndexes = [...schema.indexes].sort((left, right) => left.name.localeCompare(right.name));
+      if (runtimeIndexes.length !== expectedIndexes.length || runtimeIndexes.some((row: any, index: number) =>
+        row.name !== expectedIndexes[index].name
+        || row.columns !== expectedIndexes[index].columns.join(",")
+        || row.indisunique
+        || !row.indisvalid
+        || !row.indisready
+        || row.partial
+        || row.expressions
+        || row.access_method !== "btree"
+        || !row.keys_only
+        || !row.default_operator_classes
+        || !row.default_collations
+        || !row.default_options
+      )) return false;
       const userTriggers = postgresRowsFromResult(normalization, await query(
         `SELECT ${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("oid")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_trigger")} AS ${dialect.quoteIdentifier("trigger")} WHERE ${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("tgrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND NOT ${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("tgisinternal")}`,
         [schema.table],
@@ -2070,6 +2086,9 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
                 columns.delete(folded); columns.add(column);
               }
             }
+          }
+          for (const index of schema.indexes) {
+            await query(`CREATE INDEX IF NOT EXISTS ${dialect.quoteIdentifier(index.name)} ON ${table} (${index.columns.map(column => dialect.quoteIdentifier(column)).join(", ")})`);
           }
         }
         if (!await resourceSchemaReady(query)) throw resourceError("RESOURCE_STORAGE_ERROR");

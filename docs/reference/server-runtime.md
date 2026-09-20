@@ -814,7 +814,13 @@ inspection omits the payload and does not expose raw provider history.
 `ctx.mail.send(...)` accepts one provider-independent message with `to`,
 optional `cc`, `bcc`, `from`, and `replyTo`, plus `subject`, `textBody` and/or
 `htmlBody`, and an optional validated `provider` object. It returns a stable
-`{ messageId, accepted, rejected }` result. When `mail.smtp` is omitted from
+`{ messageId, accepted, rejected }` result. Delivery is partial by recipient:
+an address the server rejects at RCPT is returned in `rejected` while the
+message still reaches every address in `accepted`. The call fails only when no
+recipient was accepted or the conversation itself failed, with `MAIL_REJECTED`
+when every rejection was definitive (5xx) and `MAIL_CONNECTION_FAILED` when any
+was transient (4xx greylisting, rate limiting, temporary unavailability), which
+a later attempt may still deliver. When `mail.smtp` is omitted from
 `sporades.json`, calls fail with `MAIL_DISABLED`. When `mail.smtp` is configured
 but its named credentials are absent from Server env, the Capsule still starts,
 `ctx.mail.enabled` is `false`, and calls fail with `MAIL_CREDENTIAL_MISSING`;

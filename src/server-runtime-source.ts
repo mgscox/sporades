@@ -14,6 +14,7 @@ import { uncappedLogEnvelope, logPayloadMaxBytes, validateLogConfig } from "./lo
 import { validateMailConfig } from "./mail-config.js";
 import { validateStripePaymentsRuntimeConfig } from "./stripe-payment-config.js";
 import { createMailRuntime } from "./mail-runtime.js";
+import { ensureNotificationIntentStorage, notificationIntentStorageExists, startNotificationIntentWorker, stopNotificationIntentWorker } from "./notification-intent-runtime.js";
 import { createEmailEventEndpoints } from "./email-events-runtime.js";
 import { sqlWithoutTrailingTerminator, validateReadOnlyInspectionSql } from "./inspection-sql.js";
 import { isInternalLogIndexMetadataRow, targetsInternalLogIndexTable } from "./log-index-guard.js";
@@ -562,7 +563,7 @@ export async function replaceRuntimeDatabase(currentDatabase: LooseRecord, candi
   let activationError: unknown;
   try {
     if (typeof candidateDatabase.__activateJobExecution === "function") {
-      candidateDatabase.__activateJobExecution(candidateDatabase.clock.now().getTime());
+      await candidateDatabase.__activateJobExecution(candidateDatabase.clock.now().getTime());
     } else {
       scheduleJobLeaseRecoveryAt(candidateDatabase, candidateDatabase.clock.now().getTime());
       scheduleCurrentUserJobWorker(candidateDatabase);
@@ -848,6 +849,7 @@ export async function openDevDatabase(
     fileIngressEnabled,
     scheduleOccurrenceFault: options?.scheduleOccurrenceFault,
     scheduleReconciliationFault: options?.scheduleReconciliationFault,
+    notificationIntentFault: options?.notificationIntentFault,
     jobRecoveryFault: options?.jobRecoveryFault,
     schedulePayloadFactoryTimeoutMs,
     schedulePayloadFactoryActive: 0,
@@ -1031,13 +1033,26 @@ export async function openDevDatabase(
       for (const timer of database.__scheduleTimers ?? []) database.clock.clearTimer(timer);
       database.__scheduleTimers?.clear?.();
       const workerSettlement = stopCurrentUserJobWorker(database);
+      database.__notificationIntentShutdownAborting = true;
+      const notificationSettlement = stopNotificationIntentWorker(database);
       const scheduleSettlement = settleActiveScheduleWork(database);
+      let mailSettlement: Promise<unknown> | undefined;
+      let mailStartError: unknown;
+      try {
+        mailSettlement = Promise.resolve(database.mail.close());
+        void mailSettlement.catch(() => {});
+      } catch (error) {
+        mailStartError = error;
+      }
       const closeResources = () => {
         const failures: Array<{ index: number; error: unknown }> = [];
         const pending: Promise<void>[] = [];
-    const resources = [
+        const resources = [
           () => shutdownClamavRuntime(database),
-          () => database.mail.close(),
+          () => {
+            if (mailStartError !== undefined) throw mailStartError;
+            return mailSettlement;
+          },
           () => database.adapter.close(),
           () => database.fileStorage.close(),
         ];
@@ -1061,7 +1076,7 @@ export async function openDevDatabase(
         };
         return pending.length > 0 ? Promise.all(pending).then(finish) : finish();
       };
-      const runtimeSettlements = [workerSettlement, scheduleSettlement].filter(Boolean).map((settlement) => Promise.resolve(settlement));
+      const runtimeSettlements = [workerSettlement, notificationSettlement, scheduleSettlement].filter(Boolean).map((settlement) => Promise.resolve(settlement));
       if (runtimeSettlements.length === 0) return closeResources();
       return (async () => {
         let workerError: unknown;
@@ -1089,9 +1104,10 @@ export async function openDevDatabase(
       Promise.resolve(completeSettlement).catch(() => {});
       return activeWorker ? Promise.resolve(activeWorker) : undefined;
     },
-    __activateJobExecution: (recoveryAt: number | null) => {
+    __activateJobExecution: async (recoveryAt: number | null) => {
       database.__jobActivationDeferred = false;
       activateCurrentUserJobExecution(database, recoveryAt);
+      if (database.__notificationDeliveryEnabled) activateNotificationIntentWorker(database);
     },
     __preflightJobExecutionActivation: () => {
       preflightCurrentUserJobExecution(database);
@@ -1121,6 +1137,30 @@ export async function openDevDatabase(
       database.__scheduleRecoveryPromise = null;
       database.__scheduleLegacyDiscoveryTimer = null;
       await refreshIngressMaintenanceState(database, { discoverInterruptedDelivery: true });
+      const notificationDeliveryEnabled = database.mail.enabled || await notificationIntentStorageExists(database.adapter);
+      database.__notificationDeliveryEnabled = notificationDeliveryEnabled;
+      database.__notificationIntentStorageVerified = false;
+      // A PostgreSQL storage bootstrap failure here (RESOURCE_BUSY from
+      // pg_try_advisory_xact_lock contention with another replica restarting
+      // concurrently, or RESOURCE_STORAGE_ERROR) must not be fatal to init():
+      // every PostgreSQL resource-scope acquisition already runs this exact
+      // idempotent bootstrap lazily as its own retryable caller
+      // (src/resource-runtime.ts). The delivery worker also verifies storage
+      // before its first query and retries that gate on its recovery-scan
+      // interval, so a rejected bootstrap never admits delivery against an
+      // unverified schema while transient contention remains recoverable. This
+      // mirrors the fire-and-forget treatment activateNotificationIntentWorker
+      // already gives the worker itself, but stays awaited (not detached) so a
+      // non-PostgreSQL bootstrap's synchronous CREATE TABLE still completes
+      // before the worker starts immediately after it.
+      if (notificationDeliveryEnabled) {
+        try {
+          await ensureNotificationIntentStorage(database.adapter);
+          database.__notificationIntentStorageVerified = true;
+        } catch (error: any) {
+          void Promise.resolve(database.log?.emit?.({ category: "platform", event: "notification.storage.bootstrap_failed", level: "error", message: "Notification storage bootstrap failed", data: { code: String(error?.code ?? "NOTIFICATION_STORAGE_BOOTSTRAP_FAILED").slice(0, 80) } })).catch(() => {});
+        }
+      }
       if (ingressAuditMaintenanceIsDue(database)) await runIngressAuditOutboxDrain(database);
       // Recovery may classify durable state while the candidate is stopped,
       // but it returns the retained wake instead of arming it. Publication is
@@ -1141,6 +1181,7 @@ export async function openDevDatabase(
         // fresh runtime has no inherited worker/wake timer, so activation
         // releases recovery plus one normal pass to rediscover durable work.
         activateCurrentUserJobExecution(database, earliestFutureLeaseAt);
+        if (notificationDeliveryEnabled) activateNotificationIntentWorker(database);
       }
       await recoverReconciledSchedules(database, reconciled.recoveredOccurrences);
       // A fresh initial runtime publishes here. Dev replacement candidates are
@@ -1155,7 +1196,16 @@ export async function openDevDatabase(
       database.__scheduleRecoveryTimer = null;
       database.__scheduleRecoveryDueAt = null;
       database.__scheduleLegacyDiscoveryTimer = null;
-      const settlements = [stopCurrentUserJobWorker(database), settleActiveScheduleWork(database), shutdownClamavRuntime(database)]
+      database.__notificationIntentShutdownAborting = true;
+      const notificationSettlement = stopNotificationIntentWorker(database);
+      let mailSettlement: Promise<unknown>;
+      try {
+        mailSettlement = Promise.resolve(database.mail.close());
+      } catch (cleanupError) {
+        mailSettlement = Promise.reject(cleanupError);
+      }
+      void mailSettlement.catch(() => {});
+      const settlements = [stopCurrentUserJobWorker(database), notificationSettlement, mailSettlement, settleActiveScheduleWork(database), shutdownClamavRuntime(database)]
         .filter(Boolean)
         .map((pending) => Promise.resolve(pending));
       const cleanup = await Promise.allSettled(settlements);
@@ -1176,6 +1226,29 @@ export async function openDevDatabase(
         database.__scheduleStopped = true;
         workerSettlement = stopCurrentUserJobWorker(database);
       } catch (error) { failures.push(error); }
+      let notificationWorkerSettlement: unknown;
+      let mailSettlement: Promise<unknown> | undefined;
+      try {
+        database.__notificationIntentShutdownAborting = true;
+        notificationWorkerSettlement = stopNotificationIntentWorker(database);
+      }
+      catch (error) { failures.push(error); }
+      // Abort deliveries which began before shutdown without terminally
+      // closing mail: the Capsule shutdown hook retains ctx.mail authority.
+      // The global close follows the hook after every earlier delivery and
+      // durable notification reservation has settled.
+      try {
+        mailSettlement = Promise.resolve(database.mail.abortActiveDeliveries?.());
+        void mailSettlement.catch(() => {});
+      } catch (error) { failures.push(error); }
+      if (notificationWorkerSettlement) {
+        try { await notificationWorkerSettlement; }
+        catch (error) { failures.push(error); }
+      }
+      if (mailSettlement) {
+        try { await mailSettlement; }
+        catch (error) { failures.push(error); }
+      }
       try {
         abortSchedulePayloadFactories(database);
         for (const timer of database.__scheduleTimers ?? []) database.clock.clearTimer(timer);
@@ -1197,11 +1270,11 @@ export async function openDevDatabase(
           await runLifecycleHook(database.lifecycleHooks.shutdown, context);
         } catch (error) { failures.push(error); }
       }
+      try { await database.mail.close(); }
+      catch (error) { failures.push(error); }
       try { await shutdownClamavRuntime(database); }
       catch (error) { failures.push(error); }
       database.__runtimeInitialized = false;
-      try { await database.mail.close(); }
-      catch (error) { failures.push(error); }
       if (failures.length === 1) throw failures[0];
       if (failures.length > 1) throw new AggregateError(failures, "Multiple runtime resources failed to shut down.");
     })();
@@ -2124,6 +2197,20 @@ function activateCurrentUserJobExecution(database: LooseRecord, recoveryAt: numb
   if (failures.length === 1) throw failures[0];
 }
 
+function activateNotificationIntentWorker(database: LooseRecord) {
+  // Durable notification delivery is fire-and-forget, exactly like the Job
+  // worker above it. Awaiting the returned scan would serialize the whole
+  // durable backlog into startup (one SMTP conversation per due recipient) and
+  // would let a single transient adapter or mail failure reject init(), whose
+  // catch block then closes the database. The worker arms its own recovery
+  // scan before it rejects, so the rejection is logged and dropped here.
+  void Promise.resolve(startNotificationIntentWorker(database)).catch((error: any) => {
+    try {
+      void Promise.resolve(database.log?.emit?.({ category: "platform", event: "notification.delivery.scan_failed", level: "error", message: "Notification delivery scan failed", data: { code: String(error?.code ?? "NOTIFICATION_DELIVERY_SCAN_FAILED").slice(0, 80) } })).catch(() => {});
+    } catch {}
+  });
+}
+
 function preflightCurrentUserJobExecution(database: LooseRecord) {
   const timer = database.clock.setTimer(() => {}, MAX_NATIVE_TIMER_DELAY_MS);
   database.clock.clearTimer(timer);
@@ -2798,10 +2885,12 @@ function normalizeUniqueConstraints(tableName: string, fields: Record<string, un
 }
 
 function assertNotReservedTeamTableName(name: string) {
-  if (name.toLowerCase().startsWith("sporades_resource_")) {
+  const runtimeNamespace = ["sporades_resource_", "sporades_notification_"]
+    .find(prefix => name.toLowerCase().startsWith(prefix));
+  if (runtimeNamespace) {
     throw commandError(
       `Reserved runtime table name: ${name}`,
-      "Choose a Capsule table name outside the sporades_resource_ runtime namespace.",
+      `Choose a Capsule table name outside the ${runtimeNamespace} runtime namespace.`,
       "RESERVED_TABLE_NAME",
     );
   }

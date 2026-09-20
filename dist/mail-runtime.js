@@ -58,11 +58,13 @@ function mailError(code, message, hint) {
 // and every send fails with the reason, so an operator who has not sealed the SMTP credentials yet
 // gets a running Capsule without Email rather than a Capsule that will not start.
 function disabledMailRuntime(code, message, hint) {
+    const unavailable = () => { throw mailError(code, message, hint); };
+    const rejectIntent = () => { const error = mailError(code, message, hint); error.smtpOutcome = "rejected"; throw error; };
     return {
         enabled: false,
-        async send() {
-            throw mailError(code, message, hint);
-        },
+        validateIntent: unavailable,
+        async send() { unavailable(); },
+        async sendIntent() { rejectIntent(); },
         close() { },
     };
 }
@@ -109,69 +111,112 @@ export function createMailRuntime(mailConfig, serverEnv, options = {}) {
     }
     let closeStarted = false;
     let closeResult;
+    const activeDeliveryAborts = new Set();
+    const validateIntent = (input) => normalizeMailMessage({
+        to: input.to,
+        subject: input.subject,
+        textBody: input.text,
+        ...(input.html === undefined ? {} : { htmlBody: input.html }),
+    }, resolvedSmtp.defaultFrom, resolvedSmtp.vendor);
+    const deliver = async (message, deliveryLog, stableMessageId) => {
+        const deliveryAbort = new AbortController();
+        activeDeliveryAborts.add(deliveryAbort);
+        const outbound = stableMessageId ? { ...message, messageId: stableMessageId } : message;
+        const messageIdentity = stableMessageId
+            ? `intent_${stableMessageId.replace(/[^a-f0-9]/gi, "").slice(0, 16)}`
+            : `mail_${crypto.randomUUID()}`;
+        const startedAt = Date.now();
+        try {
+            const result = await transport.send(outbound, { signal: deliveryAbort.signal });
+            const normalizedResult = {
+                messageId: String(result?.messageId ?? stableMessageId ?? ""),
+                accepted: Array.isArray(result?.accepted) ? result.accepted.map(String) : [],
+                rejected: Array.isArray(result?.rejected) ? result.rejected.map(String) : [],
+            };
+            if (stableMessageId && (normalizedResult.accepted.length !== 1 || normalizedResult.rejected.length !== 0)) {
+                const rejection = mailError("MAIL_REJECTED", "The SMTP server rejected the message.", "Check the sender, recipient, and provider delivery policy.");
+                rejection.smtpOutcome = "rejected";
+                throw rejection;
+            }
+            const resultCategory = normalizedResult.rejected.length > 0 ? "partial" : "accepted";
+            try {
+                await deliveryLog?.({
+                    category: "mail", event: "mail.delivery", level: "info", message: "SMTP delivery completed.",
+                    data: createMailDeliveryLogData(resolvedSmtp.vendor, message, messageIdentity, Date.now() - startedAt, resultCategory, normalizedResult),
+                    request: null, release: null, correlation: { mail: messageIdentity },
+                });
+            }
+            catch { }
+            return normalizedResult;
+        }
+        catch (error) {
+            const normalizedError = ownedTransportBoundary
+                ? error
+                : trustedTestTransportBoundary
+                    ? normalizeMailTransportError(error)
+                    : mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status.");
+            // Intent delivery needs only a bounded outcome class. Never retain the
+            // provider reply, address, body, credentials, or engine diagnostics.
+            if (stableMessageId) {
+                normalizedError.smtpOutcome = normalizedError.code === "MAIL_REJECTED"
+                    || error?.smtpOutcome === "rejected"
+                    || Number(error?.smtpCode) >= 500 && Number(error?.smtpCode) <= 599
+                    ? "rejected" : "unknown";
+            }
+            try {
+                await deliveryLog?.({
+                    category: "mail", event: "mail.delivery", level: "error", message: "SMTP delivery failed.",
+                    data: createMailDeliveryLogData(resolvedSmtp.vendor, message, messageIdentity, Date.now() - startedAt, normalizedError.code),
+                    request: null, release: null, correlation: { mail: messageIdentity },
+                });
+            }
+            catch { }
+            throw normalizedError;
+        }
+        finally {
+            activeDeliveryAborts.delete(deliveryAbort);
+        }
+    };
     return {
         enabled: true,
+        validateIntent,
+        // Internal-only (not part of MailApi/ctx.mail): lets the durable
+        // notification worker size its reservation deadline off the same
+        // timeouts a single sendIntent's SMTP conversation is actually bounded
+        // by, instead of an unrelated fixed constant.
+        connectionTimeoutMs: resolvedSmtp.connectionTimeoutMs,
+        socketTimeoutMs: resolvedSmtp.socketTimeoutMs,
         async send(input, deliveryLog = options.mailLog) {
             const message = normalizeMailMessage(input, resolvedSmtp.defaultFrom, resolvedSmtp.vendor);
-            const messageIdentity = `mail_${crypto.randomUUID()}`;
-            const startedAt = Date.now();
+            return deliver(message, deliveryLog);
+        },
+        async sendIntent(input, stableMessageId, deliveryLog = options.mailLog) {
+            let message;
             try {
-                const result = await transport.send(message);
-                const normalizedResult = {
-                    messageId: String(result?.messageId ?? ""),
-                    accepted: Array.isArray(result?.accepted) ? result.accepted.map(String) : [],
-                    rejected: Array.isArray(result?.rejected) ? result.rejected.map(String) : [],
-                };
-                const resultCategory = normalizedResult.rejected.length > 0 ? "partial" : "accepted";
-                try {
-                    await deliveryLog?.({
-                        category: "mail",
-                        event: "mail.delivery",
-                        level: "info",
-                        message: "SMTP delivery completed.",
-                        data: createMailDeliveryLogData(resolvedSmtp.vendor, message, messageIdentity, Date.now() - startedAt, resultCategory, normalizedResult),
-                        request: null,
-                        release: null,
-                        correlation: { mail: messageIdentity },
-                    });
-                }
-                catch {
-                    // Diagnostics must never turn a completed external side effect into
-                    // an apparent delivery failure that callers may retry.
-                }
-                return normalizedResult;
+                message = validateIntent(input);
+                if (message.to.length !== 1)
+                    throw mailError("INVALID_MAIL_MESSAGE", "Invalid mail message.", "Pass exactly one intent recipient.");
             }
             catch (error) {
-                // Only Sporades-owned transport failures, or explicitly trusted
-                // internal test doubles, may be inspected for classification. An
-                // arbitrary injected value remains completely opaque.
-                const normalizedError = ownedTransportBoundary
-                    ? error
-                    : trustedTestTransportBoundary
-                        ? normalizeMailTransportError(error)
-                        : mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status.");
-                try {
-                    await deliveryLog?.({
-                        category: "mail",
-                        event: "mail.delivery",
-                        level: "error",
-                        message: "SMTP delivery failed.",
-                        data: createMailDeliveryLogData(resolvedSmtp.vendor, message, messageIdentity, Date.now() - startedAt, normalizedError.code),
-                        request: null,
-                        release: null,
-                        correlation: { mail: messageIdentity },
-                    });
-                }
-                catch {
-                    // Preserve the stable mail failure even if diagnostics are unavailable.
-                }
-                throw normalizedError;
+                if (error?.code === "INVALID_MAIL_MESSAGE")
+                    error.smtpOutcome = "rejected";
+                throw error;
             }
+            return deliver(message, deliveryLog, stableMessageId);
+        },
+        // Internal-only: interrupt deliveries which began before shutdown without
+        // terminally closing mail. A Capsule shutdown hook may still send mail;
+        // the global transport closes only after that hook has settled.
+        abortActiveDeliveries() {
+            for (const deliveryAbort of activeDeliveryAborts)
+                deliveryAbort.abort();
         },
         close() {
             if (closeStarted)
                 return closeResult;
             closeStarted = true;
+            for (const deliveryAbort of activeDeliveryAborts)
+                deliveryAbort.abort();
             closeResult = transport.close?.();
             return closeResult;
         },
@@ -773,13 +818,23 @@ function normalizeMailAddress(value, field) {
 }
 function normalizeMailTransportError(error) {
     const code = String(error?.code ?? "");
+    const smtpCode = Number(error?.smtpCode);
+    const normalized = (value) => {
+        // The owned transport replaces provider errors with fresh, redacted
+        // Errors. Carry only the bounded permanence class across that boundary so
+        // the durable intent worker does not turn a definitive 5xx into an
+        // unknown outcome and retry it forever.
+        if ((smtpCode >= 500 && smtpCode <= 599) || error?.smtpOutcome === "rejected")
+            value.smtpOutcome = "rejected";
+        return value;
+    };
     if (code === "ETIMEDOUT" || code === "ESOCKETTIMEDOUT") {
-        return mailError("MAIL_TIMEOUT", "SMTP delivery timed out.", "Check the SMTP host and timeout settings before retrying.");
+        return normalized(mailError("MAIL_TIMEOUT", "SMTP delivery timed out.", "Check the SMTP host and timeout settings before retrying."));
     }
     if (code === "MAIL_TIMEOUT")
-        return mailError("MAIL_TIMEOUT", "SMTP delivery timed out.", "Check the SMTP host and timeout settings before retrying.");
+        return normalized(mailError("MAIL_TIMEOUT", "SMTP delivery timed out.", "Check the SMTP host and timeout settings before retrying."));
     if (code === "EAUTH" || code === "MAIL_AUTH_FAILED") {
-        return mailError("MAIL_AUTH_FAILED", "SMTP authentication failed.", "Check the SMTP Server env credentials and authentication method.");
+        return normalized(mailError("MAIL_AUTH_FAILED", "SMTP authentication failed.", "Check the SMTP Server env credentials and authentication method."));
     }
     if (code === "ETLS"
         || code.startsWith("CERT_")
@@ -787,33 +842,51 @@ function normalizeMailTransportError(error) {
         || code.startsWith("ERR_SSL_")
         || ["DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY"].includes(code)
         || code === "MAIL_TLS_FAILED")
-        return mailError("MAIL_TLS_FAILED", "SMTP TLS negotiation failed.", "Check the SMTP TLS mode, port, and certificate policy.");
-    if (code === "EREJECTED" || code === "MAIL_REJECTED") {
-        return mailError("MAIL_REJECTED", "The SMTP server rejected the message.", "Check the sender, recipients, and provider delivery policy.");
+        return normalized(mailError("MAIL_TLS_FAILED", "SMTP TLS negotiation failed.", "Check the SMTP TLS mode, port, and certificate policy."));
+    if (code === "EREJECTED" && smtpCode >= 400 && smtpCode <= 499) {
+        return normalized(mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status."));
     }
-    return mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status.");
+    if (code === "EREJECTED" || code === "MAIL_REJECTED") {
+        return normalized(mailError("MAIL_REJECTED", "The SMTP server rejected the message.", "Check the sender, recipients, and provider delivery policy."));
+    }
+    return normalized(mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status."));
 }
 export function createMailTransport(smtp) {
     const sockets = new Set();
     let closed = false;
     return {
-        async send(message) {
+        async send(message, options = {}) {
             let socket;
             let reader;
+            const abortDelivery = () => {
+                const activeSocket = reader?.socket?.() ?? socket;
+                if (!activeSocket?.destroyed)
+                    activeSocket?.destroy();
+            };
             try {
+                if (options.signal?.aborted) {
+                    const error = new Error("aborted");
+                    error.code = "ECONNECTION";
+                    throw error;
+                }
+                options.signal?.addEventListener?.("abort", abortDelivery, { once: true });
                 if (closed) {
                     const error = new Error("closed");
                     error.code = "ECONNECTION";
                     throw error;
                 }
-                socket = await connectSmtpSocket(smtp);
-                if (closed) {
+                socket = await connectSmtpSocket(smtp, (connectingSocket) => {
+                    socket = connectingSocket;
+                    sockets.add(connectingSocket);
+                    if (closed || options.signal?.aborted)
+                        connectingSocket.destroy();
+                });
+                if (closed || options.signal?.aborted) {
                     const error = new Error("closed");
                     error.code = "ECONNECTION";
                     socket.destroy(error);
                     throw error;
                 }
-                sockets.add(socket);
                 reader = createSmtpResponseReader(socket, smtp.socketTimeoutMs);
                 let encrypted = smtp.tls.mode === "implicit";
                 await reader.expect([220]);
@@ -866,19 +939,30 @@ export function createMailTransport(smtp) {
                 await smtpCommand(activeSocket, reader, `MAIL FROM:<${message.from.email}>`, [250]);
                 const accepted = [];
                 const rejected = [];
+                let transientCode = 0;
                 for (const recipient of [...message.to, ...message.cc, ...message.bcc]) {
-                    if (await smtpRecipientCommand(activeSocket, reader, recipient.email))
+                    const reply = await smtpRecipientCommand(activeSocket, reader, recipient.email);
+                    if (reply.accepted)
                         accepted.push(recipient.email);
-                    else
+                    else {
                         rejected.push(recipient.email);
+                        if (reply.transient && transientCode === 0)
+                            transientCode = reply.smtpCode;
+                    }
                 }
                 if (accepted.length === 0) {
                     const error = new Error("all recipients rejected");
                     error.code = "EREJECTED";
+                    // Retain the first transient class so normalization reports a
+                    // retryable failure rather than a definitive rejection.
+                    if (transientCode !== 0)
+                        error.smtpCode = transientCode;
                     throw error;
                 }
                 await smtpCommand(activeSocket, reader, "DATA", [354]);
-                const messageId = `<${crypto.randomUUID()}@sporades.local>`;
+                const messageId = typeof message.messageId === "string" && /^<[^<>\r\n]+>$/.test(message.messageId)
+                    ? message.messageId
+                    : `<${crypto.randomUUID()}@sporades.local>`;
                 const raw = buildSmtpMessage({ ...message, messageId }).replace(/(^|\r\n)\./g, "$1..");
                 activeSocket.write(`${raw}\r\n.\r\n`);
                 const delivered = await reader.expect([250], "EREJECTED");
@@ -896,6 +980,7 @@ export function createMailTransport(smtp) {
                 throw normalizeMailTransportError(error);
             }
             finally {
+                options.signal?.removeEventListener?.("abort", abortDelivery);
                 reader?.close();
                 for (const candidate of [...sockets]) {
                     if (candidate === socket || candidate === reader?.socket()) {
@@ -913,7 +998,7 @@ export function createMailTransport(smtp) {
         },
     };
 }
-export async function connectSmtpSocket(smtp) {
+export async function connectSmtpSocket(smtp, onSocket) {
     let socket;
     if (smtp.tls.mode === "implicit") {
         const tls = await import("node:tls");
@@ -934,7 +1019,7 @@ export async function connectSmtpSocket(smtp) {
         socket.destroy(error);
     });
     const event = smtp.tls.mode === "implicit" ? "secureConnect" : "connect";
-    await new Promise((resolve, reject) => {
+    const connected = new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
             const error = new Error("connection timeout");
             error.code = "ETIMEDOUT";
@@ -948,7 +1033,15 @@ export async function connectSmtpSocket(smtp) {
             clearTimeout(timer);
             reject(error);
         });
+        socket.once("close", () => {
+            clearTimeout(timer);
+            const error = new Error("connection closed");
+            error.code = "ECONNECTION";
+            reject(error);
+        });
     });
+    onSocket?.(socket);
+    await connected;
     return socket;
 }
 function createSmtpResponseReader(initialSocket, timeoutMs) {
@@ -1039,11 +1132,18 @@ async function smtpRecipientCommand(socket, reader, email) {
     socket.write(`RCPT TO:<${email}>\r\n`);
     try {
         await reader.expect([250, 251], "EREJECTED");
-        return true;
+        return { accepted: true, transient: false, smtpCode: 0 };
     }
     catch (error) {
-        if (error?.code === "EREJECTED" && error?.smtpCode >= 400 && error?.smtpCode <= 599)
-            return false;
+        const smtpCode = Number(error?.smtpCode);
+        // A RCPT rejection is per-recipient, never per-message: the send continues
+        // to DATA for whoever was accepted, which is what MailSendResult.rejected
+        // documents. The 4xx class is reported separately because it is transient
+        // (greylisting, rate limiting, a temporarily unavailable mailbox) and a
+        // wholly-rejected message must stay uncertain so intent delivery retries.
+        if (error?.code === "EREJECTED" && smtpCode >= 400 && smtpCode <= 599) {
+            return { accepted: false, transient: smtpCode <= 499, smtpCode };
+        }
         throw error;
     }
 }

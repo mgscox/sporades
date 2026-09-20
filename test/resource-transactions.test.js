@@ -1923,6 +1923,39 @@ test('Postgres resource readiness rejects a receipt expression index before prot
   }
 });
 
+test('Postgres resource readiness rejects altered notification scheduling index semantics', { skip: POSTGRES_SKIP_REASON }, async t => {
+  const runtimeTables = [
+    'sporades_notification_attempt_keys',
+    'sporades_notification_attempts',
+    'sporades_notification_recipients',
+    'sporades_notification_intents',
+    'sporades_resource_receipts',
+    'sporades_resource_locks',
+  ];
+  const trailingKeys = '"nextAttemptAt", "resourceTable", "resourceId", "operationId", "intentId", "recipient"';
+  const cases = [
+    { name: 'non-default operator class', definition: `("state" text_pattern_ops, ${trailingKeys})` },
+    { name: 'non-default collation', definition: `("state" COLLATE "C", ${trailingKeys})` },
+    { name: 'descending sort', definition: `("state" DESC, ${trailingKeys})` },
+    { name: 'included final column', definition: '("state", "nextAttemptAt", "resourceTable", "resourceId", "operationId", "intentId") INCLUDE ("recipient")' },
+  ];
+  for (const hostile of cases) await t.test(hostile.name, async () => {
+    const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+    const bootstrap = reset[Symbol.for('sporades.database.resourceBootstrapMechanics')];
+    try {
+      await resetPostgresSchema(reset, []);
+      await reset.exec(`DROP TABLE IF EXISTS ${runtimeTables.join(', ')}`);
+      await bootstrap();
+      await reset.exec('DROP INDEX sporades_notification_recipients_due');
+      await reset.exec(`CREATE INDEX sporades_notification_recipients_due ON sporades_notification_recipients ${hostile.definition}`);
+      await assert.rejects(bootstrap(), { code: 'RESOURCE_STORAGE_ERROR' });
+    } finally {
+      await reset.exec(`DROP TABLE IF EXISTS ${runtimeTables.join(', ')}`).catch(() => {});
+      await reset.close();
+    }
+  });
+});
+
 test('Postgres resource readiness rejects user database mechanisms that can remove a resource receipt', { skip: POSTGRES_SKIP_REASON }, async t => {
   for (const mode of ['before-suppress', 'after-delete', 'rewrite-instead']) await t.test(mode, async () => {
     const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
@@ -3999,12 +4032,12 @@ test('same-runtime resource acquisition is busy behind a transaction but roots q
 test('resource table namespace rejects module and source schemas descriptively', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'resource-reserved-'));
   try {
-    for (const fromSource of [false, true]) {
-      await assert.rejects(openDevDatabase(path.join(dir, `${fromSource}.db`),
-        fromSource ? 'schema: { sporades_resource_private: table({ value: String() }) }' : '', {}, {},
-        fromSource ? undefined : { schema: { sporades_resource_private: table({ value: Text() }) } }), error => {
+    for (const reservedName of ['sporades_resource_private', 'sporades_notification_private']) for (const fromSource of [false, true]) {
+      await assert.rejects(openDevDatabase(path.join(dir, `${reservedName}-${fromSource}.db`),
+        fromSource ? `schema: { ${reservedName}: table({ value: String() }) }` : '', {}, {},
+        fromSource ? undefined : { schema: { [reservedName]: table({ value: Text() }) } }), error => {
           assert.equal(error.code, 'RESERVED_TABLE_NAME');
-          assert.match(error.message, /Reserved runtime table name: sporades_resource_private/);
+          assert.match(error.message, new RegExp(`Reserved runtime table name: ${reservedName}`));
           return true;
         });
     }

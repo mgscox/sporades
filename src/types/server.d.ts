@@ -479,7 +479,17 @@ export type MailSendInput = {
   provider?: JsonObject;
 };
 
-/** Stable SMTP delivery result. */
+/**
+ * Stable SMTP delivery result.
+ *
+ * Delivery is partial by recipient: any address the server rejects at RCPT
+ * appears in `rejected`, the message is still delivered to everyone in
+ * `accepted`, and the call resolves. It rejects only when no recipient was
+ * accepted or the conversation itself failed — with `MAIL_REJECTED` when every
+ * rejection was definitive (5xx) and `MAIL_CONNECTION_FAILED` when any was
+ * transient (4xx greylisting, rate limiting, temporary unavailability), which a
+ * later attempt may still deliver.
+ */
 export type MailSendResult = {
   messageId: string;
   accepted: string[];
@@ -870,15 +880,27 @@ export type ResourceIdentity = Readonly<{ table: string; id: string }>;
 export type ResourceRunOptions = Readonly<{ resource: ResourceIdentity; operationId: string; input: JsonValue }>;
 export type ResourceStatusOptions = Readonly<{ resource: ResourceIdentity; operationId: string }>;
 export type ResourceNotification = Readonly<{ id: string; to: readonly string[]; subject: string; text: string; html?: string }>;
+export type ResourceNotificationRecipientStatus = Readonly<{
+  recipient: string;
+  state: "accepted" | "submitting" | "unknown" | "retry-wait" | "acknowledged" | "rejected";
+  attemptCount: number;
+  nextAttemptAt: string | null;
+  lastOutcomeCategory: "acknowledged" | "rejected" | "unknown" | null;
+}>;
+export type ResourceNotificationIntentStatus = Readonly<{
+  id: string;
+  state: "pending" | "acknowledged" | "rejected";
+  recipients: readonly ResourceNotificationRecipientStatus[];
+}>;
 export type ResourceScope<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{
   db: DatabaseFromSchema<Schema>;
   jobs: Pick<JobApi, "enqueue">;
   log: Logger;
   signal: AbortSignal;
-  /** Reserved surface. Rejects RESOURCE_EFFECT_UNSUPPORTED until durable intents ship. */
+  /** Stages a durable notification in the owning resource transaction. No SMTP I/O occurs before commit. */
   notifications: { accept(input: ResourceNotification): Promise<{ id: string; state: "staged" }> };
 }>;
-export type ResourceStatus = { state: "absent" } | { state: "committed"; result: JsonValue; intentIds: string[] };
+export type ResourceStatus = { state: "absent" } | { state: "committed"; result: JsonValue; intentIds: string[]; intents?: ResourceNotificationIntentStatus[] };
 /** Explicit v1 resource-scope support matrix. libSQL rejects before callback or status work. */
 export type ResourceAdapterSupport = Readonly<{
   sqlite: "supported";

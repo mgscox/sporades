@@ -439,7 +439,7 @@ renderer, filters, pagination, or offline inspection.
 
 <a id="sqlite-resource-transactions-ticket-02"></a>
 
-## SQLite and PostgreSQL resource transactions (tickets 03–04)
+## SQLite and PostgreSQL resource transactions and notifications (tickets 03–06)
 
 An ordinary SQLite or PostgreSQL Job can call the server-only `ctx.resources.run` once, as
 its first application database or framework provider operation. It uses a
@@ -477,7 +477,7 @@ behind an acquired resource transaction. Resource acquisition itself never queue
 Anchor read/update ACLs and each operation's ACL/Team checks run inside that
 transaction under the captured Job actor. Previously captured parent DB handles
 cannot reenter the root connection. The scope exposes DB operations, Job enqueue,
-`signal`, bounded payload-free `log.info/warn/error`, and a reserved notification
+`signal`, bounded payload-free `log.info/warn/error`, and durable notification
 surface. Logs buffer at most 100 severity events; arguments are deliberately not
 recorded. Detached admitted DB/ACL work drains before commit; escaped scoped
 handles reject `RESOURCE_SCOPE_INACTIVE`. Nested resource/Privileged entry,
@@ -492,7 +492,7 @@ attempt settles, so handlers can report outcomes; during the scope use only its
 transactional `scope.log`. `run` and `status` both consume the invocation's one entry.
 There is no fallback to ordinary DB work after a failed acquisition. A rejected
 admitted DB/ACL operation poisons the transaction even if the callback catches its
-error. An unsupported `scope.notifications.accept` attempt is tracked and also
+error. An invalid `scope.notifications.accept` attempt is tracked and also
 poisons the transaction, including when its rejection is caught or not awaited.
 The 101st scope log call throws `RESOURCE_INVALID_INPUT`; log arguments are
 never retained. Scope ACL denial diagnostics are suppressed rather than written
@@ -512,11 +512,12 @@ past the deadline while still holding engine authority.
 Application writes, child Jobs and the operation receipt commit together.
 `sporades_resource_receipts` is created lazily on first opt-in and uses primary
 key `(resourceTable, resourceId, operationId)` within the database. It stores
-SHA-256 input and actor-binding digests, canonical result JSON, intent-ID JSON
-(currently `[]`), and `committedAt`. The actor digest binds the complete captured
+SHA-256 input and actor-binding digests, canonical result JSON, intent-ID JSON,
+and `committedAt`. The actor digest binds the complete captured
 Auth/Credential snapshot and Privileged mode. Receipts are also the v1 replay
 tombstones and are retained indefinitely; SQLite needs no separate lock row or
-durable resource lease. The `sporades_resource_` table namespace is reserved.
+durable resource lease. The `sporades_resource_` and `sporades_notification_`
+table namespaces are reserved.
 
 A same-bound retry reauthorizes and returns the recorded result without invoking
 the callback. Changed input or actor returns `RESOURCE_OPERATION_CONFLICT`.
@@ -524,8 +525,9 @@ Failure later in the Job does not undo a committed scope. On
 `RESOURCE_COMMIT_UNKNOWN`, retry the same binding: only a receipt read **after
 reacquisition** can reconcile the outcome. `ctx.resources.status({resource,
 operationId})` consumes the same first/once entry and returns either
-`{state: "absent"}` or `{state: "committed", result, intentIds}` under current
-anchor authorization and actor binding. Absence after acquisition rules out an
+`{state: "absent"}` or `{state: "committed", result, intentIds, intents}` under
+current anchor authorization and actor binding. Each intent includes aggregate
+and per-recipient delivery state. Absence after acquisition rules out an
 older transaction still committing.
 If post-commit child-dispatch or JSONL publication fails, the scope reports the
 redacted `RESOURCE_STORAGE_ERROR` without running rollback hooks. Its receipt,
@@ -583,11 +585,63 @@ connection before the later receipt lookup reconnects. PostgreSQL lock contentio
 aborts its transaction, so a mutation or endpoint cannot catch `RESOURCE_BUSY`
 and still settle successfully: the outer transaction is poisoned, rolls back,
 and reports the same bounded error. This also rolls back runtime-owned work which
-preceded resource entry, such as reauthentication-proof consumption. The
-`notifications.accept({id, to, subject, text, html?})` signature is reserved and
-always rejects `RESOURCE_EFFECT_UNSUPPORTED` until ticket 06; this slice stages
-no intent and adds no transport. Ordinary Jobs that never opt in retain their
-existing nontransactional behavior. See [ADR-0054](../adr/0054-ordinary-job-authority-does-not-fence-smtp-acceptance.md).
+preceded resource entry, such as reauthentication-proof consumption. libSQL fails closed
+before callback execution; its ticket is 05.
+
+`scope.notifications.accept({id, to, subject, text, html?})` validates one to
+100 distinct existing-mail-compatible ASCII recipient addresses — a repeated
+address is `RESOURCE_INVALID_INPUT` — a 1–128-byte ID, a
+subject, at least one nonempty text or HTML body, and canonical notification JSON
+of at most 65,536 bytes. It uses only the configured sender and SMTP authority.
+It returns `{id, state: "staged"}`: no SMTP socket opens in the resource
+transaction. Identity is `(resource, operationId, notification id)`. The same
+canonical payload deduplicates; changing it returns
+`RESOURCE_OPERATION_CONFLICT`. The receipt, protected writes, immutable intent,
+and recipient rows commit atomically; outer rollback removes all of them.
+
+After commit, an independent runtime worker durably scans accepted recipients.
+Each attempt first commits a random reservation token, sequence, and deadline,
+then submits exactly one SMTP envelope for one recipient using the intent's
+globally unique random Message-ID, minted and persisted when the intent is
+accepted and kept stable across every recipient and retry. The reservation window is
+`max(30_000ms, connectionTimeoutMs + 12 * socketTimeoutMs)`, using the same
+configured SMTP timeouts as the transport. The default 10-second connection and
+30-second socket timeouts therefore produce a 370-second reservation rather
+than a 30-second one. The transport does not auto-retry. Recipient states
+are `accepted`, `submitting`, `unknown`, `retry-wait`, `acknowledged`, or
+`rejected`. A positive final DATA reply acknowledges SMTP submission, not inbox
+delivery. Definitive 5xx or invalid configuration/address failures remain
+rejected for operator correction. 4xx, timeout, connection loss, lost reply,
+crashed sender, or failed outcome persistence remain uncertain and retry on the
+runtime-owned schedule. The first delivery pass that observes an expired
+reservation recovers it as unknown and starts its retry delay from that recovery
+observation: `min(30s * 2^(min(attempt - 1, 7)), 1h)`. An idle worker caps
+its durable recovery scan sleep at 30 seconds, while restart runs a pass
+immediately; scheduling delay can make observation later than the stored
+deadline. Persisted backoff has no finite attempt cutoff. Restart scanning
+preserves retry state, due times, and compact attempt authentication without
+depending on a volatile post-commit wakeup.
+The runtime additively owns recipient indexes keyed by state plus retry due time
+or reservation deadline, so permanently retained terminal rows do not make the
+worker's due and recovery scans grow without bound.
+
+A positive report from any durably issued attempt token is monotonic and suppresses
+future reservations. Each random token carries a keyed authenticator bound to its
+exact recipient, intent, Message-ID and sequence; the durable recipient attempt
+count proves the sequence was issued after its completed attempt row is compacted.
+Token-conditional negative updates cannot regress it.
+Reservation expiry cannot revoke SMTP bytes already in flight, so a late old
+sender and a retry may both be accepted. Source Job retry, cancellation,
+exhaustion, or later resource/Grant revocation never retracts a committed intent;
+an accepted intent may therefore send after revocation. Uncertainty and crashes
+are retried automatically, and duplicate receiver acceptance is possible. This
+is neither exactly-once delivery nor a promise of unconditional eventual
+delivery. Persistent recipient-bearing attempt diagnostics are compacted to the
+current attempt; one per-intent MAC key and the recipient attempt-count high-watermark
+retain bounded late-acknowledgement authority. Diagnostics never retain credentials,
+raw SMTP replies, subjects, or bodies. Ordinary Jobs that never opt in retain
+their existing nontransactional behavior. See
+[ADR-0054](../adr/0054-ordinary-job-authority-does-not-fence-smtp-acceptance.md).
 
 A cancellation or recovery writer on an independent SQLite connection may receive
 SQLite busy and must retry after engine release. The existing same-runtime gate
