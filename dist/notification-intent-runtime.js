@@ -79,7 +79,8 @@ export async function stageNotificationIntent(adapter, database, identity, input
     const allowed = Object.hasOwn(input ?? {}, "html") ? ["html", "id", "subject", "text", "to"] : ["id", "subject", "text", "to"];
     if (!exactPlainObject(input, allowed))
         invalid();
-    if (typeof input.id !== "string" || input.id.length === 0 || Buffer.byteLength(input.id, "utf8") > 128)
+    if (typeof input.id !== "string" || input.id.length === 0 || Buffer.byteLength(input.id, "utf8") > 128
+        || Buffer.from(input.id, "utf8").toString("utf8") !== input.id)
         invalid();
     if (!Array.isArray(input.to) || input.to.length < 1 || input.to.length > 100 || input.to.some((value) => typeof value !== "string"))
         invalid();

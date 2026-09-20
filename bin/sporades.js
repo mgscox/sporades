@@ -68044,7 +68044,7 @@ async function stageNotificationIntent(adapter, database, identity, input, canon
   if (!database.mail?.enabled) throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_EFFECT_UNSUPPORTED" });
   const allowed = Object.hasOwn(input ?? {}, "html") ? ["html", "id", "subject", "text", "to"] : ["id", "subject", "text", "to"];
   if (!exactPlainObject(input, allowed)) invalid();
-  if (typeof input.id !== "string" || input.id.length === 0 || Buffer.byteLength(input.id, "utf8") > 128) invalid();
+  if (typeof input.id !== "string" || input.id.length === 0 || Buffer.byteLength(input.id, "utf8") > 128 || Buffer.from(input.id, "utf8").toString("utf8") !== input.id) invalid();
   if (!Array.isArray(input.to) || input.to.length < 1 || input.to.length > 100 || input.to.some((value) => typeof value !== "string")) invalid();
   if (typeof input.subject !== "string" || typeof input.text !== "string" || input.html !== void 0 && typeof input.html !== "string") invalid();
   if (input.text.length === 0 && (input.html === void 0 || input.html.length === 0)) invalid();
