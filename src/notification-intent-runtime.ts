@@ -89,7 +89,7 @@ export async function stageNotificationIntent(
 ) {
   const invalid = () => { throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_INVALID_INPUT" }); };
   if (!database.mail?.enabled) throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_EFFECT_UNSUPPORTED" });
-  const allowed = input?.html === undefined ? ["id", "subject", "text", "to"] : ["html", "id", "subject", "text", "to"];
+  const allowed = Object.hasOwn(input ?? {}, "html") ? ["html", "id", "subject", "text", "to"] : ["id", "subject", "text", "to"];
   if (!exactPlainObject(input, allowed)) invalid();
   if (typeof input.id !== "string" || input.id.length === 0 || Buffer.byteLength(input.id, "utf8") > 128) invalid();
   if (!Array.isArray(input.to) || input.to.length < 1 || input.to.length > 100 || input.to.some((value: any) => typeof value !== "string")) invalid();

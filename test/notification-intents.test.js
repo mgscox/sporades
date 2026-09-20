@@ -143,6 +143,17 @@ test('resource notification acceptance is atomic, immutable, deduplicated, and s
   } finally { await f.close(); }
 });
 
+test('an explicitly undefined optional html body is accepted as omitted', async () => {
+  const f = await fixture();
+  try {
+    const accepted = await runMutation(f.database, actor, 'accept', [notification({ html: undefined })]);
+    assert.deepEqual(accepted, { ok: true, data: { id: 'welcome', state: 'staged' }, error: null });
+    assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM writes').get().n, 1, 'the enclosing transaction commits');
+    const payload = JSON.parse(f.database.adapter.prepare('SELECT payloadJson FROM sporades_notification_intents').get().payloadJson);
+    assert.equal(Object.hasOwn(payload, 'html'), false);
+  } finally { await f.close(); }
+});
+
 test('independent intent acceptances mint globally unique persisted Message-IDs', async () => {
   const first = await fixture();
   const second = await fixture();
