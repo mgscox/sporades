@@ -67983,24 +67983,31 @@ var notificationIntentSchemas = [
     table: "sporades_notification_intents",
     columns: ["resourceTable", "resourceId", "operationId", "intentId", "payloadDigest", "payloadJson", "messageId", "acceptedAt"],
     primaryKey: ["resourceTable", "resourceId", "operationId", "intentId"],
+    indexes: [],
     definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [payloadDigest] TEXT NOT NULL, [payloadJson] TEXT NOT NULL, [messageId] TEXT NOT NULL, [acceptedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId])"
   },
   {
     table: "sporades_notification_recipients",
     columns: ["resourceTable", "resourceId", "operationId", "intentId", "recipient", "state", "attemptCount", "currentAttemptToken", "currentAttemptDeadline", "nextAttemptAt", "lastOutcomeCategory", "updatedAt"],
     primaryKey: ["resourceTable", "resourceId", "operationId", "intentId", "recipient"],
+    indexes: [
+      { name: "sporades_notification_recipients_due", columns: ["state", "nextAttemptAt", "resourceTable", "resourceId", "operationId", "intentId", "recipient"] },
+      { name: "sporades_notification_recipients_reservations", columns: ["state", "currentAttemptDeadline", "resourceTable", "resourceId", "operationId", "intentId", "recipient"] }
+    ],
     definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [recipient] TEXT NOT NULL, [state] TEXT NOT NULL, [attemptCount] TEXT NOT NULL, [currentAttemptToken] TEXT NOT NULL, [currentAttemptDeadline] TEXT NOT NULL, [nextAttemptAt] TEXT NOT NULL, [lastOutcomeCategory] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId], [recipient])"
   },
   {
     table: "sporades_notification_attempts",
     columns: ["resourceTable", "resourceId", "operationId", "intentId", "recipient", "attemptToken", "sequence", "reservedAt", "deadline", "completedAt", "outcomeCategory"],
     primaryKey: ["resourceTable", "resourceId", "operationId", "intentId", "recipient", "attemptToken"],
+    indexes: [],
     definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [recipient] TEXT NOT NULL, [attemptToken] TEXT NOT NULL, [sequence] TEXT NOT NULL, [reservedAt] TEXT NOT NULL, [deadline] TEXT NOT NULL, [completedAt] TEXT NOT NULL, [outcomeCategory] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId], [recipient], [attemptToken])"
   },
   {
     table: "sporades_notification_attempt_keys",
     columns: ["resourceTable", "resourceId", "operationId", "intentId", "attemptKey"],
     primaryKey: ["resourceTable", "resourceId", "operationId", "intentId"],
+    indexes: [],
     definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [attemptKey] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId])"
   }
 ];
@@ -68014,6 +68021,9 @@ async function ensureNotificationIntentStorage(adapter) {
   }
   for (const schema of notificationIntentSchemas) {
     await adapter.exec(sql(adapter, `CREATE TABLE IF NOT EXISTS [${schema.table}] (${schema.definition})`));
+    for (const index of schema.indexes) {
+      await adapter.exec(sql(adapter, `CREATE INDEX IF NOT EXISTS [${index.name}] ON [${schema.table}] (${index.columns.map((column) => `[${column}]`).join(", ")})`));
+    }
   }
 }
 async function notificationIntentStorageExists(adapter) {
@@ -96132,21 +96142,26 @@ function normalizeMailAddress(value, field) {
 }
 function normalizeMailTransportError(error) {
   const code = String(error?.code ?? "");
+  const smtpCode = Number(error?.smtpCode);
+  const normalized = (value) => {
+    if (smtpCode >= 500 && smtpCode <= 599 || error?.smtpOutcome === "rejected") value.smtpOutcome = "rejected";
+    return value;
+  };
   if (code === "ETIMEDOUT" || code === "ESOCKETTIMEDOUT") {
-    return mailError("MAIL_TIMEOUT", "SMTP delivery timed out.", "Check the SMTP host and timeout settings before retrying.");
+    return normalized(mailError("MAIL_TIMEOUT", "SMTP delivery timed out.", "Check the SMTP host and timeout settings before retrying."));
   }
-  if (code === "MAIL_TIMEOUT") return mailError("MAIL_TIMEOUT", "SMTP delivery timed out.", "Check the SMTP host and timeout settings before retrying.");
+  if (code === "MAIL_TIMEOUT") return normalized(mailError("MAIL_TIMEOUT", "SMTP delivery timed out.", "Check the SMTP host and timeout settings before retrying."));
   if (code === "EAUTH" || code === "MAIL_AUTH_FAILED") {
-    return mailError("MAIL_AUTH_FAILED", "SMTP authentication failed.", "Check the SMTP Server env credentials and authentication method.");
+    return normalized(mailError("MAIL_AUTH_FAILED", "SMTP authentication failed.", "Check the SMTP Server env credentials and authentication method."));
   }
-  if (code === "ETLS" || code.startsWith("CERT_") || code.startsWith("ERR_TLS_") || code.startsWith("ERR_SSL_") || ["DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY"].includes(code) || code === "MAIL_TLS_FAILED") return mailError("MAIL_TLS_FAILED", "SMTP TLS negotiation failed.", "Check the SMTP TLS mode, port, and certificate policy.");
-  if (code === "EREJECTED" && Number(error?.smtpCode) >= 400 && Number(error?.smtpCode) <= 499) {
-    return mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status.");
+  if (code === "ETLS" || code.startsWith("CERT_") || code.startsWith("ERR_TLS_") || code.startsWith("ERR_SSL_") || ["DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY"].includes(code) || code === "MAIL_TLS_FAILED") return normalized(mailError("MAIL_TLS_FAILED", "SMTP TLS negotiation failed.", "Check the SMTP TLS mode, port, and certificate policy."));
+  if (code === "EREJECTED" && smtpCode >= 400 && smtpCode <= 499) {
+    return normalized(mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status."));
   }
   if (code === "EREJECTED" || code === "MAIL_REJECTED") {
-    return mailError("MAIL_REJECTED", "The SMTP server rejected the message.", "Check the sender, recipients, and provider delivery policy.");
+    return normalized(mailError("MAIL_REJECTED", "The SMTP server rejected the message.", "Check the sender, recipients, and provider delivery policy."));
   }
-  return mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status.");
+  return normalized(mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status."));
 }
 function createMailTransport(smtp) {
   const sockets = /* @__PURE__ */ new Set();
@@ -99369,8 +99384,8 @@ async function createPostgresDatabaseAdapter(options) {
   const normalization = postgresRowNormalization();
   const commitWasRejected = (error) => postgresRejectedTransactions.has(error);
   const resourceSchemas = [
-    { table: "sporades_resource_locks", columns: ["resourceTable", "resourceId"], primaryKey: ["resourceTable", "resourceId"], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId])" },
-    { table: "sporades_resource_receipts", columns: ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"], primaryKey: ["resourceTable", "resourceId", "operationId"], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId])" },
+    { table: "sporades_resource_locks", columns: ["resourceTable", "resourceId"], primaryKey: ["resourceTable", "resourceId"], indexes: [], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId])" },
+    { table: "sporades_resource_receipts", columns: ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"], primaryKey: ["resourceTable", "resourceId", "operationId"], indexes: [], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId])" },
     ...notificationIntentSchemas
   ];
   const resourceSchemaReady = async (query) => {
@@ -99406,11 +99421,14 @@ async function createPostgresDatabaseAdapter(options) {
         [schema.table]
       ));
       if (extraConstraints.length !== 0) return false;
-      const unexpectedIndexes = postgresRowsFromResult(normalization, await query(
-        `SELECT ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexrelid")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_index")} AS ${dialect.quoteIdentifier("index")} LEFT JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_constraint")} AS ${dialect.quoteIdentifier("constraint")} ON ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("conindid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexrelid")} AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("conrelid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indrelid")} AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("contype")}='p' WHERE ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("oid")} IS NULL`,
+      const runtimeIndexes = postgresRowsFromResult(normalization, await query(
+        `SELECT ${dialect.quoteIdentifier("index_relation")}.${dialect.quoteIdentifier("relname")} AS ${dialect.quoteIdentifier("name")}, array_to_string(array_agg(${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attname")} ORDER BY ${dialect.quoteIdentifier("key")}.${dialect.quoteIdentifier("ordinality")}), ',') AS ${dialect.quoteIdentifier("columns")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indisunique")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indisvalid")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indisready")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indpred")} IS NOT NULL AS ${dialect.quoteIdentifier("partial")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexprs")} IS NOT NULL AS ${dialect.quoteIdentifier("expressions")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_index")} AS ${dialect.quoteIdentifier("index")} JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_class")} AS ${dialect.quoteIdentifier("index_relation")} ON ${dialect.quoteIdentifier("index_relation")}.${dialect.quoteIdentifier("oid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexrelid")} CROSS JOIN LATERAL unnest(${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indkey")}) WITH ORDINALITY AS ${dialect.quoteIdentifier("key")}(${dialect.quoteIdentifier("attnum")}, ${dialect.quoteIdentifier("ordinality")}) JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_attribute")} AS ${dialect.quoteIdentifier("attribute")} ON ${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attrelid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indrelid")} AND ${dialect.quoteIdentifier("attribute")}.${dialect.quoteIdentifier("attnum")}=${dialect.quoteIdentifier("key")}.${dialect.quoteIdentifier("attnum")} LEFT JOIN ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_constraint")} AS ${dialect.quoteIdentifier("constraint")} ON ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("conindid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexrelid")} AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("conrelid")}=${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indrelid")} AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("contype")}='p' WHERE ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND ${dialect.quoteIdentifier("constraint")}.${dialect.quoteIdentifier("oid")} IS NULL GROUP BY ${dialect.quoteIdentifier("index_relation")}.${dialect.quoteIdentifier("relname")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indisunique")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indisvalid")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indisready")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indpred")}, ${dialect.quoteIdentifier("index")}.${dialect.quoteIdentifier("indexprs")} ORDER BY ${dialect.quoteIdentifier("index_relation")}.${dialect.quoteIdentifier("relname")}`,
         [schema.table]
       ));
-      if (unexpectedIndexes.length !== 0) return false;
+      const expectedIndexes = [...schema.indexes].sort((left, right) => left.name.localeCompare(right.name));
+      if (runtimeIndexes.length !== expectedIndexes.length || runtimeIndexes.some(
+        (row, index) => row.name !== expectedIndexes[index].name || row.columns !== expectedIndexes[index].columns.join(",") || row.indisunique || !row.indisvalid || !row.indisready || row.partial || row.expressions
+      )) return false;
       const userTriggers = postgresRowsFromResult(normalization, await query(
         `SELECT ${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("oid")} FROM ${dialect.quoteIdentifier("pg_catalog")}.${dialect.quoteIdentifier("pg_trigger")} AS ${dialect.quoteIdentifier("trigger")} WHERE ${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("tgrelid")}=pg_catalog.to_regclass(pg_catalog.format('%I.%I', current_schema(), ?)) AND NOT ${dialect.quoteIdentifier("trigger")}.${dialect.quoteIdentifier("tgisinternal")}`,
         [schema.table]
@@ -99465,6 +99483,9 @@ async function createPostgresDatabaseAdapter(options) {
                 columns.add(column);
               }
             }
+          }
+          for (const index of schema.indexes) {
+            await query(`CREATE INDEX IF NOT EXISTS ${dialect.quoteIdentifier(index.name)} ON ${table} (${index.columns.map((column) => dialect.quoteIdentifier(column)).join(", ")})`);
           }
         }
         if (!await resourceSchemaReady(query)) throw resourceError("RESOURCE_STORAGE_ERROR");

@@ -6,21 +6,31 @@ export declare const notificationIntentSchemas: readonly [{
     readonly table: "sporades_notification_intents";
     readonly columns: readonly ["resourceTable", "resourceId", "operationId", "intentId", "payloadDigest", "payloadJson", "messageId", "acceptedAt"];
     readonly primaryKey: readonly ["resourceTable", "resourceId", "operationId", "intentId"];
+    readonly indexes: readonly [];
     readonly definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [payloadDigest] TEXT NOT NULL, [payloadJson] TEXT NOT NULL, [messageId] TEXT NOT NULL, [acceptedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId])";
 }, {
     readonly table: "sporades_notification_recipients";
     readonly columns: readonly ["resourceTable", "resourceId", "operationId", "intentId", "recipient", "state", "attemptCount", "currentAttemptToken", "currentAttemptDeadline", "nextAttemptAt", "lastOutcomeCategory", "updatedAt"];
     readonly primaryKey: readonly ["resourceTable", "resourceId", "operationId", "intentId", "recipient"];
+    readonly indexes: readonly [{
+        readonly name: "sporades_notification_recipients_due";
+        readonly columns: readonly ["state", "nextAttemptAt", "resourceTable", "resourceId", "operationId", "intentId", "recipient"];
+    }, {
+        readonly name: "sporades_notification_recipients_reservations";
+        readonly columns: readonly ["state", "currentAttemptDeadline", "resourceTable", "resourceId", "operationId", "intentId", "recipient"];
+    }];
     readonly definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [recipient] TEXT NOT NULL, [state] TEXT NOT NULL, [attemptCount] TEXT NOT NULL, [currentAttemptToken] TEXT NOT NULL, [currentAttemptDeadline] TEXT NOT NULL, [nextAttemptAt] TEXT NOT NULL, [lastOutcomeCategory] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId], [recipient])";
 }, {
     readonly table: "sporades_notification_attempts";
     readonly columns: readonly ["resourceTable", "resourceId", "operationId", "intentId", "recipient", "attemptToken", "sequence", "reservedAt", "deadline", "completedAt", "outcomeCategory"];
     readonly primaryKey: readonly ["resourceTable", "resourceId", "operationId", "intentId", "recipient", "attemptToken"];
+    readonly indexes: readonly [];
     readonly definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [recipient] TEXT NOT NULL, [attemptToken] TEXT NOT NULL, [sequence] TEXT NOT NULL, [reservedAt] TEXT NOT NULL, [deadline] TEXT NOT NULL, [completedAt] TEXT NOT NULL, [outcomeCategory] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId], [recipient], [attemptToken])";
 }, {
     readonly table: "sporades_notification_attempt_keys";
     readonly columns: readonly ["resourceTable", "resourceId", "operationId", "intentId", "attemptKey"];
     readonly primaryKey: readonly ["resourceTable", "resourceId", "operationId", "intentId"];
+    readonly indexes: readonly [];
     readonly definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [attemptKey] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId])";
 }];
 export declare function ensureNotificationIntentStorage(adapter: RecordValue): Promise<void>;

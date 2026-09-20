@@ -614,6 +614,9 @@ immediately; scheduling delay can make observation later than the stored
 deadline. Persisted backoff has no finite attempt cutoff. Restart scanning
 preserves retry state, due times, and compact attempt authentication without
 depending on a volatile post-commit wakeup.
+The runtime additively owns recipient indexes keyed by state plus retry due time
+or reservation deadline, so permanently retained terminal rows do not make the
+worker's due and recovery scans grow without bound.
 
 A positive report from any durably issued attempt token is monotonic and suppresses
 future reservations. Each random token carries a keyed authenticator bound to its

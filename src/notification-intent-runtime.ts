@@ -18,24 +18,31 @@ export const notificationIntentSchemas = [
     table: "sporades_notification_intents",
     columns: ["resourceTable", "resourceId", "operationId", "intentId", "payloadDigest", "payloadJson", "messageId", "acceptedAt"],
     primaryKey: ["resourceTable", "resourceId", "operationId", "intentId"],
+    indexes: [],
     definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [payloadDigest] TEXT NOT NULL, [payloadJson] TEXT NOT NULL, [messageId] TEXT NOT NULL, [acceptedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId])",
   },
   {
     table: "sporades_notification_recipients",
     columns: ["resourceTable", "resourceId", "operationId", "intentId", "recipient", "state", "attemptCount", "currentAttemptToken", "currentAttemptDeadline", "nextAttemptAt", "lastOutcomeCategory", "updatedAt"],
     primaryKey: ["resourceTable", "resourceId", "operationId", "intentId", "recipient"],
+    indexes: [
+      { name: "sporades_notification_recipients_due", columns: ["state", "nextAttemptAt", "resourceTable", "resourceId", "operationId", "intentId", "recipient"] },
+      { name: "sporades_notification_recipients_reservations", columns: ["state", "currentAttemptDeadline", "resourceTable", "resourceId", "operationId", "intentId", "recipient"] },
+    ],
     definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [recipient] TEXT NOT NULL, [state] TEXT NOT NULL, [attemptCount] TEXT NOT NULL, [currentAttemptToken] TEXT NOT NULL, [currentAttemptDeadline] TEXT NOT NULL, [nextAttemptAt] TEXT NOT NULL, [lastOutcomeCategory] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId], [recipient])",
   },
   {
     table: "sporades_notification_attempts",
     columns: ["resourceTable", "resourceId", "operationId", "intentId", "recipient", "attemptToken", "sequence", "reservedAt", "deadline", "completedAt", "outcomeCategory"],
     primaryKey: ["resourceTable", "resourceId", "operationId", "intentId", "recipient", "attemptToken"],
+    indexes: [],
     definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [recipient] TEXT NOT NULL, [attemptToken] TEXT NOT NULL, [sequence] TEXT NOT NULL, [reservedAt] TEXT NOT NULL, [deadline] TEXT NOT NULL, [completedAt] TEXT NOT NULL, [outcomeCategory] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId], [recipient], [attemptToken])",
   },
   {
     table: "sporades_notification_attempt_keys",
     columns: ["resourceTable", "resourceId", "operationId", "intentId", "attemptKey"],
     primaryKey: ["resourceTable", "resourceId", "operationId", "intentId"],
+    indexes: [],
     definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [attemptKey] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId])",
   },
 ] as const;
@@ -51,6 +58,9 @@ export async function ensureNotificationIntentStorage(adapter: RecordValue) {
   }
   for (const schema of notificationIntentSchemas) {
     await adapter.exec(sql(adapter, `CREATE TABLE IF NOT EXISTS [${schema.table}] (${schema.definition})`));
+    for (const index of schema.indexes) {
+      await adapter.exec(sql(adapter, `CREATE INDEX IF NOT EXISTS [${index.name}] ON [${schema.table}] (${index.columns.map(column => `[${column}]`).join(", ")})`));
+    }
   }
 }
 

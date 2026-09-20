@@ -94,9 +94,11 @@ async function controlledReceiver(modes) {
         if (end < 0) return;
         const command = buffer.slice(0, end); buffer = buffer.slice(end + 2);
         if (/^EHLO /i.test(command)) socket.write('250 test\r\n');
-        else if (/^MAIL FROM:/i.test(command) || /^RCPT TO:/i.test(command)) socket.write('250 ok\r\n');
+        else if (/^MAIL FROM:/i.test(command)) socket.write(mode === 'mail-from-550' ? '550 sender rejected\r\n' : '250 ok\r\n');
+        else if (/^RCPT TO:/i.test(command)) socket.write('250 ok\r\n');
         else if (command === 'DATA') {
           if (mode === 'drop-before-data') return socket.destroy();
+          if (mode === 'data-554') { socket.write('554 transaction rejected\r\n'); continue; }
           data = true; socket.write('354 continue\r\n');
         } else if (command === 'QUIT') { socket.write('221 bye\r\n'); socket.end(); }
         else socket.write('500 unsupported\r\n');
@@ -425,6 +427,65 @@ test('permanent rejection is retained, validation is bounded, and exponential re
     assert.equal(status.intents[0].recipients[0].lastOutcomeCategory, 'rejected');
     assert.equal(await runNotificationIntentDeliveryPass(f.database), false);
     assert.deepEqual([1, 2, 3, 8, 9, 100].map(notificationRetryDelay), [30_000, 60_000, 120_000, 3_600_000, 3_600_000, 3_600_000]);
+  } finally { await f.close(); }
+});
+
+test('SMTP normalization keeps 5xx envelope and authentication failures terminal', async () => {
+  for (const scenario of [
+    { mode: 'mail-from-550' },
+    { mode: 'data-554' },
+  ]) {
+    const receiver = await controlledReceiver([scenario.mode]);
+    const f = await fixture({ smtpPort: receiver.port });
+    try {
+      assert.equal((await runMutation(f.database, actor, 'accept', [notification()])).ok, true);
+      assert.equal(await runNotificationIntentDeliveryPass(f.database), true);
+      assert.deepEqual(
+        { ...f.database.adapter.prepare('SELECT state,lastOutcomeCategory,nextAttemptAt FROM sporades_notification_recipients').get() },
+        { state: 'rejected', lastOutcomeCategory: 'rejected', nextAttemptAt: '' },
+        `${scenario.mode} is permanent and must not retry forever`,
+      );
+      assert.equal(await runNotificationIntentDeliveryPass(f.database), false);
+    } finally { await f.close(); await receiver.close(); }
+  }
+  const authFailure = Object.assign(new Error('provider authentication detail'), { code: 'EAUTH', smtpCode: 535 });
+  const auth = await fixture({ outcomes: [authFailure] });
+  try {
+    assert.equal((await runMutation(auth.database, actor, 'accept', [notification()])).ok, true);
+    assert.equal(await runNotificationIntentDeliveryPass(auth.database), true);
+    assert.deepEqual(
+      { ...auth.database.adapter.prepare('SELECT state,lastOutcomeCategory,nextAttemptAt FROM sporades_notification_recipients').get() },
+      { state: 'rejected', lastOutcomeCategory: 'rejected', nextAttemptAt: '' },
+      'SMTP 535 is permanent and must not retry forever',
+    );
+  } finally { await auth.close(); }
+});
+
+test('recipient scheduling indexes are installed additively and survive retained terminal rows', async () => {
+  const f = await fixture();
+  try {
+    await runMutation(f.database, actor, 'accept', [notification()]);
+    const expected = [
+      ['sporades_notification_recipients_due', ['state', 'nextAttemptAt', 'resourceTable', 'resourceId', 'operationId', 'intentId', 'recipient']],
+      ['sporades_notification_recipients_reservations', ['state', 'currentAttemptDeadline', 'resourceTable', 'resourceId', 'operationId', 'intentId', 'recipient']],
+    ];
+    const assertIndexes = () => {
+      const indexes = f.database.adapter.prepare("PRAGMA index_list('sporades_notification_recipients')").all();
+      for (const [name, columns] of expected) {
+        assert.ok(indexes.some(row => row.name === name), `${name} exists`);
+        assert.deepEqual(
+          f.database.adapter.prepare(`PRAGMA index_info('${name}')`).all().map(row => row.name),
+          columns,
+        );
+      }
+    };
+    assertIndexes();
+    for (const [name] of expected) f.database.adapter.exec(`DROP INDEX ${name}`);
+    await f.database.shutdown();
+    await f.database.init();
+    await stopNotificationIntentWorker(f.database);
+    assertIndexes();
+    assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM sporades_notification_recipients').get().n, 1, 'additive index repair retains recipient rows');
   } finally { await f.close(); }
 });
 

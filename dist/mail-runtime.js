@@ -795,13 +795,23 @@ function normalizeMailAddress(value, field) {
 }
 function normalizeMailTransportError(error) {
     const code = String(error?.code ?? "");
+    const smtpCode = Number(error?.smtpCode);
+    const normalized = (value) => {
+        // The owned transport replaces provider errors with fresh, redacted
+        // Errors. Carry only the bounded permanence class across that boundary so
+        // the durable intent worker does not turn a definitive 5xx into an
+        // unknown outcome and retry it forever.
+        if ((smtpCode >= 500 && smtpCode <= 599) || error?.smtpOutcome === "rejected")
+            value.smtpOutcome = "rejected";
+        return value;
+    };
     if (code === "ETIMEDOUT" || code === "ESOCKETTIMEDOUT") {
-        return mailError("MAIL_TIMEOUT", "SMTP delivery timed out.", "Check the SMTP host and timeout settings before retrying.");
+        return normalized(mailError("MAIL_TIMEOUT", "SMTP delivery timed out.", "Check the SMTP host and timeout settings before retrying."));
     }
     if (code === "MAIL_TIMEOUT")
-        return mailError("MAIL_TIMEOUT", "SMTP delivery timed out.", "Check the SMTP host and timeout settings before retrying.");
+        return normalized(mailError("MAIL_TIMEOUT", "SMTP delivery timed out.", "Check the SMTP host and timeout settings before retrying."));
     if (code === "EAUTH" || code === "MAIL_AUTH_FAILED") {
-        return mailError("MAIL_AUTH_FAILED", "SMTP authentication failed.", "Check the SMTP Server env credentials and authentication method.");
+        return normalized(mailError("MAIL_AUTH_FAILED", "SMTP authentication failed.", "Check the SMTP Server env credentials and authentication method."));
     }
     if (code === "ETLS"
         || code.startsWith("CERT_")
@@ -809,14 +819,14 @@ function normalizeMailTransportError(error) {
         || code.startsWith("ERR_SSL_")
         || ["DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY"].includes(code)
         || code === "MAIL_TLS_FAILED")
-        return mailError("MAIL_TLS_FAILED", "SMTP TLS negotiation failed.", "Check the SMTP TLS mode, port, and certificate policy.");
-    if (code === "EREJECTED" && Number(error?.smtpCode) >= 400 && Number(error?.smtpCode) <= 499) {
-        return mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status.");
+        return normalized(mailError("MAIL_TLS_FAILED", "SMTP TLS negotiation failed.", "Check the SMTP TLS mode, port, and certificate policy."));
+    if (code === "EREJECTED" && smtpCode >= 400 && smtpCode <= 499) {
+        return normalized(mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status."));
     }
     if (code === "EREJECTED" || code === "MAIL_REJECTED") {
-        return mailError("MAIL_REJECTED", "The SMTP server rejected the message.", "Check the sender, recipients, and provider delivery policy.");
+        return normalized(mailError("MAIL_REJECTED", "The SMTP server rejected the message.", "Check the sender, recipients, and provider delivery policy."));
     }
-    return mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status.");
+    return normalized(mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status."));
 }
 export function createMailTransport(smtp) {
     const sockets = new Set();
