@@ -19,7 +19,8 @@ one commit; CAS alone would leave recovery to each Capsule. See the
 email attempts with accepted duplicate risk. See the [approval record](maintainer-approval.md)
 for the conversation quotation and scope. Ticket 01's amendment gate is cleared;
 **tickets 02, 03 and 04 are merged and their integration gates have passed**.
-Ticket 05 is complete ([PR #74](https://github.com/mgscox/sporades/pull/74), squash d9f036d5, merged 2026-09-20). Ticket 06 is complete ([PR #75](https://github.com/mgscox/sporades/pull/75), squash 8885992b, merged 2026-09-20). Ticket 07 remains pending; parent #52 stays open.
+Ticket 05 is complete ([PR #74](https://github.com/mgscox/sporades/pull/74), squash d9f036d5, merged 2026-09-20). Ticket 06 is complete ([PR #75](https://github.com/mgscox/sporades/pull/75), squash 8885992b, merged 2026-09-20). Ticket 07 is complete ([walkthrough](issues/07-verify-grant-coordination-workflow.md); [PR #76](https://github.com/mgscox/sporades/pull/76), squash 14eda541, merged 2026-09-20). Parent #52 is CLOSED.
+Ticket 07 completion publishes the M1 evidence and maps the original-requirement gaps; it does not claim that every original guarantee passed.
 Original strict SMTP criteria remain disproved; the explicitly accepted amendment
 is the implementation contract, not a retroactive proof of those criteria.
 
@@ -32,7 +33,7 @@ provenance, not a frozen world view: current Grant checks still occur on acquisi
 ## Revised tickets and frontier
 
 The filenames are retained for stable links; the current titles/scopes below
-now supersede their old contents under approved M1. Tickets 02, 03, 04, 05 and 06 are complete. Ticket 07 requires the remaining workflow-verification slice.
+now supersede their old contents under approved M1. Tickets 02–07 are complete.
 
 | Ticket | Approved responsibility | Remaining gate |
 | --- | --- | --- |
@@ -42,7 +43,7 @@ now supersede their old contents under approved M1. Tickets 02, 03, 04, 05 and 0
 | [04](issues/04-support-resource-transactions-on-postgresql.md) | Real PG locks, connection loss, receipt conformance | Complete: [PR #65](https://github.com/mgscox/sporades/pull/65) |
 | [05](issues/05-enforce-libsql-compatibility.md) | Explicit libSQL unsupported gate, no exploratory support branch | Complete: [PR #74](https://github.com/mgscox/sporades/pull/74) |
 | [06](issues/06-support-proven-external-handoff.md) | Durable intent acceptance, automatic retry, accepted duplicates | Complete: [PR #75](https://github.com/mgscox/sporades/pull/75) |
-| [07](issues/07-verify-grant-coordination-workflow.md) | Complete amended workflow and original-requirement gap map | 05, 06 |
+| [07](issues/07-verify-grant-coordination-workflow.md) | Complete amended workflow and original-requirement gap map | Complete: [PR #76](https://github.com/mgscox/sporades/pull/76) |
 
 02–05 can proceed through their dependencies without solving ordinary SMTP
 fencing; 06 implements the different intent boundary and automatic delivery retry.
