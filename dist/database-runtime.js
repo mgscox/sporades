@@ -320,6 +320,7 @@ const resourceTransactionMechanics = Symbol.for("sporades.database.resourceTrans
 const resourceBootstrapMechanics = Symbol.for("sporades.database.resourceBootstrapMechanics");
 const resourceConsumptionMechanics = Symbol.for("sporades.database.resourceConsumptionMechanics");
 const resourceCancelActiveQuery = Symbol.for("sporades.database.resourceCancelActiveQuery");
+const postgresCancelDeliveryTimeoutMs = 250;
 async function runTransactionBeforeCommitChecks(transactionAdapter) {
     for (const check of transactionAdapter[transactionBeforeCommitChecks] ?? [])
         await check();
@@ -1742,7 +1743,17 @@ export async function createPostgresDatabaseAdapter(options) {
         [Symbol.for("sporades.database.resourceTransactionEligible")]: true,
         [resourceBootstrapMechanics]: ensureResourceSchemaPublished,
         [resourceConsumptionMechanics]: function () { return lockAndVerifyResourceSchema(this); },
-        [resourceCancelActiveQuery]: () => client[resourceCancelActiveQuery](),
+        [resourceCancelActiveQuery]: async () => {
+            try {
+                return await client[resourceCancelActiveQuery]();
+            }
+            catch (error) {
+                // Cancel delivery failure destroys the primary connection. Mark it for
+                // replacement before rollback or any subsequent adapter operation.
+                needsReconnect = true;
+                throw error;
+            }
+        },
         dialect,
         normalization,
         // A resource scope owns an independent READ COMMITTED backend.  Closing it
@@ -2063,8 +2074,28 @@ export async function createPostgresConnection(url, signal) {
             backendKeyData,
         ]);
         await new Promise((resolve, reject) => {
-            cancelSocket.once("error", reject);
-            cancelSocket.once("close", resolve);
+            let settled = false;
+            const finish = (error) => {
+                if (settled)
+                    return;
+                settled = true;
+                clearTimeout(timer);
+                if (!error) {
+                    resolve();
+                    return;
+                }
+                cancelSocket.destroy();
+                // A failed CancelRequest cannot prove that PostgreSQL released the
+                // active statement or its locks. Quarantine the primary connection so
+                // rollback/close and later queued work cannot remain behind it.
+                socket.destroy(error);
+                reject(error);
+            };
+            const deliveryFailed = () => finish(Object.assign(new Error("Postgres query cancellation could not be delivered."), { code: "POSTGRES_CANCEL_DELIVERY_FAILED" }));
+            const timer = setTimeout(deliveryFailed, postgresCancelDeliveryTimeoutMs);
+            timer.unref?.();
+            cancelSocket.once("error", deliveryFailed);
+            cancelSocket.once("close", () => finish());
             cancelSocket.once("connect", () => cancelSocket.end(request));
         });
         return true;

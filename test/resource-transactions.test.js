@@ -207,6 +207,73 @@ test('Postgres cancellation rejects every query already waiting in the connectio
   }
 });
 
+test('Postgres cancellation delivery failure bounds the active query and closes its primary connection', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const target = new URL(postgresTestUrl());
+  const stalledCancel = Promise.withResolvers();
+  const primaryClosed = Promise.withResolvers();
+  const sockets = new Set();
+  const proxy = net.createServer({ allowHalfOpen: true }, client => {
+    sockets.add(client);
+    let prefix = Buffer.alloc(0);
+    const classify = chunk => {
+      prefix = Buffer.concat([prefix, chunk]);
+      if (prefix.length < 8) return;
+      client.off('data', classify);
+      const cancelRequest = prefix.readInt32BE(4) === 80877102;
+      if (cancelRequest) {
+        stalledCancel.resolve();
+        return;
+      }
+      const upstream = net.createConnection({ host: target.hostname, port: Number(target.port) });
+      sockets.add(upstream);
+      client.once('end', () => primaryClosed.resolve());
+      client.once('close', () => { sockets.delete(client); upstream.destroy(); primaryClosed.resolve(); });
+      upstream.once('close', () => { sockets.delete(upstream); client.destroy(); });
+      upstream.once('connect', () => { upstream.write(prefix); client.pipe(upstream); upstream.pipe(client); });
+    };
+    client.on('data', classify);
+  });
+  await new Promise((resolve, reject) => {
+    proxy.once('error', reject);
+    proxy.listen(0, '127.0.0.1', resolve);
+  });
+  const blocker = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  const proxyAddress = proxy.address();
+  const connection = await createPostgresDatabaseAdapter({ url: new URL(`postgresql://${encodeURIComponent(target.username)}:${encodeURIComponent(target.password)}@127.0.0.1:${proxyAddress.port}${target.pathname}`) });
+  const advisoryLock = 8_742_012;
+  let blocked;
+  let cancellation;
+  try {
+    await blocker.exec(`SELECT pg_advisory_lock(${advisoryLock})`);
+    blocked = connection.exec(`SELECT pg_advisory_lock(${advisoryLock})`);
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    cancellation = connection[Symbol.for('sporades.database.resourceCancelActiveQuery')]();
+    await stalledCancel.promise;
+    await assert.rejects(Promise.race([
+      cancellation,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('CancelRequest delivery remained unbounded')), 750)),
+    ]), { code: 'POSTGRES_CANCEL_DELIVERY_FAILED' });
+    await assert.rejects(Promise.race([
+      blocked,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('blocked primary query survived failed cancellation delivery')), 250)),
+    ]));
+    await Promise.race([
+      primaryClosed.promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('failed cancellation delivery left the primary socket open')), 750)),
+    ]);
+    const control = await connection.prepare('SELECT 1 AS value').get();
+    assert.equal(Number(control.value), 1, 'the quarantined adapter must reconnect after failed cancellation delivery');
+  } finally {
+    await blocker.exec(`SELECT pg_advisory_unlock(${advisoryLock})`).catch(() => {});
+    for (const socket of sockets) socket.destroy();
+    await Promise.allSettled([blocked, cancellation].filter(Boolean));
+    await connection.close().catch(() => {});
+    await blocker.close();
+    await new Promise(resolve => proxy.close(resolve));
+  }
+});
+
 test('Postgres connection readiness observes caller cancellation before publishing a connection', async () => {
   const accepted = Promise.withResolvers();
   const peerClosed = Promise.withResolvers();

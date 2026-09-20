@@ -97613,6 +97613,7 @@ var resourceTransactionMechanics = Symbol.for("sporades.database.resourceTransac
 var resourceBootstrapMechanics = Symbol.for("sporades.database.resourceBootstrapMechanics");
 var resourceConsumptionMechanics = Symbol.for("sporades.database.resourceConsumptionMechanics");
 var resourceCancelActiveQuery = Symbol.for("sporades.database.resourceCancelActiveQuery");
+var postgresCancelDeliveryTimeoutMs = 250;
 async function runTransactionBeforeCommitChecks(transactionAdapter) {
   for (const check of transactionAdapter[transactionBeforeCommitChecks2] ?? []) await check();
 }
@@ -99170,7 +99171,14 @@ async function createPostgresDatabaseAdapter(options) {
     [resourceConsumptionMechanics]: function() {
       return lockAndVerifyResourceSchema(this);
     },
-    [resourceCancelActiveQuery]: () => client[resourceCancelActiveQuery](),
+    [resourceCancelActiveQuery]: async () => {
+      try {
+        return await client[resourceCancelActiveQuery]();
+      } catch (error) {
+        needsReconnect = true;
+        throw error;
+      }
+    },
     dialect,
     normalization,
     // A resource scope owns an independent READ COMMITTED backend.  Closing it
@@ -99487,8 +99495,27 @@ async function createPostgresConnection(url, signal) {
       backendKeyData
     ]);
     await new Promise((resolve, reject) => {
-      cancelSocket.once("error", reject);
-      cancelSocket.once("close", resolve);
+      let settled = false;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (!error) {
+          resolve();
+          return;
+        }
+        cancelSocket.destroy();
+        socket.destroy(error);
+        reject(error);
+      };
+      const deliveryFailed = () => finish(Object.assign(
+        new Error("Postgres query cancellation could not be delivered."),
+        { code: "POSTGRES_CANCEL_DELIVERY_FAILED" }
+      ));
+      const timer = setTimeout(deliveryFailed, postgresCancelDeliveryTimeoutMs);
+      timer.unref?.();
+      cancelSocket.once("error", deliveryFailed);
+      cancelSocket.once("close", () => finish());
       cancelSocket.once("connect", () => cancelSocket.end(request));
     });
     return true;
