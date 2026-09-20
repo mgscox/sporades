@@ -307,6 +307,11 @@ export async function runNotificationIntentDeliveryPass(database: RecordValue) {
     await settleAttempt(database, reservation, "acknowledged");
   } catch (error: any) {
     if (error?.notificationIntentCrash === true) throw error;
+    // Runtime shutdown closes the SMTP transport to abort an in-flight send.
+    // Its durable reservation must remain untouched: the process cannot know
+    // whether the receiver accepted before the connection was severed, and a
+    // fresh runtime already recovers that uncertainty after the deadline.
+    if (database.__notificationIntentShutdownAborting) return true;
     const outcome = error?.smtpOutcome === "rejected" ? "rejected" : "unknown";
     await settleAttempt(database, reservation, outcome);
   }
@@ -319,6 +324,7 @@ async function nextWakeAt(database: RecordValue) {
 }
 
 export function startNotificationIntentWorker(database: RecordValue) {
+  database.__notificationIntentShutdownAborting = false;
   database.__notificationIntentStopped = false;
   const scheduleRecoveryScan = () => {
     if (database.__notificationIntentStopped || database.__notificationIntentTimer) return;

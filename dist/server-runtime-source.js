@@ -1109,11 +1109,40 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             catch (error) {
                 failures.push(error);
             }
+            let notificationWorkerSettlement;
+            let mailSettlement;
             try {
-                await stopNotificationIntentWorker(database);
+                database.__notificationIntentShutdownAborting = true;
+                notificationWorkerSettlement = stopNotificationIntentWorker(database);
             }
             catch (error) {
                 failures.push(error);
+            }
+            // Closing the transport is what aborts a slow active SMTP conversation.
+            // Start it before awaiting the notification worker or shutdown can wait
+            // for the entire reservation window while the transport remains open.
+            try {
+                mailSettlement = Promise.resolve(database.mail.close());
+                void mailSettlement.catch(() => { });
+            }
+            catch (error) {
+                failures.push(error);
+            }
+            if (notificationWorkerSettlement) {
+                try {
+                    await notificationWorkerSettlement;
+                }
+                catch (error) {
+                    failures.push(error);
+                }
+            }
+            if (mailSettlement) {
+                try {
+                    await mailSettlement;
+                }
+                catch (error) {
+                    failures.push(error);
+                }
             }
             try {
                 abortSchedulePayloadFactories(database);
@@ -1159,12 +1188,6 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 failures.push(error);
             }
             database.__runtimeInitialized = false;
-            try {
-                await database.mail.close();
-            }
-            catch (error) {
-                failures.push(error);
-            }
             if (failures.length === 1)
                 throw failures[0];
             if (failures.length > 1)

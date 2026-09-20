@@ -1201,8 +1201,28 @@ export async function openDevDatabase(
         database.__scheduleStopped = true;
         workerSettlement = stopCurrentUserJobWorker(database);
       } catch (error) { failures.push(error); }
-      try { await stopNotificationIntentWorker(database); }
+      let notificationWorkerSettlement: unknown;
+      let mailSettlement: Promise<unknown> | undefined;
+      try {
+        database.__notificationIntentShutdownAborting = true;
+        notificationWorkerSettlement = stopNotificationIntentWorker(database);
+      }
       catch (error) { failures.push(error); }
+      // Closing the transport is what aborts a slow active SMTP conversation.
+      // Start it before awaiting the notification worker or shutdown can wait
+      // for the entire reservation window while the transport remains open.
+      try {
+        mailSettlement = Promise.resolve(database.mail.close());
+        void mailSettlement.catch(() => {});
+      } catch (error) { failures.push(error); }
+      if (notificationWorkerSettlement) {
+        try { await notificationWorkerSettlement; }
+        catch (error) { failures.push(error); }
+      }
+      if (mailSettlement) {
+        try { await mailSettlement; }
+        catch (error) { failures.push(error); }
+      }
       try {
         abortSchedulePayloadFactories(database);
         for (const timer of database.__scheduleTimers ?? []) database.clock.clearTimer(timer);
@@ -1227,8 +1247,6 @@ export async function openDevDatabase(
       try { await shutdownClamavRuntime(database); }
       catch (error) { failures.push(error); }
       database.__runtimeInitialized = false;
-      try { await database.mail.close(); }
-      catch (error) { failures.push(error); }
       if (failures.length === 1) throw failures[0];
       if (failures.length > 1) throw new AggregateError(failures, "Multiple runtime resources failed to shut down.");
     })();

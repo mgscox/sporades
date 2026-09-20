@@ -68230,6 +68230,7 @@ async function runNotificationIntentDeliveryPass(database) {
     await settleAttempt(database, reservation, "acknowledged");
   } catch (error) {
     if (error?.notificationIntentCrash === true) throw error;
+    if (database.__notificationIntentShutdownAborting) return true;
     const outcome = error?.smtpOutcome === "rejected" ? "rejected" : "unknown";
     await settleAttempt(database, reservation, outcome);
   }
@@ -68240,6 +68241,7 @@ async function nextWakeAt(database) {
   return row ? (row.currentAttemptDeadline ?? row.currentattemptdeadline) || (row.nextAttemptAt ?? row.nextattemptat) : null;
 }
 function startNotificationIntentWorker(database) {
+  database.__notificationIntentShutdownAborting = false;
   database.__notificationIntentStopped = false;
   const scheduleRecoveryScan = () => {
     if (database.__notificationIntentStopped || database.__notificationIntentTimer) return;
@@ -101499,10 +101501,34 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       } catch (error) {
         failures.push(error);
       }
+      let notificationWorkerSettlement;
+      let mailSettlement;
       try {
-        await stopNotificationIntentWorker(database);
+        database.__notificationIntentShutdownAborting = true;
+        notificationWorkerSettlement = stopNotificationIntentWorker(database);
       } catch (error) {
         failures.push(error);
+      }
+      try {
+        mailSettlement = Promise.resolve(database.mail.close());
+        void mailSettlement.catch(() => {
+        });
+      } catch (error) {
+        failures.push(error);
+      }
+      if (notificationWorkerSettlement) {
+        try {
+          await notificationWorkerSettlement;
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (mailSettlement) {
+        try {
+          await mailSettlement;
+        } catch (error) {
+          failures.push(error);
+        }
       }
       try {
         abortSchedulePayloadFactories(database);
@@ -101541,11 +101567,6 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
         failures.push(error);
       }
       database.__runtimeInitialized = false;
-      try {
-        await database.mail.close();
-      } catch (error) {
-        failures.push(error);
-      }
       if (failures.length === 1) throw failures[0];
       if (failures.length > 1) throw new AggregateError(failures, "Multiple runtime resources failed to shut down.");
     })();

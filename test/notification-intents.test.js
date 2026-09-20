@@ -426,6 +426,43 @@ test('restart retains uncertain attempt identity, due time, and accepted receipt
   } finally { await f.close(); }
 });
 
+test('shutdown aborts an active SMTP send before awaiting its worker and retains the durable reservation', async () => {
+  const f = await fixture();
+  let rejectSend;
+  let markSendStarted;
+  const sendStarted = new Promise(resolve => { markSendStarted = resolve; });
+  const events = [];
+  try {
+    assert.equal((await runMutation(f.database, actor, 'accept', [notification()])).ok, true);
+    f.database.mail = {
+      enabled: true,
+      sendIntent() {
+        events.push('send-started');
+        markSendStarted();
+        return new Promise((_, reject) => { rejectSend = reject; });
+      },
+      close() {
+        events.push('transport-closed');
+        rejectSend(Object.assign(new Error('SMTP transport closed for shutdown'), { code: 'ECONNECTION' }));
+      },
+    };
+    void startNotificationIntentWorker(f.database);
+    await sendStarted;
+    const reserved = f.database.adapter.prepare('SELECT state,currentAttemptToken,currentAttemptDeadline FROM sporades_notification_recipients').get();
+    assert.equal(reserved.state, 'submitting');
+    assert.ok(reserved.currentAttemptToken);
+
+    await f.database.shutdown();
+
+    assert.deepEqual(events, ['send-started', 'transport-closed'], 'transport closure releases the active worker during shutdown');
+    assert.deepEqual(
+      { ...f.database.adapter.prepare('SELECT state,currentAttemptToken,currentAttemptDeadline FROM sporades_notification_recipients').get() },
+      { ...reserved },
+      'shutdown leaves the uncertain reservation for deadline-based restart recovery',
+    );
+  } finally { await f.close(); }
+});
+
 test('restart additively upgrades a pre-authenticator notification database without losing pending work', async () => {
   const f = await fixture();
   try {
