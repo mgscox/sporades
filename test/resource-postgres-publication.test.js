@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { createControllableRuntimeClock, createPostgresDatabaseAdapter, openDevDatabase, runEndpoint, runMutation } from '../dist/server-runtime-source.js';
 import { endpoint, mutation, String as Text, table } from '../dist/server.js';
 import { resolveAnonymousSession } from '../dist/auth-runtime.js';
+import { runNotificationIntentDeliveryPass, stopNotificationIntentWorker } from '../dist/notification-intent-runtime.js';
 import { POSTGRES_SKIP_REASON, postgresTestUrl, resetPostgresSchema } from './support/database-adapter-engines.js';
 
 const CALLBACK_TIMEOUT_MS = 2_000;
@@ -11,6 +12,9 @@ const actor = { userId: 'publication-actor', displayName: 'Publication actor', e
 const RESOURCE_SCHEMAS = [
   ['sporades_resource_locks', ['resourceTable', 'resourceId']],
   ['sporades_resource_receipts', ['resourceTable', 'resourceId', 'operationId', 'inputDigest', 'actorDigest', 'resultJson', 'intentIdsJson', 'committedAt']],
+  ['sporades_notification_intents', ['resourceTable', 'resourceId', 'operationId', 'intentId', 'payloadDigest', 'payloadJson', 'messageId', 'acceptedAt']],
+  ['sporades_notification_recipients', ['resourceTable', 'resourceId', 'operationId', 'intentId', 'recipient', 'state', 'attemptCount', 'currentAttemptToken', 'currentAttemptDeadline', 'nextAttemptAt', 'lastOutcomeCategory', 'updatedAt']],
+  ['sporades_notification_attempts', ['resourceTable', 'resourceId', 'operationId', 'intentId', 'recipient', 'attemptToken', 'sequence', 'reservedAt', 'deadline', 'completedAt', 'outcomeCategory']],
 ];
 
 async function waitFor(callbackEntered, label) {
@@ -65,7 +69,7 @@ test('Postgres public mutation and endpoint first use publish schema before held
   for (const kind of ['mutation', 'endpoint']) {
     const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
     await resetPostgresSchema(reset, ['anchors', 'writes']);
-    await reset.exec('DROP TABLE IF EXISTS sporades_resource_receipts, sporades_resource_locks');
+    await reset.exec('DROP TABLE IF EXISTS sporades_notification_attempts, sporades_notification_recipients, sporades_notification_intents, sporades_resource_receipts, sporades_resource_locks');
     await reset.close();
 
     const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
@@ -111,4 +115,30 @@ test('Postgres public mutation and endpoint first use publish schema before held
       await database.close();
     }
   }
+});
+
+test('Postgres resource notification acceptance and per-recipient delivery use the shared durable schema', { skip: POSTGRES_SKIP_REASON }, async () => {
+  const reset = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+  await resetPostgresSchema(reset, ['anchors']);
+  await reset.exec('DROP TABLE IF EXISTS sporades_notification_attempts, sporades_notification_recipients, sporades_notification_intents, sporades_resource_receipts, sporades_resource_locks');
+  await reset.close();
+  const clock = createControllableRuntimeClock('2030-01-01T00:00:00.000Z');
+  const deliveries = [];
+  const config = { name: 'postgres-notification-intent', services: { database: { engine: 'postgres' } }, mail: { smtp: { vendor: 'generic', host: '127.0.0.1', port: 2525, tls: { mode: 'disabled' }, auth: { method: 'none' }, defaultFrom: 'sender@example.com' } } };
+  const database = await openDevDatabase('postgres-notification-intent', '', { SPORADES_SERVICE_DATABASE_ENGINE: 'postgres', SPORADES_SERVICE_DATABASE_URL: postgresTestUrl() }, config, {
+    schema: { anchors: table({ value: Text() }) },
+    mutations: {
+      accept: mutation(ctx => ctx.resources.run({ resource: { table: 'anchors', id: 'anchor' }, operationId: 'notify', input: null }, scope => scope.notifications.accept({ id: 'notice', to: ['one@example.com'], subject: 'Notice', text: 'Body' }))),
+      status: mutation(ctx => ctx.resources.status({ resource: { table: 'anchors', id: 'anchor' }, operationId: 'notify' })),
+    },
+  }, { clock, mailTransportFactoryTrusted: true, mailTransportFactory: () => ({ async send(message) { deliveries.push(message); return { messageId: message.messageId, accepted: [message.to[0].email], rejected: [] }; }, close() {} }) });
+  try {
+    await database.init(); await stopNotificationIntentWorker(database);
+    await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'postgres');
+    assert.deepEqual(await runMutation(database, actor, 'accept', []), { ok: true, data: { id: 'notice', state: 'staged' }, error: null });
+    assert.equal(await runNotificationIntentDeliveryPass(database), true);
+    const status = (await runMutation(database, actor, 'status', [])).data;
+    assert.equal(status.intents[0].state, 'acknowledged');
+    assert.equal(deliveries.length, 1);
+  } finally { await database.shutdown(); await database.close(); }
 });

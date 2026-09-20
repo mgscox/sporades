@@ -1,4 +1,5 @@
 import { acquirePostgresResourceBootstrapLock, resourceError } from "./resource-runtime.js";
+import { notificationIntentSchemas } from "./notification-intent-runtime.js";
 // The Capsule runtime's Database adapters and dialect: the three engines, the seam they answer, the
 // one shared method set every behavioural call goes through, and the app-schema DDL that method set
 // emits. Batch 9 of the migration ADR-0041 records, and the last domain to leave
@@ -1577,6 +1578,7 @@ export async function createPostgresDatabaseAdapter(options) {
     const resourceSchemas = [
         { table: "sporades_resource_locks", columns: ["resourceTable", "resourceId"], primaryKey: ["resourceTable", "resourceId"], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId])" },
         { table: "sporades_resource_receipts", columns: ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"], primaryKey: ["resourceTable", "resourceId", "operationId"], definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId])" },
+        ...notificationIntentSchemas,
     ];
     const resourceSchemaReady = async (query) => {
         for (const schema of resourceSchemas) {

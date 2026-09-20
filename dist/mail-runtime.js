@@ -58,11 +58,13 @@ function mailError(code, message, hint) {
 // and every send fails with the reason, so an operator who has not sealed the SMTP credentials yet
 // gets a running Capsule without Email rather than a Capsule that will not start.
 function disabledMailRuntime(code, message, hint) {
+    const unavailable = () => { throw mailError(code, message, hint); };
+    const rejectIntent = () => { const error = mailError(code, message, hint); error.smtpOutcome = "rejected"; throw error; };
     return {
         enabled: false,
-        async send() {
-            throw mailError(code, message, hint);
-        },
+        validateIntent: unavailable,
+        async send() { unavailable(); },
+        async sendIntent() { rejectIntent(); },
         close() { },
     };
 }
@@ -109,64 +111,78 @@ export function createMailRuntime(mailConfig, serverEnv, options = {}) {
     }
     let closeStarted = false;
     let closeResult;
+    const validateIntent = (input) => normalizeMailMessage({
+        to: input.to,
+        subject: input.subject,
+        textBody: input.text,
+        ...(input.html === undefined ? {} : { htmlBody: input.html }),
+    }, resolvedSmtp.defaultFrom, resolvedSmtp.vendor);
+    const deliver = async (message, deliveryLog, stableMessageId) => {
+        const outbound = stableMessageId ? { ...message, messageId: stableMessageId } : message;
+        const messageIdentity = stableMessageId
+            ? `intent_${stableMessageId.replace(/[^a-f0-9]/gi, "").slice(0, 16)}`
+            : `mail_${crypto.randomUUID()}`;
+        const startedAt = Date.now();
+        try {
+            const result = await transport.send(outbound);
+            const normalizedResult = {
+                messageId: String(result?.messageId ?? stableMessageId ?? ""),
+                accepted: Array.isArray(result?.accepted) ? result.accepted.map(String) : [],
+                rejected: Array.isArray(result?.rejected) ? result.rejected.map(String) : [],
+            };
+            if (stableMessageId && (normalizedResult.accepted.length !== 1 || normalizedResult.rejected.length !== 0)) {
+                const rejection = mailError("MAIL_REJECTED", "The SMTP server rejected the message.", "Check the sender, recipient, and provider delivery policy.");
+                rejection.smtpOutcome = "rejected";
+                throw rejection;
+            }
+            const resultCategory = normalizedResult.rejected.length > 0 ? "partial" : "accepted";
+            try {
+                await deliveryLog?.({
+                    category: "mail", event: "mail.delivery", level: "info", message: "SMTP delivery completed.",
+                    data: createMailDeliveryLogData(resolvedSmtp.vendor, message, messageIdentity, Date.now() - startedAt, resultCategory, normalizedResult),
+                    request: null, release: null, correlation: { mail: messageIdentity },
+                });
+            }
+            catch { }
+            return normalizedResult;
+        }
+        catch (error) {
+            const normalizedError = ownedTransportBoundary
+                ? error
+                : trustedTestTransportBoundary
+                    ? normalizeMailTransportError(error)
+                    : mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status.");
+            // Intent delivery needs only a bounded outcome class. Never retain the
+            // provider reply, address, body, credentials, or engine diagnostics.
+            if (stableMessageId) {
+                normalizedError.smtpOutcome = normalizedError.code === "MAIL_REJECTED"
+                    || error?.smtpOutcome === "rejected"
+                    || Number(error?.smtpCode) >= 500 && Number(error?.smtpCode) <= 599
+                    ? "rejected" : "unknown";
+            }
+            try {
+                await deliveryLog?.({
+                    category: "mail", event: "mail.delivery", level: "error", message: "SMTP delivery failed.",
+                    data: createMailDeliveryLogData(resolvedSmtp.vendor, message, messageIdentity, Date.now() - startedAt, normalizedError.code),
+                    request: null, release: null, correlation: { mail: messageIdentity },
+                });
+            }
+            catch { }
+            throw normalizedError;
+        }
+    };
     return {
         enabled: true,
+        validateIntent,
         async send(input, deliveryLog = options.mailLog) {
             const message = normalizeMailMessage(input, resolvedSmtp.defaultFrom, resolvedSmtp.vendor);
-            const messageIdentity = `mail_${crypto.randomUUID()}`;
-            const startedAt = Date.now();
-            try {
-                const result = await transport.send(message);
-                const normalizedResult = {
-                    messageId: String(result?.messageId ?? ""),
-                    accepted: Array.isArray(result?.accepted) ? result.accepted.map(String) : [],
-                    rejected: Array.isArray(result?.rejected) ? result.rejected.map(String) : [],
-                };
-                const resultCategory = normalizedResult.rejected.length > 0 ? "partial" : "accepted";
-                try {
-                    await deliveryLog?.({
-                        category: "mail",
-                        event: "mail.delivery",
-                        level: "info",
-                        message: "SMTP delivery completed.",
-                        data: createMailDeliveryLogData(resolvedSmtp.vendor, message, messageIdentity, Date.now() - startedAt, resultCategory, normalizedResult),
-                        request: null,
-                        release: null,
-                        correlation: { mail: messageIdentity },
-                    });
-                }
-                catch {
-                    // Diagnostics must never turn a completed external side effect into
-                    // an apparent delivery failure that callers may retry.
-                }
-                return normalizedResult;
-            }
-            catch (error) {
-                // Only Sporades-owned transport failures, or explicitly trusted
-                // internal test doubles, may be inspected for classification. An
-                // arbitrary injected value remains completely opaque.
-                const normalizedError = ownedTransportBoundary
-                    ? error
-                    : trustedTestTransportBoundary
-                        ? normalizeMailTransportError(error)
-                        : mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status.");
-                try {
-                    await deliveryLog?.({
-                        category: "mail",
-                        event: "mail.delivery",
-                        level: "error",
-                        message: "SMTP delivery failed.",
-                        data: createMailDeliveryLogData(resolvedSmtp.vendor, message, messageIdentity, Date.now() - startedAt, normalizedError.code),
-                        request: null,
-                        release: null,
-                        correlation: { mail: messageIdentity },
-                    });
-                }
-                catch {
-                    // Preserve the stable mail failure even if diagnostics are unavailable.
-                }
-                throw normalizedError;
-            }
+            return deliver(message, deliveryLog);
+        },
+        async sendIntent(input, stableMessageId, deliveryLog = options.mailLog) {
+            const message = validateIntent(input);
+            if (message.to.length !== 1)
+                throw mailError("INVALID_MAIL_MESSAGE", "Invalid mail message.", "Pass exactly one intent recipient.");
+            return deliver(message, deliveryLog, stableMessageId);
         },
         close() {
             if (closeStarted)
@@ -788,6 +804,9 @@ function normalizeMailTransportError(error) {
         || ["DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY"].includes(code)
         || code === "MAIL_TLS_FAILED")
         return mailError("MAIL_TLS_FAILED", "SMTP TLS negotiation failed.", "Check the SMTP TLS mode, port, and certificate policy.");
+    if (code === "EREJECTED" && Number(error?.smtpCode) >= 400 && Number(error?.smtpCode) <= 499) {
+        return mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status.");
+    }
     if (code === "EREJECTED" || code === "MAIL_REJECTED") {
         return mailError("MAIL_REJECTED", "The SMTP server rejected the message.", "Check the sender, recipients, and provider delivery policy.");
     }
@@ -878,7 +897,9 @@ export function createMailTransport(smtp) {
                     throw error;
                 }
                 await smtpCommand(activeSocket, reader, "DATA", [354]);
-                const messageId = `<${crypto.randomUUID()}@sporades.local>`;
+                const messageId = typeof message.messageId === "string" && /^<[^<>\r\n]+>$/.test(message.messageId)
+                    ? message.messageId
+                    : `<${crypto.randomUUID()}@sporades.local>`;
                 const raw = buildSmtpMessage({ ...message, messageId }).replace(/(^|\r\n)\./g, "$1..");
                 activeSocket.write(`${raw}\r\n.\r\n`);
                 const delivered = await reader.expect([250], "EREJECTED");
@@ -1042,7 +1063,7 @@ async function smtpRecipientCommand(socket, reader, email) {
         return true;
     }
     catch (error) {
-        if (error?.code === "EREJECTED" && error?.smtpCode >= 400 && error?.smtpCode <= 599)
+        if (error?.code === "EREJECTED" && error?.smtpCode >= 500 && error?.smtpCode <= 599)
             return false;
         throw error;
     }

@@ -266,6 +266,13 @@ const MIGRATED_RUNTIME_MODULES = [
   // declarations: enough room for an honest consolidation, not enough for a
   // partial parser result to look like the carried resource protocol.
   { file: "resource-runtime.js", atLeast: 7, sentinel: "resourceAbortError" },
+  // Durable notification acceptance and per-recipient SMTP recovery travel as
+  // one runtime domain. The exact-object validator is private and guards the
+  // canonical identity persisted before any delivery attempt.
+  { file: "notification-intent-runtime.js", atLeast: 12, sentinel: "exactPlainObject" },
+  // Promise lineage is carried whole by ACL/resource draining. Its private
+  // composition-root retention hook must remain visible to the guards.
+  { file: "promise-coordinator.js", atLeast: 8, sentinel: "retainCompositionRootCandidate" },
   // Headless Team Billing owns provider-correlation DDL and the fail-closed
   // projection boundary. The private timestamp validator is the final gate
   // before runtime-owned text can cross into browser state.
@@ -346,7 +353,7 @@ const MIGRATED_RUNTIME_MODULES = [
   //
   // The floor is 45 against 55 — room for an honest edit to fold a helper away, and not enough for a
   // parse that returned a fraction of the module.
-  { file: "acl-runtime.js", atLeast: 45, sentinel: "markAsyncAclHelperRead" },
+  { file: "acl-runtime.js", atLeast: 45, sentinel: "aclRuleTouchedAsyncHelperRead" },
   // Batch 8: the HTTP and security policy domain, 32 functions, 15 of them private. The sentinel is
   // private for the eighth time running. `serializeCspDirectives` turns the policy's directive map
   // into the header value `prepareHttpSecurity` sets on every single response, so no honest edit

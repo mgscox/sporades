@@ -3926,12 +3926,12 @@ test('same-runtime resource acquisition is busy behind a transaction but roots q
 test('resource table namespace rejects module and source schemas descriptively', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'resource-reserved-'));
   try {
-    for (const fromSource of [false, true]) {
-      await assert.rejects(openDevDatabase(path.join(dir, `${fromSource}.db`),
-        fromSource ? 'schema: { sporades_resource_private: table({ value: String() }) }' : '', {}, {},
-        fromSource ? undefined : { schema: { sporades_resource_private: table({ value: Text() }) } }), error => {
+    for (const reservedName of ['sporades_resource_private', 'sporades_notification_private']) for (const fromSource of [false, true]) {
+      await assert.rejects(openDevDatabase(path.join(dir, `${reservedName}-${fromSource}.db`),
+        fromSource ? `schema: { ${reservedName}: table({ value: String() }) }` : '', {}, {},
+        fromSource ? undefined : { schema: { [reservedName]: table({ value: Text() }) } }), error => {
           assert.equal(error.code, 'RESERVED_TABLE_NAME');
-          assert.match(error.message, /Reserved runtime table name: sporades_resource_private/);
+          assert.match(error.message, new RegExp(`Reserved runtime table name: ${reservedName}`));
           return true;
         });
     }

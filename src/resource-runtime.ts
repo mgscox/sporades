@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { ensureNotificationIntentStorage, readNotificationIntentStatuses, stageNotificationIntent } from "./notification-intent-runtime.js";
 
 type RecordValue = Record<string, any>;
 
@@ -310,6 +311,7 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
         if (database.adapter.engine !== "postgres") {
           await database.adapter.exec(database.adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_receipts] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId]))"));
           await upgradeFoldedResourceColumns(database.adapter, "sporades_resource_receipts", ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"]);
+          await ensureNotificationIntentStorage(database.adapter);
         }
         receipt = resourceReceiptRow(database.adapter, await database.adapter.prepare(database.adapter.dialect.sql("SELECT * FROM [sporades_resource_receipts] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=?")).get(identity.table, identity.id, identity.operationId));
       } catch (error: any) {
@@ -317,11 +319,15 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
       }
       if (receipt) {
         if (receipt.actorDigest !== actorDigest || !status && receipt.inputDigest !== identity.digest) throw resourceError("RESOURCE_OPERATION_CONFLICT");
-        return status ? { state: "committed", result: JSON.parse(receipt.resultJson), intentIds: JSON.parse(receipt.intentIdsJson) } : JSON.parse(receipt.resultJson);
+        if (!status) return JSON.parse(receipt.resultJson);
+        const intentIds = JSON.parse(receipt.intentIdsJson);
+        return { state: "committed", result: JSON.parse(receipt.resultJson), intentIds,
+          ...(intentIds.length ? { intents: await readNotificationIntentStatuses(database.adapter, identity, intentIds) } : {}) };
       }
       if (status) return { state: "absent" };
       const scopeDb = wrapCapability(parentDb, () => assertLive(true), [], new WeakMap<object, any>(), track);
       const logs: string[] = [];
+      const intentIds: string[] = [];
       const scope = Object.freeze({
         db: scopeDb,
         jobs: Object.freeze({ enqueue: (...args: any[]) => track(() => { assertLive(true); return parentJobs.enqueue(...args); }) }),
@@ -329,12 +335,13 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
           assertLive(true); if (logs.length >= 100) throw resourceError("RESOURCE_INVALID_INPUT"); logs.push(level);
         }]))),
         signal: controller.signal,
-        notifications: Object.freeze({ accept: () => {
+        notifications: Object.freeze({ accept: (input: any) => {
           assertLive(true);
-          return track(() => Promise.resolve().then(() => {
-          terminalError ??= resourceError("RESOURCE_EFFECT_UNSUPPORTED");
-          throw terminalError;
-          }));
+          return track(async () => {
+            const staged = await stageNotificationIntent(database.adapter, database, identity, input, resourceCanonicalJson);
+            if (!intentIds.includes(staged.id)) intentIds.push(staged.id);
+            return staged;
+          });
         } }),
       });
       let result: any;
@@ -352,7 +359,8 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
       } catch (error) { terminalError ??= error; throw error; }
       assertLive();
       try {
-        await database.adapter.prepare(database.adapter.dialect.sql("INSERT INTO [sporades_resource_receipts] VALUES (?,?,?,?,?,?,?,?)")).run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
+        intentIds.sort();
+        await database.adapter.prepare(database.adapter.dialect.sql("INSERT INTO [sporades_resource_receipts] VALUES (?,?,?,?,?,?,?,?)")).run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, JSON.stringify(intentIds), database.clock.now().toISOString());
       } catch (error: any) {
         throw normalizeDatabaseOperationError(error, true);
       }
@@ -515,12 +523,16 @@ export function bindJobResources(database: RecordValue, context: RecordValue, cl
         if (database.adapter.engine !== "postgres") {
           await guarded.exec(adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_receipts] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId]))"));
           await upgradeFoldedResourceColumns(guarded, "sporades_resource_receipts", ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"]);
+          await ensureNotificationIntentStorage(guarded);
         }
         const receipt = resourceReceiptRow(database.adapter, await guarded.prepare(adapter.dialect.sql("SELECT * FROM [sporades_resource_receipts] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=?")).get(identity.table, identity.id, identity.operationId));
         if (receipt) {
           if (receipt.actorDigest !== actorDigest || !status && receipt.inputDigest !== identity.digest) throw resourceError("RESOURCE_OPERATION_CONFLICT");
           await checkClaim(guarded);
-          return status ? { state: "committed", result: JSON.parse(receipt.resultJson), intentIds: JSON.parse(receipt.intentIdsJson) } : JSON.parse(receipt.resultJson);
+          if (!status) return JSON.parse(receipt.resultJson);
+          const intentIds = JSON.parse(receipt.intentIdsJson);
+          return { state: "committed", result: JSON.parse(receipt.resultJson), intentIds,
+            ...(intentIds.length ? { intents: await readNotificationIntentStatuses(guarded, identity, intentIds) } : {}) };
         }
         if (status) { await checkClaim(guarded); return { state: "absent" }; }
         const db = Object.fromEntries(Object.entries(scopeContext!.db).map(([name, table]) => {
@@ -531,14 +543,18 @@ export function bindJobResources(database: RecordValue, context: RecordValue, cl
           }]));
           return [name, wrapTable(table)];
         }));
-        const rejectEffect = () => { assertLive(true); throw resourceError("RESOURCE_EFFECT_UNSUPPORTED"); };
+        const intentIds: string[] = [];
         const scope = Object.freeze({
           db: Object.freeze(db), signal: controller.signal,
           jobs: Object.freeze({ enqueue: (...args: any[]) => track(() => scopeContext!.jobs.enqueue(...args)) }),
           log: Object.freeze(Object.fromEntries(["info", "warn", "error"].map((level) => [level, () => {
             assertLive(true); if (logs.length >= 100) throw resourceError("RESOURCE_INVALID_INPUT"); logs.push(level);
           }]))),
-          notifications: Object.freeze({ accept: () => track(rejectEffect) }),
+          notifications: Object.freeze({ accept: (input: any) => track(async () => {
+            const staged = await stageNotificationIntent(guarded, database, identity, input, resourceCanonicalJson);
+            if (!intentIds.includes(staged.id)) intentIds.push(staged.id);
+            return staged;
+          }) }),
         });
         const value = await Promise.race([Promise.resolve().then(() => callback(scope)), aborted]);
         admission = false;
@@ -547,7 +563,8 @@ export function bindJobResources(database: RecordValue, context: RecordValue, cl
         const resultJson = resourceCanonicalJson(value);
         await hooks.stageLogs(scopeContext, logs);
         await checkClaim(guarded);
-        await guarded.prepare(adapter.dialect.sql("INSERT INTO [sporades_resource_receipts] VALUES (?,?,?,?,?,?,?,?)")).run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, "[]", database.clock.now().toISOString());
+        intentIds.sort();
+        await guarded.prepare(adapter.dialect.sql("INSERT INTO [sporades_resource_receipts] VALUES (?,?,?,?,?,?,?,?)")).run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, JSON.stringify(intentIds), database.clock.now().toISOString());
         await checkClaim(guarded);
         active = false;
         return JSON.parse(resultJson);

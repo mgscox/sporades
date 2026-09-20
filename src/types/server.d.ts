@@ -870,15 +870,27 @@ export type ResourceIdentity = Readonly<{ table: string; id: string }>;
 export type ResourceRunOptions = Readonly<{ resource: ResourceIdentity; operationId: string; input: JsonValue }>;
 export type ResourceStatusOptions = Readonly<{ resource: ResourceIdentity; operationId: string }>;
 export type ResourceNotification = Readonly<{ id: string; to: readonly string[]; subject: string; text: string; html?: string }>;
+export type ResourceNotificationRecipientStatus = Readonly<{
+  recipient: string;
+  state: "accepted" | "submitting" | "unknown" | "retry-wait" | "acknowledged" | "rejected";
+  attemptCount: number;
+  nextAttemptAt: string | null;
+  lastOutcomeCategory: "acknowledged" | "rejected" | "unknown" | null;
+}>;
+export type ResourceNotificationIntentStatus = Readonly<{
+  id: string;
+  state: "pending" | "acknowledged" | "rejected";
+  recipients: readonly ResourceNotificationRecipientStatus[];
+}>;
 export type ResourceScope<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{
   db: DatabaseFromSchema<Schema>;
   jobs: Pick<JobApi, "enqueue">;
   log: Logger;
   signal: AbortSignal;
-  /** Reserved surface. Rejects RESOURCE_EFFECT_UNSUPPORTED until durable intents ship. */
+  /** Stages a durable notification in the owning resource transaction. No SMTP I/O occurs before commit. */
   notifications: { accept(input: ResourceNotification): Promise<{ id: string; state: "staged" }> };
 }>;
-export type ResourceStatus = { state: "absent" } | { state: "committed"; result: JsonValue; intentIds: string[] };
+export type ResourceStatus = { state: "absent" } | { state: "committed"; result: JsonValue; intentIds: string[]; intents?: ResourceNotificationIntentStatus[] };
 /** SQLite ordinary Jobs, Custom mutations, and Custom endpoints. One call, before application DB/provider work. */
 export type ResourcesApi<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{
   run<Result extends JsonValue>(options: ResourceRunOptions, callback: (scope: ResourceScope<Schema>) => MaybePromise<Result>): Promise<Result>;

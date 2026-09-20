@@ -14,6 +14,7 @@ import { uncappedLogEnvelope, logPayloadMaxBytes, validateLogConfig } from "./lo
 import { validateMailConfig } from "./mail-config.js";
 import { validateStripePaymentsRuntimeConfig } from "./stripe-payment-config.js";
 import { createMailRuntime } from "./mail-runtime.js";
+import { ensureNotificationIntentStorage, notificationIntentStorageExists, startNotificationIntentWorker, stopNotificationIntentWorker } from "./notification-intent-runtime.js";
 import { createEmailEventEndpoints } from "./email-events-runtime.js";
 import { sqlWithoutTrailingTerminator, validateReadOnlyInspectionSql } from "./inspection-sql.js";
 import { isInternalLogIndexMetadataRow, targetsInternalLogIndexTable } from "./log-index-guard.js";
@@ -562,7 +563,7 @@ export async function replaceRuntimeDatabase(currentDatabase: LooseRecord, candi
   let activationError: unknown;
   try {
     if (typeof candidateDatabase.__activateJobExecution === "function") {
-      candidateDatabase.__activateJobExecution(candidateDatabase.clock.now().getTime());
+      await candidateDatabase.__activateJobExecution(candidateDatabase.clock.now().getTime());
     } else {
       scheduleJobLeaseRecoveryAt(candidateDatabase, candidateDatabase.clock.now().getTime());
       scheduleCurrentUserJobWorker(candidateDatabase);
@@ -848,6 +849,7 @@ export async function openDevDatabase(
     fileIngressEnabled,
     scheduleOccurrenceFault: options?.scheduleOccurrenceFault,
     scheduleReconciliationFault: options?.scheduleReconciliationFault,
+    notificationIntentFault: options?.notificationIntentFault,
     jobRecoveryFault: options?.jobRecoveryFault,
     schedulePayloadFactoryTimeoutMs,
     schedulePayloadFactoryActive: 0,
@@ -1031,6 +1033,7 @@ export async function openDevDatabase(
       for (const timer of database.__scheduleTimers ?? []) database.clock.clearTimer(timer);
       database.__scheduleTimers?.clear?.();
       const workerSettlement = stopCurrentUserJobWorker(database);
+      const notificationSettlement = stopNotificationIntentWorker(database);
       const scheduleSettlement = settleActiveScheduleWork(database);
       const closeResources = () => {
         const failures: Array<{ index: number; error: unknown }> = [];
@@ -1061,7 +1064,7 @@ export async function openDevDatabase(
         };
         return pending.length > 0 ? Promise.all(pending).then(finish) : finish();
       };
-      const runtimeSettlements = [workerSettlement, scheduleSettlement].filter(Boolean).map((settlement) => Promise.resolve(settlement));
+      const runtimeSettlements = [workerSettlement, notificationSettlement, scheduleSettlement].filter(Boolean).map((settlement) => Promise.resolve(settlement));
       if (runtimeSettlements.length === 0) return closeResources();
       return (async () => {
         let workerError: unknown;
@@ -1089,9 +1092,10 @@ export async function openDevDatabase(
       Promise.resolve(completeSettlement).catch(() => {});
       return activeWorker ? Promise.resolve(activeWorker) : undefined;
     },
-    __activateJobExecution: (recoveryAt: number | null) => {
+    __activateJobExecution: async (recoveryAt: number | null) => {
       database.__jobActivationDeferred = false;
       activateCurrentUserJobExecution(database, recoveryAt);
+      if (database.__notificationDeliveryEnabled) await startNotificationIntentWorker(database);
     },
     __preflightJobExecutionActivation: () => {
       preflightCurrentUserJobExecution(database);
@@ -1121,6 +1125,9 @@ export async function openDevDatabase(
       database.__scheduleRecoveryPromise = null;
       database.__scheduleLegacyDiscoveryTimer = null;
       await refreshIngressMaintenanceState(database, { discoverInterruptedDelivery: true });
+      const notificationDeliveryEnabled = database.mail.enabled || await notificationIntentStorageExists(database.adapter);
+      database.__notificationDeliveryEnabled = notificationDeliveryEnabled;
+      if (database.mail.enabled) await ensureNotificationIntentStorage(database.adapter);
       if (ingressAuditMaintenanceIsDue(database)) await runIngressAuditOutboxDrain(database);
       // Recovery may classify durable state while the candidate is stopped,
       // but it returns the retained wake instead of arming it. Publication is
@@ -1141,6 +1148,7 @@ export async function openDevDatabase(
         // fresh runtime has no inherited worker/wake timer, so activation
         // releases recovery plus one normal pass to rediscover durable work.
         activateCurrentUserJobExecution(database, earliestFutureLeaseAt);
+        if (notificationDeliveryEnabled) await startNotificationIntentWorker(database);
       }
       await recoverReconciledSchedules(database, reconciled.recoveredOccurrences);
       // A fresh initial runtime publishes here. Dev replacement candidates are
@@ -1155,7 +1163,7 @@ export async function openDevDatabase(
       database.__scheduleRecoveryTimer = null;
       database.__scheduleRecoveryDueAt = null;
       database.__scheduleLegacyDiscoveryTimer = null;
-      const settlements = [stopCurrentUserJobWorker(database), settleActiveScheduleWork(database), shutdownClamavRuntime(database)]
+      const settlements = [stopCurrentUserJobWorker(database), stopNotificationIntentWorker(database), settleActiveScheduleWork(database), shutdownClamavRuntime(database)]
         .filter(Boolean)
         .map((pending) => Promise.resolve(pending));
       const cleanup = await Promise.allSettled(settlements);
@@ -1176,6 +1184,8 @@ export async function openDevDatabase(
         database.__scheduleStopped = true;
         workerSettlement = stopCurrentUserJobWorker(database);
       } catch (error) { failures.push(error); }
+      try { await stopNotificationIntentWorker(database); }
+      catch (error) { failures.push(error); }
       try {
         abortSchedulePayloadFactories(database);
         for (const timer of database.__scheduleTimers ?? []) database.clock.clearTimer(timer);
@@ -2798,10 +2808,12 @@ function normalizeUniqueConstraints(tableName: string, fields: Record<string, un
 }
 
 function assertNotReservedTeamTableName(name: string) {
-  if (name.toLowerCase().startsWith("sporades_resource_")) {
+  const runtimeNamespace = ["sporades_resource_", "sporades_notification_"]
+    .find(prefix => name.toLowerCase().startsWith(prefix));
+  if (runtimeNamespace) {
     throw commandError(
       `Reserved runtime table name: ${name}`,
-      "Choose a Capsule table name outside the sporades_resource_ runtime namespace.",
+      `Choose a Capsule table name outside the ${runtimeNamespace} runtime namespace.`,
       "RESERVED_TABLE_NAME",
     );
   }
