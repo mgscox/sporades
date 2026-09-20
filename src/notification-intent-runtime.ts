@@ -341,6 +341,10 @@ export function startNotificationIntentWorker(database: RecordValue) {
     if (database.__notificationIntentStopped || database.__notificationIntentWorkerPromise) return;
     const work = (async () => {
       try {
+        if (database.__notificationIntentStorageVerified !== true) {
+          await ensureNotificationIntentStorage(database.adapter);
+          database.__notificationIntentStorageVerified = true;
+        }
         while (!database.__notificationIntentStopped && await runNotificationIntentDeliveryPass(database)) {}
         if (database.__notificationIntentStopped) return;
         const wakeAt = await nextWakeAt(database);

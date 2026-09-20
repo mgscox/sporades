@@ -901,24 +901,32 @@ test('a rejected startup notification scan neither blocks nor aborts Capsule ini
   } finally { await f.close(); }
 });
 
-test('a failed notification storage bootstrap does not reject init()', async () => {
+test('failed notification storage verification gates delivery until a later bootstrap retry succeeds', async () => {
   const f = await fixture();
   const originalExec = f.database.adapter.exec;
   try {
     assert.equal((await runMutation(f.database, actor, 'accept', [notification()])).ok, true);
     await f.database.shutdown();
-    let broken = true;
+    let blocked = true;
     f.database.adapter.exec = async (sqlText, ...args) => {
-      if (broken && typeof sqlText === 'string' && sqlText.includes('sporades_notification_intents')) {
-        broken = false;
+      if (blocked && typeof sqlText === 'string' && sqlText.includes('sporades_notification_intents')) {
         throw Object.assign(new Error('storage bootstrap contention'), { code: 'RESOURCE_BUSY', retryable: true });
       }
       return originalExec.call(f.database.adapter, sqlText, ...args);
     };
     await f.database.init();
     assert.equal(f.database.__runtimeInitialized, true, 'a failed storage bootstrap is not a fatal startup failure');
-    assert.equal(broken, false, 'the injected failure actually fired');
-    f.database.adapter.exec = originalExec;
+    while (!f.database.__notificationIntentNativeTimer && f.deliveries.length === 0) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.deliveries.length, 0, 'delivery cannot query storage that failed verification');
+    assert.deepEqual(
+      { ...f.database.adapter.prepare('SELECT state,attemptCount,lastOutcomeCategory FROM sporades_notification_recipients').get() },
+      { state: 'accepted', attemptCount: '0', lastOutcomeCategory: '' },
+      'a gated worker leaves the accepted recipient valid and unreserved',
+    );
+    blocked = false;
+    await startNotificationIntentWorker(f.database);
+    assert.equal(f.deliveries.length, 1, 'a later bootstrap retry activates delivery after contention clears');
+    assert.equal(f.database.adapter.prepare('SELECT state FROM sporades_notification_recipients').get().state, 'acknowledged');
     assert.equal((await runMutation(f.database, actor, 'status', [])).ok, true, 'init did not close the database');
   } finally {
     f.database.adapter.exec = originalExec;

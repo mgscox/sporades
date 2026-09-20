@@ -68259,6 +68259,10 @@ function startNotificationIntentWorker(database) {
     if (database.__notificationIntentStopped || database.__notificationIntentWorkerPromise) return;
     const work = (async () => {
       try {
+        if (database.__notificationIntentStorageVerified !== true) {
+          await ensureNotificationIntentStorage(database.adapter);
+          database.__notificationIntentStorageVerified = true;
+        }
         while (!database.__notificationIntentStopped && await runNotificationIntentDeliveryPass(database)) {
         }
         if (database.__notificationIntentStopped) return;
@@ -101501,9 +101505,11 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       await refreshIngressMaintenanceState(database, { discoverInterruptedDelivery: true });
       const notificationDeliveryEnabled = database.mail.enabled || await notificationIntentStorageExists(database.adapter);
       database.__notificationDeliveryEnabled = notificationDeliveryEnabled;
+      database.__notificationIntentStorageVerified = false;
       if (notificationDeliveryEnabled) {
         try {
           await ensureNotificationIntentStorage(database.adapter);
+          database.__notificationIntentStorageVerified = true;
         } catch (error) {
           void Promise.resolve(database.log?.emit?.({ category: "platform", event: "notification.storage.bootstrap_failed", level: "error", message: "Notification storage bootstrap failed", data: { code: String(error?.code ?? "NOTIFICATION_STORAGE_BOOTSTRAP_FAILED").slice(0, 80) } })).catch(() => {
           });

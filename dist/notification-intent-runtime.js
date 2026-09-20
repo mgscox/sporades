@@ -342,6 +342,10 @@ export function startNotificationIntentWorker(database) {
             return;
         const work = (async () => {
             try {
+                if (database.__notificationIntentStorageVerified !== true) {
+                    await ensureNotificationIntentStorage(database.adapter);
+                    database.__notificationIntentStorageVerified = true;
+                }
                 while (!database.__notificationIntentStopped && await runNotificationIntentDeliveryPass(database)) { }
                 if (database.__notificationIntentStopped)
                     return;
