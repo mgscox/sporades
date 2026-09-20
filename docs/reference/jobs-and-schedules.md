@@ -595,7 +595,8 @@ and recipient rows commit atomically; outer rollback removes all of them.
 After commit, an independent runtime worker durably scans accepted recipients.
 Each attempt first commits a random reservation token, sequence, and deadline,
 then submits exactly one SMTP envelope for one recipient using the intent's
-stable Message-ID. The reservation window is
+globally unique random Message-ID, minted and persisted when the intent is
+accepted and kept stable across every recipient and retry. The reservation window is
 `max(30_000ms, connectionTimeoutMs + 12 * socketTimeoutMs)`, using the same
 configured SMTP timeouts as the transport. The default 10-second connection and
 30-second socket timeouts therefore produce a 370-second reservation rather

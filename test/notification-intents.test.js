@@ -141,6 +141,20 @@ test('resource notification acceptance is atomic, immutable, deduplicated, and s
   } finally { await f.close(); }
 });
 
+test('independent intent acceptances mint globally unique persisted Message-IDs', async () => {
+  const first = await fixture();
+  const second = await fixture();
+  try {
+    await runMutation(first.database, actor, 'accept', [notification({ to: ['first@example.com'], text: 'First deployment' })]);
+    await runMutation(second.database, actor, 'accept', [notification({ to: ['second@example.com'], text: 'Second deployment' })]);
+    const firstMessageId = first.database.adapter.prepare('SELECT messageId FROM sporades_notification_intents').get().messageId;
+    const secondMessageId = second.database.adapter.prepare('SELECT messageId FROM sporades_notification_intents').get().messageId;
+    assert.match(firstMessageId, /^<[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}@sporades\.local>$/);
+    assert.match(secondMessageId, /^<[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}@sporades\.local>$/);
+    assert.notEqual(firstMessageId, secondMessageId);
+  } finally { await first.close(); await second.close(); }
+});
+
 test('outer rollback removes notification, recipients, receipt, and protected writes', async () => {
   const f = await fixture();
   try {

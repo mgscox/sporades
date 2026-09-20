@@ -111,7 +111,7 @@ export async function stageNotificationIntent(adapter, database, identity, input
         return { id: input.id, state: "staged" };
     }
     const acceptedAt = database.clock.now().toISOString();
-    const messageId = `<${createHash("sha256").update(`${database.capsuleIdentity}\0${key.join("\0")}`).digest("hex")}@sporades.local>`;
+    const messageId = `<${randomUUID()}@sporades.local>`;
     await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_intents] ([resourceTable],[resourceId],[operationId],[intentId],[payloadDigest],[payloadJson],[messageId],[acceptedAt]) VALUES (?,?,?,?,?,?,?,?)"))
         .run(...key, payloadDigest, payloadJson, messageId, acceptedAt);
     await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_attempt_keys] ([resourceTable],[resourceId],[operationId],[intentId],[attemptKey]) VALUES (?,?,?,?,?)"))

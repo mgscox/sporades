@@ -68068,7 +68068,7 @@ async function stageNotificationIntent(adapter, database, identity, input, canon
     return { id: input.id, state: "staged" };
   }
   const acceptedAt = database.clock.now().toISOString();
-  const messageId = `<${createHash7("sha256").update(`${database.capsuleIdentity}\0${key.join("\0")}`).digest("hex")}@sporades.local>`;
+  const messageId = `<${randomUUID6()}@sporades.local>`;
   await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_intents] ([resourceTable],[resourceId],[operationId],[intentId],[payloadDigest],[payloadJson],[messageId],[acceptedAt]) VALUES (?,?,?,?,?,?,?,?)")).run(...key, payloadDigest, payloadJson, messageId, acceptedAt);
   await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_attempt_keys] ([resourceTable],[resourceId],[operationId],[intentId],[attemptKey]) VALUES (?,?,?,?,?)")).run(...key, randomBytes4(32).toString("hex"));
   for (const recipient of payload.to) {
