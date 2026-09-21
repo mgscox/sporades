@@ -459,10 +459,12 @@ export * from "./acl-runtime.js";
 //
 // Re-exported whole for the reason the thirteen above are. Two consumers make it load-bearing:
 // `src/cli/sporades.ts` and the generated bundle's boot program resolve `prepareHttpSecurity`,
-// `readJsonRequest`, `writeUnhandledHttpError`, `injectPageConnectionToken`, `routeRuntimeHealth`
-// and `handleFileHttpRoute` through here, and `test/host.test.js`, `test/database-adapter.test.js`
-// and `test/oauth-provider.test.js` resolve `prepareHttpSecurity`, `routeRuntimeHealth`,
-// `checkRuntimeSqlite` and `resolveOAuthRequestOrigin` through here.
+// `interpretHttpRequestTarget`, `writeInvalidHttpRequestTarget`, `readJsonRequest`,
+// `writeUnhandledHttpError`, `injectPageConnectionToken`, `isDocumentNavigationRequest`,
+// `routeConnectionToken`, `routeRuntimeHealth` and `handleFileHttpRoute` through here, and
+// `test/host.test.js`, `test/database-adapter.test.js` and `test/oauth-provider.test.js` resolve
+// `prepareHttpSecurity`, `routeRuntimeHealth`, `checkRuntimeSqlite` and
+// `resolveOAuthRequestOrigin` through here.
 export * from "./http-runtime.js";
 
 type LooseRecord = Record<string, any>;
