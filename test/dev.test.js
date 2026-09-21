@@ -361,19 +361,29 @@ function headerNames(headers) {
 }
 
 async function rawHttpStatus(baseUrl, requestPath) {
+  const response = await rawHttpResponse(baseUrl, requestPath);
+  const match = /^HTTP\/1\.1 (\d{3})/.exec(response);
+  if (!match) throw new Error(`Invalid HTTP response: ${response}`);
+  return Number(match[1]);
+}
+
+async function rawHttpResponse(baseUrl, requestPath) {
   const url = new URL(baseUrl);
   return new Promise((resolve, reject) => {
     const socket = connect(Number(url.port), url.hostname, () => {
       socket.write(`GET ${requestPath} HTTP/1.1\r\nHost: ${url.host}\r\nConnection: close\r\n\r\n`);
     });
     let response = "";
+    const timeout = setTimeout(() => {
+      socket.destroy();
+      reject(new Error(`Timed out waiting for HTTP response to ${requestPath}.`));
+    }, TEST_PROCESS_EVENT_TIMEOUT_MS);
     socket.setEncoding("utf8");
     socket.on("data", (chunk) => { response += chunk; });
     socket.on("error", reject);
     socket.on("close", () => {
-      const match = /^HTTP\/1\.1 (\d{3})/.exec(response);
-      if (!match) reject(new Error(`Invalid HTTP response: ${response}`));
-      else resolve(Number(match[1]));
+      clearTimeout(timeout);
+      resolve(response);
     });
   });
 }
@@ -494,6 +504,7 @@ function captureJsonEvents(child) {
   child.on("exit", onExit);
   return {
     events,
+    get stderr() { return stderr; },
     next(predicate) {
       const existingIndex = events.findIndex(predicate);
       if (existingIndex >= 0) return Promise.resolve(events.splice(existingIndex, 1)[0]);
@@ -1659,6 +1670,39 @@ test("sporades dev bundles and serves a Capsule built from the runtime module gr
     } finally {
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev keeps serving after an ordinary request target cannot be parsed", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "http-liveness", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "http-liveness");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    const events = captureJsonEvents(child);
+    try {
+      const started = await events.next((event) => event.ok && event.data?.event === "started");
+      const failed = await rawHttpResponse(started.data.url, "//");
+      assert.match(failed, /^HTTP\/1\.1 500\b/);
+      assert.match(failed, /"ok":false,"data":null,"error":\{"message":"Internal server error\."/);
+      assert.equal((await fetch(started.data.url)).status, 200);
+      assert.equal(child.exitCode, null);
+      assert.equal(events.events.some((event) => /unhandledRejection|uncaughtException|fatal-runtime|restart/i.test(JSON.stringify(event))), false);
+      assert.doesNotMatch(events.stderr, /unhandledRejection|uncaughtException|fatal-runtime/i);
+    } finally {
+      events.dispose();
+      if (child.exitCode === null) {
+        const exited = new Promise((resolve) => child.once("exit", resolve));
+        child.kill("SIGTERM");
+        await exited;
+      }
     }
   });
 });

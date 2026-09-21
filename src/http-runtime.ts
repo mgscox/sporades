@@ -209,24 +209,34 @@ export function writeUnhandledHttpError(database: LooseRecord, request: Incoming
 }
 
 export function emitHttpFailureLog(database: LooseRecord, request: IncomingMessage | LooseRecord, error: any, context: LooseRecord = {}) {
-  const requestUrl = new URL(request.url ?? context.path ?? "/", "http://127.0.0.1");
-  database.log?.emit?.({
-    category: "platform",
-    event: "http.request.failed",
-    level: "error",
-    message: isPayloadTooLargeError(error) ? "HTTP request body exceeded the configured limit." : "HTTP request failed.",
-    request: {
-      method: request.method ?? context.method ?? null,
-      path: requestUrl.pathname,
-    },
-    data: {
-      code: error?.code ?? null,
-      message: error?.message ?? String(error),
-      hint: error?.hint ?? null,
-      stack: error?.stack ?? null,
-      ...(context.attribution ?? (request as LooseRecord).__sporadesAccessKeyAttribution ?? {}),
-    },
-  });
+  try {
+    const target = request.url ?? context.path ?? "/";
+    let path: string;
+    try {
+      path = new URL(target, "http://127.0.0.1").pathname;
+    } catch {
+      path = String(target).split(/[?#]/, 1)[0].replace(/[\u0000-\u001F\u007F]/g, "�").slice(0, 1_024) || "/";
+    }
+    database.log?.emit?.({
+      category: "platform",
+      event: "http.request.failed",
+      level: "error",
+      message: isPayloadTooLargeError(error) ? "HTTP request body exceeded the configured limit." : "HTTP request failed.",
+      request: {
+        method: request.method ?? context.method ?? null,
+        path,
+      },
+      data: {
+        code: error?.code ?? null,
+        message: error?.message ?? String(error),
+        hint: error?.hint ?? null,
+        stack: error?.stack ?? null,
+        ...(context.attribution ?? (request as LooseRecord).__sporadesAccessKeyAttribution ?? {}),
+      },
+    });
+  } catch {
+    // A best-effort failure log must never replace the request failure it describes.
+  }
 }
 
 export function prepareHttpSecurity(database: { securityPolicy?: RuntimeSecurityPolicy }, request: IncomingMessage, response: ServerResponse<IncomingMessage> & { req: IncomingMessage; }) {

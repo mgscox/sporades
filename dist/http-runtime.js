@@ -161,24 +161,36 @@ export function writeUnhandledHttpError(database, request, response, error) {
     })}\n`);
 }
 export function emitHttpFailureLog(database, request, error, context = {}) {
-    const requestUrl = new URL(request.url ?? context.path ?? "/", "http://127.0.0.1");
-    database.log?.emit?.({
-        category: "platform",
-        event: "http.request.failed",
-        level: "error",
-        message: isPayloadTooLargeError(error) ? "HTTP request body exceeded the configured limit." : "HTTP request failed.",
-        request: {
-            method: request.method ?? context.method ?? null,
-            path: requestUrl.pathname,
-        },
-        data: {
-            code: error?.code ?? null,
-            message: error?.message ?? String(error),
-            hint: error?.hint ?? null,
-            stack: error?.stack ?? null,
-            ...(context.attribution ?? request.__sporadesAccessKeyAttribution ?? {}),
-        },
-    });
+    try {
+        const target = request.url ?? context.path ?? "/";
+        let path;
+        try {
+            path = new URL(target, "http://127.0.0.1").pathname;
+        }
+        catch {
+            path = String(target).split(/[?#]/, 1)[0].replace(/[\u0000-\u001F\u007F]/g, "�").slice(0, 1_024) || "/";
+        }
+        database.log?.emit?.({
+            category: "platform",
+            event: "http.request.failed",
+            level: "error",
+            message: isPayloadTooLargeError(error) ? "HTTP request body exceeded the configured limit." : "HTTP request failed.",
+            request: {
+                method: request.method ?? context.method ?? null,
+                path,
+            },
+            data: {
+                code: error?.code ?? null,
+                message: error?.message ?? String(error),
+                hint: error?.hint ?? null,
+                stack: error?.stack ?? null,
+                ...(context.attribution ?? request.__sporadesAccessKeyAttribution ?? {}),
+            },
+        });
+    }
+    catch {
+        // A best-effort failure log must never replace the request failure it describes.
+    }
 }
 export function prepareHttpSecurity(database, request, response) {
     const policy = database.securityPolicy ?? resolveRuntimeSecurityPolicy({});

@@ -35,7 +35,7 @@ import ts from "typescript";
 
 import { bundleServerCapsuleModule } from "../dist/bundle-pipeline.js";
 import { ensureSealedServerEnvKeyPair, sealServerEnv, sealedServerEnvPaths } from "../dist/sealed-server-env.js";
-import { createSqliteDatabaseAdapter } from "../dist/server-runtime-source.js";
+import { createSqliteDatabaseAdapter, emitHttpFailureLog } from "../dist/server-runtime-source.js";
 import { createServerBundleModuleSource } from "../dist/templates/server-bundle-module-graph.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
@@ -393,6 +393,27 @@ async function bootBundle({ source, dir, env = {} }) {
       await new Promise((resolve) => child.once("exit", resolve));
     },
   };
+}
+
+async function rawHttpResponse(baseUrl, requestPath) {
+  const url = new URL(baseUrl);
+  return new Promise((resolve, reject) => {
+    const socket = connect(Number(url.port), url.hostname, () => {
+      socket.write(`GET ${requestPath} HTTP/1.1\r\nHost: ${url.host}\r\nConnection: close\r\n\r\n`);
+    });
+    let response = "";
+    const timeout = setTimeout(() => {
+      socket.destroy();
+      reject(new Error(`Timed out waiting for HTTP response to ${requestPath}.`));
+    }, SOCKET_TIMEOUT_MS);
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => { response += chunk; });
+    socket.on("error", reject);
+    socket.on("close", () => {
+      clearTimeout(timeout);
+      resolve(response);
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2203,6 +2224,39 @@ test("the bundle mints ACL_HELPER_STATE exactly once, from the runtime's own dec
     "the bundle does not mint ACL_HELPER_STATE exactly once",
   );
   assert.match(bundle, /\bACL_HELPER_STATE\b/);
+});
+
+test("a generated server bundle keeps serving after an ordinary request target cannot be parsed", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-http-liveness-"));
+  let booted;
+  try {
+    const source = await buildBundle({
+      config: capsuleConfig({ name: "http-liveness" }),
+      serverEnv: {},
+      serverSource: CAPSULE_SOURCE,
+    });
+    await writePublicTree(root, "<!doctype html><html><body>HTTP liveness</body></html>");
+    booted = await bootBundle({ source, dir: root });
+
+    const failed = await rawHttpResponse(booted.baseUrl, "//");
+    assert.match(failed, /^HTTP\/1\.1 500\b/);
+    assert.match(failed, /"ok":false,"data":null,"error":\{"message":"Internal server error\."/);
+    assert.equal((await fetch(booted.baseUrl)).status, 200);
+    assert.doesNotMatch(booted.stderr, /unhandledRejection|uncaughtException|fatal-runtime/i);
+  } finally {
+    await booted?.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("HTTP failure logging preserves a bounded path-like target when URL parsing fails", () => {
+  const entries = [];
+  const database = { log: { emit: (entry) => entries.push(entry) } };
+  assert.doesNotThrow(() => emitHttpFailureLog(database, { method: "GET", url: "//?token=supersecret#fragment" }, new Error("route failed")));
+  assert.equal(entries[0].request.path, "//");
+  const target = `//\u0000${"x".repeat(2_000)}?token=supersecret#fragment`;
+  emitHttpFailureLog(database, { method: "GET", url: target }, new Error("route failed"));
+  assert.equal(entries[1].request.path, target.slice(0, target.indexOf("?")).replace(/\u0000/g, "�").slice(0, 1_024));
 });
 
 test("the module-graph bundle is reproducible for identical inputs", async () => {
