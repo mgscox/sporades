@@ -2812,9 +2812,10 @@ test("sporades dev preserves unusual request targets across HTTP and WebSocket a
     try {
       const started = await waitForJsonLine(child);
       assert.equal(started.ok, true, JSON.stringify(started.error));
-      for (const [target, method, expectedStatus] of [["//", "GET", 404], ["//unrelated.example/", "GET", 404], ["///", "GET", 404], ["/%", "GET", 400], ["http://unrelated.example/", "GET", 200], ["*", "OPTIONS", 404], ["*", "GET", 400]]) {
+      for (const [target, method, expectedStatus] of [["//", "GET", 404], ["//unrelated.example/", "GET", 404], ["///", "GET", 404], ["/%", "GET", 400], ["/?query=%", "GET", 200], ["http://unrelated.example\\path", "GET", 400], ["http://unrelated.example/", "GET", 200], ["*", "OPTIONS", 404], ["*", "GET", 400]]) {
         const response = await rawHttpResponse(started.data.url, target, { method, headers: { host: "wrong.example" } });
         assert.match(response, new RegExp(`^HTTP/1\\.1 ${expectedStatus} `), `${target}: ${response}`);
+        if (target === "*") assert.match(response, /x-content-type-options: nosniff/i, response);
         assert.equal((await fetch(`${started.data.url}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": "request-targets" } })).status, 200);
       }
       assert.equal(await rawHttpResponse(started.data.url, "unrelated.example:443", { method: "CONNECT" }), "");

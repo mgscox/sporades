@@ -18,7 +18,7 @@ import { lstatSync, readFileSync } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
-import { createRuntimeInspectionAdapter, createWebSocketHub, handleFileHttpRoute, injectPageConnectionToken, isDocumentNavigationRequest, inspectRuntimeJobs, inspectRuntimeSchedules, interpretHttpRequestTarget, openDevDatabase, prepareHttpSecurity, runRuntimeAccessKeyOperatorAction, routeConnectionToken, routeEndpoint, routeRuntimeHealth, routeSporadesAuth, shutdownAndCloseDatabase, shutdownHttpServerAndRuntime, writeUnhandledHttpError, } from "../server-runtime-source.js";
+import { createRuntimeInspectionAdapter, createWebSocketHub, handleFileHttpRoute, injectPageConnectionToken, isDocumentNavigationRequest, inspectRuntimeJobs, inspectRuntimeSchedules, interpretHttpRequestTarget, openDevDatabase, prepareHttpSecurity, runRuntimeAccessKeyOperatorAction, routeConnectionToken, routeEndpoint, routeRuntimeHealth, routeSporadesAuth, shutdownAndCloseDatabase, shutdownHttpServerAndRuntime, writeUnhandledHttpError, writeInvalidHttpRequestTarget, } from "../server-runtime-source.js";
 import { publicTreePathFromRequest } from "../public-tree-contract.js";
 import { publicAccessKeyManagementError } from "../access-keys-runtime.js";
 import { ACCESS_KEY_OPERATOR_ACTIONS, validateAccessKeyOperatorActionInput } from "../cli/access-key-operator-envelope.js";
@@ -129,12 +129,11 @@ const websocketHub = createWebSocketHub(() => database);
 const runtimePublicRoot = resolveRuntimePublicRoot();
 const server = createServer(async (request, response) => {
     try {
-        if (!interpretHttpRequestTarget(request.url ?? "/", request.method)) {
-            response.writeHead(400, { "content-type": "text/plain; charset=utf-8", connection: "close" });
-            response.end("Bad request");
+        if (prepareHttpSecurity(database, request, response)) {
             return;
         }
-        if (prepareHttpSecurity(database, request, response)) {
+        if (!interpretHttpRequestTarget(request.url ?? "/", request.method)) {
+            writeInvalidHttpRequestTarget(database, request, response);
             return;
         }
         if (routeConnectionToken(request, response, (currentToken) => websocketHub.createConnectionToken(currentToken))) {

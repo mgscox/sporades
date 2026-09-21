@@ -115,7 +115,7 @@ const CLIENT_REQUEST_ERROR_CODES = new Set([
 // origin-form URL by concatenating a fixed authority instead, so repeated leading slashes remain a
 // literal route path everywhere the runtime routes or admits an upgrade.
 export function interpretHttpRequestTarget(target, method) {
-    if (typeof target !== "string" || target.length === 0 || /[\u0000-\u001F\u007F]/.test(target) || /%(?![0-9A-Fa-f]{2})/.test(target))
+    if (typeof target !== "string" || target.length === 0 || /[\u0000-\u001F\u007F]/.test(target))
         return null;
     const requestMethod = typeof method === "string" ? method.toUpperCase() : "";
     if (target === "*") {
@@ -124,9 +124,15 @@ export function interpretHttpRequestTarget(target, method) {
         return { form: "asterisk", pathname: "*", url: new URL("http://sporades.invalid/*") };
     }
     try {
-        if (target.startsWith("/"))
-            return { form: "origin", pathname: target.split(/[?#]/, 1)[0], url: new URL(`http://sporades.invalid${target}`) };
+        if (target.startsWith("/")) {
+            const pathname = target.split(/[?#]/, 1)[0];
+            if (/%(?![0-9A-Fa-f]{2})/.test(pathname))
+                return null;
+            return { form: "origin", pathname, url: new URL(`http://sporades.invalid${target}`) };
+        }
         if (!/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(target))
+            return null;
+        if (target.includes("\\"))
             return null;
         const url = new URL(target);
         if ((url.protocol !== "http:" && url.protocol !== "https:") || !url.host || url.username || url.password)
@@ -134,6 +140,8 @@ export function interpretHttpRequestTarget(target, method) {
         const afterAuthority = target.slice(target.indexOf("://") + 3);
         const pathStart = afterAuthority.search(/[/?#]/);
         const pathname = pathStart === -1 || afterAuthority[pathStart] !== "/" ? "/" : afterAuthority.slice(pathStart).split(/[?#]/, 1)[0];
+        if (/%(?![0-9A-Fa-f]{2})/.test(pathname))
+            return null;
         return { form: "absolute", pathname, url };
     }
     catch {
@@ -148,6 +156,21 @@ export function requestTarget(request) {
         throw error;
     }
     return target;
+}
+function boundedRequestTargetPath(target) {
+    const withoutQuery = String(target ?? "/").split(/[?#]/, 1)[0];
+    const absolute = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(withoutQuery);
+    const afterAuthority = absolute ? withoutQuery.slice(absolute[0].length) : withoutQuery;
+    const pathStart = absolute ? afterAuthority.indexOf("/") : 0;
+    const path = absolute ? (pathStart === -1 ? "/" : afterAuthority.slice(pathStart)) : withoutQuery;
+    return path.replace(/[\u0000-\u001F\u007F]/g, "�").slice(0, 1_024) || "/";
+}
+export function writeInvalidHttpRequestTarget(database, request, response) {
+    const error = new Error("Invalid HTTP request target.");
+    error.code = "INVALID_HTTP_REQUEST_TARGET";
+    emitHttpFailureLog(database, request, error);
+    response.writeHead(400, { "content-type": "text/plain; charset=utf-8", connection: "close" });
+    response.end("Bad request");
 }
 export async function readJsonRequest(request, limitSource = null) {
     const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
@@ -202,13 +225,7 @@ export function writeUnhandledHttpError(database, request, response, error) {
 export function emitHttpFailureLog(database, request, error, context = {}) {
     try {
         const target = request.url ?? context.path ?? "/";
-        let path;
-        try {
-            path = requestTarget(request).pathname;
-        }
-        catch {
-            path = String(target).split(/[?#]/, 1)[0].replace(/[\u0000-\u001F\u007F]/g, "�").slice(0, 1_024) || "/";
-        }
+        const path = boundedRequestTargetPath(target);
         database.log?.emit?.({
             category: "platform",
             event: "http.request.failed",

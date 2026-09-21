@@ -67,6 +67,7 @@ import {
   routeConnectionToken,
   routeEndpoint,
   routeRuntimeHealth,
+  writeInvalidHttpRequestTarget,
   routeSporadesAuth,
   runReadOnlyQuery,
   shutdownHttpServerAndRuntime,
@@ -2190,17 +2191,15 @@ async function startDevSession(options: LooseRecord) {
 
   const server = createServer(async (request, response) => {
     try {
-      const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
-      if (!target) {
-        response.writeHead(400, { "content-type": "text/plain; charset=utf-8", connection: "close" });
-        response.end("Bad request");
-        return;
-      }
-      const requestPath = target.pathname;
-
       if (prepareHttpSecurity(runtime.database, request, response)) {
         return;
       }
+      const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
+      if (!target) {
+        writeInvalidHttpRequestTarget(runtime.database, request, response);
+        return;
+      }
+      const requestPath = target.pathname;
 
       if (routeConnectionToken(request, response, (currentToken) => websocketHub.createConnectionToken(currentToken))) {
         return;

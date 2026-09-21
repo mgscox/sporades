@@ -16,7 +16,7 @@ import { discardPublicTree, getProcessStartIdentity, readPublicAsset, readPublic
 import { SPORADES_BASE_IMAGE, baseImageLabels, baseImageRuntimeUser, } from "../base-image.js";
 import { ensureSealedServerEnvKeyPair, envelopeSummary, exportedEnvelope, readKeyPair, readSealedServerEnv, sealServerEnv, sealedServerEnvPaths, unsealServerEnv, withSealedServerEnvMutationLock, writeSealedServerEnv, } from "../sealed-server-env.js";
 import { restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-policy.js";
-import { createSqliteDatabaseAdapter, createLogEnvelope, createPrivilegedAuditLogInput, createPostgresConnection, createWebSocketHub, dumpDatabase, handleFileHttpRoute, injectPageConnectionToken, interpretHttpRequestTarget, isDocumentNavigationRequest, listDatabaseTables, openDevDatabase, prepareHttpSecurity, readJsonRequest, routeConnectionToken, routeEndpoint, routeRuntimeHealth, routeSporadesAuth, runReadOnlyQuery, shutdownHttpServerAndRuntime, simulateLocalIdentitySession, readJsonlLogEvents, replacePreparedRuntimeDatabase, shutdownAndCloseDatabase, validateReadOnlyInspectionSql, writeUnhandledHttpError, } from "../server-runtime-source.js";
+import { createSqliteDatabaseAdapter, createLogEnvelope, createPrivilegedAuditLogInput, createPostgresConnection, createWebSocketHub, dumpDatabase, handleFileHttpRoute, injectPageConnectionToken, interpretHttpRequestTarget, isDocumentNavigationRequest, listDatabaseTables, openDevDatabase, prepareHttpSecurity, readJsonRequest, routeConnectionToken, routeEndpoint, routeRuntimeHealth, writeInvalidHttpRequestTarget, routeSporadesAuth, runReadOnlyQuery, shutdownHttpServerAndRuntime, simulateLocalIdentitySession, readJsonlLogEvents, replacePreparedRuntimeDatabase, shutdownAndCloseDatabase, validateReadOnlyInspectionSql, writeUnhandledHttpError, } from "../server-runtime-source.js";
 import { scaffoldFiles } from "../templates/scaffold-template.js";
 import { resolveSporadesPackageRoot } from "../package-root.js";
 import { attachRequiredDevClamavSidecar, releaseDevClamavSidecar, retireDevClamavSidecarIfUnused, startDevClamavSidecar } from "../dev-clamav-sidecar.js";
@@ -1874,16 +1874,15 @@ async function startDevSession(options) {
     const websocketHub = createWebSocketHub(() => runtime.database, devRefresh.transport);
     const server = createServer(async (request, response) => {
         try {
-            const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
-            if (!target) {
-                response.writeHead(400, { "content-type": "text/plain; charset=utf-8", connection: "close" });
-                response.end("Bad request");
-                return;
-            }
-            const requestPath = target.pathname;
             if (prepareHttpSecurity(runtime.database, request, response)) {
                 return;
             }
+            const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
+            if (!target) {
+                writeInvalidHttpRequestTarget(runtime.database, request, response);
+                return;
+            }
+            const requestPath = target.pathname;
             if (routeConnectionToken(request, response, (currentToken) => websocketHub.createConnectionToken(currentToken))) {
                 return;
             }

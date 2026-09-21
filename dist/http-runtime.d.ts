@@ -28,6 +28,7 @@ export type InterpretedHttpRequestTarget = {
 };
 export declare function interpretHttpRequestTarget(target: unknown, method: unknown): InterpretedHttpRequestTarget | null;
 export declare function requestTarget(request: Pick<IncomingMessage, "url" | "method">): InterpretedHttpRequestTarget;
+export declare function writeInvalidHttpRequestTarget(database: LooseRecord, request: IncomingMessage, response: Pick<ServerResponse, "writeHead" | "end">): void;
 export declare function readJsonRequest(request: IncomingMessage, limitSource?: LooseRecord | number | null): Promise<LooseRecord>;
 export declare function readLimitedRequestBody(request: any, limitSource?: LooseRecord | number | null): Promise<Buffer<ArrayBuffer>>;
 export declare function resolveHttpMaxBodyBytes(source?: LooseRecord | number | null): number;

@@ -90272,20 +90272,26 @@ var CLIENT_REQUEST_ERROR_CODES = /* @__PURE__ */ new Set([
   "OAUTH_UNKNOWN_PROVIDER"
 ]);
 function interpretHttpRequestTarget(target, method) {
-  if (typeof target !== "string" || target.length === 0 || /[\u0000-\u001F\u007F]/.test(target) || /%(?![0-9A-Fa-f]{2})/.test(target)) return null;
+  if (typeof target !== "string" || target.length === 0 || /[\u0000-\u001F\u007F]/.test(target)) return null;
   const requestMethod = typeof method === "string" ? method.toUpperCase() : "";
   if (target === "*") {
     if (requestMethod !== "OPTIONS") return null;
     return { form: "asterisk", pathname: "*", url: new URL("http://sporades.invalid/*") };
   }
   try {
-    if (target.startsWith("/")) return { form: "origin", pathname: target.split(/[?#]/, 1)[0], url: new URL(`http://sporades.invalid${target}`) };
+    if (target.startsWith("/")) {
+      const pathname2 = target.split(/[?#]/, 1)[0];
+      if (/%(?![0-9A-Fa-f]{2})/.test(pathname2)) return null;
+      return { form: "origin", pathname: pathname2, url: new URL(`http://sporades.invalid${target}`) };
+    }
     if (!/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(target)) return null;
+    if (target.includes("\\")) return null;
     const url = new URL(target);
     if (url.protocol !== "http:" && url.protocol !== "https:" || !url.host || url.username || url.password) return null;
     const afterAuthority = target.slice(target.indexOf("://") + 3);
     const pathStart = afterAuthority.search(/[/?#]/);
     const pathname = pathStart === -1 || afterAuthority[pathStart] !== "/" ? "/" : afterAuthority.slice(pathStart).split(/[?#]/, 1)[0];
+    if (/%(?![0-9A-Fa-f]{2})/.test(pathname)) return null;
     return { form: "absolute", pathname, url };
   } catch {
     return null;
@@ -90299,6 +90305,21 @@ function requestTarget(request) {
     throw error;
   }
   return target;
+}
+function boundedRequestTargetPath(target) {
+  const withoutQuery = String(target ?? "/").split(/[?#]/, 1)[0];
+  const absolute = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(withoutQuery);
+  const afterAuthority = absolute ? withoutQuery.slice(absolute[0].length) : withoutQuery;
+  const pathStart = absolute ? afterAuthority.indexOf("/") : 0;
+  const path14 = absolute ? pathStart === -1 ? "/" : afterAuthority.slice(pathStart) : withoutQuery;
+  return path14.replace(/[\u0000-\u001F\u007F]/g, "\uFFFD").slice(0, 1024) || "/";
+}
+function writeInvalidHttpRequestTarget(database, request, response) {
+  const error = new Error("Invalid HTTP request target.");
+  error.code = "INVALID_HTTP_REQUEST_TARGET";
+  emitHttpFailureLog(database, request, error);
+  response.writeHead(400, { "content-type": "text/plain; charset=utf-8", connection: "close" });
+  response.end("Bad request");
 }
 async function readJsonRequest(request, limitSource = null) {
   const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
@@ -90353,12 +90374,7 @@ function writeUnhandledHttpError(database, request, response, error) {
 function emitHttpFailureLog(database, request, error, context = {}) {
   try {
     const target = request.url ?? context.path ?? "/";
-    let path14;
-    try {
-      path14 = requestTarget(request).pathname;
-    } catch {
-      path14 = String(target).split(/[?#]/, 1)[0].replace(/[\u0000-\u001F\u007F]/g, "\uFFFD").slice(0, 1024) || "/";
-    }
+    const path14 = boundedRequestTargetPath(target);
     database.log?.emit?.({
       category: "platform",
       event: "http.request.failed",
@@ -115955,16 +115971,15 @@ async function startDevSession(options) {
   const websocketHub = createWebSocketHub(() => runtime.database, devRefresh.transport);
   const server = createServer2(async (request, response) => {
     try {
-      const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
-      if (!target) {
-        response.writeHead(400, { "content-type": "text/plain; charset=utf-8", connection: "close" });
-        response.end("Bad request");
-        return;
-      }
-      const requestPath = target.pathname;
       if (prepareHttpSecurity(runtime.database, request, response)) {
         return;
       }
+      const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
+      if (!target) {
+        writeInvalidHttpRequestTarget(runtime.database, request, response);
+        return;
+      }
+      const requestPath = target.pathname;
       if (routeConnectionToken(request, response, (currentToken) => websocketHub.createConnectionToken(currentToken))) {
         return;
       }

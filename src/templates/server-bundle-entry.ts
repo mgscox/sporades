@@ -38,6 +38,7 @@ import {
   shutdownAndCloseDatabase,
   shutdownHttpServerAndRuntime,
   writeUnhandledHttpError,
+  writeInvalidHttpRequestTarget,
 } from "../server-runtime-source.js";
 import { publicTreePathFromRequest } from "../public-tree-contract.js";
 import { publicAccessKeyManagementError } from "../access-keys-runtime.js";
@@ -152,12 +153,11 @@ const runtimePublicRoot = resolveRuntimePublicRoot();
 
 const server = createServer(async (request, response) => {
   try {
-    if (!interpretHttpRequestTarget(request.url ?? "/", request.method)) {
-      response.writeHead(400, { "content-type": "text/plain; charset=utf-8", connection: "close" });
-      response.end("Bad request");
+    if (prepareHttpSecurity(database, request, response)) {
       return;
     }
-    if (prepareHttpSecurity(database, request, response)) {
+    if (!interpretHttpRequestTarget(request.url ?? "/", request.method)) {
+      writeInvalidHttpRequestTarget(database, request, response);
       return;
     }
 
