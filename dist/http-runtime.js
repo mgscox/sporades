@@ -5,12 +5,13 @@
 // byte-identical to the one that stood in `server-runtime-source.ts`.
 //
 // **The domain is 44 function declarations and three type aliases, established by closing the reference graph
-// rather than by matching names.** Ticket 04 estimated ~17 from a name sweep — the smallest
-// remaining estimate — and the real set is close to twice that. The error is in shape rather than
+// rather than by matching names.** At Ticket 04 the moved set was 32 declarations: the ~17 name-sweep
+// estimate was close to twice too small. Twelve functions have joined this module since, so the current
+// count is 44. The historical error was in shape rather than
 // in size, and in one direction only for once: nothing a name sweep collects here belongs to
-// another domain, but ten declarations of this domain answer to no HTTP-shaped name.
+// another domain, but ten declarations in that historical moved set answered to no HTTP-shaped name.
 //
-// Three of those ten are the reason the estimate was low rather than merely imprecise.
+// Three of those historical ten are the reason the estimate was low rather than merely imprecise.
 // `writeEndpointResult`, `writeEndpointError` and `endpointResponseError` are named for the
 // endpoint layer and are pure HTTP response plumbing: between them they set a status code, choose a
 // content type, serialize an error envelope and refuse a malformed handler response, and they
@@ -85,7 +86,8 @@
 //
 //   - What the two servers call: `prepareHttpSecurity`, `interpretHttpRequestTarget`,
 //     `writeInvalidHttpRequestTarget`, `readJsonRequest`, `writeUnhandledHttpError`,
-//     `injectPageConnectionToken`, `routeRuntimeHealth` and `handleFileHttpRoute`.
+//     `injectPageConnectionToken`, `isDocumentNavigationRequest`, `routeConnectionToken`,
+//     `routeRuntimeHealth` and `handleFileHttpRoute`.
 //   - What the monolith calls: `requestTarget` (`routeEndpoint` and `createWebSocketHub`),
 //     `emitHttpFailureLog`, `writeEndpointError` and `writeEndpointResult`
 //     (`routeEndpoint`), `readLimitedRequestBody` (`readEndpointBody`), `resolveHttpMaxBodyBytes`
