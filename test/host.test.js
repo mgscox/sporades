@@ -8195,6 +8195,32 @@ test("Sporades runtime health rejects unauthenticated probes and returns safe re
   });
 });
 
+test("Sporades runtime health accepts a URL instance through its public request contract", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {});
+    const response = {
+      status: 0,
+      body: "",
+      writeHead(status) { this.status = status; },
+      end(body) { this.body = body; },
+    };
+
+    try {
+      const handled = await routeRuntimeHealth(database, {
+        url: new URL("https://unrelated.example/__sporades/health/runtime"),
+        method: "GET",
+        headers: { "x-sporades-host-probe": "probe-secret" },
+      }, response);
+
+      assert.equal(handled, true);
+      assert.equal(response.status, 200);
+      assert.equal(JSON.parse(response.body).data.runtime.ready, true);
+    } finally {
+      database.close();
+    }
+  });
+});
+
 test("sporades host helper reports structured Hosted Capsule runtime health failures", async () => {
   await withTempDir(async (dir) => {
     const baseRoot = path.join(dir, "remote-root");

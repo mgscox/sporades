@@ -701,7 +701,7 @@ export async function handleFileHttpRoute(database: LooseRecord, request: Incomi
 }
 
 export async function routeRuntimeHealth(database: any, request: { url: string | URL; method: string; headers: { [x: string]: any; }; }, response: any) {
-  const target = requestTarget(request as IncomingMessage);
+  const target = requestTarget({ url: String(request.url), method: request.method });
   if (request.method !== "GET" || target.pathname !== "/__sporades/health/runtime") {
     return false;
   }

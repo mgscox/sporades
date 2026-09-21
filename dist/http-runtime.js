@@ -637,7 +637,7 @@ export async function handleFileHttpRoute(database, request, response, websocket
     return false;
 }
 export async function routeRuntimeHealth(database, request, response) {
-    const target = requestTarget(request);
+    const target = requestTarget({ url: String(request.url), method: request.method });
     if (request.method !== "GET" || target.pathname !== "/__sporades/health/runtime") {
         return false;
     }
