@@ -1119,12 +1119,15 @@ test("a generated Capsule keeps unusual request targets out of ordinary and WebS
       ["//unrelated.example/probe/status", "GET", 404],
       ["///probe/status", "GET", 404],
       ["/%", "GET", 400],
+      ["/?query=%", "GET", 200],
+      ["http://unrelated.example\\path", "GET", 400],
       ["http://unrelated.example/probe/status?one=1", "GET", 202],
       ["*", "OPTIONS", 404],
       ["*", "GET", 400],
     ]) {
       const response = await rawHttpResponse(booted.baseUrl, target, { method, headers: { host: "wrong.example" } });
       assert.match(response, new RegExp(`^HTTP/1\\.1 ${expectedStatus} `), `${target}: ${response}`);
+      if (target === "*") assert.match(response, /x-content-type-options: nosniff/i, response);
       const health = await fetch(`${booted.baseUrl}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": "equivalence" } });
       assert.equal(health.status, 200, `runtime stopped after ${target}`);
     }
@@ -2323,6 +2326,10 @@ test("HTTP failure logging preserves a bounded path-like target when URL parsing
   const target = `//\u0000${"x".repeat(2_000)}?token=supersecret#fragment`;
   emitHttpFailureLog(database, { method: "GET", url: target }, new Error("route failed"));
   assert.equal(entries[1].request.path, target.slice(0, target.indexOf("?")).replace(/\u0000/g, "�").slice(0, 1_024));
+  emitHttpFailureLog(database, { method: "GET", url: `http://user:secret@example.test/${"x".repeat(2_000)}?token=hidden` }, new Error("route failed"));
+  assert.equal(entries[2].request.path.length, 1_024);
+  assert.equal(entries[2].request.path.includes("secret"), false);
+  assert.equal(entries[2].request.path.includes("hidden"), false);
 });
 
 test("the module-graph bundle is reproducible for identical inputs", async () => {
