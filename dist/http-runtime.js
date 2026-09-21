@@ -86,13 +86,15 @@
 //   - What the two servers call: `prepareHttpSecurity`, `interpretHttpRequestTarget`,
 //     `writeInvalidHttpRequestTarget`, `readJsonRequest`, `writeUnhandledHttpError`,
 //     `injectPageConnectionToken`, `routeRuntimeHealth` and `handleFileHttpRoute`.
-//   - What the monolith calls: `emitHttpFailureLog`, `writeEndpointError` and `writeEndpointResult`
+//   - What the monolith calls: `requestTarget` (`routeEndpoint` and `createWebSocketHub`),
+//     `emitHttpFailureLog`, `writeEndpointError` and `writeEndpointResult`
 //     (`routeEndpoint`), `readLimitedRequestBody` (`readEndpointBody`), `resolveHttpMaxBodyBytes`
 //     and `resolveRuntimeSecurityPolicy` (`openDevDatabase`), and `resolveRuntimeSecurityPolicy`,
 //     `websocketOriginAllowed` and `resolveOAuthRequestOrigin` (`createWebSocketHub`).
 //   - What `auth-runtime.ts` imports: `normalizeOrigin`, `readLimitedRequestBody`, `requestTarget`,
-//     `singleHttpHeader` and `writeEndpointError`. `boundedRequestTargetPath` stays private because
-//     only this module uses it to redact failure-log paths.
+//     `singleHttpHeader` and `writeEndpointError`.
+//
+// `boundedRequestTargetPath` stays private because only this module uses it to redact failure-log paths.
 //
 // `checkRuntimeSqlite` is exported for a test rather than for a caller, as it was before the move.
 //
