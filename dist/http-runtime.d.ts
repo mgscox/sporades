@@ -21,6 +21,13 @@ export type RuntimeRequestLike = {
     headers: IncomingHttpHeaders | LooseRecord;
     socket?: any;
 };
+export type InterpretedHttpRequestTarget = {
+    form: "absolute" | "asterisk" | "origin";
+    pathname: string;
+    url: URL;
+};
+export declare function interpretHttpRequestTarget(target: unknown, method: unknown): InterpretedHttpRequestTarget | null;
+export declare function requestTarget(request: Pick<IncomingMessage, "url" | "method">): InterpretedHttpRequestTarget;
 export declare function readJsonRequest(request: IncomingMessage, limitSource?: LooseRecord | number | null): Promise<LooseRecord>;
 export declare function readLimitedRequestBody(request: any, limitSource?: LooseRecord | number | null): Promise<Buffer<ArrayBuffer>>;
 export declare function resolveHttpMaxBodyBytes(source?: LooseRecord | number | null): number;

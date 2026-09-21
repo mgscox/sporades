@@ -16,7 +16,7 @@ import { discardPublicTree, getProcessStartIdentity, readPublicAsset, readPublic
 import { SPORADES_BASE_IMAGE, baseImageLabels, baseImageRuntimeUser, } from "../base-image.js";
 import { ensureSealedServerEnvKeyPair, envelopeSummary, exportedEnvelope, readKeyPair, readSealedServerEnv, sealServerEnv, sealedServerEnvPaths, unsealServerEnv, withSealedServerEnvMutationLock, writeSealedServerEnv, } from "../sealed-server-env.js";
 import { restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-policy.js";
-import { createSqliteDatabaseAdapter, createLogEnvelope, createPrivilegedAuditLogInput, createPostgresConnection, createWebSocketHub, dumpDatabase, handleFileHttpRoute, injectPageConnectionToken, isDocumentNavigationRequest, listDatabaseTables, openDevDatabase, prepareHttpSecurity, readJsonRequest, routeConnectionToken, routeEndpoint, routeRuntimeHealth, routeSporadesAuth, runReadOnlyQuery, shutdownHttpServerAndRuntime, simulateLocalIdentitySession, readJsonlLogEvents, replacePreparedRuntimeDatabase, shutdownAndCloseDatabase, validateReadOnlyInspectionSql, writeUnhandledHttpError, } from "../server-runtime-source.js";
+import { createSqliteDatabaseAdapter, createLogEnvelope, createPrivilegedAuditLogInput, createPostgresConnection, createWebSocketHub, dumpDatabase, handleFileHttpRoute, injectPageConnectionToken, interpretHttpRequestTarget, isDocumentNavigationRequest, listDatabaseTables, openDevDatabase, prepareHttpSecurity, readJsonRequest, routeConnectionToken, routeEndpoint, routeRuntimeHealth, routeSporadesAuth, runReadOnlyQuery, shutdownHttpServerAndRuntime, simulateLocalIdentitySession, readJsonlLogEvents, replacePreparedRuntimeDatabase, shutdownAndCloseDatabase, validateReadOnlyInspectionSql, writeUnhandledHttpError, } from "../server-runtime-source.js";
 import { scaffoldFiles } from "../templates/scaffold-template.js";
 import { resolveSporadesPackageRoot } from "../package-root.js";
 import { attachRequiredDevClamavSidecar, releaseDevClamavSidecar, retireDevClamavSidecarIfUnused, startDevClamavSidecar } from "../dev-clamav-sidecar.js";
@@ -1874,14 +1874,20 @@ async function startDevSession(options) {
     const websocketHub = createWebSocketHub(() => runtime.database, devRefresh.transport);
     const server = createServer(async (request, response) => {
         try {
-            const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+            const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
+            if (!target) {
+                response.writeHead(400, { "content-type": "text/plain; charset=utf-8", connection: "close" });
+                response.end("Bad request");
+                return;
+            }
+            const requestPath = target.pathname;
             if (prepareHttpSecurity(runtime.database, request, response)) {
                 return;
             }
             if (routeConnectionToken(request, response, (currentToken) => websocketHub.createConnectionToken(currentToken))) {
                 return;
             }
-            switch (`${request.method}:${requestUrl.pathname}`) {
+            switch (`${request.method}:${requestPath}`) {
                 case "POST:/__sporades/debug/ctx-log":
                     if (!requireDevInspectionToken(request, response, inspectionToken)) {
                         return;
@@ -1997,8 +2003,7 @@ async function startDevSession(options) {
                 || (await routeEndpoint(runtime.database, request, response))) {
                 return;
             }
-            const rawPublicPathname = (request.url ?? "/").split("?", 1)[0];
-            const publicAsset = await readPublicAsset(bundle.staticFiles.publicTree, rawPublicPathname);
+            const publicAsset = await readPublicAsset(bundle.staticFiles.publicTree, requestPath);
             if (publicAsset) {
                 response.writeHead(200, {
                     "content-type": publicAsset.contentType,
@@ -2017,12 +2022,19 @@ async function startDevSession(options) {
         }
     });
     server.on("upgrade", (request, socket) => {
-        const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-        if (requestUrl.pathname !== "/__sporades/ws") {
+        const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
+        if (!target) {
+            socket.destroy();
+            return;
+        }
+        if (target.pathname !== "/__sporades/ws") {
             socket.destroy();
             return;
         }
         websocketHub.accept(request, socket);
+    });
+    server.on("connect", (_request, socket) => {
+        socket.destroy();
     });
     await new Promise((resolve, reject) => {
         server.once("error", reject);

@@ -395,16 +395,25 @@ async function bootBundle({ source, dir, env = {} }) {
   };
 }
 
-async function rawHttpResponse(baseUrl, requestPath) {
+async function rawHttpResponse(baseUrl, requestTarget, options = {}) {
   const url = new URL(baseUrl);
+  const method = options.method ?? "GET";
+  const headers = options.headers ?? {};
   return new Promise((resolve, reject) => {
     const socket = connect(Number(url.port), url.hostname, () => {
-      socket.write(`GET ${requestPath} HTTP/1.1\r\nHost: ${url.host}\r\nConnection: close\r\n\r\n`);
+      socket.write([
+        `${method} ${requestTarget} HTTP/1.1`,
+        `Host: ${headers.host ?? url.host}`,
+        ...Object.entries(headers).filter(([name]) => name.toLowerCase() !== "host").map(([name, value]) => `${name}: ${value}`),
+        ...(Object.keys(headers).some((name) => name.toLowerCase() === "connection") ? [] : ["Connection: close"]),
+        "",
+        "",
+      ].join("\r\n"));
     });
     let response = "";
     const timeout = setTimeout(() => {
       socket.destroy();
-      reject(new Error(`Timed out waiting for HTTP response to ${requestPath}.`));
+      reject(new Error(`Timed out waiting for HTTP response to ${requestTarget}.`));
     }, SOCKET_TIMEOUT_MS);
     socket.setEncoding("utf8");
     socket.on("data", (chunk) => { response += chunk; });
@@ -1086,6 +1095,53 @@ test("a Capsule built from a module graph answers the HTTP and WebSocket surface
       ],
     );
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a generated Capsule keeps unusual request targets out of ordinary and WebSocket routes", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-request-targets-"));
+  let booted;
+  try {
+    const source = await buildBundle({ config: capsuleConfig(), serverEnv: { PROBE_PLAIN_VALUE: "plain-env-value" }, serverSource: CAPSULE_SOURCE });
+    const dir = path.join(root, "graph");
+    await mkdir(dir, { recursive: true });
+    await writePublicTree(dir, "<!doctype html><html><head></head><body></body></html>");
+    booted = await bootBundle({ source, dir });
+
+    for (const [target, method, expectedStatus] of [
+      ["//", "GET", 404],
+      ["//unrelated.example/probe/status", "GET", 404],
+      ["///probe/status", "GET", 404],
+      ["/%", "GET", 400],
+      ["http://unrelated.example/probe/status?one=1", "GET", 202],
+      ["*", "OPTIONS", 404],
+      ["*", "GET", 400],
+    ]) {
+      const response = await rawHttpResponse(booted.baseUrl, target, { method, headers: { host: "wrong.example" } });
+      assert.match(response, new RegExp(`^HTTP/1\\.1 ${expectedStatus} `), `${target}: ${response}`);
+      const health = await fetch(`${booted.baseUrl}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": "equivalence" } });
+      assert.equal(health.status, 200, `runtime stopped after ${target}`);
+    }
+    assert.equal(await rawHttpResponse(booted.baseUrl, "unrelated.example:443", { method: "CONNECT" }), "");
+    assert.equal((await fetch(`${booted.baseUrl}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": "equivalence" } })).status, 200);
+
+    const page = await fetch(booted.baseUrl, { headers: { "sec-fetch-dest": "document" } });
+    const token = /window\.__SPORADES_CONNECTION_TOKEN="([^"]+)"/.exec(await page.text())?.[1];
+    assert.ok(token);
+    const rejectedUpgrade = await rawHttpResponse(booted.baseUrl, `///__sporades/ws?connectionToken=${encodeURIComponent(token)}`, {
+      headers: {
+        connection: "Upgrade",
+        upgrade: "websocket",
+        origin: CAPSULE_PUBLIC_ORIGIN,
+        "sec-websocket-key": randomBytes(16).toString("base64"),
+        "sec-websocket-version": "13",
+      },
+    });
+    assert.doesNotMatch(rejectedUpgrade, /^HTTP\/1\.1 101 /, rejectedUpgrade);
+    assert.equal((await fetch(`${booted.baseUrl}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": "equivalence" } })).status, 200);
+  } finally {
+    await booted?.stop();
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -2226,7 +2282,7 @@ test("the bundle mints ACL_HELPER_STATE exactly once, from the runtime's own dec
   assert.match(bundle, /\bACL_HELPER_STATE\b/);
 });
 
-test("a generated server bundle keeps serving after an ordinary request target cannot be parsed", async () => {
+test("a generated server bundle keeps serving after a repeated-slash origin-form request", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-http-liveness-"));
   let booted;
   try {
@@ -2239,8 +2295,7 @@ test("a generated server bundle keeps serving after an ordinary request target c
     booted = await bootBundle({ source, dir: root });
 
     const failed = await rawHttpResponse(booted.baseUrl, "//");
-    assert.match(failed, /^HTTP\/1\.1 500\b/);
-    assert.match(failed, /"ok":false,"data":null,"error":\{"message":"Internal server error\."/);
+    assert.match(failed, /^HTTP\/1\.1 404\b/);
     assert.equal((await fetch(booted.baseUrl)).status, 200);
     assert.doesNotMatch(booted.stderr, /unhandledRejection|uncaughtException|fatal-runtime/i);
   } finally {

@@ -18,7 +18,7 @@ import { lstatSync, readFileSync } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
-import { createRuntimeInspectionAdapter, createWebSocketHub, handleFileHttpRoute, injectPageConnectionToken, isDocumentNavigationRequest, inspectRuntimeJobs, inspectRuntimeSchedules, openDevDatabase, prepareHttpSecurity, runRuntimeAccessKeyOperatorAction, routeConnectionToken, routeEndpoint, routeRuntimeHealth, routeSporadesAuth, shutdownAndCloseDatabase, shutdownHttpServerAndRuntime, writeUnhandledHttpError, } from "../server-runtime-source.js";
+import { createRuntimeInspectionAdapter, createWebSocketHub, handleFileHttpRoute, injectPageConnectionToken, isDocumentNavigationRequest, inspectRuntimeJobs, inspectRuntimeSchedules, interpretHttpRequestTarget, openDevDatabase, prepareHttpSecurity, runRuntimeAccessKeyOperatorAction, routeConnectionToken, routeEndpoint, routeRuntimeHealth, routeSporadesAuth, shutdownAndCloseDatabase, shutdownHttpServerAndRuntime, writeUnhandledHttpError, } from "../server-runtime-source.js";
 import { publicTreePathFromRequest } from "../public-tree-contract.js";
 import { publicAccessKeyManagementError } from "../access-keys-runtime.js";
 import { ACCESS_KEY_OPERATOR_ACTIONS, validateAccessKeyOperatorActionInput } from "../cli/access-key-operator-envelope.js";
@@ -129,6 +129,11 @@ const websocketHub = createWebSocketHub(() => database);
 const runtimePublicRoot = resolveRuntimePublicRoot();
 const server = createServer(async (request, response) => {
     try {
+        if (!interpretHttpRequestTarget(request.url ?? "/", request.method)) {
+            response.writeHead(400, { "content-type": "text/plain; charset=utf-8", connection: "close" });
+            response.end("Bad request");
+            return;
+        }
         if (prepareHttpSecurity(database, request, response)) {
             return;
         }
@@ -158,12 +163,19 @@ const server = createServer(async (request, response) => {
     }
 });
 server.on("upgrade", (request, socket) => {
-    const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-    if (requestUrl.pathname !== "/__sporades/ws") {
+    const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
+    if (!target) {
+        socket.destroy();
+        return;
+    }
+    if (target.pathname !== "/__sporades/ws") {
         socket.destroy();
         return;
     }
     websocketHub.accept(request, socket);
+});
+server.on("connect", (_request, socket) => {
+    socket.destroy();
 });
 await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -216,8 +228,10 @@ function resolveActiveRuntimePublicRoot() {
     return null;
 }
 async function routePublicAsset(request, response, publicRoot, hub) {
-    const rawPathname = String(request.url ?? "/").split("?", 1)[0];
-    const relativePath = publicTreePathFromRequest(rawPathname);
+    const requestTarget = interpretHttpRequestTarget(request.url ?? "/", request.method);
+    if (!requestTarget)
+        return false;
+    const relativePath = publicTreePathFromRequest(requestTarget.pathname);
     if (relativePath === null)
         return false;
     const filePath = path.join(publicRoot, ...relativePath.split("/"));

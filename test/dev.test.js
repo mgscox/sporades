@@ -367,16 +367,25 @@ async function rawHttpStatus(baseUrl, requestPath) {
   return Number(match[1]);
 }
 
-async function rawHttpResponse(baseUrl, requestPath) {
+async function rawHttpResponse(baseUrl, requestTarget, options = {}) {
   const url = new URL(baseUrl);
+  const method = options.method ?? "GET";
+  const headers = options.headers ?? {};
   return new Promise((resolve, reject) => {
     const socket = connect(Number(url.port), url.hostname, () => {
-      socket.write(`GET ${requestPath} HTTP/1.1\r\nHost: ${url.host}\r\nConnection: close\r\n\r\n`);
+      socket.write([
+        `${method} ${requestTarget} HTTP/1.1`,
+        `Host: ${headers.host ?? url.host}`,
+        ...Object.entries(headers).filter(([name]) => name.toLowerCase() !== "host").map(([name, value]) => `${name}: ${value}`),
+        ...(Object.keys(headers).some((name) => name.toLowerCase() === "connection") ? [] : ["Connection: close"]),
+        "",
+        "",
+      ].join("\r\n"));
     });
     let response = "";
     const timeout = setTimeout(() => {
       socket.destroy();
-      reject(new Error(`Timed out waiting for HTTP response to ${requestPath}.`));
+      reject(new Error(`Timed out waiting for HTTP response to ${requestTarget}.`));
     }, TEST_PROCESS_EVENT_TIMEOUT_MS);
     socket.setEncoding("utf8");
     socket.on("data", (chunk) => { response += chunk; });
@@ -2783,6 +2792,42 @@ test("sporades dev builds and safely serves the normalized public tree", async (
       assert.equal(await rawHttpStatus(started.data.url, "/assets/%2e%2e/client.js"), 404);
       assert.equal(await rawHttpStatus(started.data.url, "/assets%2fmissing.css"), 404);
       assert.equal((await fetch(`${started.data.url}/assets%2f..%2f..%2fsporades.json`)).status, 404);
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev preserves unusual request targets across HTTP and WebSocket admission", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "request-targets", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "request-targets");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+      for (const [target, method, expectedStatus] of [["//", "GET", 404], ["//unrelated.example/", "GET", 404], ["///", "GET", 404], ["/%", "GET", 400], ["http://unrelated.example/", "GET", 200], ["*", "OPTIONS", 404], ["*", "GET", 400]]) {
+        const response = await rawHttpResponse(started.data.url, target, { method, headers: { host: "wrong.example" } });
+        assert.match(response, new RegExp(`^HTTP/1\\.1 ${expectedStatus} `), `${target}: ${response}`);
+        assert.equal((await fetch(`${started.data.url}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": "request-targets" } })).status, 200);
+      }
+      assert.equal(await rawHttpResponse(started.data.url, "unrelated.example:443", { method: "CONNECT" }), "");
+      assert.equal((await fetch(`${started.data.url}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": "request-targets" } })).status, 200);
+      const page = await fetch(started.data.url, { headers: { "sec-fetch-dest": "document" } });
+      const token = /window\.__SPORADES_CONNECTION_TOKEN="([^"]+)"/.exec(await page.text())?.[1];
+      assert.ok(token);
+      const rejectedUpgrade = await rawHttpResponse(started.data.url, `///__sporades/ws?connectionToken=${encodeURIComponent(token)}`, {
+        headers: { connection: "Upgrade", upgrade: "websocket", origin: started.data.url, "sec-websocket-key": randomBytes(16).toString("base64"), "sec-websocket-version": "13" },
+      });
+      assert.doesNotMatch(rejectedUpgrade, /^HTTP\/1\.1 101 /, rejectedUpgrade);
+      assert.equal((await fetch(`${started.data.url}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": "request-targets" } })).status, 200);
     } finally {
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));

@@ -96,7 +96,7 @@ import {
 // `openDevDatabase` the body limit and the security policy; and `createWebSocketHub` the security
 // policy, the WebSocket origin check and the request-origin resolver.
 import {
-  emitHttpFailureLog, readLimitedRequestBody, resolveHttpMaxBodyBytes, resolveOAuthRequestOrigin,
+  emitHttpFailureLog, readLimitedRequestBody, requestTarget, resolveHttpMaxBodyBytes, resolveOAuthRequestOrigin,
   resolveRuntimeSecurityPolicy, websocketOriginAllowed, writeEndpointError, writeEndpointResult,
 } from "./http-runtime.js";
 import { chainMaybePromise, isPromiseLike, thenIfPromise } from "./maybe-promise.js";
@@ -3490,9 +3490,10 @@ function extractFieldDefaultSource(fieldSource: string, builderEndIndex: any) {
 }
 
 export async function routeEndpoint(database: { endpoints: any[]; }, request: IncomingMessage, response: ServerResponse<IncomingMessage> & { req: IncomingMessage; }) {
-  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+  const target = requestTarget(request);
+  const requestUrl = target.url;
   const endpoint = database.endpoints.find(
-    (candidate: { method: any; path: string; }) => candidate.method === request.method && candidate.path === requestUrl.pathname,
+    (candidate: { method: any; path: string; }) => candidate.method === request.method && candidate.path === target.pathname,
   );
   if (!endpoint) {
     return false;
@@ -3528,7 +3529,7 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
       emitAuthDeniedLog(database as LooseRecord, { data: {
         requirement: "access-key",
         reason: error.sporadesAccessKeyReason ?? error.sporadesAccessKeyFailure,
-        handler: { kind: "endpoint", path: requestUrl.pathname },
+        handler: { kind: "endpoint", path: target.pathname },
         actor: { userId: null, provider: null, isAuthenticated: null, isGuest: null },
       } });
     }
@@ -5136,7 +5137,13 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
         socket.destroy();
         return;
       }
-      const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+      let requestUrl: URL;
+      try {
+        requestUrl = requestTarget(request).url;
+      } catch {
+        socket.destroy();
+        return;
+      }
       if (!validateConnectionToken(requestUrl.searchParams.get("connectionToken"))) {
         socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
         socket.destroy();

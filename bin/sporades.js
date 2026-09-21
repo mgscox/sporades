@@ -90271,6 +90271,35 @@ var CLIENT_REQUEST_ERROR_CODES = /* @__PURE__ */ new Set([
   "OAUTH_PROVIDER_MISMATCH",
   "OAUTH_UNKNOWN_PROVIDER"
 ]);
+function interpretHttpRequestTarget(target, method) {
+  if (typeof target !== "string" || target.length === 0 || /[\u0000-\u001F\u007F]/.test(target) || /%(?![0-9A-Fa-f]{2})/.test(target)) return null;
+  const requestMethod = typeof method === "string" ? method.toUpperCase() : "";
+  if (target === "*") {
+    if (requestMethod !== "OPTIONS") return null;
+    return { form: "asterisk", pathname: "*", url: new URL("http://sporades.invalid/*") };
+  }
+  try {
+    if (target.startsWith("/")) return { form: "origin", pathname: target.split(/[?#]/, 1)[0], url: new URL(`http://sporades.invalid${target}`) };
+    if (!/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(target)) return null;
+    const url = new URL(target);
+    if (url.protocol !== "http:" && url.protocol !== "https:" || !url.host || url.username || url.password) return null;
+    const afterAuthority = target.slice(target.indexOf("://") + 3);
+    const pathStart = afterAuthority.search(/[/?#]/);
+    const pathname = pathStart === -1 || afterAuthority[pathStart] !== "/" ? "/" : afterAuthority.slice(pathStart).split(/[?#]/, 1)[0];
+    return { form: "absolute", pathname, url };
+  } catch {
+    return null;
+  }
+}
+function requestTarget(request) {
+  const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
+  if (!target) {
+    const error = new Error("Invalid HTTP request target.");
+    error.code = "INVALID_HTTP_REQUEST_TARGET";
+    throw error;
+  }
+  return target;
+}
 async function readJsonRequest(request, limitSource = null) {
   const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
   return raw ? JSON.parse(raw) : {};
@@ -90326,7 +90355,7 @@ function emitHttpFailureLog(database, request, error, context = {}) {
     const target = request.url ?? context.path ?? "/";
     let path14;
     try {
-      path14 = new URL(target, "http://127.0.0.1").pathname;
+      path14 = requestTarget(request).pathname;
     } catch {
       path14 = String(target).split(/[?#]/, 1)[0].replace(/[\u0000-\u001F\u007F]/g, "\uFFFD").slice(0, 1024) || "/";
     }
@@ -90471,8 +90500,8 @@ function isDocumentNavigationRequest(request) {
   return request.headers["sec-fetch-dest"] === "document";
 }
 function routeConnectionToken(request, response, createConnectionToken) {
-  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-  if (request.method !== "GET" || requestUrl.pathname !== "/__sporades/connection-token") return false;
+  const target = requestTarget(request);
+  if (request.method !== "GET" || target.pathname !== "/__sporades/connection-token") return false;
   const origin = request.headers.origin;
   if (request.headers["x-sporades-connection-token-request"] !== "1" || origin && !isSameOriginRequest(request, origin)) {
     response.writeHead(403, {
@@ -90614,14 +90643,15 @@ function sanitizeResponseHeaders(headers) {
   );
 }
 async function handleFileHttpRoute(database, request, response, websocketHub = null) {
-  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-  const uploadMatch = requestUrl.pathname.match(/^\/__sporades\/uploads\/([^/]+)$/);
+  const target = requestTarget(request);
+  const requestUrl = target.url;
+  const uploadMatch = target.pathname.match(/^\/__sporades\/uploads\/([^/]+)$/);
   if (uploadMatch && request.method === "PUT") {
     const result = await completePendingFileUpload(database, uploadMatch[1], request, websocketHub);
     writeJsonHttpResponse(response, result.ok ? 200 : 400, result);
     return true;
   }
-  const privateMatch = requestUrl.pathname.match(/^\/__sporades\/files\/private\/([^/]+)$/);
+  const privateMatch = target.pathname.match(/^\/__sporades\/files\/private\/([^/]+)$/);
   if (privateMatch && request.method === "GET") {
     const token = request.headers["x-sporades-session-token"];
     const sessionToken = Array.isArray(token) ? token[0] : token ?? null;
@@ -90641,7 +90671,7 @@ async function handleFileHttpRoute(database, request, response, websocketHub = n
           const error = commandError2("Forbidden.", "Use an Access key permitted for this File operation.", "FORBIDDEN");
           error.sporadesAuthDenialLogData = {
             requirement: "file-access-key-scopes",
-            handler: { kind: "file", path: requestUrl.pathname },
+            handler: { kind: "file", path: target.pathname },
             actor: { userId: auth.userId, provider: auth.provider, isAuthenticated: true, isGuest: false }
           };
           error.sporadesAccessKeyFailure = "forbidden";
@@ -90677,7 +90707,7 @@ async function handleFileHttpRoute(database, request, response, websocketHub = n
         emitAuthDeniedLog(database, { data: {
           requirement: "file-access-key",
           reason: error.sporadesAccessKeyReason ?? error.sporadesAccessKeyFailure,
-          handler: { kind: "file", path: requestUrl.pathname },
+          handler: { kind: "file", path: target.pathname },
           actor: { userId: null, provider: null, isAuthenticated: null, isGuest: null }
         } });
       }
@@ -90686,7 +90716,7 @@ async function handleFileHttpRoute(database, request, response, websocketHub = n
       return true;
     }
   }
-  const publicMatch = requestUrl.pathname.match(/^\/__sporades\/files\/public\/([^/]+)$/);
+  const publicMatch = target.pathname.match(/^\/__sporades\/files\/public\/([^/]+)$/);
   if (publicMatch && request.method === "GET") {
     const publicRow = await database.adapter.selectPublicFileRow(publicMatch[1]);
     if (!publicRow || publicRow.revokedAt || publicRow.deletedAt || publicRow.expiresAt && Date.parse(publicRow.expiresAt) <= Date.now() || publicRow.publicVersion !== requestUrl.searchParams.get("v") || publicRow.publicVersion !== publicRow.version) {
@@ -90699,8 +90729,8 @@ async function handleFileHttpRoute(database, request, response, websocketHub = n
   return false;
 }
 async function routeRuntimeHealth(database, request, response) {
-  const requestUrl = new URL(request.url, "http://127.0.0.1");
-  if (request.method !== "GET" || requestUrl.pathname !== "/__sporades/health/runtime") {
+  const target = requestTarget(request);
+  if (request.method !== "GET" || target.pathname !== "/__sporades/health/runtime") {
     return false;
   }
   const probe = request.headers["x-sporades-host-probe"];
@@ -94599,8 +94629,9 @@ async function moveSessionToUserOnAdapter(database, sqlite, session, userId, pro
   });
 }
 async function routeSporadesAuth(database, request, response) {
-  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-  const match = requestUrl.pathname.match(/^\/__sporades\/auth\/([a-z0-9-]+)\/callback$/);
+  const target = requestTarget(request);
+  const requestUrl = target.url;
+  const match = target.pathname.match(/^\/__sporades\/auth\/([a-z0-9-]+)\/callback$/);
   if (!match) {
     return false;
   }
@@ -103536,9 +103567,10 @@ function extractFieldDefaultSource(fieldSource, builderEndIndex) {
   return rest.slice(openIndex + 1, closeIndex).trim();
 }
 async function routeEndpoint(database, request, response) {
-  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+  const target = requestTarget(request);
+  const requestUrl = target.url;
   const endpoint = database.endpoints.find(
-    (candidate) => candidate.method === request.method && candidate.path === requestUrl.pathname
+    (candidate) => candidate.method === request.method && candidate.path === target.pathname
   );
   if (!endpoint) {
     return false;
@@ -103569,7 +103601,7 @@ async function routeEndpoint(database, request, response) {
       emitAuthDeniedLog(database, { data: {
         requirement: "access-key",
         reason: error.sporadesAccessKeyReason ?? error.sporadesAccessKeyFailure,
-        handler: { kind: "endpoint", path: requestUrl.pathname },
+        handler: { kind: "endpoint", path: target.pathname },
         actor: { userId: null, provider: null, isAuthenticated: null, isGuest: null }
       } });
     }
@@ -105038,7 +105070,13 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
         socket.destroy();
         return;
       }
-      const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+      let requestUrl;
+      try {
+        requestUrl = requestTarget(request).url;
+      } catch {
+        socket.destroy();
+        return;
+      }
       if (!validateConnectionToken(requestUrl.searchParams.get("connectionToken"))) {
         socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
         socket.destroy();
@@ -115917,14 +115955,20 @@ async function startDevSession(options) {
   const websocketHub = createWebSocketHub(() => runtime.database, devRefresh.transport);
   const server = createServer2(async (request, response) => {
     try {
-      const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+      const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
+      if (!target) {
+        response.writeHead(400, { "content-type": "text/plain; charset=utf-8", connection: "close" });
+        response.end("Bad request");
+        return;
+      }
+      const requestPath = target.pathname;
       if (prepareHttpSecurity(runtime.database, request, response)) {
         return;
       }
       if (routeConnectionToken(request, response, (currentToken) => websocketHub.createConnectionToken(currentToken))) {
         return;
       }
-      switch (`${request.method}:${requestUrl.pathname}`) {
+      switch (`${request.method}:${requestPath}`) {
         case "POST:/__sporades/debug/ctx-log":
           if (!requireDevInspectionToken(request, response, inspectionToken)) {
             return;
@@ -116037,8 +116081,7 @@ async function startDevSession(options) {
       if (await routeRuntimeHealth(runtime.database, request, response) || await routeSporadesAuth(runtime.database, request, response) || await handleFileHttpRoute(runtime.database, request, response, websocketHub) || await routeEndpoint(runtime.database, request, response)) {
         return;
       }
-      const rawPublicPathname = (request.url ?? "/").split("?", 1)[0];
-      const publicAsset2 = await readPublicAsset(bundle.staticFiles.publicTree, rawPublicPathname);
+      const publicAsset2 = await readPublicAsset(bundle.staticFiles.publicTree, requestPath);
       if (publicAsset2) {
         response.writeHead(200, {
           "content-type": publicAsset2.contentType,
@@ -116054,12 +116097,19 @@ async function startDevSession(options) {
     }
   });
   server.on("upgrade", (request, socket) => {
-    const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-    if (requestUrl.pathname !== "/__sporades/ws") {
+    const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
+    if (!target) {
+      socket.destroy();
+      return;
+    }
+    if (target.pathname !== "/__sporades/ws") {
       socket.destroy();
       return;
     }
     websocketHub.accept(request, socket);
+  });
+  server.on("connect", (_request, socket) => {
+    socket.destroy();
   });
   await new Promise((resolve, reject) => {
     server.once("error", reject);

@@ -81,7 +81,7 @@ import { chainMaybePromise } from "./maybe-promise.js";
 // the private File route's authentication — a cycle, and a safe one, because every binding across it
 // is a hoisted `function` declaration used only inside a body that runs on a request rather than at
 // module initialization. See `http-runtime.ts`'s header.
-import { normalizeOrigin, readLimitedRequestBody, singleHttpHeader, writeEndpointError, } from "./http-runtime.js";
+import { normalizeOrigin, readLimitedRequestBody, requestTarget, singleHttpHeader, writeEndpointError, } from "./http-runtime.js";
 import { decorateRequireAuth, normalizeRequireUserAuthOptions } from "./auth-admission.js";
 import { accessKeyCredentialLogAttribution, createAccessKeyTables, emitAccessKeyOwnerTransitionAudits, runAccessKeyOwnerSecurityTransition } from "./access-keys-runtime.js";
 // Synchronous access to a Node builtin without an import — see the header. `process` is a global in
@@ -2871,8 +2871,9 @@ async function moveSessionToUserOnAdapter(database, sqlite, session, userId, pro
 // because only the two above call them.
 // ---------------------------------------------------------------------------------------------
 export async function routeSporadesAuth(database, request, response) {
-    const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-    const match = requestUrl.pathname.match(/^\/__sporades\/auth\/([a-z0-9-]+)\/callback$/);
+    const target = requestTarget(request);
+    const requestUrl = target.url;
+    const match = target.pathname.match(/^\/__sporades\/auth\/([a-z0-9-]+)\/callback$/);
     if (!match) {
         return false;
     }

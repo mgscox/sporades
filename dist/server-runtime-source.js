@@ -32,7 +32,7 @@ import { TEAM_BILLING_ERASURE_JOB, createCurrentUserTeamBillingErasureApi, perfo
 // `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
 // `openDevDatabase` the body limit and the security policy; and `createWebSocketHub` the security
 // policy, the WebSocket origin check and the request-origin resolver.
-import { emitHttpFailureLog, readLimitedRequestBody, resolveHttpMaxBodyBytes, resolveOAuthRequestOrigin, resolveRuntimeSecurityPolicy, websocketOriginAllowed, writeEndpointError, writeEndpointResult, } from "./http-runtime.js";
+import { emitHttpFailureLog, readLimitedRequestBody, requestTarget, resolveHttpMaxBodyBytes, resolveOAuthRequestOrigin, resolveRuntimeSecurityPolicy, websocketOriginAllowed, writeEndpointError, writeEndpointResult, } from "./http-runtime.js";
 import { isPromiseLike, thenIfPromise } from "./maybe-promise.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import { accessKeyGrantsSatisfyScopes, normalizeCapsuleAuthDefinition, readAuthRequirements, validateCapsuleAuthRequirements, } from "./auth-admission.js";
@@ -3303,8 +3303,9 @@ function extractFieldDefaultSource(fieldSource, builderEndIndex) {
     return rest.slice(openIndex + 1, closeIndex).trim();
 }
 export async function routeEndpoint(database, request, response) {
-    const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-    const endpoint = database.endpoints.find((candidate) => candidate.method === request.method && candidate.path === requestUrl.pathname);
+    const target = requestTarget(request);
+    const requestUrl = target.url;
+    const endpoint = database.endpoints.find((candidate) => candidate.method === request.method && candidate.path === target.pathname);
     if (!endpoint) {
         return false;
     }
@@ -3342,7 +3343,7 @@ export async function routeEndpoint(database, request, response) {
             emitAuthDeniedLog(database, { data: {
                     requirement: "access-key",
                     reason: error.sporadesAccessKeyReason ?? error.sporadesAccessKeyFailure,
-                    handler: { kind: "endpoint", path: requestUrl.pathname },
+                    handler: { kind: "endpoint", path: target.pathname },
                     actor: { userId: null, provider: null, isAuthenticated: null, isGuest: null },
                 } });
         }
@@ -4885,7 +4886,14 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
                 socket.destroy();
                 return;
             }
-            const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+            let requestUrl;
+            try {
+                requestUrl = requestTarget(request).url;
+            }
+            catch {
+                socket.destroy();
+                return;
+            }
             if (!validateConnectionToken(requestUrl.searchParams.get("connectionToken"))) {
                 socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
                 socket.destroy();
