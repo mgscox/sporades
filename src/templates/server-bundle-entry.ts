@@ -27,6 +27,7 @@ import {
   isDocumentNavigationRequest,
   inspectRuntimeJobs,
   inspectRuntimeSchedules,
+  interpretHttpRequestTarget,
   openDevDatabase,
   prepareHttpSecurity,
   runRuntimeAccessKeyOperatorAction,
@@ -151,6 +152,11 @@ const runtimePublicRoot = resolveRuntimePublicRoot();
 
 const server = createServer(async (request, response) => {
   try {
+    if (!interpretHttpRequestTarget(request.url ?? "/", request.method)) {
+      response.writeHead(400, { "content-type": "text/plain; charset=utf-8", connection: "close" });
+      response.end("Bad request");
+      return;
+    }
     if (prepareHttpSecurity(database, request, response)) {
       return;
     }
@@ -187,12 +193,20 @@ const server = createServer(async (request, response) => {
 });
 
 server.on("upgrade", (request, socket) => {
-  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-  if (requestUrl.pathname !== "/__sporades/ws") {
+  const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
+  if (!target) {
+    socket.destroy();
+    return;
+  }
+  if (target.pathname !== "/__sporades/ws") {
     socket.destroy();
     return;
   }
   websocketHub.accept(request, socket);
+});
+
+server.on("connect", (_request, socket) => {
+  socket.destroy();
 });
 
 await new Promise<void>((resolve, reject) => {
@@ -242,8 +256,9 @@ function resolveActiveRuntimePublicRoot() {
 }
 
 async function routePublicAsset(request: IncomingMessage, response: ServerResponse, publicRoot: string, hub: any) {
-  const rawPathname = String(request.url ?? "/").split("?", 1)[0];
-  const relativePath = publicTreePathFromRequest(rawPathname);
+  const requestTarget = interpretHttpRequestTarget(request.url ?? "/", request.method);
+  if (!requestTarget) return false;
+  const relativePath = publicTreePathFromRequest(requestTarget.pathname);
   if (relativePath === null) return false;
   const filePath = path.join(publicRoot, ...relativePath.split("/"));
   const stats = await lstat(filePath).catch(() => null);

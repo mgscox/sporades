@@ -58,6 +58,7 @@ import {
   dumpDatabase,
   handleFileHttpRoute,
   injectPageConnectionToken,
+  interpretHttpRequestTarget,
   isDocumentNavigationRequest,
   listDatabaseTables,
   openDevDatabase,
@@ -2189,7 +2190,13 @@ async function startDevSession(options: LooseRecord) {
 
   const server = createServer(async (request, response) => {
     try {
-      const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+      const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
+      if (!target) {
+        response.writeHead(400, { "content-type": "text/plain; charset=utf-8", connection: "close" });
+        response.end("Bad request");
+        return;
+      }
+      const requestPath = target.pathname;
 
       if (prepareHttpSecurity(runtime.database, request, response)) {
         return;
@@ -2199,7 +2206,7 @@ async function startDevSession(options: LooseRecord) {
         return;
       }
 
-      switch (`${request.method}:${requestUrl.pathname}`) {
+      switch (`${request.method}:${requestPath}`) {
         case "POST:/__sporades/debug/ctx-log":
           if (!requireDevInspectionToken(request, response, inspectionToken)) {
             return;
@@ -2327,8 +2334,7 @@ async function startDevSession(options: LooseRecord) {
         return;
       }
 
-      const rawPublicPathname = (request.url ?? "/").split("?", 1)[0];
-      const publicAsset = await readPublicAsset(bundle.staticFiles.publicTree, rawPublicPathname);
+      const publicAsset = await readPublicAsset(bundle.staticFiles.publicTree, requestPath);
       if (publicAsset) {
         response.writeHead(200, {
           "content-type": publicAsset.contentType,
@@ -2347,12 +2353,19 @@ async function startDevSession(options: LooseRecord) {
     }
   });
   server.on("upgrade", (request, socket) => {
-    const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-    if (requestUrl.pathname !== "/__sporades/ws") {
+    const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
+    if (!target) {
+      socket.destroy();
+      return;
+    }
+    if (target.pathname !== "/__sporades/ws") {
       socket.destroy();
       return;
     }
     websocketHub.accept(request, socket);
+  });
+  server.on("connect", (_request, socket) => {
+    socket.destroy();
   });
 
   await new Promise<void>((resolve, reject) => {

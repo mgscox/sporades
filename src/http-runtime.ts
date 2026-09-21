@@ -152,6 +152,47 @@ export type RuntimeRequestLike = {
   socket?: any;
 };
 
+export type InterpretedHttpRequestTarget = {
+  form: "absolute" | "asterisk" | "origin";
+  pathname: string;
+  url: URL;
+};
+
+// Node exposes the HTTP request-target, not a URL relative to this process. In particular, feeding
+// `//host/path` to `new URL(target, base)` turns the first path segment into an authority. Build an
+// origin-form URL by concatenating a fixed authority instead, so repeated leading slashes remain a
+// literal route path everywhere the runtime routes or admits an upgrade.
+export function interpretHttpRequestTarget(target: unknown, method: unknown): InterpretedHttpRequestTarget | null {
+  if (typeof target !== "string" || target.length === 0 || /[\u0000-\u001F\u007F]/.test(target) || /%(?![0-9A-Fa-f]{2})/.test(target)) return null;
+  const requestMethod = typeof method === "string" ? method.toUpperCase() : "";
+  if (target === "*") {
+    if (requestMethod !== "OPTIONS") return null;
+    return { form: "asterisk", pathname: "*", url: new URL("http://sporades.invalid/*") };
+  }
+  try {
+    if (target.startsWith("/")) return { form: "origin", pathname: target.split(/[?#]/, 1)[0], url: new URL(`http://sporades.invalid${target}`) };
+    if (!/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(target)) return null;
+    const url = new URL(target);
+    if ((url.protocol !== "http:" && url.protocol !== "https:") || !url.host || url.username || url.password) return null;
+    const afterAuthority = target.slice(target.indexOf("://") + 3);
+    const pathStart = afterAuthority.search(/[/?#]/);
+    const pathname = pathStart === -1 || afterAuthority[pathStart] !== "/" ? "/" : afterAuthority.slice(pathStart).split(/[?#]/, 1)[0];
+    return { form: "absolute", pathname, url };
+  } catch {
+    return null;
+  }
+}
+
+export function requestTarget(request: Pick<IncomingMessage, "url" | "method">) {
+  const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
+  if (!target) {
+    const error: any = new Error("Invalid HTTP request target.");
+    error.code = "INVALID_HTTP_REQUEST_TARGET";
+    throw error;
+  }
+  return target;
+}
+
 export async function readJsonRequest(request: IncomingMessage, limitSource: LooseRecord | number | null = null): Promise<LooseRecord> {
   const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
   return raw ? JSON.parse(raw) : {};
@@ -213,7 +254,7 @@ export function emitHttpFailureLog(database: LooseRecord, request: IncomingMessa
     const target = request.url ?? context.path ?? "/";
     let path: string;
     try {
-      path = new URL(target, "http://127.0.0.1").pathname;
+      path = requestTarget(request as IncomingMessage).pathname;
     } catch {
       path = String(target).split(/[?#]/, 1)[0].replace(/[\u0000-\u001F\u007F]/g, "�").slice(0, 1_024) || "/";
     }
@@ -375,8 +416,8 @@ export function routeConnectionToken(
   response: Pick<ServerResponse, "writeHead" | "end">,
   createConnectionToken: (currentToken?: string) => string,
 ) {
-  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-  if (request.method !== "GET" || requestUrl.pathname !== "/__sporades/connection-token") return false;
+  const target = requestTarget(request);
+  if (request.method !== "GET" || target.pathname !== "/__sporades/connection-token") return false;
   const origin = request.headers.origin;
   if (request.headers["x-sporades-connection-token-request"] !== "1" || (origin && !isSameOriginRequest(request, origin))) {
     response.writeHead(403, {
@@ -538,15 +579,16 @@ function sanitizeResponseHeaders(headers: OutgoingHttpHeaders | LooseRecord) {
 }
 
 export async function handleFileHttpRoute(database: LooseRecord, request: IncomingMessage, response: ServerResponse<IncomingMessage> & { req: IncomingMessage; }, websocketHub: any = null) {
-  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-  const uploadMatch = requestUrl.pathname.match(/^\/__sporades\/uploads\/([^/]+)$/);
+  const target = requestTarget(request);
+  const requestUrl = target.url;
+  const uploadMatch = target.pathname.match(/^\/__sporades\/uploads\/([^/]+)$/);
   if (uploadMatch && request.method === "PUT") {
     const result = await completePendingFileUpload(database, uploadMatch[1], request, websocketHub);
     writeJsonHttpResponse(response, result.ok ? 200 : 400, result);
     return true;
   }
 
-  const privateMatch = requestUrl.pathname.match(/^\/__sporades\/files\/private\/([^/]+)$/);
+  const privateMatch = target.pathname.match(/^\/__sporades\/files\/private\/([^/]+)$/);
   if (privateMatch && request.method === "GET") {
     const token = request.headers["x-sporades-session-token"];
     const sessionToken = Array.isArray(token) ? token[0] : (token ?? null);
@@ -567,7 +609,7 @@ export async function handleFileHttpRoute(database: LooseRecord, request: Incomi
           const error: any = commandError("Forbidden.", "Use an Access key permitted for this File operation.", "FORBIDDEN");
           error.sporadesAuthDenialLogData = {
             requirement: "file-access-key-scopes",
-            handler: { kind: "file", path: requestUrl.pathname },
+          handler: { kind: "file", path: target.pathname },
             actor: { userId: auth.userId, provider: auth.provider, isAuthenticated: true, isGuest: false },
           };
           error.sporadesAccessKeyFailure = "forbidden";
@@ -603,7 +645,7 @@ export async function handleFileHttpRoute(database: LooseRecord, request: Incomi
         emitAuthDeniedLog(database, { data: {
           requirement: "file-access-key",
           reason: error.sporadesAccessKeyReason ?? error.sporadesAccessKeyFailure,
-          handler: { kind: "file", path: requestUrl.pathname },
+            handler: { kind: "file", path: target.pathname },
           actor: { userId: null, provider: null, isAuthenticated: null, isGuest: null },
         } });
       }
@@ -613,7 +655,7 @@ export async function handleFileHttpRoute(database: LooseRecord, request: Incomi
     }
   }
 
-  const publicMatch = requestUrl.pathname.match(/^\/__sporades\/files\/public\/([^/]+)$/);
+  const publicMatch = target.pathname.match(/^\/__sporades\/files\/public\/([^/]+)$/);
   if (publicMatch && request.method === "GET") {
     const publicRow = await database.adapter.selectPublicFileRow(publicMatch[1]);
     if (
@@ -635,8 +677,8 @@ export async function handleFileHttpRoute(database: LooseRecord, request: Incomi
 }
 
 export async function routeRuntimeHealth(database: any, request: { url: string | URL; method: string; headers: { [x: string]: any; }; }, response: any) {
-  const requestUrl = new URL(request.url, "http://127.0.0.1");
-  if (request.method !== "GET" || requestUrl.pathname !== "/__sporades/health/runtime") {
+  const target = requestTarget(request as IncomingMessage);
+  if (request.method !== "GET" || target.pathname !== "/__sporades/health/runtime") {
     return false;
   }
 

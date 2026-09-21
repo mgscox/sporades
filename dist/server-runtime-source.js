@@ -32,7 +32,7 @@ import { TEAM_BILLING_ERASURE_JOB, createCurrentUserTeamBillingErasureApi, perfo
 // `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
 // `openDevDatabase` the body limit and the security policy; and `createWebSocketHub` the security
 // policy, the WebSocket origin check and the request-origin resolver.
-import { emitHttpFailureLog, readLimitedRequestBody, resolveHttpMaxBodyBytes, resolveOAuthRequestOrigin, resolveRuntimeSecurityPolicy, websocketOriginAllowed, writeEndpointError, writeEndpointResult, } from "./http-runtime.js";
+import { emitHttpFailureLog, readLimitedRequestBody, requestTarget, resolveHttpMaxBodyBytes, resolveOAuthRequestOrigin, resolveRuntimeSecurityPolicy, websocketOriginAllowed, writeEndpointError, writeEndpointResult, } from "./http-runtime.js";
 import { isPromiseLike, thenIfPromise } from "./maybe-promise.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import { accessKeyGrantsSatisfyScopes, normalizeCapsuleAuthDefinition, readAuthRequirements, validateCapsuleAuthRequirements, } from "./auth-admission.js";
@@ -3303,8 +3303,9 @@ function extractFieldDefaultSource(fieldSource, builderEndIndex) {
     return rest.slice(openIndex + 1, closeIndex).trim();
 }
 export async function routeEndpoint(database, request, response) {
-    const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-    const endpoint = database.endpoints.find((candidate) => candidate.method === request.method && candidate.path === requestUrl.pathname);
+    const target = requestTarget(request);
+    const requestUrl = target.url;
+    const endpoint = database.endpoints.find((candidate) => candidate.method === request.method && candidate.path === target.pathname);
     if (!endpoint) {
         return false;
     }
@@ -3325,7 +3326,7 @@ export async function routeEndpoint(database, request, response) {
         return {};
     };
     try {
-        const result = await runEndpoint(database, endpoint, requestUrl, request);
+        const result = await runEndpoint(database, endpoint, requestUrl, request, target.pathname);
         const sensitiveResponseHeaders = request.__sporadesAccessKeyAdmitted
             || request.__sporadesSecretDisclosed
             ? { "cache-control": "private, no-store", pragma: "no-cache" }
@@ -3342,7 +3343,7 @@ export async function routeEndpoint(database, request, response) {
             emitAuthDeniedLog(database, { data: {
                     requirement: "access-key",
                     reason: error.sporadesAccessKeyReason ?? error.sporadesAccessKeyFailure,
-                    handler: { kind: "endpoint", path: requestUrl.pathname },
+                    handler: { kind: "endpoint", path: target.pathname },
                     actor: { userId: null, provider: null, isAuthenticated: null, isGuest: null },
                 } });
         }
@@ -3491,14 +3492,14 @@ async function admitEndpointMultipart(database, endpoint, endpointRequest, admis
         controller.abort();
     }
 }
-export async function runEndpoint(database, endpoint, requestUrl, request) {
+export async function runEndpoint(database, endpoint, requestUrl, request, requestPath = requestUrl.pathname) {
     const handler = typeof endpoint.handler === "function"
         ? endpoint.handler
         : new Function(`return (${endpoint.handlerSource});`)();
     const runtimeOwnedProviderCallback = endpoint.runtimeOwnedEmailEvent || endpoint.runtimeOwnedStripeCallback;
     // Admission intentionally precedes multipart body consumption. Ordinary endpoint bodies retain
     // their historic bounded read path below.
-    let endpointRequest = endpointRequestHead(requestUrl, request);
+    let endpointRequest = endpointRequestHead(requestUrl, request, requestPath);
     const requirements = readAuthRequirements(handler);
     const hasAuthorization = requirements ? endpointHasAuthorization(request) : false;
     if (requirements)
@@ -3581,7 +3582,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
         }
     }
     else {
-        endpointRequest = await readEndpointRequest(database, requestUrl, request, !endpoint.runtimeOwnedStripeCallback);
+        endpointRequest = await readEndpointRequest(database, requestUrl, request, !endpoint.runtimeOwnedStripeCallback, requestPath);
         // `readEndpointRequest` rebuilds the request head before reading the body.
         // Preserve the long-standing guard invariant that a consumed Bearer value
         // never reaches Capsule middleware or handler code.
@@ -4003,12 +4004,12 @@ export async function runAtomicStripeConsequence(database, parentContext, event,
     }
     throw new Error("Unreachable atomic Stripe consequence fence state.");
 }
-async function readEndpointRequest(database, requestUrl, request, parseJsonBody = true) {
-    const head = endpointRequestHead(requestUrl, request);
+async function readEndpointRequest(database, requestUrl, request, parseJsonBody = true, requestPath = requestUrl.pathname) {
+    const head = endpointRequestHead(requestUrl, request, requestPath);
     const payload = await readEndpointPayload(request, head.headers, database, parseJsonBody);
     return { ...head, ...payload };
 }
-function endpointRequestHead(requestUrl, request) {
+function endpointRequestHead(requestUrl, request, requestPath = requestUrl.pathname) {
     const headers = Object.fromEntries(Object.entries(request.headers).map(([name, value]) => [
         name.toLowerCase(),
         Array.isArray(value) ? value.join(", ") : value,
@@ -4016,7 +4017,7 @@ function endpointRequestHead(requestUrl, request) {
     const query = endpointQueryFromUrl(requestUrl);
     return {
         method: request.method,
-        path: requestUrl.pathname,
+        path: requestPath,
         headers,
         query,
     };
@@ -4885,7 +4886,14 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
                 socket.destroy();
                 return;
             }
-            const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+            let requestUrl;
+            try {
+                requestUrl = requestTarget(request).url;
+            }
+            catch {
+                socket.destroy();
+                return;
+            }
             if (!validateConnectionToken(requestUrl.searchParams.get("connectionToken"))) {
                 socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
                 socket.destroy();
