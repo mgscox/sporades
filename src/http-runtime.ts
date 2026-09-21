@@ -215,7 +215,7 @@ export function emitHttpFailureLog(database: LooseRecord, request: IncomingMessa
     try {
       path = new URL(target, "http://127.0.0.1").pathname;
     } catch {
-      path = String(target).replace(/[\u0000-\u001F\u007F]/g, "�").slice(0, 1_024) || "/";
+      path = String(target).split(/[?#]/, 1)[0].replace(/[\u0000-\u001F\u007F]/g, "�").slice(0, 1_024) || "/";
     }
     database.log?.emit?.({
       category: "platform",

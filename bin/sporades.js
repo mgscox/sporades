@@ -90328,7 +90328,7 @@ function emitHttpFailureLog(database, request, error, context = {}) {
     try {
       path14 = new URL(target, "http://127.0.0.1").pathname;
     } catch {
-      path14 = String(target).replace(/[\u0000-\u001F\u007F]/g, "\uFFFD").slice(0, 1024) || "/";
+      path14 = String(target).split(/[?#]/, 1)[0].replace(/[\u0000-\u001F\u007F]/g, "\uFFFD").slice(0, 1024) || "/";
     }
     database.log?.emit?.({
       category: "platform",

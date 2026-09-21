@@ -2249,12 +2249,14 @@ test("a generated server bundle keeps serving after an ordinary request target c
   }
 });
 
-test("HTTP failure logging preserves a bounded raw target when URL parsing fails", () => {
+test("HTTP failure logging preserves a bounded path-like target when URL parsing fails", () => {
   const entries = [];
-  const target = "//".repeat(1_000);
-  assert.doesNotThrow(() => emitHttpFailureLog({ log: { emit: (entry) => entries.push(entry) } }, { method: "GET", url: target }, new Error("route failed")));
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0].request.path, target.slice(0, 1_024));
+  const database = { log: { emit: (entry) => entries.push(entry) } };
+  assert.doesNotThrow(() => emitHttpFailureLog(database, { method: "GET", url: "//?token=supersecret#fragment" }, new Error("route failed")));
+  assert.equal(entries[0].request.path, "//");
+  const target = `//\u0000${"x".repeat(2_000)}?token=supersecret#fragment`;
+  emitHttpFailureLog(database, { method: "GET", url: target }, new Error("route failed"));
+  assert.equal(entries[1].request.path, target.slice(0, target.indexOf("?")).replace(/\u0000/g, "�").slice(0, 1_024));
 });
 
 test("the module-graph bundle is reproducible for identical inputs", async () => {
