@@ -442,7 +442,7 @@ export * from "./acl-runtime.js";
 // names imported above are what `routeEndpoint`, `readEndpointBody`, `openDevDatabase` and
 // `createWebSocketHub` still need from it.
 //
-// **One of the domain's thirty-three declarations is still here.** `routeEndpoint` reaches
+// **One HTTP routing function remains in this monolith.** `routeEndpoint` reaches
 // `runEndpoint`, and `runEndpoint` reaches `createMutationContext`, `createContextHolder` and
 // `createEndpointDatabaseApi` — the composition core this file retains until ticket 05. That is
 // batch 4's case rather than batch 5's, so batch 9 does not clear it. The three response writers it
