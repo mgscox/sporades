@@ -1330,6 +1330,7 @@ const RUN_LEXER_CENSUS = {
   findMatchingDelimiter: "lexes Capsule definition JavaScript, not SQL",
   findMatchingParen: "lexes Capsule definition JavaScript, not SQL",
   splitTopLevelList: "lexes Capsule definition JavaScript, not SQL",
+  interpretHttpRequestTarget: "parses HTTP request-target forms and preserves literal route paths, not SQL",
   // The nesting oracle, in two parts since the counter was extracted into a helper. Neither lexes a
   // quoted run — together they count block-comment depth and compare the end against the one
   // tokenizer's — and both are *required* to disagree with it, which is the opposite of the property

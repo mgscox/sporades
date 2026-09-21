@@ -3514,7 +3514,7 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
     return {};
   };
   try {
-    const result = await runEndpoint(database, endpoint, requestUrl, request);
+    const result = await runEndpoint(database, endpoint, requestUrl, request, target.pathname);
     const sensitiveResponseHeaders = (request as LooseRecord).__sporadesAccessKeyAdmitted
       || (request as LooseRecord).__sporadesSecretDisclosed
       ? { "cache-control": "private, no-store", pragma: "no-cache" }
@@ -3678,7 +3678,7 @@ async function admitEndpointMultipart(database: LooseRecord, endpoint: LooseReco
   }
 }
 
-export async function runEndpoint(database: any, endpoint: { handler?: Function; handlerSource?: string; }, requestUrl: URL, request: any) {
+export async function runEndpoint(database: any, endpoint: { handler?: Function; handlerSource?: string; }, requestUrl: URL, request: any, requestPath = requestUrl.pathname) {
   const handler =
     typeof endpoint.handler === "function"
       ? endpoint.handler
@@ -3686,7 +3686,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
   const runtimeOwnedProviderCallback = (endpoint as LooseRecord).runtimeOwnedEmailEvent || (endpoint as LooseRecord).runtimeOwnedStripeCallback;
   // Admission intentionally precedes multipart body consumption. Ordinary endpoint bodies retain
   // their historic bounded read path below.
-  let endpointRequest = endpointRequestHead(requestUrl, request);
+  let endpointRequest = endpointRequestHead(requestUrl, request, requestPath);
   const requirements = readAuthRequirements(handler);
   const hasAuthorization = requirements ? endpointHasAuthorization(request) : false;
   if (requirements) delete endpointRequest.headers.authorization;
@@ -3764,7 +3764,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
       throw error;
     }
   } else {
-    endpointRequest = await readEndpointRequest(database, requestUrl, request, !(endpoint as LooseRecord).runtimeOwnedStripeCallback);
+    endpointRequest = await readEndpointRequest(database, requestUrl, request, !(endpoint as LooseRecord).runtimeOwnedStripeCallback, requestPath);
     // `readEndpointRequest` rebuilds the request head before reading the body.
     // Preserve the long-standing guard invariant that a consumed Bearer value
     // never reaches Capsule middleware or handler code.
@@ -4181,13 +4181,13 @@ export async function runAtomicStripeConsequence(
   throw new Error("Unreachable atomic Stripe consequence fence state.");
 }
 
-async function readEndpointRequest(database: LooseRecord, requestUrl: URL, request: any, parseJsonBody = true) {
-  const head = endpointRequestHead(requestUrl, request);
+async function readEndpointRequest(database: LooseRecord, requestUrl: URL, request: any, parseJsonBody = true, requestPath = requestUrl.pathname) {
+  const head = endpointRequestHead(requestUrl, request, requestPath);
   const payload = await readEndpointPayload(request, head.headers, database, parseJsonBody);
   return { ...head, ...payload };
 }
 
-function endpointRequestHead(requestUrl: URL, request: any) {
+function endpointRequestHead(requestUrl: URL, request: any, requestPath = requestUrl.pathname) {
   const headers = Object.fromEntries(
     Object.entries(request.headers).map(([name, value]) => [
       name.toLowerCase(),
@@ -4197,7 +4197,7 @@ function endpointRequestHead(requestUrl: URL, request: any) {
   const query = endpointQueryFromUrl(requestUrl);
   return {
     method: request.method,
-    path: requestUrl.pathname,
+    path: requestPath,
     headers,
     query,
   };

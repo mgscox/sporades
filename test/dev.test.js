@@ -1683,7 +1683,7 @@ test("sporades dev bundles and serves a Capsule built from the runtime module gr
   });
 });
 
-test("sporades dev keeps serving after an ordinary request target cannot be parsed", async () => {
+test("sporades dev keeps serving after a repeated-slash origin-form request", async () => {
   await withTempDir(async (dir) => {
     const created = await runCli(["create", "http-liveness", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
     assert.equal(created.code, 0, created.stderr);
@@ -1699,8 +1699,7 @@ test("sporades dev keeps serving after an ordinary request target cannot be pars
     try {
       const started = await events.next((event) => event.ok && event.data?.event === "started");
       const failed = await rawHttpResponse(started.data.url, "//");
-      assert.match(failed, /^HTTP\/1\.1 500\b/);
-      assert.match(failed, /"ok":false,"data":null,"error":\{"message":"Internal server error\."/);
+      assert.match(failed, /^HTTP\/1\.1 404\b/);
       assert.equal((await fetch(started.data.url)).status, 200);
       assert.equal(child.exitCode, null);
       assert.equal(events.events.some((event) => /unhandledRejection|uncaughtException|fatal-runtime|restart/i.test(JSON.stringify(event))), false);
@@ -5214,6 +5213,11 @@ export default capsule({
       (ctx: { request: { query: Record<string, string> } }) =>
         String((ctx.request.query.source as string) ?? "missing"),
     ),
+    literalEncodedPath: endpoint(
+      { method: "GET", path: "/%2e%2e" },
+      (ctx: { request: { path: string; query: Record<string, string> } }) =>
+        JSON.stringify({ path: ctx.request.path, source: ctx.request.query.source }),
+    ),
   },
 });
 `,
@@ -5229,6 +5233,13 @@ export default capsule({
       assert.equal(endpointResponse.status, 200);
       assert.match(endpointResponse.headers.get("content-type") ?? "", /^text\/plain/);
       assert.equal(await endpointResponse.text(), "test");
+
+      for (const [target, source] of [["/%2e%2e?source=origin", "origin"], ["http://unrelated.example/%2e%2e?source=absolute", "absolute"]]) {
+        const response = await rawHttpResponse(started.data.url, target, { headers: { host: "wrong.example" } });
+        assert.match(response, /^HTTP\/1\.1 200 /, response);
+        assert.match(response, /"path":"\/%2e%2e"/, response);
+        assert.match(response, new RegExp(`"source":"${source}"`), response);
+      }
 
       const methodMissResponse = await fetch(`${started.data.url}/integrations/ping`);
       assert.equal(methodMissResponse.status, 404);

@@ -103589,7 +103589,7 @@ async function routeEndpoint(database, request, response) {
     return {};
   };
   try {
-    const result = await runEndpoint(database, endpoint, requestUrl, request);
+    const result = await runEndpoint(database, endpoint, requestUrl, request, target.pathname);
     const sensitiveResponseHeaders = request.__sporadesAccessKeyAdmitted || request.__sporadesSecretDisclosed ? { "cache-control": "private, no-store", pragma: "no-cache" } : void 0;
     if (!await writeEndpointResult(database, response, result, { ...sensitiveResponseHeaders, ...closeIncompleteMultipartRequest() })) {
       return true;
@@ -103730,10 +103730,10 @@ async function admitEndpointMultipart(database, endpoint, endpointRequest, admis
     controller.abort();
   }
 }
-async function runEndpoint(database, endpoint, requestUrl, request) {
+async function runEndpoint(database, endpoint, requestUrl, request, requestPath = requestUrl.pathname) {
   const handler = typeof endpoint.handler === "function" ? endpoint.handler : new Function(`return (${endpoint.handlerSource});`)();
   const runtimeOwnedProviderCallback = endpoint.runtimeOwnedEmailEvent || endpoint.runtimeOwnedStripeCallback;
-  let endpointRequest = endpointRequestHead(requestUrl, request);
+  let endpointRequest = endpointRequestHead(requestUrl, request, requestPath);
   const requirements = readAuthRequirements(handler);
   const hasAuthorization = requirements ? endpointHasAuthorization(request) : false;
   if (requirements) delete endpointRequest.headers.authorization;
@@ -103802,7 +103802,7 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
       throw error;
     }
   } else {
-    endpointRequest = await readEndpointRequest(database, requestUrl, request, !endpoint.runtimeOwnedStripeCallback);
+    endpointRequest = await readEndpointRequest(database, requestUrl, request, !endpoint.runtimeOwnedStripeCallback, requestPath);
     if (requirements) delete endpointRequest.headers.authorization;
   }
   let context;
@@ -104196,12 +104196,12 @@ async function runAtomicStripeConsequence(database, parentContext, event, subscr
   }
   throw new Error("Unreachable atomic Stripe consequence fence state.");
 }
-async function readEndpointRequest(database, requestUrl, request, parseJsonBody = true) {
-  const head = endpointRequestHead(requestUrl, request);
+async function readEndpointRequest(database, requestUrl, request, parseJsonBody = true, requestPath = requestUrl.pathname) {
+  const head = endpointRequestHead(requestUrl, request, requestPath);
   const payload = await readEndpointPayload(request, head.headers, database, parseJsonBody);
   return { ...head, ...payload };
 }
-function endpointRequestHead(requestUrl, request) {
+function endpointRequestHead(requestUrl, request, requestPath = requestUrl.pathname) {
   const headers = Object.fromEntries(
     Object.entries(request.headers).map(([name2, value]) => [
       name2.toLowerCase(),
@@ -104211,7 +104211,7 @@ function endpointRequestHead(requestUrl, request) {
   const query = endpointQueryFromUrl(requestUrl);
   return {
     method: request.method,
-    path: requestUrl.pathname,
+    path: requestPath,
     headers,
     query
   };

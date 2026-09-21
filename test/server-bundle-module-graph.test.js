@@ -130,6 +130,11 @@ export default capsule({
       },
     })),
 
+    literalEncodedPath: endpoint({ method: "GET", path: "/%2e%2e" }, (ctx) => ({
+      status: 200,
+      body: { path: ctx.request.path, query: ctx.request.query },
+    })),
+
     echo: endpoint({ method: "POST", path: "/probe/echo" }, (ctx) => {
       const firstRead = ctx.request.bodyBytes;
       if (firstRead.byteLength > 0) Reflect.set(firstRead, 0, 0);
@@ -1122,6 +1127,12 @@ test("a generated Capsule keeps unusual request targets out of ordinary and WebS
       assert.match(response, new RegExp(`^HTTP/1\\.1 ${expectedStatus} `), `${target}: ${response}`);
       const health = await fetch(`${booted.baseUrl}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": "equivalence" } });
       assert.equal(health.status, 200, `runtime stopped after ${target}`);
+    }
+    for (const [target, source] of [["/%2e%2e?source=origin", "origin"], ["http://unrelated.example/%2e%2e?source=absolute", "absolute"]]) {
+      const response = await rawHttpResponse(booted.baseUrl, target, { headers: { host: "wrong.example" } });
+      assert.match(response, /^HTTP\/1\.1 200 /, response);
+      assert.match(response, /"path":"\/%2e%2e"/, response);
+      assert.match(response, new RegExp(`"source":"${source}"`), response);
     }
     assert.equal(await rawHttpResponse(booted.baseUrl, "unrelated.example:443", { method: "CONNECT" }), "");
     assert.equal((await fetch(`${booted.baseUrl}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": "equivalence" } })).status, 200);
