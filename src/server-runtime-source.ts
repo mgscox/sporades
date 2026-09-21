@@ -90,11 +90,12 @@ import {
   repairTeamBillingErasureStateAtStartup,
   settleExhaustedTeamBillingErasureJob,
 } from "./team-billing-erasure.js";
-// Batch 8. Eight names, which is what the one function of that domain still in this file
+// Batch 8. Nine names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
-// `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
-// `openDevDatabase` the body limit and the security policy; and `createWebSocketHub` the security
-// policy, the WebSocket origin check and the request-origin resolver.
+// `routeEndpoint` takes `requestTarget`, the three writers and the failure log; `readEndpointBody`
+// the body reader; `openDevDatabase` the body limit and the security policy; and
+// `createWebSocketHub` takes `requestTarget`, the security policy, the WebSocket origin check and
+// the request-origin resolver.
 import {
   emitHttpFailureLog, readLimitedRequestBody, requestTarget, resolveHttpMaxBodyBytes, resolveOAuthRequestOrigin,
   resolveRuntimeSecurityPolicy, websocketOriginAllowed, writeEndpointError, writeEndpointResult,
@@ -436,8 +437,8 @@ export * from "./acl-runtime.js";
 
 // The HTTP and security policy domain left this file as batch 8 — the CORS and CSP posture every
 // response carries, the origin and host-header validation behind it, the request body reader and
-// its size limit, the generic response writers, and the health and File routes. Thirty-two
-// declarations and two type aliases, of which fifteen are private to that module now; the eight
+// its size limit, the generic response writers, and the health and File routes. Forty-four function
+// declarations and three type aliases, of which twenty-two declarations are private to that module now; the nine
 // names imported above are what `routeEndpoint`, `readEndpointBody`, `openDevDatabase` and
 // `createWebSocketHub` still need from it.
 //
