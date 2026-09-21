@@ -4,7 +4,7 @@
 // probe and the File route. Batch 8 of the migration ADR-0041 records. Every body here is
 // byte-identical to the one that stood in `server-runtime-source.ts`.
 //
-// **The domain is 32 declarations and two type aliases, established by closing the reference graph
+// **The domain is 44 function declarations and three type aliases, established by closing the reference graph
 // rather than by matching names.** Ticket 04 estimated ~17 from a name sweep — the smallest
 // remaining estimate — and the real set is close to twice that. The error is in shape rather than
 // in size, and in one direction only for once: nothing a name sweep collects here belongs to
@@ -21,9 +21,9 @@
 // boundary. Leaving them would have stranded `routeSporadesAuth` a second time, for the same reason
 // batch 6's two file routes were stranded here: the writer, not the route, is the blocker.
 //
-// **The reverse-graph pass flagged twelve seeds with no in-domain caller and rejected none of
+// **The reverse-graph pass flags entry points with no in-domain caller and rejects none of
 // them.** Batch 6 established that pass and batch 7 sharpened it — it flags entry points and
-// foreigners alike, and only reading the body separates them. Every one of the twelve here is an
+// foreigners alike, and only reading the body separates them. Every one here is an
 // entry point: `prepareHttpSecurity`, `readJsonRequest`, `writeUnhandledHttpError`,
 // `injectPageConnectionToken`, `routeRuntimeHealth` and `handleFileHttpRoute` are called by the two
 // servers (`src/cli/sporades.ts` and the generated bundle's boot program); `websocketOriginAllowed`
@@ -68,8 +68,8 @@
 // neither module reads a name of the other's before both are initialized. esbuild resolves the
 // cycle when it bundles the migrated set into the carried IIFE and again when it builds `bin/`.
 //
-// **What is exported and what is not.** 17 of the 32 are exported and 15 are private, against 7
-// exported and all 32 registered before the move. Under the emitted list every one of the 32 had to be
+// **What is exported and what is not.** 25 of the 47 declarations are exported and 22 are private, against 7
+// exported and all 32 registered before the move. Under the emitted list every function had to be
 // an entry in `SERVER_RUNTIME_SOURCE_FUNCTIONS` or become a `ReferenceError` in a deployed Capsule,
 // so "private" was not available to this domain. It is now: the whole CSP construction
 // (`defaultRuntimeCspDirectives`, `serializeCspDirectives`), the origin and header predicates
@@ -83,14 +83,18 @@
 // The exports are not a designed interface. They are the names something outside this file still
 // resolves, in three groups:
 //
-//   - What the two servers call: `prepareHttpSecurity`, `readJsonRequest`, `writeUnhandledHttpError`,
+//   - What the two servers call: `prepareHttpSecurity`, `interpretHttpRequestTarget`,
+//     `writeInvalidHttpRequestTarget`, `readJsonRequest`, `writeUnhandledHttpError`,
 //     `injectPageConnectionToken`, `routeRuntimeHealth` and `handleFileHttpRoute`.
-//   - What the monolith calls: `emitHttpFailureLog`, `writeEndpointError` and `writeEndpointResult`
+//   - What the monolith calls: `requestTarget` (`routeEndpoint` and `createWebSocketHub`),
+//     `emitHttpFailureLog`, `writeEndpointError` and `writeEndpointResult`
 //     (`routeEndpoint`), `readLimitedRequestBody` (`readEndpointBody`), `resolveHttpMaxBodyBytes`
 //     and `resolveRuntimeSecurityPolicy` (`openDevDatabase`), and `resolveRuntimeSecurityPolicy`,
 //     `websocketOriginAllowed` and `resolveOAuthRequestOrigin` (`createWebSocketHub`).
-//   - What `auth-runtime.ts` imports: `normalizeOrigin`, `readLimitedRequestBody`,
+//   - What `auth-runtime.ts` imports: `normalizeOrigin`, `readLimitedRequestBody`, `requestTarget`,
 //     `singleHttpHeader` and `writeEndpointError`.
+//
+// `boundedRequestTargetPath` stays private because only this module uses it to redact failure-log paths.
 //
 // `checkRuntimeSqlite` is exported for a test rather than for a caller, as it was before the move.
 //
@@ -627,7 +631,7 @@ export async function handleFileHttpRoute(database: LooseRecord, request: Incomi
           const error: any = commandError("Forbidden.", "Use an Access key permitted for this File operation.", "FORBIDDEN");
           error.sporadesAuthDenialLogData = {
             requirement: "file-access-key-scopes",
-          handler: { kind: "file", path: target.pathname },
+            handler: { kind: "file", path: target.pathname },
             actor: { userId: auth.userId, provider: auth.provider, isAuthenticated: true, isGuest: false },
           };
           error.sporadesAccessKeyFailure = "forbidden";
@@ -663,7 +667,7 @@ export async function handleFileHttpRoute(database: LooseRecord, request: Incomi
         emitAuthDeniedLog(database, { data: {
           requirement: "file-access-key",
           reason: error.sporadesAccessKeyReason ?? error.sporadesAccessKeyFailure,
-            handler: { kind: "file", path: target.pathname },
+          handler: { kind: "file", path: target.pathname },
           actor: { userId: null, provider: null, isAuthenticated: null, isGuest: null },
         } });
       }
