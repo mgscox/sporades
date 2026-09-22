@@ -265,7 +265,9 @@ function preserveRendererImportMetaUrl(
         const loader = loaders.get(path.extname(args.path));
         if (!loader) return undefined;
         const checksImports = contents.includes("import");
-        const requiresTransform = checksImports || (commonJsModule && /\b(?:require|module|eval|__dirname|__filename)\b/.test(contents));
+        // Parse every CommonJS module: dynamic scope and escaped identifiers
+        // cannot safely be detected by searching the original source text.
+        const requiresTransform = checksImports || commonJsModule;
         if (!requiresTransform) {
           if (args.namespace !== commonJsNamespace) return undefined;
           return {
@@ -493,6 +495,9 @@ function specializeCommonJsRendererModule(contents: string, modulePath: string, 
   const scopes = new WeakMap<object, RendererLexicalScope>();
   collectRendererScopes(syntax, rootScope, scopes);
   visitRendererSyntax(syntax, (node) => {
+    if (node.type === "WithStatement") {
+      throw new Error("With statements are unsupported in CommonJS prerender modules; use explicit bindings so module-local wrapper semantics can be preserved.");
+    }
     if (node.type === "CallExpression" && !node.optional && isRendererSyntaxNode(node.callee) && node.callee.type === "Identifier" && node.callee.name === "eval") {
       throw new Error("Direct eval is unsupported in CommonJS prerender modules; use explicit code so module-local wrapper bindings can be preserved.");
     }
