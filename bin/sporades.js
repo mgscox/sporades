@@ -60713,16 +60713,18 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot) {
         if (outputs.length !== 1 || javascript.length !== 1 || !javascript[0]?.text) {
           throw new Error("the import.meta.url transform produced unsupported output");
         }
-        const outputLoader = loader === "jsx" || loader === "tsx" ? "jsx" : "js";
         return {
           contents: javascript[0].text,
-          loader: outputLoader,
+          loader: rendererTransformOutputLoader(loader),
           resolveDir: path3.dirname(args.path),
           watchFiles: [args.path]
         };
       });
     }
   };
+}
+function rendererTransformOutputLoader(loader) {
+  return loader === "jsx" || loader === "tsx" ? "jsx" : "js";
 }
 function placeClientPrerenderFragment(html, fragment, rendered) {
   const bounded = `<!-- sporades:prerender-boundary-start ${fragment.name} -->${rendered}<!-- sporades:prerender-boundary-end ${fragment.name} -->`;

@@ -5,5 +5,6 @@ export type ClientPrerenderFragment = Readonly<{
 }>;
 export declare function readClientPrerenderConfig(value: unknown, toolchain: ClientToolchainName): ClientPrerenderFragment[];
 export declare function renderClientPrerenderFragment(projectRoot: string, fragment: ClientPrerenderFragment, projectRoots?: string[]): Promise<string>;
+export declare function rendererTransformOutputLoader(loader: import("esbuild").Loader): "js" | "jsx";
 export declare function placeClientPrerenderFragment(html: string, fragment: ClientPrerenderFragment, rendered: string): string;
 //# sourceMappingURL=client-prerender.d.ts.map
