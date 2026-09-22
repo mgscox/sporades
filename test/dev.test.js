@@ -4369,6 +4369,25 @@ test("Dev watches prerender modules and transitive code while retaining the last
         assert.match(await page(), /Initial resolution/);
       }
       const settle = () => new Promise((resolve) => setTimeout(resolve, 800));
+      for (const computed of [false, true]) {
+        const name = computed ? 'selected-computed' : 'selected-static';
+        const selected = path.join(projectDir, 'node_modules', name);
+        await mkdir(selected, {recursive:true});
+        await writeFile(path.join(selected, 'package.json'), JSON.stringify({name, type:'commonjs'}));
+        await writeFile(path.join(selected, 'feature.json'), '"Initial package resolution"');
+        await writeFile(path.join(projectDir, 'render/landing.ts'), computed
+          ? `export default () => {const target = "${name}/feature"; return require(target);};`
+          : `import copy from "${name}/feature"; export default () => copy;`);
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Initial package resolution/);
+        const preferred = path.join(selected, 'feature.js');
+        await writeFile(preferred, 'module.exports = "Preferred package resolution";');
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Preferred package resolution/);
+        await rm(preferred);
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Initial package resolution/);
+      }
       const rebuildCount = () => events.events.filter((event) => event.data?.event === 'rebuild').length;
       await settle();
       await writeFile(path.join(projectDir, 'render/existing.cjs'), 'module.exports = "One rebuild";');

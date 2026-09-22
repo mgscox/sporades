@@ -258,6 +258,18 @@ test('successful local edges retain higher-priority static and computed resoluti
     assert.ok(dependencies.has(path.join(root, 'dynamic.js')), 'higher-priority computed CommonJS target is observed');
     await writeFile(path.join(root, 'dynamic.js'), 'module.exports = "Computed JavaScript copy";');
     assert.equal(await render(), 'Computed JavaScript copy');
+    const packageRoot = path.join(root, 'node_modules/selected-package');
+    await mkdir(packageRoot, {recursive:true});
+    await writeFile(path.join(packageRoot, 'package.json'), '{"name":"selected-package","type":"commonjs"}');
+    await writeFile(path.join(packageRoot, 'feature.json'), '"Package JSON copy"');
+    await writeFile(path.join(root, 'entry.mjs'), 'import copy from "selected-package/feature"; export default () => copy;');
+    dependencies.clear();
+    assert.equal(await render(), 'Package JSON copy');
+    assert.ok(dependencies.has(packageRoot), 'selected package observes new resolution candidates within its tree');
+    await writeFile(path.join(packageRoot, 'feature.js'), 'module.exports = "Package JavaScript copy";');
+    assert.equal(await render(), 'Package JavaScript copy');
+    await writeFile(path.join(packageRoot, 'feature.ts'), 'export default "Package TypeScript copy";');
+    assert.equal(await render(), 'Package JavaScript copy', 'esbuild prioritizes JavaScript inside node_modules');
   } finally { await rm(root, {recursive:true, force:true}); }
 });
 

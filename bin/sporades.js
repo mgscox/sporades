@@ -82172,8 +82172,8 @@ async function recordRendererPackageManifests(specifier, directory, onDependency
       canonicalRoot = await realpath2(root);
     } catch {
     }
-    if (resolvedPath === canonicalRoot || isCanonicalDescendant(canonicalRoot, resolvedPath)) break;
     onDependency(root);
+    if (resolvedPath === canonicalRoot || isCanonicalDescendant(canonicalRoot, resolvedPath)) break;
   }
 }
 async function recordRendererPackageImport(specifier, directory, onDependency) {

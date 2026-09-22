@@ -427,11 +427,12 @@ async function recordRendererPackageManifests(specifier, directory, onDependency
             canonicalRoot = await realpath(root);
         }
         catch { /* missing nearer candidates still need observation */ }
+        // Observe nearer candidates and the selected package itself: a new file
+        // inside it can outrank the selected subpath or package entry point. This
+        // remains bounded to this package, not the containing node_modules tree.
+        onDependency(root);
         if (resolvedPath === canonicalRoot || isCanonicalDescendant(canonicalRoot, resolvedPath))
             break;
-        // A nearer manifestless index or package subpath can supersede the chosen
-        // package. Watch candidates only up to it, not its entire installed tree.
-        onDependency(root);
     }
 }
 async function recordRendererPackageImport(specifier, directory, onDependency) {
