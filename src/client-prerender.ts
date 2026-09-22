@@ -259,7 +259,7 @@ function preserveRendererImportMetaUrl(
               && !isCanonicalDescendant(projectRoot, failedPath);
             if (/^file:/i.test(args.path)) {
               if (projectRootEqual) {
-                rendererDependencyAliases.set(rendererRawLocalFileUrlPath(args.path), {
+                mergeRendererDiagnosticAlias(rendererDependencyAliases, rendererRawLocalFileUrlPath(args.path), {
                   replacement: "<project>",
                   boundary: "path",
                 });
@@ -269,7 +269,7 @@ function preserveRendererImportMetaUrl(
                   const replacement = external
                     ? "<project>"
                     : rendererProjectDiagnosticPrefix(projectRoot, failedDirectory);
-                  rendererDependencyAliases.set(rawParent, { replacement, boundary: "parent" });
+                  mergeRendererDiagnosticAlias(rendererDependencyAliases, rawParent, { replacement, boundary: "parent" });
                 }
               }
             }
@@ -1125,12 +1125,35 @@ function boundedMessage(
     message = "Thrown error message unavailable.";
   }
   let redacted = message;
-  const aliases = [...new Map(exactAliases).entries()].sort(([left], [right]) => right.length - left.length);
+  const mergedAliases = new Map<string, RendererDiagnosticAlias>();
+  for (const [alias, configuration] of exactAliases) {
+    mergeRendererDiagnosticAlias(mergedAliases, alias, configuration);
+  }
+  const aliases = [...mergedAliases.entries()].sort(([left], [right]) => right.length - left.length);
   for (const [alias, configuration] of aliases) {
     if (alias) redacted = redactUrlPathAlias(redacted, alias, configuration);
   }
   redacted = redactBuildProjectRoots(redacted, projectRoots);
   return redacted.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
+}
+
+function mergeRendererDiagnosticAlias(
+  aliases: Map<string, RendererDiagnosticAlias>,
+  alias: string,
+  candidate: RendererDiagnosticAlias,
+) {
+  const current = aliases.get(alias);
+  if (!current) {
+    aliases.set(alias, candidate);
+    return;
+  }
+  const currentRank = current.boundary === "path" ? 1 : 0;
+  const candidateRank = candidate.boundary === "path" ? 1 : 0;
+  if (candidateRank > currentRank) {
+    aliases.set(alias, candidate);
+  } else if (candidateRank === currentRank && candidate.replacement < current.replacement) {
+    aliases.set(alias, candidate);
+  }
 }
 
 function redactUrlPathAlias(value: string, alias: string, configuration: RendererDiagnosticAlias) {
