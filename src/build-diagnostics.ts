@@ -1,4 +1,5 @@
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 export function redactBuildProjectRoots(message: string, projectRoots: string[]) {
   const absoluteRoots = new Set<string>();
@@ -11,6 +12,9 @@ export function redactBuildProjectRoots(message: string, projectRoots: string[])
         absoluteRoots.add(normalizedRoot);
         absoluteRoots.add(normalizedRoot.replaceAll("\\", "/"));
         absoluteRoots.add(normalizedRoot.replaceAll("/", "\\"));
+        const fileUrl = pathToFileURL(normalizedRoot);
+        absoluteRoots.add(fileUrl.href);
+        absoluteRoots.add(fileUrl.pathname);
       }
     }
     const relative = path.relative(process.cwd(), resolved);

@@ -58895,7 +58895,7 @@ import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "nod
 import { createServer as createServer2 } from "node:http";
 import { appendFile, chmod as chmod2, cp, lstat as lstat9, mkdir as mkdir8, readdir as readdir3, readFile as readFile11, rename as rename6, rm as rm8, writeFile as writeFile7 } from "node:fs/promises";
 import path15 from "node:path";
-import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL3 } from "node:url";
+import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL4 } from "node:url";
 
 // src/bundle-pipeline.ts
 import { lstat as lstat6, mkdir as mkdir4, readFile as readFile7, rename as rename4, rm as rm4, writeFile as writeFile3 } from "node:fs/promises";
@@ -58905,7 +58905,7 @@ import path9 from "node:path";
 import path4 from "node:path";
 import { lstat as lstat3, readFile as readFile3, realpath as realpath3 } from "node:fs/promises";
 import { createRequire as createRequire2 } from "node:module";
-import { pathToFileURL as pathToFileURL2 } from "node:url";
+import { pathToFileURL as pathToFileURL3 } from "node:url";
 
 // src/templates/client-runtime-template.ts
 function createClientRuntimeSource(options = {}) {
@@ -60498,10 +60498,11 @@ function deepFreeze(value) {
 import { lstat as lstat2, readFile as readFile2, realpath as realpath2 } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path3 from "node:path";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL as pathToFileURL2 } from "node:url";
 
 // src/build-diagnostics.ts
 import path2 from "node:path";
+import { pathToFileURL } from "node:url";
 function redactBuildProjectRoots(message, projectRoots) {
   const absoluteRoots = /* @__PURE__ */ new Set();
   const relativeRoots = /* @__PURE__ */ new Set();
@@ -60513,6 +60514,9 @@ function redactBuildProjectRoots(message, projectRoots) {
         absoluteRoots.add(normalizedRoot);
         absoluteRoots.add(normalizedRoot.replaceAll("\\", "/"));
         absoluteRoots.add(normalizedRoot.replaceAll("/", "\\"));
+        const fileUrl = pathToFileURL(normalizedRoot);
+        absoluteRoots.add(fileUrl.href);
+        absoluteRoots.add(fileUrl.pathname);
       }
     }
     const relative = path2.relative(process.cwd(), resolved);
@@ -60692,7 +60696,7 @@ function preserveRendererImportMetaUrl(transform) {
         const loader = loaders.get(path3.extname(args.path));
         if (!loader) return void 0;
         const result = await transform(contents, {
-          define: { "import.meta.url": JSON.stringify(pathToFileURL(args.path).href) },
+          define: { "import.meta.url": JSON.stringify(pathToFileURL2(args.path).href) },
           jsx: "preserve",
           loader,
           sourcefile: args.path,
@@ -61211,7 +61215,7 @@ async function loadProjectCompilerToolchain(projectRoot, spec) {
   const loaded = /* @__PURE__ */ new Map();
   for (const [packageName, resolved] of resolvedPackages) {
     try {
-      loaded.set(packageName, await import(pathToFileURL2(resolved).href));
+      loaded.set(packageName, await import(pathToFileURL3(resolved).href));
     } catch (error) {
       throw projectToolchainError(
         spec.framework,
@@ -116812,14 +116816,14 @@ var stripeCallbackFactoryPromise;
 var stripeTeamBillingProviderFactoryPromise;
 async function stripeCallbackFactory(config) {
   if (!config.payments?.stripe?.enabled) return void 0;
-  stripeCallbackFactoryPromise ??= import(pathToFileURL3(
+  stripeCallbackFactoryPromise ??= import(pathToFileURL4(
     path15.join(resolveSporadesPackageRoot(), "dist", "stripe-webhook-runtime.js")
   ).href).then((module) => module.createStripeCallbackEndpoint);
   return await stripeCallbackFactoryPromise;
 }
 async function stripeTeamBillingProviderFactory(config) {
   if (!config.payments?.stripe?.enabled) return void 0;
-  stripeTeamBillingProviderFactoryPromise ??= import(pathToFileURL3(
+  stripeTeamBillingProviderFactoryPromise ??= import(pathToFileURL4(
     path15.join(resolveSporadesPackageRoot(), "dist", "stripe-team-billing-provider.js")
   ).href).then((module) => module.createStripeTeamBillingProvider);
   return await stripeTeamBillingProviderFactoryPromise;
