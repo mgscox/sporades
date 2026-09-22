@@ -825,17 +825,21 @@ export function validateClientPrerenderOutputHtml(html, expectedBoundaries) {
     }
 }
 function hasReservedPrerenderBoundary(html) {
-    const pending = [parseHtml(html, { scriptingEnabled: true })];
+    return countReservedPrerenderBoundaries(parseHtml(html, { scriptingEnabled: true })) > 0;
+}
+function countReservedPrerenderBoundaries(root) {
+    const pending = [root];
+    let count = 0;
     while (pending.length) {
         const node = pending.pop();
         if (node.nodeName === "#comment" && "data" in node && /^sporades:prerender-boundary-(?:start|end)\b/.test(node.data.trim()))
-            return true;
+            count++;
         if ("childNodes" in node)
             pending.push(...node.childNodes);
-        if ("tagName" in node && node.tagName === "template")
+        if ("tagName" in node && node.tagName === "template" && "content" in node)
             pending.push(node.content);
     }
-    return false;
+    return count;
 }
 export function placeClientPrerenderFragments(html, fragments) {
     const warnings = [];
@@ -989,9 +993,12 @@ function validatePrerenderDomBoundaries(html, expectedPlacements) {
         if (implicit)
             implicit.after = order;
     };
-    visit(parseHtml(html, { sourceCodeLocationInfo: true, scriptingEnabled: true }));
+    const document = parseHtml(html, { sourceCodeLocationInfo: true, scriptingEnabled: true });
+    visit(document);
     const invalid = () => prerenderError("Client prerender placement is not stable in the parsed HTML document.", "Use context-valid fragment HTML at each marker (for example, rows inside tables), outside inert templates. The browser must keep fragment content between its boundaries.");
-    if (boundaries.length !== expectedPlacements * 2)
+    // Templates are inert to current discovery, but their cloned contents can
+    // become live later. Count all reserved comments, including malformed pairs.
+    if (boundaries.length !== expectedPlacements * 2 || countReservedPrerenderBoundaries(document) !== expectedPlacements * 2)
         throw invalid();
     boundaries.sort((left, right) => left.start - right.start);
     const ownedRanges = [];
@@ -1072,7 +1079,7 @@ function scanClientPrerenderHtml(html) {
         if ("childNodes" in node)
             for (const child of node.childNodes)
                 visit(child);
-        if ("tagName" in node && node.tagName === "template")
+        if ("tagName" in node && node.tagName === "template" && "content" in node)
             visit(node.content);
     };
     visit(document);

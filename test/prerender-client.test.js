@@ -10,6 +10,8 @@ test('renderer output and source HTML cannot introduce reserved boundary comment
     assert.throws(() => placeClientPrerenderFragments('<body><!-- sporades:prerender landing --></body>', [{name:'landing', html}]), /document-root attributes/i);
   }
   const literalRoot = '<script>window.example = "<body data-example>";</script><p>Valid fragment</p>';
+  const foreignTemplate = '<svg><template><text>author</text></template></svg>';
+  assert.ok(placeClientPrerenderFragments(`<body>${foreignTemplate}<!-- sporades:prerender landing --></body>`, [{name:'landing', html:'<p>Static</p>'}]).html.includes(foreignTemplate));
   assert.ok(placeClientPrerenderFragments('<body></body>', [{name:'landing', html:literalRoot}]).html.includes(literalRoot));
   const bogus = '<!sporades:prerender-boundary-start landing><p>author</p><!sporades:prerender-boundary-end landing>';
   for (const html of [bogus, `<template>${bogus}</template>`]) {

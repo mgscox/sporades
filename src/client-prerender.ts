@@ -880,14 +880,19 @@ export function validateClientPrerenderOutputHtml(html: string, expectedBoundari
 }
 
 function hasReservedPrerenderBoundary(html: string) {
-  const pending: DefaultTreeAdapterTypes.Node[] = [parseHtml(html, { scriptingEnabled: true })];
+  return countReservedPrerenderBoundaries(parseHtml(html, { scriptingEnabled: true })) > 0;
+}
+
+function countReservedPrerenderBoundaries(root: DefaultTreeAdapterTypes.Node) {
+  const pending: DefaultTreeAdapterTypes.Node[] = [root];
+  let count = 0;
   while (pending.length) {
     const node = pending.pop()!;
-    if (node.nodeName === "#comment" && "data" in node && /^sporades:prerender-boundary-(?:start|end)\b/.test(node.data.trim())) return true;
+    if (node.nodeName === "#comment" && "data" in node && /^sporades:prerender-boundary-(?:start|end)\b/.test(node.data.trim())) count++;
     if ("childNodes" in node) pending.push(...node.childNodes);
-    if ("tagName" in node && node.tagName === "template") pending.push((node as DefaultTreeAdapterTypes.Template).content);
+    if ("tagName" in node && node.tagName === "template" && "content" in node) pending.push((node as DefaultTreeAdapterTypes.Template).content);
   }
-  return false;
+  return count;
 }
 
 export function placeClientPrerenderFragments(html: string, fragments: readonly { name: string; html: string }[]) {
@@ -1031,12 +1036,15 @@ function validatePrerenderDomBoundaries(html: string, expectedPlacements: number
     if (located) located.after = order;
     if (implicit) implicit.after = order;
   };
-  visit(parseHtml(html, { sourceCodeLocationInfo: true, scriptingEnabled: true }));
+  const document = parseHtml(html, { sourceCodeLocationInfo: true, scriptingEnabled: true });
+  visit(document);
   const invalid = () => prerenderError(
     "Client prerender placement is not stable in the parsed HTML document.",
     "Use context-valid fragment HTML at each marker (for example, rows inside tables), outside inert templates. The browser must keep fragment content between its boundaries.",
   );
-  if (boundaries.length !== expectedPlacements * 2) throw invalid();
+  // Templates are inert to current discovery, but their cloned contents can
+  // become live later. Count all reserved comments, including malformed pairs.
+  if (boundaries.length !== expectedPlacements * 2 || countReservedPrerenderBoundaries(document) !== expectedPlacements * 2) throw invalid();
   boundaries.sort((left, right) => left.start - right.start);
   const ownedRanges: string[] = [];
   for (let index = 0; index < boundaries.length; index += 2) {
@@ -1104,7 +1112,7 @@ function scanClientPrerenderHtml(html: string) {
       }
     }
     if ("childNodes" in node) for (const child of node.childNodes) visit(child);
-    if ("tagName" in node && node.tagName === "template") visit((node as DefaultTreeAdapterTypes.Template).content);
+    if ("tagName" in node && node.tagName === "template" && "content" in node) visit((node as DefaultTreeAdapterTypes.Template).content);
   };
   visit(document);
   for (const error of errors) {

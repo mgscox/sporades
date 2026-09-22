@@ -111,6 +111,10 @@ export default async () => {
       await assert.rejects(createBundle(root, {...config, client}), /reserved prerender boundary comment/i);
       await assert.rejects(createBundle(root, config), /not stable in the parsed HTML document/i);
     }
+    for (const suffix of [`<template>${boundary}</template>`, `<template><template>${boundary}</template></template>`, '<!sporades:prerender-boundary-start malformed>']) {
+      await writeFile(path.join(root, 'vite.config.mjs'), `export default { plugins: [{ name: 'late-inert-boundaries', generateBundle: {order:'post', handler(_options, bundle) {bundle['index.html'].source += ${JSON.stringify(suffix)};} } }] };`);
+      await assert.rejects(createBundle(root, config), /not stable in the parsed HTML document/i);
+    }
     await writeFile(path.join(root, 'vite.config.mjs'), 'export default {};');
     await writeFile(path.join(root, 'index.html'), '<html><body><script type="module" src="/client/index.tsx"></script></body></html>');
     await writeFile(path.join(root, 'renderer-only.css'), 'body { color: red; }');
