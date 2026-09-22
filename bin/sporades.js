@@ -72829,7 +72829,9 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
           with: args.with
         });
         if (resolved.errors.length > 0) return args.namespace === commonJsNamespace ? { errors: resolved.errors, warnings: resolved.warnings } : void 0;
-        if (!resolved.external && resolved.namespace === "file") rendererDependencyRoots.add(path3.dirname(resolved.path));
+        if (!resolved.external && resolved.namespace === "file" && !isCanonicalDescendant(projectRoot, resolved.path)) {
+          rendererDependencyRoots.add(path3.dirname(resolved.path));
+        }
         let namespace = resolved.namespace;
         if (!resolved.external && namespace === "file" && [".js", ".jsx"].includes(path3.extname(resolved.path))) {
           const contents = await readFile2(resolved.path, "utf8");
