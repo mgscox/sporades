@@ -106,6 +106,19 @@ test('computed require cannot hide an ESM import graph from Dev dependency track
   } finally { await rm(root, {recursive:true, force:true}); }
 });
 
+test('failed static absolute and file URL imports report their local recovery targets', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-local-targets-')));
+  try {
+    const missing = path.join(root, 'missing.mjs');
+    for (const specifier of [missing, pathToFileURL(missing).href]) {
+      await writeFile(path.join(root, 'entry.mjs'), `import value from ${JSON.stringify(specifier)}; export default () => value;`);
+      const dependencies = new Set();
+      await assert.rejects(renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'}, [root], (file) => dependencies.add(file)));
+      assert.ok(dependencies.has(missing), specifier);
+    }
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
 test('computed external require failures redact runtime paths and file URLs', async () => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-runtime-redaction-')));
   const external = await realpath(await mkdtemp(path.join(tmpdir(), 'private-renderer-location-')));

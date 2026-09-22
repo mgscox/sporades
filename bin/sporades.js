@@ -80930,15 +80930,15 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
           with: args.with
         });
         if (resolved.errors.length > 0) {
-          if (args.path.startsWith(".")) {
-            const candidate = path3.resolve(args.resolveDir, args.path);
+          const failedPath = rendererLocalFilePath(args.path);
+          if (args.path.startsWith(".") || failedPath) {
+            const candidate = failedPath ?? path3.resolve(args.resolveDir, args.path);
             for (const suffix of ["", ".tsx", ".ts", ".jsx", ".js", ".json", "/index.ts", "/index.js"]) onDependency?.(`${candidate}${suffix}`);
           } else if (!path3.isAbsolute(args.path) && !/^(?:[A-Za-z][A-Za-z0-9+.-]*:|#)/.test(args.path)) {
             const packageName = args.path.split("/").slice(0, args.path.startsWith("@") ? 2 : 1).join("/");
             const localRequire = createRequire(path3.join(args.resolveDir || projectRoot, "__sporades_prerender__.cjs"));
             for (const directory of localRequire.resolve.paths(args.path) ?? []) onDependency?.(path3.join(directory, packageName));
           }
-          const failedPath = rendererLocalFilePath(args.path);
           const failedDirectory = failedPath ? rendererDependencyDirectory(failedPath) : void 0;
           if (failedPath) {
             const projectRootEqual = path3.resolve(failedPath) === path3.resolve(projectRoot);
@@ -131706,7 +131706,12 @@ async function startDevSession(options) {
   const restartPolicy = restartPolicyForMode("dev");
   const port = options.port ?? config.dev?.port ?? config.deploy?.port ?? 4e3;
   let clientDependencies = /* @__PURE__ */ new Set();
-  let bundle = await createBundle(options.projectDir, config, { devClientRefresh: true, deployFiles: false, onClientDependency: (file) => clientDependencies.add(file) });
+  const initialDependencySignatures = /* @__PURE__ */ new Map();
+  const recordClientDependency = (file) => {
+    if (!clientDependencies.has(file)) initialDependencySignatures.set(file, readDevInputSignature([{ path: file }]));
+    clientDependencies.add(file);
+  };
+  let bundle = await createBundle(options.projectDir, config, { devClientRefresh: true, deployFiles: false, onClientDependency: recordClientDependency });
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config, { publishPorts: true });
   const capsuleServiceEnv = await startCapsuleServices(capsuleServices, options.projectDir, {
     wait: true,
@@ -132053,7 +132058,7 @@ async function startDevSession(options) {
       const nextClientDependencies = /* @__PURE__ */ new Set();
       rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false, devClientRefresh: true, deployFiles: false, onClientDependency: (file) => {
         nextClientDependencies.add(file);
-        clientDependencies.add(file);
+        recordClientDependency(file);
       } });
       const nextCapsuleServiceEnv = await startCapsuleServices(nextCapsuleServices, options.projectDir, {
         wait: true,
@@ -132096,6 +132101,7 @@ async function startDevSession(options) {
       const previousBundle = bundle;
       bundle = rebuild;
       clientDependencies = nextClientDependencies;
+      for (const file of initialDependencySignatures.keys()) if (!clientDependencies.has(file)) initialDependencySignatures.delete(file);
       rebuild.releasePublicTreeLease().catch((error) => {
         reportDevPublicCleanupDegradation(options, runtime, url, actualPort, nextConfig, error);
       });
@@ -132176,7 +132182,7 @@ async function startDevSession(options) {
         }
       );
     }
-  }, () => [...clientDependencies]);
+  }, () => [...clientDependencies], initialDependencySignatures);
   emitDevEvent(options, { event: "started", url, port: actualPort, security, restartPolicy: restartPolicyStatus("dev"), ...bundle.clientDiagnostics.warnings?.length ? { warnings: bundle.clientDiagnostics.warnings } : {} });
   let shutdownStarted = false;
   const shutdown = async () => {
@@ -132378,7 +132384,7 @@ async function importCapsuleDefinition(moduleSource) {
   const module = await import(`data:text/javascript;base64,${encodedModule}`);
   return module.default ?? null;
 }
-function watchDevInputs(projectDir, onChange, clientDependencies = () => []) {
+function watchDevInputs(projectDir, onChange, clientDependencies = () => [], initialDependencySignatures = /* @__PURE__ */ new Map()) {
   const baseWatchedPaths = [
     { path: path15.join(projectDir, "server"), affectsServerRuntime: true },
     { path: path15.join(projectDir, "client"), affectsServerRuntime: false },
@@ -132411,15 +132417,24 @@ function watchDevInputs(projectDir, onChange, clientDependencies = () => []) {
     }
     const currentChange = pendingChange ?? { affectsServerRuntime: true };
     pendingChange = null;
-    const currentSignature = readDevInputSignature(watchedPaths());
+    const beforePaths = watchedPaths();
+    const beforeSignatures = new Map(beforePaths.map((entry) => [entry.path, readDevInputSignature([entry])]));
+    const currentSignature = [...beforeSignatures.values()].flatMap((signature) => signature.split("\n")).sort().join("\n");
     if (currentSignature === lastHandledSignature) {
       return;
     }
     rebuildInFlight = true;
     try {
       await onChange(currentChange);
-      lastHandledSignature = currentSignature;
-      for (const watchedPath of watchedPaths()) handledSignatures.set(watchedPath.path, readDevInputSignature([watchedPath]));
+      const afterPaths = watchedPaths();
+      for (const watchedPath of afterPaths) {
+        const signature = beforeSignatures.get(watchedPath.path) ?? initialDependencySignatures.get(watchedPath.path) ?? readDevInputSignature([watchedPath]);
+        handledSignatures.set(watchedPath.path, signature);
+        if (!observedSignatures.has(watchedPath.path)) observedSignatures.set(watchedPath.path, signature);
+      }
+      const currentPaths = new Set(afterPaths.map((entry) => entry.path));
+      for (const signatures of [handledSignatures, observedSignatures]) for (const file of signatures.keys()) if (!currentPaths.has(file)) signatures.delete(file);
+      lastHandledSignature = afterPaths.flatMap((entry) => handledSignatures.get(entry.path).split("\n")).sort().join("\n");
     } finally {
       rebuildInFlight = false;
       if (pendingChange) {
@@ -132429,6 +132444,11 @@ function watchDevInputs(projectDir, onChange, clientDependencies = () => []) {
   };
   const observe = (watchedPath) => {
     const signature = readDevInputSignature([watchedPath]);
+    const initial = initialDependencySignatures.get(watchedPath.path);
+    if (initial !== void 0) {
+      if (!observedSignatures.has(watchedPath.path)) observedSignatures.set(watchedPath.path, initial);
+      if (!handledSignatures.has(watchedPath.path)) handledSignatures.set(watchedPath.path, initial);
+    }
     if (observedSignatures.get(watchedPath.path) === signature) return;
     observedSignatures.set(watchedPath.path, signature);
     schedule(watchedPath);

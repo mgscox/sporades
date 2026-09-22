@@ -1843,7 +1843,13 @@ async function startDevSession(options) {
     const restartPolicy = restartPolicyForMode("dev");
     const port = options.port ?? config.dev?.port ?? config.deploy?.port ?? 4000;
     let clientDependencies = new Set();
-    let bundle = await createBundle(options.projectDir, config, { devClientRefresh: true, deployFiles: false, onClientDependency: (file) => clientDependencies.add(file) });
+    const initialDependencySignatures = new Map();
+    const recordClientDependency = (file) => {
+        if (!clientDependencies.has(file))
+            initialDependencySignatures.set(file, readDevInputSignature([{ path: file }]));
+        clientDependencies.add(file);
+    };
+    let bundle = await createBundle(options.projectDir, config, { devClientRefresh: true, deployFiles: false, onClientDependency: recordClientDependency });
     const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config, { publishPorts: true });
     const capsuleServiceEnv = await startCapsuleServices(capsuleServices, options.projectDir, {
         wait: true,
@@ -2174,7 +2180,7 @@ async function startDevSession(options) {
             const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
             const nextCapsuleServices = await writeCapsuleServicesCompose(options.projectDir, nextConfig, { publishPorts: true });
             const nextClientDependencies = new Set();
-            rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false, devClientRefresh: true, deployFiles: false, onClientDependency: (file) => { nextClientDependencies.add(file); clientDependencies.add(file); } });
+            rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false, devClientRefresh: true, deployFiles: false, onClientDependency: (file) => { nextClientDependencies.add(file); recordClientDependency(file); } });
             const nextCapsuleServiceEnv = await startCapsuleServices(nextCapsuleServices, options.projectDir, {
                 wait: true,
                 emit: (data, error) => emitDevEvent(options, data, error),
@@ -2226,6 +2232,9 @@ async function startDevSession(options) {
             const previousBundle = bundle;
             bundle = rebuild;
             clientDependencies = nextClientDependencies;
+            for (const file of initialDependencySignatures.keys())
+                if (!clientDependencies.has(file))
+                    initialDependencySignatures.delete(file);
             rebuild.releasePublicTreeLease().catch((error) => {
                 reportDevPublicCleanupDegradation(options, runtime, url, actualPort, nextConfig, error);
             });
@@ -2307,7 +2316,7 @@ async function startDevSession(options) {
                 ...(details.diagnostics ? { diagnostics: details.diagnostics } : {}),
             });
         }
-    }, () => [...clientDependencies]);
+    }, () => [...clientDependencies], initialDependencySignatures);
     emitDevEvent(options, { event: "started", url, port: actualPort, security, restartPolicy: restartPolicyStatus("dev"), ...(bundle.clientDiagnostics.warnings?.length ? { warnings: bundle.clientDiagnostics.warnings } : {}) });
     let shutdownStarted = false;
     const shutdown = async () => {
@@ -2515,7 +2524,7 @@ async function importCapsuleDefinition(moduleSource) {
     const module = await import(`data:text/javascript;base64,${encodedModule}`);
     return module.default ?? null;
 }
-function watchDevInputs(projectDir, onChange, clientDependencies = () => []) {
+function watchDevInputs(projectDir, onChange, clientDependencies = () => [], initialDependencySignatures = new Map()) {
     const baseWatchedPaths = [
         { path: path.join(projectDir, "server"), affectsServerRuntime: true },
         { path: path.join(projectDir, "client"), affectsServerRuntime: false },
@@ -2550,16 +2559,28 @@ function watchDevInputs(projectDir, onChange, clientDependencies = () => []) {
         }
         const currentChange = pendingChange ?? { affectsServerRuntime: true };
         pendingChange = null;
-        const currentSignature = readDevInputSignature(watchedPaths());
+        const beforePaths = watchedPaths();
+        const beforeSignatures = new Map(beforePaths.map((entry) => [entry.path, readDevInputSignature([entry])]));
+        const currentSignature = [...beforeSignatures.values()].flatMap((signature) => signature.split("\n")).sort().join("\n");
         if (currentSignature === lastHandledSignature) {
             return;
         }
         rebuildInFlight = true;
         try {
             await onChange(currentChange);
-            lastHandledSignature = currentSignature;
-            for (const watchedPath of watchedPaths())
-                handledSignatures.set(watchedPath.path, readDevInputSignature([watchedPath]));
+            const afterPaths = watchedPaths();
+            for (const watchedPath of afterPaths) {
+                const signature = beforeSignatures.get(watchedPath.path) ?? initialDependencySignatures.get(watchedPath.path) ?? readDevInputSignature([watchedPath]);
+                handledSignatures.set(watchedPath.path, signature);
+                if (!observedSignatures.has(watchedPath.path))
+                    observedSignatures.set(watchedPath.path, signature);
+            }
+            const currentPaths = new Set(afterPaths.map((entry) => entry.path));
+            for (const signatures of [handledSignatures, observedSignatures])
+                for (const file of signatures.keys())
+                    if (!currentPaths.has(file))
+                        signatures.delete(file);
+            lastHandledSignature = afterPaths.flatMap((entry) => handledSignatures.get(entry.path).split("\n")).sort().join("\n");
         }
         finally {
             rebuildInFlight = false;
@@ -2571,6 +2592,13 @@ function watchDevInputs(projectDir, onChange, clientDependencies = () => []) {
     };
     const observe = (watchedPath) => {
         const signature = readDevInputSignature([watchedPath]);
+        const initial = initialDependencySignatures.get(watchedPath.path);
+        if (initial !== undefined) {
+            if (!observedSignatures.has(watchedPath.path))
+                observedSignatures.set(watchedPath.path, initial);
+            if (!handledSignatures.has(watchedPath.path))
+                handledSignatures.set(watchedPath.path, initial);
+        }
         if (observedSignatures.get(watchedPath.path) === signature)
             return;
         observedSignatures.set(watchedPath.path, signature);

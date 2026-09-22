@@ -213,8 +213,9 @@ function preserveRendererImportMetaUrl(
           with: args.with,
         });
         if (resolved.errors.length > 0) {
-          if (args.path.startsWith(".")) {
-            const candidate = path.resolve(args.resolveDir, args.path);
+          const failedPath = rendererLocalFilePath(args.path);
+          if (args.path.startsWith(".") || failedPath) {
+            const candidate = failedPath ?? path.resolve(args.resolveDir, args.path);
             // Retain missing code edges so creating a previously absent import can
             // recover a failed Dev rebuild without editing the renderer again.
             for (const suffix of ["", ".tsx", ".ts", ".jsx", ".js", ".json", "/index.ts", "/index.js"]) onDependency?.(`${candidate}${suffix}`);
@@ -225,7 +226,6 @@ function preserveRendererImportMetaUrl(
             // tree. Installation (including package subpaths) can then recover.
             for (const directory of localRequire.resolve.paths(args.path) ?? []) onDependency?.(path.join(directory, packageName));
           }
-          const failedPath = rendererLocalFilePath(args.path);
           const failedDirectory = failedPath ? rendererDependencyDirectory(failedPath) : undefined;
           if (failedPath) {
             const projectRootEqual = path.resolve(failedPath) === path.resolve(projectRoot);

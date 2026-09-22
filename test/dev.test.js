@@ -4247,6 +4247,26 @@ test("Dev watches prerender modules and transitive code while retaining the last
         await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
         assert.ok((await page()).includes(`Installed ${packageName}`));
       }
+      const absolute = path.join(dir, 'late-absolute.cjs');
+      await writeFile(path.join(projectDir, 'render/landing.ts'), `import copy from ${JSON.stringify(absolute)}; export default () => copy;`);
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+      await writeFile(absolute, 'module.exports = "Recovered absolute dependency";');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.match(await page(), /Recovered absolute dependency/);
+      const settle = () => new Promise((resolve) => setTimeout(resolve, 800));
+      const rebuildCount = () => events.events.filter((event) => event.data?.event === 'rebuild').length;
+      await settle();
+      await writeFile(path.join(projectDir, 'render/existing.cjs'), 'module.exports = "One rebuild";');
+      const beforeExisting = rebuildCount();
+      await writeFile(path.join(projectDir, 'render/landing.ts'), 'import copy from "./existing.cjs"; export default () => copy;');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      await settle();
+      assert.equal(rebuildCount(), beforeExisting + 1, 'discovering an unchanged dependency does not trigger another rebuild');
+      const beforeMissing = rebuildCount();
+      await writeFile(path.join(projectDir, 'render/landing.ts'), 'import copy from "./still-missing.cjs"; export default () => copy;');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+      await settle();
+      assert.equal(rebuildCount(), beforeMissing + 1, 'new missing candidates do not repeat the failed build');
     } catch (error) {
       error.message += `\nCaptured events: ${JSON.stringify(events.events)}`;
       throw error;
