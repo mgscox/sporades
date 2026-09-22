@@ -73373,6 +73373,7 @@ function scanClientPrerenderHtml(html) {
   const lowerHtml = foldAsciiCase(html);
   const rawTextElements = /* @__PURE__ */ new Set(["iframe", "noembed", "noframes", "noscript", "plaintext", "script", "style", "textarea", "title", "xmp"]);
   const markers = [];
+  const foreignElements = [];
   let bodyEnd;
   let problem;
   let reservedBoundary = false;
@@ -73380,6 +73381,15 @@ function scanClientPrerenderHtml(html) {
   while (cursor < html.length) {
     const tagStart = html.indexOf("<", cursor);
     if (tagStart === -1) break;
+    if (foreignElements.length > 0 && html.startsWith("<![CDATA[", tagStart)) {
+      const cdataEnd = html.indexOf("]]>", tagStart + 9);
+      if (cdataEnd === -1) {
+        problem = "unterminated foreign-content CDATA section";
+        break;
+      }
+      cursor = cdataEnd + 3;
+      continue;
+    }
     if (html.startsWith("<!--", tagStart)) {
       const commentEnd = findHtmlCommentEnd(html, tagStart);
       if (!commentEnd) {
@@ -73440,6 +73450,12 @@ function scanClientPrerenderHtml(html) {
       break;
     }
     if (!closing && name2 === "body" && bodyEnd === void 0) bodyEnd = tagEnd;
+    if (closing) {
+      const foreignIndex = foreignElements.lastIndexOf(name2);
+      if (foreignIndex !== -1) foreignElements.length = foreignIndex;
+    } else if ((name2 === "svg" || name2 === "math") && !/\/\s*>$/.test(html.slice(tagStart, tagEnd))) {
+      foreignElements.push(name2);
+    }
     cursor = tagEnd;
     if (!closing && rawTextElements.has(name2)) {
       if (name2 === "plaintext") break;
