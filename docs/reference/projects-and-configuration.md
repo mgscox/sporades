@@ -185,7 +185,7 @@ Ports follow this cascade: CLI flag, then `sporades.json`, then default.
 
 ### Static prerender configuration (Vite)
 
-`client.prerender` is an optional ordered array of `{ "name": "landing", "module": "render/landing.ts" }`
+`client.prerender` is an optional ordered array of `{ "name": "landing", "module": "client/render/landing.ts" }`
 entries. Names must be unique, start with a letter and contain 1–64 letters,
 digits, underscores or hyphens. Modules must be regular project-owned files at
 explicit project-relative paths, without absolute paths, backslashes, `.` or `..`

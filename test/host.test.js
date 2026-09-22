@@ -46,6 +46,13 @@ test("Hosted prerender warnings reach human and structured successful CLI output
     for (const json of [true, false]) {
       assertPrerenderWarnings(await runCli(["host", "push", "--host", "work", "--subname", "warnings", ...(json ? ["--json"] : [])], {cwd:projectDir, env}), json);
     }
+    const failedSsh = await installContractFakeSsh(path.join(dir, "failed-ssh"), 'process.stdout.write(JSON.stringify({ok:false,data:null,error:{message:"install rejected",hint:"retry install"}}) + "\\n");');
+    const failed = await runCli(["host", "push", "--host", "work", "--subname", "warnings", "--json"], {cwd:projectDir, env:{...env, ...failedSsh.env, PATH:`${failedSsh.fakeBinDir}${path.delimiter}${fakeScp.fakeBinDir}${path.delimiter}${process.env.PATH}`}});
+    assert.notEqual(failed.code, 0);
+    const envelope = JSON.parse(failed.stdout);
+    assert.equal(envelope.ok, false);
+    assert.equal(envelope.data, null, 'build warnings never replace failure data');
+    assert.match(envelope.error.message, /install rejected/);
   });
 });
 

@@ -3765,7 +3765,7 @@ async function manageHost(options: LooseRecord) {
         projectDir: options.projectDir,
       });
       const outputResult = redactHostPushSshState(result);
-      if (bundle.clientDiagnostics.warnings?.length) {
+      if (outputResult.ok && bundle.clientDiagnostics.warnings?.length) {
         outputResult.data = { ...outputResult.data, warnings: bundle.clientDiagnostics.warnings };
       }
 

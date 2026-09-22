@@ -80966,9 +80966,9 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
           addRendererDependencyRoot(rendererDependencyRoots, resolved.path);
         }
         let namespace = resolved.namespace;
-        if (!resolved.external && namespace === "file" && [".js", ".jsx"].includes(path3.extname(resolved.path))) {
+        if (!resolved.external && namespace === "file" && [".js", ".jsx", ".ts", ".tsx"].includes(path3.extname(resolved.path))) {
           const contents = await readFile2(resolved.path, "utf8");
-          if (await rendererModuleUsesCommonJs(resolved.path, contents, projectRoot, packageModeCache) && await rendererNeedsCommonJsBoundaryNamespace(resolved.path)) {
+          if (await rendererModuleUsesCommonJs(resolved.path, contents, projectRoot, packageModeCache) && ([".ts", ".tsx"].includes(path3.extname(resolved.path)) || await rendererNeedsCommonJsBoundaryNamespace(resolved.path))) {
             namespace = commonJsNamespace;
           }
         }
@@ -80990,7 +80990,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
         const loader = loaders.get(path3.extname(args.path));
         if (!loader) return void 0;
         const checksImports = contents.includes("import");
-        const requiresTransform = checksImports || preservesImportMetaUrl || commonJsModule && /\b(?:require|__dirname|__filename)\b/.test(contents);
+        const requiresTransform = checksImports || preservesImportMetaUrl || commonJsModule && /\b(?:require|module|__dirname|__filename)\b/.test(contents);
         if (!requiresTransform) {
           if (args.namespace !== commonJsNamespace) return void 0;
           return {
@@ -81080,6 +81080,11 @@ function rendererRawLocalFileUrlPath(specifier) {
 async function rendererModuleUsesCommonJs(modulePath, contents, projectRoot, packageModeCache) {
   const extension = path3.extname(modulePath);
   if (extension === ".cjs" || extension === ".cts") return true;
+  if (extension === ".ts" || extension === ".tsx") {
+    const { transform } = await import("esbuild");
+    const javascript = await transform(contents, { loader: extension === ".tsx" ? "tsx" : "ts", jsx: "preserve", tsconfigRaw: { compilerOptions: { verbatimModuleSyntax: true } } });
+    return defaultRendererJavaScriptUsesCommonJs(javascript.code);
+  }
   if (extension !== ".js" && extension !== ".jsx") return false;
   const mode = await nearestRendererPackageMode(path3.dirname(modulePath), projectRoot, packageModeCache);
   if (mode === "module") return false;
@@ -81202,13 +81207,24 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
   while (contents.includes(writableRequireName)) writableRequireName += "_";
   const writableRequire = writtenWrapperNames.has("require");
   const handledRequireCalls = /* @__PURE__ */ new WeakSet();
+  const handledModuleRequireCalls = /* @__PURE__ */ new WeakSet();
   const emptyTargets = /* @__PURE__ */ new WeakSet();
+  let needsModuleRequireMethod = false;
   visitRendererSyntax(syntax, (node, parent, key) => {
     const scope = scopes.get(node) ?? rootScope;
+    if (node.type === "Identifier" && node.name === "module" && !rendererScopeBinds(scope, "module") && isRendererIdentifierReference(node, parent, key, emptyTargets, emptyTargets)) needsModuleRequireMethod = true;
+    if (node.type === "MemberExpression" && !handledModuleRequireCalls.has(node) && isRendererSyntaxNode(node.object) && node.object.type === "Identifier" && node.object.name === "module" && !rendererScopeBinds(scope, "module") && isRendererSyntaxNode(node.property) && (!node.computed && node.property.name === "require" || node.computed && node.property.value === "require")) {
+      replacements.push({ start: node.object.start, end: node.object.end, value: `${helperName}Module()` });
+    }
     if (node.type === "CallExpression") {
       const callee = node.callee;
       const args = node.arguments;
       const first = args?.[0];
+      if (!node.optional && callee?.type === "MemberExpression" && isRendererSyntaxNode(callee.object) && callee.object.type === "Identifier" && callee.object.name === "module" && !rendererScopeBinds(scope, "module") && isRendererSyntaxNode(callee.property) && (!callee.computed && callee.property.name === "require" || callee.computed && callee.property.value === "require") && first && isStaticRendererRequireSpecifier(first)) {
+        handledModuleRequireCalls.add(callee);
+        const literal3 = contents.slice(first.start, first.end);
+        replacements.push({ start: callee.start, end: callee.end, value: `((...args) => ${helperName}Module().require === ${helperName} ? require(${literal3}) : ${helperName}Module().require(...args))` });
+      }
       if (callee?.type === "Identifier" && callee.name === "require" && !rendererScopeBinds(scope, "require") && first) {
         handledRequireCalls.add(callee);
         if (isStaticRendererRequireSpecifier(first)) {
@@ -81232,14 +81248,16 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
     }
   });
   const writableLocations = ["__dirname", "__filename"].filter((name2) => writtenWrapperNames.has(name2));
-  if (replacements.length === 0 && writableLocations.length === 0) return { contents, changed: false };
-  const needsModuleRequire = replacements.some((replacement) => replacement.value.includes(helperName));
+  if (replacements.length === 0 && writableLocations.length === 0 && !needsModuleRequireMethod) return { contents, changed: false };
+  const needsModuleRequire = needsModuleRequireMethod || replacements.some((replacement) => replacement.value.includes(helperName));
   if (needsModuleRequire || writableLocations.length > 0) {
     const insertionOffset = rendererHelperInsertionOffset(syntax, contents);
     replacements.push({
       start: insertionOffset,
       end: insertionOffset,
       value: (needsModuleRequire ? `const ${helperName} = require("node:module").createRequire(${JSON.stringify(moduleUrl)});
+` : "") + (needsModuleRequireMethod ? `const ${helperName}Module = () => module;
+${helperName}Module().require = ${helperName};
 ` : "") + (writableRequire && needsModuleRequire ? `var ${writableRequireName} = ${helperName};
 ` : "") + writableLocations.map((name2) => `var ${name2} = ${JSON.stringify(name2 === "__dirname" ? path3.dirname(modulePath) : modulePath)};
 `).join("")
@@ -81412,9 +81430,14 @@ function forEachRendererChild(node, visit) {
 function isRendererSyntaxNode(value) {
   return Boolean(value && typeof value === "object" && typeof value.type === "string");
 }
+function validateClientPrerenderSourceHtml(html) {
+  if (scanClientPrerenderHtml(html).reservedBoundary) {
+    throw prerenderError("Client index.html contains a reserved prerender boundary comment.", "Remove Sporades private boundary comments from index.html and HTML plugins; the Bundle pipeline supplies them.");
+  }
+}
 function placeClientPrerenderFragments(html, fragments) {
   const warnings = [];
-  if (fragments.length === 0) return { html, warnings };
+  validateClientPrerenderSourceHtml(html);
   for (const fragment of fragments) {
     if (scanClientPrerenderHtml(fragment.html).reservedBoundary) {
       throw prerenderError(`Prerender fragment "${fragment.name}" contains a reserved prerender boundary comment.`, "Remove Sporades private boundary comments from renderer output; the Bundle pipeline supplies them.");
@@ -81427,8 +81450,11 @@ function placeClientPrerenderFragments(html, fragments) {
     return `<!-- sporades:prerender-boundary-start ${fragment.name} -->${fragment.html}<!-- sporades:prerender-boundary-end ${fragment.name} -->`;
   };
   const placement = scanClientPrerenderHtml(html);
-  if (placement.reservedBoundary) {
-    throw prerenderError("Client index.html contains a reserved prerender boundary comment.", "Remove Sporades private boundary comments from index.html and HTML plugins; the Bundle pipeline supplies them.");
+  if (fragments.length === 0) {
+    for (const name2 of new Set(placement.markers.flatMap((marker) => marker.name ? [marker.name] : []))) {
+      warnings.push({ code: "PRERENDER_UNKNOWN_MARKER", fragment: name2, message: `Unknown prerender marker "${name2}" remains a comment in index.html.` });
+    }
+    return { html, warnings };
   }
   if (placement.problem) {
     throw prerenderError(
@@ -81910,6 +81936,7 @@ async function buildClientToolchain(options) {
   return buildEsbuild(options);
 }
 function validateClientToolchainInput(options) {
+  validateClientPrerenderSourceHtml(options.indexHtml);
   if (options.toolchain !== "vite" && options.prerender && options.prerender.length > 0) {
     throw clientToolchainError(
       "Client prerender fragments require the Vite client toolchain.",
@@ -82044,7 +82071,7 @@ async function buildVite(options) {
       plugins: [
         ...frameworkPlugins,
         sporadesViteClientPlugin(options.devRefresh === true),
-        ...options.prerender?.length ? [sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender, prerenderWarnings, options.onDependency)] : [],
+        sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender ?? [], prerenderWarnings, options.prerender !== void 0, options.onDependency),
         sporadesViteBuildInvariants(canonicalIndexHtmlPath, options.frameworkConfig)
       ],
       build: {
@@ -82093,7 +82120,7 @@ async function buildVite(options) {
     throw viteBuildError(error, [options.projectDir, projectRoot], options.frameworkConfig.framework);
   }
 }
-function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragments, warnings, onDependency) {
+function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragments, warnings, diagnoseMarkers, onDependency) {
   return {
     name: "sporades-prerender",
     enforce: "post",
@@ -82105,7 +82132,7 @@ function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragments, warni
           rendered.push({ name: fragment.name, html: await renderClientPrerenderFragment(projectRoot, fragment, projectRoots, onDependency) });
         }
         const placed = placeClientPrerenderFragments(html, rendered);
-        warnings.push(...placed.warnings);
+        if (diagnoseMarkers) warnings.push(...placed.warnings);
         return placed.html;
       }
     }
@@ -84299,7 +84326,7 @@ async function createBundle(projectDir, config, options = {}) {
     toolchain,
     indexHtml,
     indexHtmlPath: paths.indexHtml,
-    prerender,
+    prerender: config.client?.prerender === void 0 ? void 0 : prerender,
     onDependency: options.onClientDependency,
     clientSource,
     clientSourcePath: paths.clientEntry,
@@ -133166,7 +133193,7 @@ async function manageHost(options) {
         projectDir: options.projectDir
       });
       const outputResult = redactHostPushSshState(result);
-      if (bundle.clientDiagnostics.warnings?.length) {
+      if (outputResult.ok && bundle.clientDiagnostics.warnings?.length) {
         outputResult.data = { ...outputResult.data, warnings: bundle.clientDiagnostics.warnings };
       }
       if (options.json) {

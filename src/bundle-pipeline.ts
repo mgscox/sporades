@@ -121,7 +121,7 @@ export async function createBundle(
     toolchain,
     indexHtml,
     indexHtmlPath: paths.indexHtml,
-    prerender,
+    prerender: config.client?.prerender === undefined ? undefined : prerender,
     onDependency: options.onClientDependency,
     clientSource,
     clientSourcePath: paths.clientEntry,
