@@ -60725,6 +60725,13 @@ function preserveRendererImportMetaUrl(transform, projectTsconfigRaw) {
 function placeClientPrerenderFragment(html, fragment, rendered) {
   const bounded = `<!-- sporades:prerender-boundary-start ${fragment.name} -->${rendered}<!-- sporades:prerender-boundary-end ${fragment.name} -->`;
   const placement = scanClientPrerenderHtml(html);
+  if (placement.problem) {
+    throw prerenderError(
+      `Client prerender placement could not safely scan index.html: ${placement.problem}.`,
+      "Fix the malformed HTML construct in index.html, then retry.",
+      { fragment: fragment.name }
+    );
+  }
   const namedMarkers = placement.markers.filter((marker) => marker.name === fragment.name);
   if (namedMarkers.length > 0) {
     let replaced = "";
@@ -60750,22 +60757,29 @@ function scanClientPrerenderHtml(html) {
   const rawTextElements = /* @__PURE__ */ new Set(["iframe", "noembed", "noframes", "plaintext", "script", "style", "textarea", "title", "xmp"]);
   const markers = [];
   let bodyEnd;
+  let problem;
   let cursor = 0;
   while (cursor < html.length) {
     const tagStart = html.indexOf("<", cursor);
     if (tagStart === -1) break;
     if (html.startsWith("<!--", tagStart)) {
-      const commentEnd = html.indexOf("-->", tagStart + 4);
-      if (commentEnd !== -1) {
-        const marker = /^\s*sporades:prerender(?:\s+([A-Za-z][A-Za-z0-9_-]{0,63}))?\s*$/.exec(html.slice(tagStart + 4, commentEnd));
-        if (marker) markers.push({ start: tagStart, end: commentEnd + 3, name: marker[1] });
+      const commentEnd = findHtmlCommentEnd(html, tagStart);
+      if (!commentEnd) {
+        problem = "unterminated HTML comment";
+        break;
       }
-      cursor = commentEnd === -1 ? html.length : commentEnd + 3;
+      const marker = /^\s*sporades:prerender(?:\s+([A-Za-z][A-Za-z0-9_-]{0,63}))?\s*$/.exec(html.slice(tagStart + 4, commentEnd.contentEnd));
+      if (marker) markers.push({ start: tagStart, end: commentEnd.end, name: marker[1] });
+      cursor = commentEnd.end;
       continue;
     }
     if (html.startsWith("<![CDATA[", tagStart)) {
       const cdataEnd = html.indexOf("]]>", tagStart + 9);
-      cursor = cdataEnd === -1 ? html.length : cdataEnd + 3;
+      if (cdataEnd === -1) {
+        problem = "unterminated CDATA section";
+        break;
+      }
+      cursor = cdataEnd + 3;
       continue;
     }
     let nameStart = tagStart + 1;
@@ -60785,10 +60799,27 @@ function scanClientPrerenderHtml(html) {
     cursor = tagEnd;
     if (!closing && rawTextElements.has(name2)) {
       if (name2 === "plaintext") break;
-      cursor = findRawTextElementEnd(html, lowerHtml, cursor, name2);
+      const rawTextEnd = findRawTextElementEnd(html, lowerHtml, cursor, name2);
+      if (rawTextEnd === void 0) {
+        problem = `unterminated raw text element: ${name2}`;
+        break;
+      }
+      cursor = rawTextEnd;
     }
   }
-  return { bodyEnd, markers };
+  return { bodyEnd, markers, problem };
+}
+function findHtmlCommentEnd(html, commentStart) {
+  const contentStart = commentStart + 4;
+  if (html[contentStart] === ">") return { contentEnd: contentStart, end: contentStart + 1 };
+  if (html.startsWith("->", contentStart)) return { contentEnd: contentStart, end: contentStart + 2 };
+  const standardEnd = html.indexOf("-->", contentStart);
+  const bangEnd = html.indexOf("--!>", contentStart);
+  if (standardEnd === -1 && bangEnd === -1) return void 0;
+  if (bangEnd !== -1 && (standardEnd === -1 || bangEnd < standardEnd)) {
+    return { contentEnd: bangEnd, end: bangEnd + 4 };
+  }
+  return { contentEnd: standardEnd, end: standardEnd + 3 };
 }
 function foldAsciiCase(value) {
   return value.replace(/[A-Z]/g, (character) => String.fromCharCode(character.charCodeAt(0) + 32));
@@ -60811,14 +60842,14 @@ function findRawTextElementEnd(html, lowerHtml, cursor, name2) {
   const closingPrefix = `</${name2}`;
   while (cursor < html.length) {
     const closingStart = lowerHtml.indexOf(closingPrefix, cursor);
-    if (closingStart === -1) return html.length;
+    if (closingStart === -1) return void 0;
     const boundary = html[closingStart + closingPrefix.length];
     if (boundary === ">" || boundary === "/" || /\s/.test(boundary ?? "")) {
-      return findHtmlTagEnd(html, closingStart + closingPrefix.length) ?? html.length;
+      return findHtmlTagEnd(html, closingStart + closingPrefix.length);
     }
     cursor = closingStart + closingPrefix.length;
   }
-  return html.length;
+  return void 0;
 }
 function isProjectRelativeModulePath(value) {
   if (!value || value.includes("\\") || path3.posix.isAbsolute(value)) return false;
