@@ -647,6 +647,101 @@ module.exports = () => \`<main>\${plainCall()}|\${adjacent}|\${resolved.endsWith
   });
 });
 
+test("default-package CommonJS JavaScript helpers keep module-local wrapper semantics", async () => {
+  await withTempDir(async (projectDir) => {
+    const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
+    await writeMinimalViteCapsule(projectDir, sourceHtml);
+    await writeFile(path.join(projectDir, "package.json"), '{}\n');
+    const nestedDir = path.join(projectDir, "renderer", "nested");
+    await mkdir(nestedDir, { recursive: true });
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'import render from "./renderer/nested/helper.js";\nexport default render;\n',
+    );
+    await writeFile(
+      path.join(nestedDir, "helper.js"),
+      `const path = require("node:path");
+const target = process.argv.length > 0 ? "./adjacent.cjs" : "./missing.cjs";
+module.exports = () => \`<main>\${path.basename(__dirname)}|\${path.basename(__filename)}|\${require(target)}</main>\`;
+`,
+    );
+    await writeFile(path.join(nestedDir, "adjacent.cjs"), 'module.exports = "default-package CommonJS";\n');
+
+    const bundle = await createBundle(projectDir, { name: "default-js-prerender", client: structuredClone(viteConfig) }, { publishLegacy: false });
+    try {
+      assert.match(
+        await readFile(bundle.staticFiles.indexHtml, "utf8"),
+        /<main>nested\|helper\.js\|default-package CommonJS<\/main>/,
+      );
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
+test("nested CommonJS package boundaries specialize JSX helpers", async () => {
+  await withTempDir(async (projectDir) => {
+    const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
+    await writeMinimalViteCapsule(projectDir, sourceHtml);
+    await writeFile(path.join(projectDir, "tsconfig.json"), '{"compilerOptions":{"jsx":"react","jsxFactory":"h"}}\n');
+    const nestedDir = path.join(projectDir, "renderer", "common", "nested");
+    await mkdir(nestedDir, { recursive: true });
+    await writeFile(path.join(projectDir, "renderer", "common", "package.json"), '{"type":"commonjs"}\n');
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'import render from "./renderer/common/nested/helper.jsx";\nexport default render;\n',
+    );
+    await writeFile(
+      path.join(nestedDir, "helper.jsx"),
+      `const path = require("node:path");
+const target = process.argv.length > 0 ? "./adjacent.cjs" : "./missing.cjs";
+function h(tag, _props, ...children) { return { tag, children }; }
+const view = <strong>nested JSX CommonJS</strong>;
+module.exports = () => \`<main>\${path.basename(__dirname)}|\${path.basename(__filename)}|\${view.tag}:\${view.children.join("")}|\${require(target)}</main>\`;
+`,
+    );
+    await writeFile(path.join(nestedDir, "adjacent.cjs"), 'module.exports = "nested package boundary";\n');
+
+    const bundle = await createBundle(projectDir, { name: "nested-jsx-prerender", client: structuredClone(viteConfig) }, { publishLegacy: false });
+    try {
+      assert.match(
+        await readFile(bundle.staticFiles.indexHtml, "utf8"),
+        /<main>nested\|helper\.jsx\|strong:nested JSX CommonJS\|nested package boundary<\/main>/,
+      );
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
+test("module-package JavaScript helpers retain ESM import.meta.url semantics", async () => {
+  await withTempDir(async (projectDir) => {
+    const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
+    await writeMinimalViteCapsule(projectDir, sourceHtml);
+    const nestedDir = path.join(projectDir, "renderer", "nested");
+    await mkdir(nestedDir, { recursive: true });
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'import render from "./renderer/nested/helper.js";\nexport default render;\n',
+    );
+    await writeFile(
+      path.join(nestedDir, "helper.js"),
+      'import { readFile } from "node:fs/promises";\nexport default async () => `<main>${(await readFile(new URL("./content.txt", import.meta.url), "utf8")).trim()}</main>`;\n',
+    );
+    await writeFile(path.join(nestedDir, "content.txt"), "ESM JavaScript package boundary\n");
+
+    const bundle = await createBundle(projectDir, { name: "esm-js-prerender", client: structuredClone(viteConfig) }, { publishLegacy: false });
+    try {
+      assert.match(await readFile(bundle.staticFiles.indexHtml, "utf8"), /<main>ESM JavaScript package boundary<\/main>/);
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
 test("a nested TypeScript CommonJS prerender helper keeps per-module paths and computed require", async () => {
   await withTempDir(async (projectDir) => {
     const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
