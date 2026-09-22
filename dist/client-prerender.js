@@ -163,8 +163,10 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
                 const localPath = rendererLocalFilePath(args.path)
                     ?? (args.path.startsWith(".") ? path.resolve(args.resolveDir || projectRoot, args.path) : undefined);
                 // Record absent and malformed boundaries before resolution can fail.
-                if (localPath)
+                if (localPath) {
+                    recordRendererLocalResolutionCandidates(localPath, onDependency);
                     await recordRendererLocalPackageBoundaries(localPath, projectRoot, onDependency);
+                }
                 const resolved = await pluginBuild.resolve(args.path, {
                     importer: args.importer,
                     kind: args.kind,
@@ -175,14 +177,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
                 });
                 if (resolved.errors.length > 0) {
                     const failedPath = rendererLocalFilePath(args.path);
-                    if (args.path.startsWith(".") || failedPath) {
-                        const candidate = failedPath ?? path.resolve(args.resolveDir, args.path);
-                        // Retain missing code edges so creating a previously absent import can
-                        // recover a failed Dev rebuild without editing the renderer again.
-                        for (const suffix of ["", ".tsx", ".ts", ".jsx", ".js", ".json", "/index.ts", "/index.js"])
-                            onDependency?.(`${candidate}${suffix}`);
-                    }
-                    else if (!path.isAbsolute(args.path) && !/^(?:[A-Za-z][A-Za-z0-9+.-]*:|#)/.test(args.path)) {
+                    if (!localPath && !path.isAbsolute(args.path) && !/^(?:[A-Za-z][A-Za-z0-9+.-]*:|#)/.test(args.path)) {
                         const packageName = args.path.split("/").slice(0, args.path.startsWith("@") ? 2 : 1).join("/");
                         const localRequire = createRequire(path.join(args.resolveDir || projectRoot, "__sporades_prerender__.cjs"));
                         // Watch only the unresolved package roots, not every node_modules
@@ -513,6 +508,18 @@ async function recordRendererPackageImport(specifier, directory, onDependency) {
         return;
     }
 }
+function recordRendererLocalResolutionCandidates(candidate, onDependency) {
+    if (!onDependency)
+        return;
+    // Observe potential winners even when resolution succeeds: a new .ts file
+    // can supersede an existing .js import without changing the selected file.
+    for (const suffix of ["", ".tsx", ".ts", ".jsx", ".js", ".css", ".json", "/package.json", "/index.tsx", "/index.ts", "/index.jsx", "/index.js", "/index.css", "/index.json"])
+        onDependency(candidate + suffix);
+    const extension = path.extname(candidate);
+    const substitutes = extension === ".js" || extension === ".jsx" ? [".ts", ".tsx"] : extension === ".mjs" ? [".mts"] : extension === ".cjs" ? [".cts"] : [];
+    for (const substitute of substitutes)
+        onDependency(candidate.slice(0, -extension.length) + substitute);
+}
 function createRendererTsconfigObserver(onDependency) {
     const matchers = new Map();
     return (specifier, directory) => {
@@ -545,8 +552,7 @@ function createRendererTsconfigObserver(onDependency) {
         if (!specifier || isBuiltin(specifier) || specifier.startsWith(".") || path.isAbsolute(specifier) || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(specifier))
             return;
         for (const candidate of matchers.get(directory)?.(specifier) ?? []) {
-            for (const suffix of ["", ".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs", ".json", "/index.ts", "/index.tsx", "/index.js", "/index.jsx"])
-                onDependency(candidate + suffix);
+            recordRendererLocalResolutionCandidates(candidate, onDependency);
         }
     };
 }
@@ -1347,6 +1353,10 @@ Module._resolveFilename = function(specifier, parent) {
   const packageRequest = typeof specifier === "string" && !isBuiltin(specifier) && !specifier.startsWith(".") && !isAbsolute(specifier) && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(specifier) ? {specifier, filename:parent?.filename || workerData.modulePath} : null;
   if (packageRequest) packageImports.push(packageRequest);
   if (typeof specifier === "string" && (isAbsolute(specifier) || /^file:/i.test(specifier))) runtimeSpecifiers.add(specifier);
+  if (typeof specifier === "string" && (specifier.startsWith(".") || isAbsolute(specifier))) {
+    const candidate = resolve(dirname(parent?.filename || workerData.modulePath), specifier);
+    for (const suffix of ["", ".js", ".json", ".node", "/package.json", "/index.js", "/index.json", "/index.node"]) dependencies.add(candidate + suffix);
+  }
   try {
     const filename = originalResolveFilename.apply(this, arguments);
     if (packageRequest) packageRequest.resolvedPath = filename;

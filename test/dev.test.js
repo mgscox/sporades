@@ -4348,6 +4348,26 @@ test("Dev watches prerender modules and transitive code while retaining the last
       await writeFile(absolute, 'module.exports = "Recovered absolute dependency";');
       await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
       assert.match(await page(), /Recovered absolute dependency/);
+      const resolutionDir = path.join(projectDir, 'render/resolution');
+      await mkdir(resolutionDir);
+      await writeFile(path.join(resolutionDir, 'package.json'), '{"type":"commonjs"}');
+      for (const computed of [false, true]) {
+        const stem = computed ? 'resolution-computed' : 'resolution-static';
+        const initial = path.join(resolutionDir, `${stem}.${computed ? 'json' : 'js'}`);
+        const preferred = path.join(resolutionDir, `${stem}.${computed ? 'js' : 'ts'}`);
+        await writeFile(initial, computed ? '"Initial resolution"' : 'module.exports = "Initial resolution";');
+        await writeFile(path.join(projectDir, 'render/landing.ts'), computed
+          ? `export default () => {const target = "./resolution/${stem}"; return require(target);};`
+          : `import copy from "./resolution/${stem}"; export default () => copy;`);
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Initial resolution/);
+        await writeFile(preferred, computed ? 'module.exports = "Preferred resolution";' : 'export default "Preferred resolution";');
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Preferred resolution/);
+        await rm(preferred);
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Initial resolution/);
+      }
       const settle = () => new Promise((resolve) => setTimeout(resolve, 800));
       const rebuildCount = () => events.events.filter((event) => event.data?.event === 'rebuild').length;
       await settle();

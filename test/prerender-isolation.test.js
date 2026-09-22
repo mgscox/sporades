@@ -240,6 +240,27 @@ test('CommonJS dynamic with scope fails explicitly before wrapper specialization
   } finally { await rm(root, {recursive:true, force:true}); }
 });
 
+test('successful local edges retain higher-priority static and computed resolution candidates', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-resolution-candidates-')));
+  try {
+    await writeFile(path.join(root, 'entry.mjs'), 'import copy from "./copy"; export default () => copy;');
+    await writeFile(path.join(root, 'copy.js'), 'module.exports = "JavaScript copy";');
+    const dependencies = new Set();
+    const render = () => renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'}, [], (file) => dependencies.add(file));
+    assert.equal(await render(), 'JavaScript copy');
+    assert.ok(dependencies.has(path.join(root, 'copy.ts')), 'higher-priority TypeScript file is observed before it exists');
+    await writeFile(path.join(root, 'copy.ts'), 'export default "TypeScript copy";');
+    assert.equal(await render(), 'TypeScript copy');
+    await writeFile(path.join(root, 'entry.mjs'), 'export default () => { const target = "./dynamic"; return require(target); };');
+    await writeFile(path.join(root, 'dynamic.json'), '"JSON copy"');
+    dependencies.clear();
+    assert.equal(await render(), 'JSON copy');
+    assert.ok(dependencies.has(path.join(root, 'dynamic.js')), 'higher-priority computed CommonJS target is observed');
+    await writeFile(path.join(root, 'dynamic.js'), 'module.exports = "Computed JavaScript copy";');
+    assert.equal(await render(), 'Computed JavaScript copy');
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
 test('tsconfig observer retains extended config and missing mapped module inputs', async () => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-tsconfig-inputs-')));
   try {

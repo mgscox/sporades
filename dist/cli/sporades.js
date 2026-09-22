@@ -2612,7 +2612,7 @@ function watchDevInputs(projectDir, onChange, clientDependencies = () => [], ini
             watchers.push(watch(watchedPath.path, { recursive: true }, () => observe(watchedPath)));
         }
         catch (error) {
-            if (errorDetails(error).code !== "ENOENT") {
+            if (errorDetails(error).code !== "ENOENT" && errorDetails(error).code !== "ENOTDIR") {
                 throw error;
             }
         }
