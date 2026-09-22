@@ -1004,8 +1004,37 @@ test("hoisted CommonJS runtime failures redact dependency paths outside the Caps
       renderClientPrerenderFragment(canonicalProject, { name: "landing", module: "render-landing.mjs" }),
       (error) => {
         assert.match(error.message, /client prerender renderer for landing failed/i);
+        assert.match(error.message, /dependency path <project>\/index\.js/i);
         const surfaced = JSON.stringify({ message: error.message, hint: error.hint, diagnostics: error.diagnostics, stack: error.stack });
         assert.equal(surfaced.includes(canonicalDependency), false, "leaked hoisted CommonJS runtime path");
+        return true;
+      },
+    );
+  });
+});
+
+test("nested project runtime diagnostics preserve project-relative context", async () => {
+  await withTempDir(async (projectDir) => {
+    await writeFile(path.join(projectDir, "package.json"), '{"type":"module"}\n');
+    const helperDir = path.join(projectDir, "renderer", "invalid");
+    await mkdir(helperDir, { recursive: true });
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'import render from "./renderer/invalid/helper.cjs";\nexport default render;\n',
+    );
+    await writeFile(
+      path.join(helperDir, "helper.cjs"),
+      'const { pathToFileURL } = require("node:url");\nmodule.exports = () => { throw new Error("file " + __filename + " url " + pathToFileURL(__filename).href); };\n',
+    );
+    const canonicalProject = await realpath(projectDir);
+
+    await assert.rejects(
+      renderClientPrerenderFragment(canonicalProject, { name: "landing", module: "render-landing.mjs" }),
+      (error) => {
+        assert.match(
+          error.message,
+          /file <project>\/renderer\/invalid\/helper\.cjs url <project>\/renderer\/invalid\/helper\.cjs/i,
+        );
         return true;
       },
     );
