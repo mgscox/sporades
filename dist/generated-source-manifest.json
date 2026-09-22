@@ -15,6 +15,7 @@
       "src/auth-admission.ts",
       "src/auth-runtime.ts",
       "src/base-image.ts",
+      "src/build-diagnostics.ts",
       "src/bundle-pipeline.ts",
       "src/capsule-services.ts",
       "src/cli/access-key-operator-envelope.ts",
@@ -39,6 +40,7 @@
       "src/cli/sporades-host-helper.ts",
       "src/cli/sporades.ts",
       "src/client-capabilities.ts",
+      "src/client-prerender.ts",
       "src/client-toolchain.ts",
       "src/client.ts",
       "src/database-runtime.ts",
@@ -101,7 +103,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "f8d873319315c53445f36140b48fffb1b8c06f171b57fbd6e8125623555cdc77"
+    "digest": "20f9c13d2539a53798b6799a0ef40c075456fcf97af0165d4de0d4d5aa47c5fc"
   },
   "outputs": {
     "files": [
@@ -131,6 +133,10 @@
       "dist/base-image.d.ts.map",
       "dist/base-image.js",
       "dist/base-image.js.map",
+      "dist/build-diagnostics.d.ts",
+      "dist/build-diagnostics.d.ts.map",
+      "dist/build-diagnostics.js",
+      "dist/build-diagnostics.js.map",
       "dist/bundle-pipeline.d.ts",
       "dist/bundle-pipeline.d.ts.map",
       "dist/bundle-pipeline.js",
@@ -227,6 +233,10 @@
       "dist/client-capabilities.d.ts.map",
       "dist/client-capabilities.js",
       "dist/client-capabilities.js.map",
+      "dist/client-prerender.d.ts",
+      "dist/client-prerender.d.ts.map",
+      "dist/client-prerender.js",
+      "dist/client-prerender.js.map",
       "dist/client-toolchain.d.ts",
       "dist/client-toolchain.d.ts.map",
       "dist/client-toolchain.js",
@@ -444,6 +454,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "6ae11b600d0e4e24f185aa45e831b92a268e4a8f17eb765ffba3ee03a3144d8e"
+    "digest": "cfc731fa69b61f275398bb335897caa358912db123692b87e51bc2bff396d43c"
   }
 }

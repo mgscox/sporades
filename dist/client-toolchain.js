@@ -4,6 +4,8 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { createClientRuntimeSource } from "./templates/client-runtime-template.js";
 import { clientCapabilityError, clientFrameworkCapability, supportsClientCapability } from "./client-capabilities.js";
+import { placeClientPrerenderFragment, renderClientPrerenderFragment } from "./client-prerender.js";
+import { canonicalBuildDiagnosticRoots, redactBuildProjectRoots } from "./build-diagnostics.js";
 export async function buildClientToolchain(options) {
     validateClientToolchainInput(options);
     if (options.toolchain === "vite")
@@ -11,6 +13,9 @@ export async function buildClientToolchain(options) {
     return buildEsbuild(options);
 }
 export function validateClientToolchainInput(options) {
+    if (options.toolchain !== "vite" && options.prerender && options.prerender.length > 0) {
+        throw clientToolchainError("Client prerender fragments require the Vite client toolchain.", "Set `client.toolchain` to `vite`, or remove `client.prerender` from sporades.json.");
+    }
     if (options.toolchain !== "vite")
         return;
     const frameworkLabel = clientFrameworkCapability(options.frameworkConfig.framework)?.label ?? String(options.frameworkConfig.framework);
@@ -134,6 +139,7 @@ async function buildVite(options) {
             plugins: [
                 ...frameworkPlugins,
                 sporadesViteClientPlugin(options.devRefresh === true),
+                ...options.prerender?.map((fragment) => sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], fragment)) ?? [],
                 sporadesViteBuildInvariants(canonicalIndexHtmlPath, options.frameworkConfig),
             ],
             build: {
@@ -186,6 +192,18 @@ async function buildVite(options) {
             throw error;
         throw viteBuildError(error, [options.projectDir, projectRoot], options.frameworkConfig.framework);
     }
+}
+function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragment) {
+    return {
+        name: `sporades-prerender-${fragment.name}`,
+        enforce: "post",
+        transformIndexHtml: {
+            order: "post",
+            async handler(html) {
+                return placeClientPrerenderFragment(html, fragment, await renderClientPrerenderFragment(projectRoot, fragment, projectRoots));
+            },
+        },
+    };
 }
 const VITE_CONFIG_NAMES = [
     "vite.config.js", "vite.config.mjs", "vite.config.ts", "vite.config.cjs", "vite.config.mts", "vite.config.cts",
@@ -478,7 +496,7 @@ function viteBuildError(error, projectRoots, framework) {
     });
 }
 function safeRelativeDiagnosticPath(projectRoots, fileName) {
-    for (const projectRoot of canonicalDiagnosticRoots(projectRoots)) {
+    for (const projectRoot of canonicalBuildDiagnosticRoots(projectRoots)) {
         const relative = path.relative(projectRoot, fileName).split(path.sep).join("/");
         if (relative && !relative.startsWith("../") && relative !== "..")
             return relative.slice(0, 240);
@@ -493,51 +511,6 @@ function boundedBuildMessage(error, projectRoots = []) {
         : typeof details.message === "string" ? details.message : "unknown error";
     message = redactBuildProjectRoots(message, projectRoots);
     return message.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 1200);
-}
-function redactBuildProjectRoots(message, projectRoots) {
-    const absoluteRoots = new Set();
-    const relativeRoots = new Set();
-    for (const projectRoot of projectRoots) {
-        const resolved = path.resolve(projectRoot);
-        for (const root of [resolved, path.isAbsolute(projectRoot) ? projectRoot : ""]) {
-            if (!root)
-                continue;
-            for (const normalizedRoot of diagnosticNormalizationForms(root)) {
-                absoluteRoots.add(normalizedRoot);
-                absoluteRoots.add(normalizedRoot.replaceAll("\\", "/"));
-                absoluteRoots.add(normalizedRoot.replaceAll("/", "\\"));
-            }
-        }
-        const relative = path.relative(process.cwd(), resolved);
-        if (!relative || relative === ".")
-            continue;
-        for (const normalizedRoot of diagnosticNormalizationForms(relative)) {
-            for (const root of [normalizedRoot, normalizedRoot.replaceAll("\\", "/"), normalizedRoot.replaceAll("/", "\\")]) {
-                relativeRoots.add(root);
-                relativeRoots.add(`./${root}`);
-                relativeRoots.add(`.\\${root}`);
-            }
-        }
-    }
-    let redacted = message;
-    for (const root of [...absoluteRoots].filter(Boolean).sort((left, right) => right.length - left.length)) {
-        redacted = redacted.split(root).join("<project>");
-    }
-    for (const root of [...relativeRoots].filter(Boolean).sort((left, right) => right.length - left.length)) {
-        const escaped = root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        redacted = redacted.replace(new RegExp(`(^|[^\\p{L}\\p{M}\\p{N}\\p{Pc}.\\/\\\\-])${escaped}(?=[/\\\\])`, "gu"), "$1<project>");
-    }
-    return redacted;
-}
-function diagnosticNormalizationForms(value) {
-    return [...new Set([value, value.normalize("NFC"), value.normalize("NFD")])];
-}
-function canonicalDiagnosticRoots(projectRoots) {
-    return [...new Set(projectRoots.flatMap((projectRoot) => {
-            const resolved = path.resolve(projectRoot);
-            const relative = path.relative(process.cwd(), resolved);
-            return [projectRoot, resolved, relative, relative.split(path.sep).join("/")];
-        }).filter(Boolean))].sort((left, right) => right.length - left.length);
 }
 function clientToolchainError(message, hint, diagnostics) {
     const error = new Error(message);
