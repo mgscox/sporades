@@ -11,8 +11,9 @@ a second HTML lifecycle. Sporades deliberately does not provide request-time SSR
 ## Decision
 
 The Bundle pipeline's Vite adapter owns ordered, explicit, project-relative
-render modules and a single placement transform over Vite's fully composed HTML,
-including deferred project-plugin tag descriptors. Source HTML
+render modules and a single post-project HTML-hook placement transform. Vite
+composes project tag descriptors before this transform, so later output-derived
+assets observe the completed HTML. Final validation does not mutate it. Source HTML
 remains author-owned and byte-for-byte unchanged. Named/bare comment markers or
 body fallback place trusted HTML verbatim, bounded by private comments without
 wrappers. Duplicate/unused/unknown placements warn; invalid configuration and

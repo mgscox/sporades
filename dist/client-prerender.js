@@ -454,7 +454,7 @@ async function recordRendererPackageImport(specifier, directory, onDependency) {
                                 onDependency(candidate + extension);
                         }
                     }
-                    else if (!path.isAbsolute(expanded) && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(expanded)) {
+                    else if (expanded && !expanded.startsWith(".") && (!expanded.startsWith("@") || expanded.split("/")[1]) && !path.isAbsolute(expanded) && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(expanded)) {
                         const packageName = expanded.split("/").slice(0, expanded.startsWith("@") ? 2 : 1).join("/");
                         const localRequire = createRequire(path.join(directory, "__sporades_prerender__.cjs"));
                         for (const base of localRequire.resolve.paths(expanded) ?? [])
