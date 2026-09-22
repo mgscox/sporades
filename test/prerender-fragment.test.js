@@ -222,6 +222,65 @@ test("a prerender module can use a local CommonJS dependency that requires a Nod
   });
 });
 
+test("CommonJS prerender helpers keep static TypeScript sibling requires in the esbuild graph", async () => {
+  await withTempDir(async (projectDir) => {
+    const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
+    await writeMinimalViteCapsule(projectDir, sourceHtml);
+    const nestedDir = path.join(projectDir, "renderer", "nested");
+    await mkdir(nestedDir, { recursive: true });
+    await writeFile(path.join(projectDir, "tsconfig.json"), '{"compilerOptions":{"jsx":"react","jsxFactory":"h"}}\n');
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'import render from "./renderer/nested/helper.cjs";\nexport default render;\n',
+    );
+    await writeFile(
+      path.join(nestedDir, "helper.cjs"),
+      'const view = require("./view.tsx");\nmodule.exports = () => `<main>${view.content}</main>`;\n',
+    );
+    await writeFile(
+      path.join(nestedDir, "view.tsx"),
+      'function h(tag: string, _props: unknown, ...children: string[]) { return { tag, children }; }\nconst view = <strong>static TSX sibling</strong>;\nexport const content = `${view.tag}:${view.children.join("")}`;\n',
+    );
+
+    const bundle = await createBundle(projectDir, { name: "cjs-static-tsx-prerender", client: structuredClone(viteConfig) }, { publishLegacy: false });
+    try {
+      assert.match(await readFile(bundle.staticFiles.indexHtml, "utf8"), /<main>strong:static TSX sibling<\/main>/);
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
+test("TypeScript CommonJS prerender helpers keep static TypeScript sibling requires in the esbuild graph", async () => {
+  await withTempDir(async (projectDir) => {
+    const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
+    await writeMinimalViteCapsule(projectDir, sourceHtml);
+    const nestedDir = path.join(projectDir, "renderer", "nested");
+    await mkdir(nestedDir, { recursive: true });
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'import render from "./renderer/nested/helper.cts";\nexport default render;\n',
+    );
+    await writeFile(
+      path.join(nestedDir, "helper.cts"),
+      'const card: { content: string } = require("./card.ts");\nmodule.exports = () => `<main>${card.content}</main>`;\n',
+    );
+    await writeFile(
+      path.join(nestedDir, "card.ts"),
+      'enum CardState { Ready = "static TS sibling" }\nexport const content = CardState.Ready;\n',
+    );
+
+    const bundle = await createBundle(projectDir, { name: "cts-static-ts-prerender", client: structuredClone(viteConfig) }, { publishLegacy: false });
+    try {
+      assert.match(await readFile(bundle.staticFiles.indexHtml, "utf8"), /<main>static TS sibling<\/main>/);
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
 test("a nested CommonJS prerender helper keeps per-module paths and computed require", async () => {
   await withTempDir(async (projectDir) => {
     const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
@@ -238,13 +297,13 @@ test("a nested CommonJS prerender helper keeps per-module paths and computed req
 const target = process.argv.length > 0 ? "./adjacent.cjs" : "./missing.cjs";
 module.exports = () => {
   const adjacent = require(target);
-  return \`<main>\${path.basename(__dirname)}|\${path.basename(__filename)}|\${path.basename(adjacent.filename)}|\${adjacent.content}</main>\`;
+  return \`<main>\${path.basename(__dirname)}|\${path.basename(__filename)}|\${path.basename(adjacent.filename)}|\${adjacent.cached}|\${adjacent.content}</main>\`;
 };
 `,
     );
     await writeFile(
       path.join(nestedDir, "adjacent.cjs"),
-      'const fs = require("node:fs");\nconst path = require("node:path");\nmodule.exports = { filename: __filename, content: fs.readFileSync(path.join(__dirname, "content.txt"), "utf8").trim() };\n',
+      'const fs = require("node:fs");\nconst path = require("node:path");\nmodule.exports = { filename: __filename, cached: Boolean(require.cache[__filename]), content: fs.readFileSync(path.join(__dirname, "content.txt"), "utf8").trim() };\n',
     );
     await writeFile(path.join(nestedDir, "content.txt"), "adjacent CommonJS content\n");
 
@@ -252,10 +311,11 @@ module.exports = () => {
     try {
       assert.match(
         await readFile(bundle.staticFiles.indexHtml, "utf8"),
-        /<main>nested\|helper\.cjs\|adjacent\.cjs\|adjacent CommonJS content<\/main>/,
+        /<main>nested\|helper\.cjs\|adjacent\.cjs\|true\|adjacent CommonJS content<\/main>/,
       );
       const cache = createRequire(import.meta.url).cache;
-      assert.equal(Object.keys(cache).some((file) => file.startsWith(projectDir)), false, "renderer dependencies remained in the CommonJS cache");
+      const canonicalProjectDir = await realpath(projectDir);
+      assert.equal(Object.keys(cache).some((file) => file.startsWith(canonicalProjectDir)), false, "renderer dependencies remained in the CommonJS cache");
     } finally {
       await bundle.releasePublicTreeLease();
       await discardPublicTree(bundle.staticFiles.publicTree);
@@ -279,13 +339,13 @@ test("a nested TypeScript CommonJS prerender helper keeps per-module paths and c
 const target: string = process.argv.length > 0 ? "./adjacent.cjs" : "./missing.cjs";
 module.exports = () => {
   const adjacent = require(target);
-  return \`<main>\${path.basename(__dirname)}|\${path.basename(__filename)}|\${path.basename(adjacent.filename)}|\${adjacent.content}</main>\`;
+  return \`<main>\${path.basename(__dirname)}|\${path.basename(__filename)}|\${path.basename(adjacent.filename)}|\${adjacent.cached}|\${adjacent.content}</main>\`;
 };
 `,
     );
     await writeFile(
       path.join(nestedDir, "adjacent.cjs"),
-      'const fs = require("node:fs");\nconst path = require("node:path");\nmodule.exports = { filename: __filename, content: fs.readFileSync(path.join(__dirname, "content.txt"), "utf8").trim() };\n',
+      'const fs = require("node:fs");\nconst path = require("node:path");\nmodule.exports = { filename: __filename, cached: Boolean(require.cache[__filename]), content: fs.readFileSync(path.join(__dirname, "content.txt"), "utf8").trim() };\n',
     );
     await writeFile(path.join(nestedDir, "content.txt"), "adjacent CTS content\n");
 
@@ -293,14 +353,73 @@ module.exports = () => {
     try {
       assert.match(
         await readFile(bundle.staticFiles.indexHtml, "utf8"),
-        /<main>nested\|helper\.cts\|adjacent\.cjs\|adjacent CTS content<\/main>/,
+        /<main>nested\|helper\.cts\|adjacent\.cjs\|true\|adjacent CTS content<\/main>/,
       );
       const cache = createRequire(import.meta.url).cache;
-      assert.equal(Object.keys(cache).some((file) => file.startsWith(projectDir)), false, "renderer dependencies remained in the CommonJS cache");
+      const canonicalProjectDir = await realpath(projectDir);
+      assert.equal(Object.keys(cache).some((file) => file.startsWith(canonicalProjectDir)), false, "renderer dependencies remained in the CommonJS cache");
     } finally {
       await bundle.releasePublicTreeLease();
       await discardPublicTree(bundle.staticFiles.publicTree);
     }
+  });
+});
+
+test("prerender execution removes new project and hoisted CommonJS cache entries after failure or success", async () => {
+  await withTempDir(async (tempRoot) => {
+    const projectDir = path.join(tempRoot, "capsule");
+    const nestedDir = path.join(projectDir, "renderer", "nested");
+    const hoistedDir = path.join(tempRoot, "node_modules", "hoisted-renderer");
+    const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
+    await writeMinimalViteCapsule(projectDir, sourceHtml);
+    await mkdir(nestedDir, { recursive: true });
+    await mkdir(hoistedDir, { recursive: true });
+    await writeFile(path.join(hoistedDir, "package.json"), '{"name":"hoisted-renderer","main":"index.cjs"}\n');
+    await writeFile(
+      path.join(hoistedDir, "index.cjs"),
+      'module.exports = { cachedDuringLoad: Boolean(require.cache[__filename]) };\n',
+    );
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'import render from "./renderer/nested/helper.cjs";\nexport default render;\n',
+    );
+    await writeFile(
+      path.join(nestedDir, "helper.cjs"),
+      `const target = process.argv.length > 0 ? "hoisted-renderer" : "missing-renderer";
+module.exports = () => {
+  const dependency = require(target);
+  return \`<main>hoisted cache: \${dependency.cachedDuringLoad}</main>\`;
+};
+`,
+    );
+
+    const bundle = await createBundle(projectDir, { name: "hoisted-cache-prerender", client: structuredClone(viteConfig) }, { publishLegacy: false });
+    try {
+      assert.match(await readFile(bundle.staticFiles.indexHtml, "utf8"), /<main>hoisted cache: true<\/main>/);
+      const canonicalHoistedDir = await realpath(hoistedDir);
+      assert.equal(Object.keys(createRequire(import.meta.url).cache).some((file) => file.startsWith(canonicalHoistedDir)), false);
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+
+    await writeFile(
+      path.join(nestedDir, "helper.cjs"),
+      `const target = process.argv.length > 0 ? "./failure.cjs" : "./missing.cjs";
+module.exports = () => {
+  require(target);
+  throw new Error("expected renderer failure");
+};
+`,
+    );
+    await writeFile(path.join(nestedDir, "failure.cjs"), 'module.exports = { cachedDuringLoad: Boolean(require.cache[__filename]) };\n');
+
+    await assert.rejects(
+      createBundle(projectDir, { name: "failed-cache-prerender", client: structuredClone(viteConfig) }, { publishLegacy: false }),
+      /expected renderer failure/,
+    );
+    const canonicalProjectDir = await realpath(projectDir);
+    assert.equal(Object.keys(createRequire(import.meta.url).cache).some((file) => file.startsWith(canonicalProjectDir)), false);
   });
 });
 
