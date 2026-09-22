@@ -1,4 +1,5 @@
 export declare const auth: import("../src/types/client.js").AuthApi;
+export declare const prerender: import("../src/types/client.js").PrerenderApi;
 export declare const accessKeys: any;
 export declare const files: any;
 export declare const preferences: any;

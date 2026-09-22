@@ -3,6 +3,7 @@ import { createClientRuntimeSource } from "./templates/client-runtime-template.j
 const runtime = await import(`data:text/javascript,${encodeURIComponent(createClientRuntimeSource())}`);
 
 export const auth: import("../src/types/client.js").AuthApi = runtime.auth;
+export const prerender: import("../src/types/client.js").PrerenderApi = runtime.prerender;
 export const accessKeys = runtime.accessKeys;
 export const files = runtime.files;
 export const preferences = runtime.preferences;

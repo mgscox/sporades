@@ -2,6 +2,53 @@ export function createClientRuntimeSource(options: { devRefresh?: boolean } = {}
   return `
 const websocketPath = "/__sporades/ws";
 
+// Static fragments have no transport or automatic lifecycle. The Capsule decides
+// when its interactive content is ready to replace them.
+export const prerender = Object.freeze({
+  discover() {
+    if (typeof document === "undefined") return Object.freeze([]);
+    const walker = document.createTreeWalker(document, 128);
+    const stack = [];
+    const boundaries = [];
+    let sequence = 0;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const marker = /^sporades:prerender-boundary-(start|end) ([A-Za-z][A-Za-z0-9_-]{0,63})$/.exec(node.data.trim());
+      if (!marker) continue;
+      if (marker[1] === "start") {
+        stack.push({ name: marker[2], start: node, sequence: sequence++ });
+        continue;
+      }
+      const opening = stack.pop();
+      if (!opening || opening.name !== marker[2] || opening.start.parentNode !== node.parentNode) continue;
+      const start = opening.start;
+      const end = node;
+      const handle = Object.freeze({
+        name: opening.name,
+        dismiss() {
+          const parent = start.parentNode;
+          if (!parent || parent !== end.parentNode || !start.isConnected || !end.isConnected) return;
+          // Validate the complete interval before mutation. A stale or moved end
+          // must never let cleanup consume unrelated following content.
+          const nodes = [];
+          for (let current = start; current; current = current.nextSibling) {
+            nodes.push(current);
+            if (current === end) break;
+          }
+          if (nodes[nodes.length - 1] !== end) return;
+          for (const current of nodes) if (current.parentNode === parent) parent.removeChild(current);
+        },
+      });
+      boundaries.push({ sequence: opening.sequence, handle });
+    }
+    return Object.freeze(boundaries.sort((left, right) => left.sequence - right.sequence).map((entry) => entry.handle));
+  },
+  dismiss(name) {
+    for (const handle of prerender.discover()) {
+      if (name === undefined || handle.name === name) handle.dismiss();
+    }
+  },
+});
+
 export function isAuthenticated() {
   return connect().isAuthenticated();
 }
