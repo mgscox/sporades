@@ -28,6 +28,9 @@ cannot retain the owning module's wrapper bindings through bundling. Use explici
 code instead. Ordinary method calls such as `object.eval(...)` are unaffected.
 Renderer-only CSS, image or other asset output is unsupported;
 assets used by static HTML must already belong to the ordinary Vite client graph.
+After placement in `transformIndexHtml`, later Vite output hooks must leave each
+Sporades-owned boundary pair and its enclosed HTML unchanged. Final validation
+rejects replacement ranges; derive final fragment content in the renderer.
 
 Fragment HTML must be valid for its marker's document context. The build checks
 the parsed DOM without rewriting the emitted HTML: content moved outside its

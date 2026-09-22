@@ -822,9 +822,14 @@ export function validateClientPrerenderSourceHtml(html: string) {
   }
 }
 
-export function validateClientPrerenderOutputHtml(html: string, placements: number) {
-  if (placements === 0) validateClientPrerenderSourceHtml(html);
-  else validatePrerenderDomBoundaries(html, placements);
+export function validateClientPrerenderOutputHtml(html: string, expectedBoundaries: readonly string[]) {
+  if (expectedBoundaries.length === 0) validateClientPrerenderSourceHtml(html);
+  else {
+    const actual = validatePrerenderDomBoundaries(html, expectedBoundaries.length);
+    if (JSON.stringify(actual) !== JSON.stringify(expectedBoundaries)) {
+      throw prerenderError("Final Vite HTML replaced a reserved prerender boundary or its content.", "Keep Sporades-owned fragment ranges unchanged after transformIndexHtml; render final fragment content through its renderer.");
+    }
+  }
 }
 
 function hasReservedPrerenderBoundary(html: string) {
@@ -857,7 +862,7 @@ export function placeClientPrerenderFragments(html: string, fragments: readonly 
     for (const name of new Set(placement.markers.flatMap((marker) => marker.name ? [marker.name] : []))) {
       warnings.push({ code: "PRERENDER_UNKNOWN_MARKER", fragment: name, message: `Unknown prerender marker "${name}" remains a comment in index.html.` });
     }
-    return { html, warnings, placements: 0 };
+    return { html, warnings, placements: 0, boundaries: [] as string[] };
   }
   if (placement.problem) {
     throw prerenderError(
@@ -898,12 +903,12 @@ export function placeClientPrerenderFragments(html: string, fragments: readonly 
     else if (count > 1) warnings.push({ code: "PRERENDER_DUPLICATE_PLACEMENT", fragment: name, message: `Prerender fragment "${name}" is placed ${count} times in index.html.` });
   }
   const placements = [...counts.values()].reduce((sum, count) => sum + count, 0);
-  validatePrerenderDomBoundaries(replaced, placements);
+  const boundaries = validatePrerenderDomBoundaries(replaced, placements);
   if (prerenderDocumentRootAttributes(html) !== prerenderDocumentRootAttributes(replaced)) {
     throw prerenderError("Client prerender fragments mutate author-owned document-root attributes.", "Return fragment content rather than html or body elements; browsers merge their attributes into the existing document roots.");
   }
   validatePrerenderAuthorDom(html, replaced, new Set(placement.markers.filter((marker) => marker.name === undefined || byName.has(marker.name)).map((marker) => marker.start)));
-  return { html: replaced, warnings, placements };
+  return { html: replaced, warnings, placements, boundaries };
 }
 
 function validatePrerenderAuthorDom(source: string, output: string, consumedMarkers: ReadonlySet<number>) {
@@ -951,7 +956,7 @@ function validatePrerenderAuthorDom(source: string, output: string, consumedMark
 }
 
 function validatePrerenderDomBoundaries(html: string, expectedPlacements: number) {
-  if (expectedPlacements === 0) return;
+  if (expectedPlacements === 0) return [];
   type LocatedNode = { start: number; end: number; order: number; after: number; tagName?: string };
   const nodes: LocatedNode[] = [];
   const implicitNodes: Array<{order:number; after:number; tagName:string}> = [];
@@ -986,10 +991,12 @@ function validatePrerenderDomBoundaries(html: string, expectedPlacements: number
   );
   if (boundaries.length !== expectedPlacements * 2) throw invalid();
   boundaries.sort((left, right) => left.start - right.start);
+  const ownedRanges: string[] = [];
   for (let index = 0; index < boundaries.length; index += 2) {
     const start = boundaries[index]!;
     const end = boundaries[index + 1]!;
     if (start.kind !== "start" || end.kind !== "end" || start.name !== end.name || start.order >= end.order) throw invalid();
+    ownedRanges.push(html.slice(start.start, end.end));
     for (const node of nodes) {
       if (node.order === start.order || node.order === end.order) continue;
       const fromFragment = node.start < end.start && node.end > start.end;
@@ -1010,6 +1017,7 @@ function validatePrerenderDomBoundaries(html: string, expectedPlacements: number
       if (!authorRequiresWrapper) throw invalid();
     }
   }
+  return ownedRanges;
 }
 
 function prerenderDocumentRootAttributes(html: string) {

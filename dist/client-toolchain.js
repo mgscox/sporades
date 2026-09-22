@@ -120,7 +120,7 @@ async function buildVite(options) {
             frameworkPlugins.push(await loadProjectInfernoToolchain(projectRoot));
         }
         const prerenderWarnings = [];
-        const prerenderState = { placements: 0 };
+        const prerenderState = { boundaries: [] };
         const result = await build({
             root: projectRoot,
             base: "/",
@@ -186,7 +186,7 @@ async function buildVite(options) {
             throw new Error("Vite returned no transformed index.html output.");
         const source = files.get("index.html");
         // Validate only: output-dependent hooks have already derived their artifacts.
-        validateClientPrerenderOutputHtml(typeof source === "string" ? source : new TextDecoder().decode(source), prerenderState.placements);
+        validateClientPrerenderOutputHtml(typeof source === "string" ? source : new TextDecoder().decode(source), prerenderState.boundaries);
         return {
             publicFiles: [...files].map(([filePath, contents]) => ({ path: filePath, contents })),
             legacyClientBundle: null,
@@ -211,7 +211,7 @@ function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragments, warni
                     rendered.push({ name: fragment.name, html: await renderClientPrerenderFragment(projectRoot, fragment, projectRoots) });
                 }
                 const placed = placeClientPrerenderFragments(html, rendered);
-                state.placements = placed.placements;
+                state.boundaries = placed.boundaries;
                 if (diagnoseMarkers)
                     warnings.push(...placed.warnings);
                 return placed.html;

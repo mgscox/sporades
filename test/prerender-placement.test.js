@@ -85,6 +85,10 @@ export default async () => {
     const digestedHtml = await readFile(digested.staticFiles.indexHtml, 'utf8');
     assert.ok(digestedHtml.includes('<footer>second once</footer>'));
     assert.equal(await readFile(path.join(path.dirname(digested.staticFiles.indexHtml), 'index-digest.txt'), 'utf8'), createHash('sha256').update(digestedHtml).digest('hex'));
+    for (const replacementName of ['forged', 'second']) {
+      await writeFile(path.join(root, 'vite.config.mjs'), `export default { plugins: [{ name: 'replace-boundaries', generateBundle: { order:'post', handler(_options, bundle) { bundle['index.html'].source = bundle['index.html'].source.replace(/<!-- sporades:prerender-boundary-start second -->[\\s\\S]*?<!-- sporades:prerender-boundary-end second -->/, ${JSON.stringify(`<!-- sporades:prerender-boundary-start ${replacementName} --><p>Author content</p><!-- sporades:prerender-boundary-end ${replacementName} -->`)}); } } }] };`);
+      await assert.rejects(createBundle(root, config), /replaced a reserved prerender boundary or its content/i);
+    }
     await writeFile(path.join(root, 'vite.config.mjs'), 'export default {};');
     // Explicit empty configuration still diagnoses stale names; omission is opt-out.
     await writeFile(path.join(root, 'index.html'), '<html><head></head><body><!-- sporades:prerender stale --><script type="module" src="/client/index.tsx"></script></body></html>');
