@@ -161,7 +161,7 @@ export function placeClientPrerenderFragment(html: string, fragment: ClientPrere
 }
 
 function findOpeningBodyEnd(html: string): number | undefined {
-  const lowerHtml = html.toLowerCase();
+  const lowerHtml = foldAsciiCase(html);
   const rawTextElements = new Set(["iframe", "noembed", "noframes", "plaintext", "script", "style", "textarea", "title", "xmp"]);
   let cursor = 0;
   while (cursor < html.length) {
@@ -200,6 +200,10 @@ function findOpeningBodyEnd(html: string): number | undefined {
     }
   }
   return undefined;
+}
+
+function foldAsciiCase(value: string) {
+  return value.replace(/[A-Z]/g, (character) => String.fromCharCode(character.charCodeAt(0) + 32));
 }
 
 function findHtmlTagEnd(html: string, cursor: number): number | undefined {

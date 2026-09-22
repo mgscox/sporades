@@ -60687,7 +60687,7 @@ function placeClientPrerenderFragment(html, fragment, rendered) {
   return `${html.slice(0, bodyEnd)}${bounded}${html.slice(bodyEnd)}`;
 }
 function findOpeningBodyEnd(html) {
-  const lowerHtml = html.toLowerCase();
+  const lowerHtml = foldAsciiCase(html);
   const rawTextElements = /* @__PURE__ */ new Set(["iframe", "noembed", "noframes", "plaintext", "script", "style", "textarea", "title", "xmp"]);
   let cursor = 0;
   while (cursor < html.length) {
@@ -60724,6 +60724,9 @@ function findOpeningBodyEnd(html) {
     }
   }
   return void 0;
+}
+function foldAsciiCase(value) {
+  return value.replace(/[A-Z]/g, (character) => String.fromCharCode(character.charCodeAt(0) + 32));
 }
 function findHtmlTagEnd(html, cursor) {
   let quote;
