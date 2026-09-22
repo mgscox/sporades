@@ -118,6 +118,39 @@ test("a prerender module can use a local CommonJS dependency that requires a Nod
   });
 });
 
+test("a transitive ESM prerender module retains its own import.meta.url", async () => {
+  await withTempDir(async (projectDir) => {
+    const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
+    await writeMinimalViteCapsule(projectDir, sourceHtml);
+    const rendererDir = path.join(projectDir, "renderer");
+    const helperDir = path.join(rendererDir, "helper");
+    await mkdir(helperDir, { recursive: true });
+    await writeFile(
+      path.join(rendererDir, "render-landing.mjs"),
+      'import { renderAdjacent } from "./helper/render-adjacent.mjs";\nexport default renderAdjacent;\n',
+    );
+    await writeFile(
+      path.join(helperDir, "render-adjacent.mjs"),
+      'import { readFile } from "node:fs/promises";\nexport async function renderAdjacent() {\n  const content = await readFile(new URL("./content.txt", import.meta.url), "utf8");\n  return `<main>${content.trim()}</main>`;\n}\n',
+    );
+    await writeFile(path.join(helperDir, "content.txt"), "transitive import.meta.url works\n");
+    const config = structuredClone(viteConfig);
+    config.prerender[0].module = "renderer/render-landing.mjs";
+
+    const bundle = await createBundle(projectDir, { name: "esm-import-meta-prerender", client: config }, { publishLegacy: false });
+    try {
+      const emittedHtml = await readFile(bundle.staticFiles.indexHtml, "utf8");
+      assert.match(emittedHtml, /<main>transitive import\.meta\.url works<\/main>/);
+      assert.equal(await readFile(path.join(projectDir, "index.html"), "utf8"), sourceHtml);
+      assert.equal((await publicFiles(bundle.staticFiles.publicDir)).some((file) => /renderer|content\.txt/.test(file)), false);
+      await assert.rejects(access(path.join(projectDir, ".sporades-prerender-output")), (error) => error.code === "ENOENT");
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
 test("runtime renderer dependency failures redact Capsule path aliases", async () => {
   await withTempDir(async (dir) => {
     const projectDir = path.join(dir, "caf\u00e9-capsule");
