@@ -1224,6 +1224,32 @@ test("failed imports equal to the project root redact without parent traversal",
   });
 });
 
+test("bare project-root file URL aliases redact before diagnostic quotes", async () => {
+  await withTempDir(async (tempRoot) => {
+    const projectDir = path.join(tempRoot, "URL Capsule");
+    await mkdir(projectDir);
+    await writeFile(path.join(projectDir, "package.json"), '{"type":"module"}\n');
+    const canonicalProject = await realpath(projectDir);
+    const rawRootUrl = pathToFileURL(canonicalProject).href
+      .replace(/^file:/, "FiLe:")
+      .replace("URL", "%55%52%4c");
+    for (const specifier of [rawRootUrl, `${rawRootUrl}/`]) {
+      await writeFile(
+        path.join(projectDir, "render-landing.mjs"),
+        `import ${JSON.stringify(specifier)};\nexport default () => "<main>unreachable</main>";\n`,
+      );
+      await assert.rejects(
+        renderClientPrerenderFragment(canonicalProject, { name: "landing", module: "render-landing.mjs" }),
+        (error) => {
+          assert.match(error.message, /Could not resolve "<project>"/i);
+          assert.doesNotMatch(error.message, /%55%52%4c%20Capsule/i);
+          return true;
+        },
+      );
+    }
+  });
+});
+
 test("hoisted renderer build failures redact dependency paths outside the Capsule", async () => {
   await withTempDir(async (tempRoot) => {
     const projectDir = path.join(tempRoot, "capsule");
