@@ -903,19 +903,22 @@ export function placeClientPrerenderFragments(html: string, fragments: readonly 
 
 function validatePrerenderDomBoundaries(html: string, expectedPlacements: number) {
   if (expectedPlacements === 0) return;
-  type LocatedNode = { start: number; end: number; order: number; after: number };
+  type LocatedNode = { start: number; end: number; order: number; after: number; tagName?: string };
   const nodes: LocatedNode[] = [];
+  const implicitNodes: Array<{order:number; after:number; tagName:string}> = [];
   const boundaries: Array<LocatedNode & { kind: string; name: string }> = [];
   let order = 0;
   const visit = (node: DefaultTreeAdapterTypes.Node) => {
     const location = node.sourceCodeLocation;
     const position = order++;
     let located: LocatedNode | undefined;
+    const implicit = !location && "tagName" in node ? {order:position, after:order, tagName:node.tagName} : undefined;
+    if (implicit) implicitNodes.push(implicit);
     if (location) {
       // Element ranges include descendants; only the opener identifies where
       // that node came from. Text ranges also reveal merged foster-parented text.
       const token = "startTag" in location && location.startTag ? location.startTag : location;
-      located = { start: token.startOffset, end: token.endOffset, order: position, after: order };
+      located = { start: token.startOffset, end: token.endOffset, order: position, after: order, ...("tagName" in node ? {tagName:node.tagName} : {}) };
       nodes.push(located);
       if (node.nodeName === "#comment" && "data" in node) {
         const marker = /^sporades:prerender-boundary-(start|end) ([A-Za-z][A-Za-z0-9_-]{0,63})$/.exec(node.data.trim());
@@ -925,6 +928,7 @@ function validatePrerenderDomBoundaries(html: string, expectedPlacements: number
     // Like document TreeWalker, do not descend into inert template.content.
     if ("childNodes" in node) for (const child of node.childNodes) visit(child);
     if (located) located.after = order;
+    if (implicit) implicit.after = order;
   };
   visit(parseHtml(html, { sourceCodeLocationInfo: true, scriptingEnabled: true }));
   const invalid = () => prerenderError(
@@ -944,6 +948,17 @@ function validatePrerenderDomBoundaries(html: string, expectedPlacements: number
       // A fragment-created ancestor containing the end comment would survive
       // Range.deleteContents() as a partially contained (possibly empty) node.
       if (fromFragment !== withinBoundary || (fromFragment && node.after > end.order)) throw invalid();
+      if (!fromFragment && node.order < start.order && node.after > start.order && node.after <= end.order) throw invalid();
+    }
+    for (const node of implicitNodes) {
+      const containsStart = node.order < start.order && start.order < node.after;
+      const containsEnd = node.order < end.order && end.order < node.after;
+      if (containsStart === containsEnd) continue;
+      // A partially selected implied wrapper survives Range deletion. Keep it
+      // only when author rows/columns independently require that same wrapper.
+      const authorChild = node.tagName === "tbody" ? "tr" : node.tagName === "colgroup" ? "col" : undefined;
+      const authorRequiresWrapper = authorChild && nodes.some((child) => child.tagName === authorChild && child.order > node.order && child.order < node.after && !(child.start < end.start && child.end > start.end));
+      if (!authorRequiresWrapper) throw invalid();
     }
   }
 }

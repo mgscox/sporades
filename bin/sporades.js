@@ -81507,15 +81507,18 @@ function placeClientPrerenderFragments(html, fragments) {
 function validatePrerenderDomBoundaries(html, expectedPlacements) {
   if (expectedPlacements === 0) return;
   const nodes = [];
+  const implicitNodes = [];
   const boundaries = [];
   let order = 0;
   const visit = (node) => {
     const location = node.sourceCodeLocation;
     const position = order++;
     let located;
+    const implicit = !location && "tagName" in node ? { order: position, after: order, tagName: node.tagName } : void 0;
+    if (implicit) implicitNodes.push(implicit);
     if (location) {
       const token = "startTag" in location && location.startTag ? location.startTag : location;
-      located = { start: token.startOffset, end: token.endOffset, order: position, after: order };
+      located = { start: token.startOffset, end: token.endOffset, order: position, after: order, ..."tagName" in node ? { tagName: node.tagName } : {} };
       nodes.push(located);
       if (node.nodeName === "#comment" && "data" in node) {
         const marker = /^sporades:prerender-boundary-(start|end) ([A-Za-z][A-Za-z0-9_-]{0,63})$/.exec(node.data.trim());
@@ -81524,6 +81527,7 @@ function validatePrerenderDomBoundaries(html, expectedPlacements) {
     }
     if ("childNodes" in node) for (const child of node.childNodes) visit(child);
     if (located) located.after = order;
+    if (implicit) implicit.after = order;
   };
   visit(parse4(html, { sourceCodeLocationInfo: true, scriptingEnabled: true }));
   const invalid = () => prerenderError(
@@ -81541,6 +81545,15 @@ function validatePrerenderDomBoundaries(html, expectedPlacements) {
       const fromFragment = node.start < end.start && node.end > start.end;
       const withinBoundary = node.order > start.order && node.order < end.order;
       if (fromFragment !== withinBoundary || fromFragment && node.after > end.order) throw invalid();
+      if (!fromFragment && node.order < start.order && node.after > start.order && node.after <= end.order) throw invalid();
+    }
+    for (const node of implicitNodes) {
+      const containsStart = node.order < start.order && start.order < node.after;
+      const containsEnd = node.order < end.order && end.order < node.after;
+      if (containsStart === containsEnd) continue;
+      const authorChild = node.tagName === "tbody" ? "tr" : node.tagName === "colgroup" ? "col" : void 0;
+      const authorRequiresWrapper = authorChild && nodes.some((child) => child.tagName === authorChild && child.order > node.order && child.order < node.after && !(child.start < end.start && child.end > start.end));
+      if (!authorRequiresWrapper) throw invalid();
     }
   }
 }

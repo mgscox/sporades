@@ -34,3 +34,6 @@ leave a fragment ancestor spanning its end boundary, which also fails validation
 Fragments also cannot add attributes to the author-owned html or body roots
 through parser-ignored document tags. Reserved boundaries are checked using the
 HTML parser, including bogus declarations that become browser comments.
+Fragments cannot close an author-owned ancestor or leave behind a fragment-only
+implicit wrapper after dismissal. Put sole static table rows in an author-owned
+`tbody`; implicit `tbody` is supported when author rows independently require it.
