@@ -207,7 +207,8 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
                 const loader = loaders.get(path.extname(args.path));
                 if (!loader)
                     return undefined;
-                const requiresTransform = preservesImportMetaUrl || (commonJsModule && /\b(?:require|__dirname|__filename)\b/.test(contents));
+                const checksImports = contents.includes("import");
+                const requiresTransform = checksImports || preservesImportMetaUrl || (commonJsModule && /\b(?:require|__dirname|__filename)\b/.test(contents));
                 if (!requiresTransform) {
                     if (args.namespace !== commonJsNamespace)
                         return undefined;
@@ -237,6 +238,14 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
                 const javascript = outputs.filter((output) => output.path.endsWith(".js"));
                 if (outputs.length !== 1 || javascript.length !== 1 || !javascript[0]?.text) {
                     throw new Error("the import.meta.url transform produced unsupported output");
+                }
+                if (checksImports) {
+                    const syntax = RendererSyntaxParser.parse(javascript[0].text, { ecmaVersion: "latest", sourceType: commonJsModule ? "script" : "module", allowReturnOutsideFunction: commonJsModule });
+                    visitRendererSyntax(syntax, (node) => {
+                        if (node.type === "ImportExpression" && isRendererSyntaxNode(node.source) && !isStaticRendererRequireSpecifier(node.source)) {
+                            throw new Error("Prerender dynamic import specifiers must be string literals; use explicit imports so dependencies resolve from their owning module.");
+                        }
+                    });
                 }
                 const specialized = commonJsModule
                     ? specializeCommonJsRendererModule(javascript[0].text, args.path, moduleUrl)
@@ -423,39 +432,41 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
     let helperName = "__sporadesModuleRequire";
     while (contents.includes(helperName))
         helperName += "_";
+    let writableRequireName = `${helperName}Writable`;
+    while (contents.includes(writableRequireName))
+        writableRequireName += "_";
+    const writableRequire = writtenWrapperNames.has("require");
+    const handledRequireCalls = new WeakSet();
+    const emptyTargets = new WeakSet();
     visitRendererSyntax(syntax, (node, parent, key) => {
         const scope = scopes.get(node) ?? rootScope;
         if (node.type === "CallExpression") {
             const callee = node.callee;
             const args = node.arguments;
             const first = args?.[0];
-            const memberObject = callee?.type === "MemberExpression" ? callee.object : undefined;
-            const memberProperty = callee?.type === "MemberExpression" ? callee.property : undefined;
-            if (memberObject?.type === "Identifier"
-                && memberObject.name === "require"
-                && memberProperty?.type === "Identifier"
-                && memberProperty.name === "resolve"
-                && callee?.computed !== true
-                && !rendererScopeBinds(scope, "require")) {
-                replacements.push({
-                    start: memberObject.start,
-                    end: memberObject.end,
-                    value: writtenWrapperNames.has("require") ? "(0, require)" : helperName,
-                });
-                return;
-            }
             if (callee?.type === "Identifier"
                 && callee.name === "require"
                 && !rendererScopeBinds(scope, "require")
-                && first
-                && !isStaticRendererRequireSpecifier(first)) {
-                replacements.push({
-                    start: callee.start,
-                    end: callee.end,
-                    value: writtenWrapperNames.has("require") ? "(0, require)" : helperName,
-                });
+                && first) {
+                handledRequireCalls.add(callee);
+                if (isStaticRendererRequireSpecifier(first)) {
+                    if (writableRequire) {
+                        // Keep a literal require in the esbuild graph (including TS imports),
+                        // while honoring a reassigned wrapper at execution time.
+                        const literal = contents.slice(first.start, first.end);
+                        replacements.push({ start: callee.start, end: callee.end, value: `((...args) => ${writableRequireName} === ${helperName} ? require(${literal}) : ${writableRequireName}(...args))` });
+                    }
+                }
+                else
+                    replacements.push({ start: callee.start, end: callee.end, value: writableRequire ? writableRequireName : helperName });
             }
             return;
+        }
+        if (node.type === "Identifier" && node.name === "require" && !handledRequireCalls.has(node)
+            && !rendererScopeBinds(scope, "require") && isRendererIdentifierReference(node, parent, key, emptyTargets, emptyTargets)) {
+            const value = writableRequire ? writableRequireName : helperName;
+            const shorthand = parent?.type === "Property" && parent.shorthand === true && parent.value === node;
+            replacements.push({ start: node.start, end: node.end, value: shorthand ? `require: ${value}` : value });
         }
         if (node.type === "Identifier"
             && (node.name === "__dirname" || node.name === "__filename")
@@ -470,13 +481,14 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
     const writableLocations = ["__dirname", "__filename"].filter((name) => writtenWrapperNames.has(name));
     if (replacements.length === 0 && writableLocations.length === 0)
         return { contents, changed: false };
-    const needsModuleRequire = replacements.some((replacement) => replacement.value === helperName);
+    const needsModuleRequire = replacements.some((replacement) => replacement.value.includes(helperName));
     if (needsModuleRequire || writableLocations.length > 0) {
         const insertionOffset = rendererHelperInsertionOffset(syntax, contents);
         replacements.push({
             start: insertionOffset,
             end: insertionOffset,
             value: (needsModuleRequire ? `const ${helperName} = require("node:module").createRequire(${JSON.stringify(moduleUrl)});\n` : "")
+                + (writableRequire && needsModuleRequire ? `var ${writableRequireName} = ${helperName};\n` : "")
                 + writableLocations.map((name) => `var ${name} = ${JSON.stringify(name === "__dirname" ? path.dirname(modulePath) : modulePath)};\n`).join(""),
         });
     }
