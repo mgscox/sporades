@@ -244,6 +244,20 @@ module.exports = render;`);
   } finally { await rm(root, {recursive:true, force:true}); }
 });
 
+test('configured CommonJS entry modules accept conventional and transpiled default exports', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-commonjs-entry-')));
+  try {
+    await writeFile(path.join(root, 'package.json'), '{"type":"commonjs"}');
+    for (const extension of ['cjs', 'cts', 'js', 'ts']) {
+      const module = `entry.${extension}`;
+      await writeFile(path.join(root, module), 'module.exports = async function render() { "use strict"; return this === undefined ? "conventional" : "wrong receiver"; };');
+      assert.equal(await renderClientPrerenderFragment(root, {name:'landing', module}), 'conventional');
+      await writeFile(path.join(root, module), 'exports.default = function render() { "use strict"; return this === undefined ? "transpiled" : "wrong receiver"; };');
+      assert.equal(await renderClientPrerenderFragment(root, {name:'landing', module}), 'transpiled');
+    }
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
 test('ESM import.meta aliases and computed accesses preserve each source URL', async () => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-import-meta-alias-')));
   try {

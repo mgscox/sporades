@@ -81531,8 +81531,9 @@ process.once("uncaughtException", (error) => post({ kind: "failure", message: sa
       namespace = await import("data:text/javascript;base64," + encoded);
     }
     if (!namespace) return post({ kind: "not-function" });
-    if (typeof namespace.default !== "function") return post({ kind: "not-function" });
-    const rendered = await namespace.default();
+    const renderer = typeof namespace === "function" ? namespace : namespace.default;
+    if (typeof renderer !== "function") return post({ kind: "not-function" });
+    const rendered = await renderer();
     if (typeof rendered !== "string") {
       return post({ kind: "non-string", resultType: rendered === null ? "null" : typeof rendered });
     }
