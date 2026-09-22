@@ -60775,15 +60775,6 @@ function scanClientPrerenderHtml(html) {
       cursor = commentEnd.end;
       continue;
     }
-    if (html.startsWith("<![CDATA[", tagStart)) {
-      const cdataEnd = html.indexOf("]]>", tagStart + 9);
-      if (cdataEnd === -1) {
-        problem = "unterminated CDATA section";
-        break;
-      }
-      cursor = cdataEnd + 3;
-      continue;
-    }
     const tagKind = html[tagStart + 1];
     if (tagKind === "!" || tagKind === "?") {
       const declarationEnd = html.indexOf(">", tagStart + 2);
@@ -60812,8 +60803,12 @@ function scanClientPrerenderHtml(html) {
     let nameEnd = nameStart + 1;
     while (/[A-Za-z0-9:-]/.test(html[nameEnd] ?? "")) nameEnd += 1;
     const name2 = lowerHtml.slice(nameStart, nameEnd);
-    const nestedMarkup = findUnquotedMarkupStart(html, nameEnd);
-    if (nestedMarkup !== void 0) {
+    const tagBoundary = scanHtmlTagBoundary(html, nameEnd);
+    if (tagBoundary.nestedMarkup !== void 0) {
+      if (!closing && rawTextElements.has(name2)) {
+        problem = `malformed raw text element opener: ${name2}`;
+        break;
+      }
       if (!closing && /[A-Za-z0-9]/.test(html[tagStart - 1] ?? "")) {
         cursor = tagStart + 1;
         continue;
@@ -60821,7 +60816,7 @@ function scanClientPrerenderHtml(html) {
       problem = "unterminated HTML tag";
       break;
     }
-    const tagEnd = findHtmlTagEnd(html, nameEnd);
+    const tagEnd = tagBoundary.end;
     if (tagEnd === void 0) {
       problem = "unterminated HTML tag";
       break;
@@ -60855,35 +60850,64 @@ function findHtmlCommentEnd(html, commentStart) {
 function foldAsciiCase(value) {
   return value.replace(/[A-Z]/g, (character) => String.fromCharCode(character.charCodeAt(0) + 32));
 }
-function findHtmlTagEnd(html, cursor) {
+function scanHtmlTagBoundary(html, cursor) {
+  let state = "before-attribute-name";
   let quote;
   for (let index = cursor; index < html.length; index += 1) {
     const character = html[index];
-    if (quote) {
-      if (character === quote) quote = void 0;
-    } else if (character === '"' || character === "'") {
-      quote = character;
-    } else if (character === ">") {
-      return index + 1;
+    if (state === "attribute-value-quoted") {
+      if (character === quote) {
+        quote = void 0;
+        state = "after-attribute-value-quoted";
+      }
+      continue;
     }
-  }
-  return void 0;
-}
-function findUnquotedMarkupStart(html, cursor) {
-  let quote;
-  for (let index = cursor; index < html.length; index += 1) {
-    const character = html[index];
-    if (quote) {
-      if (character === quote) quote = void 0;
-    } else if (character === '"' || character === "'") {
-      quote = character;
-    } else if (character === "<") {
-      return index;
-    } else if (character === ">") {
-      return void 0;
+    if (state === "before-attribute-value") {
+      if (/\s/.test(character)) continue;
+      if (character === '"' || character === "'") {
+        quote = character;
+        state = "attribute-value-quoted";
+        continue;
+      }
+      if (character === ">") return { end: index + 1 };
+      if (character === "<") return { nestedMarkup: index };
+      state = "attribute-value-unquoted";
+      continue;
     }
+    if (state === "attribute-value-unquoted") {
+      if (/\s/.test(character)) state = "before-attribute-name";
+      else if (character === ">") return { end: index + 1 };
+      else if (character === "<") return { nestedMarkup: index };
+      continue;
+    }
+    if (state === "attribute-name") {
+      if (/\s/.test(character)) state = "after-attribute-name";
+      else if (character === "=") state = "before-attribute-value";
+      else if (character === ">") return { end: index + 1 };
+      else if (character === "<") return { nestedMarkup: index };
+      continue;
+    }
+    if (state === "after-attribute-name") {
+      if (/\s/.test(character)) continue;
+      if (character === "=") state = "before-attribute-value";
+      else if (character === ">") return { end: index + 1 };
+      else if (character === "<") return { nestedMarkup: index };
+      else if (character !== "/") state = "attribute-name";
+      continue;
+    }
+    if (state === "after-attribute-value-quoted") {
+      if (/\s/.test(character) || character === "/") state = "before-attribute-name";
+      else if (character === ">") return { end: index + 1 };
+      else if (character === "<") return { nestedMarkup: index };
+      else state = "attribute-name";
+      continue;
+    }
+    if (/\s/.test(character) || character === "/") continue;
+    if (character === ">") return { end: index + 1 };
+    if (character === "<") return { nestedMarkup: index };
+    state = "attribute-name";
   }
-  return void 0;
+  return {};
 }
 function findRawTextElementEnd(html, lowerHtml, cursor, name2) {
   const closingPrefix = `</${name2}`;
@@ -60892,7 +60916,7 @@ function findRawTextElementEnd(html, lowerHtml, cursor, name2) {
     if (closingStart === -1) return void 0;
     const boundary = html[closingStart + closingPrefix.length];
     if (boundary === ">" || boundary === "/" || /\s/.test(boundary ?? "")) {
-      return findHtmlTagEnd(html, closingStart + closingPrefix.length);
+      return scanHtmlTagBoundary(html, closingStart + closingPrefix.length).end;
     }
     cursor = closingStart + closingPrefix.length;
   }
