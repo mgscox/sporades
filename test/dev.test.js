@@ -4286,6 +4286,19 @@ test("Dev watches prerender modules and transitive code while retaining the last
         assert.ok((await page()).includes(`Repointed ${packageName}`));
       }
       const localPackage = path.join(projectDir, 'render/local-package');
+      const tsconfigPath = path.join(projectDir, 'tsconfig.json');
+      const tsconfig = {compilerOptions:{paths:{'@render/*':['./render/*']}}};
+      await writeFile(tsconfigPath, JSON.stringify(tsconfig));
+      await writeFile(path.join(projectDir, 'render/landing.ts'), 'import copy from "@render/mapped-copy"; export default () => copy;');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+      await writeFile(path.join(projectDir, 'render/mapped-copy.ts'), 'export default "Recovered tsconfig mapping";');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.match(await page(), /Recovered tsconfig mapping/);
+      await writeFile(path.join(projectDir, 'render/mapped-next.ts'), 'export default "Retargeted tsconfig mapping";');
+      tsconfig.compilerOptions.paths = {'@render/*':['./render/mapped-next.ts']};
+      await writeFile(tsconfigPath, JSON.stringify(tsconfig));
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.match(await page(), /Retargeted tsconfig mapping/);
       await mkdir(localPackage);
       await writeFile(path.join(localPackage, 'copy.js'), 'module.exports = "Local package boundary";');
       await writeFile(path.join(projectDir, 'render/landing.ts'), 'import copy from "./local-package/copy.js"; export default () => copy;');

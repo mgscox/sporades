@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { MessageChannel, Worker } from "node:worker_threads";
 import { Parser } from "acorn";
 import jsx from "acorn-jsx";
+import { createPathsMatcher, getTsconfig } from "get-tsconfig";
 import { parse as parseHtml, serialize as serializeHtml, defaultTreeAdapter } from "parse5";
 import { redactBuildProjectRoots } from "./build-diagnostics.js";
 export function readClientPrerenderConfig(value, toolchain) {
@@ -135,6 +136,7 @@ function isCommonJsTopLevelAwaitBuildFailure(error) {
 }
 function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDependencyRoots, rendererDependencyAliases, onDependency) {
     const packageModeCache = new Map();
+    const recordTsconfig = createRendererTsconfigObserver(onDependency);
     const loaders = new Map([
         [".cjs", "js"],
         [".cts", "ts"],
@@ -153,6 +155,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
             pluginBuild.onResolve({ filter: /.*/ }, async (args) => {
                 if (args.pluginData?.[resolutionBypass])
                     return undefined;
+                recordTsconfig(args.path, args.resolveDir || projectRoot);
                 if (args.path.startsWith("#"))
                     await recordRendererPackageImport(args.path, args.resolveDir || projectRoot, onDependency);
                 else
@@ -244,6 +247,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
                 };
             });
             const loadRendererModule = async (args) => {
+                recordTsconfig("", path.dirname(args.path));
                 const contents = await readFile(args.path, "utf8");
                 const commonJsModule = await rendererModuleUsesCommonJs(args.path, contents, projectRoot, packageModeCache);
                 const loader = loaders.get(path.extname(args.path));
@@ -490,6 +494,43 @@ async function recordRendererPackageImport(specifier, directory, onDependency) {
         visitAlias(specifier);
         return;
     }
+}
+function createRendererTsconfigObserver(onDependency) {
+    const matchers = new Map();
+    return (specifier, directory) => {
+        if (!onDependency)
+            return;
+        if (!matchers.has(directory)) {
+            const cache = new Map();
+            let matcher;
+            try {
+                const config = getTsconfig(directory, "tsconfig.json", cache);
+                if (config)
+                    matcher = createPathsMatcher(config) ?? undefined;
+            }
+            catch { /* esbuild owns config diagnostics; retain inputs for repair. */ }
+            finally {
+                // Adapter for the exact-pinned get-tsconfig filesystem cache. Retain
+                // read configs, package manifests and absent lookup candidates, not
+                // existing parent directories (which would observe build outputs).
+                for (const [key, value] of cache) {
+                    const read = /^readFileSync:(.*):utf8$/.exec(key);
+                    const exists = /^existsSync:(.*)$/.exec(key);
+                    if (read)
+                        onDependency(path.resolve(read[1]));
+                    else if (exists && (value === false || exists[1].endsWith(".json")))
+                        onDependency(path.resolve(exists[1]));
+                }
+                matchers.set(directory, matcher);
+            }
+        }
+        if (!specifier || isBuiltin(specifier) || specifier.startsWith(".") || path.isAbsolute(specifier) || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(specifier))
+            return;
+        for (const candidate of matchers.get(directory)?.(specifier) ?? []) {
+            for (const suffix of ["", ".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs", ".json", "/index.ts", "/index.tsx", "/index.js", "/index.jsx"])
+                onDependency(candidate + suffix);
+        }
+    };
 }
 async function recordRendererLocalPackageBoundaries(modulePath, projectRoot, onDependency) {
     if (!onDependency)

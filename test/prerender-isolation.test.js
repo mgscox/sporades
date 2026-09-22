@@ -240,6 +240,29 @@ test('CommonJS dynamic with scope fails explicitly before wrapper specialization
   } finally { await rm(root, {recursive:true, force:true}); }
 });
 
+test('tsconfig observer retains extended config and missing mapped module inputs', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-tsconfig-inputs-')));
+  try {
+    await mkdir(path.join(root, 'configs'));
+    await mkdir(path.join(root, 'render'));
+    await writeFile(path.join(root, 'tsconfig.json'), '{"extends":"./configs/base.json"}');
+    await writeFile(path.join(root, 'entry.ts'), 'import copy from "@render/copy"; export default () => copy;');
+    const base = path.join(root, 'configs/base.json');
+    const dependencies = new Set();
+    const render = () => renderClientPrerenderFragment(root, {name:'landing', module:'entry.ts'}, [], (file) => dependencies.add(file));
+    await assert.rejects(render());
+    assert.ok(dependencies.has(base), 'missing extended configuration is watched');
+    await writeFile(base, '{/* JSONC */ "compilerOptions":{"paths":{"@render/*":["../render/*"],},},}');
+    dependencies.clear();
+    await assert.rejects(render());
+    assert.ok(dependencies.has(path.join(root, 'tsconfig.json')));
+    assert.ok(dependencies.has(base), 'extended configuration remains watched');
+    assert.ok(dependencies.has(path.join(root, 'render/copy.ts')), 'mapped missing source is watched');
+    await writeFile(path.join(root, 'render/copy.ts'), 'export default "Mapped copy";');
+    assert.equal(await render(), 'Mapped copy');
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
 test('ESM import.meta aliases and computed accesses preserve each source URL', async () => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-import-meta-alias-')));
   try {

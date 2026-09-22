@@ -6,6 +6,7 @@ import { MessageChannel, Worker } from "node:worker_threads";
 
 import { Parser } from "acorn";
 import jsx from "acorn-jsx";
+import { createPathsMatcher, getTsconfig, type PathsMatcher } from "get-tsconfig";
 import { parse as parseHtml, serialize as serializeHtml, defaultTreeAdapter, type DefaultTreeAdapterTypes } from "parse5";
 
 import type { ClientToolchainName } from "./client-capabilities.js";
@@ -194,6 +195,7 @@ function preserveRendererImportMetaUrl(
   onDependency?: (file: string) => void,
 ): import("esbuild").Plugin {
   const packageModeCache = new Map<string, Promise<"module" | "commonjs" | "default">>();
+  const recordTsconfig = createRendererTsconfigObserver(onDependency);
   const loaders = new Map<string, import("esbuild").Loader>([
     [".cjs", "js"],
     [".cts", "ts"],
@@ -211,6 +213,7 @@ function preserveRendererImportMetaUrl(
       const resolutionBypass = "sporadesRendererResolutionBypass";
       pluginBuild.onResolve({ filter: /.*/ }, async (args) => {
         if ((args.pluginData as { [resolutionBypass]?: boolean } | undefined)?.[resolutionBypass]) return undefined;
+        recordTsconfig(args.path, args.resolveDir || projectRoot);
         if (args.path.startsWith("#")) await recordRendererPackageImport(args.path, args.resolveDir || projectRoot, onDependency);
         else recordRendererPackageManifests(args.path, args.resolveDir || projectRoot, onDependency);
         const localPath = rendererLocalFilePath(args.path)
@@ -297,6 +300,7 @@ function preserveRendererImportMetaUrl(
         };
       });
       const loadRendererModule = async (args: import("esbuild").OnLoadArgs): Promise<import("esbuild").OnLoadResult | undefined> => {
+        recordTsconfig("", path.dirname(args.path));
         const contents = await readFile(args.path, "utf8");
         const commonJsModule = await rendererModuleUsesCommonJs(args.path, contents, projectRoot, packageModeCache);
         const loader = loaders.get(path.extname(args.path));
@@ -519,6 +523,37 @@ async function recordRendererPackageImport(specifier: string, directory: string,
     visitAlias(specifier);
     return;
   }
+}
+
+function createRendererTsconfigObserver(onDependency?: (file: string) => void) {
+  const matchers = new Map<string, PathsMatcher | undefined>();
+  return (specifier: string, directory: string) => {
+    if (!onDependency) return;
+    if (!matchers.has(directory)) {
+      const cache = new Map<string, unknown>();
+      let matcher: PathsMatcher | undefined;
+      try {
+        const config = getTsconfig(directory, "tsconfig.json", cache);
+        if (config) matcher = createPathsMatcher(config) ?? undefined;
+      } catch { /* esbuild owns config diagnostics; retain inputs for repair. */ }
+      finally {
+        // Adapter for the exact-pinned get-tsconfig filesystem cache. Retain
+        // read configs, package manifests and absent lookup candidates, not
+        // existing parent directories (which would observe build outputs).
+        for (const [key, value] of cache) {
+          const read = /^readFileSync:(.*):utf8$/.exec(key);
+          const exists = /^existsSync:(.*)$/.exec(key);
+          if (read) onDependency(path.resolve(read[1]!));
+          else if (exists && (value === false || exists[1]!.endsWith(".json"))) onDependency(path.resolve(exists[1]!));
+        }
+        matchers.set(directory, matcher);
+      }
+    }
+    if (!specifier || isBuiltin(specifier) || specifier.startsWith(".") || path.isAbsolute(specifier) || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(specifier)) return;
+    for (const candidate of matchers.get(directory)?.(specifier) ?? []) {
+      for (const suffix of ["", ".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs", ".json", "/index.ts", "/index.tsx", "/index.js", "/index.jsx"]) onDependency(candidate + suffix);
+    }
+  };
 }
 
 async function recordRendererLocalPackageBoundaries(modulePath: string, projectRoot: string, onDependency?: (file: string) => void) {
