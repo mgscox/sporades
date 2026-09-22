@@ -82053,7 +82053,6 @@ async function buildVite(options) {
       plugins: [
         ...frameworkPlugins,
         sporadesViteClientPlugin(options.devRefresh === true),
-        sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender ?? [], prerenderWarnings, options.prerender !== void 0),
         sporadesViteBuildInvariants(canonicalIndexHtmlPath, options.frameworkConfig)
       ],
       build: {
@@ -82092,6 +82091,14 @@ async function buildVite(options) {
       }
     }
     if (!files.has("index.html")) throw new Error("Vite returned no transformed index.html output.");
+    const rendered = [];
+    for (const fragment of options.prerender ?? []) {
+      rendered.push({ name: fragment.name, html: await renderClientPrerenderFragment(projectRoot, fragment, [options.projectDir, projectRoot]) });
+    }
+    const source = files.get("index.html");
+    const placed = placeClientPrerenderFragments(typeof source === "string" ? source : new TextDecoder().decode(source), rendered);
+    files.set("index.html", placed.html);
+    if (options.prerender !== void 0) prerenderWarnings.push(...placed.warnings);
     return {
       publicFiles: [...files].map(([filePath, contents]) => ({ path: filePath, contents })),
       legacyClientBundle: null,
@@ -82101,24 +82108,6 @@ async function buildVite(options) {
     if (hasHint(error)) throw error;
     throw viteBuildError(error, [options.projectDir, projectRoot], options.frameworkConfig.framework);
   }
-}
-function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragments, warnings, diagnoseMarkers) {
-  return {
-    name: "sporades-prerender",
-    enforce: "post",
-    transformIndexHtml: {
-      order: "post",
-      async handler(html) {
-        const rendered = [];
-        for (const fragment of fragments) {
-          rendered.push({ name: fragment.name, html: await renderClientPrerenderFragment(projectRoot, fragment, projectRoots) });
-        }
-        const placed = placeClientPrerenderFragments(html, rendered);
-        if (diagnoseMarkers) warnings.push(...placed.warnings);
-        return placed.html;
-      }
-    }
-  };
 }
 var VITE_CONFIG_NAMES = [
   "vite.config.js",
