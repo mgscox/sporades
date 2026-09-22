@@ -595,7 +595,7 @@ function specializeCommonJsRendererModule(contents: string, modulePath: string, 
       start: insertionOffset,
       end: insertionOffset,
       value: (needsModuleRequire ? `const ${helperName} = require("node:module").createRequire(${JSON.stringify(moduleUrl)});\n` : "")
-        + (needsModuleRequireMethod ? `const ${helperName}Module = () => module;\n${helperName}Module().require = ${helperName};\n` : "")
+        + (needsModuleRequireMethod ? `const ${helperName}Module = () => module;\n${helperName}Module().require = ${helperName};\n${helperName}Module().filename = ${JSON.stringify(modulePath)};\n${helperName}Module().id = ${JSON.stringify(modulePath)};\n${helperName}Module().path = ${JSON.stringify(path.dirname(modulePath))};\n` : "")
         + (writableRequire && needsModuleRequire ? `var ${writableRequireName} = ${helperName};\n` : "")
         + writableLocations.map((name) => `var ${name} = ${JSON.stringify(name === "__dirname" ? path.dirname(modulePath) : modulePath)};\n`).join(""),
     });
