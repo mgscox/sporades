@@ -1250,6 +1250,34 @@ test("bare project-root file URL aliases redact before diagnostic quotes", async
   });
 });
 
+test("file URL alias collisions prefer exact paths in either import order", async () => {
+  await withTempDir(async (tempRoot) => {
+    const projectDir = path.join(tempRoot, "URL Capsule");
+    await mkdir(projectDir);
+    await writeFile(path.join(projectDir, "package.json"), '{"type":"module"}\n');
+    const canonicalProject = await realpath(projectDir);
+    const rawRootUrl = pathToFileURL(canonicalProject).href
+      .replace(/^file:/, "FiLe:")
+      .replace("URL", "%55%52%4c");
+    const childUrl = `${rawRootUrl}/missing-collision-child.mjs`;
+    for (const specifiers of [[rawRootUrl, childUrl], [childUrl, rawRootUrl]]) {
+      await writeFile(
+        path.join(projectDir, "render-landing.mjs"),
+        `${specifiers.map((specifier) => `import ${JSON.stringify(specifier)};`).join("\n")}\nexport default () => "<main>unreachable</main>";\n`,
+      );
+      await assert.rejects(
+        renderClientPrerenderFragment(canonicalProject, { name: "landing", module: "render-landing.mjs" }),
+        (error) => {
+          assert.match(error.message, /Could not resolve "<project>/i);
+          assert.equal(error.message.includes(rawRootUrl), false, "raw project-root alias leaked after a collision");
+          assert.doesNotMatch(error.message, /%55%52%4c%20Capsule/i);
+          return true;
+        },
+      );
+    }
+  });
+});
+
 test("hoisted renderer build failures redact dependency paths outside the Capsule", async () => {
   await withTempDir(async (tempRoot) => {
     const projectDir = path.join(tempRoot, "capsule");
