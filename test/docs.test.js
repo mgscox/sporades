@@ -1327,6 +1327,15 @@ test("File reference docs define the trusted multipart ingress contract and oper
   assert.match(contents, /requestKeyHeader/);
   assert.match(contents, /partKeyHeader/);
   assert.match(contents, /INGRESS_AUTHORITY_DENIED/);
+  const refusalContract = contents.match(/When a Custom endpoint rejects one of these limits,[\s\S]*?(?=\n\n`requestKeyHeader`)/)?.[0];
+  assert.ok(refusalContract, "multipart refusal contract must remain documented at the ingress limits");
+  assert.match(refusalContract, /\{ partType: "file" \| "field", limitKind, limit: integer \}/);
+  assert.deepEqual(
+    [...refusalContract.matchAll(/`((?:max|fileMax)[A-Za-z]+)`/g)].map((match) => match[1]),
+    ["maxPartHeaderBytes", "maxFieldCount", "maxFieldBytes", "maxTotalFieldBytes", "maxFiles", "maxFileBytes", "fileMaxSizeBytes", "maxTotalFileBytes"],
+  );
+  assert.match(refusalContract, /never includes filenames, field contents, credentials,\s+raw headers, or other request data/i);
+  assert.doesNotMatch(refusalContract, /maxPartBytes|maxWireBytes/);
   assert.match(contents, /Capsule startup automatically runs a bounded, deterministic\s+cleanup batch/i);
   assert.match(contents, /There is no\s+public manual ingress-sweeper API/i);
   assert.doesNotMatch(contents, /sweepExpiredFileIngress/);

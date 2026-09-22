@@ -556,6 +556,16 @@ smaller of endpoint `maxFileBytes` and the Capsule-wide File size limit, so the
 global limit aborts during streaming rather than after buffering. Field names are stored in
 an own-property-safe map, including `constructor`, `toString`, and `__proto__`.
 
+When a Custom endpoint rejects one of these limits, its public JSON error uses
+code `MULTIPART_LIMIT_EXCEEDED` and may include exactly this allowlisted detail:
+`{ partType: "file" | "field", limitKind, limit: integer }`. Supported
+`limitKind` values are `maxPartHeaderBytes`, `maxFieldCount`, `maxFieldBytes`,
+`maxTotalFieldBytes`, `maxFiles`, `maxFileBytes`, `fileMaxSizeBytes`, and
+`maxTotalFileBytes`. `limit` is the effective non-negative integer bound that
+was applied. Sporades omits malformed or non-allowlisted detail rather than
+passing it through, and never includes filenames, field contents, credentials,
+raw headers, or other request data in this object.
+
 `requestKeyHeader` identifies the whole retry and `partKeyHeader` identifies a
 part independently of multipart ordering. Use sender-provided, stable,
 non-secret values. With `requireStablePartKeys`, missing or repeated part keys

@@ -3371,10 +3371,16 @@ function normaliseRuntimeHealthBody(body: any) {
   const fileStorage = checks?.fileStorage;
   const fileInspection = checks?.fileInspection;
   const ready = body?.data?.runtime?.ready;
+  const fileMaxSizeBytes = body?.data?.runtime?.fileMaxSizeBytes;
+  const httpMaxBodyBytes = body?.data?.runtime?.httpMaxBodyBytes;
   const valid = typeof body?.ok === "boolean" && typeof ready === "boolean" && typeof sqlite?.ok === "boolean" && typeof fileStorage?.ok === "boolean"
+    && Number.isInteger(fileMaxSizeBytes) && fileMaxSizeBytes > 0
+    && Number.isInteger(httpMaxBodyBytes) && httpMaxBodyBytes > 0
     && (fileInspection === undefined || typeof fileInspection?.ok === "boolean");
   const safe = {
     ready: ready === true,
+    fileMaxSizeBytes,
+    httpMaxBodyBytes,
     checks: {
       sqlite: { ok: sqlite?.ok === true },
       fileStorage: { ok: fileStorage?.ok === true },
