@@ -1018,10 +1018,26 @@ function boundedMessage(error, projectRoots = [], exactAliases = []) {
     }
     let redacted = message;
     for (const alias of [...new Set(exactAliases)].filter(Boolean).sort((left, right) => right.length - left.length)) {
-        redacted = redacted.split(alias).join("<project>");
+        redacted = redactUrlPathAlias(redacted, alias);
     }
     redacted = redactBuildProjectRoots(redacted, projectRoots);
     return redacted.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
+}
+function redactUrlPathAlias(value, alias) {
+    let redacted = "";
+    let cursor = 0;
+    while (cursor < value.length) {
+        const match = value.indexOf(alias, cursor);
+        if (match === -1)
+            break;
+        const end = match + alias.length;
+        redacted += value.slice(cursor, end);
+        if (end === value.length || value[end] === "/") {
+            redacted = `${redacted.slice(0, -alias.length)}<project>`;
+        }
+        cursor = end;
+    }
+    return `${redacted}${value.slice(cursor)}`;
 }
 function prerenderError(message, hint, diagnostics) {
     const error = new Error(message);
