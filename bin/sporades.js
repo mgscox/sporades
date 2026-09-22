@@ -81447,8 +81447,8 @@ function scanClientPrerenderHtml(html) {
     if (node.nodeName === "#comment" && "data" in node && location) {
       const source = html.slice(location.startOffset, location.endOffset);
       if (!source.startsWith("<!--") && !source.endsWith(">")) problem = "unterminated HTML declaration";
-      const marker = /^\s*sporades:prerender(?:\s+([A-Za-z][A-Za-z0-9_-]{0,63}))?\s*$/.exec(node.data);
-      if (marker) markers.push({ start: location.startOffset, end: location.endOffset, name: marker[1] });
+      const marker = /^\s*sporades:prerender(?:\s+([\s\S]*?))?\s*$/.exec(node.data);
+      if (marker) markers.push({ start: location.startOffset, end: location.endOffset, name: marker[1]?.trim() || void 0 });
     }
     if ("tagName" in node && node.namespaceURI === "http://www.w3.org/1999/xhtml" && location && "startTag" in location && location.startTag) {
       if (node.tagName === "body") bodyEnd = location.startTag.endOffset;

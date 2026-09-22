@@ -826,9 +826,9 @@ function scanClientPrerenderHtml(html) {
             const source = html.slice(location.startOffset, location.endOffset);
             if (!source.startsWith("<!--") && !source.endsWith(">"))
                 problem = "unterminated HTML declaration";
-            const marker = /^\s*sporades:prerender(?:\s+([A-Za-z][A-Za-z0-9_-]{0,63}))?\s*$/.exec(node.data);
+            const marker = /^\s*sporades:prerender(?:\s+([\s\S]*?))?\s*$/.exec(node.data);
             if (marker)
-                markers.push({ start: location.startOffset, end: location.endOffset, name: marker[1] });
+                markers.push({ start: location.startOffset, end: location.endOffset, name: marker[1]?.trim() || undefined });
         }
         if ("tagName" in node && node.namespaceURI === "http://www.w3.org/1999/xhtml" && location && "startTag" in location && location.startTag) {
             if (node.tagName === "body")

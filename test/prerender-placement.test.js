@@ -34,6 +34,8 @@ export default async () => {
       { head: '', body: '<!-- sporades:prerender --><!-- sporades:prerender -->', order: ['first', 'second', 'first', 'second'], codes: ['PRERENDER_DUPLICATE_PLACEMENT', 'PRERENDER_DUPLICATE_PLACEMENT'] },
       { head: '', body: '<!-- sporades:prerender first --><!-- sporades:prerender first -->', order: ['first', 'first'], codes: ['PRERENDER_DUPLICATE_PLACEMENT', 'PRERENDER_UNUSED_FRAGMENT'] },
       { head: '', body: '<!-- sporades:prerender typo -->', order: [], codes: ['PRERENDER_UNKNOWN_MARKER', 'PRERENDER_UNUSED_FRAGMENT', 'PRERENDER_UNUSED_FRAGMENT'] },
+      { head: '', body: '<!-- sporades:prerender landing.page -->', order: [], codes: ['PRERENDER_UNKNOWN_MARKER', 'PRERENDER_UNUSED_FRAGMENT', 'PRERENDER_UNUSED_FRAGMENT'] },
+      { head: '', body: '<!-- sporades:prerender two words -->', order: [], codes: ['PRERENDER_UNKNOWN_MARKER', 'PRERENDER_UNUSED_FRAGMENT', 'PRERENDER_UNUSED_FRAGMENT'] },
     ];
     let last;
     for (const fixture of cases) {
@@ -50,7 +52,7 @@ export default async () => {
         assert.equal(typeof warning.fragment, 'string');
         assert.equal(warning.message.includes(root), false);
       }
-      if (fixture.body.includes('typo')) assert.ok(html.includes('<!-- sporades:prerender typo -->'));
+      if (fixture.codes.includes('PRERENDER_UNKNOWN_MARKER')) assert.ok(html.includes(fixture.body));
       assert.equal(await readFile(path.join(root, 'index.html'), 'utf8'), source);
       assert.match(html, /\/assets\/index-[^" ]+\.js/);
       assert.doesNotMatch(html, /<div[^>]*sporades/);
