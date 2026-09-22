@@ -303,20 +303,21 @@ test("named class expression bindings shield local CommonJS-like identifiers", a
       path.join(nestedDir, "helper.cjs"),
       `const path = require("node:path");
 const Resolver = class require {
-  static resolve(value) { return require.resolve(value); }
+  static resolve(value) { return value; }
+  static value() { return require.resolve("class-local"); }
 };
 const DirectoryName = class __dirname {
-  static value() { return __dirname.name; }
+  static value() { return __dirname === DirectoryName ? "directory-class-local" : "directory-class-rewritten"; }
 };
 const FileName = class __filename {
-  static value() { return __filename.name; }
+  static value() { return __filename === FileName ? "file-class-local" : "file-class-rewritten"; }
 };
 function nested(require) {
   return class NestedResolver {
     static value() { return require.resolve("nested-function-class"); }
   }.value();
 }
-module.exports = () => \`<main>\${Resolver.resolve("class-local")}|\${DirectoryName.value()}|\${FileName.value()}|\${nested({ resolve: (value) => value })}|\${path.basename(__dirname)}</main>\`;
+module.exports = () => \`<main>\${Resolver.value()}|\${DirectoryName.value()}|\${FileName.value()}|\${nested({ resolve: (value) => value })}|\${path.basename(__dirname)}</main>\`;
 `,
     );
 
@@ -324,7 +325,7 @@ module.exports = () => \`<main>\${Resolver.resolve("class-local")}|\${DirectoryN
     try {
       assert.match(
         await readFile(bundle.staticFiles.indexHtml, "utf8"),
-        /<main>class-local\|__dirname\|__filename\|nested-function-class\|nested<\/main>/,
+        /<main>class-local\|directory-class-local\|file-class-local\|nested-function-class\|nested<\/main>/,
       );
     } finally {
       await bundle.releasePublicTreeLease();

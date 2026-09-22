@@ -230,6 +230,17 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
     return { contents: rewritten, changed: true };
 }
 function collectRendererScopes(node, scope, scopes) {
+    if (node.type === "SwitchStatement") {
+        const switchScope = { parent: scope, functionScope: false, bindings: new Set() };
+        scopes.set(node, scope);
+        const discriminant = node.discriminant;
+        if (isRendererSyntaxNode(discriminant))
+            collectRendererScopes(discriminant, scope, scopes);
+        for (const switchCase of node.cases ?? []) {
+            collectRendererScopes(switchCase, switchScope, scopes);
+        }
+        return;
+    }
     let activeScope = scope;
     if (node.type === "FunctionDeclaration") {
         addRendererBinding(scope, node.id);
@@ -244,6 +255,21 @@ function collectRendererScopes(node, scope, scopes) {
         for (const parameter of node.params ?? [])
             addRendererBinding(activeScope, parameter);
     }
+    else if (node.type === "ClassDeclaration") {
+        addRendererBinding(scope, node.id);
+        activeScope = { parent: scope, functionScope: false, bindings: new Set() };
+        addRendererBinding(activeScope, node.id);
+    }
+    else if (node.type === "ClassExpression") {
+        activeScope = { parent: scope, functionScope: false, bindings: new Set() };
+        addRendererBinding(activeScope, node.id);
+    }
+    else if (node.type === "ForStatement" || node.type === "ForInStatement" || node.type === "ForOfStatement") {
+        activeScope = { parent: scope, functionScope: false, bindings: new Set() };
+    }
+    else if (node.type === "StaticBlock") {
+        activeScope = { parent: scope, functionScope: true, bindings: new Set() };
+    }
     else if (node.type === "BlockStatement" || node.type === "CatchClause") {
         activeScope = { parent: scope, functionScope: false, bindings: new Set() };
         if (node.type === "CatchClause")
@@ -254,9 +280,6 @@ function collectRendererScopes(node, scope, scopes) {
         const declarationScope = node.kind === "var" ? nearestRendererFunctionScope(activeScope) : activeScope;
         for (const declaration of node.declarations ?? [])
             addRendererBinding(declarationScope, declaration.id);
-    }
-    else if (node.type === "ClassDeclaration") {
-        addRendererBinding(scope, node.id);
     }
     else if (node.type === "ImportDeclaration") {
         for (const specifier of node.specifiers ?? [])
