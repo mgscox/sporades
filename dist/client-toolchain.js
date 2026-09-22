@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { createClientRuntimeSource } from "./templates/client-runtime-template.js";
 import { clientCapabilityError, clientFrameworkCapability, supportsClientCapability } from "./client-capabilities.js";
+import { placeClientPrerenderFragment, renderClientPrerenderFragment } from "./client-prerender.js";
 export async function buildClientToolchain(options) {
     validateClientToolchainInput(options);
     if (options.toolchain === "vite")
@@ -11,6 +12,9 @@ export async function buildClientToolchain(options) {
     return buildEsbuild(options);
 }
 export function validateClientToolchainInput(options) {
+    if (options.toolchain !== "vite" && options.prerender && options.prerender.length > 0) {
+        throw clientToolchainError("Client prerender fragments require the Vite client toolchain.", "Set `client.toolchain` to `vite`, or remove `client.prerender` from sporades.json.");
+    }
     if (options.toolchain !== "vite")
         return;
     const frameworkLabel = clientFrameworkCapability(options.frameworkConfig.framework)?.label ?? String(options.frameworkConfig.framework);
@@ -134,6 +138,7 @@ async function buildVite(options) {
             plugins: [
                 ...frameworkPlugins,
                 sporadesViteClientPlugin(options.devRefresh === true),
+                ...options.prerender?.map((fragment) => sporadesVitePrerenderPlugin(projectRoot, fragment)) ?? [],
                 sporadesViteBuildInvariants(canonicalIndexHtmlPath, options.frameworkConfig),
             ],
             build: {
@@ -186,6 +191,18 @@ async function buildVite(options) {
             throw error;
         throw viteBuildError(error, [options.projectDir, projectRoot], options.frameworkConfig.framework);
     }
+}
+function sporadesVitePrerenderPlugin(projectRoot, fragment) {
+    return {
+        name: `sporades-prerender-${fragment.name}`,
+        enforce: "post",
+        transformIndexHtml: {
+            order: "post",
+            async handler(html) {
+                return placeClientPrerenderFragment(html, fragment, await renderClientPrerenderFragment(projectRoot, fragment));
+            },
+        },
+    };
 }
 const VITE_CONFIG_NAMES = [
     "vite.config.js", "vite.config.mjs", "vite.config.ts", "vite.config.cjs", "vite.config.mts", "vite.config.cts",

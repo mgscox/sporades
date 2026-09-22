@@ -12,6 +12,7 @@ import { createPublicTree, discardPublicTree, releasePublicTreeLease, validateAc
 import { CLIENT_FRAMEWORK_HINT, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, clientFrameworkCapability, defaultClientToolchain, isClientToolchain, supportsClientCapability } from "./client-capabilities.js";
 import { resolveSporadesPackageRoot } from "./package-root.js";
 import { validateStripePaymentsRuntimeConfig, validateStripePaymentsSealedServerEnv } from "./stripe-payment-config.js";
+import { readClientPrerenderConfig, type ClientPrerenderFragment } from "./client-prerender.js";
 
 export type JsonRecord = Record<string, unknown>;
 export type ServerEnv = Record<string, string>;
@@ -19,7 +20,7 @@ type HelperError = Error & { hint?: string; diagnostics?: unknown; phase?: strin
 export type ServerEnvFile = { exists: boolean; raw: string };
 export type ProjectConfig = JsonRecord & {
   auth?: AuthConfig;
-  client?: { framework?: unknown; toolchain?: unknown };
+  client?: { framework?: unknown; toolchain?: unknown; prerender?: readonly ClientPrerenderFragment[] };
 };
 export type AuthConfig = JsonRecord & {
   mode?: unknown;
@@ -68,6 +69,12 @@ export async function createBundle(
   const deployFiles = options.deployFiles === false ? [] : await buildDeployFiles(projectDir, (config.deploy as { files?: unknown } | undefined)?.files);
   const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
   const toolchain = readClientToolchain(config.client?.toolchain ?? defaultClientToolchain(frameworkBundleConfig.framework), frameworkBundleConfig.framework);
+  let prerender: ClientPrerenderFragment[];
+  try {
+    prerender = readClientPrerenderConfig(config.client?.prerender, toolchain);
+  } catch (error) {
+    throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain);
+  }
   const buildDir = path.join(projectDir, ".sporades", "build");
 
   const paths = {
@@ -113,6 +120,7 @@ export async function createBundle(
     toolchain,
     indexHtml,
     indexHtmlPath: paths.indexHtml,
+    prerender,
     clientSource,
     clientSourcePath: paths.clientEntry,
     frameworkConfig: frameworkBundleConfig,

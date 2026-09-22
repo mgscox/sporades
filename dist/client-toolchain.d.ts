@@ -1,3 +1,4 @@
+import { type ClientPrerenderFragment } from "./client-prerender.js";
 export type ClientToolchainName = "esbuild" | "vite";
 export type ClientToolchainDiagnostics = {
     framework: string;
@@ -29,12 +30,14 @@ export declare function buildClientToolchain(options: {
     clientSourcePath: string;
     indexHtml: string;
     indexHtmlPath: string;
+    prerender?: readonly ClientPrerenderFragment[];
     devRefresh?: boolean;
 }): Promise<ClientToolchainOutput>;
 export declare function validateClientToolchainInput(options: {
     frameworkConfig: FrameworkBuildConfig;
     toolchain: ClientToolchainName;
     indexHtml: string;
+    prerender?: readonly ClientPrerenderFragment[];
 }): void;
 export {};
 //# sourceMappingURL=client-toolchain.d.ts.map

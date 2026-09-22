@@ -9,6 +9,7 @@ import { validateLogConfig } from "../log-envelope.js";
 import { validateMailConfig } from "../mail-config.js";
 import { validatePaymentsConfig } from "../stripe-payment-config.js";
 import { commandError, errorDetails, type LooseRecord } from "./cli-support.js";
+import { readClientPrerenderConfig } from "../client-prerender.js";
 
 export { validateMailConfig } from "../mail-config.js";
 export { validatePaymentsConfig } from "../stripe-payment-config.js";
@@ -147,8 +148,8 @@ export function validateTeamsConfig(teams: LooseRecord) {
 
 export function validateClientConfig(client: LooseRecord) {
   if (client === undefined) return;
-  if (!client || typeof client !== "object" || Array.isArray(client) || Object.keys(client).some((key) => key !== "framework" && key !== "toolchain")) {
-    throw commandError("Invalid client configuration.", "Set `client.framework` and optional `client.toolchain` in sporades.json.");
+  if (!client || typeof client !== "object" || Array.isArray(client) || Object.keys(client).some((key) => key !== "framework" && key !== "toolchain" && key !== "prerender")) {
+    throw commandError("Invalid client configuration.", "Set `client.framework`, optional `client.toolchain`, and optional `client.prerender` in sporades.json.");
   }
   if (client.framework !== undefined && !isClientFramework(client.framework)) {
     throw commandError(`Unsupported framework: ${client.framework}`, CLIENT_FRAMEWORK_HINT);
@@ -162,6 +163,7 @@ export function validateClientConfig(client: LooseRecord) {
     const details = clientCapabilityError(framework, toolchain);
     throw commandError(details.message, details.hint);
   }
+  if (isClientToolchain(toolchain)) readClientPrerenderConfig(client.prerender, toolchain);
 }
 
 export function validateSchedulingConfig(scheduling: LooseRecord) {

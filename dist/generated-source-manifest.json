@@ -39,6 +39,7 @@
       "src/cli/sporades-host-helper.ts",
       "src/cli/sporades.ts",
       "src/client-capabilities.ts",
+      "src/client-prerender.ts",
       "src/client-toolchain.ts",
       "src/client.ts",
       "src/database-runtime.ts",
@@ -101,7 +102,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "8d48ab336c65bd9c9f97fa08b6e5d3a2a48a74baaf8ef874838125ef7df15fd6"
+    "digest": "67741bfcefca9f4bfd3667ec7cf754343a7d83a97caba2a9f6d22e552b508859"
   },
   "outputs": {
     "files": [
@@ -227,6 +228,10 @@
       "dist/client-capabilities.d.ts.map",
       "dist/client-capabilities.js",
       "dist/client-capabilities.js.map",
+      "dist/client-prerender.d.ts",
+      "dist/client-prerender.d.ts.map",
+      "dist/client-prerender.js",
+      "dist/client-prerender.js.map",
       "dist/client-toolchain.d.ts",
       "dist/client-toolchain.d.ts.map",
       "dist/client-toolchain.js",
@@ -444,6 +449,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "e351b04268dabcc5e0bc20c84b1978f5878150abcf9f1058cd33ef903cd575d8"
+    "digest": "868d6eb9d4ef26e3c313de472662943295b71d2480959671ceb23c8d1892665b"
   }
 }

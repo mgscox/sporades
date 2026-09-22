@@ -9,6 +9,7 @@ import { createPublicTree, discardPublicTree, releasePublicTreeLease, validateAc
 import { CLIENT_FRAMEWORK_HINT, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, clientFrameworkCapability, defaultClientToolchain, isClientToolchain, supportsClientCapability } from "./client-capabilities.js";
 import { resolveSporadesPackageRoot } from "./package-root.js";
 import { validateStripePaymentsRuntimeConfig, validateStripePaymentsSealedServerEnv } from "./stripe-payment-config.js";
+import { readClientPrerenderConfig } from "./client-prerender.js";
 const AUTH_PROVIDER_ORDER = ["anonymous", "email", "google", "microsoft", "apple", "facebook"];
 const SUPPORTED_AUTH_PROVIDERS = new Set(AUTH_PROVIDER_ORDER);
 const RUNTIME_AUTH_PROVIDERS = new Set(["anonymous", "email", "google", "microsoft", "apple", "facebook"]);
@@ -16,6 +17,13 @@ export async function createBundle(projectDir, config, options = {}) {
     const deployFiles = options.deployFiles === false ? [] : await buildDeployFiles(projectDir, config.deploy?.files);
     const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
     const toolchain = readClientToolchain(config.client?.toolchain ?? defaultClientToolchain(frameworkBundleConfig.framework), frameworkBundleConfig.framework);
+    let prerender;
+    try {
+        prerender = readClientPrerenderConfig(config.client?.prerender, toolchain);
+    }
+    catch (error) {
+        throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain);
+    }
     const buildDir = path.join(projectDir, ".sporades", "build");
     const paths = {
         config: path.join(projectDir, "sporades.json"),
@@ -58,6 +66,7 @@ export async function createBundle(projectDir, config, options = {}) {
         toolchain,
         indexHtml,
         indexHtmlPath: paths.indexHtml,
+        prerender,
         clientSource,
         clientSourcePath: paths.clientEntry,
         frameworkConfig: frameworkBundleConfig,
