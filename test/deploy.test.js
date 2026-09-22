@@ -19,12 +19,27 @@ import { installProjectSolidToolchain } from "./support/project-solid-toolchain.
 import { installProjectLitToolchain } from "./support/project-lit-toolchain.js";
 import { installProjectInfernoToolchain } from "./support/project-inferno-toolchain.js";
 import { CLIENT_CAPABILITIES } from "../dist/client-capabilities.js";
+import { installPrerenderWarnings, assertPrerenderWarnings } from "./support/prerender-warnings.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
 const TEST_WEBSOCKET_TIMEOUT_MS = 10000;
 const BASE_IMAGE_RUNTIME_USER = "10001:10001";
 const TEST_PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDI9R+ElI6awrzqT1DDZjMa6q7iH+jF5bughycSLBOa/ test@example";
+
+test("Container prerender warnings reach human and structured successful CLI output", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "warning-capsule", "--framework", "react", "--toolchain", "vite", "--no-install", "--no-git", "--json"], {cwd:dir});
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "warning-capsule"));
+    await installFakeReact(projectDir);
+    await installPrerenderWarnings(projectDir);
+    for (const json of [true, false]) {
+      const docker = await installFakeDocker(path.join(dir, `docker-${json}`), `warning-container-${json}`);
+      assertPrerenderWarnings(await runCli(["deploy", ...(json ? ["--json"] : [])], {cwd:projectDir, env:docker.env}), json);
+    }
+  });
+});
 
 async function withTempDir(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-deploy-"));
