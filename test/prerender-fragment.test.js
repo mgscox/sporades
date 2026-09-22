@@ -187,6 +187,56 @@ export default () => {
   });
 });
 
+test("hostile message access cannot escape the renderer error boundary", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = path.join(dir, "caf\u00e9-hostile-message-capsule");
+    const projectAlias = path.join(dir, "hostile-message-capsule-alias");
+    const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
+    await writeMinimalViteCapsule(projectDir, sourceHtml);
+    await symlink(projectDir, projectAlias, "dir");
+    const canonicalProject = await realpath(projectDir);
+    const aliases = [...new Set([projectAlias, projectDir, canonicalProject].flatMap((root) => [
+      root,
+      root.normalize("NFC"),
+      root.normalize("NFD"),
+      root.replaceAll("\\", "/"),
+      root.replaceAll("/", "\\"),
+    ]))];
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      `const aliases = ${JSON.stringify(aliases)};
+export default () => {
+  const thrown = { hint: \`outer hostile hint at \${aliases[0]}\` };
+  Object.defineProperty(thrown, "message", {
+    get() {
+      const nested = new Error(\`nested hostile message at \${aliases[1]}\`);
+      nested.hint = \`nested hostile hint at \${aliases[2]}\`;
+      nested.diagnostics = { path: aliases[3] };
+      nested.cause = new Error(\`nested hostile cause at \${aliases[4]}\`);
+      throw nested;
+    },
+  });
+  throw thrown;
+};
+`,
+    );
+
+    await assert.rejects(
+      createBundle(projectAlias, { name: "hostile-message-failure", client: structuredClone(viteConfig) }),
+      (error) => {
+        assert.match(error.message, /renderer for landing failed: thrown error message unavailable/i);
+        assert.match(error.hint, /fix the renderer in render-landing\.mjs/i);
+        assert.deepEqual(error.diagnostics, { fragment: "landing", module: "render-landing.mjs" });
+        assert.equal(error.cause, undefined);
+        const surfaced = JSON.stringify({ message: error.message, hint: error.hint, diagnostics: error.diagnostics, stack: error.stack, cause: error.cause });
+        assert.doesNotMatch(surfaced, /(?:outer|nested) hostile|hostile-message-capsule/);
+        for (const alias of aliases) assert.equal(surfaced.includes(alias), false, `leaked Capsule path alias: ${alias}`);
+        return true;
+      },
+    );
+  });
+});
+
 test("prerender placement preserves replacement-pattern dollar sequences byte for byte", async () => {
   await withTempDir(async (projectDir) => {
     const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
