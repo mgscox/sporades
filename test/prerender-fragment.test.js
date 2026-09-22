@@ -131,6 +131,52 @@ export default () => require(missing);
   });
 });
 
+test("renderer-owned hints and diagnostics cannot bypass bounded path redaction", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = path.join(dir, "caf\u00e9-hinted-capsule");
+    const projectAlias = path.join(dir, "hinted-capsule-alias");
+    const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
+    await writeMinimalViteCapsule(projectDir, sourceHtml);
+    await symlink(projectDir, projectAlias, "dir");
+    const canonicalProject = await realpath(projectDir);
+    const aliases = [...new Set([projectAlias, projectDir, canonicalProject].flatMap((root) => [
+      root,
+      root.normalize("NFC"),
+      root.normalize("NFD"),
+      root.replaceAll("\\", "/"),
+      root.replaceAll("/", "\\"),
+    ]))];
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      `const aliases = ${JSON.stringify(aliases)};
+export default () => {
+  const error = new Error(\`hostile renderer at \${aliases[0]}\`);
+  error.hint = \`hostile hint at \${aliases[1]}\`;
+  error.diagnostics = { hostilePath: aliases[2], nested: { path: aliases[3] } };
+  error.cause = new Error(\`hostile cause at \${aliases[4]}\`);
+  error.stack += \`\\nhostile stack at \${aliases[5]}\`;
+  throw error;
+};
+`,
+    );
+
+    await assert.rejects(
+      createBundle(projectAlias, { name: "hinted-renderer-failure", client: structuredClone(viteConfig) }),
+      (error) => {
+        assert.match(error.message, /renderer for landing failed: hostile renderer at <project>/i);
+        assert.match(error.hint, /fix the renderer in render-landing\.mjs/i);
+        assert.doesNotMatch(error.hint, /hostile hint/i);
+        assert.deepEqual(error.diagnostics, { fragment: "landing", module: "render-landing.mjs" });
+        assert.equal(error.cause, undefined);
+        const surfaced = JSON.stringify({ message: error.message, hint: error.hint, diagnostics: error.diagnostics, stack: error.stack, cause: error.cause });
+        assert.doesNotMatch(surfaced, /hostile (?:hint|cause|stack)|hostilePath/);
+        for (const alias of aliases) assert.equal(surfaced.includes(alias), false, `leaked Capsule path alias: ${alias}`);
+        return true;
+      },
+    );
+  });
+});
+
 test("prerender placement preserves replacement-pattern dollar sequences byte for byte", async () => {
   await withTempDir(async (projectDir) => {
     const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
