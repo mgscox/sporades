@@ -706,10 +706,10 @@ if (args[0] === "exec") {
   const statePath = process.env.FAKE_DOCKER_RUNTIME_PROBE_STATE;
   const count = statePath && existsSync(statePath) ? Number(readFileSync(statePath, "utf8")) : 0;
   const configured = process.env.FAKE_DOCKER_RUNTIME_PROBE_RESULTS ? JSON.parse(process.env.FAKE_DOCKER_RUNTIME_PROBE_RESULTS) : [];
-  const result = configured[Math.min(count, configured.length - 1)] || { status: 200, body: { ok: true, data: { runtime: { ready: true }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: true } } }, error: null } };
+  const result = configured[Math.min(count, configured.length - 1)] || { status: 200, body: { ok: true, data: { runtime: { ready: true, fileMaxSizeBytes: 10_485_760, httpMaxBodyBytes: 1_048_576 }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: true } } }, error: null } };
   if (statePath) writeFileSync(statePath, String(count + 1));
   if (result.stdout !== undefined) process.stdout.write(result.stdout);
-  else { const checks = result.body?.data?.checks; process.stdout.write(JSON.stringify({ kind: "response", status: result.status, valid: typeof result.body?.ok === "boolean" && typeof result.body?.data?.runtime?.ready === "boolean" && typeof checks?.sqlite?.ok === "boolean" && typeof checks?.fileStorage?.ok === "boolean" && (checks?.fileInspection === undefined || typeof checks.fileInspection?.ok === "boolean"), ok: result.body?.ok === true, ready: result.body?.data?.runtime?.ready === true, sqlite: checks?.sqlite?.ok === true, fileStorage: checks?.fileStorage?.ok === true, fileInspection: checks?.fileInspection === undefined ? null : checks.fileInspection?.ok === true })); }
+  else { const checks = result.body?.data?.checks; const runtime = result.body?.data?.runtime; const hasFileMaxSizeBytes = runtime?.fileMaxSizeBytes !== undefined; const hasHttpMaxBodyBytes = runtime?.httpMaxBodyBytes !== undefined; const validBounds = (!hasFileMaxSizeBytes && !hasHttpMaxBodyBytes) || (hasFileMaxSizeBytes && hasHttpMaxBodyBytes && Number.isInteger(runtime.fileMaxSizeBytes) && runtime.fileMaxSizeBytes > 0 && Number.isInteger(runtime.httpMaxBodyBytes) && runtime.httpMaxBodyBytes > 0); process.stdout.write(JSON.stringify({ kind: "response", status: result.status, valid: typeof result.body?.ok === "boolean" && typeof runtime?.ready === "boolean" && validBounds && typeof checks?.sqlite?.ok === "boolean" && typeof checks?.fileStorage?.ok === "boolean" && (checks?.fileInspection === undefined || typeof checks.fileInspection?.ok === "boolean"), ok: result.body?.ok === true, ready: runtime?.ready === true, sqlite: checks?.sqlite?.ok === true, fileStorage: checks?.fileStorage?.ok === true, fileInspection: checks?.fileInspection === undefined ? null : checks.fileInspection?.ok === true })); }
   if (result.stderr) process.stderr.write(result.stderr);
   process.exit(Number(result.exitStatus || "0"));
 }
@@ -6786,7 +6786,7 @@ test("Hosted Capsule restart never publishes a running route before authenticate
     const lifecycle = await alignSealedFixtureWithBuiltLifecycle(fixture);
     const docker = await installFakeDocker(path.join(dir, "docker"), {
       env: {
-        FAKE_DOCKER_RUNTIME_PROBE_RESULTS: JSON.stringify([{ status: 503, body: { ok: false, data: { runtime: { ready: false }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: false } } }, error: null } }]),
+        FAKE_DOCKER_RUNTIME_PROBE_RESULTS: JSON.stringify([{ status: 503, body: { ok: false, data: { runtime: { ready: false, fileMaxSizeBytes: 10_485_760, httpMaxBodyBytes: 1_048_576 }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: false } } }, error: null } }]),
         FAKE_DOCKER_RUNTIME_PROBE_OBSERVATION: path.join(dir, "readiness-observation.json"),
         FAKE_DOCKER_RUNTIME_PROBE_ROUTE: fixture.routeFile,
         FAKE_DOCKER_RUNTIME_PROBE_REGISTRY: fixture.registryRecordPath,
@@ -6812,8 +6812,8 @@ test("Hosted Capsule restart never publishes a running route before authenticate
 });
 
 test("Hosted Capsule startup distinguishes delayed readiness, probe authentication failure, and exit during initialization", async () => {
-  const readyBody = { ok: true, data: { runtime: { ready: true }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: true } } }, error: null };
-  const startingBody = { ok: false, data: { runtime: { ready: false }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: false } } }, error: null };
+  const readyBody = { ok: true, data: { runtime: { ready: true, fileMaxSizeBytes: 10_485_760, httpMaxBodyBytes: 1_048_576 }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: true } } }, error: null };
+  const startingBody = { ok: false, data: { runtime: { ready: false, fileMaxSizeBytes: 10_485_760, httpMaxBodyBytes: 1_048_576 }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: false } } }, error: null };
   for (const scenario of ["delayed", "authentication", "exit"]) await withTempDir(async (dir) => {
     const fixture = await writeLegacySealedInstallFixture(dir, { rootName: `runtime-readiness-${scenario}`, restart: false });
     const lifecycle = await alignSealedFixtureWithBuiltLifecycle(fixture);
@@ -6845,6 +6845,74 @@ test("Hosted Capsule startup distinguishes delayed readiness, probe authenticati
     }
     const recordText = await readFile(fixture.registryRecordPath, "utf8");
     assert.equal(result.stdout.includes(JSON.parse(recordText).runtimeProbe.token), false);
+  });
+});
+
+test("Hosted Capsule startup and restart accept legacy readiness without runtime bounds", async () => {
+  for (const action of ["capsule.start", "capsule.restart"]) await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: `legacy-runtime-readiness-${action}`, restart: false });
+    const lifecycle = await alignSealedFixtureWithBuiltLifecycle(fixture);
+    const docker = await installFakeDocker(path.join(dir, "docker"), { env: {
+      FAKE_DOCKER_RUNTIME_PROBE_RESULTS: JSON.stringify([{ status: 200, body: {
+        ok: true,
+        data: { runtime: { ready: true }, checks: { sqlite: { ok: true }, fileStorage: { ok: true } } },
+        error: null,
+      } }]),
+    } });
+
+    const result = await runHostHelper({
+      action,
+      host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+      lifecycle,
+      verification: { healthTimeoutMs: 25 },
+    }, { cwd: dir, env: docker.env });
+
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, true, `${action}: ${result.stdout}`);
+    assert.match(await readFile(fixture.routeFile, "utf8"), /reverse_proxy 127\.0\.0\.1:49153/);
+    assert.equal(JSON.parse(await readFile(fixture.registryRecordPath, "utf8")).status, "running");
+  });
+});
+
+test("Hosted Capsule startup rejects partial or malformed runtime bounds", async () => {
+  const validRuntime = { ready: true, fileMaxSizeBytes: 10_485_760, httpMaxBodyBytes: 1_048_576 };
+  for (const { name, runtime } of [
+    { name: "missing-file-max", runtime: { ready: true, httpMaxBodyBytes: validRuntime.httpMaxBodyBytes } },
+    { name: "missing-http-max", runtime: { ready: true, fileMaxSizeBytes: validRuntime.fileMaxSizeBytes } },
+    { name: "fractional-file-max", runtime: { ...validRuntime, fileMaxSizeBytes: 10.5 } },
+    { name: "fractional-http-max", runtime: { ...validRuntime, httpMaxBodyBytes: 10.5 } },
+    { name: "non-positive-file-max", runtime: { ...validRuntime, fileMaxSizeBytes: 0 } },
+    { name: "non-positive-http-max", runtime: { ...validRuntime, httpMaxBodyBytes: -1 } },
+    { name: "string-file-max", runtime: { ...validRuntime, fileMaxSizeBytes: "10485760" } },
+    { name: "null-http-max", runtime: { ...validRuntime, httpMaxBodyBytes: null } },
+  ]) await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: `runtime-readiness-${name}`, restart: false });
+    const lifecycle = await alignSealedFixtureWithBuiltLifecycle(fixture);
+    const docker = await installFakeDocker(path.join(dir, "docker"), { env: {
+      FAKE_DOCKER_RUNTIME_PROBE_RESULTS: JSON.stringify([{ status: 200, body: {
+        ok: true,
+        data: { runtime, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: true } } },
+        error: null,
+      } }]),
+    } });
+
+    const result = await runHostHelper({
+      action: "capsule.start",
+      host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+      lifecycle,
+      verification: { healthTimeoutMs: 25 },
+    }, { cwd: dir, env: docker.env });
+
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, false, `${name}: ${result.stdout}`);
+    assert.equal(output.error.message, "Hosted Capsule runtime did not become ready.");
+    assert.match(await readFile(fixture.routeFile, "utf8"), /respond "Hosted Capsule unavailable" 503/);
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    assert.equal(record.status, "failed");
+    assert.equal(record.releases.find((release) => release.id === record.currentRelease.id).failure.message, "Hosted Capsule runtime readiness failed (invalid).");
+    assert((await docker.calls()).some((call) => call.args[0] === "exec"), `${name}: authenticated runtime probe was not attempted`);
   });
 });
 
@@ -6964,7 +7032,7 @@ test("sporades host helper checks Hosted Capsule runtime health with a Host-owne
         JSON.stringify({
           ok: true,
           data: {
-            runtime: { ready: true },
+            runtime: { ready: true, fileMaxSizeBytes: 7_654_321, httpMaxBodyBytes: 1_234_567 },
             checks: {
               sqlite: { ok: true },
               fileStorage: { ok: true },
@@ -7026,6 +7094,8 @@ test("sporades host helper checks Hosted Capsule runtime health with a Host-owne
           },
           runtime: {
             ready: true,
+            fileMaxSizeBytes: 7_654_321,
+            httpMaxBodyBytes: 1_234_567,
             checks: {
               sqlite: { ok: true },
               fileStorage: { ok: true },
@@ -7057,7 +7127,7 @@ test("sporades host helper refreshes a stale loopback route after Docker restart
       response.end(JSON.stringify({
         ok: true,
         data: {
-          runtime: { ready: true },
+          runtime: { ready: true, fileMaxSizeBytes: 10_485_760, httpMaxBodyBytes: 1_048_576 },
           checks: { sqlite: { ok: true }, fileStorage: { ok: true } },
         },
         error: null,
@@ -7157,7 +7227,7 @@ test("sporades host helper serializes two stale health route repairs across help
       response.end(JSON.stringify({
         ok: true,
         data: {
-          runtime: { ready: true },
+          runtime: { ready: true, fileMaxSizeBytes: 10_485_760, httpMaxBodyBytes: 1_048_576 },
           checks: { sqlite: { ok: true }, fileStorage: { ok: true } },
         },
         error: null,
@@ -7255,7 +7325,7 @@ test("sporades host helper serializes stale health repair against route removal"
       response.end(JSON.stringify({
         ok: true,
         data: {
-          runtime: { ready: true },
+          runtime: { ready: true, fileMaxSizeBytes: 10_485_760, httpMaxBodyBytes: 1_048_576 },
           checks: { sqlite: { ok: true }, fileStorage: { ok: true } },
         },
         error: null,
@@ -7336,7 +7406,7 @@ test("sporades host helper serializes stale health repair against a concurrent s
       response.end(JSON.stringify({
         ok: true,
         data: {
-          runtime: { ready: true },
+          runtime: { ready: true, fileMaxSizeBytes: 10_485_760, httpMaxBodyBytes: 1_048_576 },
           checks: { sqlite: { ok: true }, fileStorage: { ok: true } },
         },
         error: null,
@@ -8080,7 +8150,7 @@ test("sporades host helper does not send the runtime probe credential to caller-
         JSON.stringify({
           ok: true,
           data: {
-            runtime: { ready: true },
+            runtime: { ready: true, fileMaxSizeBytes: 10_485_760, httpMaxBodyBytes: 1_048_576 },
             checks: {
               sqlite: { ok: true },
               fileStorage: { ok: true },
@@ -8138,7 +8208,7 @@ test("sporades host helper does not send the runtime probe credential to caller-
 
 test("Sporades runtime health rejects unauthenticated probes and returns safe readiness checks", async () => {
   await withTempDir(async (dir) => {
-    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {});
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { files: { maxSizeBytes: 7_654_321 }, http: { maxBodyBytes: 1_234_567 } });
     const server = createServer(async (request, response) => {
       if (await routeRuntimeHealth(database, request, response)) {
         return;
@@ -8158,24 +8228,50 @@ test("Sporades runtime health rejects unauthenticated probes and returns safe re
       assert.equal(unauthenticated.status, 404);
       assert.equal(await unauthenticated.text(), "Not found");
 
-      database.clamavRequired = true;
       database.runtimeProbeToken = "a".repeat(64);
       const forged = await fetch(`http://127.0.0.1:${port}/__sporades/health/runtime`, {
-        headers: { "x-sporades-host-probe": "probe-secret" },
+        headers: { "x-sporades-host-probe": "b".repeat(64) },
       });
       assert.equal(forged.status, 404);
       assert.equal(await forged.text(), "Not found");
+
+      database.clamavRequired = true;
+      const forgedWithRequiredInspection = await fetch(`http://127.0.0.1:${port}/__sporades/health/runtime`, {
+        headers: { "x-sporades-host-probe": "b".repeat(64) },
+      });
+      assert.equal(forgedWithRequiredInspection.status, 404);
+      assert.equal(await forgedWithRequiredInspection.text(), "Not found");
+
+      const authenticatedWithRequiredInspection = await fetch(`http://127.0.0.1:${port}/__sporades/health/runtime`, {
+        headers: { "x-sporades-host-probe": "a".repeat(64) },
+      });
+      assert.equal(authenticatedWithRequiredInspection.status, 503);
+      assert.deepEqual(await authenticatedWithRequiredInspection.json(), {
+        ok: false,
+        data: {
+          runtime: { ready: false, fileMaxSizeBytes: 7_654_321, httpMaxBodyBytes: 1_234_567 },
+          checks: {
+            sqlite: { ok: true },
+            fileStorage: { ok: true },
+            fileInspection: { ok: false },
+          },
+        },
+        error: {
+          message: "Sporades runtime is not ready.",
+          hint: "Check Hosted Capsule logs and data volume permissions.",
+        },
+      });
       database.clamavRequired = false;
 
       const authenticated = await fetch(`http://127.0.0.1:${port}/__sporades/health/runtime`, {
-        headers: { "x-sporades-host-probe": "probe-secret" },
+        headers: { "x-sporades-host-probe": "a".repeat(64) },
       });
       assert.equal(authenticated.status, 200);
       const body = await authenticated.json();
       assert.deepEqual(body, {
         ok: true,
         data: {
-          runtime: { ready: true },
+          runtime: { ready: true, fileMaxSizeBytes: 7_654_321, httpMaxBodyBytes: 1_234_567 },
           checks: {
             sqlite: { ok: true },
             fileStorage: { ok: true },
@@ -8184,9 +8280,10 @@ test("Sporades runtime health rejects unauthenticated probes and returns safe re
         },
         error: null,
       });
+      assert.deepEqual(Object.keys(body.data.runtime).sort(), ["fileMaxSizeBytes", "httpMaxBodyBytes", "ready"]);
       const raw = JSON.stringify(body);
       assert.equal(raw.includes(dir), false);
-      assert.equal(raw.includes("probe-secret"), false);
+      assert.equal(raw.includes("a".repeat(64)), false);
       assert.equal(raw.includes("SPORADES"), false);
     } finally {
       database.close();
@@ -8195,9 +8292,35 @@ test("Sporades runtime health rejects unauthenticated probes and returns safe re
   });
 });
 
+test("Sporades runtime resolves the configured File size bound before exposing it", async () => {
+  await withTempDir(async (dir) => {
+    const valid = await openDevDatabase(path.join(dir, "valid.db"), "", {}, { files: { maxSizeBytes: 7_654_321 } });
+    try {
+      assert.equal(valid.fileMaxSizeBytes, 7_654_321);
+    } finally {
+      valid.close();
+    }
+
+    const defaulted = await openDevDatabase(path.join(dir, "default.db"), "", {}, {});
+    try {
+      assert.equal(defaulted.fileMaxSizeBytes, 10 * 1024 * 1024);
+    } finally {
+      defaulted.close();
+    }
+
+    for (const maxSizeBytes of [0, 1.5, "7654321", null]) {
+      await assert.rejects(
+        openDevDatabase(path.join(dir, `invalid-${String(maxSizeBytes)}.db`), "", {}, { files: { maxSizeBytes } }),
+        { code: "INVALID_FILE_CONFIG" },
+      );
+    }
+  });
+});
+
 test("Sporades runtime health accepts a URL instance through its public request contract", async () => {
   await withTempDir(async (dir) => {
     const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {});
+    database.runtimeProbeToken = "a".repeat(64);
     const response = {
       status: 0,
       body: "",
@@ -8209,7 +8332,7 @@ test("Sporades runtime health accepts a URL instance through its public request 
       const handled = await routeRuntimeHealth(database, {
         url: new URL("https://unrelated.example/__sporades/health/runtime"),
         method: "GET",
-        headers: { "x-sporades-host-probe": "probe-secret" },
+        headers: { "x-sporades-host-probe": "a".repeat(64) },
       }, response);
 
       assert.equal(handled, true);
@@ -8301,26 +8424,51 @@ test("sporades host helper reports structured Hosted Capsule runtime health fail
     const responseCases = [
       {
         failure: "runtime-failure",
-        body: { ok: false, data: { runtime: { ready: false }, checks: { sqlite: { ok: true }, fileStorage: { ok: true } } }, error: null },
+        body: { ok: false, data: { runtime: { ready: false, fileMaxSizeBytes: 10_485_760, httpMaxBodyBytes: 1_048_576 }, checks: { sqlite: { ok: true }, fileStorage: { ok: true } } }, error: null },
       },
       {
         failure: "sqlite-failure",
-        body: { ok: false, data: { runtime: { ready: false }, checks: { sqlite: { ok: false }, fileStorage: { ok: true } } }, error: null },
+        body: { ok: false, data: { runtime: { ready: false, fileMaxSizeBytes: 10_485_760, httpMaxBodyBytes: 1_048_576 }, checks: { sqlite: { ok: false }, fileStorage: { ok: true } } }, error: null },
       },
       {
         failure: "file-storage-failure",
-        body: { ok: false, data: { runtime: { ready: false }, checks: { sqlite: { ok: true }, fileStorage: { ok: false } } }, error: null },
+        body: { ok: false, data: { runtime: { ready: false, fileMaxSizeBytes: 10_485_760, httpMaxBodyBytes: 1_048_576 }, checks: { sqlite: { ok: true }, fileStorage: { ok: false } } }, error: null },
       },
       {
         failure: "file-inspection-failure",
         statusCode: 503,
-        body: { ok: false, data: { runtime: { ready: false }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: false } } }, error: null },
+        body: { ok: false, data: { runtime: { ready: false, fileMaxSizeBytes: 10_485_760, httpMaxBodyBytes: 1_048_576 }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: false } } }, error: null },
+      },
+      {
+        name: "invalid-runtime-bounds",
+        failure: "runtime-failure",
+        message: "Hosted Capsule runtime health had an unexpected shape.",
+        body: { ok: true, data: { runtime: { ready: true, fileMaxSizeBytes: 10.5, httpMaxBodyBytes: 1_048_576 }, checks: { sqlite: { ok: true }, fileStorage: { ok: true } } }, error: null },
+      },
+      {
+        name: "partial-runtime-bounds",
+        failure: "runtime-failure",
+        message: "Hosted Capsule runtime health had an unexpected shape.",
+        body: { ok: true, data: { runtime: { ready: true, fileMaxSizeBytes: 10_485_760 }, checks: { sqlite: { ok: true }, fileStorage: { ok: true } } }, error: null },
+      },
+      {
+        name: "non-positive-runtime-bounds",
+        failure: "runtime-failure",
+        message: "Hosted Capsule runtime health had an unexpected shape.",
+        body: { ok: true, data: { runtime: { ready: true, fileMaxSizeBytes: 10_485_760, httpMaxBodyBytes: 0 }, checks: { sqlite: { ok: true }, fileStorage: { ok: true } } }, error: null },
+      },
+      {
+        name: "malformed-runtime-bounds",
+        failure: "runtime-failure",
+        message: "Hosted Capsule runtime health had an unexpected shape.",
+        body: { ok: true, data: { runtime: { ready: true, fileMaxSizeBytes: "10485760", httpMaxBodyBytes: 1_048_576 }, checks: { sqlite: { ok: true }, fileStorage: { ok: true } } }, error: null },
       },
     ];
 
     for (const responseCase of responseCases) {
-      const root = path.join(baseRoot, responseCase.failure);
-      const docker = await installFakeDocker(path.join(dir, `${responseCase.failure}-docker`));
+      const caseName = responseCase.name ?? responseCase.failure;
+      const root = path.join(baseRoot, caseName);
+      const docker = await installFakeDocker(path.join(dir, `${caseName}-docker`));
       await withHttpServer((request, response) => {
         assert.equal(request.headers["x-sporades-host-probe"], "a".repeat(64));
         response.writeHead(responseCase.statusCode ?? 200, { "content-type": "application/json" });
@@ -8338,8 +8486,43 @@ test("sporades host helper reports structured Hosted Capsule runtime health fail
         const output = JSON.parse(result.stdout);
         assert.equal(output.ok, false);
         assert.equal(output.data.failure, responseCase.failure);
+        if (responseCase.message) assert.equal(output.error.message, responseCase.message);
         assert.equal(result.stdout.includes("a".repeat(64)), false);
         assert.equal(result.stdout.includes(baseRoot), false);
+      });
+    }
+
+    for (const responseCase of [
+      {
+        name: "legacy-runtime-health",
+        body: { ok: true, data: { runtime: { ready: true }, checks: { sqlite: { ok: true }, fileStorage: { ok: true } } }, error: null },
+        expectedRuntime: { ready: true, checks: { sqlite: { ok: true }, fileStorage: { ok: true } } },
+      },
+      {
+        name: "bounded-runtime-health",
+        body: { ok: true, data: { runtime: { ready: true, fileMaxSizeBytes: 7_654_321, httpMaxBodyBytes: 1_234_567 }, checks: { sqlite: { ok: true }, fileStorage: { ok: true } } }, error: null },
+        expectedRuntime: { ready: true, fileMaxSizeBytes: 7_654_321, httpMaxBodyBytes: 1_234_567, checks: { sqlite: { ok: true }, fileStorage: { ok: true } } },
+      },
+    ]) {
+      const root = path.join(baseRoot, responseCase.name);
+      const docker = await installFakeDocker(path.join(dir, `${responseCase.name}-docker`));
+      await withHttpServer((request, response) => {
+        assert.equal(request.headers["x-sporades-host-probe"], "a".repeat(64));
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify(responseCase.body));
+      }, async (port) => {
+        const domain = `localhost:${port}`;
+        await writeHealthRecord(root, {
+          domain,
+          scheme: "http",
+          hostedUrl: `http://team-notes.localhost:${port}`,
+          remoteCapsuleId: `${domain}/team-notes`,
+        });
+        const result = await runHealth(root, docker.env, { domain, scheme: "http" });
+        assert.equal(result.code, 0, result.stderr);
+        const output = JSON.parse(result.stdout);
+        assert.equal(output.ok, true, `${responseCase.name}: ${result.stdout}`);
+        assert.deepEqual(output.data.runtime, responseCase.expectedRuntime, responseCase.name);
       });
     }
   });
@@ -11367,7 +11550,7 @@ test("sporades host helper verifies a pushed Hosted Capsule release after restar
         JSON.stringify({
           ok: true,
           data: {
-            runtime: { ready: true },
+            runtime: { ready: true, fileMaxSizeBytes: 10_485_760, httpMaxBodyBytes: 1_048_576 },
             checks: {
               sqlite: { ok: true },
               fileStorage: { ok: true },
@@ -11463,7 +11646,7 @@ test("sporades host helper waits for a newly started Capsule route to serve its 
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({
         ok: true,
-        data: { runtime: { ready: true }, checks: { sqlite: { ok: true }, fileStorage: { ok: true } } },
+        data: { runtime: { ready: true, fileMaxSizeBytes: 10_485_760, httpMaxBodyBytes: 1_048_576 }, checks: { sqlite: { ok: true }, fileStorage: { ok: true } } },
         error: null,
       }));
     }, async (port) => {
@@ -11507,7 +11690,7 @@ test("ClamAV-declaring release verification allows a cold scanner to exceed the 
         response.writeHead(200, { "content-type": "text/html" }); response.end("<main>ready</main>"); return;
       }
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ ok: true, data: { runtime: { ready: true }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: true } } }, error: null }));
+      response.end(JSON.stringify({ ok: true, data: { runtime: { ready: true, fileMaxSizeBytes: 10_485_760, httpMaxBodyBytes: 1_048_576 }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: true } } }, error: null }));
     }, async (port) => {
       const fixture = await writeHostedCapsuleInstallFixture(dir, { rootName: "verify-cold-clamav", domain: `localhost:${port}`, scheme: "http" });
       fixture.release.inspection = { requiredInspectors: ["clamav"] };
@@ -11769,7 +11952,7 @@ test("sporades host helper marks verified push failed when runtime health checks
         JSON.stringify({
           ok: false,
           data: {
-            runtime: { ready: false },
+            runtime: { ready: false, fileMaxSizeBytes: 10_485_760, httpMaxBodyBytes: 1_048_576 },
             checks: {
               sqlite: { ok: false },
               fileStorage: { ok: true },

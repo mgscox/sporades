@@ -462,6 +462,11 @@ setting, and not used by MinIO-backed storage. File paths are logical,
 Capsule-scoped Sporades paths regardless of which Storage adapter stores the
 bytes.
 
+`files.maxSizeBytes` configures the maximum size of one uploaded File. When it
+is omitted, the limit defaults to 10 MiB (10 * 1024 * 1024 bytes). An explicit
+value must be a positive integer byte count. `0`, fractions, non-numeric
+values, and `null` are rejected at startup with `INVALID_FILE_CONFIG`.
+
 The first Docker Compose Capsule service implementation is local-only. Dev
 sessions and local Container sessions can start, inspect, stop, and reset
 declared local service state. Hosted Capsule service orchestration is deferred:

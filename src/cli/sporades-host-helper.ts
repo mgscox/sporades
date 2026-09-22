@@ -97,8 +97,10 @@ try {
   const text = await response.text();
   if (text.length > 65536) { process.stdout.write(JSON.stringify({ kind: "invalid", status: response.status })); process.exit(0); }
   let body; try { body = JSON.parse(text); } catch { process.stdout.write(JSON.stringify({ kind: "invalid", status: response.status })); process.exit(0); }
-  const checks = body?.data?.checks; const ready = body?.data?.runtime?.ready;
-  const valid = typeof body?.ok === "boolean" && typeof ready === "boolean" && typeof checks?.sqlite?.ok === "boolean" && typeof checks?.fileStorage?.ok === "boolean" && (checks?.fileInspection === undefined || typeof checks.fileInspection?.ok === "boolean");
+  const checks = body?.data?.checks; const runtime = body?.data?.runtime; const ready = runtime?.ready;
+  const hasFileMaxSizeBytes = runtime?.fileMaxSizeBytes !== undefined; const hasHttpMaxBodyBytes = runtime?.httpMaxBodyBytes !== undefined;
+  const validBounds = (!hasFileMaxSizeBytes && !hasHttpMaxBodyBytes) || (hasFileMaxSizeBytes && hasHttpMaxBodyBytes && Number.isInteger(runtime.fileMaxSizeBytes) && runtime.fileMaxSizeBytes > 0 && Number.isInteger(runtime.httpMaxBodyBytes) && runtime.httpMaxBodyBytes > 0);
+  const valid = typeof body?.ok === "boolean" && typeof ready === "boolean" && validBounds && typeof checks?.sqlite?.ok === "boolean" && typeof checks?.fileStorage?.ok === "boolean" && (checks?.fileInspection === undefined || typeof checks.fileInspection?.ok === "boolean");
   process.stdout.write(JSON.stringify({ kind: "response", status: response.status, valid, ok: body?.ok === true, ready: ready === true, sqlite: checks?.sqlite?.ok === true, fileStorage: checks?.fileStorage?.ok === true, fileInspection: checks?.fileInspection === undefined ? null : checks.fileInspection?.ok === true }));
 } catch { process.stdout.write(JSON.stringify({ kind: "connection" })); }`;
 // Published by Cloudflare at https://www.cloudflare.com/ips/ and checked on 2026-08-21.
@@ -3371,10 +3373,20 @@ function normaliseRuntimeHealthBody(body: any) {
   const fileStorage = checks?.fileStorage;
   const fileInspection = checks?.fileInspection;
   const ready = body?.data?.runtime?.ready;
+  const fileMaxSizeBytes = body?.data?.runtime?.fileMaxSizeBytes;
+  const httpMaxBodyBytes = body?.data?.runtime?.httpMaxBodyBytes;
+  const hasFileMaxSizeBytes = fileMaxSizeBytes !== undefined;
+  const hasHttpMaxBodyBytes = httpMaxBodyBytes !== undefined;
+  const validBounds = (!hasFileMaxSizeBytes && !hasHttpMaxBodyBytes)
+    || (hasFileMaxSizeBytes && hasHttpMaxBodyBytes
+      && Number.isInteger(fileMaxSizeBytes) && fileMaxSizeBytes > 0
+      && Number.isInteger(httpMaxBodyBytes) && httpMaxBodyBytes > 0);
   const valid = typeof body?.ok === "boolean" && typeof ready === "boolean" && typeof sqlite?.ok === "boolean" && typeof fileStorage?.ok === "boolean"
+    && validBounds
     && (fileInspection === undefined || typeof fileInspection?.ok === "boolean");
   const safe = {
     ready: ready === true,
+    ...(validBounds && hasFileMaxSizeBytes ? { fileMaxSizeBytes, httpMaxBodyBytes } : {}),
     checks: {
       sqlite: { ok: sqlite?.ok === true },
       fileStorage: { ok: fileStorage?.ok === true },

@@ -381,6 +381,7 @@ Useful Hosted Capsule operations:
 
 ```sh
 sporades host list --host personal --json
+sporades host health team-notes --host personal --json
 sporades host stats --host personal --json
 sporades host stats team-notes --host personal --json
 sporades host logs http --host personal --subname team-notes -n 200 --json
@@ -389,6 +390,25 @@ sporades host restart team-notes --host personal --json
 sporades host stop team-notes --host personal --json
 sporades host reconcile team-notes --host personal --json
 ```
+
+### Runtime health bounds
+
+The existing token-gated `/__sporades/health/runtime` probe reports a `runtime`
+object. For current Capsule releases, that object includes `fileMaxSizeBytes`
+and `httpMaxBodyBytes` as resolved running-process positive integer byte bounds.
+`sporades host health --json` preserves both values for current Capsules in its
+normalized `data.runtime` object, so operators can confirm the limits used by
+the running process without restarting it.
+
+Legacy Capsule releases may omit `fileMaxSizeBytes` and `httpMaxBodyBytes`
+together. Consumers treat that all-absent pair compatibly and omit both values
+from normalized output. Partial presence, malformed values, or non-positive
+values are an invalid, unexpected shape rather than legacy compatibility.
+
+This adds only the two resolved numeric bounds: no additional sensitive data is
+exposed. The token gate uses the existing Host-owned
+`x-sporades-host-probe` credential. The runtime validates that credential on
+every probe, independently of whether the Capsule requires File inspection.
 
 `sporades host reconcile` settles an interrupted release install whose
 `deploy-file-attempt.jsonl` journal blocks start, restart and rollback. It

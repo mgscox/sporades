@@ -1176,6 +1176,80 @@ test("docs describe doctor diagnostics as read-only coordination", async () => {
   assert.doesNotMatch(roadmap, /`sporades doctor` \| ready/);
 });
 
+test("canonical hosting docs define runtime health bound compatibility", async () => {
+  const [operations, runtimeSource, hostHelperSource] = await Promise.all([
+    readProjectFile("docs/reference/operations-and-hosting.md"),
+    readProjectFile("src/http-runtime.ts"),
+    readProjectFile("src/cli/sporades-host-helper.ts"),
+  ]);
+  const contract = operations.match(/### Runtime health bounds[\s\S]*?(?=\n`sporades host reconcile`)/)?.[0];
+  const normalizer = hostHelperSource.match(/function normaliseRuntimeHealthBody\(body: any\)[\s\S]*?(?=\nfunction healthFailure)/)?.[0];
+  assert.ok(contract, "canonical operations docs must define the runtime health bounds contract");
+  assert.ok(normalizer, "Host health must retain an inspectable runtime health normalizer");
+
+  assert.match(contract, /`\/__sporades\/health\/runtime`/);
+  assert.match(contract, /token-gated/);
+  assert.match(contract, /`sporades host health --json`/);
+  for (const field of ["fileMaxSizeBytes", "httpMaxBodyBytes"]) {
+    assert.match(contract, new RegExp("`" + field + "`"));
+    assert.match(runtimeSource, new RegExp(`runtime: \\{ ready,[^}]*${field}`));
+    assert.match(normalizer, new RegExp(`const ${field} = body\\?\\.data\\?\\.runtime\\?\\.${field}`));
+  }
+  assert.match(normalizer, /\(!hasFileMaxSizeBytes && !hasHttpMaxBodyBytes\)/);
+  assert.match(normalizer, /hasFileMaxSizeBytes && hasHttpMaxBodyBytes[\s\S]*Number\.isInteger\(fileMaxSizeBytes\) && fileMaxSizeBytes > 0[\s\S]*Number\.isInteger\(httpMaxBodyBytes\) && httpMaxBodyBytes > 0/);
+  assert.match(normalizer, /validBounds && hasFileMaxSizeBytes \? \{ fileMaxSizeBytes, httpMaxBodyBytes \} : \{\}/);
+  assert.match(runtimeSource, /request\.headers\["x-sporades-host-probe"\]/);
+  assert.match(contract, /resolved running-process positive integer byte bounds/i);
+  assert.match(contract, /legacy Capsule releases[\s\S]*omit[\s\S]*together/i);
+  assert.match(contract, /all-absent pair[\s\S]*compatibl/i);
+  assert.match(contract, /partial presence[\s\S]*malformed[\s\S]*non-positive[\s\S]*unexpected shape/i);
+  assert.match(contract, /token gate[\s\S]*Host-owned[\s\S]*every probe[\s\S]*independently[\s\S]*File inspection/i);
+  assert.match(contract, /no additional sensitive data/i);
+});
+
+test("File inspection docs keep runtime probe authentication unconditional", async () => {
+  const [files, runtimeSource, hostTests] = await Promise.all([
+    readProjectFile("docs/reference/files-and-realtime.md"),
+    readProjectFile("src/http-runtime.ts"),
+    readProjectFile("test/host.test.js"),
+  ]);
+  const contract = files.match(/The private\s+health route[\s\S]*?(?=\n\nThe Base image)/)?.[0];
+  const route = runtimeSource.match(/export async function routeRuntimeHealth[\s\S]*?(?=\nasync function createRuntimeHealthResult)/)?.[0];
+  const healthTests = hostTests.match(/test\("Sporades runtime health rejects unauthenticated probes[\s\S]*?(?=\ntest\()/)?.[0];
+  assert.ok(contract, "canonical File docs must define private runtime health authentication");
+  assert.ok(route, "runtime health route must remain inspectable");
+  assert.ok(healthTests, "runtime health authentication tests must remain inspectable");
+
+  assert.match(contract, /exact[\s\S]*64-hex[\s\S]*`runtimeProbeToken`/i);
+  assert.match(contract, /regardless of whether[\s\S]*ClamAV/i);
+  assert.match(contract, /missing[\s\S]*malformed[\s\S]*forged[\s\S]*opaque `404`/i);
+  assert.match(contract, /ClamAV[\s\S]*`fileInspection` readiness\s+check[\s\S]*not authentication/i);
+  assert.match(route, /runtimeProbeMatches\(probe, database\.runtimeProbeToken\)[\s\S]*createRuntimeHealthResult\(database\)/);
+  assert.match(route, /\^\[a-f0-9\]\{64\}\$[\s\S]*timingSafeEqual/);
+  assert.match(healthTests, /database\.runtimeProbeToken = "a"\.repeat\(64\)[\s\S]*"b"\.repeat\(64\)[\s\S]*forged\.status, 404[\s\S]*database\.clamavRequired = true/);
+  assert.match(healthTests, /database\.clamavRequired = false[\s\S]*"a"\.repeat\(64\)[\s\S]*authenticated\.status, 200/);
+});
+
+test("canonical project configuration docs define the File upload size limit", async () => {
+  const [configuration, runtimeSource] = await Promise.all([
+    readProjectFile("docs/reference/projects-and-configuration.md"),
+    readProjectFile("src/server-runtime-source.ts"),
+  ]);
+  const contract = configuration.match(/`files\.maxSizeBytes`[\s\S]*?(?=\n### |\n`security` controls)/)?.[0];
+  const resolver = runtimeSource.match(/function resolveFileMaxSizeBytes\(config: RuntimeConfig = \{\}\)[\s\S]*?(?=\nexport async function openDevDatabase)/)?.[0];
+  assert.ok(contract, "canonical project configuration docs must define files.maxSizeBytes");
+  assert.ok(resolver, "server runtime must retain an inspectable File size resolver");
+
+  assert.match(contract, /10 MiB/);
+  assert.match(contract, /10 \* 1024 \* 1024 bytes/);
+  assert.match(contract, /positive integer byte count/i);
+  assert.match(contract, /`0`[\s\S]*fractions[\s\S]*non-numeric[\s\S]*`null`[\s\S]*rejected at startup/i);
+  assert.match(contract, /`INVALID_FILE_CONFIG`/);
+  assert.match(resolver, /configured === undefined\) return 10 \* 1024 \* 1024/);
+  assert.match(resolver, /!Number\.isInteger\(configured\) \|\| configured <= 0/);
+  assert.match(resolver, /"INVALID_FILE_CONFIG"/);
+});
+
 test("user guide documents Capsule service reset without blanket Runtime deletion", async () => {
   const userGuide = await readProjectFile("docs/user-guide.md");
 
@@ -1327,6 +1401,15 @@ test("File reference docs define the trusted multipart ingress contract and oper
   assert.match(contents, /requestKeyHeader/);
   assert.match(contents, /partKeyHeader/);
   assert.match(contents, /INGRESS_AUTHORITY_DENIED/);
+  const refusalContract = contents.match(/When a Custom endpoint rejects one of these limits,[\s\S]*?(?=\n\n`requestKeyHeader`)/)?.[0];
+  assert.ok(refusalContract, "multipart refusal contract must remain documented at the ingress limits");
+  assert.match(refusalContract, /\{ partType: "file" \| "field", limitKind, limit: integer \}/);
+  assert.deepEqual(
+    [...refusalContract.matchAll(/`((?:max|fileMax)[A-Za-z]+)`/g)].map((match) => match[1]),
+    ["maxPartHeaderBytes", "maxFieldCount", "maxFieldBytes", "maxTotalFieldBytes", "maxFiles", "maxFileBytes", "fileMaxSizeBytes", "maxTotalFileBytes"],
+  );
+  assert.match(refusalContract, /never includes filenames, field contents, credentials,\s+raw headers, or other request data/i);
+  assert.doesNotMatch(refusalContract, /maxPartBytes|maxWireBytes/);
   assert.match(contents, /Capsule startup automatically runs a bounded, deterministic\s+cleanup batch/i);
   assert.match(contents, /There is no\s+public manual ingress-sweeper API/i);
   assert.doesNotMatch(contents, /sweepExpiredFileIngress/);
