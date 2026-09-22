@@ -754,6 +754,7 @@ function scanClientPrerenderHtml(html) {
     const lowerHtml = foldAsciiCase(html);
     const rawTextElements = new Set(["iframe", "noembed", "noframes", "noscript", "plaintext", "script", "style", "textarea", "title", "xmp"]);
     const markers = [];
+    const foreignElements = [];
     let bodyEnd;
     let problem;
     let cursor = 0;
@@ -761,6 +762,17 @@ function scanClientPrerenderHtml(html) {
         const tagStart = html.indexOf("<", cursor);
         if (tagStart === -1)
             break;
+        // In SVG/MathML this is character data, not a bogus HTML declaration.
+        // Its payload can contain both > and comment-shaped text.
+        if (foreignElements.length > 0 && html.startsWith("<![CDATA[", tagStart)) {
+            const cdataEnd = html.indexOf("]]>", tagStart + 9);
+            if (cdataEnd === -1) {
+                problem = "unterminated foreign-content CDATA section";
+                break;
+            }
+            cursor = cdataEnd + 3;
+            continue;
+        }
         if (html.startsWith("<!--", tagStart)) {
             const commentEnd = findHtmlCommentEnd(html, tagStart);
             if (!commentEnd) {
@@ -823,6 +835,14 @@ function scanClientPrerenderHtml(html) {
         }
         if (!closing && name === "body" && bodyEnd === undefined)
             bodyEnd = tagEnd;
+        if (closing) {
+            const foreignIndex = foreignElements.lastIndexOf(name);
+            if (foreignIndex !== -1)
+                foreignElements.length = foreignIndex;
+        }
+        else if ((name === "svg" || name === "math") && !/\/\s*>$/.test(html.slice(tagStart, tagEnd))) {
+            foreignElements.push(name);
+        }
         cursor = tagEnd;
         if (!closing && rawTextElements.has(name)) {
             if (name === "plaintext")
