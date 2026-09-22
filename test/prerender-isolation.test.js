@@ -120,3 +120,18 @@ test('computed external require failures redact runtime paths and file URLs', as
     });
   } finally { await rm(root, {recursive:true, force:true}); await rm(external, {recursive:true, force:true}); }
 });
+
+test('renderer parentPort progress cannot impersonate bootstrap completion', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-renderer-channel-')));
+  try {
+    await writeFile(path.join(root, 'entry.cjs'), `
+const { parentPort } = require('node:worker_threads');
+parentPort.postMessage({ progress: 'loading' });
+exports.default = async () => {
+  parentPort.postMessage({ kind:'success', rendered:'wrong channel' });
+  await new Promise((resolve) => setImmediate(resolve));
+  return '<main>Actual renderer result</main>';
+};`);
+    assert.equal(await renderClientPrerenderFragment(root, {name:'landing', module:'entry.cjs'}), '<main>Actual renderer result</main>');
+  } finally { await rm(root, {recursive:true, force:true}); }
+});

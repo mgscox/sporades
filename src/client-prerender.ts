@@ -1,7 +1,7 @@
 import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { Worker } from "node:worker_threads";
+import { MessageChannel, Worker } from "node:worker_threads";
 
 import { Parser } from "acorn";
 import jsx from "acorn-jsx";
@@ -1045,7 +1045,9 @@ async function executeBundledRenderer(
   // isolates preloaded CLI/Vite dependencies as well as concurrent renderer builds,
   // without evicting or mutating the host's CommonJS cache. This is not a sandbox.
   const bootstrap = String.raw`
-const { parentPort, workerData } = require("node:worker_threads");
+const { workerData } = require("node:worker_threads");
+const completionPort = workerData.completionPort;
+delete workerData.completionPort;
 const { createRequire, Module } = require("node:module");
 const { dirname, isAbsolute, resolve } = require("node:path");
 const dependencies = new Set();
@@ -1073,7 +1075,7 @@ Module.prototype.require = function(specifier) {
 };
 globalThis.require = createRequire(workerData.modulePath);
 function post(outcome) {
-  parentPort.postMessage({ ...outcome, dependencies: [...new Set([...dependencies, ...Object.keys(require.cache)])], runtimeSpecifiers: [...runtimeSpecifiers] });
+  completionPort.postMessage({ ...outcome, dependencies: [...new Set([...dependencies, ...Object.keys(require.cache)])], runtimeSpecifiers: [...runtimeSpecifiers] });
 }
 function safeMessage(error) {
   try {
@@ -1107,15 +1109,17 @@ process.once("uncaughtException", (error) => post({ kind: "failure", message: sa
     post({ kind: "failure", message: safeMessage(error) });
   }
 })();`;
+  const completion = new MessageChannel();
   const worker = new Worker(bootstrap, {
     eval: true,
-    workerData: { source, format, modulePath, displayPath: displayPath.replaceAll("\\", "/") },
+    workerData: { source, format, modulePath, displayPath: displayPath.replaceAll("\\", "/"), completionPort: completion.port2 },
+    transferList: [completion.port2],
   });
   try {
     const outcome = await new Promise<EsmRendererOutcome>((resolve, reject) => {
       let settled = false;
       const cleanup = () => {
-        worker.off("message", onMessage);
+        completion.port1.off("message", onMessage);
         worker.off("error", onError);
         worker.off("exit", onExit);
       };
@@ -1130,7 +1134,7 @@ process.once("uncaughtException", (error) => post({ kind: "failure", message: sa
       const onExit = (code: number) => settle(() => {
         reject(new Error(`renderer worker exited before returning a result (code ${code})`));
       });
-      worker.once("message", onMessage);
+      completion.port1.once("message", onMessage);
       worker.once("error", onError);
       worker.once("exit", onExit);
     });
@@ -1154,6 +1158,7 @@ process.once("uncaughtException", (error) => post({ kind: "failure", message: sa
     return { kind: "failure", message: boundedMessage(error, projectRoots) };
   } finally {
     await worker.terminate();
+    completion.port1.close();
   }
 }
 
