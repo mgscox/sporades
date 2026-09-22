@@ -452,6 +452,40 @@ test("CommonJS wrapper writes remain valid assignment targets with local semanti
   });
 });
 
+test("deleting CommonJS location wrappers stays false without changing later reads", async () => {
+  await withTempDir(async (projectDir) => {
+    const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
+    await writeMinimalViteCapsule(projectDir, sourceHtml);
+    const nestedDir = path.join(projectDir, "renderer", "nested");
+    await mkdir(nestedDir, { recursive: true });
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'import render from "./renderer/nested/helper.cjs";\nexport default render;\n',
+    );
+    await writeFile(
+      path.join(nestedDir, "helper.cjs"),
+      `const path = require("node:path");
+module.exports = () => {
+  const deletedDirectory = delete __dirname;
+  const deletedFilename = delete __filename;
+  return \`<main>\${deletedDirectory}|\${deletedFilename}|\${path.basename(__dirname)}|\${path.basename(__filename)}</main>\`;
+};
+`,
+    );
+
+    const bundle = await createBundle(projectDir, { name: "wrapper-delete-prerender", client: structuredClone(viteConfig) }, { publishLegacy: false });
+    try {
+      assert.match(
+        await readFile(bundle.staticFiles.indexHtml, "utf8"),
+        /<main>false\|false\|nested\|helper\.cjs<\/main>/,
+      );
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
 test("a nested CommonJS prerender helper keeps per-module paths and computed require", async () => {
   await withTempDir(async (projectDir) => {
     const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
