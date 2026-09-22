@@ -72858,7 +72858,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
           bundle: false,
           define: define2,
           entryPoints: [args.path],
-          format: commonJsModule ? "cjs" : "esm",
+          format: commonJsModule ? void 0 : "esm",
           jsx: "preserve",
           logLevel: "silent",
           outdir: path3.join(projectRoot, ".sporades-prerender-transform"),
@@ -72872,7 +72872,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
           throw new Error("the import.meta.url transform produced unsupported output");
         }
         if (checksImports) {
-          const syntax = RendererSyntaxParser.parse(javascript[0].text, { ecmaVersion: "latest", sourceType: commonJsModule ? "script" : "module", allowReturnOutsideFunction: commonJsModule });
+          const syntax = parseRendererSyntax(javascript[0].text, commonJsModule);
           visitRendererSyntax(syntax, (node) => {
             if (node.type === "ImportExpression" && isRendererSyntaxNode(node.source) && !isStaticRendererRequireSpecifier(node.source)) {
               throw new Error("Prerender dynamic import specifiers must be string literals; use explicit imports so dependencies resolve from their owning module.");
@@ -73011,13 +73011,17 @@ function rendererTransformOutputLoader(loader) {
   return loader === "jsx" || loader === "tsx" ? "jsx" : "js";
 }
 var RendererSyntaxParser = Parser.extend((0, import_acorn_jsx.default)());
+function parseRendererSyntax(contents, commonJs) {
+  if (commonJs) {
+    try {
+      return RendererSyntaxParser.parse(contents, { ecmaVersion: "latest", sourceType: "script", allowReturnOutsideFunction: true });
+    } catch {
+    }
+  }
+  return RendererSyntaxParser.parse(contents, { ecmaVersion: "latest", sourceType: "module" });
+}
 function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
-  const syntax = RendererSyntaxParser.parse(contents, {
-    allowHashBang: true,
-    allowReturnOutsideFunction: true,
-    ecmaVersion: "latest",
-    sourceType: "script"
-  });
+  const syntax = parseRendererSyntax(contents, true);
   const rootScope = { functionScope: true, bindings: /* @__PURE__ */ new Set() };
   const scopes = /* @__PURE__ */ new WeakMap();
   collectRendererScopes(syntax, rootScope, scopes);
@@ -73026,7 +73030,18 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
   const deleteOperands = /* @__PURE__ */ new WeakSet();
   collectRendererDeleteOperands(syntax, deleteOperands);
   const writtenWrapperNames = /* @__PURE__ */ new Set();
+  const wrapperDeclarations = /* @__PURE__ */ new WeakSet();
   visitRendererSyntax(syntax, (node) => {
+    if (node.type === "VariableDeclaration" && node.kind === "var" && nearestRendererFunctionScope(scopes.get(node) ?? rootScope) === rootScope) {
+      for (const declaration of node.declarations) {
+        const declared = { functionScope: true, bindings: /* @__PURE__ */ new Set() };
+        addRendererBinding(declared, declaration.id);
+        for (const name2 of declared.bindings) {
+          if (["require", "__dirname", "__filename"].includes(name2) && !rootScope.bindings.has(name2)) writtenWrapperNames.add(name2);
+        }
+        markRendererAssignmentTarget(declaration.id, wrapperDeclarations);
+      }
+    }
     if (node.type === "Identifier" && assignmentTargets.has(node) && (node.name === "require" || node.name === "__dirname" || node.name === "__filename") && !rendererScopeBinds(scopes.get(node) ?? rootScope, node.name)) {
       writtenWrapperNames.add(node.name);
     }
@@ -73056,7 +73071,7 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
       }
       return;
     }
-    if (node.type === "Identifier" && node.name === "require" && !handledRequireCalls.has(node) && !rendererScopeBinds(scope, "require") && isRendererIdentifierReference(node, parent, key, emptyTargets, emptyTargets)) {
+    if (node.type === "Identifier" && node.name === "require" && !handledRequireCalls.has(node) && !rendererScopeBinds(scope, "require") && (wrapperDeclarations.has(node) || isRendererIdentifierReference(node, parent, key, emptyTargets, emptyTargets))) {
       const value = writableRequire ? writableRequireName : helperName;
       const shorthand = parent?.type === "Property" && parent.shorthand === true && parent.value === node;
       replacements.push({ start: node.start, end: node.end, value: shorthand ? `require: ${value}` : value });
@@ -73139,7 +73154,13 @@ function collectRendererScopes(node, scope, scopes) {
   scopes.set(node, activeScope);
   if (node.type === "VariableDeclaration") {
     const declarationScope = node.kind === "var" ? nearestRendererFunctionScope(activeScope) : activeScope;
-    for (const declaration of node.declarations ?? []) addRendererBinding(declarationScope, declaration.id);
+    for (const declaration of node.declarations ?? []) {
+      if (node.kind === "var" && !declarationScope.parent) {
+        const declared = { functionScope: true, bindings: /* @__PURE__ */ new Set() };
+        addRendererBinding(declared, declaration.id);
+        for (const name2 of declared.bindings) if (!["require", "__dirname", "__filename"].includes(name2)) declarationScope.bindings.add(name2);
+      } else addRendererBinding(declarationScope, declaration.id);
+    }
   } else if (node.type === "ImportDeclaration") {
     for (const specifier of node.specifiers ?? []) addRendererBinding(activeScope, specifier.local);
   }
