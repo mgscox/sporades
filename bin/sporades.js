@@ -81391,7 +81391,7 @@ function collectRendererScopes(node, scope, scopes) {
       if (node.kind === "var" && !declarationScope.parent) {
         const declared = { functionScope: true, bindings: /* @__PURE__ */ new Set() };
         addRendererBinding(declared, declaration.id);
-        for (const name2 of declared.bindings) if (!["require", "__dirname", "__filename"].includes(name2)) declarationScope.bindings.add(name2);
+        for (const name2 of declared.bindings) if (!["require", "module", "exports", "__dirname", "__filename"].includes(name2)) declarationScope.bindings.add(name2);
       } else addRendererBinding(declarationScope, declaration.id);
     }
   } else if (node.type === "ImportDeclaration") {
@@ -81497,15 +81497,29 @@ function isRendererSyntaxNode(value) {
   return Boolean(value && typeof value === "object" && typeof value.type === "string");
 }
 function validateClientPrerenderSourceHtml(html) {
-  if (scanClientPrerenderHtml(html).reservedBoundary) {
+  if (hasReservedPrerenderBoundary(html)) {
     throw prerenderError("Client index.html contains a reserved prerender boundary comment.", "Remove Sporades private boundary comments from index.html and HTML plugins; the Bundle pipeline supplies them.");
   }
+}
+function validateClientPrerenderOutputHtml(html, placements) {
+  if (placements === 0) validateClientPrerenderSourceHtml(html);
+  else validatePrerenderDomBoundaries(html, placements);
+}
+function hasReservedPrerenderBoundary(html) {
+  const pending = [parse4(html, { scriptingEnabled: true })];
+  while (pending.length) {
+    const node = pending.pop();
+    if (node.nodeName === "#comment" && "data" in node && /^sporades:prerender-boundary-(?:start|end)\b/.test(node.data.trim())) return true;
+    if ("childNodes" in node) pending.push(...node.childNodes);
+    if ("tagName" in node && node.tagName === "template") pending.push(node.content);
+  }
+  return false;
 }
 function placeClientPrerenderFragments(html, fragments) {
   const warnings = [];
   validateClientPrerenderSourceHtml(html);
   for (const fragment of fragments) {
-    if (scanClientPrerenderHtml(fragment.html).reservedBoundary) {
+    if (hasReservedPrerenderBoundary(fragment.html)) {
       throw prerenderError(`Prerender fragment "${fragment.name}" contains a reserved prerender boundary comment.`, "Remove Sporades private boundary comments from renderer output; the Bundle pipeline supplies them.");
     }
   }
@@ -81520,7 +81534,7 @@ function placeClientPrerenderFragments(html, fragments) {
     for (const name2 of new Set(placement.markers.flatMap((marker) => marker.name ? [marker.name] : []))) {
       warnings.push({ code: "PRERENDER_UNKNOWN_MARKER", fragment: name2, message: `Unknown prerender marker "${name2}" remains a comment in index.html.` });
     }
-    return { html, warnings };
+    return { html, warnings, placements: 0 };
   }
   if (placement.problem) {
     throw prerenderError(
@@ -81560,8 +81574,12 @@ function placeClientPrerenderFragments(html, fragments) {
     if (count === 0) warnings.push({ code: "PRERENDER_UNUSED_FRAGMENT", fragment: name2, message: `Configured prerender fragment "${name2}" has no placement in index.html.` });
     else if (count > 1) warnings.push({ code: "PRERENDER_DUPLICATE_PLACEMENT", fragment: name2, message: `Prerender fragment "${name2}" is placed ${count} times in index.html.` });
   }
-  validatePrerenderDomBoundaries(replaced, [...counts.values()].reduce((sum, count) => sum + count, 0));
-  return { html: replaced, warnings };
+  const placements = [...counts.values()].reduce((sum, count) => sum + count, 0);
+  validatePrerenderDomBoundaries(replaced, placements);
+  if (prerenderDocumentRootAttributes(html) !== prerenderDocumentRootAttributes(replaced)) {
+    throw prerenderError("Client prerender fragments mutate author-owned document-root attributes.", "Return fragment content rather than html or body elements; browsers merge their attributes into the existing document roots.");
+  }
+  return { html: replaced, warnings, placements };
 }
 function validatePrerenderDomBoundaries(html, expectedPlacements) {
   if (expectedPlacements === 0) return;
@@ -81602,6 +81620,18 @@ function validatePrerenderDomBoundaries(html, expectedPlacements) {
       if (fromFragment !== withinBoundary || fromFragment && node.after > end.order) throw invalid();
     }
   }
+}
+function prerenderDocumentRootAttributes(html) {
+  const roots = /* @__PURE__ */ new Map();
+  const pending = [parse4(html, { scriptingEnabled: true })];
+  while (pending.length) {
+    const node = pending.pop();
+    if ("tagName" in node && node.namespaceURI === "http://www.w3.org/1999/xhtml" && (node.tagName === "html" || node.tagName === "body")) {
+      roots.set(node.tagName, JSON.stringify(node.attrs.map((attr) => [attr.namespace ?? "", attr.prefix ?? "", attr.name, attr.value]).sort()));
+    }
+    if ("childNodes" in node) pending.push(...node.childNodes);
+  }
+  return JSON.stringify([...roots].sort());
 }
 function scanClientPrerenderHtml(html) {
   const lowerHtml = foldAsciiCase(html);
@@ -81823,28 +81853,29 @@ const { dirname, isAbsolute, resolve } = require("node:path");
 const dependencies = new Set();
 const runtimeSpecifiers = new Set();
 const packageImports = [];
-const originalRequire = Module.prototype.require;
-// Observe attempts before evaluation: failed CommonJS modules are evicted from
-// require.cache. This override lives only in the disposable renderer Worker.
-Module.prototype.require = function(specifier) {
+const originalResolveFilename = Module._resolveFilename;
+// One Worker-local seam observes both require() and require.resolve(), before
+// evaluation can fail and evict a module from the cache.
+Module._resolveFilename = function(specifier, parent) {
+  if (typeof specifier === "string" && specifier.startsWith("#")) packageImports.push({specifier, filename:parent?.filename || workerData.modulePath});
+  if (typeof specifier === "string" && (isAbsolute(specifier) || /^file:/i.test(specifier))) runtimeSpecifiers.add(specifier);
+  try {
+    const filename = originalResolveFilename.apply(this, arguments);
+    if (typeof filename === "string" && isAbsolute(filename)) dependencies.add(filename);
+    return filename;
+  } catch (error) {
   if (typeof specifier === "string") {
-    if (specifier.startsWith("#")) packageImports.push({specifier, filename:this.filename || workerData.modulePath});
-    if (isAbsolute(specifier) || /^file:/i.test(specifier)) runtimeSpecifiers.add(specifier);
-    const localRequire = createRequire(this.filename || workerData.modulePath);
-    try {
-      const filename = localRequire.resolve(specifier);
-      if (isAbsolute(filename)) dependencies.add(filename);
-    } catch {
+    const localRequire = createRequire(parent?.filename || workerData.modulePath);
       const packageName = specifier.split("/").slice(0, specifier.startsWith("@") ? 2 : 1).join("/");
       const candidates = specifier.startsWith(".") || isAbsolute(specifier)
-        ? [resolve(dirname(this.filename || workerData.modulePath), specifier)]
+        ? [resolve(dirname(parent?.filename || workerData.modulePath), specifier)]
         : (localRequire.resolve.paths(specifier) || []).map((base) => resolve(base, packageName));
       for (const candidate of candidates) {
         for (const suffix of ["", ".js", ".json", ".node", "/package.json", "/index.js", "/index.json", "/index.node"]) dependencies.add(candidate + suffix);
       }
-    }
   }
-  return originalRequire.apply(this, arguments);
+    throw error;
+  }
 };
 globalThis.require = createRequire(workerData.modulePath);
 function post(outcome) {
@@ -82121,6 +82152,7 @@ async function buildVite(options) {
       frameworkPlugins.push(await loadProjectInfernoToolchain(projectRoot));
     }
     const prerenderWarnings = [];
+    const prerenderState = { placements: 0 };
     const result = await build2({
       root: projectRoot,
       base: "/",
@@ -82140,6 +82172,7 @@ async function buildVite(options) {
       plugins: [
         ...frameworkPlugins,
         sporadesViteClientPlugin(options.devRefresh === true),
+        sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender ?? [], prerenderWarnings, prerenderState, options.prerender !== void 0, options.onDependency),
         sporadesViteBuildInvariants(canonicalIndexHtmlPath, options.frameworkConfig)
       ],
       build: {
@@ -82178,14 +82211,8 @@ async function buildVite(options) {
       }
     }
     if (!files.has("index.html")) throw new Error("Vite returned no transformed index.html output.");
-    const rendered = [];
-    for (const fragment of options.prerender ?? []) {
-      rendered.push({ name: fragment.name, html: await renderClientPrerenderFragment(projectRoot, fragment, [options.projectDir, projectRoot], options.onDependency) });
-    }
     const source = files.get("index.html");
-    const placed = placeClientPrerenderFragments(typeof source === "string" ? source : new TextDecoder().decode(source), rendered);
-    files.set("index.html", placed.html);
-    if (options.prerender !== void 0) prerenderWarnings.push(...placed.warnings);
+    validateClientPrerenderOutputHtml(typeof source === "string" ? source : new TextDecoder().decode(source), prerenderState.placements);
     return {
       publicFiles: [...files].map(([filePath, contents]) => ({ path: filePath, contents })),
       legacyClientBundle: null,
@@ -82195,6 +82222,25 @@ async function buildVite(options) {
     if (hasHint(error)) throw error;
     throw viteBuildError(error, [options.projectDir, projectRoot], options.frameworkConfig.framework);
   }
+}
+function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragments, warnings, state, diagnoseMarkers, onDependency) {
+  return {
+    name: "sporades-prerender",
+    enforce: "post",
+    transformIndexHtml: {
+      order: "post",
+      async handler(html) {
+        const rendered = [];
+        for (const fragment of fragments) {
+          rendered.push({ name: fragment.name, html: await renderClientPrerenderFragment(projectRoot, fragment, projectRoots, onDependency) });
+        }
+        const placed = placeClientPrerenderFragments(html, rendered);
+        state.placements = placed.placements;
+        if (diagnoseMarkers) warnings.push(...placed.warnings);
+        return placed.html;
+      }
+    }
+  };
 }
 var VITE_CONFIG_NAMES = [
   "vite.config.js",

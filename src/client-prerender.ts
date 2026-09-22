@@ -749,7 +749,7 @@ function collectRendererScopes(
       if (node.kind === "var" && !declarationScope.parent) {
         const declared: RendererLexicalScope = { functionScope: true, bindings: new Set() };
         addRendererBinding(declared, declaration.id);
-        for (const name of declared.bindings) if (!["require", "__dirname", "__filename"].includes(name)) declarationScope.bindings.add(name);
+        for (const name of declared.bindings) if (!["require", "module", "exports", "__dirname", "__filename"].includes(name)) declarationScope.bindings.add(name);
       } else addRendererBinding(declarationScope, declaration.id);
     }
   } else if (node.type === "ImportDeclaration") {
@@ -893,16 +893,32 @@ export type ClientPrerenderWarning = Readonly<{
 }>;
 
 export function validateClientPrerenderSourceHtml(html: string) {
-  if (scanClientPrerenderHtml(html).reservedBoundary) {
+  if (hasReservedPrerenderBoundary(html)) {
     throw prerenderError("Client index.html contains a reserved prerender boundary comment.", "Remove Sporades private boundary comments from index.html and HTML plugins; the Bundle pipeline supplies them.");
   }
+}
+
+export function validateClientPrerenderOutputHtml(html: string, placements: number) {
+  if (placements === 0) validateClientPrerenderSourceHtml(html);
+  else validatePrerenderDomBoundaries(html, placements);
+}
+
+function hasReservedPrerenderBoundary(html: string) {
+  const pending: DefaultTreeAdapterTypes.Node[] = [parseHtml(html, { scriptingEnabled: true })];
+  while (pending.length) {
+    const node = pending.pop()!;
+    if (node.nodeName === "#comment" && "data" in node && /^sporades:prerender-boundary-(?:start|end)\b/.test(node.data.trim())) return true;
+    if ("childNodes" in node) pending.push(...node.childNodes);
+    if ("tagName" in node && node.tagName === "template") pending.push((node as DefaultTreeAdapterTypes.Template).content);
+  }
+  return false;
 }
 
 export function placeClientPrerenderFragments(html: string, fragments: readonly { name: string; html: string }[]) {
   const warnings: ClientPrerenderWarning[] = [];
   validateClientPrerenderSourceHtml(html);
   for (const fragment of fragments) {
-    if (scanClientPrerenderHtml(fragment.html).reservedBoundary) {
+    if (hasReservedPrerenderBoundary(fragment.html)) {
       throw prerenderError(`Prerender fragment "${fragment.name}" contains a reserved prerender boundary comment.`, "Remove Sporades private boundary comments from renderer output; the Bundle pipeline supplies them.");
     }
   }
@@ -917,7 +933,7 @@ export function placeClientPrerenderFragments(html: string, fragments: readonly 
     for (const name of new Set(placement.markers.flatMap((marker) => marker.name ? [marker.name] : []))) {
       warnings.push({ code: "PRERENDER_UNKNOWN_MARKER", fragment: name, message: `Unknown prerender marker "${name}" remains a comment in index.html.` });
     }
-    return { html, warnings };
+    return { html, warnings, placements: 0 };
   }
   if (placement.problem) {
     throw prerenderError(
@@ -957,8 +973,12 @@ export function placeClientPrerenderFragments(html: string, fragments: readonly 
     if (count === 0) warnings.push({ code: "PRERENDER_UNUSED_FRAGMENT", fragment: name, message: `Configured prerender fragment "${name}" has no placement in index.html.` });
     else if (count > 1) warnings.push({ code: "PRERENDER_DUPLICATE_PLACEMENT", fragment: name, message: `Prerender fragment "${name}" is placed ${count} times in index.html.` });
   }
-  validatePrerenderDomBoundaries(replaced, [...counts.values()].reduce((sum, count) => sum + count, 0));
-  return { html: replaced, warnings };
+  const placements = [...counts.values()].reduce((sum, count) => sum + count, 0);
+  validatePrerenderDomBoundaries(replaced, placements);
+  if (prerenderDocumentRootAttributes(html) !== prerenderDocumentRootAttributes(replaced)) {
+    throw prerenderError("Client prerender fragments mutate author-owned document-root attributes.", "Return fragment content rather than html or body elements; browsers merge their attributes into the existing document roots.");
+  }
+  return { html: replaced, warnings, placements };
 }
 
 function validatePrerenderDomBoundaries(html: string, expectedPlacements: number) {
@@ -1006,6 +1026,19 @@ function validatePrerenderDomBoundaries(html: string, expectedPlacements: number
       if (fromFragment !== withinBoundary || (fromFragment && node.after > end.order)) throw invalid();
     }
   }
+}
+
+function prerenderDocumentRootAttributes(html: string) {
+  const roots = new Map<string, string>();
+  const pending: DefaultTreeAdapterTypes.Node[] = [parseHtml(html, { scriptingEnabled: true })];
+  while (pending.length) {
+    const node = pending.pop()!;
+    if ("tagName" in node && node.namespaceURI === "http://www.w3.org/1999/xhtml" && (node.tagName === "html" || node.tagName === "body")) {
+      roots.set(node.tagName, JSON.stringify(node.attrs.map((attr) => [attr.namespace ?? "", attr.prefix ?? "", attr.name, attr.value]).sort()));
+    }
+    if ("childNodes" in node) pending.push(...node.childNodes);
+  }
+  return JSON.stringify([...roots].sort());
 }
 
 function scanClientPrerenderHtml(html: string) {
@@ -1250,28 +1283,29 @@ const { dirname, isAbsolute, resolve } = require("node:path");
 const dependencies = new Set();
 const runtimeSpecifiers = new Set();
 const packageImports = [];
-const originalRequire = Module.prototype.require;
-// Observe attempts before evaluation: failed CommonJS modules are evicted from
-// require.cache. This override lives only in the disposable renderer Worker.
-Module.prototype.require = function(specifier) {
+const originalResolveFilename = Module._resolveFilename;
+// One Worker-local seam observes both require() and require.resolve(), before
+// evaluation can fail and evict a module from the cache.
+Module._resolveFilename = function(specifier, parent) {
+  if (typeof specifier === "string" && specifier.startsWith("#")) packageImports.push({specifier, filename:parent?.filename || workerData.modulePath});
+  if (typeof specifier === "string" && (isAbsolute(specifier) || /^file:/i.test(specifier))) runtimeSpecifiers.add(specifier);
+  try {
+    const filename = originalResolveFilename.apply(this, arguments);
+    if (typeof filename === "string" && isAbsolute(filename)) dependencies.add(filename);
+    return filename;
+  } catch (error) {
   if (typeof specifier === "string") {
-    if (specifier.startsWith("#")) packageImports.push({specifier, filename:this.filename || workerData.modulePath});
-    if (isAbsolute(specifier) || /^file:/i.test(specifier)) runtimeSpecifiers.add(specifier);
-    const localRequire = createRequire(this.filename || workerData.modulePath);
-    try {
-      const filename = localRequire.resolve(specifier);
-      if (isAbsolute(filename)) dependencies.add(filename);
-    } catch {
+    const localRequire = createRequire(parent?.filename || workerData.modulePath);
       const packageName = specifier.split("/").slice(0, specifier.startsWith("@") ? 2 : 1).join("/");
       const candidates = specifier.startsWith(".") || isAbsolute(specifier)
-        ? [resolve(dirname(this.filename || workerData.modulePath), specifier)]
+        ? [resolve(dirname(parent?.filename || workerData.modulePath), specifier)]
         : (localRequire.resolve.paths(specifier) || []).map((base) => resolve(base, packageName));
       for (const candidate of candidates) {
         for (const suffix of ["", ".js", ".json", ".node", "/package.json", "/index.js", "/index.json", "/index.node"]) dependencies.add(candidate + suffix);
       }
-    }
   }
-  return originalRequire.apply(this, arguments);
+    throw error;
+  }
 };
 globalThis.require = createRequire(workerData.modulePath);
 function post(outcome) {

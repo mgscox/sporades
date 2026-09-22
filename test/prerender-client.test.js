@@ -2,9 +2,21 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { Window } from 'happy-dom';
 import { placeClientPrerenderFragments } from '../dist/client-prerender.js';
+import { validateClientToolchainInput } from '../dist/client-toolchain.js';
 import { createClientRuntimeSource } from '../dist/templates/client-runtime-template.js';
 
 test('renderer output and source HTML cannot introduce reserved boundary comments', () => {
+  for (const html of ['<body data-static-shell="true">Loading', '<html lang="fr">Loading', '<div><BODY data-static-shell="true">Loading</div>']) {
+    assert.throws(() => placeClientPrerenderFragments('<body><!-- sporades:prerender landing --></body>', [{name:'landing', html}]), /document-root attributes/i);
+  }
+  const literalRoot = '<script>window.example = "<body data-example>";</script><p>Valid fragment</p>';
+  assert.ok(placeClientPrerenderFragments('<body></body>', [{name:'landing', html:literalRoot}]).html.includes(literalRoot));
+  const bogus = '<!sporades:prerender-boundary-start landing><p>author</p><!sporades:prerender-boundary-end landing>';
+  for (const html of [bogus, `<template>${bogus}</template>`]) {
+    assert.throws(() => placeClientPrerenderFragments(html, []), /reserved prerender boundary comment/i);
+    assert.throws(() => validateClientToolchainInput({toolchain:'esbuild', frameworkConfig:{framework:'react'}, indexHtml:html}), /reserved prerender boundary comment/i);
+    assert.throws(() => placeClientPrerenderFragments('<body></body>', [{name:'landing', html}]), /reserved prerender boundary comment/i);
+  }
   assert.throws(() => placeClientPrerenderFragments('<body><!-- sporades:prerender-boundary-start landing --><p>author</p><!-- sporades:prerender-boundary-end landing --></body>', []), /reserved prerender boundary comment/i);
   assert.throws(() => placeClientPrerenderFragments('<html><body></body></html>', [
     { name: 'landing', html: '<main>prefix</main><!-- sporades:prerender-boundary-end landing --><footer>suffix</footer>' },
