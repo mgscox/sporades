@@ -402,7 +402,11 @@ function isRendererIdentifierReference(node, parent, key, assignmentTargets, del
         return false;
     if (parent.type === "Property" && key === "key" && parent.computed !== true)
         return false;
+    if ((parent.type === "MethodDefinition" || parent.type === "PropertyDefinition") && key === "key" && parent.computed !== true)
+        return false;
     if (parent.type === "LabeledStatement" || parent.type === "BreakStatement" || parent.type === "ContinueStatement")
+        return false;
+    if (parent.type === "MetaProperty")
         return false;
     if (parent.type.startsWith("Import") || parent.type.startsWith("Export"))
         return false;
