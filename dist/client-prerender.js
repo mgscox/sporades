@@ -181,10 +181,10 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
                     addRendererDependencyRoot(rendererDependencyRoots, resolved.path);
                 }
                 let namespace = resolved.namespace;
-                if (!resolved.external && namespace === "file" && [".js", ".jsx"].includes(path.extname(resolved.path))) {
+                if (!resolved.external && namespace === "file" && [".js", ".jsx", ".ts", ".tsx"].includes(path.extname(resolved.path))) {
                     const contents = await readFile(resolved.path, "utf8");
                     if (await rendererModuleUsesCommonJs(resolved.path, contents, projectRoot, packageModeCache)
-                        && await rendererNeedsCommonJsBoundaryNamespace(resolved.path)) {
+                        && ([".ts", ".tsx"].includes(path.extname(resolved.path)) || await rendererNeedsCommonJsBoundaryNamespace(resolved.path))) {
                         namespace = commonJsNamespace;
                     }
                 }
@@ -208,7 +208,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
                 if (!loader)
                     return undefined;
                 const checksImports = contents.includes("import");
-                const requiresTransform = checksImports || preservesImportMetaUrl || (commonJsModule && /\b(?:require|__dirname|__filename)\b/.test(contents));
+                const requiresTransform = checksImports || preservesImportMetaUrl || (commonJsModule && /\b(?:require|module|__dirname|__filename)\b/.test(contents));
                 if (!requiresTransform) {
                     if (args.namespace !== commonJsNamespace)
                         return undefined;
@@ -308,6 +308,11 @@ async function rendererModuleUsesCommonJs(modulePath, contents, projectRoot, pac
     const extension = path.extname(modulePath);
     if (extension === ".cjs" || extension === ".cts")
         return true;
+    if (extension === ".ts" || extension === ".tsx") {
+        const { transform } = await import("esbuild");
+        const javascript = await transform(contents, { loader: extension === ".tsx" ? "tsx" : "ts", jsx: "preserve", tsconfigRaw: { compilerOptions: { verbatimModuleSyntax: true } } });
+        return defaultRendererJavaScriptUsesCommonJs(javascript.code);
+    }
     if (extension !== ".js" && extension !== ".jsx")
         return false;
     const mode = await nearestRendererPackageMode(path.dirname(modulePath), projectRoot, packageModeCache);
@@ -453,13 +458,32 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
         writableRequireName += "_";
     const writableRequire = writtenWrapperNames.has("require");
     const handledRequireCalls = new WeakSet();
+    const handledModuleRequireCalls = new WeakSet();
     const emptyTargets = new WeakSet();
+    let needsModuleRequireMethod = false;
     visitRendererSyntax(syntax, (node, parent, key) => {
         const scope = scopes.get(node) ?? rootScope;
+        if (node.type === "Identifier" && node.name === "module" && !rendererScopeBinds(scope, "module")
+            && isRendererIdentifierReference(node, parent, key, emptyTargets, emptyTargets))
+            needsModuleRequireMethod = true;
+        if (node.type === "MemberExpression" && !handledModuleRequireCalls.has(node) && isRendererSyntaxNode(node.object) && node.object.type === "Identifier" && node.object.name === "module"
+            && !rendererScopeBinds(scope, "module") && isRendererSyntaxNode(node.property)
+            && ((!node.computed && node.property.name === "require") || (node.computed && node.property.value === "require"))) {
+            // Hide only this special access from esbuild's module.require -> require
+            // lowering, which otherwise loses module locality and later reassignment.
+            replacements.push({ start: node.object.start, end: node.object.end, value: `${helperName}Module()` });
+        }
         if (node.type === "CallExpression") {
             const callee = node.callee;
             const args = node.arguments;
             const first = args?.[0];
+            if (!node.optional && callee?.type === "MemberExpression" && isRendererSyntaxNode(callee.object) && callee.object.type === "Identifier" && callee.object.name === "module"
+                && !rendererScopeBinds(scope, "module") && isRendererSyntaxNode(callee.property)
+                && ((!callee.computed && callee.property.name === "require") || (callee.computed && callee.property.value === "require")) && first && isStaticRendererRequireSpecifier(first)) {
+                handledModuleRequireCalls.add(callee);
+                const literal = contents.slice(first.start, first.end);
+                replacements.push({ start: callee.start, end: callee.end, value: `((...args) => ${helperName}Module().require === ${helperName} ? require(${literal}) : ${helperName}Module().require(...args))` });
+            }
             if (callee?.type === "Identifier"
                 && callee.name === "require"
                 && !rendererScopeBinds(scope, "require")
@@ -495,15 +519,16 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
         }
     });
     const writableLocations = ["__dirname", "__filename"].filter((name) => writtenWrapperNames.has(name));
-    if (replacements.length === 0 && writableLocations.length === 0)
+    if (replacements.length === 0 && writableLocations.length === 0 && !needsModuleRequireMethod)
         return { contents, changed: false };
-    const needsModuleRequire = replacements.some((replacement) => replacement.value.includes(helperName));
+    const needsModuleRequire = needsModuleRequireMethod || replacements.some((replacement) => replacement.value.includes(helperName));
     if (needsModuleRequire || writableLocations.length > 0) {
         const insertionOffset = rendererHelperInsertionOffset(syntax, contents);
         replacements.push({
             start: insertionOffset,
             end: insertionOffset,
             value: (needsModuleRequire ? `const ${helperName} = require("node:module").createRequire(${JSON.stringify(moduleUrl)});\n` : "")
+                + (needsModuleRequireMethod ? `const ${helperName}Module = () => module;\n${helperName}Module().require = ${helperName};\n` : "")
                 + (writableRequire && needsModuleRequire ? `var ${writableRequireName} = ${helperName};\n` : "")
                 + writableLocations.map((name) => `var ${name} = ${JSON.stringify(name === "__dirname" ? path.dirname(modulePath) : modulePath)};\n`).join(""),
         });
