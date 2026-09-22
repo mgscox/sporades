@@ -673,6 +673,19 @@ function normalizeCapsuleFileIngressDefinition(files: LooseRecord | undefined, e
   return Object.freeze({ principalNamespaces: Object.freeze([...namespaces]), admit: ingress.admit });
 }
 
+function resolveFileMaxSizeBytes(config: RuntimeConfig = {}) {
+  const configured = config.files?.maxSizeBytes;
+  if (configured === undefined) return 10 * 1024 * 1024;
+  if (!Number.isInteger(configured) || configured <= 0) {
+    throw commandError(
+      "Invalid File size configuration.",
+      "Set `files.maxSizeBytes` to a positive integer byte count.",
+      "INVALID_FILE_CONFIG",
+    );
+  }
+  return configured;
+}
+
 export async function openDevDatabase(
   databasePath: string,
   serverSource: any,
@@ -688,6 +701,7 @@ export async function openDevDatabase(
     validateEndpointResponseDeclarations(capsuleDefinition);
   }
   validateLogConfig(config);
+  const fileMaxSizeBytes = resolveFileMaxSizeBytes(config);
   const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
   if (capsuleDefinition?.teams !== undefined && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
     throw commandError("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
@@ -1028,7 +1042,7 @@ export async function openDevDatabase(
       : null,
     securityPolicy: resolveRuntimeSecurityPolicy(config),
     fileStorage,
-    fileMaxSizeBytes: config.files?.maxSizeBytes ?? 10 * 1024 * 1024,
+    fileMaxSizeBytes,
     httpMaxBodyBytes: resolveHttpMaxBodyBytes(config),
     close: () => {
       database.__scheduleStopped = true;

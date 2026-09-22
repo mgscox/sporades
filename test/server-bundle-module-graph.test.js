@@ -362,7 +362,7 @@ async function bootBundle({ source, dir, env = {} }) {
   const port = await reserveFreePort();
   const child = spawn(process.execPath, [bundlePath], {
     cwd: dir,
-    env: { ...process.env, PORT: String(port), ...env },
+    env: { ...process.env, PORT: String(port), SPORADES_RUNTIME_PROBE_TOKEN: "a".repeat(64), ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stderr = "";
@@ -379,7 +379,7 @@ async function bootBundle({ source, dir, env = {} }) {
       throw new Error(`Bundle exited before it listened (code ${exited.code}, signal ${exited.signal}).\n${stderr}\n${stdout}`);
     }
     const reached = await fetch(`${baseUrl}/__sporades/health/runtime`, {
-      headers: { "x-sporades-host-probe": "equivalence" },
+      headers: { "x-sporades-host-probe": "a".repeat(64) },
     }).then(() => true, () => false);
     if (reached) break;
     if (Date.now() > deadline) {
@@ -492,7 +492,7 @@ const COMPARED_HEADERS = [
 ];
 
 const HTTP_SCRIPT = [
-  { name: "health with probe header", path: "/__sporades/health/runtime", headers: { "x-sporades-host-probe": "equivalence" } },
+  { name: "health with probe header", path: "/__sporades/health/runtime", headers: { "x-sporades-host-probe": "a".repeat(64) } },
   { name: "health without probe header", path: "/__sporades/health/runtime" },
   { name: "unknown path", path: "/definitely-not-here" },
   { name: "index page", path: "/" },
@@ -1128,7 +1128,7 @@ test("a generated Capsule keeps unusual request targets out of ordinary and WebS
       const response = await rawHttpResponse(booted.baseUrl, target, { method, headers: { host: "wrong.example" } });
       assert.match(response, new RegExp(`^HTTP/1\\.1 ${expectedStatus} `), `${target}: ${response}`);
       if (target === "*") assert.match(response, /x-content-type-options: nosniff/i, response);
-      const health = await fetch(`${booted.baseUrl}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": "equivalence" } });
+      const health = await fetch(`${booted.baseUrl}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": "a".repeat(64) } });
       assert.equal(health.status, 200, `runtime stopped after ${target}`);
     }
     for (const [target, source] of [["/%2e%2e?source=origin", "origin"], ["http://unrelated.example/%2e%2e?source=absolute", "absolute"]]) {
@@ -1138,7 +1138,7 @@ test("a generated Capsule keeps unusual request targets out of ordinary and WebS
       assert.match(response, new RegExp(`"source":"${source}"`), response);
     }
     assert.equal(await rawHttpResponse(booted.baseUrl, "unrelated.example:443", { method: "CONNECT" }), "");
-    assert.equal((await fetch(`${booted.baseUrl}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": "equivalence" } })).status, 200);
+    assert.equal((await fetch(`${booted.baseUrl}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": "a".repeat(64) } })).status, 200);
 
     const page = await fetch(booted.baseUrl, { headers: { "sec-fetch-dest": "document" } });
     const token = /window\.__SPORADES_CONNECTION_TOKEN="([^"]+)"/.exec(await page.text())?.[1];
@@ -1153,7 +1153,7 @@ test("a generated Capsule keeps unusual request targets out of ordinary and WebS
       },
     });
     assert.doesNotMatch(rejectedUpgrade, /^HTTP\/1\.1 101 /, rejectedUpgrade);
-    assert.equal((await fetch(`${booted.baseUrl}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": "equivalence" } })).status, 200);
+    assert.equal((await fetch(`${booted.baseUrl}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": "a".repeat(64) } })).status, 200);
   } finally {
     await booted?.stop();
     await rm(root, { recursive: true, force: true });
@@ -1789,7 +1789,7 @@ test("the bundle drives S3-compatible file storage", async () => {
       let observed;
       try {
         const health = await fetch(`${booted.baseUrl}/__sporades/health/runtime`, {
-          headers: { "x-sporades-host-probe": "equivalence" },
+          headers: { "x-sporades-host-probe": "a".repeat(64) },
         });
         const socket = await openBundleSocket(booted.baseUrl);
         const uploads = [];

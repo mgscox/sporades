@@ -21,6 +21,8 @@ export declare function checkClamavRuntime(database: RecordLike): Promise<{
 export declare function multipartParts(request: AsyncIterable<Uint8Array>, boundaryText: string, maxWireBytes: number, maxPartBytes: number | {
     file: number;
     field: number;
+    fileKind?: string;
+    fieldKind?: string;
 }, allowFiles?: boolean): AsyncGenerator<{
     rawHeaders: string;
     body: Buffer<ArrayBuffer>;

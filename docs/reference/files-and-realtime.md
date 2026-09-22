@@ -556,6 +556,16 @@ smaller of endpoint `maxFileBytes` and the Capsule-wide File size limit, so the
 global limit aborts during streaming rather than after buffering. Field names are stored in
 an own-property-safe map, including `constructor`, `toString`, and `__proto__`.
 
+When a Custom endpoint rejects one of these limits, its public JSON error uses
+code `MULTIPART_LIMIT_EXCEEDED` and may include exactly this allowlisted detail:
+`{ partType: "file" | "field", limitKind, limit: integer }`. Supported
+`limitKind` values are `maxPartHeaderBytes`, `maxFieldCount`, `maxFieldBytes`,
+`maxTotalFieldBytes`, `maxFiles`, `maxFileBytes`, `fileMaxSizeBytes`, and
+`maxTotalFileBytes`. `limit` is the effective non-negative integer bound that
+was applied. Sporades omits malformed or non-allowlisted detail rather than
+passing it through, and never includes filenames, field contents, credentials,
+raw headers, or other request data in this object.
+
 `requestKeyHeader` identifies the whole retry and `partKeyHeader` identifies a
 part independently of multipart ordering. Use sender-provided, stable,
 non-secret values. With `requireStablePartKeys`, missing or repeated part keys
@@ -723,14 +733,15 @@ health repeats that socket probe, degrades immediately when clamd or the
 signature updater exits or signals, and never marks a terminated child healthy
 again. A transient probe or reload mismatch can recover only while the same
 children remain live and again report a current loaded database. The private
-health route verifies an exact runtime-owned 256-bit credential before any
-signature or socket work. Dev reuses its private session inspection credential;
-local Containers receive a fresh credential, and Hosted Capsules receive the
+health route requires `x-sporades-host-probe` to exactly match the configured,
+valid 64-hex `runtimeProbeToken` on every probe, regardless of whether the
+Capsule declares ClamAV. Missing, malformed, or forged credentials receive an
+opaque `404`. Dev reuses its private session inspection credential; local
+Containers receive a fresh credential, and Hosted Capsules receive the
 credential stored in their protected Host registry and Caddy route. It is not
-reported in CLI output or logs. Capsules that omit ClamAV preserve the legacy
-nonempty private-probe contract for compatibility because that route performs
-only the inexpensive legacy checks. Capsules that omit it do not
-start clamd and retain legacy startup behaviour.
+reported in CLI output or logs. ClamAV affects the `fileInspection` readiness
+check, not authentication: Capsules that omit it do not start clamd and retain
+legacy startup behaviour.
 
 The Base image includes ClamAV, which increases image size, while enabling it
 also costs daemon startup time and RAM. `freshclam` is the only intended

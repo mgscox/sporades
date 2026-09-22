@@ -97127,6 +97127,26 @@ function multipartBoundary(contentType) {
   const validToken = /^[0-9A-Za-z'+_.-]+$/.test(value);
   return value.length <= 70 && validBchars && (quoted || validToken) ? value : null;
 }
+function multipartPartType(rawHeaders) {
+  const disposition = /^content-disposition:\s*form-data;\s*name="[^"]+"(?:;\s*filename="([^"]*)")?\s*$/im.exec(rawHeaders);
+  if (!disposition) return void 0;
+  return disposition?.[1] !== void 0 ? "file" : "field";
+}
+function multipartLimitExceeded(partType, limitKind, limit, message = "Multipart part exceeds declared limits.") {
+  return Object.assign(new Error(message), {
+    code: "MULTIPART_LIMIT_EXCEEDED",
+    details: { partType, limitKind, limit: Number(limit) }
+  });
+}
+function multipartHeaderLimitExceeded(rawHeaders, headersComplete = false) {
+  const completeLineEnd = rawHeaders.lastIndexOf("\r\n");
+  const completeHeaders = headersComplete ? rawHeaders : completeLineEnd < 0 ? "" : rawHeaders.slice(0, completeLineEnd);
+  const partType = multipartPartType(completeHeaders);
+  return Object.assign(new Error("Multipart headers exceed limit."), {
+    code: "MULTIPART_LIMIT_EXCEEDED",
+    ...partType ? { details: { partType, limitKind: "maxPartHeaderBytes", limit: 16384 } } : {}
+  });
+}
 async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes, allowFiles = true) {
   const boundary = Buffer.from(`--${boundaryText}`);
   const marker = Buffer.from(`\r
@@ -97137,7 +97157,9 @@ async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes
   let rawHeaders = "";
   let pieces = [];
   let size = 0;
+  let partType = "field";
   let partLimit = typeof maxPartBytes === "number" ? maxPartBytes : Math.max(maxPartBytes.file, maxPartBytes.field);
+  let partLimitKind = typeof maxPartBytes === "number" ? "maxPartBytes" : "maxFieldBytes";
   const stream = request;
   const chunks = typeof stream.iterator === "function" ? stream.iterator({ destroyOnReturn: false }) : stream;
   for await (const source of chunks) {
@@ -97155,14 +97177,18 @@ async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes
       if (state === "headers") {
         const headerEnd = pending.indexOf("\r\n\r\n");
         if (headerEnd < 0) {
-          if (pending.length > 16384) throw Object.assign(new Error("Multipart headers exceed limit."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+          if (pending.length > 16384) throw multipartHeaderLimitExceeded(pending.toString("latin1"));
           break;
         }
         rawHeaders = pending.subarray(0, headerEnd).toString("latin1");
         const disposition = /^content-disposition:\s*form-data;\s*name="[^"]+"(?:;\s*filename="([^"]*)")?/im.exec(rawHeaders);
         const isFile = disposition?.[1] !== void 0;
+        partType = isFile ? "file" : "field";
         if (isFile && !allowFiles) throw Object.assign(new Error("Multipart request was not admitted."), { code: "MULTIPART_ADMISSION_DENIED" });
-        if (typeof maxPartBytes !== "number") partLimit = isFile ? maxPartBytes.file : maxPartBytes.field;
+        if (typeof maxPartBytes !== "number") {
+          partLimit = isFile ? maxPartBytes.file : maxPartBytes.field;
+          partLimitKind = isFile ? maxPartBytes.fileKind ?? "maxFileBytes" : maxPartBytes.fieldKind ?? "maxFieldBytes";
+        }
         pending = pending.subarray(headerEnd + 4);
         pieces = [];
         size = 0;
@@ -97176,7 +97202,7 @@ async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes
           if (take) {
             pieces.push(pending.subarray(0, take));
             size += take;
-            if (size > partLimit) throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+            if (size > partLimit) throw multipartLimitExceeded(partType, partLimitKind, partLimit);
             pending = pending.subarray(take);
           }
           break;
@@ -97185,7 +97211,7 @@ async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes
           if (at2) {
             pieces.push(pending.subarray(0, at2));
             size += at2;
-            if (size > partLimit) throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+            if (size > partLimit) throw multipartLimitExceeded(partType, partLimitKind, partLimit);
             pending = pending.subarray(at2);
           }
           break;
@@ -97195,7 +97221,7 @@ async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes
           const take = at2 + marker.length;
           pieces.push(pending.subarray(0, take));
           size += take;
-          if (size > partLimit) throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+          if (size > partLimit) throw multipartLimitExceeded(partType, partLimitKind, partLimit);
           pending = pending.subarray(take);
           continue;
         }
@@ -97203,7 +97229,7 @@ async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes
           pieces.push(pending.subarray(0, at2));
           size += at2;
         }
-        if (size > partLimit) throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+        if (size > partLimit) throw multipartLimitExceeded(partType, partLimitKind, partLimit);
         pending = pending.subarray(at2 + marker.length);
         state = "separator";
         continue;
@@ -97262,11 +97288,12 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
   const partKeys = /* @__PURE__ */ new Set();
   const wonReceipts = [];
   const streamingFileLimit = Math.min(Number(policy.maxFileBytes), Number(database.fileMaxSizeBytes));
+  const streamingFileLimitKind = Number(database.fileMaxSizeBytes) < Number(policy.maxFileBytes) ? "fileMaxSizeBytes" : "maxFileBytes";
   try {
-    for await (const part of multipartParts(request, boundary, maxBytes, { file: streamingFileLimit, field: policy.maxFieldBytes }, allowFiles)) {
+    for await (const part of multipartParts(request, boundary, maxBytes, { file: streamingFileLimit, field: policy.maxFieldBytes, fileKind: streamingFileLimitKind, fieldKind: "maxFieldBytes" }, allowFiles)) {
       const rawHeaders = part.rawHeaders;
       const body = part.body;
-      if (rawHeaders.length > 16384) throw Object.assign(new Error("Multipart headers exceed limit."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+      if (rawHeaders.length > 16384) throw multipartHeaderLimitExceeded(rawHeaders, true);
       if (unsupportedMultipartPartEncoding(rawHeaders)) throw Object.assign(new Error("Unsupported multipart part encoding."), { code: "INVALID_MULTIPART" });
       const disposition = /^content-disposition:\s*form-data;\s*name="([^"]+)"(?:;\s*filename="([^"]*)")?/im.exec(rawHeaders);
       if (!disposition) throw Object.assign(new Error("Malformed multipart part."), { code: "INVALID_MULTIPART" });
@@ -97275,13 +97302,18 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
       if (filename === void 0) {
         fieldCount += 1;
         fieldBytes += body.length;
-        if (fieldCount > policy.maxFieldCount || body.length > policy.maxFieldBytes || fieldBytes > policy.maxTotalFieldBytes) throw Object.assign(new Error("Multipart field exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+        if (fieldCount > policy.maxFieldCount) throw multipartLimitExceeded("field", "maxFieldCount", policy.maxFieldCount, "Multipart field exceeds declared limits.");
+        if (body.length > policy.maxFieldBytes) throw multipartLimitExceeded("field", "maxFieldBytes", policy.maxFieldBytes, "Multipart field exceeds declared limits.");
+        if (fieldBytes > policy.maxTotalFieldBytes) throw multipartLimitExceeded("field", "maxTotalFieldBytes", policy.maxTotalFieldBytes, "Multipart field exceeds declared limits.");
         if (!Object.prototype.hasOwnProperty.call(fields, fieldName)) fields[fieldName] = [];
         fields[fieldName].push(body.toString("utf8"));
         continue;
       }
       fileBytes += body.length;
-      if (files.length >= policy.maxFiles || body.length > policy.maxFileBytes || fileBytes > policy.maxTotalFileBytes || body.length > database.fileMaxSizeBytes) throw Object.assign(new Error("Multipart file exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+      if (files.length >= policy.maxFiles) throw multipartLimitExceeded("file", "maxFiles", policy.maxFiles, "Multipart file exceeds declared limits.");
+      if (body.length > policy.maxFileBytes) throw multipartLimitExceeded("file", "maxFileBytes", policy.maxFileBytes, "Multipart file exceeds declared limits.");
+      if (body.length > database.fileMaxSizeBytes) throw multipartLimitExceeded("file", "fileMaxSizeBytes", database.fileMaxSizeBytes, "Multipart file exceeds declared limits.");
+      if (fileBytes > policy.maxTotalFileBytes) throw multipartLimitExceeded("file", "maxTotalFileBytes", policy.maxTotalFileBytes, "Multipart file exceeds declared limits.");
       const partKey = partHeader(rawHeaders, policy.partKeyHeader);
       if (policy.requireStablePartKeys && (!partKey || partKeys.has(partKey))) throw Object.assign(new Error("Multipart files require unique stable part keys."), { code: "INVALID_MULTIPART_PART_KEY" });
       if (partKey) partKeys.add(partKey);
@@ -98168,7 +98200,7 @@ async function routeRuntimeHealth(database, request, response) {
     writeNotFound(response);
     return true;
   }
-  if (database.clamavRequired && !runtimeProbeMatches(probe, database.runtimeProbeToken)) {
+  if (!runtimeProbeMatches(probe, database.runtimeProbeToken)) {
     writeNotFound(response);
     return true;
   }
@@ -98190,7 +98222,7 @@ async function createRuntimeHealthResult(database) {
   return {
     ok: ready,
     data: {
-      runtime: { ready },
+      runtime: { ready, fileMaxSizeBytes: database.fileMaxSizeBytes, httpMaxBodyBytes: database.httpMaxBodyBytes },
       checks
     },
     error: ready ? null : {
@@ -98323,6 +98355,7 @@ function writeEndpointError(response, error) {
     headers["cache-control"] = "no-store";
     headers.pragma = "no-cache";
   }
+  const multipartDetails = safeMultipartLimitDetails(error);
   response.writeHead(endpointErrorStatus(error), headers);
   response.end(
     `${JSON.stringify({
@@ -98330,12 +98363,20 @@ function writeEndpointError(response, error) {
       data: null,
       error: {
         ...error?.code ? { code: error.code } : {},
+        ...multipartDetails ? { details: multipartDetails } : {},
         message: isPayloadTooLargeError(error) ? error.message : error?.hint ? error.message : error?.sporadesEndpointResponse ? "Invalid endpoint response." : "Endpoint handler failed.",
         hint: error?.sporadesEndpointResponse ? "Return { status, headers, body } with a numeric status, plain object headers, and a serializable body." : isPayloadTooLargeError(error) ? error.hint : error?.hint ? error.hint : "Check the endpoint handler and retry the request."
       }
     })}
 `
   );
+}
+function safeMultipartLimitDetails(error) {
+  if (error?.code !== "MULTIPART_LIMIT_EXCEEDED") return null;
+  const details = error?.details;
+  const kinds = /* @__PURE__ */ new Set(["maxPartHeaderBytes", "maxFieldCount", "maxFieldBytes", "maxTotalFieldBytes", "maxFiles", "maxFileBytes", "fileMaxSizeBytes", "maxTotalFileBytes"]);
+  if (details?.partType !== "file" && details?.partType !== "field" || !kinds.has(details?.limitKind) || !Number.isInteger(details?.limit) || details.limit < 0) return null;
+  return { partType: details.partType, limitKind: details.limitKind, limit: details.limit };
 }
 function endpointErrorStatus(error) {
   if (error?.code === "UNAUTHENTICATED") return 401;
@@ -108537,6 +108578,18 @@ function normalizeCapsuleFileIngressDefinition(files, endpoints) {
   }
   return Object.freeze({ principalNamespaces: Object.freeze([...namespaces]), admit: ingress.admit });
 }
+function resolveFileMaxSizeBytes(config = {}) {
+  const configured = config.files?.maxSizeBytes;
+  if (configured === void 0) return 10 * 1024 * 1024;
+  if (!Number.isInteger(configured) || configured <= 0) {
+    throw commandError2(
+      "Invalid File size configuration.",
+      "Set `files.maxSizeBytes` to a positive integer byte count.",
+      "INVALID_FILE_CONFIG"
+    );
+  }
+  return configured;
+}
 async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
   if (capsuleDefinition) {
     capsuleDefinition = normalizeCapsuleAuthDefinition(capsuleDefinition);
@@ -108545,6 +108598,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     validateEndpointResponseDeclarations(capsuleDefinition);
   }
   validateLogConfig(config);
+  const fileMaxSizeBytes = resolveFileMaxSizeBytes(config);
   const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
   if (capsuleDefinition?.teams !== void 0 && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
     throw commandError2("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
@@ -108881,7 +108935,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     fileAccessKeyRead: capsuleDefinition?.files?.accessKeys?.read ? Object.freeze({ scopes: Object.freeze([...capsuleDefinition.files.accessKeys.read.scopes ?? []]) }) : null,
     securityPolicy: resolveRuntimeSecurityPolicy(config),
     fileStorage,
-    fileMaxSizeBytes: config.files?.maxSizeBytes ?? 10 * 1024 * 1024,
+    fileMaxSizeBytes,
     httpMaxBodyBytes: resolveHttpMaxBodyBytes(config),
     close: () => {
       database.__scheduleStopped = true;
