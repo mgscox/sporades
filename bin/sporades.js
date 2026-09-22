@@ -81119,7 +81119,11 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
   const rootScope = { functionScope: true, bindings: /* @__PURE__ */ new Set() };
   const scopes = /* @__PURE__ */ new WeakMap();
   collectRendererScopes(syntax, rootScope, scopes);
-  visitRendererSyntax(syntax, (node) => {
+  const noTargets = /* @__PURE__ */ new WeakSet();
+  visitRendererSyntax(syntax, (node, parent, key) => {
+    if (node.type === "Identifier" && node.name === "arguments" && !rendererScopeBinds(scopes.get(node) ?? rootScope, "arguments") && isRendererIdentifierReference(node, parent, key, noTargets, noTargets)) {
+      throw new Error("Top-level CommonJS arguments are unsupported in prerender modules; use explicit module-local wrapper bindings instead.");
+    }
     if (node.type === "WithStatement") {
       throw new Error("With statements are unsupported in CommonJS prerender modules; use explicit bindings so module-local wrapper semantics can be preserved.");
     }
@@ -81247,11 +81251,11 @@ function collectRendererScopes(node, scope, scopes) {
   let activeScope = scope;
   if (node.type === "FunctionDeclaration") {
     addRendererBinding(scope, node.id);
-    activeScope = { parent: scope, functionScope: true, bindings: /* @__PURE__ */ new Set() };
+    activeScope = { parent: scope, functionScope: true, bindings: /* @__PURE__ */ new Set(["arguments"]) };
     addRendererBinding(activeScope, node.id);
     for (const parameter of node.params ?? []) addRendererBinding(activeScope, parameter);
   } else if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
-    activeScope = { parent: scope, functionScope: true, bindings: /* @__PURE__ */ new Set() };
+    activeScope = { parent: scope, functionScope: true, bindings: new Set(node.type === "FunctionExpression" ? ["arguments"] : []) };
     addRendererBinding(activeScope, node.id);
     for (const parameter of node.params ?? []) addRendererBinding(activeScope, parameter);
   } else if (node.type === "ClassDeclaration") {
@@ -81276,13 +81280,15 @@ function collectRendererScopes(node, scope, scopes) {
       if (node.kind === "var" && !declarationScope.parent) {
         const declared = { functionScope: true, bindings: /* @__PURE__ */ new Set() };
         addRendererBinding(declared, declaration.id);
-        for (const name2 of declared.bindings) if (!["require", "module", "exports", "__dirname", "__filename"].includes(name2)) declarationScope.bindings.add(name2);
+        for (const name2 of declared.bindings) if (!["require", "module", "exports", "__dirname", "__filename", "arguments"].includes(name2)) declarationScope.bindings.add(name2);
       } else addRendererBinding(declarationScope, declaration.id);
     }
   } else if (node.type === "ImportDeclaration") {
     for (const specifier of node.specifiers ?? []) addRendererBinding(activeScope, specifier.local);
   }
-  forEachRendererChild(node, (child) => collectRendererScopes(child, activeScope, scopes));
+  const isFunction = node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression";
+  const bodyScope = isFunction ? { parent: activeScope, functionScope: true, bindings: /* @__PURE__ */ new Set() } : void 0;
+  forEachRendererChild(node, (child) => collectRendererScopes(child, bodyScope && child === node.body ? bodyScope : activeScope, scopes));
 }
 function addRendererBinding(scope, pattern) {
   if (!pattern || typeof pattern !== "object") return;
@@ -81544,8 +81550,9 @@ process.once("uncaughtException", (error) => post({ kind: "failure", message: sa
       namespace = await import("data:text/javascript;base64," + encoded);
     }
     if (!namespace) return post({ kind: "not-function" });
-    if (typeof namespace.default !== "function") return post({ kind: "not-function" });
-    const rendered = await namespace.default();
+    const renderer = typeof namespace === "function" ? namespace : namespace.default;
+    if (typeof renderer !== "function") return post({ kind: "not-function" });
+    const rendered = await renderer();
     if (typeof rendered !== "string") {
       return post({ kind: "non-string", resultType: rendered === null ? "null" : typeof rendered });
     }

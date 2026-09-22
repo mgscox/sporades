@@ -212,6 +212,52 @@ test('CommonJS dynamic with scope fails explicitly before wrapper specialization
   } finally { await rm(root, {recursive:true, force:true}); }
 });
 
+test('CommonJS wrapper arguments fail explicitly while ordinary function arguments work', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-wrapper-arguments-')));
+  try {
+    for (const source of [
+      'const filename = arguments[3]; exports.default = () => filename;',
+      'exports.default = () => arguments[3];',
+      'var arguments; exports.default = () => arguments[1]("node:path").sep;',
+    ]) {
+      await writeFile(path.join(root, 'entry.cjs'), source);
+      await assert.rejects(renderClientPrerenderFragment(root, {name:'landing', module:'entry.cjs'}), /Top-level CommonJS arguments are unsupported/i);
+    }
+    await writeFile(path.join(root, 'entry.cjs'), 'function regular(value) { return (() => arguments[0])(); } const expression = function(value) { return arguments[0]; }; exports.default = () => regular("local") + expression("-function");');
+    assert.equal(await renderClientPrerenderFragment(root, {name:'landing', module:'entry.cjs'}), 'local-function');
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
+test('CommonJS parameter initializers do not inherit body var shadows of module wrappers', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-parameter-scope-')));
+  try {
+    await mkdir(path.join(root, 'nested'));
+    await writeFile(path.join(root, 'nested/value.cjs'), 'module.exports = "adjacent";');
+    await writeFile(path.join(root, 'nested/helper.cjs'), `
+function render(directory = __dirname, filename = __filename, copy = require('./' + 'value.cjs')) {
+  var __dirname, __filename, require;
+  return JSON.stringify([directory, filename, copy]);
+}
+module.exports = render;`);
+    await writeFile(path.join(root, 'entry.mjs'), 'import render from "./nested/helper.cjs"; export default render;');
+    assert.deepEqual(JSON.parse(await renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'})), [path.join(root, 'nested'), path.join(root, 'nested/helper.cjs'), 'adjacent']);
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
+test('configured CommonJS entry modules accept conventional and transpiled default exports', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-commonjs-entry-')));
+  try {
+    await writeFile(path.join(root, 'package.json'), '{"type":"commonjs"}');
+    for (const extension of ['cjs', 'cts', 'js', 'ts']) {
+      const module = `entry.${extension}`;
+      await writeFile(path.join(root, module), 'module.exports = async function render() { "use strict"; return this === undefined ? "conventional" : "wrong receiver"; };');
+      assert.equal(await renderClientPrerenderFragment(root, {name:'landing', module}), 'conventional');
+      await writeFile(path.join(root, module), 'exports.default = function render() { "use strict"; return this === undefined ? "transpiled" : "wrong receiver"; };');
+      assert.equal(await renderClientPrerenderFragment(root, {name:'landing', module}), 'transpiled');
+    }
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
 test('ESM import.meta aliases and computed accesses preserve each source URL', async () => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-import-meta-alias-')));
   try {
