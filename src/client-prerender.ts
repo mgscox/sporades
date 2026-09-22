@@ -1028,11 +1028,11 @@ function isCanonicalDescendant(parent: string, candidate: string) {
   return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
-type EsmRendererOutcome =
+type EsmRendererOutcome = (
   | { kind: "success"; rendered: string }
   | { kind: "not-function" }
   | { kind: "non-string"; resultType: string }
-  | { kind: "failure"; message: string };
+  | { kind: "failure"; message: string }) & { dependencies?: string[]; runtimeSpecifiers?: string[] };
 
 async function executeBundledRenderer(
   source: string,
@@ -1046,9 +1046,35 @@ async function executeBundledRenderer(
   // without evicting or mutating the host's CommonJS cache. This is not a sandbox.
   const bootstrap = String.raw`
 const { parentPort, workerData } = require("node:worker_threads");
-const { createRequire } = require("node:module");
-const { dirname } = require("node:path");
+const { createRequire, Module } = require("node:module");
+const { dirname, isAbsolute, resolve } = require("node:path");
+const dependencies = new Set();
+const runtimeSpecifiers = new Set();
+const originalRequire = Module.prototype.require;
+// Observe attempts before evaluation: failed CommonJS modules are evicted from
+// require.cache. This override lives only in the disposable renderer Worker.
+Module.prototype.require = function(specifier) {
+  if (typeof specifier === "string") {
+    if (isAbsolute(specifier) || /^file:/i.test(specifier)) runtimeSpecifiers.add(specifier);
+    const localRequire = createRequire(this.filename || workerData.modulePath);
+    try {
+      const filename = localRequire.resolve(specifier);
+      if (isAbsolute(filename)) dependencies.add(filename);
+    } catch {
+      const candidates = specifier.startsWith(".") || isAbsolute(specifier)
+        ? [resolve(dirname(this.filename || workerData.modulePath), specifier)]
+        : (localRequire.resolve.paths(specifier) || []).map((base) => resolve(base, specifier));
+      for (const candidate of candidates) {
+        for (const suffix of ["", ".js", ".json", ".node", "/package.json", "/index.js", "/index.json", "/index.node"]) dependencies.add(candidate + suffix);
+      }
+    }
+  }
+  return originalRequire.apply(this, arguments);
+};
 globalThis.require = createRequire(workerData.modulePath);
+function post(outcome) {
+  parentPort.postMessage({ ...outcome, dependencies: [...new Set([...dependencies, ...Object.keys(require.cache)])], runtimeSpecifiers: [...runtimeSpecifiers] });
+}
 function safeMessage(error) {
   try {
     return error && typeof error === "object" && "message" in error ? String(error.message) : String(error);
@@ -1056,6 +1082,7 @@ function safeMessage(error) {
     return "Thrown error message unavailable.";
   }
 }
+process.once("uncaughtException", (error) => post({ kind: "failure", message: safeMessage(error) }));
 (async () => {
   try {
     const source = workerData.source + "\n//# sourceURL=" + workerData.displayPath + "\n";
@@ -1069,15 +1096,15 @@ function safeMessage(error) {
       const encoded = Buffer.from(source).toString("base64");
       namespace = await import("data:text/javascript;base64," + encoded);
     }
-    if (!namespace) return parentPort.postMessage({ kind: "not-function" });
-    if (typeof namespace.default !== "function") return parentPort.postMessage({ kind: "not-function" });
+    if (!namespace) return post({ kind: "not-function" });
+    if (typeof namespace.default !== "function") return post({ kind: "not-function" });
     const rendered = await namespace.default();
     if (typeof rendered !== "string") {
-      return parentPort.postMessage({ kind: "non-string", resultType: rendered === null ? "null" : typeof rendered });
+      return post({ kind: "non-string", resultType: rendered === null ? "null" : typeof rendered });
     }
-    parentPort.postMessage({ kind: "success", rendered });
+    post({ kind: "success", rendered });
   } catch (error) {
-    parentPort.postMessage({ kind: "failure", message: safeMessage(error) });
+    post({ kind: "failure", message: safeMessage(error) });
   }
 })();`;
   const worker = new Worker(bootstrap, {
@@ -1108,7 +1135,21 @@ function safeMessage(error) {
       worker.once("exit", onExit);
     });
     if (outcome.kind !== "failure") return outcome;
-    return { kind: "failure", message: boundedMessage(outcome.message, projectRoots) };
+    const runtimeRoots = new Set(projectRoots);
+    const aliases: Array<readonly [string, RendererDiagnosticAlias]> = [];
+    for (const filename of outcome.dependencies ?? []) {
+      if (path.isAbsolute(filename) && !projectRoots.some((root) => filename === root || isCanonicalDescendant(root, filename))) {
+        addRendererDependencyRoot(runtimeRoots, filename);
+      }
+    }
+    for (const specifier of outcome.runtimeSpecifiers ?? []) {
+      const filename = rendererLocalFilePath(specifier);
+      if (!filename) continue;
+      const containedRoot = projectRoots.find((root) => filename === root || isCanonicalDescendant(root, filename));
+      const relative = containedRoot ? path.relative(containedRoot, filename) : path.basename(filename);
+      aliases.push([specifier, { replacement: relative ? `<project>/${relative.replaceAll("\\", "/")}` : "<project>", boundary: "path" }]);
+    }
+    return { ...outcome, message: boundedMessage(outcome.message, [...runtimeRoots], aliases) };
   } catch (error) {
     return { kind: "failure", message: boundedMessage(error, projectRoots) };
   } finally {
