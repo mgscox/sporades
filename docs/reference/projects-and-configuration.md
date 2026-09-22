@@ -183,6 +183,36 @@ A typical `sporades.json` looks like this:
 
 Ports follow this cascade: CLI flag, then `sporades.json`, then default.
 
+### Static prerender configuration (Vite)
+
+`client.prerender` is an optional ordered array of `{ "name": "landing", "module": "client/render/landing.ts" }`
+entries. Names must be unique, start with a letter and contain 1–64 letters,
+digits, underscores or hyphens. Modules must be regular project-owned files at
+explicit project-relative paths, without absolute paths, backslashes, `.` or `..`
+segments. The selected toolchain must be Vite; esbuild rejects this configuration.
+
+Each module default-exports a zero-argument function returning HTML or a promise
+of HTML. Renderers execute sequentially in array order. In author-owned
+`index.html`, `<!-- sporades:prerender NAME -->` places one fragment and
+`<!-- sporades:prerender -->` places all fragments in order. Markers can occur in
+the head or body and may be mixed or repeated. With no markers, all fragments
+are inserted immediately after the opening body; fallback fails without a body.
+Source HTML remains unchanged and emitted fragments have private comment
+boundaries, without wrapper elements.
+
+Unknown markers remain comments and warn with `PRERENDER_UNKNOWN_MARKER`.
+Repeated placement warns with `PRERENDER_DUPLICATE_PLACEMENT`; configured but
+unplaced fragments warn with `PRERENDER_UNUSED_FRAGMENT`. These warnings retain
+successful build status and appear in human output and structured `warnings`
+entries (`code`, `fragment`, `message`). Duplicate configured names, missing
+modules, thrown/rejected renderers and non-string results fail the candidate
+build without replacing the last successful normalized public tree.
+
+Renderers are trusted build code, not sandboxed SSR. They receive no Server
+runtime or Server-env context. Renderer-only assets are unsupported; use assets
+from the ordinary Vite client graph. See [Build static prerender fragments](../guide/client.md#build-static-prerender-fragments)
+for a configuration example and the trust and asset boundaries.
+
 ### Built-in Stripe payments in blank Capsules
 
 Every newly generated blank Capsule includes this credential-free project

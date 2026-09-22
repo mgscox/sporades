@@ -1,9 +1,10 @@
-import { type ClientPrerenderFragment } from "./client-prerender.js";
+import { type ClientPrerenderFragment, type ClientPrerenderWarning } from "./client-prerender.js";
 export type ClientToolchainName = "esbuild" | "vite";
 export type ClientToolchainDiagnostics = {
     framework: string;
     toolchain: ClientToolchainName;
     refresh: "none" | "full-page";
+    warnings?: readonly ClientPrerenderWarning[];
 };
 export type NormalizedClientFile = {
     path: string;

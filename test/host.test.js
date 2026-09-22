@@ -19,6 +19,7 @@ import { installProjectSvelteToolchain } from "./support/project-svelte-toolchai
 import { installProjectSolidToolchain } from "./support/project-solid-toolchain.js";
 import { installProjectLitToolchain } from "./support/project-lit-toolchain.js";
 import { installProjectInfernoToolchain } from "./support/project-inferno-toolchain.js";
+import { installPrerenderWarnings, assertPrerenderWarnings } from "./support/prerender-warnings.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
@@ -26,6 +27,31 @@ const hostHelperPath = path.join(repoRoot, "bin", "sporades-host-helper.js");
 const rootPackageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
 const TEST_PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDI9R+ElI6awrzqT1DDZjMa6q7iH+jF5bughycSLBOa/ test@example";
 const TEST_WEBSOCKET_TIMEOUT_MS = 10000;
+
+test("Hosted prerender warnings reach human and structured successful CLI output", async () => {
+  await withTempDir(async (dir) => {
+    const fakeSsh = await installContractFakeSsh(path.join(dir, "fake-ssh"), `const request = JSON.parse(stdin); process.stdout.write(JSON.stringify({ ok:true, data:{ installed:true, release:{ id:request.release.id, files:request.release.files }, capsule:{ subname:request.capsule.subname, hostedUrl:request.release.hostedUrl } }, error:null }) + "\\n");`);
+    const fakeScp = await installFakeScp(path.join(dir, "fake-scp"));
+    const env = { ...hostEnv(path.join(dir, "machine-config")), ...fakeSsh.env, ...fakeScp.env, PATH:`${fakeSsh.fakeBinDir}${path.delimiter}${fakeScp.fakeBinDir}${path.delimiter}${process.env.PATH}` };
+    const created = await runCli(["create", "warning-capsule", "--framework", "react", "--toolchain", "vite", "--no-install", "--no-git", "--json"], {cwd:dir});
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "warning-capsule");
+    await installFakeReact(projectDir);
+    await installPrerenderWarnings(projectDir);
+    const added = await runCli(["host", "add", "work", "--server", "deploy@example.test", "--domain", "apps.work.test", "--remote-root", "/srv/sporades", "--json"], {cwd:projectDir, env});
+    assert.equal(added.code, 0, added.stderr);
+    for (const json of [true, false]) {
+      assertPrerenderWarnings(await runCli(["host", "push", "--host", "work", "--subname", "warnings", ...(json ? ["--json"] : [])], {cwd:projectDir, env}), json);
+    }
+    const failedSsh = await installContractFakeSsh(path.join(dir, "failed-ssh"), 'process.stdout.write(JSON.stringify({ok:false,data:null,error:{message:"install rejected",hint:"retry install"}}) + "\\n");');
+    const failed = await runCli(["host", "push", "--host", "work", "--subname", "warnings", "--json"], {cwd:projectDir, env:{...env, ...failedSsh.env, PATH:`${failedSsh.fakeBinDir}${path.delimiter}${fakeScp.fakeBinDir}${path.delimiter}${process.env.PATH}`}});
+    assert.notEqual(failed.code, 0);
+    const envelope = JSON.parse(failed.stdout);
+    assert.equal(envelope.ok, false);
+    assert.equal(envelope.data, null, 'build warnings never replace failure data');
+    assert.match(envelope.error.message, /install rejected/);
+  });
+});
 
 function buildHostLifecycle(remoteRoot, domain, subname, scheme = "https") {
   return createHostLifecycleRequest(

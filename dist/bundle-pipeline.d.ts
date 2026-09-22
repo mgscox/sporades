@@ -58,6 +58,7 @@ export declare function createBundle(projectDir: string, config: ProjectConfig, 
         serverBundle: string;
         clientBundle: string;
     };
+    clientDiagnostics: import("./client-toolchain.js").ClientToolchainDiagnostics;
     deployFiles: import("./deploy-files.js").BuiltDeployFile[];
     buildDir: string;
     publishLegacy: () => Promise<() => Promise<void>>;

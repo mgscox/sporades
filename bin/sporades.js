@@ -80762,12 +80762,6 @@ function readClientPrerenderConfig(value, toolchain) {
     }
     return { name: record.name, module: record.module };
   });
-  if (fragments.length > 1) {
-    throw prerenderError(
-      "This Sporades version supports one configured prerender fragment.",
-      "Configure one `client.prerender` entry. Ordered multi-fragment builds are not available yet."
-    );
-  }
   return fragments;
 }
 async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots = [projectRoot]) {
@@ -81418,35 +81412,66 @@ function forEachRendererChild(node, visit) {
 function isRendererSyntaxNode(value) {
   return Boolean(value && typeof value === "object" && typeof value.type === "string");
 }
-function placeClientPrerenderFragment(html, fragment, rendered) {
-  const bounded = `<!-- sporades:prerender-boundary-start ${fragment.name} -->${rendered}<!-- sporades:prerender-boundary-end ${fragment.name} -->`;
+function unknownPrerenderMarkerWarning(name2) {
+  const normalized = name2.replace(/[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029]/gu, " ").replace(/\s+/g, " ").trim();
+  const characters = Array.from(normalized || "[empty]");
+  const fragment = characters.length > 64 ? `${characters.slice(0, 63).join("")}\u2026` : characters.join("");
+  return { code: "PRERENDER_UNKNOWN_MARKER", fragment, message: `Unknown prerender marker "${fragment}" remains a comment in index.html.` };
+}
+function placeClientPrerenderFragments(html, fragments) {
+  const warnings = [];
+  const byName = new Map(fragments.map((fragment) => [fragment.name, fragment]));
+  const counts = new Map(fragments.map((fragment) => [fragment.name, 0]));
+  const expand = (fragment) => {
+    counts.set(fragment.name, counts.get(fragment.name) + 1);
+    return `<!-- sporades:prerender-boundary-start ${fragment.name} -->${fragment.html}<!-- sporades:prerender-boundary-end ${fragment.name} -->`;
+  };
   const placement = scanClientPrerenderHtml(html);
+  if (fragments.length === 0) {
+    for (const name2 of new Set(placement.markers.flatMap((marker) => marker.name ? [marker.name] : []))) {
+      warnings.push(unknownPrerenderMarkerWarning(name2));
+    }
+    return { html, warnings };
+  }
   if (placement.problem) {
     throw prerenderError(
       `Client prerender placement could not safely scan index.html: ${placement.problem}.`,
-      "Fix the malformed HTML construct in index.html, then retry.",
-      { fragment: fragment.name }
+      "Fix the malformed HTML construct in index.html, then retry."
     );
   }
-  const namedMarkers = placement.markers.filter((marker) => marker.name === fragment.name);
-  if (namedMarkers.length > 0) {
-    let replaced = "";
+  let replaced = "";
+  if (placement.markers.length > 0) {
     let cursor = 0;
-    for (const marker of namedMarkers) {
-      replaced += `${html.slice(cursor, marker.start)}${bounded}`;
+    const unknownNames = /* @__PURE__ */ new Set();
+    for (const marker of placement.markers) {
+      replaced += html.slice(cursor, marker.start);
+      if (marker.name === void 0) replaced += fragments.map(expand).join("");
+      else if (byName.has(marker.name)) replaced += expand(byName.get(marker.name));
+      else {
+        replaced += html.slice(marker.start, marker.end);
+        if (!unknownNames.has(marker.name)) {
+          warnings.push(unknownPrerenderMarkerWarning(marker.name));
+          unknownNames.add(marker.name);
+        }
+      }
       cursor = marker.end;
     }
-    return `${replaced}${html.slice(cursor)}`;
+    replaced += html.slice(cursor);
+  } else {
+    if (placement.bodyEnd === void 0) {
+      throw prerenderError(
+        "Client prerender fallback placement requires an opening body element.",
+        "Add an opening `<body>` element or a `<!-- sporades:prerender -->` marker to index.html."
+      );
+    }
+    replaced = `${html.slice(0, placement.bodyEnd)}${fragments.map(expand).join("")}${html.slice(placement.bodyEnd)}`;
   }
-  if (placement.markers.length > 0) return html;
-  if (placement.bodyEnd === void 0) {
-    throw prerenderError(
-      "Client prerender fallback placement requires an opening body element.",
-      "Add an opening `<body>` element or a named `<!-- sporades:prerender NAME -->` marker to index.html.",
-      { fragment: fragment.name }
-    );
+  for (const { name: name2 } of fragments) {
+    const count = counts.get(name2);
+    if (count === 0) warnings.push({ code: "PRERENDER_UNUSED_FRAGMENT", fragment: name2, message: `Configured prerender fragment "${name2}" has no placement in index.html.` });
+    else if (count > 1) warnings.push({ code: "PRERENDER_DUPLICATE_PLACEMENT", fragment: name2, message: `Prerender fragment "${name2}" is placed ${count} times in index.html.` });
   }
-  return `${html.slice(0, placement.bodyEnd)}${bounded}${html.slice(placement.bodyEnd)}`;
+  return { html: replaced, warnings };
 }
 function scanClientPrerenderHtml(html) {
   const errors = [];
@@ -81461,8 +81486,8 @@ function scanClientPrerenderHtml(html) {
     if (node.nodeName === "#comment" && "data" in node && location) {
       const source = html.slice(location.startOffset, location.endOffset);
       if (!source.startsWith("<!--") && !source.endsWith(">")) problem = "unterminated HTML declaration";
-      const marker = /^\s*sporades:prerender(?:\s+([A-Za-z][A-Za-z0-9_-]{0,63}))?\s*$/.exec(node.data);
-      if (marker) markers.push({ start: location.startOffset, end: location.endOffset, name: marker[1] });
+      const marker = /^\s*sporades:prerender(?:\s+([\s\S]*?))?\s*$/.exec(node.data);
+      if (marker) markers.push({ start: location.startOffset, end: location.endOffset, name: marker[1]?.trim() || void 0 });
     }
     if ("tagName" in node && node.namespaceURI === "http://www.w3.org/1999/xhtml" && location && "startTag" in location && location.startTag) {
       if (node.tagName === "body") bodyEnd = location.startTag.endOffset;
@@ -81797,6 +81822,7 @@ async function buildVite(options) {
     } else if (options.frameworkConfig.framework === "inferno") {
       frameworkPlugins.push(await loadProjectInfernoToolchain(projectRoot));
     }
+    const prerenderWarnings = [];
     const result = await build2({
       root: projectRoot,
       base: "/",
@@ -81816,7 +81842,7 @@ async function buildVite(options) {
       plugins: [
         ...frameworkPlugins,
         sporadesViteClientPlugin(options.devRefresh === true),
-        ...options.prerender?.map((fragment) => sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], fragment)) ?? [],
+        ...options.prerender !== void 0 ? [sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender, prerenderWarnings)] : [],
         sporadesViteBuildInvariants(canonicalIndexHtmlPath, options.frameworkConfig)
       ],
       build: {
@@ -81858,21 +81884,27 @@ async function buildVite(options) {
     return {
       publicFiles: [...files].map(([filePath, contents]) => ({ path: filePath, contents })),
       legacyClientBundle: null,
-      diagnostics: { framework: options.frameworkConfig.framework, toolchain: "vite", refresh: "full-page" }
+      diagnostics: { framework: options.frameworkConfig.framework, toolchain: "vite", refresh: "full-page", ...prerenderWarnings.length ? { warnings: prerenderWarnings } : {} }
     };
   } catch (error) {
     if (hasHint(error)) throw error;
     throw viteBuildError(error, [options.projectDir, projectRoot], options.frameworkConfig.framework);
   }
 }
-function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragment) {
+function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragments, warnings) {
   return {
-    name: `sporades-prerender-${fragment.name}`,
+    name: "sporades-prerender",
     enforce: "post",
     transformIndexHtml: {
       order: "post",
       async handler(html) {
-        return placeClientPrerenderFragment(html, fragment, await renderClientPrerenderFragment(projectRoot, fragment, projectRoots));
+        const rendered = [];
+        for (const fragment of fragments) {
+          rendered.push({ name: fragment.name, html: await renderClientPrerenderFragment(projectRoot, fragment, projectRoots) });
+        }
+        const placed = placeClientPrerenderFragments(html, rendered);
+        warnings.push(...placed.warnings);
+        return placed.html;
       }
     }
   };
@@ -84065,7 +84097,7 @@ async function createBundle(projectDir, config, options = {}) {
     toolchain,
     indexHtml,
     indexHtmlPath: paths.indexHtml,
-    prerender,
+    prerender: config.client?.prerender === void 0 ? void 0 : prerender,
     clientSource,
     clientSourcePath: paths.clientEntry,
     frameworkConfig: frameworkBundleConfig,
@@ -84164,6 +84196,7 @@ async function createBundle(projectDir, config, options = {}) {
   }
   return {
     paths,
+    clientDiagnostics: clientOutput.diagnostics,
     deployFiles,
     buildDir,
     publishLegacy,
@@ -131874,6 +131907,7 @@ async function startDevSession(options) {
           framework: nextConfig.client?.framework ?? "react",
           toolchain: configuredClientToolchain(nextConfig)
         },
+        ...rebuild.clientDiagnostics.warnings?.length ? { warnings: rebuild.clientDiagnostics.warnings } : {},
         ...refresh ? { refresh } : {}
       });
     } catch (error) {
@@ -131934,7 +131968,7 @@ async function startDevSession(options) {
       );
     }
   });
-  emitDevEvent(options, { event: "started", url, port: actualPort, security, restartPolicy: restartPolicyStatus("dev") });
+  emitDevEvent(options, { event: "started", url, port: actualPort, security, restartPolicy: restartPolicyStatus("dev"), ...bundle.clientDiagnostics.warnings?.length ? { warnings: bundle.clientDiagnostics.warnings } : {} });
   let shutdownStarted = false;
   const shutdown = async () => {
     if (shutdownStarted) return;
@@ -132255,6 +132289,7 @@ function emitDevEvent(options, data2, error = null) {
     });
     return;
   }
+  printBuildWarnings(data2.warnings);
   switch (data2.event) {
     case "started":
       process.stdout.write(`Sporades dev session started at ${data2.url}
@@ -132298,6 +132333,10 @@ Use Ctrl-C to exit
       }
   }
   process.stdout.write(`Sporades dev rebuild failed: ${error.message}
+`);
+}
+function printBuildWarnings(warnings = []) {
+  for (const warning of warnings) process.stdout.write(`Warning [${warning.code}]: ${warning.message}
 `);
 }
 async function manageAuth(options) {
@@ -132894,6 +132933,9 @@ async function manageHost(options) {
         projectDir: options.projectDir
       });
       const outputResult = redactHostPushSshState(result);
+      if (outputResult.ok && bundle.clientDiagnostics.warnings?.length) {
+        outputResult.data = { ...outputResult.data, warnings: bundle.clientDiagnostics.warnings };
+      }
       if (options.json) {
         writeResult(outputResult, !outputResult.ok);
         return;
@@ -132903,6 +132945,7 @@ async function manageHost(options) {
       }
       process.stdout.write(`Hosted Capsule release pushed: ${target.binding.hostedUrl}
 `);
+      printBuildWarnings(bundle.clientDiagnostics.warnings);
       if (!options.restart) {
         process.stdout.write("The Hosted Capsule was not restarted.\n");
       }
@@ -133718,6 +133761,7 @@ async function startContainerSession(options) {
         port,
         containerId,
         restartPolicy: restartPolicyStatus("container"),
+        ...bundle.clientDiagnostics.warnings?.length ? { warnings: bundle.clientDiagnostics.warnings } : {},
         ...containerCapsuleServices.services ? { services: containerCapsuleServices.services } : {}
       },
       error: null
@@ -133725,6 +133769,7 @@ async function startContainerSession(options) {
   } else {
     process.stdout.write(`Sporades container session started at ${url}
 `);
+    printBuildWarnings(bundle.clientDiagnostics.warnings);
   }
 }
 function readContainerReadinessTimeoutMs() {

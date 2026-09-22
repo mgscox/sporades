@@ -66,7 +66,7 @@ export async function createBundle(projectDir, config, options = {}) {
         toolchain,
         indexHtml,
         indexHtmlPath: paths.indexHtml,
-        prerender,
+        prerender: config.client?.prerender === undefined ? undefined : prerender,
         clientSource,
         clientSourcePath: paths.clientEntry,
         frameworkConfig: frameworkBundleConfig,
@@ -186,6 +186,7 @@ export async function createBundle(projectDir, config, options = {}) {
     }
     return {
         paths,
+        clientDiagnostics: clientOutput.diagnostics,
         deployFiles,
         buildDir,
         publishLegacy,

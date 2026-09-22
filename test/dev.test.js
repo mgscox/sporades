@@ -4189,6 +4189,55 @@ test("Vue Vite rejects a symlinked node_modules root before resolving compiler p
   });
 });
 
+test("prerender warnings appear in human and structured Dev diagnostics", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "prerender-warnings", "--framework", "react", "--toolchain", "vite", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "prerender-warnings");
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.client.prerender = [{ name: "landing", module: "render.mjs" }, { name: "unused", module: "render.mjs" }];
+    await writeFile(configPath, JSON.stringify(config));
+    await writeFile(path.join(projectDir, "render.mjs"), 'export default () => "<main>Static shell</main>";');
+    const htmlPath = path.join(projectDir, "index.html");
+    const original = await readFile(htmlPath, "utf8");
+    await writeFile(htmlPath, original.replace('<body>', '<body><!-- sporades:prerender landing --><!-- sporades:prerender landing --><!-- sporades:prerender typo -->'));
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+      assert.deepEqual(started.data.warnings.map((warning) => warning.code), ['PRERENDER_UNKNOWN_MARKER', 'PRERENDER_DUPLICATE_PLACEMENT', 'PRERENDER_UNUSED_FRAGMENT']);
+      const rebuilt = waitForJsonEvent(child, (event) => event.data.event === 'rebuild' && event.data.status === 'success');
+      await writeFile(htmlPath, original.replace('<body>', '<body><!-- sporades:prerender typo -->'));
+      assert.deepEqual((await rebuilt).data.warnings.map((warning) => warning.code), ['PRERENDER_UNKNOWN_MARKER', 'PRERENDER_UNUSED_FRAGMENT', 'PRERENDER_UNUSED_FRAGMENT']);
+    } finally {
+      const exited = new Promise((resolve) => child.once('exit', resolve));
+      child.kill('SIGTERM');
+      await exited;
+    }
+    const human = startCli(["dev"], { cwd: projectDir });
+    try {
+      const output = await new Promise((resolve, reject) => {
+        let text = '';
+        const timer = setTimeout(() => reject(new Error(text)), TEST_PROCESS_EVENT_TIMEOUT_MS);
+        human.stdout.on('data', (chunk) => {
+          text += chunk;
+          if (text.includes('Use Ctrl-C to exit')) { clearTimeout(timer); resolve(text); }
+        });
+        human.once('error', reject);
+      });
+      assert.match(output, /Warning \[PRERENDER_UNKNOWN_MARKER\]: Unknown prerender marker "typo"/);
+      assert.match(output, /Warning \[PRERENDER_UNUSED_FRAGMENT\]: Configured prerender fragment "landing"/);
+    } finally {
+      const exited = new Promise((resolve) => human.once('exit', resolve));
+      human.kill('SIGTERM');
+      await exited;
+    }
+  });
+});
+
 test("sporades dev owns React Vite rebuilds, preserves last-good output, and requests full-page refresh", async () => {
   await withTempDir(async (dir) => {
     const created = await runCli(
