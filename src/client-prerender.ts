@@ -83,15 +83,16 @@ export async function renderClientPrerenderFragment(
 
   let bundledSource: string;
   let bundleFormat: "cjs" | "esm" = "cjs";
+  const rendererDependencyRoots = new Set<string>();
   try {
     const { build } = await import("esbuild");
     let result: import("esbuild").BuildResult;
     try {
-      result = await buildRendererBundle(build, projectRoot, canonicalModulePath, bundleFormat);
+      result = await buildRendererBundle(build, projectRoot, canonicalModulePath, bundleFormat, rendererDependencyRoots);
     } catch (error) {
       if (!isCommonJsTopLevelAwaitBuildFailure(error)) throw error;
       bundleFormat = "esm";
-      result = await buildRendererBundle(build, projectRoot, canonicalModulePath, bundleFormat);
+      result = await buildRendererBundle(build, projectRoot, canonicalModulePath, bundleFormat, rendererDependencyRoots);
     }
     const outputs = result.outputFiles ?? [];
     const javascript = outputs.filter((output) => output.path.endsWith(".js"));
@@ -101,7 +102,7 @@ export async function renderClientPrerenderFragment(
     bundledSource = javascript[0].text;
   } catch (error) {
     throw prerenderError(
-      `Could not build client prerender module for ${fragment.name}: ${boundedMessage(error, projectRoots)}`,
+      `Could not build client prerender module for ${fragment.name}: ${boundedMessage(error, [...projectRoots, ...rendererDependencyRoots])}`,
       `Fix ${fragment.module}, then retry.`,
       { fragment: fragment.name, module: fragment.module },
     );
@@ -179,6 +180,7 @@ async function buildRendererBundle(
   projectRoot: string,
   canonicalModulePath: string,
   format: "cjs" | "esm",
+  rendererDependencyRoots: Set<string>,
 ) {
   return build({
     absWorkingDir: projectRoot,
@@ -189,7 +191,7 @@ async function buildRendererBundle(
     logLevel: "silent",
     outdir: path.join(projectRoot, ".sporades-prerender-output"),
     platform: "node",
-    plugins: [preserveRendererImportMetaUrl(build, projectRoot)],
+    plugins: [preserveRendererImportMetaUrl(build, projectRoot, rendererDependencyRoots)],
     sourcemap: false,
     target: "node22",
     write: false,
@@ -211,6 +213,7 @@ function isCommonJsTopLevelAwaitBuildFailure(error: unknown) {
 function preserveRendererImportMetaUrl(
   esbuildBuild: typeof import("esbuild").build,
   projectRoot: string,
+  rendererDependencyRoots: Set<string>,
 ): import("esbuild").Plugin {
   const packageModeCache = new Map<string, Promise<"module" | "commonjs" | "default">>();
   const loaders = new Map<string, import("esbuild").Loader>([
@@ -239,6 +242,7 @@ function preserveRendererImportMetaUrl(
           with: args.with,
         });
         if (resolved.errors.length > 0) return args.namespace === commonJsNamespace ? { errors: resolved.errors, warnings: resolved.warnings } : undefined;
+        if (!resolved.external && resolved.namespace === "file") rendererDependencyRoots.add(path.dirname(resolved.path));
         let namespace = resolved.namespace;
         if (!resolved.external && namespace === "file" && [".js", ".jsx"].includes(path.extname(resolved.path))) {
           const contents = await readFile(resolved.path, "utf8");
@@ -264,9 +268,18 @@ function preserveRendererImportMetaUrl(
         const contents = await readFile(args.path, "utf8");
         const commonJsModule = await rendererModuleUsesCommonJs(args.path, contents, projectRoot, packageModeCache);
         const preservesImportMetaUrl = contents.includes("import.meta.url");
-        if (!preservesImportMetaUrl && (!commonJsModule || !/\b(?:require|__dirname|__filename)\b/.test(contents))) return undefined;
         const loader = loaders.get(path.extname(args.path));
         if (!loader) return undefined;
+        const requiresTransform = preservesImportMetaUrl || (commonJsModule && /\b(?:require|__dirname|__filename)\b/.test(contents));
+        if (!requiresTransform) {
+          if (args.namespace !== commonJsNamespace) return undefined;
+          return {
+            contents,
+            loader,
+            resolveDir: path.dirname(args.path),
+            watchFiles: [args.path],
+          };
+        }
         const moduleUrl = pathToFileURL(args.path).href;
         const define: Record<string, string> = { "import.meta.url": JSON.stringify(moduleUrl) };
         const result = await esbuildBuild({
@@ -290,7 +303,7 @@ function preserveRendererImportMetaUrl(
         const specialized = commonJsModule
           ? specializeCommonJsRendererModule(javascript[0].text, args.path, moduleUrl)
           : { contents: javascript[0].text, changed: false };
-        if (commonJsModule && !preservesImportMetaUrl && !specialized.changed) return undefined;
+        if (commonJsModule && !preservesImportMetaUrl && !specialized.changed && args.namespace !== commonJsNamespace) return undefined;
         return {
           contents: specialized.contents,
           loader: rendererTransformOutputLoader(loader),
