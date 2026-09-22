@@ -81126,7 +81126,32 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
   const scopes = /* @__PURE__ */ new WeakMap();
   collectRendererScopes(syntax, rootScope, scopes);
   const noTargets = /* @__PURE__ */ new WeakSet();
+  const blockFunctions = /* @__PURE__ */ new Map();
+  visitRendererSyntax(syntax, (node) => {
+    if (node.type !== "VariableDeclaration" || node.kind === "var") return;
+    const scope = scopes.get(node) ?? rootScope;
+    if (scope === rootScope) return;
+    for (const declaration of node.declarations) {
+      if (isRendererSyntaxNode(declaration.id) && declaration.id.type === "Identifier" && isRendererSyntaxNode(declaration.init) && declaration.init.type === "FunctionExpression") {
+        const names = blockFunctions.get(scope) ?? /* @__PURE__ */ new Set();
+        names.add(String(declaration.id.name));
+        blockFunctions.set(scope, names);
+      }
+    }
+  });
   visitRendererSyntax(syntax, (node, parent, key) => {
+    const scope = scopes.get(node) ?? rootScope;
+    if (node.type === "VariableDeclaration" && node.kind === "var" && scope !== rootScope && nearestRendererFunctionScope(scope) === rootScope) {
+      for (const declaration of node.declarations) {
+        if (!isRendererSyntaxNode(declaration.id) || !["require", "module", "exports", "__dirname", "__filename", "arguments"].includes(String(declaration.id.name)) || !isRendererSyntaxNode(declaration.init) || declaration.init.type !== "Identifier") continue;
+        const name2 = String(declaration.init.name);
+        for (let bindingScope = scope; bindingScope && bindingScope !== rootScope; bindingScope = bindingScope.parent) {
+          if (!bindingScope.bindings.has(name2)) continue;
+          if (blockFunctions.get(bindingScope)?.has(name2)) throw new Error("Module-scope CommonJS wrapper bindings cannot be redeclared from block-local functions in prerender modules; use an explicit assignment instead of Annex B hoisting.");
+          break;
+        }
+      }
+    }
     if (node.type === "Identifier" && node.name === "arguments" && !rendererScopeBinds(scopes.get(node) ?? rootScope, "arguments") && isRendererIdentifierReference(node, parent, key, noTargets, noTargets)) {
       throw new Error("Top-level CommonJS arguments are unsupported in prerender modules; use explicit module-local wrapper bindings instead.");
     }
