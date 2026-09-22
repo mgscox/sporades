@@ -1203,7 +1203,7 @@ test("canonical hosting docs define runtime health bound compatibility", async (
   assert.match(contract, /legacy Capsule releases[\s\S]*omit[\s\S]*together/i);
   assert.match(contract, /all-absent pair[\s\S]*compatibl/i);
   assert.match(contract, /partial presence[\s\S]*malformed[\s\S]*non-positive[\s\S]*unexpected shape/i);
-  assert.match(contract, /probe credential[\s\S]*token gate[\s\S]*unchanged/i);
+  assert.match(contract, /token gate[\s\S]*Host-owned[\s\S]*every probe[\s\S]*independently[\s\S]*File inspection/i);
   assert.match(contract, /no additional sensitive data/i);
 });
 

@@ -90776,7 +90776,7 @@ async function routeRuntimeHealth(database, request, response) {
     writeNotFound(response);
     return true;
   }
-  if (database.clamavRequired && !runtimeProbeMatches(probe, database.runtimeProbeToken)) {
+  if (!runtimeProbeMatches(probe, database.runtimeProbeToken)) {
     writeNotFound(response);
     return true;
   }
@@ -101154,6 +101154,18 @@ function normalizeCapsuleFileIngressDefinition(files, endpoints) {
   }
   return Object.freeze({ principalNamespaces: Object.freeze([...namespaces]), admit: ingress.admit });
 }
+function resolveFileMaxSizeBytes(config = {}) {
+  const configured = config.files?.maxSizeBytes;
+  if (configured === void 0) return 10 * 1024 * 1024;
+  if (!Number.isInteger(configured) || configured <= 0) {
+    throw commandError2(
+      "Invalid File size configuration.",
+      "Set `files.maxSizeBytes` to a positive integer byte count.",
+      "INVALID_FILE_CONFIG"
+    );
+  }
+  return configured;
+}
 async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
   if (capsuleDefinition) {
     capsuleDefinition = normalizeCapsuleAuthDefinition(capsuleDefinition);
@@ -101162,6 +101174,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     validateEndpointResponseDeclarations(capsuleDefinition);
   }
   validateLogConfig(config);
+  const fileMaxSizeBytes = resolveFileMaxSizeBytes(config);
   const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
   if (capsuleDefinition?.teams !== void 0 && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
     throw commandError2("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
@@ -101498,7 +101511,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     fileAccessKeyRead: capsuleDefinition?.files?.accessKeys?.read ? Object.freeze({ scopes: Object.freeze([...capsuleDefinition.files.accessKeys.read.scopes ?? []]) }) : null,
     securityPolicy: resolveRuntimeSecurityPolicy(config),
     fileStorage,
-    fileMaxSizeBytes: config.files?.maxSizeBytes ?? 10 * 1024 * 1024,
+    fileMaxSizeBytes,
     httpMaxBodyBytes: resolveHttpMaxBodyBytes(config),
     close: () => {
       database.__scheduleStopped = true;

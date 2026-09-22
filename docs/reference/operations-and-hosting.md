@@ -406,8 +406,9 @@ from normalized output. Partial presence, malformed values, or non-positive
 values are an invalid, unexpected shape rather than legacy compatibility.
 
 This adds only the two resolved numeric bounds: no additional sensitive data is
-exposed. The existing probe credential and token gate are unchanged, including
-the Host-owned `x-sporades-host-probe` credential used to access the route.
+exposed. The token gate uses the existing Host-owned
+`x-sporades-host-probe` credential. The runtime validates that credential on
+every probe, independently of whether the Capsule requires File inspection.
 
 `sporades host reconcile` settles an interrupted release install whose
 `deploy-file-attempt.jsonl` journal blocks start, restart and rollback. It

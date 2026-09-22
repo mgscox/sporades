@@ -8228,17 +8228,23 @@ test("Sporades runtime health rejects unauthenticated probes and returns safe re
       assert.equal(unauthenticated.status, 404);
       assert.equal(await unauthenticated.text(), "Not found");
 
-      database.clamavRequired = true;
       database.runtimeProbeToken = "a".repeat(64);
       const forged = await fetch(`http://127.0.0.1:${port}/__sporades/health/runtime`, {
-        headers: { "x-sporades-host-probe": "probe-secret" },
+        headers: { "x-sporades-host-probe": "b".repeat(64) },
       });
       assert.equal(forged.status, 404);
       assert.equal(await forged.text(), "Not found");
+
+      database.clamavRequired = true;
+      const forgedWithRequiredInspection = await fetch(`http://127.0.0.1:${port}/__sporades/health/runtime`, {
+        headers: { "x-sporades-host-probe": "b".repeat(64) },
+      });
+      assert.equal(forgedWithRequiredInspection.status, 404);
+      assert.equal(await forgedWithRequiredInspection.text(), "Not found");
       database.clamavRequired = false;
 
       const authenticated = await fetch(`http://127.0.0.1:${port}/__sporades/health/runtime`, {
-        headers: { "x-sporades-host-probe": "probe-secret" },
+        headers: { "x-sporades-host-probe": "a".repeat(64) },
       });
       assert.equal(authenticated.status, 200);
       const body = await authenticated.json();
@@ -8257,7 +8263,7 @@ test("Sporades runtime health rejects unauthenticated probes and returns safe re
       assert.deepEqual(Object.keys(body.data.runtime).sort(), ["fileMaxSizeBytes", "httpMaxBodyBytes", "ready"]);
       const raw = JSON.stringify(body);
       assert.equal(raw.includes(dir), false);
-      assert.equal(raw.includes("probe-secret"), false);
+      assert.equal(raw.includes("a".repeat(64)), false);
       assert.equal(raw.includes("SPORADES"), false);
     } finally {
       database.close();
@@ -8266,9 +8272,35 @@ test("Sporades runtime health rejects unauthenticated probes and returns safe re
   });
 });
 
+test("Sporades runtime resolves the configured File size bound before exposing it", async () => {
+  await withTempDir(async (dir) => {
+    const valid = await openDevDatabase(path.join(dir, "valid.db"), "", {}, { files: { maxSizeBytes: 7_654_321 } });
+    try {
+      assert.equal(valid.fileMaxSizeBytes, 7_654_321);
+    } finally {
+      valid.close();
+    }
+
+    const defaulted = await openDevDatabase(path.join(dir, "default.db"), "", {}, {});
+    try {
+      assert.equal(defaulted.fileMaxSizeBytes, 10 * 1024 * 1024);
+    } finally {
+      defaulted.close();
+    }
+
+    for (const maxSizeBytes of [0, 1.5, "7654321", null]) {
+      await assert.rejects(
+        openDevDatabase(path.join(dir, `invalid-${String(maxSizeBytes)}.db`), "", {}, { files: { maxSizeBytes } }),
+        { code: "INVALID_FILE_CONFIG" },
+      );
+    }
+  });
+});
+
 test("Sporades runtime health accepts a URL instance through its public request contract", async () => {
   await withTempDir(async (dir) => {
     const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {});
+    database.runtimeProbeToken = "a".repeat(64);
     const response = {
       status: 0,
       body: "",
@@ -8280,7 +8312,7 @@ test("Sporades runtime health accepts a URL instance through its public request 
       const handled = await routeRuntimeHealth(database, {
         url: new URL("https://unrelated.example/__sporades/health/runtime"),
         method: "GET",
-        headers: { "x-sporades-host-probe": "probe-secret" },
+        headers: { "x-sporades-host-probe": "a".repeat(64) },
       }, response);
 
       assert.equal(handled, true);

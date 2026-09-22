@@ -711,7 +711,7 @@ export async function routeRuntimeHealth(database: any, request: { url: string |
     writeNotFound(response);
     return true;
   }
-  if (database.clamavRequired && !runtimeProbeMatches(probe, database.runtimeProbeToken)) {
+  if (!runtimeProbeMatches(probe, database.runtimeProbeToken)) {
     writeNotFound(response);
     return true;
   }

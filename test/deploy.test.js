@@ -2163,6 +2163,7 @@ test("container server bundle reads injected service env and selects the libSQL 
           SPORADES_SERVICE_DATABASE_ENGINE: "libsql",
           SPORADES_SERVICE_DATABASE_URL: url,
           SPORADES_SERVICE_DATABASE_AUTH_TOKEN: "server-only-token",
+          SPORADES_RUNTIME_PROBE_TOKEN: "a".repeat(64),
         },
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -2170,7 +2171,7 @@ test("container server bundle reads injected service env and selects the libSQL 
       try {
         await waitForHttp(`http://127.0.0.1:${port}/`, child);
         const health = await fetch(`http://127.0.0.1:${port}/__sporades/health/runtime`, {
-          headers: { "x-sporades-host-probe": "test" },
+          headers: { "x-sporades-host-probe": "a".repeat(64) },
         });
         assert.equal(health.status, 200, await health.text());
         assert(
@@ -2246,6 +2247,7 @@ test("container server bundle uses injected MinIO storage env for file lifecycle
           NODE_OPTIONS: nodeOptionsWithImport(bridgeImport),
           PORT: String(port),
           SPORADES_DATABASE_PATH: path.join(projectDir, ".sporades", "data", "data.db"),
+          SPORADES_RUNTIME_PROBE_TOKEN: "a".repeat(64),
           ...storageEnv,
         },
         stdio: ["ignore", "pipe", "pipe"],
@@ -2256,7 +2258,7 @@ test("container server bundle uses injected MinIO storage env for file lifecycle
         const baseUrl = `http://127.0.0.1:${port}`;
         await waitForHttp(`${baseUrl}/`, child);
         const health = await fetch(`${baseUrl}/__sporades/health/runtime`, {
-          headers: { "x-sporades-host-probe": "test" },
+          headers: { "x-sporades-host-probe": "a".repeat(64) },
         });
         assert.equal(health.status, 200, await health.text());
 
