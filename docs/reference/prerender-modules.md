@@ -17,3 +17,10 @@ build with an explicit diagnostic: their source-module resolution cannot be
 preserved by the bundled evaluator. Express the supported choices with explicit
 imports instead. Renderer-only CSS, image or other asset output is unsupported;
 assets used by static HTML must already belong to the ordinary Vite client graph.
+
+Fragment HTML must be valid for its marker's document context. The build checks
+the parsed DOM without rewriting the emitted HTML: content moved outside its
+handover boundaries by HTML parsing fails with a placement diagnostic. For
+example, render rows at a marker inside a table, not a `div` or plain text that
+the browser would move before the table. Markers inside inert `template` content
+are not supported. Valid implicit table wrappers remain supported.

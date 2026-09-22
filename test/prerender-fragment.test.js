@@ -152,11 +152,12 @@ test("marker scanning preserves less-than text and bounds bogus HTML constructs"
   const rendered = "<main>static fragment</main>";
   const marker = "<!-- sporades:prerender landing -->";
   const bounded = "<!-- sporades:prerender-boundary-start landing --><main>static fragment</main><!-- sporades:prerender-boundary-end landing -->";
-  for (const text of ["1 < 2", "<3", "a<b"]) {
+  for (const text of ["1 < 2", "<3"]) {
     const source = `<html><body>${text}${marker}<p>page</p></body></html>`;
     const expected = `<html><body>${text}${bounded}<p>page</p></body></html>`;
     assert.equal(placeClientPrerenderFragment(source, fragment, rendered), expected, text);
   }
+  assert.throws(() => placeClientPrerenderFragment(`<html><body>a<b${marker}<p>page</p></body></html>`, fragment, rendered), /not stable in the parsed HTML document/i);
   for (const bogus of ['<!x " >', '<? " >', '</3 " >']) {
     const source = `<html><body>${bogus}${marker}tail"><p>page</p></body></html>`;
     const expected = `<html><body>${bogus}${bounded}tail"><p>page</p></body></html>`;
