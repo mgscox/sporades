@@ -72716,8 +72716,9 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
       { fragment: fragment.name, module: fragment.module }
     );
   }
+  const boundedRendererRoots = [...projectRoots, ...rendererDependencyRoots];
   if (bundleFormat === "esm") {
-    const outcome = await executeEsmBundledRenderer(bundledSource, canonicalModulePath, fragment.module, projectRoots);
+    const outcome = await executeEsmBundledRenderer(bundledSource, canonicalModulePath, fragment.module, boundedRendererRoots);
     if (outcome.kind === "not-function") {
       throw prerenderError(
         `Client prerender module for ${fragment.name} must default-export a zero-argument renderer.`,
@@ -72747,7 +72748,7 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
   } catch (error) {
     discardRendererRequireCache(initialRequireCache);
     throw prerenderError(
-      `Client prerender renderer for ${fragment.name} failed: ${boundedMessage(error, projectRoots)}`,
+      `Client prerender renderer for ${fragment.name} failed: ${boundedMessage(error, boundedRendererRoots)}`,
       `Fix the renderer in ${fragment.module}, then retry.`,
       { fragment: fragment.name, module: fragment.module }
     );
@@ -72764,7 +72765,7 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
     rendered = await renderer();
   } catch (error) {
     throw prerenderError(
-      `Client prerender renderer for ${fragment.name} failed: ${boundedMessage(error, projectRoots)}`,
+      `Client prerender renderer for ${fragment.name} failed: ${boundedMessage(error, boundedRendererRoots)}`,
       `Fix the renderer in ${fragment.module}, then retry.`,
       { fragment: fragment.name, module: fragment.module }
     );
