@@ -7,7 +7,7 @@ import type { Plugin as VitePlugin } from "vite";
 
 import { createClientRuntimeSource } from "./templates/client-runtime-template.js";
 import { clientCapabilityError, clientFrameworkCapability, supportsClientCapability } from "./client-capabilities.js";
-import { placeClientPrerenderFragment, renderClientPrerenderFragment, type ClientPrerenderFragment } from "./client-prerender.js";
+import { placeClientPrerenderFragments, renderClientPrerenderFragment, type ClientPrerenderFragment, type ClientPrerenderWarning } from "./client-prerender.js";
 import { canonicalBuildDiagnosticRoots, redactBuildProjectRoots } from "./build-diagnostics.js";
 
 export type ClientToolchainName = "esbuild" | "vite";
@@ -15,6 +15,7 @@ export type ClientToolchainDiagnostics = {
   framework: string;
   toolchain: ClientToolchainName;
   refresh: "none" | "full-page";
+  warnings?: readonly ClientPrerenderWarning[];
 };
 export type NormalizedClientFile = { path: string; contents: string | Uint8Array };
 export type ClientToolchainOutput = {
@@ -176,6 +177,7 @@ async function buildVite(options: {
     } else if (options.frameworkConfig.framework === "inferno") {
       frameworkPlugins.push(await loadProjectInfernoToolchain(projectRoot));
     }
+    const prerenderWarnings: ClientPrerenderWarning[] = [];
     const result = await build({
       root: projectRoot,
       base: "/",
@@ -197,7 +199,7 @@ async function buildVite(options: {
       plugins: [
         ...frameworkPlugins,
         sporadesViteClientPlugin(options.devRefresh === true),
-        ...options.prerender?.map((fragment) => sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], fragment)) ?? [],
+        ...(options.prerender?.length ? [sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender, prerenderWarnings)] : []),
         sporadesViteBuildInvariants(canonicalIndexHtmlPath, options.frameworkConfig),
       ],
       build: {
@@ -239,7 +241,7 @@ async function buildVite(options: {
     return {
       publicFiles: [...files].map(([filePath, contents]) => ({ path: filePath, contents })),
       legacyClientBundle: null,
-      diagnostics: { framework: options.frameworkConfig.framework, toolchain: "vite" as const, refresh: "full-page" as const },
+      diagnostics: { framework: options.frameworkConfig.framework, toolchain: "vite" as const, refresh: "full-page" as const, ...(prerenderWarnings.length ? { warnings: prerenderWarnings } : {}) },
     };
   } catch (error) {
     if (hasHint(error)) throw error;
@@ -247,14 +249,20 @@ async function buildVite(options: {
   }
 }
 
-function sporadesVitePrerenderPlugin(projectRoot: string, projectRoots: string[], fragment: ClientPrerenderFragment): VitePlugin {
+function sporadesVitePrerenderPlugin(projectRoot: string, projectRoots: string[], fragments: readonly ClientPrerenderFragment[], warnings: ClientPrerenderWarning[]): VitePlugin {
   return {
-    name: `sporades-prerender-${fragment.name}`,
+    name: "sporades-prerender",
     enforce: "post",
     transformIndexHtml: {
       order: "post",
       async handler(html) {
-        return placeClientPrerenderFragment(html, fragment, await renderClientPrerenderFragment(projectRoot, fragment, projectRoots));
+        const rendered = [];
+        for (const fragment of fragments) {
+          rendered.push({ name: fragment.name, html: await renderClientPrerenderFragment(projectRoot, fragment, projectRoots) });
+        }
+        const placed = placeClientPrerenderFragments(html, rendered);
+        warnings.push(...placed.warnings);
+        return placed.html;
       },
     },
   };

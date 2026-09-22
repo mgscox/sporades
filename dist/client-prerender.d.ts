@@ -7,4 +7,20 @@ export declare function readClientPrerenderConfig(value: unknown, toolchain: Cli
 export declare function renderClientPrerenderFragment(projectRoot: string, fragment: ClientPrerenderFragment, projectRoots?: string[]): Promise<string>;
 export declare function rendererTransformOutputLoader(loader: import("esbuild").Loader): "js" | "jsx";
 export declare function placeClientPrerenderFragment(html: string, fragment: ClientPrerenderFragment, rendered: string): string;
+export type ClientPrerenderWarning = Readonly<{
+    code: "PRERENDER_DUPLICATE_PLACEMENT" | "PRERENDER_UNUSED_FRAGMENT" | "PRERENDER_UNKNOWN_MARKER";
+    fragment: string;
+    message: string;
+}>;
+export declare function placeClientPrerenderFragments(html: string, fragments: readonly {
+    name: string;
+    html: string;
+}[]): {
+    html: string;
+    warnings: Readonly<{
+        code: "PRERENDER_DUPLICATE_PLACEMENT" | "PRERENDER_UNUSED_FRAGMENT" | "PRERENDER_UNKNOWN_MARKER";
+        fragment: string;
+        message: string;
+    }>[];
+};
 //# sourceMappingURL=client-prerender.d.ts.map

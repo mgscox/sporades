@@ -186,6 +186,7 @@ export async function createBundle(projectDir, config, options = {}) {
     }
     return {
         paths,
+        clientDiagnostics: clientOutput.diagnostics,
         deployFiles,
         buildDir,
         publishLegacy,

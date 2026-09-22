@@ -1820,11 +1820,7 @@ test("one configured Vite prerender fragment reaches the normalized public tree"
     const multipleConfig = structuredClone(config);
     multipleConfig.client.prerender.push({ name: "footer", module: "render-footer.mjs" });
     await writeFile(path.join(projectDir, "sporades.json"), `${JSON.stringify(multipleConfig, null, 2)}\n`);
-    await assert.rejects(readProjectConfig(projectDir), (error) => {
-      assert.match(error.message, /supports one configured prerender fragment/i);
-      assert.match(error.hint, /ordered multi-fragment builds are not available yet/i);
-      return true;
-    });
+    assert.deepEqual((await readProjectConfig(projectDir)).client.prerender, multipleConfig.client.prerender);
     for (const invalidModule of [
       "../escape.mjs",
       "./dot.mjs",

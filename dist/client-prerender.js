@@ -36,9 +36,6 @@ export function readClientPrerenderConfig(value, toolchain) {
         }
         return { name: record.name, module: record.module };
     });
-    if (fragments.length > 1) {
-        throw prerenderError("This Sporades version supports one configured prerender fragment.", "Configure one `client.prerender` entry. Ordered multi-fragment builds are not available yet.");
-    }
     return fragments;
 }
 export async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots = [projectRoot]) {
@@ -724,27 +721,57 @@ function discardRendererRequireCache(initialCache) {
     }
 }
 export function placeClientPrerenderFragment(html, fragment, rendered) {
-    const bounded = `<!-- sporades:prerender-boundary-start ${fragment.name} -->${rendered}<!-- sporades:prerender-boundary-end ${fragment.name} -->`;
+    return placeClientPrerenderFragments(html, [{ name: fragment.name, html: rendered }]).html;
+}
+export function placeClientPrerenderFragments(html, fragments) {
+    const warnings = [];
+    if (fragments.length === 0)
+        return { html, warnings };
+    const byName = new Map(fragments.map((fragment) => [fragment.name, fragment]));
+    const counts = new Map(fragments.map((fragment) => [fragment.name, 0]));
+    const expand = (fragment) => {
+        counts.set(fragment.name, counts.get(fragment.name) + 1);
+        return `<!-- sporades:prerender-boundary-start ${fragment.name} -->${fragment.html}<!-- sporades:prerender-boundary-end ${fragment.name} -->`;
+    };
     const placement = scanClientPrerenderHtml(html);
     if (placement.problem) {
-        throw prerenderError(`Client prerender placement could not safely scan index.html: ${placement.problem}.`, "Fix the malformed HTML construct in index.html, then retry.", { fragment: fragment.name });
+        throw prerenderError(`Client prerender placement could not safely scan index.html: ${placement.problem}.`, "Fix the malformed HTML construct in index.html, then retry.");
     }
-    const namedMarkers = placement.markers.filter((marker) => marker.name === fragment.name);
-    if (namedMarkers.length > 0) {
-        let replaced = "";
+    let replaced = "";
+    if (placement.markers.length > 0) {
         let cursor = 0;
-        for (const marker of namedMarkers) {
-            replaced += `${html.slice(cursor, marker.start)}${bounded}`;
+        const unknownNames = new Set();
+        for (const marker of placement.markers) {
+            replaced += html.slice(cursor, marker.start);
+            if (marker.name === undefined)
+                replaced += fragments.map(expand).join("");
+            else if (byName.has(marker.name))
+                replaced += expand(byName.get(marker.name));
+            else {
+                replaced += html.slice(marker.start, marker.end);
+                if (!unknownNames.has(marker.name)) {
+                    warnings.push({ code: "PRERENDER_UNKNOWN_MARKER", fragment: marker.name, message: `Unknown prerender marker "${marker.name}" remains a comment in index.html.` });
+                    unknownNames.add(marker.name);
+                }
+            }
             cursor = marker.end;
         }
-        return `${replaced}${html.slice(cursor)}`;
+        replaced += html.slice(cursor);
     }
-    if (placement.markers.length > 0)
-        return html;
-    if (placement.bodyEnd === undefined) {
-        throw prerenderError("Client prerender fallback placement requires an opening body element.", "Add an opening `<body>` element or a named `<!-- sporades:prerender NAME -->` marker to index.html.", { fragment: fragment.name });
+    else {
+        if (placement.bodyEnd === undefined) {
+            throw prerenderError("Client prerender fallback placement requires an opening body element.", "Add an opening `<body>` element or a `<!-- sporades:prerender -->` marker to index.html.");
+        }
+        replaced = `${html.slice(0, placement.bodyEnd)}${fragments.map(expand).join("")}${html.slice(placement.bodyEnd)}`;
     }
-    return `${html.slice(0, placement.bodyEnd)}${bounded}${html.slice(placement.bodyEnd)}`;
+    for (const { name } of fragments) {
+        const count = counts.get(name);
+        if (count === 0)
+            warnings.push({ code: "PRERENDER_UNUSED_FRAGMENT", fragment: name, message: `Configured prerender fragment "${name}" has no placement in index.html.` });
+        else if (count > 1)
+            warnings.push({ code: "PRERENDER_DUPLICATE_PLACEMENT", fragment: name, message: `Prerender fragment "${name}" is placed ${count} times in index.html.` });
+    }
+    return { html: replaced, warnings };
 }
 function scanClientPrerenderHtml(html) {
     const lowerHtml = foldAsciiCase(html);

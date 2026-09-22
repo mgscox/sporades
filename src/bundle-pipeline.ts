@@ -231,6 +231,7 @@ export async function createBundle(
 
   return {
     paths,
+    clientDiagnostics: clientOutput.diagnostics,
     deployFiles,
     buildDir,
     publishLegacy,

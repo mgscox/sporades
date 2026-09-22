@@ -2602,6 +2602,7 @@ async function startDevSession(options: LooseRecord) {
           framework: nextConfig.client?.framework ?? "react",
           toolchain: configuredClientToolchain(nextConfig),
         },
+        ...(rebuild.clientDiagnostics.warnings?.length ? { warnings: rebuild.clientDiagnostics.warnings } : {}),
         ...(refresh ? { refresh } : {}),
       });
     } catch (error) {
@@ -2662,7 +2663,7 @@ async function startDevSession(options: LooseRecord) {
       );
     }
   });
-  emitDevEvent(options, { event: "started", url, port: actualPort, security, restartPolicy: restartPolicyStatus("dev") });
+  emitDevEvent(options, { event: "started", url, port: actualPort, security, restartPolicy: restartPolicyStatus("dev"), ...(bundle.clientDiagnostics.warnings?.length ? { warnings: bundle.clientDiagnostics.warnings } : {}) });
 
   let shutdownStarted = false;
   const shutdown = async () => {
@@ -3044,6 +3045,7 @@ function emitDevEvent(options: LooseRecord, data: LooseRecord, error: any = null
     return;
   }
 
+  printBuildWarnings(data.warnings);
   switch (data.event) {
     case "started":
       process.stdout.write(`Sporades dev session started at ${data.url}\nUse Ctrl-C to exit\n`);
@@ -3087,6 +3089,10 @@ function emitDevEvent(options: LooseRecord, data: LooseRecord, error: any = null
   }
 
   process.stdout.write(`Sporades dev rebuild failed: ${error.message}\n`);
+}
+
+function printBuildWarnings(warnings: readonly { code: string; message: string }[] = []) {
+  for (const warning of warnings) process.stdout.write(`Warning [${warning.code}]: ${warning.message}\n`);
 }
 
 async function manageAuth(options: LooseRecord) {
@@ -3731,6 +3737,9 @@ async function manageHost(options: LooseRecord) {
         projectDir: options.projectDir,
       });
       const outputResult = redactHostPushSshState(result);
+      if (bundle.clientDiagnostics.warnings?.length) {
+        outputResult.data = { ...outputResult.data, warnings: bundle.clientDiagnostics.warnings };
+      }
 
       if (options.json) {
         writeResult(outputResult, !outputResult.ok);
@@ -3741,6 +3750,7 @@ async function manageHost(options: LooseRecord) {
         throw commandError(outputResult.error.message, outputResult.error.hint);
       }
       process.stdout.write(`Hosted Capsule release pushed: ${target.binding.hostedUrl}\n`);
+      printBuildWarnings(bundle.clientDiagnostics.warnings);
       if (!options.restart) {
         process.stdout.write("The Hosted Capsule was not restarted.\n");
       }
@@ -4577,12 +4587,14 @@ async function startContainerSession(options: LooseRecord) {
         port,
         containerId,
         restartPolicy: restartPolicyStatus("container"),
+        ...(bundle.clientDiagnostics.warnings?.length ? { warnings: bundle.clientDiagnostics.warnings } : {}),
         ...(containerCapsuleServices.services ? { services: containerCapsuleServices.services } : {}),
       },
       error: null,
     });
   } else {
     process.stdout.write(`Sporades container session started at ${url}\n`);
+    printBuildWarnings(bundle.clientDiagnostics.warnings);
   }
 }
 
