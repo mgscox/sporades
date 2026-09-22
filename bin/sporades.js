@@ -81314,7 +81314,7 @@ function collectRendererScopes(node, scope, scopes) {
       if (node.kind === "var" && !declarationScope.parent) {
         const declared = { functionScope: true, bindings: /* @__PURE__ */ new Set() };
         addRendererBinding(declared, declaration.id);
-        for (const name2 of declared.bindings) if (!["require", "__dirname", "__filename"].includes(name2)) declarationScope.bindings.add(name2);
+        for (const name2 of declared.bindings) if (!["require", "module", "exports", "__dirname", "__filename"].includes(name2)) declarationScope.bindings.add(name2);
       } else addRendererBinding(declarationScope, declaration.id);
     }
   } else if (node.type === "ImportDeclaration") {
@@ -81424,6 +81424,10 @@ function validateClientPrerenderSourceHtml(html) {
     throw prerenderError("Client index.html contains a reserved prerender boundary comment.", "Remove Sporades private boundary comments from index.html and HTML plugins; the Bundle pipeline supplies them.");
   }
 }
+function validateClientPrerenderOutputHtml(html, placements) {
+  if (placements === 0) validateClientPrerenderSourceHtml(html);
+  else validatePrerenderDomBoundaries(html, placements);
+}
 function hasReservedPrerenderBoundary(html) {
   const pending = [parse4(html, { scriptingEnabled: true })];
   while (pending.length) {
@@ -81453,7 +81457,7 @@ function placeClientPrerenderFragments(html, fragments) {
     for (const name2 of new Set(placement.markers.flatMap((marker) => marker.name ? [marker.name] : []))) {
       warnings.push({ code: "PRERENDER_UNKNOWN_MARKER", fragment: name2, message: `Unknown prerender marker "${name2}" remains a comment in index.html.` });
     }
-    return { html, warnings };
+    return { html, warnings, placements: 0 };
   }
   if (placement.problem) {
     throw prerenderError(
@@ -81493,11 +81497,12 @@ function placeClientPrerenderFragments(html, fragments) {
     if (count === 0) warnings.push({ code: "PRERENDER_UNUSED_FRAGMENT", fragment: name2, message: `Configured prerender fragment "${name2}" has no placement in index.html.` });
     else if (count > 1) warnings.push({ code: "PRERENDER_DUPLICATE_PLACEMENT", fragment: name2, message: `Prerender fragment "${name2}" is placed ${count} times in index.html.` });
   }
-  validatePrerenderDomBoundaries(replaced, [...counts.values()].reduce((sum, count) => sum + count, 0));
+  const placements = [...counts.values()].reduce((sum, count) => sum + count, 0);
+  validatePrerenderDomBoundaries(replaced, placements);
   if (prerenderDocumentRootAttributes(html) !== prerenderDocumentRootAttributes(replaced)) {
     throw prerenderError("Client prerender fragments mutate author-owned document-root attributes.", "Return fragment content rather than html or body elements; browsers merge their attributes into the existing document roots.");
   }
-  return { html: replaced, warnings };
+  return { html: replaced, warnings, placements };
 }
 function validatePrerenderDomBoundaries(html, expectedPlacements) {
   if (expectedPlacements === 0) return;
@@ -82062,6 +82067,7 @@ async function buildVite(options) {
       frameworkPlugins.push(await loadProjectInfernoToolchain(projectRoot));
     }
     const prerenderWarnings = [];
+    const prerenderState = { placements: 0 };
     const result = await build2({
       root: projectRoot,
       base: "/",
@@ -82081,6 +82087,7 @@ async function buildVite(options) {
       plugins: [
         ...frameworkPlugins,
         sporadesViteClientPlugin(options.devRefresh === true),
+        sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender ?? [], prerenderWarnings, prerenderState, options.prerender !== void 0),
         sporadesViteBuildInvariants(canonicalIndexHtmlPath, options.frameworkConfig)
       ],
       build: {
@@ -82119,14 +82126,8 @@ async function buildVite(options) {
       }
     }
     if (!files.has("index.html")) throw new Error("Vite returned no transformed index.html output.");
-    const rendered = [];
-    for (const fragment of options.prerender ?? []) {
-      rendered.push({ name: fragment.name, html: await renderClientPrerenderFragment(projectRoot, fragment, [options.projectDir, projectRoot]) });
-    }
     const source = files.get("index.html");
-    const placed = placeClientPrerenderFragments(typeof source === "string" ? source : new TextDecoder().decode(source), rendered);
-    files.set("index.html", placed.html);
-    if (options.prerender !== void 0) prerenderWarnings.push(...placed.warnings);
+    validateClientPrerenderOutputHtml(typeof source === "string" ? source : new TextDecoder().decode(source), prerenderState.placements);
     return {
       publicFiles: [...files].map(([filePath, contents]) => ({ path: filePath, contents })),
       legacyClientBundle: null,
@@ -82136,6 +82137,25 @@ async function buildVite(options) {
     if (hasHint(error)) throw error;
     throw viteBuildError(error, [options.projectDir, projectRoot], options.frameworkConfig.framework);
   }
+}
+function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragments, warnings, state, diagnoseMarkers) {
+  return {
+    name: "sporades-prerender",
+    enforce: "post",
+    transformIndexHtml: {
+      order: "post",
+      async handler(html) {
+        const rendered = [];
+        for (const fragment of fragments) {
+          rendered.push({ name: fragment.name, html: await renderClientPrerenderFragment(projectRoot, fragment, projectRoots) });
+        }
+        const placed = placeClientPrerenderFragments(html, rendered);
+        state.placements = placed.placements;
+        if (diagnoseMarkers) warnings.push(...placed.warnings);
+        return placed.html;
+      }
+    }
+  };
 }
 var VITE_CONFIG_NAMES = [
   "vite.config.js",

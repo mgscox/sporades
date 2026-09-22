@@ -31,3 +31,6 @@ the browser would move before the table. Markers inside inert `template` content
 are not supported. Valid implicit table wrappers remain supported.
 Close fragment-created elements explicitly: an omitted optional closing tag can
 leave a fragment ancestor spanning its end boundary, which also fails validation.
+Fragments also cannot add attributes to the author-owned html or body roots
+through parser-ignored document tags. Reserved boundaries are checked using the
+HTML parser, including bogus declarations that become browser comments.

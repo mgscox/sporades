@@ -669,7 +669,7 @@ function collectRendererScopes(
       if (node.kind === "var" && !declarationScope.parent) {
         const declared: RendererLexicalScope = { functionScope: true, bindings: new Set() };
         addRendererBinding(declared, declaration.id);
-        for (const name of declared.bindings) if (!["require", "__dirname", "__filename"].includes(name)) declarationScope.bindings.add(name);
+        for (const name of declared.bindings) if (!["require", "module", "exports", "__dirname", "__filename"].includes(name)) declarationScope.bindings.add(name);
       } else addRendererBinding(declarationScope, declaration.id);
     }
   } else if (node.type === "ImportDeclaration") {
@@ -818,6 +818,11 @@ export function validateClientPrerenderSourceHtml(html: string) {
   }
 }
 
+export function validateClientPrerenderOutputHtml(html: string, placements: number) {
+  if (placements === 0) validateClientPrerenderSourceHtml(html);
+  else validatePrerenderDomBoundaries(html, placements);
+}
+
 function hasReservedPrerenderBoundary(html: string) {
   const pending: DefaultTreeAdapterTypes.Node[] = [parseHtml(html, { scriptingEnabled: true })];
   while (pending.length) {
@@ -848,7 +853,7 @@ export function placeClientPrerenderFragments(html: string, fragments: readonly 
     for (const name of new Set(placement.markers.flatMap((marker) => marker.name ? [marker.name] : []))) {
       warnings.push({ code: "PRERENDER_UNKNOWN_MARKER", fragment: name, message: `Unknown prerender marker "${name}" remains a comment in index.html.` });
     }
-    return { html, warnings };
+    return { html, warnings, placements: 0 };
   }
   if (placement.problem) {
     throw prerenderError(
@@ -888,11 +893,12 @@ export function placeClientPrerenderFragments(html: string, fragments: readonly 
     if (count === 0) warnings.push({ code: "PRERENDER_UNUSED_FRAGMENT", fragment: name, message: `Configured prerender fragment "${name}" has no placement in index.html.` });
     else if (count > 1) warnings.push({ code: "PRERENDER_DUPLICATE_PLACEMENT", fragment: name, message: `Prerender fragment "${name}" is placed ${count} times in index.html.` });
   }
-  validatePrerenderDomBoundaries(replaced, [...counts.values()].reduce((sum, count) => sum + count, 0));
+  const placements = [...counts.values()].reduce((sum, count) => sum + count, 0);
+  validatePrerenderDomBoundaries(replaced, placements);
   if (prerenderDocumentRootAttributes(html) !== prerenderDocumentRootAttributes(replaced)) {
     throw prerenderError("Client prerender fragments mutate author-owned document-root attributes.", "Return fragment content rather than html or body elements; browsers merge their attributes into the existing document roots.");
   }
-  return { html: replaced, warnings };
+  return { html: replaced, warnings, placements };
 }
 
 function validatePrerenderDomBoundaries(html: string, expectedPlacements: number) {
