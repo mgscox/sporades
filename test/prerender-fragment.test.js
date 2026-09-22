@@ -139,6 +139,35 @@ test("marker scanning preserves less-than text and bounds bogus HTML constructs"
   }
 });
 
+test("marker scanning distinguishes prose quotes, malformed raw tags, and HTML CDATA declarations", () => {
+  const fragment = { name: "landing", module: "render-landing.mjs" };
+  const rendered = "<main>static fragment</main>";
+  const marker = "<!-- sporades:prerender landing -->";
+  const bounded = "<!-- sporades:prerender-boundary-start landing --><main>static fragment</main><!-- sporades:prerender-boundary-end landing -->";
+  for (const prefix of [
+    "<html><body><p>x<y isn't true.</p>",
+    '<html><body><p>x<y "is not" true.</p>',
+    '<html><body><p data-claim = "x < y > z">quoted attribute</p>',
+  ]) {
+    const suffix = "<p>Don't forget: 3 > 2</p></body></html>";
+    assert.equal(
+      placeClientPrerenderFragment(`${prefix}${marker}${suffix}`, fragment, rendered),
+      `${prefix}${bounded}${suffix}`,
+      prefix,
+    );
+  }
+  assert.throws(
+    () => placeClientPrerenderFragment(`<html><body>x<script src=a<b>${marker}</script></body></html>`, fragment, rendered),
+    /malformed raw text element opener: script/i,
+  );
+  const cdataPrefix = "<html><body><![CDATA[declaration boundary >";
+  const cdataSuffix = " tail]]><p>page</p></body></html>";
+  assert.equal(
+    placeClientPrerenderFragment(`${cdataPrefix}${marker}${cdataSuffix}`, fragment, rendered),
+    `${cdataPrefix}${bounded}${cdataSuffix}`,
+  );
+});
+
 test("a prerender module can use a local CommonJS dependency that requires a Node builtin", async () => {
   await withTempDir(async (projectDir) => {
     const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
