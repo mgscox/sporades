@@ -72693,15 +72693,16 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
   let bundledSource;
   let bundleFormat = "cjs";
   const rendererDependencyRoots = /* @__PURE__ */ new Set();
+  const rendererDependencyAliases = /* @__PURE__ */ new Set();
   try {
     const { build: build2 } = await import("esbuild");
     let result;
     try {
-      result = await buildRendererBundle(build2, projectRoot, canonicalModulePath, bundleFormat, rendererDependencyRoots);
+      result = await buildRendererBundle(build2, projectRoot, canonicalModulePath, bundleFormat, rendererDependencyRoots, rendererDependencyAliases);
     } catch (error) {
       if (!isCommonJsTopLevelAwaitBuildFailure(error)) throw error;
       bundleFormat = "esm";
-      result = await buildRendererBundle(build2, projectRoot, canonicalModulePath, bundleFormat, rendererDependencyRoots);
+      result = await buildRendererBundle(build2, projectRoot, canonicalModulePath, bundleFormat, rendererDependencyRoots, rendererDependencyAliases);
     }
     const outputs = result.outputFiles ?? [];
     const javascript = outputs.filter((output) => output.path.endsWith(".js"));
@@ -72711,7 +72712,7 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
     bundledSource = javascript[0].text;
   } catch (error) {
     throw prerenderError(
-      `Could not build client prerender module for ${fragment.name}: ${boundedMessage(error, [...projectRoots, ...rendererDependencyRoots])}`,
+      `Could not build client prerender module for ${fragment.name}: ${boundedMessage(error, [...projectRoots, ...rendererDependencyRoots], [...rendererDependencyAliases])}`,
       `Fix ${fragment.module}, then retry.`,
       { fragment: fragment.name, module: fragment.module }
     );
@@ -72781,7 +72782,7 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
   }
   return rendered;
 }
-async function buildRendererBundle(build2, projectRoot, canonicalModulePath, format, rendererDependencyRoots) {
+async function buildRendererBundle(build2, projectRoot, canonicalModulePath, format, rendererDependencyRoots, rendererDependencyAliases) {
   return build2({
     absWorkingDir: projectRoot,
     bundle: true,
@@ -72791,7 +72792,7 @@ async function buildRendererBundle(build2, projectRoot, canonicalModulePath, for
     logLevel: "silent",
     outdir: path3.join(projectRoot, ".sporades-prerender-output"),
     platform: "node",
-    plugins: [preserveRendererImportMetaUrl(build2, projectRoot, rendererDependencyRoots)],
+    plugins: [preserveRendererImportMetaUrl(build2, projectRoot, rendererDependencyRoots, rendererDependencyAliases)],
     sourcemap: false,
     target: "node22",
     write: false
@@ -72801,7 +72802,7 @@ function isCommonJsTopLevelAwaitBuildFailure(error) {
   if (!error || typeof error !== "object" || !("errors" in error) || !Array.isArray(error.errors)) return false;
   return error.errors.some((diagnostic) => diagnostic && typeof diagnostic === "object" && "text" in diagnostic && typeof diagnostic.text === "string" && diagnostic.text.includes("Top-level await") && diagnostic.text.includes('"cjs" output format'));
 }
-function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDependencyRoots) {
+function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDependencyRoots, rendererDependencyAliases) {
   const packageModeCache = /* @__PURE__ */ new Map();
   const loaders = /* @__PURE__ */ new Map([
     [".cjs", "js"],
@@ -72831,12 +72832,16 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
         if (resolved.errors.length > 0) {
           const failedPath = rendererLocalFilePath(args.path);
           if (failedPath && path3.resolve(failedPath) !== path3.resolve(projectRoot) && !isCanonicalDescendant(projectRoot, failedPath)) {
-            rendererDependencyRoots.add(path3.dirname(failedPath));
+            const added = addRendererDependencyRoot(rendererDependencyRoots, failedPath);
+            if (added && args.path.startsWith("file:")) {
+              const rawParent = rendererRawLocalFileUrlParent(args.path);
+              if (rawParent) rendererDependencyAliases.add(rawParent);
+            }
           }
           return args.namespace === commonJsNamespace ? { errors: resolved.errors, warnings: resolved.warnings } : void 0;
         }
         if (!resolved.external && resolved.namespace === "file" && !isCanonicalDescendant(projectRoot, resolved.path)) {
-          rendererDependencyRoots.add(path3.dirname(resolved.path));
+          addRendererDependencyRoot(rendererDependencyRoots, resolved.path);
         }
         let namespace = resolved.namespace;
         if (!resolved.external && namespace === "file" && [".js", ".jsx"].includes(path3.extname(resolved.path))) {
@@ -72914,6 +72919,20 @@ function rendererLocalFilePath(specifier) {
   } catch {
     return void 0;
   }
+}
+function addRendererDependencyRoot(roots, filePath) {
+  const directory = path3.dirname(filePath);
+  if (directory === path3.parse(directory).root) return false;
+  roots.add(directory);
+  return true;
+}
+function rendererRawLocalFileUrlParent(specifier) {
+  const suffixStart = specifier.search(/[?#]/);
+  const rawPath = suffixStart === -1 ? specifier : specifier.slice(0, suffixStart);
+  const finalSlash = rawPath.lastIndexOf("/");
+  if (finalSlash === -1) return void 0;
+  const parent = rawPath.slice(0, finalSlash);
+  return parent === "file:" || parent === "file:/" || parent === "file://" ? void 0 : parent;
 }
 async function rendererModuleUsesCommonJs(modulePath, contents, projectRoot, packageModeCache) {
   const extension = path3.extname(modulePath);
@@ -73514,14 +73533,18 @@ function safeMessage(error) {
     await worker.terminate();
   }
 }
-function boundedMessage(error, projectRoots = []) {
+function boundedMessage(error, projectRoots = [], exactAliases = []) {
   let message;
   try {
     message = error && typeof error === "object" && "message" in error ? String(error.message) : String(error);
   } catch {
     message = "Thrown error message unavailable.";
   }
-  const redacted = redactBuildProjectRoots(message, projectRoots);
+  let redacted = message;
+  for (const alias of [...new Set(exactAliases)].filter(Boolean).sort((left, right) => right.length - left.length)) {
+    redacted = redacted.split(alias).join("<project>");
+  }
+  redacted = redactBuildProjectRoots(redacted, projectRoots);
   return redacted.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
 }
 function prerenderError(message, hint, diagnostics) {

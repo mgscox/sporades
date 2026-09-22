@@ -84,15 +84,16 @@ export async function renderClientPrerenderFragment(
   let bundledSource: string;
   let bundleFormat: "cjs" | "esm" = "cjs";
   const rendererDependencyRoots = new Set<string>();
+  const rendererDependencyAliases = new Set<string>();
   try {
     const { build } = await import("esbuild");
     let result: import("esbuild").BuildResult;
     try {
-      result = await buildRendererBundle(build, projectRoot, canonicalModulePath, bundleFormat, rendererDependencyRoots);
+      result = await buildRendererBundle(build, projectRoot, canonicalModulePath, bundleFormat, rendererDependencyRoots, rendererDependencyAliases);
     } catch (error) {
       if (!isCommonJsTopLevelAwaitBuildFailure(error)) throw error;
       bundleFormat = "esm";
-      result = await buildRendererBundle(build, projectRoot, canonicalModulePath, bundleFormat, rendererDependencyRoots);
+      result = await buildRendererBundle(build, projectRoot, canonicalModulePath, bundleFormat, rendererDependencyRoots, rendererDependencyAliases);
     }
     const outputs = result.outputFiles ?? [];
     const javascript = outputs.filter((output) => output.path.endsWith(".js"));
@@ -102,7 +103,7 @@ export async function renderClientPrerenderFragment(
     bundledSource = javascript[0].text;
   } catch (error) {
     throw prerenderError(
-      `Could not build client prerender module for ${fragment.name}: ${boundedMessage(error, [...projectRoots, ...rendererDependencyRoots])}`,
+      `Could not build client prerender module for ${fragment.name}: ${boundedMessage(error, [...projectRoots, ...rendererDependencyRoots], [...rendererDependencyAliases])}`,
       `Fix ${fragment.module}, then retry.`,
       { fragment: fragment.name, module: fragment.module },
     );
@@ -182,6 +183,7 @@ async function buildRendererBundle(
   canonicalModulePath: string,
   format: "cjs" | "esm",
   rendererDependencyRoots: Set<string>,
+  rendererDependencyAliases: Set<string>,
 ) {
   return build({
     absWorkingDir: projectRoot,
@@ -192,7 +194,7 @@ async function buildRendererBundle(
     logLevel: "silent",
     outdir: path.join(projectRoot, ".sporades-prerender-output"),
     platform: "node",
-    plugins: [preserveRendererImportMetaUrl(build, projectRoot, rendererDependencyRoots)],
+    plugins: [preserveRendererImportMetaUrl(build, projectRoot, rendererDependencyRoots, rendererDependencyAliases)],
     sourcemap: false,
     target: "node22",
     write: false,
@@ -215,6 +217,7 @@ function preserveRendererImportMetaUrl(
   esbuildBuild: typeof import("esbuild").build,
   projectRoot: string,
   rendererDependencyRoots: Set<string>,
+  rendererDependencyAliases: Set<string>,
 ): import("esbuild").Plugin {
   const packageModeCache = new Map<string, Promise<"module" | "commonjs" | "default">>();
   const loaders = new Map<string, import("esbuild").Loader>([
@@ -249,7 +252,11 @@ function preserveRendererImportMetaUrl(
             && path.resolve(failedPath) !== path.resolve(projectRoot)
             && !isCanonicalDescendant(projectRoot, failedPath)
           ) {
-            rendererDependencyRoots.add(path.dirname(failedPath));
+            const added = addRendererDependencyRoot(rendererDependencyRoots, failedPath);
+            if (added && args.path.startsWith("file:")) {
+              const rawParent = rendererRawLocalFileUrlParent(args.path);
+              if (rawParent) rendererDependencyAliases.add(rawParent);
+            }
           }
           return args.namespace === commonJsNamespace ? { errors: resolved.errors, warnings: resolved.warnings } : undefined;
         }
@@ -258,7 +265,7 @@ function preserveRendererImportMetaUrl(
           && resolved.namespace === "file"
           && !isCanonicalDescendant(projectRoot, resolved.path)
         ) {
-          rendererDependencyRoots.add(path.dirname(resolved.path));
+          addRendererDependencyRoot(rendererDependencyRoots, resolved.path);
         }
         let namespace = resolved.namespace;
         if (!resolved.external && namespace === "file" && [".js", ".jsx"].includes(path.extname(resolved.path))) {
@@ -342,6 +349,22 @@ function rendererLocalFilePath(specifier: string) {
   } catch {
     return undefined;
   }
+}
+
+function addRendererDependencyRoot(roots: Set<string>, filePath: string) {
+  const directory = path.dirname(filePath);
+  if (directory === path.parse(directory).root) return false;
+  roots.add(directory);
+  return true;
+}
+
+function rendererRawLocalFileUrlParent(specifier: string) {
+  const suffixStart = specifier.search(/[?#]/);
+  const rawPath = suffixStart === -1 ? specifier : specifier.slice(0, suffixStart);
+  const finalSlash = rawPath.lastIndexOf("/");
+  if (finalSlash === -1) return undefined;
+  const parent = rawPath.slice(0, finalSlash);
+  return parent === "file:" || parent === "file:/" || parent === "file://" ? undefined : parent;
 }
 
 async function rendererModuleUsesCommonJs(
@@ -1058,14 +1081,18 @@ function safeMessage(error) {
   }
 }
 
-function boundedMessage(error: unknown, projectRoots: string[] = []) {
+function boundedMessage(error: unknown, projectRoots: string[] = [], exactAliases: string[] = []) {
   let message: string;
   try {
     message = error && typeof error === "object" && "message" in error ? String(error.message) : String(error);
   } catch {
     message = "Thrown error message unavailable.";
   }
-  const redacted = redactBuildProjectRoots(message, projectRoots);
+  let redacted = message;
+  for (const alias of [...new Set(exactAliases)].filter(Boolean).sort((left, right) => right.length - left.length)) {
+    redacted = redacted.split(alias).join("<project>");
+  }
+  redacted = redactBuildProjectRoots(redacted, projectRoots);
   return redacted.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
 }
 
