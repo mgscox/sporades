@@ -123,7 +123,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot) {
         setup(pluginBuild) {
             pluginBuild.onLoad({ filter: /\.[cm]?[jt]sx?$/, namespace: "file" }, async (args) => {
                 const contents = await readFile(args.path, "utf8");
-                const commonJsModule = path.extname(args.path) === ".cjs";
+                const commonJsModule = [".cjs", ".cts"].includes(path.extname(args.path));
                 if (!contents.includes("import.meta.url") && !commonJsModule)
                     return undefined;
                 const loader = loaders.get(path.extname(args.path));
