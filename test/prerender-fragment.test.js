@@ -205,6 +205,17 @@ test("foreign-content CDATA preserves marker-shaped text and keeps body fallback
   }
 });
 
+test("doctype identifiers preserve quoted greater-than and marker-shaped text", () => {
+  const fragment = { name: "landing", module: "render-landing.mjs" };
+  const marker = "<!-- sporades:prerender landing -->";
+  const rendered = "<main>static fragment</main>";
+  const bounded = `<!-- sporades:prerender-boundary-start landing -->${rendered}<!-- sporades:prerender-boundary-end landing -->`;
+  for (const identifier of [`SYSTEM "x>${marker}"`, `PUBLIC 'x>${marker}' "system>identifier"`]) {
+    const declaration = `<!DOCTYPE html ${identifier}>`;
+    assert.equal(placeClientPrerenderFragment(`${declaration}<html><body>author</body></html>`, fragment, rendered), `${declaration}<html><body>${bounded}author</body></html>`);
+  }
+});
+
 test("a prerender module can use a local CommonJS dependency that requires a Node builtin", async () => {
   await withTempDir(async (projectDir) => {
     const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
