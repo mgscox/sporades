@@ -21,7 +21,9 @@ loading is useful. Computed dynamic imports such as `import(variable)` fail the
 build with an explicit diagnostic: their source-module resolution cannot be
 preserved by the bundled evaluator. Express the supported choices with explicit
 imports instead.
-Direct CommonJS `eval()` is also rejected because string-hidden code cannot retain
-the owning module's wrapper bindings through bundling. Use explicit code instead.
+Direct CommonJS `eval(...)` call syntax is also rejected, including shadowed
+bindings that could receive the native evaluator, because string-hidden code
+cannot retain the owning module's wrapper bindings through bundling. Use explicit
+code instead. Ordinary method calls such as `object.eval(...)` are unaffected.
 Renderer-only CSS, image or other asset output is unsupported;
 assets used by static HTML must already belong to the ordinary Vite client graph.

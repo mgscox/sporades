@@ -195,7 +195,9 @@ test('direct CommonJS eval fails explicitly instead of using entry-rooted wrappe
     await writeFile(path.join(root, 'entry.mjs'), 'import render from "./nested/helper.cjs"; export default render;');
     await writeFile(path.join(root, 'nested/helper.cjs'), 'module.exports = () => eval("__dirname");');
     await assert.rejects(renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'}), /Direct eval is unsupported/i);
-    await writeFile(path.join(root, 'nested/helper.cjs'), 'function local(eval) { return eval("local"); } module.exports = () => local(value => value);');
+    await writeFile(path.join(root, 'nested/helper.cjs'), 'function local(eval) { return eval("__dirname"); } module.exports = () => local(globalThis.eval);');
+    await assert.rejects(renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'}), /Direct eval is unsupported/i);
+    await writeFile(path.join(root, 'nested/helper.cjs'), 'const local = { eval: value => value }; module.exports = () => local.eval("local");');
     assert.equal(await renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'}), 'local');
   } finally { await rm(root, {recursive:true, force:true}); }
 });
