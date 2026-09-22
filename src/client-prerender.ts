@@ -781,6 +781,9 @@ export function placeClientPrerenderFragments(html: string, fragments: readonly 
     return `<!-- sporades:prerender-boundary-start ${fragment.name} -->${fragment.html}<!-- sporades:prerender-boundary-end ${fragment.name} -->`;
   };
   const placement = scanClientPrerenderHtml(html);
+  if (placement.reservedBoundary) {
+    throw prerenderError("Client index.html contains a reserved prerender boundary comment.", "Remove Sporades private boundary comments from index.html and HTML plugins; the Bundle pipeline supplies them.");
+  }
   if (placement.problem) {
     throw prerenderError(
       `Client prerender placement could not safely scan index.html: ${placement.problem}.`,

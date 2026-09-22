@@ -65314,23 +65314,21 @@ export const prerender = Object.freeze({
         continue;
       }
       const opening = stack.pop();
-      if (!opening || opening.name !== marker[2] || opening.start.parentNode !== node.parentNode) continue;
+      if (!opening || opening.name !== marker[2]) continue;
       const start = opening.start;
       const end = node;
       const handle = Object.freeze({
         name: opening.name,
         dismiss() {
-          const parent = start.parentNode;
-          if (!parent || parent !== end.parentNode || !start.isConnected || !end.isConnected) return;
-          // Validate the complete interval before mutation. A stale or moved end
-          // must never let cleanup consume unrelated following content.
-          const nodes = [];
-          for (let current = start; current; current = current.nextSibling) {
-            nodes.push(current);
-            if (current === end) break;
-          }
-          if (nodes[nodes.length - 1] !== end) return;
-          for (const current of nodes) if (current.parentNode === parent) parent.removeChild(current);
+          if (!start.isConnected || !end.isConnected || start.getRootNode() !== end.getRootNode()) return;
+          // HTML parsing can put the closing comment inside an implicit tbody.
+          // A DOM range preserves surrounding content across parent boundaries.
+          // Validate order before mutation so stale/reversed handles are inert.
+          if (!(start.compareDocumentPosition(end) & 4)) return;
+          const range = start.ownerDocument.createRange();
+          range.setStartBefore(start);
+          range.setEndAfter(end);
+          range.deleteContents();
         },
       });
       boundaries.push({ sequence: opening.sequence, handle });
@@ -73298,6 +73296,9 @@ function placeClientPrerenderFragments(html, fragments) {
     return `<!-- sporades:prerender-boundary-start ${fragment.name} -->${fragment.html}<!-- sporades:prerender-boundary-end ${fragment.name} -->`;
   };
   const placement = scanClientPrerenderHtml(html);
+  if (placement.reservedBoundary) {
+    throw prerenderError("Client index.html contains a reserved prerender boundary comment.", "Remove Sporades private boundary comments from index.html and HTML plugins; the Bundle pipeline supplies them.");
+  }
   if (placement.problem) {
     throw prerenderError(
       `Client prerender placement could not safely scan index.html: ${placement.problem}.`,

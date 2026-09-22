@@ -4,13 +4,42 @@ import { Window } from 'happy-dom';
 import { placeClientPrerenderFragments } from '../dist/client-prerender.js';
 import { createClientRuntimeSource } from '../dist/templates/client-runtime-template.js';
 
-test('renderer output cannot introduce reserved boundary comments', () => {
+test('renderer output and source HTML cannot introduce reserved boundary comments', () => {
   assert.throws(() => placeClientPrerenderFragments('<html><body></body></html>', [
     { name: 'landing', html: '<main>prefix</main><!-- sporades:prerender-boundary-end landing --><footer>suffix</footer>' },
+  ]), /reserved prerender boundary comment/i);
+  assert.throws(() => placeClientPrerenderFragments('<html><body><!-- sporades:prerender-boundary-start landing --><p>author content</p><!-- sporades:prerender-boundary-end landing --></body></html>', [
+    { name: 'landing', html: '<main>Static shell</main>' },
   ]), /reserved prerender boundary comment/i);
   // Literal text inside a script is not a DOM comment and remains author-owned.
   const script = '<script>const example = "<!-- sporades:prerender-boundary-end landing -->";</script>';
   assert.ok(placeClientPrerenderFragments('<html><body></body></html>', [{name:'landing', html:script}]).html.includes(script));
+  assert.ok(placeClientPrerenderFragments(`<html><body>${script}</body></html>`, [{name:'landing', html:'<main>Static shell</main>'}]).html.includes(script));
+});
+
+test('handover dismisses browser-reparented table boundaries without touching author rows', async () => {
+  const window = new Window();
+  const previousDocument = globalThis.document;
+  globalThis.document = window.document;
+  try {
+    const { html } = placeClientPrerenderFragments('<html><body><table><!-- sporades:prerender rows --><tr id="author"><td>keep</td></tr></table></body></html>', [
+      { name: 'rows', html: '<tr id="static"><td>Static row</td></tr>' },
+    ]);
+    for (const runtime of [await import('../dist/client.js'), await import(`data:text/javascript;base64,${Buffer.from(createClientRuntimeSource()).toString('base64')}`)]) {
+      document.open(); document.write(html); document.close();
+      assert.ok(document.querySelector('table > tbody > #static'), 'HTML parser inserted tbody');
+      const [handle] = runtime.prerender.discover();
+      assert.equal(handle.name, 'rows');
+      handle.dismiss(); handle.dismiss();
+      assert.equal(document.querySelector('#static'), null);
+      assert.equal(document.querySelector('#author').textContent, 'keep');
+      assert.deepEqual(runtime.prerender.discover(), []);
+    }
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+    await window.happyDOM.close();
+  }
 });
 
 test('prerender handover exposes opaque snapshots and deliberate idempotent dismissal in head and body', async () => {
