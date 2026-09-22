@@ -807,6 +807,61 @@ export default () => {
   });
 });
 
+test("top-level-await worker preserves renderer result validation", async () => {
+  await withTempDir(async (projectDir) => {
+    const canonicalProject = await realpath(projectDir);
+    const cases = [
+      {
+        source: "await Promise.resolve();\nexport const value = 1;\n",
+        message: /must default-export a zero-argument renderer/i,
+      },
+      {
+        source: "await Promise.resolve();\nexport default () => 42;\n",
+        message: /returned a non-string result/i,
+      },
+    ];
+    for (const testCase of cases) {
+      await writeFile(path.join(projectDir, "render-landing.mjs"), testCase.source);
+      await assert.rejects(
+        renderClientPrerenderFragment(canonicalProject, { name: "landing", module: "render-landing.mjs" }),
+        testCase.message,
+      );
+    }
+  });
+});
+
+test("top-level-await worker failures redact Capsule path aliases", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = path.join(dir, "caf\u00e9 worker capsule");
+    const projectAlias = path.join(dir, "worker-alias");
+    await mkdir(projectDir);
+    await symlink(projectDir, projectAlias, "dir");
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'await Promise.resolve();\nexport default () => { throw new Error(`worker path ${import.meta.url}`); };\n',
+    );
+    const canonicalProject = await realpath(projectDir);
+    const aliases = [projectAlias, projectDir, canonicalProject];
+
+    await assert.rejects(
+      renderClientPrerenderFragment(
+        canonicalProject,
+        { name: "landing", module: "render-landing.mjs" },
+        aliases,
+      ),
+      (error) => {
+        assert.match(error.message, /client prerender renderer for landing failed/i);
+        const surfaced = JSON.stringify({ message: error.message, hint: error.hint, diagnostics: error.diagnostics, stack: error.stack });
+        for (const alias of aliases) {
+          assert.equal(surfaced.includes(alias), false, `leaked Capsule worker path: ${alias}`);
+          assert.equal(surfaced.includes(pathToFileURL(alias).href), false, `leaked Capsule worker URL: ${alias}`);
+        }
+        return true;
+      },
+    );
+  });
+});
+
 test("invalid renderer package metadata is identified without leaking Capsule paths", async () => {
   await withTempDir(async (dir) => {
     const projectDir = path.join(dir, "caf\u00e9 package capsule");
@@ -872,6 +927,60 @@ module.exports = () => \`<main>\${path.basename(__dirname)}|\${path.basename(__f
       await bundle.releasePublicTreeLease();
       await discardPublicTree(bundle.staticFiles.publicTree);
     }
+  });
+});
+
+test("metadata-less hoisted CommonJS modules load without specialization tokens", async () => {
+  await withTempDir(async (tempRoot) => {
+    const projectDir = path.join(tempRoot, "capsule");
+    const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
+    await writeMinimalViteCapsule(projectDir, sourceHtml);
+    const dependencyDir = path.join(tempRoot, "node_modules", "plain-default-renderer");
+    await mkdir(dependencyDir, { recursive: true });
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'import render from "plain-default-renderer";\nexport default render;\n',
+    );
+    await writeFile(
+      path.join(dependencyDir, "index.js"),
+      'const unchanged = "require __dirname __filename";\nmodule.exports = () => `<main>plain CommonJS|${unchanged.length > 0}</main>`;\n',
+    );
+
+    const bundle = await createBundle(projectDir, { name: "plain-hoisted-prerender", client: structuredClone(viteConfig) }, { publishLegacy: false });
+    try {
+      assert.match(await readFile(bundle.staticFiles.indexHtml, "utf8"), /<main>plain CommonJS\|true<\/main>/);
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
+test("hoisted renderer build failures redact dependency paths outside the Capsule", async () => {
+  await withTempDir(async (tempRoot) => {
+    const projectDir = path.join(tempRoot, "capsule");
+    await mkdir(projectDir);
+    await writeFile(path.join(projectDir, "package.json"), '{"type":"module"}\n');
+    const dependencyDir = path.join(tempRoot, "node_modules", "broken-default-renderer");
+    await mkdir(dependencyDir, { recursive: true });
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'import render from "broken-default-renderer";\nexport default render;\n',
+    );
+    await writeFile(path.join(dependencyDir, "index.js"), "module.exports = () => <broken;\n");
+    const canonicalProject = await realpath(projectDir);
+    const canonicalDependency = await realpath(dependencyDir);
+
+    await assert.rejects(
+      renderClientPrerenderFragment(canonicalProject, { name: "landing", module: "render-landing.mjs" }),
+      (error) => {
+        assert.match(error.message, /could not build client prerender module/i);
+        const surfaced = JSON.stringify({ message: error.message, hint: error.hint, diagnostics: error.diagnostics, stack: error.stack });
+        assert.equal(surfaced.includes(canonicalDependency), false, "leaked hoisted dependency path");
+        assert.equal(surfaced.includes(tempRoot), false, "leaked hoisted dependency parent path");
+        return true;
+      },
+    );
   });
 });
 
