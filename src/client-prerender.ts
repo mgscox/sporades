@@ -109,9 +109,11 @@ export async function renderClientPrerenderFragment(
   }
 
   let renderer: unknown;
+  const initialRequireCache = new Set(Object.keys(createRequire(canonicalModulePath).cache));
   try {
     renderer = executeBundledRenderer(bundledSource, canonicalModulePath, fragment.module);
   } catch (error) {
+    discardRendererRequireCache(projectRoot, initialRequireCache);
     throw prerenderError(
       `Client prerender renderer for ${fragment.name} failed: ${boundedMessage(error, projectRoots)}`,
       `Fix the renderer in ${fragment.module}, then retry.`,
@@ -119,6 +121,7 @@ export async function renderClientPrerenderFragment(
     );
   }
   if (typeof renderer !== "function") {
+    discardRendererRequireCache(projectRoot, initialRequireCache);
     throw prerenderError(
       `Client prerender module for ${fragment.name} must default-export a zero-argument renderer.`,
       `Default-export a function from ${fragment.module} that returns an HTML string or Promise<string>.`,
@@ -134,6 +137,8 @@ export async function renderClientPrerenderFragment(
       `Fix the renderer in ${fragment.module}, then retry.`,
       { fragment: fragment.name, module: fragment.module },
     );
+  } finally {
+    discardRendererRequireCache(projectRoot, initialRequireCache);
   }
   if (typeof rendered !== "string") {
     throw prerenderError(
@@ -164,15 +169,24 @@ function preserveRendererImportMetaUrl(
     setup(pluginBuild) {
       pluginBuild.onLoad({ filter: /\.[cm]?[jt]sx?$/, namespace: "file" }, async (args) => {
         const contents = await readFile(args.path, "utf8");
-        if (!contents.includes("import.meta.url")) return undefined;
+        const commonJsModule = path.extname(args.path) === ".cjs";
+        if (!contents.includes("import.meta.url") && !commonJsModule) return undefined;
         const loader = loaders.get(path.extname(args.path));
         if (!loader) return undefined;
+        const moduleUrl = pathToFileURL(args.path).href;
+        const define: Record<string, string> = { "import.meta.url": JSON.stringify(moduleUrl) };
+        if (commonJsModule) {
+          define.require = "__sporadesModuleRequire";
+          define.__dirname = JSON.stringify(path.dirname(args.path));
+          define.__filename = JSON.stringify(args.path);
+        }
         const result = await esbuildBuild({
           absWorkingDir: projectRoot,
+          ...(commonJsModule ? { banner: { js: `const __sporadesModuleRequire = require("node:module").createRequire(${JSON.stringify(moduleUrl)});` } } : {}),
           bundle: false,
-          define: { "import.meta.url": JSON.stringify(pathToFileURL(args.path).href) },
+          define,
           entryPoints: [args.path],
-          format: "esm",
+          format: commonJsModule ? "cjs" : "esm",
           jsx: "preserve",
           logLevel: "silent",
           outdir: path.join(projectRoot, ".sporades-prerender-transform"),
@@ -198,6 +212,13 @@ function preserveRendererImportMetaUrl(
 
 export function rendererTransformOutputLoader(loader: import("esbuild").Loader): "js" | "jsx" {
   return loader === "jsx" || loader === "tsx" ? "jsx" : "js";
+}
+
+function discardRendererRequireCache(projectRoot: string, initialCache: Set<string>) {
+  const cache = createRequire(path.join(projectRoot, "package.json")).cache;
+  for (const cachedPath of Object.keys(cache)) {
+    if (!initialCache.has(cachedPath) && isCanonicalDescendant(projectRoot, cachedPath)) delete cache[cachedPath];
+  }
 }
 
 export function placeClientPrerenderFragment(html: string, fragment: ClientPrerenderFragment, rendered: string): string {

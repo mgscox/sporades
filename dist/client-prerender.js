@@ -80,13 +80,16 @@ export async function renderClientPrerenderFragment(projectRoot, fragment, proje
         throw prerenderError(`Could not build client prerender module for ${fragment.name}: ${boundedMessage(error, projectRoots)}`, `Fix ${fragment.module}, then retry.`, { fragment: fragment.name, module: fragment.module });
     }
     let renderer;
+    const initialRequireCache = new Set(Object.keys(createRequire(canonicalModulePath).cache));
     try {
         renderer = executeBundledRenderer(bundledSource, canonicalModulePath, fragment.module);
     }
     catch (error) {
+        discardRendererRequireCache(projectRoot, initialRequireCache);
         throw prerenderError(`Client prerender renderer for ${fragment.name} failed: ${boundedMessage(error, projectRoots)}`, `Fix the renderer in ${fragment.module}, then retry.`, { fragment: fragment.name, module: fragment.module });
     }
     if (typeof renderer !== "function") {
+        discardRendererRequireCache(projectRoot, initialRequireCache);
         throw prerenderError(`Client prerender module for ${fragment.name} must default-export a zero-argument renderer.`, `Default-export a function from ${fragment.module} that returns an HTML string or Promise<string>.`);
     }
     let rendered;
@@ -95,6 +98,9 @@ export async function renderClientPrerenderFragment(projectRoot, fragment, proje
     }
     catch (error) {
         throw prerenderError(`Client prerender renderer for ${fragment.name} failed: ${boundedMessage(error, projectRoots)}`, `Fix the renderer in ${fragment.module}, then retry.`, { fragment: fragment.name, module: fragment.module });
+    }
+    finally {
+        discardRendererRequireCache(projectRoot, initialRequireCache);
     }
     if (typeof rendered !== "string") {
         throw prerenderError(`Client prerender renderer for ${fragment.name} returned a non-string result.`, `Return an HTML string or Promise<string> from ${fragment.module}.`, { fragment: fragment.name, resultType: rendered === null ? "null" : typeof rendered });
@@ -117,17 +123,26 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot) {
         setup(pluginBuild) {
             pluginBuild.onLoad({ filter: /\.[cm]?[jt]sx?$/, namespace: "file" }, async (args) => {
                 const contents = await readFile(args.path, "utf8");
-                if (!contents.includes("import.meta.url"))
+                const commonJsModule = path.extname(args.path) === ".cjs";
+                if (!contents.includes("import.meta.url") && !commonJsModule)
                     return undefined;
                 const loader = loaders.get(path.extname(args.path));
                 if (!loader)
                     return undefined;
+                const moduleUrl = pathToFileURL(args.path).href;
+                const define = { "import.meta.url": JSON.stringify(moduleUrl) };
+                if (commonJsModule) {
+                    define.require = "__sporadesModuleRequire";
+                    define.__dirname = JSON.stringify(path.dirname(args.path));
+                    define.__filename = JSON.stringify(args.path);
+                }
                 const result = await esbuildBuild({
                     absWorkingDir: projectRoot,
+                    ...(commonJsModule ? { banner: { js: `const __sporadesModuleRequire = require("node:module").createRequire(${JSON.stringify(moduleUrl)});` } } : {}),
                     bundle: false,
-                    define: { "import.meta.url": JSON.stringify(pathToFileURL(args.path).href) },
+                    define,
                     entryPoints: [args.path],
-                    format: "esm",
+                    format: commonJsModule ? "cjs" : "esm",
                     jsx: "preserve",
                     logLevel: "silent",
                     outdir: path.join(projectRoot, ".sporades-prerender-transform"),
@@ -152,6 +167,13 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot) {
 }
 export function rendererTransformOutputLoader(loader) {
     return loader === "jsx" || loader === "tsx" ? "jsx" : "js";
+}
+function discardRendererRequireCache(projectRoot, initialCache) {
+    const cache = createRequire(path.join(projectRoot, "package.json")).cache;
+    for (const cachedPath of Object.keys(cache)) {
+        if (!initialCache.has(cachedPath) && isCanonicalDescendant(projectRoot, cachedPath))
+            delete cache[cachedPath];
+    }
 }
 export function placeClientPrerenderFragment(html, fragment, rendered) {
     const bounded = `<!-- sporades:prerender-boundary-start ${fragment.name} -->${rendered}<!-- sporades:prerender-boundary-end ${fragment.name} -->`;
