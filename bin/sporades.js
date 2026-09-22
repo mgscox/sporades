@@ -60668,15 +60668,81 @@ function placeClientPrerenderFragment(html, fragment, rendered) {
   const bounded = `<!-- sporades:prerender-boundary-start ${fragment.name} -->${rendered}<!-- sporades:prerender-boundary-end ${fragment.name} -->`;
   if (marker.test(html)) return html.replace(marker, () => bounded);
   if (/<!--\s*sporades:prerender(?:\s+[A-Za-z][A-Za-z0-9_-]{0,63})?\s*-->/.test(html)) return html;
-  const body = /<body\b[^>]*>/i;
-  if (!body.test(html)) {
+  const bodyEnd = findOpeningBodyEnd(html);
+  if (bodyEnd === void 0) {
     throw prerenderError(
       "Client prerender fallback placement requires an opening body element.",
       "Add an opening `<body>` element or a named `<!-- sporades:prerender NAME -->` marker to index.html.",
       { fragment: fragment.name }
     );
   }
-  return html.replace(body, (openingBody) => `${openingBody}${bounded}`);
+  return `${html.slice(0, bodyEnd)}${bounded}${html.slice(bodyEnd)}`;
+}
+function findOpeningBodyEnd(html) {
+  const lowerHtml = html.toLowerCase();
+  const rawTextElements = /* @__PURE__ */ new Set(["iframe", "noembed", "noframes", "plaintext", "script", "style", "textarea", "title", "xmp"]);
+  let cursor = 0;
+  while (cursor < html.length) {
+    const tagStart = html.indexOf("<", cursor);
+    if (tagStart === -1) return void 0;
+    if (html.startsWith("<!--", tagStart)) {
+      const commentEnd = html.indexOf("-->", tagStart + 4);
+      cursor = commentEnd === -1 ? html.length : commentEnd + 3;
+      continue;
+    }
+    if (html.startsWith("<![CDATA[", tagStart)) {
+      const cdataEnd = html.indexOf("]]>", tagStart + 9);
+      cursor = cdataEnd === -1 ? html.length : cdataEnd + 3;
+      continue;
+    }
+    let nameStart = tagStart + 1;
+    const closing = html[nameStart] === "/";
+    if (closing) nameStart += 1;
+    if (!/[A-Za-z]/.test(html[nameStart] ?? "")) {
+      const declarationEnd = findHtmlTagEnd(html, nameStart);
+      cursor = declarationEnd === void 0 ? tagStart + 1 : declarationEnd;
+      continue;
+    }
+    let nameEnd = nameStart + 1;
+    while (/[A-Za-z0-9:-]/.test(html[nameEnd] ?? "")) nameEnd += 1;
+    const name2 = lowerHtml.slice(nameStart, nameEnd);
+    const tagEnd = findHtmlTagEnd(html, nameEnd);
+    if (tagEnd === void 0) return void 0;
+    if (!closing && name2 === "body") return tagEnd;
+    cursor = tagEnd;
+    if (!closing && rawTextElements.has(name2)) {
+      if (name2 === "plaintext") return void 0;
+      cursor = findRawTextElementEnd(html, lowerHtml, cursor, name2);
+    }
+  }
+  return void 0;
+}
+function findHtmlTagEnd(html, cursor) {
+  let quote;
+  for (let index = cursor; index < html.length; index += 1) {
+    const character = html[index];
+    if (quote) {
+      if (character === quote) quote = void 0;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === ">") {
+      return index + 1;
+    }
+  }
+  return void 0;
+}
+function findRawTextElementEnd(html, lowerHtml, cursor, name2) {
+  const closingPrefix = `</${name2}`;
+  while (cursor < html.length) {
+    const closingStart = lowerHtml.indexOf(closingPrefix, cursor);
+    if (closingStart === -1) return html.length;
+    const boundary = html[closingStart + closingPrefix.length];
+    if (boundary === ">" || boundary === "/" || /\s/.test(boundary ?? "")) {
+      return findHtmlTagEnd(html, closingStart + closingPrefix.length) ?? html.length;
+    }
+    cursor = closingStart + closingPrefix.length;
+  }
+  return html.length;
 }
 function isProjectRelativeModulePath(value) {
   if (!value || value.includes("\\") || path3.posix.isAbsolute(value)) return false;
