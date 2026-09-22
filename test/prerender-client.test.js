@@ -6,6 +6,11 @@ import { validateClientToolchainInput } from '../dist/client-toolchain.js';
 import { createClientRuntimeSource } from '../dist/templates/client-runtime-template.js';
 
 test('renderer output and source HTML cannot introduce reserved boundary comments', () => {
+  for (const html of ['<body data-static-shell="true">Loading', '<html lang="fr">Loading', '<div><BODY data-static-shell="true">Loading</div>']) {
+    assert.throws(() => placeClientPrerenderFragments('<body><!-- sporades:prerender landing --></body>', [{name:'landing', html}]), /document-root attributes/i);
+  }
+  const literalRoot = '<script>window.example = "<body data-example>";</script><p>Valid fragment</p>';
+  assert.ok(placeClientPrerenderFragments('<body></body>', [{name:'landing', html:literalRoot}]).html.includes(literalRoot));
   const bogus = '<!sporades:prerender-boundary-start landing><p>author</p><!sporades:prerender-boundary-end landing>';
   for (const html of [bogus, `<template>${bogus}</template>`]) {
     assert.throws(() => placeClientPrerenderFragments(html, []), /reserved prerender boundary comment/i);

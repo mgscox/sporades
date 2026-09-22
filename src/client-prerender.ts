@@ -889,6 +889,9 @@ export function placeClientPrerenderFragments(html: string, fragments: readonly 
     else if (count > 1) warnings.push({ code: "PRERENDER_DUPLICATE_PLACEMENT", fragment: name, message: `Prerender fragment "${name}" is placed ${count} times in index.html.` });
   }
   validatePrerenderDomBoundaries(replaced, [...counts.values()].reduce((sum, count) => sum + count, 0));
+  if (prerenderDocumentRootAttributes(html) !== prerenderDocumentRootAttributes(replaced)) {
+    throw prerenderError("Client prerender fragments mutate author-owned document-root attributes.", "Return fragment content rather than html or body elements; browsers merge their attributes into the existing document roots.");
+  }
   return { html: replaced, warnings };
 }
 
@@ -937,6 +940,19 @@ function validatePrerenderDomBoundaries(html: string, expectedPlacements: number
       if (fromFragment !== withinBoundary || (fromFragment && node.after > end.order)) throw invalid();
     }
   }
+}
+
+function prerenderDocumentRootAttributes(html: string) {
+  const roots = new Map<string, string>();
+  const pending: DefaultTreeAdapterTypes.Node[] = [parseHtml(html, { scriptingEnabled: true })];
+  while (pending.length) {
+    const node = pending.pop()!;
+    if ("tagName" in node && node.namespaceURI === "http://www.w3.org/1999/xhtml" && (node.tagName === "html" || node.tagName === "body")) {
+      roots.set(node.tagName, JSON.stringify(node.attrs.map((attr) => [attr.namespace ?? "", attr.prefix ?? "", attr.name, attr.value]).sort()));
+    }
+    if ("childNodes" in node) pending.push(...node.childNodes);
+  }
+  return JSON.stringify([...roots].sort());
 }
 
 function scanClientPrerenderHtml(html: string) {
