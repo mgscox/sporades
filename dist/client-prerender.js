@@ -186,7 +186,10 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
                             && !isCanonicalDescendant(projectRoot, failedPath);
                         if (/^file:/i.test(args.path)) {
                             if (projectRootEqual) {
-                                rendererDependencyAliases.set(rendererRawLocalFileUrlPath(args.path), "<project>");
+                                rendererDependencyAliases.set(rendererRawLocalFileUrlPath(args.path), {
+                                    replacement: "<project>",
+                                    boundary: "path",
+                                });
                             }
                             else if (failedDirectory) {
                                 const rawParent = rendererRawLocalFileUrlParent(args.path);
@@ -194,7 +197,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
                                     const replacement = external
                                         ? "<project>"
                                         : rendererProjectDiagnosticPrefix(projectRoot, failedDirectory);
-                                    rendererDependencyAliases.set(rawParent, replacement);
+                                    rendererDependencyAliases.set(rawParent, { replacement, boundary: "parent" });
                                 }
                             }
                         }
@@ -1042,14 +1045,14 @@ function boundedMessage(error, projectRoots = [], exactAliases = []) {
     }
     let redacted = message;
     const aliases = [...new Map(exactAliases).entries()].sort(([left], [right]) => right.length - left.length);
-    for (const [alias, replacement] of aliases) {
+    for (const [alias, configuration] of aliases) {
         if (alias)
-            redacted = redactUrlPathAlias(redacted, alias, replacement);
+            redacted = redactUrlPathAlias(redacted, alias, configuration);
     }
     redacted = redactBuildProjectRoots(redacted, projectRoots);
     return redacted.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
 }
-function redactUrlPathAlias(value, alias, replacement) {
+function redactUrlPathAlias(value, alias, configuration) {
     let redacted = "";
     let cursor = 0;
     while (cursor < value.length) {
@@ -1058,8 +1061,18 @@ function redactUrlPathAlias(value, alias, replacement) {
             break;
         const end = match + alias.length;
         redacted += value.slice(cursor, end);
-        if (end === value.length || value[end] === "/" || value[end] === "?" || value[end] === "#") {
-            redacted = `${redacted.slice(0, -alias.length)}${replacement}`;
+        const next = value[end];
+        const boundary = configuration.boundary === "parent"
+            ? next === "/"
+            : end === value.length
+                || next === "/"
+                || next === "?"
+                || next === "#"
+                || next === "\""
+                || next === "'"
+                || /\s/.test(next ?? "");
+        if (boundary) {
+            redacted = `${redacted.slice(0, -alias.length)}${configuration.replacement}`;
         }
         cursor = end;
     }
