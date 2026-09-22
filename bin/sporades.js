@@ -73530,26 +73530,28 @@ const { createRequire, Module } = require("node:module");
 const { dirname, isAbsolute, resolve } = require("node:path");
 const dependencies = new Set();
 const runtimeSpecifiers = new Set();
-const originalRequire = Module.prototype.require;
-// Observe attempts before evaluation: failed CommonJS modules are evicted from
-// require.cache. This override lives only in the disposable renderer Worker.
-Module.prototype.require = function(specifier) {
+const originalResolveFilename = Module._resolveFilename;
+// One Worker-local seam observes both require() and require.resolve(), before
+// evaluation can fail and evict a module from the cache.
+Module._resolveFilename = function(specifier, parent) {
+  if (typeof specifier === "string" && (isAbsolute(specifier) || /^file:/i.test(specifier))) runtimeSpecifiers.add(specifier);
+  try {
+    const filename = originalResolveFilename.apply(this, arguments);
+    if (typeof filename === "string" && isAbsolute(filename)) dependencies.add(filename);
+    return filename;
+  } catch (error) {
   if (typeof specifier === "string") {
-    if (isAbsolute(specifier) || /^file:/i.test(specifier)) runtimeSpecifiers.add(specifier);
-    const localRequire = createRequire(this.filename || workerData.modulePath);
-    try {
-      const filename = localRequire.resolve(specifier);
-      if (isAbsolute(filename)) dependencies.add(filename);
-    } catch {
+    const localRequire = createRequire(parent?.filename || workerData.modulePath);
+      const packageName = specifier.split("/").slice(0, specifier.startsWith("@") ? 2 : 1).join("/");
       const candidates = specifier.startsWith(".") || isAbsolute(specifier)
-        ? [resolve(dirname(this.filename || workerData.modulePath), specifier)]
-        : (localRequire.resolve.paths(specifier) || []).map((base) => resolve(base, specifier));
+        ? [resolve(dirname(parent?.filename || workerData.modulePath), specifier)]
+        : (localRequire.resolve.paths(specifier) || []).map((base) => resolve(base, packageName));
       for (const candidate of candidates) {
         for (const suffix of ["", ".js", ".json", ".node", "/package.json", "/index.js", "/index.json", "/index.node"]) dependencies.add(candidate + suffix);
       }
-    }
   }
-  return originalRequire.apply(this, arguments);
+    throw error;
+  }
 };
 globalThis.require = createRequire(workerData.modulePath);
 function post(outcome) {
