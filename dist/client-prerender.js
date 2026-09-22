@@ -242,14 +242,34 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
     });
     if (replacements.length === 0)
         return { contents, changed: false };
+    const needsModuleRequire = replacements.some((replacement) => replacement.value === helperName);
+    if (needsModuleRequire) {
+        const insertionOffset = rendererHelperInsertionOffset(syntax, contents);
+        replacements.push({
+            start: insertionOffset,
+            end: insertionOffset,
+            value: `const ${helperName} = require("node:module").createRequire(${JSON.stringify(moduleUrl)});\n`,
+        });
+    }
     let rewritten = contents;
     for (const replacement of replacements.sort((left, right) => right.start - left.start)) {
         rewritten = `${rewritten.slice(0, replacement.start)}${replacement.value}${rewritten.slice(replacement.end)}`;
     }
-    if (replacements.some((replacement) => replacement.value === helperName)) {
-        rewritten = `const ${helperName} = require("node:module").createRequire(${JSON.stringify(moduleUrl)});\n${rewritten}`;
-    }
     return { contents: rewritten, changed: true };
+}
+function rendererHelperInsertionOffset(syntax, contents) {
+    const body = syntax.body ?? [];
+    let directiveCount = 0;
+    while (body[directiveCount]?.type === "ExpressionStatement" && typeof body[directiveCount]?.directive === "string") {
+        directiveCount += 1;
+    }
+    if (directiveCount > 0)
+        return body[directiveCount]?.start ?? contents.length;
+    if (contents.startsWith("#!")) {
+        const lineEnd = contents.indexOf("\n");
+        return lineEnd === -1 ? contents.length : lineEnd + 1;
+    }
+    return 0;
 }
 function collectRendererScopes(node, scope, scopes) {
     if (node.type === "SwitchStatement") {
