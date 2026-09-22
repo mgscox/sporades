@@ -5,6 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { createBundle } from "../dist/bundle-pipeline.js";
+import { placeClientPrerenderFragment } from "../dist/client-prerender.js";
 import { readProjectConfig } from "../dist/cli/project-config.js";
 import { validateClientToolchainInput } from "../dist/client-toolchain.js";
 import { discardPublicTree } from "../dist/public-tree.js";
@@ -42,6 +43,30 @@ const viteConfig = {
   toolchain: "vite",
   prerender: [{ name: "landing", module: "render-landing.mjs" }],
 };
+
+test("fallback placement finds the real opening body without rewriting surrounding HTML", () => {
+  const fragment = { name: "landing", module: "render-landing.mjs" };
+  const rendered = "<main>static fragment</main>";
+  const bounded = "<!-- sporades:prerender-boundary-start landing --><main>static fragment</main><!-- sporades:prerender-boundary-end landing -->";
+  const cases = [
+    {
+      source: '<!doctype html><html><head></head><body data-label="a > b" class=\'shell\'><p>page</p></body></html>\n',
+      expected: `<!doctype html><html><head></head><body data-label="a > b" class='shell'>${bounded}<p>page</p></body></html>\n`,
+    },
+    {
+      source: '<!doctype html><html><head><!-- <body data-decoy="comment"> --></head><body class="shell"><p>page</p></body></html>\n',
+      expected: `<!doctype html><html><head><!-- <body data-decoy="comment"> --></head><body class="shell">${bounded}<p>page</p></body></html>\n`,
+    },
+    {
+      source: '<!doctype html><html><head><script>const template = "<body data-decoy=\'script\'>";</script></head><body class="shell"><p>page</p></body></html>\n',
+      expected: `<!doctype html><html><head><script>const template = "<body data-decoy='script'>";</script></head><body class="shell">${bounded}<p>page</p></body></html>\n`,
+    },
+  ];
+
+  for (const fixture of cases) {
+    assert.equal(placeClientPrerenderFragment(fixture.source, fragment, rendered), fixture.expected);
+  }
+});
 
 test("a prerender module can use a local CommonJS dependency that requires a Node builtin", async () => {
   await withTempDir(async (projectDir) => {
