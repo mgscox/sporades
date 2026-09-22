@@ -248,19 +248,24 @@ function preserveRendererImportMetaUrl(
         if (resolved.errors.length > 0) {
           const failedPath = rendererLocalFilePath(args.path);
           const failedDirectory = failedPath ? rendererDependencyDirectory(failedPath) : undefined;
-          if (failedPath && failedDirectory) {
-            const external = path.resolve(failedPath) !== path.resolve(projectRoot)
+          if (failedPath) {
+            const projectRootEqual = path.resolve(failedPath) === path.resolve(projectRoot);
+            const external = !projectRootEqual
               && !isCanonicalDescendant(projectRoot, failedPath);
             if (/^file:/i.test(args.path)) {
-              const rawParent = rendererRawLocalFileUrlParent(args.path);
-              if (rawParent) {
-                const replacement = external
-                  ? "<project>"
-                  : rendererProjectDiagnosticPrefix(projectRoot, failedDirectory);
-                rendererDependencyAliases.set(rawParent, replacement);
+              if (projectRootEqual) {
+                rendererDependencyAliases.set(rendererRawLocalFileUrlPath(args.path), "<project>");
+              } else if (failedDirectory) {
+                const rawParent = rendererRawLocalFileUrlParent(args.path);
+                if (rawParent) {
+                  const replacement = external
+                    ? "<project>"
+                    : rendererProjectDiagnosticPrefix(projectRoot, failedDirectory);
+                  rendererDependencyAliases.set(rawParent, replacement);
+                }
               }
             }
-            if (external) rendererDependencyRoots.add(failedDirectory);
+            if (external && failedDirectory) rendererDependencyRoots.add(failedDirectory);
           }
           return args.namespace === commonJsNamespace ? { errors: resolved.errors, warnings: resolved.warnings } : undefined;
         }
@@ -373,13 +378,17 @@ function rendererProjectDiagnosticPrefix(projectRoot: string, directory: string)
 }
 
 function rendererRawLocalFileUrlParent(specifier: string) {
-  const suffixStart = specifier.search(/[?#]/);
-  const rawPath = suffixStart === -1 ? specifier : specifier.slice(0, suffixStart);
+  const rawPath = rendererRawLocalFileUrlPath(specifier);
   const finalSlash = rawPath.lastIndexOf("/");
   if (finalSlash === -1) return undefined;
   const parent = rawPath.slice(0, finalSlash);
   const lowerParent = parent.toLowerCase();
   return lowerParent === "file:" || lowerParent === "file:/" || lowerParent === "file://" ? undefined : parent;
+}
+
+function rendererRawLocalFileUrlPath(specifier: string) {
+  const suffixStart = specifier.search(/[?#]/);
+  return suffixStart === -1 ? specifier : specifier.slice(0, suffixStart);
 }
 
 async function rendererModuleUsesCommonJs(
@@ -1124,7 +1133,7 @@ function redactUrlPathAlias(value: string, alias: string, replacement: string) {
     if (match === -1) break;
     const end = match + alias.length;
     redacted += value.slice(cursor, end);
-    if (end === value.length || value[end] === "/") {
+    if (end === value.length || value[end] === "/" || value[end] === "?" || value[end] === "#") {
       redacted = `${redacted.slice(0, -alias.length)}${replacement}`;
     }
     cursor = end;
