@@ -2,6 +2,7 @@ import { lstat, readFile, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { parse } from "acorn";
 import { redactBuildProjectRoots } from "./build-diagnostics.js";
 export function readClientPrerenderConfig(value, toolchain) {
     if (value === undefined)
@@ -85,11 +86,11 @@ export async function renderClientPrerenderFragment(projectRoot, fragment, proje
         renderer = executeBundledRenderer(bundledSource, canonicalModulePath, fragment.module);
     }
     catch (error) {
-        discardRendererRequireCache(projectRoot, initialRequireCache);
+        discardRendererRequireCache(initialRequireCache);
         throw prerenderError(`Client prerender renderer for ${fragment.name} failed: ${boundedMessage(error, projectRoots)}`, `Fix the renderer in ${fragment.module}, then retry.`, { fragment: fragment.name, module: fragment.module });
     }
     if (typeof renderer !== "function") {
-        discardRendererRequireCache(projectRoot, initialRequireCache);
+        discardRendererRequireCache(initialRequireCache);
         throw prerenderError(`Client prerender module for ${fragment.name} must default-export a zero-argument renderer.`, `Default-export a function from ${fragment.module} that returns an HTML string or Promise<string>.`);
     }
     let rendered;
@@ -100,7 +101,7 @@ export async function renderClientPrerenderFragment(projectRoot, fragment, proje
         throw prerenderError(`Client prerender renderer for ${fragment.name} failed: ${boundedMessage(error, projectRoots)}`, `Fix the renderer in ${fragment.module}, then retry.`, { fragment: fragment.name, module: fragment.module });
     }
     finally {
-        discardRendererRequireCache(projectRoot, initialRequireCache);
+        discardRendererRequireCache(initialRequireCache);
     }
     if (typeof rendered !== "string") {
         throw prerenderError(`Client prerender renderer for ${fragment.name} returned a non-string result.`, `Return an HTML string or Promise<string> from ${fragment.module}.`, { fragment: fragment.name, resultType: rendered === null ? "null" : typeof rendered });
@@ -124,21 +125,16 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot) {
             pluginBuild.onLoad({ filter: /\.[cm]?[jt]sx?$/, namespace: "file" }, async (args) => {
                 const contents = await readFile(args.path, "utf8");
                 const commonJsModule = [".cjs", ".cts"].includes(path.extname(args.path));
-                if (!contents.includes("import.meta.url") && !commonJsModule)
+                const preservesImportMetaUrl = contents.includes("import.meta.url");
+                if (!preservesImportMetaUrl && (!commonJsModule || !/\b(?:require|__dirname|__filename)\b/.test(contents)))
                     return undefined;
                 const loader = loaders.get(path.extname(args.path));
                 if (!loader)
                     return undefined;
                 const moduleUrl = pathToFileURL(args.path).href;
                 const define = { "import.meta.url": JSON.stringify(moduleUrl) };
-                if (commonJsModule) {
-                    define.require = "__sporadesModuleRequire";
-                    define.__dirname = JSON.stringify(path.dirname(args.path));
-                    define.__filename = JSON.stringify(args.path);
-                }
                 const result = await esbuildBuild({
                     absWorkingDir: projectRoot,
-                    ...(commonJsModule ? { banner: { js: `const __sporadesModuleRequire = require("node:module").createRequire(${JSON.stringify(moduleUrl)});` } } : {}),
                     bundle: false,
                     define,
                     entryPoints: [args.path],
@@ -155,8 +151,13 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot) {
                 if (outputs.length !== 1 || javascript.length !== 1 || !javascript[0]?.text) {
                     throw new Error("the import.meta.url transform produced unsupported output");
                 }
+                const specialized = commonJsModule
+                    ? specializeCommonJsRendererModule(javascript[0].text, args.path, moduleUrl)
+                    : { contents: javascript[0].text, changed: false };
+                if (commonJsModule && !preservesImportMetaUrl && !specialized.changed)
+                    return undefined;
                 return {
-                    contents: javascript[0].text,
+                    contents: specialized.contents,
                     loader: rendererTransformOutputLoader(loader),
                     resolveDir: path.dirname(args.path),
                     watchFiles: [args.path],
@@ -168,10 +169,184 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot) {
 export function rendererTransformOutputLoader(loader) {
     return loader === "jsx" || loader === "tsx" ? "jsx" : "js";
 }
-function discardRendererRequireCache(projectRoot, initialCache) {
-    const cache = createRequire(path.join(projectRoot, "package.json")).cache;
+function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
+    const syntax = parse(contents, {
+        allowHashBang: true,
+        allowReturnOutsideFunction: true,
+        ecmaVersion: "latest",
+        sourceType: "script",
+    });
+    const rootScope = { functionScope: true, bindings: new Set() };
+    const scopes = new WeakMap();
+    collectRendererScopes(syntax, rootScope, scopes);
+    const replacements = [];
+    let helperName = "__sporadesModuleRequire";
+    while (contents.includes(helperName))
+        helperName += "_";
+    visitRendererSyntax(syntax, (node, parent, key) => {
+        const scope = scopes.get(node) ?? rootScope;
+        if (node.type === "CallExpression") {
+            const callee = node.callee;
+            const args = node.arguments;
+            const first = args?.[0];
+            const memberObject = callee?.type === "MemberExpression" ? callee.object : undefined;
+            const memberProperty = callee?.type === "MemberExpression" ? callee.property : undefined;
+            if (memberObject?.type === "Identifier"
+                && memberObject.name === "require"
+                && memberProperty?.type === "Identifier"
+                && memberProperty.name === "resolve"
+                && callee?.computed !== true
+                && !rendererScopeBinds(scope, "require")) {
+                replacements.push({ start: memberObject.start, end: memberObject.end, value: helperName });
+                return;
+            }
+            if (callee?.type === "Identifier"
+                && callee.name === "require"
+                && !rendererScopeBinds(scope, "require")
+                && first
+                && !isStaticRendererRequireSpecifier(first)) {
+                replacements.push({ start: callee.start, end: callee.end, value: helperName });
+            }
+            return;
+        }
+        if (node.type === "Identifier"
+            && (node.name === "__dirname" || node.name === "__filename")
+            && isRendererIdentifierReference(node, parent, key)
+            && !rendererScopeBinds(scope, node.name)) {
+            const value = JSON.stringify(node.name === "__dirname" ? path.dirname(modulePath) : modulePath);
+            const shorthand = parent?.type === "Property" && parent.shorthand === true && parent.value === node;
+            replacements.push({ start: node.start, end: node.end, value: shorthand ? `${String(node.name)}: ${value}` : value });
+        }
+    });
+    if (replacements.length === 0)
+        return { contents, changed: false };
+    let rewritten = contents;
+    for (const replacement of replacements.sort((left, right) => right.start - left.start)) {
+        rewritten = `${rewritten.slice(0, replacement.start)}${replacement.value}${rewritten.slice(replacement.end)}`;
+    }
+    if (replacements.some((replacement) => replacement.value === helperName)) {
+        rewritten = `const ${helperName} = require("node:module").createRequire(${JSON.stringify(moduleUrl)});\n${rewritten}`;
+    }
+    return { contents: rewritten, changed: true };
+}
+function collectRendererScopes(node, scope, scopes) {
+    let activeScope = scope;
+    if (node.type === "FunctionDeclaration") {
+        addRendererBinding(scope, node.id);
+        activeScope = { parent: scope, functionScope: true, bindings: new Set() };
+        addRendererBinding(activeScope, node.id);
+        for (const parameter of node.params ?? [])
+            addRendererBinding(activeScope, parameter);
+    }
+    else if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
+        activeScope = { parent: scope, functionScope: true, bindings: new Set() };
+        addRendererBinding(activeScope, node.id);
+        for (const parameter of node.params ?? [])
+            addRendererBinding(activeScope, parameter);
+    }
+    else if (node.type === "BlockStatement" || node.type === "CatchClause") {
+        activeScope = { parent: scope, functionScope: false, bindings: new Set() };
+        if (node.type === "CatchClause")
+            addRendererBinding(activeScope, node.param);
+    }
+    scopes.set(node, activeScope);
+    if (node.type === "VariableDeclaration") {
+        const declarationScope = node.kind === "var" ? nearestRendererFunctionScope(activeScope) : activeScope;
+        for (const declaration of node.declarations ?? [])
+            addRendererBinding(declarationScope, declaration.id);
+    }
+    else if (node.type === "ClassDeclaration") {
+        addRendererBinding(scope, node.id);
+    }
+    else if (node.type === "ImportDeclaration") {
+        for (const specifier of node.specifiers ?? [])
+            addRendererBinding(activeScope, specifier.local);
+    }
+    forEachRendererChild(node, (child) => collectRendererScopes(child, activeScope, scopes));
+}
+function addRendererBinding(scope, pattern) {
+    if (!pattern || typeof pattern !== "object")
+        return;
+    const node = pattern;
+    if (node.type === "Identifier" && typeof node.name === "string") {
+        scope.bindings.add(node.name);
+        return;
+    }
+    if (node.type === "RestElement")
+        return addRendererBinding(scope, node.argument);
+    if (node.type === "AssignmentPattern")
+        return addRendererBinding(scope, node.left);
+    if (node.type === "ArrayPattern") {
+        for (const element of node.elements ?? [])
+            addRendererBinding(scope, element);
+    }
+    if (node.type === "ObjectPattern") {
+        for (const property of node.properties ?? []) {
+            addRendererBinding(scope, property.type === "RestElement" ? property.argument : property.value);
+        }
+    }
+}
+function nearestRendererFunctionScope(scope) {
+    let candidate = scope;
+    while (!candidate.functionScope && candidate.parent)
+        candidate = candidate.parent;
+    return candidate;
+}
+function rendererScopeBinds(scope, name) {
+    for (let candidate = scope; candidate; candidate = candidate.parent) {
+        if (candidate.bindings.has(name))
+            return true;
+    }
+    return false;
+}
+function isStaticRendererRequireSpecifier(node) {
+    if (node.type === "Literal")
+        return typeof node.value === "string";
+    return node.type === "TemplateLiteral" && (node.expressions?.length ?? 0) === 0;
+}
+function isRendererIdentifierReference(node, parent, key) {
+    if (!parent)
+        return true;
+    if ((parent.type === "VariableDeclarator" && key === "id") || key === "params" || key === "id")
+        return false;
+    if ((parent.type === "MemberExpression" || parent.type === "Property") && key === "property" && parent.computed !== true)
+        return false;
+    if (parent.type === "Property" && key === "key" && parent.computed !== true && parent.shorthand !== true)
+        return false;
+    if (parent.type === "LabeledStatement" || parent.type === "BreakStatement" || parent.type === "ContinueStatement")
+        return false;
+    if (parent.type.startsWith("Import") || parent.type.startsWith("Export"))
+        return false;
+    return node.type === "Identifier";
+}
+function visitRendererSyntax(node, visit, parent, key, seen = new WeakSet()) {
+    if (seen.has(node))
+        return;
+    seen.add(node);
+    visit(node, parent, key);
+    forEachRendererChild(node, (child, childKey) => visitRendererSyntax(child, visit, node, childKey, seen));
+}
+function forEachRendererChild(node, visit) {
+    for (const [key, value] of Object.entries(node)) {
+        if (key === "start" || key === "end" || key === "loc" || key === "range")
+            continue;
+        if (Array.isArray(value)) {
+            for (const child of value)
+                if (isRendererSyntaxNode(child))
+                    visit(child, key);
+        }
+        else if (isRendererSyntaxNode(value)) {
+            visit(value, key);
+        }
+    }
+}
+function isRendererSyntaxNode(value) {
+    return Boolean(value && typeof value === "object" && typeof value.type === "string");
+}
+function discardRendererRequireCache(initialCache) {
+    const cache = createRequire(import.meta.url).cache;
     for (const cachedPath of Object.keys(cache)) {
-        if (!initialCache.has(cachedPath) && isCanonicalDescendant(projectRoot, cachedPath))
+        if (!initialCache.has(cachedPath))
             delete cache[cachedPath];
     }
 }

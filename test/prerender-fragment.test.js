@@ -235,7 +235,12 @@ test("CommonJS prerender helpers keep static TypeScript sibling requires in the 
     );
     await writeFile(
       path.join(nestedDir, "helper.cjs"),
-      'const view = require("./view.tsx");\nmodule.exports = () => `<main>${view.content}</main>`;\n',
+      `const view = require("./view.tsx");
+const resolved = require.resolve("./view.tsx");
+const shadowed = (() => { const require = (value) => value; return require("shadowed require"); })();
+const untouched = "require(not-code)"; // require(notCodeEither)
+module.exports = () => \`<main>\${view.content}|\${require("node:path").basename(resolved)}|\${shadowed}|\${untouched}</main>\`;
+`,
     );
     await writeFile(
       path.join(nestedDir, "view.tsx"),
@@ -244,7 +249,10 @@ test("CommonJS prerender helpers keep static TypeScript sibling requires in the 
 
     const bundle = await createBundle(projectDir, { name: "cjs-static-tsx-prerender", client: structuredClone(viteConfig) }, { publishLegacy: false });
     try {
-      assert.match(await readFile(bundle.staticFiles.indexHtml, "utf8"), /<main>strong:static TSX sibling<\/main>/);
+      assert.match(
+        await readFile(bundle.staticFiles.indexHtml, "utf8"),
+        /<main>strong:static TSX sibling\|view\.tsx\|shadowed require\|require\(not-code\)<\/main>/,
+      );
     } finally {
       await bundle.releasePublicTreeLease();
       await discardPublicTree(bundle.staticFiles.publicTree);
@@ -264,7 +272,7 @@ test("TypeScript CommonJS prerender helpers keep static TypeScript sibling requi
     );
     await writeFile(
       path.join(nestedDir, "helper.cts"),
-      'const card: { content: string } = require("./card.ts");\nmodule.exports = () => `<main>${card.content}</main>`;\n',
+      'import card = require("./card.ts");\nconst resolved: string = require.resolve("./card.ts");\nmodule.exports = () => `<main>${card.content}|${require("node:path").basename(resolved)}</main>`;\n',
     );
     await writeFile(
       path.join(nestedDir, "card.ts"),
@@ -273,7 +281,7 @@ test("TypeScript CommonJS prerender helpers keep static TypeScript sibling requi
 
     const bundle = await createBundle(projectDir, { name: "cts-static-ts-prerender", client: structuredClone(viteConfig) }, { publishLegacy: false });
     try {
-      assert.match(await readFile(bundle.staticFiles.indexHtml, "utf8"), /<main>static TS sibling<\/main>/);
+      assert.match(await readFile(bundle.staticFiles.indexHtml, "utf8"), /<main>static TS sibling\|card\.ts<\/main>/);
     } finally {
       await bundle.releasePublicTreeLease();
       await discardPublicTree(bundle.staticFiles.publicTree);
@@ -407,7 +415,8 @@ module.exports = () => {
       path.join(nestedDir, "helper.cjs"),
       `const target = process.argv.length > 0 ? "./failure.cjs" : "./missing.cjs";
 module.exports = () => {
-  require(target);
+  const dependency = require(target);
+  if (!dependency.cachedDuringLoad) throw new Error("failure dependency was not cached during evaluation");
   throw new Error("expected renderer failure");
 };
 `,

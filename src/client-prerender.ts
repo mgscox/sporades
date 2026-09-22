@@ -3,6 +3,8 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { parse } from "acorn";
+
 import type { ClientToolchainName } from "./client-capabilities.js";
 import { redactBuildProjectRoots } from "./build-diagnostics.js";
 
@@ -113,7 +115,7 @@ export async function renderClientPrerenderFragment(
   try {
     renderer = executeBundledRenderer(bundledSource, canonicalModulePath, fragment.module);
   } catch (error) {
-    discardRendererRequireCache(projectRoot, initialRequireCache);
+    discardRendererRequireCache(initialRequireCache);
     throw prerenderError(
       `Client prerender renderer for ${fragment.name} failed: ${boundedMessage(error, projectRoots)}`,
       `Fix the renderer in ${fragment.module}, then retry.`,
@@ -121,7 +123,7 @@ export async function renderClientPrerenderFragment(
     );
   }
   if (typeof renderer !== "function") {
-    discardRendererRequireCache(projectRoot, initialRequireCache);
+    discardRendererRequireCache(initialRequireCache);
     throw prerenderError(
       `Client prerender module for ${fragment.name} must default-export a zero-argument renderer.`,
       `Default-export a function from ${fragment.module} that returns an HTML string or Promise<string>.`,
@@ -138,7 +140,7 @@ export async function renderClientPrerenderFragment(
       { fragment: fragment.name, module: fragment.module },
     );
   } finally {
-    discardRendererRequireCache(projectRoot, initialRequireCache);
+    discardRendererRequireCache(initialRequireCache);
   }
   if (typeof rendered !== "string") {
     throw prerenderError(
@@ -170,19 +172,14 @@ function preserveRendererImportMetaUrl(
       pluginBuild.onLoad({ filter: /\.[cm]?[jt]sx?$/, namespace: "file" }, async (args) => {
         const contents = await readFile(args.path, "utf8");
         const commonJsModule = [".cjs", ".cts"].includes(path.extname(args.path));
-        if (!contents.includes("import.meta.url") && !commonJsModule) return undefined;
+        const preservesImportMetaUrl = contents.includes("import.meta.url");
+        if (!preservesImportMetaUrl && (!commonJsModule || !/\b(?:require|__dirname|__filename)\b/.test(contents))) return undefined;
         const loader = loaders.get(path.extname(args.path));
         if (!loader) return undefined;
         const moduleUrl = pathToFileURL(args.path).href;
         const define: Record<string, string> = { "import.meta.url": JSON.stringify(moduleUrl) };
-        if (commonJsModule) {
-          define.require = "__sporadesModuleRequire";
-          define.__dirname = JSON.stringify(path.dirname(args.path));
-          define.__filename = JSON.stringify(args.path);
-        }
         const result = await esbuildBuild({
           absWorkingDir: projectRoot,
-          ...(commonJsModule ? { banner: { js: `const __sporadesModuleRequire = require("node:module").createRequire(${JSON.stringify(moduleUrl)});` } } : {}),
           bundle: false,
           define,
           entryPoints: [args.path],
@@ -199,8 +196,12 @@ function preserveRendererImportMetaUrl(
         if (outputs.length !== 1 || javascript.length !== 1 || !javascript[0]?.text) {
           throw new Error("the import.meta.url transform produced unsupported output");
         }
+        const specialized = commonJsModule
+          ? specializeCommonJsRendererModule(javascript[0].text, args.path, moduleUrl)
+          : { contents: javascript[0].text, changed: false };
+        if (commonJsModule && !preservesImportMetaUrl && !specialized.changed) return undefined;
         return {
-          contents: javascript[0].text,
+          contents: specialized.contents,
           loader: rendererTransformOutputLoader(loader),
           resolveDir: path.dirname(args.path),
           watchFiles: [args.path],
@@ -214,10 +215,194 @@ export function rendererTransformOutputLoader(loader: import("esbuild").Loader):
   return loader === "jsx" || loader === "tsx" ? "jsx" : "js";
 }
 
-function discardRendererRequireCache(projectRoot: string, initialCache: Set<string>) {
-  const cache = createRequire(path.join(projectRoot, "package.json")).cache;
+type RendererSyntaxNode = {
+  type: string;
+  start: number;
+  end: number;
+  [key: string]: unknown;
+};
+
+type RendererLexicalScope = {
+  parent?: RendererLexicalScope;
+  functionScope: boolean;
+  bindings: Set<string>;
+};
+
+function specializeCommonJsRendererModule(contents: string, modulePath: string, moduleUrl: string) {
+  const syntax = parse(contents, {
+    allowHashBang: true,
+    allowReturnOutsideFunction: true,
+    ecmaVersion: "latest",
+    sourceType: "script",
+  }) as unknown as RendererSyntaxNode;
+  const rootScope: RendererLexicalScope = { functionScope: true, bindings: new Set() };
+  const scopes = new WeakMap<object, RendererLexicalScope>();
+  collectRendererScopes(syntax, rootScope, scopes);
+  const replacements: Array<{ start: number; end: number; value: string }> = [];
+  let helperName = "__sporadesModuleRequire";
+  while (contents.includes(helperName)) helperName += "_";
+  visitRendererSyntax(syntax, (node, parent, key) => {
+    const scope = scopes.get(node) ?? rootScope;
+    if (node.type === "CallExpression") {
+      const callee = node.callee as RendererSyntaxNode | undefined;
+      const args = node.arguments as RendererSyntaxNode[] | undefined;
+      const first = args?.[0];
+      const memberObject = callee?.type === "MemberExpression" ? callee.object as RendererSyntaxNode | undefined : undefined;
+      const memberProperty = callee?.type === "MemberExpression" ? callee.property as RendererSyntaxNode | undefined : undefined;
+      if (
+        memberObject?.type === "Identifier"
+        && memberObject.name === "require"
+        && memberProperty?.type === "Identifier"
+        && memberProperty.name === "resolve"
+        && callee?.computed !== true
+        && !rendererScopeBinds(scope, "require")
+      ) {
+        replacements.push({ start: memberObject.start, end: memberObject.end, value: helperName });
+        return;
+      }
+      if (
+        callee?.type === "Identifier"
+        && callee.name === "require"
+        && !rendererScopeBinds(scope, "require")
+        && first
+        && !isStaticRendererRequireSpecifier(first)
+      ) {
+        replacements.push({ start: callee.start, end: callee.end, value: helperName });
+      }
+      return;
+    }
+    if (
+      node.type === "Identifier"
+      && (node.name === "__dirname" || node.name === "__filename")
+      && isRendererIdentifierReference(node, parent, key)
+      && !rendererScopeBinds(scope, node.name as string)
+    ) {
+      const value = JSON.stringify(node.name === "__dirname" ? path.dirname(modulePath) : modulePath);
+      const shorthand = parent?.type === "Property" && parent.shorthand === true && parent.value === node;
+      replacements.push({ start: node.start, end: node.end, value: shorthand ? `${String(node.name)}: ${value}` : value });
+    }
+  });
+  if (replacements.length === 0) return { contents, changed: false };
+  let rewritten = contents;
+  for (const replacement of replacements.sort((left, right) => right.start - left.start)) {
+    rewritten = `${rewritten.slice(0, replacement.start)}${replacement.value}${rewritten.slice(replacement.end)}`;
+  }
+  if (replacements.some((replacement) => replacement.value === helperName)) {
+    rewritten = `const ${helperName} = require("node:module").createRequire(${JSON.stringify(moduleUrl)});\n${rewritten}`;
+  }
+  return { contents: rewritten, changed: true };
+}
+
+function collectRendererScopes(
+  node: RendererSyntaxNode,
+  scope: RendererLexicalScope,
+  scopes: WeakMap<object, RendererLexicalScope>,
+) {
+  let activeScope = scope;
+  if (node.type === "FunctionDeclaration") {
+    addRendererBinding(scope, node.id);
+    activeScope = { parent: scope, functionScope: true, bindings: new Set() };
+    addRendererBinding(activeScope, node.id);
+    for (const parameter of (node.params as RendererSyntaxNode[] | undefined) ?? []) addRendererBinding(activeScope, parameter);
+  } else if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
+    activeScope = { parent: scope, functionScope: true, bindings: new Set() };
+    addRendererBinding(activeScope, node.id);
+    for (const parameter of (node.params as RendererSyntaxNode[] | undefined) ?? []) addRendererBinding(activeScope, parameter);
+  } else if (node.type === "BlockStatement" || node.type === "CatchClause") {
+    activeScope = { parent: scope, functionScope: false, bindings: new Set() };
+    if (node.type === "CatchClause") addRendererBinding(activeScope, node.param);
+  }
+  scopes.set(node, activeScope);
+  if (node.type === "VariableDeclaration") {
+    const declarationScope = node.kind === "var" ? nearestRendererFunctionScope(activeScope) : activeScope;
+    for (const declaration of (node.declarations as RendererSyntaxNode[] | undefined) ?? []) addRendererBinding(declarationScope, declaration.id);
+  } else if (node.type === "ClassDeclaration") {
+    addRendererBinding(scope, node.id);
+  } else if (node.type === "ImportDeclaration") {
+    for (const specifier of (node.specifiers as RendererSyntaxNode[] | undefined) ?? []) addRendererBinding(activeScope, specifier.local);
+  }
+  forEachRendererChild(node, (child) => collectRendererScopes(child, activeScope, scopes));
+}
+
+function addRendererBinding(scope: RendererLexicalScope, pattern: unknown) {
+  if (!pattern || typeof pattern !== "object") return;
+  const node = pattern as RendererSyntaxNode;
+  if (node.type === "Identifier" && typeof node.name === "string") {
+    scope.bindings.add(node.name);
+    return;
+  }
+  if (node.type === "RestElement") return addRendererBinding(scope, node.argument);
+  if (node.type === "AssignmentPattern") return addRendererBinding(scope, node.left);
+  if (node.type === "ArrayPattern") {
+    for (const element of (node.elements as unknown[] | undefined) ?? []) addRendererBinding(scope, element);
+  }
+  if (node.type === "ObjectPattern") {
+    for (const property of (node.properties as RendererSyntaxNode[] | undefined) ?? []) {
+      addRendererBinding(scope, property.type === "RestElement" ? property.argument : property.value);
+    }
+  }
+}
+
+function nearestRendererFunctionScope(scope: RendererLexicalScope) {
+  let candidate = scope;
+  while (!candidate.functionScope && candidate.parent) candidate = candidate.parent;
+  return candidate;
+}
+
+function rendererScopeBinds(scope: RendererLexicalScope, name: string) {
+  for (let candidate: RendererLexicalScope | undefined = scope; candidate; candidate = candidate.parent) {
+    if (candidate.bindings.has(name)) return true;
+  }
+  return false;
+}
+
+function isStaticRendererRequireSpecifier(node: RendererSyntaxNode) {
+  if (node.type === "Literal") return typeof node.value === "string";
+  return node.type === "TemplateLiteral" && ((node.expressions as unknown[] | undefined)?.length ?? 0) === 0;
+}
+
+function isRendererIdentifierReference(node: RendererSyntaxNode, parent: RendererSyntaxNode | undefined, key: string | undefined) {
+  if (!parent) return true;
+  if ((parent.type === "VariableDeclarator" && key === "id") || key === "params" || key === "id") return false;
+  if ((parent.type === "MemberExpression" || parent.type === "Property") && key === "property" && parent.computed !== true) return false;
+  if (parent.type === "Property" && key === "key" && parent.computed !== true && parent.shorthand !== true) return false;
+  if (parent.type === "LabeledStatement" || parent.type === "BreakStatement" || parent.type === "ContinueStatement") return false;
+  if (parent.type.startsWith("Import") || parent.type.startsWith("Export")) return false;
+  return node.type === "Identifier";
+}
+
+function visitRendererSyntax(
+  node: RendererSyntaxNode,
+  visit: (node: RendererSyntaxNode, parent?: RendererSyntaxNode, key?: string) => void,
+  parent?: RendererSyntaxNode,
+  key?: string,
+  seen: WeakSet<object> = new WeakSet(),
+) {
+  if (seen.has(node)) return;
+  seen.add(node);
+  visit(node, parent, key);
+  forEachRendererChild(node, (child, childKey) => visitRendererSyntax(child, visit, node, childKey, seen));
+}
+
+function forEachRendererChild(node: RendererSyntaxNode, visit: (child: RendererSyntaxNode, key: string) => void) {
+  for (const [key, value] of Object.entries(node)) {
+    if (key === "start" || key === "end" || key === "loc" || key === "range") continue;
+    if (Array.isArray(value)) {
+      for (const child of value) if (isRendererSyntaxNode(child)) visit(child, key);
+    } else if (isRendererSyntaxNode(value)) {
+      visit(value, key);
+    }
+  }
+}
+
+function isRendererSyntaxNode(value: unknown): value is RendererSyntaxNode {
+  return Boolean(value && typeof value === "object" && typeof (value as { type?: unknown }).type === "string");
+}
+
+function discardRendererRequireCache(initialCache: Set<string>) {
+  const cache = createRequire(import.meta.url).cache;
   for (const cachedPath of Object.keys(cache)) {
-    if (!initialCache.has(cachedPath) && isCanonicalDescendant(projectRoot, cachedPath)) delete cache[cachedPath];
+    if (!initialCache.has(cachedPath)) delete cache[cachedPath];
   }
 }
 
