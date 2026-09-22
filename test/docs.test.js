@@ -1207,6 +1207,29 @@ test("canonical hosting docs define runtime health bound compatibility", async (
   assert.match(contract, /no additional sensitive data/i);
 });
 
+test("File inspection docs keep runtime probe authentication unconditional", async () => {
+  const [files, runtimeSource, hostTests] = await Promise.all([
+    readProjectFile("docs/reference/files-and-realtime.md"),
+    readProjectFile("src/http-runtime.ts"),
+    readProjectFile("test/host.test.js"),
+  ]);
+  const contract = files.match(/The private\s+health route[\s\S]*?(?=\n\nThe Base image)/)?.[0];
+  const route = runtimeSource.match(/export async function routeRuntimeHealth[\s\S]*?(?=\nasync function createRuntimeHealthResult)/)?.[0];
+  const healthTests = hostTests.match(/test\("Sporades runtime health rejects unauthenticated probes[\s\S]*?(?=\ntest\()/)?.[0];
+  assert.ok(contract, "canonical File docs must define private runtime health authentication");
+  assert.ok(route, "runtime health route must remain inspectable");
+  assert.ok(healthTests, "runtime health authentication tests must remain inspectable");
+
+  assert.match(contract, /exact[\s\S]*64-hex[\s\S]*`runtimeProbeToken`/i);
+  assert.match(contract, /regardless of whether[\s\S]*ClamAV/i);
+  assert.match(contract, /missing[\s\S]*malformed[\s\S]*forged[\s\S]*opaque `404`/i);
+  assert.match(contract, /ClamAV[\s\S]*`fileInspection` readiness\s+check[\s\S]*not authentication/i);
+  assert.match(route, /runtimeProbeMatches\(probe, database\.runtimeProbeToken\)[\s\S]*createRuntimeHealthResult\(database\)/);
+  assert.match(route, /\^\[a-f0-9\]\{64\}\$[\s\S]*timingSafeEqual/);
+  assert.match(healthTests, /database\.runtimeProbeToken = "a"\.repeat\(64\)[\s\S]*"b"\.repeat\(64\)[\s\S]*forged\.status, 404[\s\S]*database\.clamavRequired = true/);
+  assert.match(healthTests, /database\.clamavRequired = false[\s\S]*"a"\.repeat\(64\)[\s\S]*authenticated\.status, 200/);
+});
+
 test("canonical project configuration docs define the File upload size limit", async () => {
   const [configuration, runtimeSource] = await Promise.all([
     readProjectFile("docs/reference/projects-and-configuration.md"),
