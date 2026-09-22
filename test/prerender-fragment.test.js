@@ -78,6 +78,17 @@ test("fallback placement keeps Unicode byte offsets while matching HTML tags cas
   assert.equal(placeClientPrerenderFragment(source, fragment, rendered), expected);
 });
 
+test("named prerender markers replace only HTML comment nodes outside raw text", () => {
+  const fragment = { name: "landing", module: "render-landing.mjs" };
+  const rendered = "<main>static fragment</main>";
+  const marker = "<!-- sporades:prerender landing -->";
+  const bounded = "<!-- sporades:prerender-boundary-start landing --><main>static fragment</main><!-- sporades:prerender-boundary-end landing -->";
+  const source = `<!doctype html><html><head><script>const marker = ${JSON.stringify(marker)};</script><style>.shell::before { content: ${JSON.stringify(marker)}; }</style></head><body>${marker}<p>between</p>${marker}</body></html>\n`;
+  const expected = `<!doctype html><html><head><script>const marker = ${JSON.stringify(marker)};</script><style>.shell::before { content: ${JSON.stringify(marker)}; }</style></head><body>${bounded}<p>between</p>${bounded}</body></html>\n`;
+
+  assert.equal(placeClientPrerenderFragment(source, fragment, rendered), expected);
+});
+
 test("a prerender module can use a local CommonJS dependency that requires a Node builtin", async () => {
   await withTempDir(async (projectDir) => {
     const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
