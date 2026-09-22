@@ -55,6 +55,7 @@ export async function renderClientPrerenderFragment(projectRoot, fragment, proje
     let bundledSource;
     try {
         const { build, transform } = await import("esbuild");
+        const projectTsconfigRaw = await readOptionalFile(path.join(projectRoot, "tsconfig.json"));
         const result = await build({
             absWorkingDir: projectRoot,
             bundle: true,
@@ -64,7 +65,7 @@ export async function renderClientPrerenderFragment(projectRoot, fragment, proje
             logLevel: "silent",
             outdir: path.join(projectRoot, ".sporades-prerender-output"),
             platform: "node",
-            plugins: [preserveRendererImportMetaUrl(transform)],
+            plugins: [preserveRendererImportMetaUrl(transform, projectTsconfigRaw)],
             sourcemap: false,
             target: "node22",
             write: false,
@@ -101,7 +102,17 @@ export async function renderClientPrerenderFragment(projectRoot, fragment, proje
     }
     return rendered;
 }
-function preserveRendererImportMetaUrl(transform) {
+async function readOptionalFile(filePath) {
+    try {
+        return await readFile(filePath, "utf8");
+    }
+    catch (error) {
+        if (error && typeof error === "object" && "code" in error && error.code === "ENOENT")
+            return undefined;
+        throw error;
+    }
+}
+function preserveRendererImportMetaUrl(transform, projectTsconfigRaw) {
     const loaders = new Map([
         [".cjs", "js"],
         [".cts", "ts"],
@@ -127,7 +138,8 @@ function preserveRendererImportMetaUrl(transform) {
                     jsx: "preserve",
                     loader,
                     sourcefile: args.path,
-                    target: "node22",
+                    target: "esnext",
+                    ...(projectTsconfigRaw === undefined ? {} : { tsconfigRaw: projectTsconfigRaw }),
                 });
                 return {
                     contents: result.code,
