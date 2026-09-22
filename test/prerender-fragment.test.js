@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -62,6 +62,9 @@ test("a prerender module can use a local CommonJS dependency that requires a Nod
     const bundle = await createBundle(projectDir, { name: "cjs-prerender", client: structuredClone(viteConfig) }, { publishLegacy: false });
     try {
       assert.match(await readFile(bundle.staticFiles.indexHtml, "utf8"), /<main>CJS builtin works<\/main>/);
+      const files = await publicFiles(bundle.staticFiles.publicDir);
+      assert.equal(files.some((file) => /renderer|renderer-cjs/.test(file)), false, JSON.stringify(files));
+      await assert.rejects(access(path.join(projectDir, ".sporades-prerender-output")), (error) => error.code === "ENOENT");
     } finally {
       await bundle.releasePublicTreeLease();
       await discardPublicTree(bundle.staticFiles.publicTree);

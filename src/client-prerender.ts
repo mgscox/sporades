@@ -1,4 +1,5 @@
 import { lstat, realpath } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 
 import type { ClientToolchainName } from "./client-capabilities.js";
@@ -7,8 +8,6 @@ export type ClientPrerenderFragment = Readonly<{
   name: string;
   module: string;
 }>;
-
-let rendererImportSequence = 0;
 
 export function readClientPrerenderConfig(value: unknown, toolchain: ClientToolchainName): ClientPrerenderFragment[] {
   if (value === undefined) return [];
@@ -78,16 +77,22 @@ export async function renderClientPrerenderFragment(projectRoot: string, fragmen
     const result = await build({
       absWorkingDir: projectRoot,
       bundle: true,
-      entryPoints: [canonicalModulePath],
-      format: "esm",
+      entryNames: "renderer",
+      entryPoints: { renderer: canonicalModulePath },
+      format: "cjs",
       logLevel: "silent",
+      outdir: path.join(projectRoot, ".sporades-prerender-output"),
       platform: "node",
       sourcemap: false,
       target: "node22",
       write: false,
     });
-    bundledSource = result.outputFiles?.[0]?.text ?? "";
-    if (!bundledSource) throw new Error("esbuild returned no renderer output");
+    const outputs = result.outputFiles ?? [];
+    const javascript = outputs.filter((output) => output.path.endsWith(".js"));
+    if (outputs.length !== 1 || javascript.length !== 1 || !javascript[0]?.text) {
+      throw new Error("the renderer produced an unsupported secondary output");
+    }
+    bundledSource = javascript[0].text;
   } catch (error) {
     if (hasHint(error)) throw error;
     throw prerenderError(
@@ -98,14 +103,14 @@ export async function renderClientPrerenderFragment(projectRoot: string, fragmen
   }
 
   try {
-    const loaded = await import(`${sourceDataUrl(bundledSource)}#${encodeURIComponent(fragment.name)}-${rendererImportSequence++}`);
-    if (typeof loaded.default !== "function") {
+    const renderer = executeBundledRenderer(bundledSource, canonicalModulePath, fragment.module);
+    if (typeof renderer !== "function") {
       throw prerenderError(
         `Client prerender module for ${fragment.name} must default-export a zero-argument renderer.`,
         `Default-export a function from ${fragment.module} that returns an HTML string or Promise<string>.`,
       );
     }
-    const rendered = await loaded.default();
+    const rendered = await renderer();
     if (typeof rendered !== "string") {
       throw prerenderError(
         `Client prerender renderer for ${fragment.name} returned a non-string result.`,
@@ -128,7 +133,7 @@ export function placeClientPrerenderFragment(html: string, fragment: ClientPrere
   const escapedName = fragment.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const marker = new RegExp(`<!--\\s*sporades:prerender\\s+${escapedName}\\s*-->`, "g");
   const bounded = `<!-- sporades:prerender-boundary-start ${fragment.name} -->${rendered}<!-- sporades:prerender-boundary-end ${fragment.name} -->`;
-  if (marker.test(html)) return html.replace(marker, bounded);
+  if (marker.test(html)) return html.replace(marker, () => bounded);
   if (/<!--\s*sporades:prerender(?:\s+[A-Za-z][A-Za-z0-9_-]{0,63})?\s*-->/.test(html)) return html;
   const body = /<body\b[^>]*>/i;
   if (!body.test(html)) {
@@ -152,8 +157,24 @@ function isCanonicalDescendant(parent: string, candidate: string) {
   return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
-function sourceDataUrl(source: string) {
-  return `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
+function executeBundledRenderer(source: string, modulePath: string, displayPath: string) {
+  const moduleRecord: { exports: unknown } = { exports: {} };
+  // Renderers share the trusted-build-code boundary of project Vite config. Execute the
+  // in-memory CommonJS bundle fresh on every build: project-rooted require supports Node
+  // builtins/native externals without adding a unique data URL to the permanent ESM cache.
+  const execute = new Function(
+    "exports",
+    "require",
+    "module",
+    "__filename",
+    "__dirname",
+    `${source}\n//# sourceURL=${displayPath.replaceAll("\\", "/")}\n`,
+  ) as (exports: unknown, require: NodeJS.Require, module: { exports: unknown }, fileName: string, directory: string) => void;
+  execute(moduleRecord.exports, createRequire(modulePath), moduleRecord, modulePath, path.dirname(modulePath));
+  const exported = moduleRecord.exports;
+  return exported && typeof exported === "object" && "default" in exported
+    ? (exported as { default?: unknown }).default
+    : undefined;
 }
 
 function boundedMessage(error: unknown, projectRoot?: string) {
