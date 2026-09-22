@@ -956,6 +956,36 @@ test("metadata-less hoisted CommonJS modules load without specialization tokens"
   });
 });
 
+test("unresolved absolute renderer imports redact external host paths", async () => {
+  await withTempDir(async (tempRoot) => {
+    const projectDir = path.join(tempRoot, "capsule");
+    const externalDir = path.join(tempRoot, "caf\u00e9 external modules");
+    await mkdir(projectDir);
+    await mkdir(externalDir);
+    await writeFile(path.join(projectDir, "package.json"), '{"type":"module"}\n');
+    const canonicalProject = await realpath(projectDir);
+    const canonicalExternalDir = await realpath(externalDir);
+    const missingModule = path.join(canonicalExternalDir, "missing-renderer-dependency.mjs");
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      `import ${JSON.stringify(missingModule)};\nexport default () => "<main>unreachable</main>";\n`,
+    );
+
+    await assert.rejects(
+      renderClientPrerenderFragment(canonicalProject, { name: "landing", module: "render-landing.mjs" }),
+      (error) => {
+        assert.match(error.message, /could not build client prerender module/i);
+        assert.match(error.message, /<project>\/missing-renderer-dependency\.mjs/i);
+        const surfaced = JSON.stringify({ message: error.message, hint: error.hint, diagnostics: error.diagnostics, stack: error.stack });
+        assert.equal(surfaced.includes(canonicalExternalDir), false, "leaked unresolved external import directory");
+        assert.equal(surfaced.includes(pathToFileURL(canonicalExternalDir).href), false, "leaked unresolved external import URL");
+        assert.doesNotMatch(surfaced, /caf(?:é|e%CC%81|%C3%A9)%20external%20modules/i);
+        return true;
+      },
+    );
+  });
+});
+
 test("hoisted renderer build failures redact dependency paths outside the Capsule", async () => {
   await withTempDir(async (tempRoot) => {
     const projectDir = path.join(tempRoot, "capsule");
