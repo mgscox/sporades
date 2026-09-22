@@ -263,6 +263,47 @@ module.exports = () => {
   });
 });
 
+test("a nested TypeScript CommonJS prerender helper keeps per-module paths and computed require", async () => {
+  await withTempDir(async (projectDir) => {
+    const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
+    await writeMinimalViteCapsule(projectDir, sourceHtml);
+    const nestedDir = path.join(projectDir, "renderer", "nested");
+    await mkdir(nestedDir, { recursive: true });
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'import render from "./renderer/nested/helper.cts";\nexport default render;\n',
+    );
+    await writeFile(
+      path.join(nestedDir, "helper.cts"),
+      `const path = require("node:path");
+const target: string = process.argv.length > 0 ? "./adjacent.cjs" : "./missing.cjs";
+module.exports = () => {
+  const adjacent = require(target);
+  return \`<main>\${path.basename(__dirname)}|\${path.basename(__filename)}|\${path.basename(adjacent.filename)}|\${adjacent.content}</main>\`;
+};
+`,
+    );
+    await writeFile(
+      path.join(nestedDir, "adjacent.cjs"),
+      'const fs = require("node:fs");\nconst path = require("node:path");\nmodule.exports = { filename: __filename, content: fs.readFileSync(path.join(__dirname, "content.txt"), "utf8").trim() };\n',
+    );
+    await writeFile(path.join(nestedDir, "content.txt"), "adjacent CTS content\n");
+
+    const bundle = await createBundle(projectDir, { name: "nested-cts-prerender", client: structuredClone(viteConfig) }, { publishLegacy: false });
+    try {
+      assert.match(
+        await readFile(bundle.staticFiles.indexHtml, "utf8"),
+        /<main>nested\|helper\.cts\|adjacent\.cjs\|adjacent CTS content<\/main>/,
+      );
+      const cache = createRequire(import.meta.url).cache;
+      assert.equal(Object.keys(cache).some((file) => file.startsWith(projectDir)), false, "renderer dependencies remained in the CommonJS cache");
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
 test("a transitive ESM prerender module retains its own import.meta.url", async () => {
   await withTempDir(async (projectDir) => {
     const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
