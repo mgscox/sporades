@@ -60671,30 +60671,43 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
   return rendered;
 }
 function placeClientPrerenderFragment(html, fragment, rendered) {
-  const escapedName = fragment.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const marker = new RegExp(`<!--\\s*sporades:prerender\\s+${escapedName}\\s*-->`, "g");
   const bounded = `<!-- sporades:prerender-boundary-start ${fragment.name} -->${rendered}<!-- sporades:prerender-boundary-end ${fragment.name} -->`;
-  if (marker.test(html)) return html.replace(marker, () => bounded);
-  if (/<!--\s*sporades:prerender(?:\s+[A-Za-z][A-Za-z0-9_-]{0,63})?\s*-->/.test(html)) return html;
-  const bodyEnd = findOpeningBodyEnd(html);
-  if (bodyEnd === void 0) {
+  const placement = scanClientPrerenderHtml(html);
+  const namedMarkers = placement.markers.filter((marker) => marker.name === fragment.name);
+  if (namedMarkers.length > 0) {
+    let replaced = "";
+    let cursor = 0;
+    for (const marker of namedMarkers) {
+      replaced += `${html.slice(cursor, marker.start)}${bounded}`;
+      cursor = marker.end;
+    }
+    return `${replaced}${html.slice(cursor)}`;
+  }
+  if (placement.markers.length > 0) return html;
+  if (placement.bodyEnd === void 0) {
     throw prerenderError(
       "Client prerender fallback placement requires an opening body element.",
       "Add an opening `<body>` element or a named `<!-- sporades:prerender NAME -->` marker to index.html.",
       { fragment: fragment.name }
     );
   }
-  return `${html.slice(0, bodyEnd)}${bounded}${html.slice(bodyEnd)}`;
+  return `${html.slice(0, placement.bodyEnd)}${bounded}${html.slice(placement.bodyEnd)}`;
 }
-function findOpeningBodyEnd(html) {
+function scanClientPrerenderHtml(html) {
   const lowerHtml = foldAsciiCase(html);
   const rawTextElements = /* @__PURE__ */ new Set(["iframe", "noembed", "noframes", "plaintext", "script", "style", "textarea", "title", "xmp"]);
+  const markers = [];
+  let bodyEnd;
   let cursor = 0;
   while (cursor < html.length) {
     const tagStart = html.indexOf("<", cursor);
-    if (tagStart === -1) return void 0;
+    if (tagStart === -1) break;
     if (html.startsWith("<!--", tagStart)) {
       const commentEnd = html.indexOf("-->", tagStart + 4);
+      if (commentEnd !== -1) {
+        const marker = /^\s*sporades:prerender(?:\s+([A-Za-z][A-Za-z0-9_-]{0,63}))?\s*$/.exec(html.slice(tagStart + 4, commentEnd));
+        if (marker) markers.push({ start: tagStart, end: commentEnd + 3, name: marker[1] });
+      }
       cursor = commentEnd === -1 ? html.length : commentEnd + 3;
       continue;
     }
@@ -60715,15 +60728,15 @@ function findOpeningBodyEnd(html) {
     while (/[A-Za-z0-9:-]/.test(html[nameEnd] ?? "")) nameEnd += 1;
     const name2 = lowerHtml.slice(nameStart, nameEnd);
     const tagEnd = findHtmlTagEnd(html, nameEnd);
-    if (tagEnd === void 0) return void 0;
-    if (!closing && name2 === "body") return tagEnd;
+    if (tagEnd === void 0) break;
+    if (!closing && name2 === "body" && bodyEnd === void 0) bodyEnd = tagEnd;
     cursor = tagEnd;
     if (!closing && rawTextElements.has(name2)) {
-      if (name2 === "plaintext") return void 0;
+      if (name2 === "plaintext") break;
       cursor = findRawTextElementEnd(html, lowerHtml, cursor, name2);
     }
   }
-  return void 0;
+  return { bodyEnd, markers };
 }
 function foldAsciiCase(value) {
   return value.replace(/[A-Z]/g, (character) => String.fromCharCode(character.charCodeAt(0) + 32));
