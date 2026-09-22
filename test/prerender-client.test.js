@@ -42,6 +42,14 @@ test('handover dismisses browser-reparented table boundaries without touching au
   }
 });
 
+test('placement rejects content foster-parented outside its handover boundaries', () => {
+  const source = '<html><body><table><!-- sporades:prerender rows --><tr><td>author row</td></tr></table></body></html>';
+  for (const html of ['<div>Loading</div>', 'Loading']) {
+    assert.throws(() => placeClientPrerenderFragments(source, [{ name: 'rows', html }]), /not stable in the parsed HTML document/i);
+  }
+  assert.throws(() => placeClientPrerenderFragments('<html><body><template><!-- sporades:prerender rows --></template></body></html>', [{ name:'rows', html:'<p>Inert</p>' }]), /not stable in the parsed HTML document/i);
+});
+
 test('prerender handover exposes opaque snapshots and deliberate idempotent dismissal in head and body', async () => {
   const window = new Window();
   const previousDocument = globalThis.document;

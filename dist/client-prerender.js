@@ -4,6 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { Parser } from "acorn";
 import jsx from "acorn-jsx";
+import { parse as parseHtml } from "parse5";
 import { redactBuildProjectRoots } from "./build-diagnostics.js";
 export function readClientPrerenderConfig(value, toolchain) {
     if (value === undefined)
@@ -797,7 +798,54 @@ export function placeClientPrerenderFragments(html, fragments) {
         else if (count > 1)
             warnings.push({ code: "PRERENDER_DUPLICATE_PLACEMENT", fragment: name, message: `Prerender fragment "${name}" is placed ${count} times in index.html.` });
     }
+    validatePrerenderDomBoundaries(replaced, [...counts.values()].reduce((sum, count) => sum + count, 0));
     return { html: replaced, warnings };
+}
+function validatePrerenderDomBoundaries(html, expectedPlacements) {
+    if (expectedPlacements === 0)
+        return;
+    const nodes = [];
+    const boundaries = [];
+    let order = 0;
+    const visit = (node) => {
+        const location = node.sourceCodeLocation;
+        const position = order++;
+        if (location) {
+            // Element ranges include descendants; only the opener identifies where
+            // that node came from. Text ranges also reveal merged foster-parented text.
+            const token = "startTag" in location && location.startTag ? location.startTag : location;
+            const located = { start: token.startOffset, end: token.endOffset, order: position };
+            nodes.push(located);
+            if (node.nodeName === "#comment" && "data" in node) {
+                const marker = /^sporades:prerender-boundary-(start|end) ([A-Za-z][A-Za-z0-9_-]{0,63})$/.exec(node.data.trim());
+                if (marker)
+                    boundaries.push({ ...located, kind: marker[1], name: marker[2] });
+            }
+        }
+        // Like document TreeWalker, do not descend into inert template.content.
+        if ("childNodes" in node)
+            for (const child of node.childNodes)
+                visit(child);
+    };
+    visit(parseHtml(html, { sourceCodeLocationInfo: true, scriptingEnabled: true }));
+    const invalid = () => prerenderError("Client prerender placement is not stable in the parsed HTML document.", "Use context-valid fragment HTML at each marker (for example, rows inside tables), outside inert templates. The browser must keep fragment content between its boundaries.");
+    if (boundaries.length !== expectedPlacements * 2)
+        throw invalid();
+    boundaries.sort((left, right) => left.start - right.start);
+    for (let index = 0; index < boundaries.length; index += 2) {
+        const start = boundaries[index];
+        const end = boundaries[index + 1];
+        if (start.kind !== "start" || end.kind !== "end" || start.name !== end.name || start.order >= end.order)
+            throw invalid();
+        for (const node of nodes) {
+            if (node.order === start.order || node.order === end.order)
+                continue;
+            const fromFragment = node.start < end.start && node.end > start.end;
+            const withinBoundary = node.order > start.order && node.order < end.order;
+            if (fromFragment !== withinBoundary)
+                throw invalid();
+        }
+    }
 }
 function scanClientPrerenderHtml(html) {
     const lowerHtml = foldAsciiCase(html);

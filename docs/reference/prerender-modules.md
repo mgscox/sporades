@@ -24,3 +24,10 @@ CommonJS cache does not expose the ESM descendants needed for reliable Dev
 watching. Use a literal import or require for ESM dependencies so the bundler can
 track their complete code graph. This restriction is consistent across supported
 Node releases.
+
+Fragment HTML must be valid for its marker's document context. The build checks
+the parsed DOM without rewriting the emitted HTML: content moved outside its
+handover boundaries by HTML parsing fails with a placement diagnostic. For
+example, render rows at a marker inside a table, not a `div` or plain text that
+the browser would move before the table. Markers inside inert `template` content
+are not supported. Valid implicit table wrappers remain supported.
