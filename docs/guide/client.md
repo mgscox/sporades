@@ -85,5 +85,8 @@ framework mounting do not dismiss anything automatically. Preserve the static
 shell until your replacement content is ready; without JavaScript it stays
 visible. Dismissal removes nodes, not effects of scripts that already ran. This
 is deliberate static-shell replacement, not framework hydration.
+Sporades boundary comments are private and reserved. A renderer that returns an
+actual boundary comment fails the build, preventing an embedded delimiter from
+truncating later dismissal. Use only the public discovery and dismissal API.
 
 Next: [authentication](./auth.md), [files](./files.md), or [realtime features](./realtime.md).
