@@ -254,7 +254,7 @@ export function placeClientPrerenderFragment(html: string, fragment: ClientPrere
 
 function scanClientPrerenderHtml(html: string) {
   const lowerHtml = foldAsciiCase(html);
-  const rawTextElements = new Set(["iframe", "noembed", "noframes", "plaintext", "script", "style", "textarea", "title", "xmp"]);
+  const rawTextElements = new Set(["iframe", "noembed", "noframes", "noscript", "plaintext", "script", "style", "textarea", "title", "xmp"]);
   const markers: Array<{ start: number; end: number; name?: string }> = [];
   let bodyEnd: number | undefined;
   let problem: string | undefined;

@@ -200,7 +200,7 @@ export function placeClientPrerenderFragment(html, fragment, rendered) {
 }
 function scanClientPrerenderHtml(html) {
     const lowerHtml = foldAsciiCase(html);
-    const rawTextElements = new Set(["iframe", "noembed", "noframes", "plaintext", "script", "style", "textarea", "title", "xmp"]);
+    const rawTextElements = new Set(["iframe", "noembed", "noframes", "noscript", "plaintext", "script", "style", "textarea", "title", "xmp"]);
     const markers = [];
     let bodyEnd;
     let problem;
