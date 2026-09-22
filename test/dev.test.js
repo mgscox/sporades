@@ -4237,6 +4237,16 @@ test("Dev watches prerender modules and transitive code while retaining the last
       await writeFile(path.join(projectDir, 'render/computed.cjs'), 'module.exports = "Recovered computed helper";');
       await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
       assert.match(await page(), /Recovered computed helper/);
+      for (const packageName of ['new-render-copy', '@example/new-render-copy']) {
+        await writeFile(path.join(projectDir, 'render/landing.ts'), `import copy from ${JSON.stringify(packageName)}; export default () => copy;`);
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+        const packageDir = path.join(projectDir, 'node_modules', packageName);
+        await mkdir(packageDir, {recursive:true});
+        await writeFile(path.join(packageDir, 'package.json'), JSON.stringify({name:packageName, main:'index.js'}));
+        await writeFile(path.join(packageDir, 'index.js'), `module.exports = ${JSON.stringify(`Installed ${packageName}`)};`);
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.ok((await page()).includes(`Installed ${packageName}`));
+      }
     } catch (error) {
       error.message += `\nCaptured events: ${JSON.stringify(events.events)}`;
       throw error;

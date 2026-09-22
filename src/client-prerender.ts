@@ -1,5 +1,6 @@
 import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { MessageChannel, Worker } from "node:worker_threads";
 
@@ -217,6 +218,12 @@ function preserveRendererImportMetaUrl(
             // Retain missing code edges so creating a previously absent import can
             // recover a failed Dev rebuild without editing the renderer again.
             for (const suffix of ["", ".tsx", ".ts", ".jsx", ".js", ".json", "/index.ts", "/index.js"]) onDependency?.(`${candidate}${suffix}`);
+          } else if (!path.isAbsolute(args.path) && !/^(?:[A-Za-z][A-Za-z0-9+.-]*:|#)/.test(args.path)) {
+            const packageName = args.path.split("/").slice(0, args.path.startsWith("@") ? 2 : 1).join("/");
+            const localRequire = createRequire(path.join(args.resolveDir || projectRoot, "__sporades_prerender__.cjs"));
+            // Watch only the unresolved package roots, not every node_modules
+            // tree. Installation (including package subpaths) can then recover.
+            for (const directory of localRequire.resolve.paths(args.path) ?? []) onDependency?.(path.join(directory, packageName));
           }
           const failedPath = rendererLocalFilePath(args.path);
           const failedDirectory = failedPath ? rendererDependencyDirectory(failedPath) : undefined;

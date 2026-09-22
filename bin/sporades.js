@@ -65289,7 +65289,7 @@ import path9 from "node:path";
 // src/client-toolchain.ts
 import path4 from "node:path";
 import { lstat as lstat3, readFile as readFile3, realpath as realpath3 } from "node:fs/promises";
-import { createRequire } from "node:module";
+import { createRequire as createRequire2 } from "node:module";
 import { pathToFileURL as pathToFileURL3 } from "node:url";
 
 // src/templates/client-runtime-template.ts
@@ -66927,6 +66927,7 @@ function deepFreeze(value) {
 // src/client-prerender.ts
 import { lstat as lstat2, readFile as readFile2, realpath as realpath2 } from "node:fs/promises";
 import path3 from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL as pathToFileURL2 } from "node:url";
 import { MessageChannel, Worker as Worker2 } from "node:worker_threads";
 
@@ -80932,6 +80933,10 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
           if (args.path.startsWith(".")) {
             const candidate = path3.resolve(args.resolveDir, args.path);
             for (const suffix of ["", ".tsx", ".ts", ".jsx", ".js", ".json", "/index.ts", "/index.js"]) onDependency?.(`${candidate}${suffix}`);
+          } else if (!path3.isAbsolute(args.path) && !/^(?:[A-Za-z][A-Za-z0-9+.-]*:|#)/.test(args.path)) {
+            const packageName = args.path.split("/").slice(0, args.path.startsWith("@") ? 2 : 1).join("/");
+            const localRequire = createRequire(path3.join(args.resolveDir || projectRoot, "__sporades_prerender__.cjs"));
+            for (const directory of localRequire.resolve.paths(args.path) ?? []) onDependency?.(path3.join(directory, packageName));
           }
           const failedPath = rendererLocalFilePath(args.path);
           const failedDirectory = failedPath ? rendererDependencyDirectory(failedPath) : void 0;
@@ -82221,7 +82226,7 @@ async function loadProjectCompilerToolchain(projectRoot, spec) {
   } catch {
     throw projectToolchainError(spec.framework, `${spec.framework}/Vite requires node_modules to be a real directory contained by the Capsule project.`, spec.installHint);
   }
-  const projectRequire = createRequire(path4.join(projectRoot, "package.json"));
+  const projectRequire = createRequire2(path4.join(projectRoot, "package.json"));
   const resolvedPackages = /* @__PURE__ */ new Map();
   for (const required of spec.requiredPackages) {
     if (typeof declared[required.declaration] !== "string") {
