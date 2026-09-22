@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -69,6 +69,40 @@ test("a prerender module can use a local CommonJS dependency that requires a Nod
       await bundle.releasePublicTreeLease();
       await discardPublicTree(bundle.staticFiles.publicTree);
     }
+  });
+});
+
+test("runtime renderer dependency failures redact Capsule path aliases", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = path.join(dir, "caf\u00e9-capsule");
+    const projectAlias = path.join(dir, "capsule-alias");
+    const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
+    await writeMinimalViteCapsule(projectDir, sourceHtml);
+    await symlink(projectDir, projectAlias, "dir");
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      `const missing = process.env.SPORADES_TEST_MISSING_RENDERER_DEPENDENCY || "./missing-runtime-dependency.cjs";
+export default () => require(missing);
+`,
+    );
+    const canonicalProject = await realpath(projectDir);
+    const aliases = new Set([projectAlias, projectDir, canonicalProject].flatMap((root) => [
+      root,
+      root.normalize("NFC"),
+      root.normalize("NFD"),
+      root.replaceAll("\\", "/"),
+      root.replaceAll("/", "\\"),
+    ]));
+
+    await assert.rejects(
+      createBundle(projectAlias, { name: "runtime-require-failure", client: structuredClone(viteConfig) }),
+      (error) => {
+        assert.match(error.message, /Cannot find module.*missing-runtime-dependency\.cjs/i);
+        const surfaced = JSON.stringify({ message: error.message, hint: error.hint, diagnostics: error.diagnostics, stack: error.stack });
+        for (const alias of aliases) assert.equal(surfaced.includes(alias), false, `leaked Capsule path alias: ${alias}`);
+        return true;
+      },
+    );
   });
 });
 
