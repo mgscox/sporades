@@ -26,8 +26,8 @@ Declare ordered, uniquely named project-relative render modules in `sporades.jso
     "framework": "react",
     "toolchain": "vite",
     "prerender": [
-      { "name": "landing", "module": "render/landing.ts" },
-      { "name": "footer", "module": "render/footer.ts" }
+      { "name": "landing", "module": "client/render/landing.ts" },
+      { "name": "footer", "module": "client/render/footer.ts" }
     ]
   }
 }
@@ -85,8 +85,9 @@ framework mounting do not dismiss anything automatically. Preserve the static
 shell until your replacement content is ready; without JavaScript it stays
 visible. Dismissal removes nodes, not effects of scripts that already ran. This
 is deliberate static-shell replacement, not framework hydration.
-Sporades boundary comments are private and reserved. A renderer that returns an
-actual boundary comment fails the build, preventing an embedded delimiter from
-truncating later dismissal. Use only the public discovery and dismissal API.
+Sporades boundary comments are private and reserved. Actual boundary comments in
+renderer output, source HTML, or an HTML plugin fail the build, even when
+prerender is disabled. This prevents embedded delimiters from truncating dismissal
+or claiming author-owned content. Use only the public discovery and dismissal API.
 
 Next: [authentication](./auth.md), [files](./files.md), or [realtime features](./realtime.md).

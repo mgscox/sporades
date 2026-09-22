@@ -12,6 +12,7 @@ export type ClientPrerenderWarning = Readonly<{
     fragment: string;
     message: string;
 }>;
+export declare function validateClientPrerenderSourceHtml(html: string): void;
 export declare function placeClientPrerenderFragments(html: string, fragments: readonly {
     name: string;
     html: string;

@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { createClientRuntimeSource } from "./templates/client-runtime-template.js";
 import { clientCapabilityError, clientFrameworkCapability, supportsClientCapability } from "./client-capabilities.js";
-import { placeClientPrerenderFragments, renderClientPrerenderFragment } from "./client-prerender.js";
+import { placeClientPrerenderFragments, renderClientPrerenderFragment, validateClientPrerenderSourceHtml } from "./client-prerender.js";
 import { canonicalBuildDiagnosticRoots, redactBuildProjectRoots } from "./build-diagnostics.js";
 export async function buildClientToolchain(options) {
     validateClientToolchainInput(options);
@@ -13,6 +13,7 @@ export async function buildClientToolchain(options) {
     return buildEsbuild(options);
 }
 export function validateClientToolchainInput(options) {
+    validateClientPrerenderSourceHtml(options.indexHtml);
     if (options.toolchain !== "vite" && options.prerender && options.prerender.length > 0) {
         throw clientToolchainError("Client prerender fragments require the Vite client toolchain.", "Set `client.toolchain` to `vite`, or remove `client.prerender` from sporades.json.");
     }
@@ -140,7 +141,7 @@ async function buildVite(options) {
             plugins: [
                 ...frameworkPlugins,
                 sporadesViteClientPlugin(options.devRefresh === true),
-                ...(options.prerender?.length ? [sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender, prerenderWarnings)] : []),
+                sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender ?? [], prerenderWarnings, options.prerender !== undefined),
                 sporadesViteBuildInvariants(canonicalIndexHtmlPath, options.frameworkConfig),
             ],
             build: {
@@ -194,7 +195,7 @@ async function buildVite(options) {
         throw viteBuildError(error, [options.projectDir, projectRoot], options.frameworkConfig.framework);
     }
 }
-function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragments, warnings) {
+function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragments, warnings, diagnoseMarkers) {
     return {
         name: "sporades-prerender",
         enforce: "post",
@@ -206,7 +207,8 @@ function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragments, warni
                     rendered.push({ name: fragment.name, html: await renderClientPrerenderFragment(projectRoot, fragment, projectRoots) });
                 }
                 const placed = placeClientPrerenderFragments(html, rendered);
-                warnings.push(...placed.warnings);
+                if (diagnoseMarkers)
+                    warnings.push(...placed.warnings);
                 return placed.html;
             },
         },

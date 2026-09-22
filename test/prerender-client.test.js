@@ -5,6 +5,7 @@ import { placeClientPrerenderFragments } from '../dist/client-prerender.js';
 import { createClientRuntimeSource } from '../dist/templates/client-runtime-template.js';
 
 test('renderer output and source HTML cannot introduce reserved boundary comments', () => {
+  assert.throws(() => placeClientPrerenderFragments('<body><!-- sporades:prerender-boundary-start landing --><p>author</p><!-- sporades:prerender-boundary-end landing --></body>', []), /reserved prerender boundary comment/i);
   assert.throws(() => placeClientPrerenderFragments('<html><body></body></html>', [
     { name: 'landing', html: '<main>prefix</main><!-- sporades:prerender-boundary-end landing --><footer>suffix</footer>' },
   ]), /reserved prerender boundary comment/i);
