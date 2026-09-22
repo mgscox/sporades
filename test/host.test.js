@@ -8138,7 +8138,7 @@ test("sporades host helper does not send the runtime probe credential to caller-
 
 test("Sporades runtime health rejects unauthenticated probes and returns safe readiness checks", async () => {
   await withTempDir(async (dir) => {
-    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {});
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { files: { maxSizeBytes: 7_654_321 }, http: { maxBodyBytes: 1_234_567 } });
     const server = createServer(async (request, response) => {
       if (await routeRuntimeHealth(database, request, response)) {
         return;
@@ -8175,7 +8175,7 @@ test("Sporades runtime health rejects unauthenticated probes and returns safe re
       assert.deepEqual(body, {
         ok: true,
         data: {
-          runtime: { ready: true },
+          runtime: { ready: true, fileMaxSizeBytes: 7_654_321, httpMaxBodyBytes: 1_234_567 },
           checks: {
             sqlite: { ok: true },
             fileStorage: { ok: true },
@@ -8184,6 +8184,7 @@ test("Sporades runtime health rejects unauthenticated probes and returns safe re
         },
         error: null,
       });
+      assert.deepEqual(Object.keys(body.data.runtime).sort(), ["fileMaxSizeBytes", "httpMaxBodyBytes", "ready"]);
       const raw = JSON.stringify(body);
       assert.equal(raw.includes(dir), false);
       assert.equal(raw.includes("probe-secret"), false);

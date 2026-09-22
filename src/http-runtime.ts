@@ -736,7 +736,7 @@ async function createRuntimeHealthResult(database: any) {
   return {
     ok: ready,
     data: {
-      runtime: { ready },
+      runtime: { ready, fileMaxSizeBytes: database.fileMaxSizeBytes, httpMaxBodyBytes: database.httpMaxBodyBytes },
       checks,
     },
     error: ready
@@ -893,6 +893,7 @@ export function writeEndpointError(response: any, error: any) {
     headers["cache-control"] = "no-store";
     headers.pragma = "no-cache";
   }
+  const multipartDetails = safeMultipartLimitDetails(error);
   response.writeHead(endpointErrorStatus(error), headers);
   response.end(
     `${JSON.stringify({
@@ -900,6 +901,7 @@ export function writeEndpointError(response: any, error: any) {
       data: null as any,
       error: {
         ...(error?.code ? { code: error.code } : {}),
+        ...(multipartDetails ? { details: multipartDetails } : {}),
         message: isPayloadTooLargeError(error)
           ? error.message
           : error?.hint
@@ -917,6 +919,14 @@ export function writeEndpointError(response: any, error: any) {
       },
     })}\n`,
   );
+}
+
+function safeMultipartLimitDetails(error: any) {
+  if (error?.code !== "MULTIPART_LIMIT_EXCEEDED") return null;
+  const details = error?.details;
+  const kinds = new Set(["maxPartBytes", "maxPartHeaderBytes", "maxFieldCount", "maxFieldBytes", "maxTotalFieldBytes", "maxFiles", "maxFileBytes", "fileMaxSizeBytes", "maxTotalFileBytes"]);
+  if ((details?.partType !== "file" && details?.partType !== "field") || !kinds.has(details?.limitKind) || !Number.isInteger(details?.limit) || details.limit < 0) return null;
+  return { partType: details.partType, limitKind: details.limitKind, limit: details.limit };
 }
 
 function endpointErrorStatus(error: any) {

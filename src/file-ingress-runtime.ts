@@ -1442,13 +1442,26 @@ function multipartBoundary(contentType: string) {
   const validToken = /^[0-9A-Za-z'+_.-]+$/.test(value);
   return value.length <= 70 && validBchars && (quoted || validToken) ? value : null;
 }
+type MultipartPartType = "file" | "field";
+function multipartPartType(rawHeaders: string): MultipartPartType {
+  const disposition = /^content-disposition:\s*form-data;\s*name="[^"]+"(?:;\s*filename="([^"]*)")?/im.exec(rawHeaders);
+  return disposition?.[1] !== undefined ? "file" : "field";
+}
+function multipartLimitExceeded(partType: MultipartPartType, limitKind: string, limit: number, message = "Multipart part exceeds declared limits.") {
+  return Object.assign(new Error(message), {
+    code: "MULTIPART_LIMIT_EXCEEDED",
+    details: { partType, limitKind, limit: Number(limit) },
+  });
+}
 
 // Keeps only one completed part (never the aggregate request) in memory. The storage adapter
 // currently accepts complete bounded bytes; this is deliberately the narrowest streaming seam.
-export async function* multipartParts(request: AsyncIterable<Uint8Array>, boundaryText: string, maxWireBytes: number, maxPartBytes: number | { file: number; field: number }, allowFiles = true) {
+export async function* multipartParts(request: AsyncIterable<Uint8Array>, boundaryText: string, maxWireBytes: number, maxPartBytes: number | { file: number; field: number; fileKind?: string; fieldKind?: string }, allowFiles = true) {
   const boundary = Buffer.from(`--${boundaryText}`); const marker = Buffer.from(`\r\n--${boundaryText}`);
   let pending = Buffer.alloc(0); let wire = 0; let state: "preamble" | "headers" | "body" | "separator" | "closing" = "preamble";
-  let rawHeaders = ""; let pieces: Buffer[] = []; let size = 0; let partLimit = typeof maxPartBytes === "number" ? maxPartBytes : Math.max(maxPartBytes.file, maxPartBytes.field);
+  let rawHeaders = ""; let pieces: Buffer[] = []; let size = 0; let partType: MultipartPartType = "field";
+  let partLimit = typeof maxPartBytes === "number" ? maxPartBytes : Math.max(maxPartBytes.file, maxPartBytes.field);
+  let partLimitKind = typeof maxPartBytes === "number" ? "maxPartBytes" : "maxFieldBytes";
   // Returning after a boundary or rejecting a file must not destroy an HTTP
   // request's socket before routeEndpoint can write its response.
   const stream = request as AsyncIterable<Uint8Array> & { iterator?: (options: { destroyOnReturn: boolean }) => AsyncIterable<Uint8Array> };
@@ -1459,16 +1472,20 @@ export async function* multipartParts(request: AsyncIterable<Uint8Array>, bounda
       if (state === "preamble") { if (pending.length < boundary.length + 2) break; if (!pending.subarray(0, boundary.length).equals(boundary) || pending.subarray(boundary.length, boundary.length + 2).toString() !== "\r\n") throw Object.assign(new Error("Malformed multipart request."), { code: "INVALID_MULTIPART" }); pending = pending.subarray(boundary.length + 2); state = "headers"; continue; }
       if (state === "headers") {
         const headerEnd = pending.indexOf("\r\n\r\n");
-        if (headerEnd < 0) { if (pending.length > 16384) throw Object.assign(new Error("Multipart headers exceed limit."), { code: "MULTIPART_LIMIT_EXCEEDED" }); break; }
+        if (headerEnd < 0) { if (pending.length > 16384) throw multipartLimitExceeded(multipartPartType(pending.toString("latin1")), "maxPartHeaderBytes", 16384, "Multipart headers exceed limit."); break; }
         rawHeaders = pending.subarray(0, headerEnd).toString("latin1");
         const disposition = /^content-disposition:\s*form-data;\s*name="[^"]+"(?:;\s*filename="([^"]*)")?/im.exec(rawHeaders);
         const isFile = disposition?.[1] !== undefined;
+        partType = isFile ? "file" : "field";
         // Admission applies at recognition, before buffering even an empty file.
         if (isFile && !allowFiles) throw Object.assign(new Error("Multipart request was not admitted."), { code: "MULTIPART_ADMISSION_DENIED" });
-        if (typeof maxPartBytes !== "number") partLimit = isFile ? maxPartBytes.file : maxPartBytes.field;
+        if (typeof maxPartBytes !== "number") {
+          partLimit = isFile ? maxPartBytes.file : maxPartBytes.field;
+          partLimitKind = isFile ? (maxPartBytes.fileKind ?? "maxFileBytes") : (maxPartBytes.fieldKind ?? "maxFieldBytes");
+        }
         pending = pending.subarray(headerEnd + 4); pieces = []; size = 0; state = "body"; continue;
       }
-      if (state === "body") { const at = pending.indexOf(marker); if (at < 0) { const take = Math.max(0, pending.length - marker.length + 1); if (take) { pieces.push(pending.subarray(0, take)); size += take; if (size > partLimit) throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" }); pending = pending.subarray(take); } break; } if (pending.length < at + marker.length + 2) { if (at) { pieces.push(pending.subarray(0, at)); size += at; if (size > partLimit) throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" }); pending = pending.subarray(at); } break; } const suffix = pending.subarray(at + marker.length, at + marker.length + 2).toString(); if (suffix !== "\r\n" && suffix !== "--") { const take = at + marker.length; pieces.push(pending.subarray(0, take)); size += take; if (size > partLimit) throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" }); pending = pending.subarray(take); continue; } if (at) { pieces.push(pending.subarray(0, at)); size += at; } if (size > partLimit) throw Object.assign(new Error("Multipart part exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" }); pending = pending.subarray(at + marker.length); state = "separator"; continue; }
+      if (state === "body") { const at = pending.indexOf(marker); if (at < 0) { const take = Math.max(0, pending.length - marker.length + 1); if (take) { pieces.push(pending.subarray(0, take)); size += take; if (size > partLimit) throw multipartLimitExceeded(partType, partLimitKind, partLimit); pending = pending.subarray(take); } break; } if (pending.length < at + marker.length + 2) { if (at) { pieces.push(pending.subarray(0, at)); size += at; if (size > partLimit) throw multipartLimitExceeded(partType, partLimitKind, partLimit); pending = pending.subarray(at); } break; } const suffix = pending.subarray(at + marker.length, at + marker.length + 2).toString(); if (suffix !== "\r\n" && suffix !== "--") { const take = at + marker.length; pieces.push(pending.subarray(0, take)); size += take; if (size > partLimit) throw multipartLimitExceeded(partType, partLimitKind, partLimit); pending = pending.subarray(take); continue; } if (at) { pieces.push(pending.subarray(0, at)); size += at; } if (size > partLimit) throw multipartLimitExceeded(partType, partLimitKind, partLimit); pending = pending.subarray(at + marker.length); state = "separator"; continue; }
       if (state === "separator") { if (pending.length < 2) break;
         const separator = pending.subarray(0, 2).toString(); if (separator !== "\r\n" && separator !== "--") throw Object.assign(new Error("Malformed multipart request."), { code: "INVALID_MULTIPART" }); pending = pending.subarray(2); yield { rawHeaders, body: Buffer.concat(pieces, size) }; if (separator === "--") { state = "closing"; continue; } state = "headers"; continue;
       }
@@ -1500,15 +1517,16 @@ export async function stageMultipartIngress(database: RecordLike, endpoint: Reco
   const maxBytes = Number(policy.maxTotalFileBytes) + Number(policy.maxTotalFieldBytes) + 65536;
   const files: any[] = []; const fields: RecordLike = Object.create(null); let fieldCount = 0; let fieldBytes = 0; let fileBytes = 0; const partKeys = new Set<string>(); const wonReceipts: RecordLike[] = [];
   const streamingFileLimit = Math.min(Number(policy.maxFileBytes), Number(database.fileMaxSizeBytes));
-  try { for await (const part of multipartParts(request, boundary, maxBytes, { file: streamingFileLimit, field: policy.maxFieldBytes }, allowFiles)) {
+  const streamingFileLimitKind = Number(database.fileMaxSizeBytes) < Number(policy.maxFileBytes) ? "fileMaxSizeBytes" : "maxFileBytes";
+  try { for await (const part of multipartParts(request, boundary, maxBytes, { file: streamingFileLimit, field: policy.maxFieldBytes, fileKind: streamingFileLimitKind, fieldKind: "maxFieldBytes" }, allowFiles)) {
     const rawHeaders = part.rawHeaders; const body = part.body;
-    if (rawHeaders.length > 16384) throw Object.assign(new Error("Multipart headers exceed limit."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+    if (rawHeaders.length > 16384) throw multipartLimitExceeded(multipartPartType(rawHeaders), "maxPartHeaderBytes", 16384, "Multipart headers exceed limit.");
     if (unsupportedMultipartPartEncoding(rawHeaders)) throw Object.assign(new Error("Unsupported multipart part encoding."), { code: "INVALID_MULTIPART" });
     const disposition = /^content-disposition:\s*form-data;\s*name="([^"]+)"(?:;\s*filename="([^"]*)")?/im.exec(rawHeaders);
     if (!disposition) throw Object.assign(new Error("Malformed multipart part."), { code: "INVALID_MULTIPART" });
     const fieldName = disposition[1]; const filename = disposition[2];
-    if (filename === undefined) { fieldCount += 1; fieldBytes += body.length; if (fieldCount > policy.maxFieldCount || body.length > policy.maxFieldBytes || fieldBytes > policy.maxTotalFieldBytes) throw Object.assign(new Error("Multipart field exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" }); if (!Object.prototype.hasOwnProperty.call(fields, fieldName)) fields[fieldName] = []; fields[fieldName].push(body.toString("utf8")); continue; }
-    fileBytes += body.length; if (files.length >= policy.maxFiles || body.length > policy.maxFileBytes || fileBytes > policy.maxTotalFileBytes || body.length > database.fileMaxSizeBytes) throw Object.assign(new Error("Multipart file exceeds declared limits."), { code: "MULTIPART_LIMIT_EXCEEDED" });
+    if (filename === undefined) { fieldCount += 1; fieldBytes += body.length; if (fieldCount > policy.maxFieldCount) throw multipartLimitExceeded("field", "maxFieldCount", policy.maxFieldCount, "Multipart field exceeds declared limits."); if (body.length > policy.maxFieldBytes) throw multipartLimitExceeded("field", "maxFieldBytes", policy.maxFieldBytes, "Multipart field exceeds declared limits."); if (fieldBytes > policy.maxTotalFieldBytes) throw multipartLimitExceeded("field", "maxTotalFieldBytes", policy.maxTotalFieldBytes, "Multipart field exceeds declared limits."); if (!Object.prototype.hasOwnProperty.call(fields, fieldName)) fields[fieldName] = []; fields[fieldName].push(body.toString("utf8")); continue; }
+    fileBytes += body.length; if (files.length >= policy.maxFiles) throw multipartLimitExceeded("file", "maxFiles", policy.maxFiles, "Multipart file exceeds declared limits."); if (body.length > policy.maxFileBytes) throw multipartLimitExceeded("file", "maxFileBytes", policy.maxFileBytes, "Multipart file exceeds declared limits."); if (body.length > database.fileMaxSizeBytes) throw multipartLimitExceeded("file", "fileMaxSizeBytes", database.fileMaxSizeBytes, "Multipart file exceeds declared limits."); if (fileBytes > policy.maxTotalFileBytes) throw multipartLimitExceeded("file", "maxTotalFileBytes", policy.maxTotalFileBytes, "Multipart file exceeds declared limits.");
     const partKey = partHeader(rawHeaders, policy.partKeyHeader);
     if (policy.requireStablePartKeys && (!partKey || partKeys.has(partKey))) throw Object.assign(new Error("Multipart files require unique stable part keys."), { code: "INVALID_MULTIPART_PART_KEY" });
     if (partKey) partKeys.add(partKey);
