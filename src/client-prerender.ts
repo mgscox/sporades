@@ -850,18 +850,19 @@ export function placeClientPrerenderFragments(html: string, fragments: readonly 
 
 function validatePrerenderDomBoundaries(html: string, expectedPlacements: number) {
   if (expectedPlacements === 0) return;
-  type LocatedNode = { start: number; end: number; order: number };
+  type LocatedNode = { start: number; end: number; order: number; after: number };
   const nodes: LocatedNode[] = [];
   const boundaries: Array<LocatedNode & { kind: string; name: string }> = [];
   let order = 0;
   const visit = (node: DefaultTreeAdapterTypes.Node) => {
     const location = node.sourceCodeLocation;
     const position = order++;
+    let located: LocatedNode | undefined;
     if (location) {
       // Element ranges include descendants; only the opener identifies where
       // that node came from. Text ranges also reveal merged foster-parented text.
       const token = "startTag" in location && location.startTag ? location.startTag : location;
-      const located = { start: token.startOffset, end: token.endOffset, order: position };
+      located = { start: token.startOffset, end: token.endOffset, order: position, after: order };
       nodes.push(located);
       if (node.nodeName === "#comment" && "data" in node) {
         const marker = /^sporades:prerender-boundary-(start|end) ([A-Za-z][A-Za-z0-9_-]{0,63})$/.exec(node.data.trim());
@@ -870,6 +871,7 @@ function validatePrerenderDomBoundaries(html: string, expectedPlacements: number
     }
     // Like document TreeWalker, do not descend into inert template.content.
     if ("childNodes" in node) for (const child of node.childNodes) visit(child);
+    if (located) located.after = order;
   };
   visit(parseHtml(html, { sourceCodeLocationInfo: true, scriptingEnabled: true }));
   const invalid = () => prerenderError(
@@ -886,7 +888,9 @@ function validatePrerenderDomBoundaries(html: string, expectedPlacements: number
       if (node.order === start.order || node.order === end.order) continue;
       const fromFragment = node.start < end.start && node.end > start.end;
       const withinBoundary = node.order > start.order && node.order < end.order;
-      if (fromFragment !== withinBoundary) throw invalid();
+      // A fragment-created ancestor containing the end comment would survive
+      // Range.deleteContents() as a partially contained (possibly empty) node.
+      if (fromFragment !== withinBoundary || (fromFragment && node.after > end.order)) throw invalid();
     }
   }
 }
