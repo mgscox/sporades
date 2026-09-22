@@ -205,23 +205,45 @@ function scanClientPrerenderHtml(html) {
             cursor = cdataEnd + 3;
             continue;
         }
-        let nameStart = tagStart + 1;
-        const closing = html[nameStart] === "/";
-        if (closing)
-            nameStart += 1;
-        if (!/[A-Za-z]/.test(html[nameStart] ?? "")) {
-            const declarationEnd = findHtmlTagEnd(html, nameStart);
-            if (declarationEnd === undefined && (html[nameStart] === "!" || html[nameStart] === "?")) {
+        const tagKind = html[tagStart + 1];
+        if (tagKind === "!" || tagKind === "?") {
+            const declarationEnd = html.indexOf(">", tagStart + 2);
+            if (declarationEnd === -1) {
                 problem = "unterminated HTML declaration";
                 break;
             }
-            cursor = declarationEnd === undefined ? tagStart + 1 : declarationEnd;
+            cursor = declarationEnd + 1;
+            continue;
+        }
+        const closing = tagKind === "/";
+        let nameStart = tagStart + (closing ? 2 : 1);
+        if (!/[A-Za-z]/.test(html[nameStart] ?? "")) {
+            if (closing) {
+                const bogusEnd = html.indexOf(">", nameStart);
+                if (bogusEnd === -1) {
+                    problem = "unterminated HTML declaration";
+                    break;
+                }
+                cursor = bogusEnd + 1;
+            }
+            else {
+                cursor = tagStart + 1;
+            }
             continue;
         }
         let nameEnd = nameStart + 1;
         while (/[A-Za-z0-9:-]/.test(html[nameEnd] ?? ""))
             nameEnd += 1;
         const name = lowerHtml.slice(nameStart, nameEnd);
+        const nestedMarkup = findUnquotedMarkupStart(html, nameEnd);
+        if (nestedMarkup !== undefined) {
+            if (!closing && /[A-Za-z0-9]/.test(html[tagStart - 1] ?? "")) {
+                cursor = tagStart + 1;
+                continue;
+            }
+            problem = "unterminated HTML tag";
+            break;
+        }
         const tagEnd = findHtmlTagEnd(html, nameEnd);
         if (tagEnd === undefined) {
             problem = "unterminated HTML tag";
@@ -274,6 +296,26 @@ function findHtmlTagEnd(html, cursor) {
         }
         else if (character === ">") {
             return index + 1;
+        }
+    }
+    return undefined;
+}
+function findUnquotedMarkupStart(html, cursor) {
+    let quote;
+    for (let index = cursor; index < html.length; index += 1) {
+        const character = html[index];
+        if (quote) {
+            if (character === quote)
+                quote = undefined;
+        }
+        else if (character === "\"" || character === "'") {
+            quote = character;
+        }
+        else if (character === "<") {
+            return index;
+        }
+        else if (character === ">") {
+            return undefined;
         }
     }
     return undefined;
