@@ -185,9 +185,10 @@ function preserveRendererImportMetaUrl(
         if (outputs.length !== 1 || javascript.length !== 1 || !javascript[0]?.text) {
           throw new Error("the import.meta.url transform produced unsupported output");
         }
+        const outputLoader: import("esbuild").Loader = loader === "jsx" || loader === "tsx" ? "jsx" : "js";
         return {
           contents: javascript[0].text,
-          loader,
+          loader: outputLoader,
           resolveDir: path.dirname(args.path),
           watchFiles: [args.path],
         };
