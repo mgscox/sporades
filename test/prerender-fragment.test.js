@@ -98,6 +98,23 @@ test("named prerender markers replace only HTML comment nodes outside raw text",
   assert.equal(placeClientPrerenderFragment(source, fragment, rendered), expected);
 });
 
+test("marker scanning treats noscript content as raw text when scripting is enabled", () => {
+  const fragment = { name: "landing", module: "render-landing.mjs" };
+  const rendered = "<main>static fragment</main>";
+  const marker = "<!-- sporades:prerender landing -->";
+  const bounded = "<!-- sporades:prerender-boundary-start landing --><main>static fragment</main><!-- sporades:prerender-boundary-end landing -->";
+  const noscript = `<NoScRiPt data-copy="a > b">${marker}</nOsCrIpT>`;
+
+  assert.equal(
+    placeClientPrerenderFragment(`<html><body>${noscript}<p>${marker}</p></body></html>`, fragment, rendered),
+    `<html><body>${noscript}<p>${bounded}</p></body></html>`,
+  );
+  assert.equal(
+    placeClientPrerenderFragment(`<html><body class="shell">${noscript}<p>page</p></body></html>`, fragment, rendered),
+    `<html><body class="shell">${bounded}${noscript}<p>page</p></body></html>`,
+  );
+});
+
 test("fallback scanning recovers abrupt comments and rejects unterminated constructs", () => {
   const fragment = { name: "landing", module: "render-landing.mjs" };
   const rendered = "<main>static fragment</main>";
