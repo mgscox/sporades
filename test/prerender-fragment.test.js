@@ -1188,6 +1188,42 @@ test("mixed-case local file URL schemes redact external and contained paths", as
   });
 });
 
+test("failed imports equal to the project root redact without parent traversal", async () => {
+  await withTempDir(async (tempRoot) => {
+    const projectDir = path.join(tempRoot, "URL Capsule");
+    await mkdir(projectDir);
+    await writeFile(path.join(projectDir, "package.json"), '{"type":"module"}\n');
+    const canonicalProject = await realpath(projectDir);
+    const rawRootUrl = `${pathToFileURL(canonicalProject).href
+      .replace(/^file:/, "FiLe:")
+      .replace("URL", "%55%52%4c")}?mode=%2f#root-fragment`;
+    const cases = [
+      {
+        specifier: rawRootUrl,
+        expected: /Could not resolve "<project>\?mode=%2f#root-fragment"/i,
+      },
+      {
+        specifier: canonicalProject,
+        expected: /Could not resolve "<project>"/i,
+      },
+    ];
+    for (const testCase of cases) {
+      await writeFile(
+        path.join(projectDir, "render-landing.mjs"),
+        `import ${JSON.stringify(testCase.specifier)};\nexport default () => "<main>unreachable</main>";\n`,
+      );
+      await assert.rejects(
+        renderClientPrerenderFragment(canonicalProject, { name: "landing", module: "render-landing.mjs" }),
+        (error) => {
+          assert.match(error.message, testCase.expected);
+          assert.doesNotMatch(error.message, /<project>\/\.\./);
+          return true;
+        },
+      );
+    }
+  });
+});
+
 test("hoisted renderer build failures redact dependency paths outside the Capsule", async () => {
   await withTempDir(async (tempRoot) => {
     const projectDir = path.join(tempRoot, "capsule");
