@@ -69,6 +69,15 @@ export default async () => {
     const composedHtml = await readFile(composed.staticFiles.indexHtml, 'utf8');
     assert.ok(composedHtml.includes('<main>literal <!-- sporades:prerender second --></main>'));
     assert.equal(composedHtml.split('<footer>second once</footer>').length - 1, 1);
+    // Vite inserts returned tag descriptors after its final HTML hook.
+    await writeFile(path.join(root, 'vite.config.mjs'), `export default { plugins: [{ name: 'author-tags', transformIndexHtml: () => ({ tags: [{ tag: 'section', attrs: { id: 'plugin-slot' }, children: '<!-- sporades:prerender -->', injectTo: 'body' }] }) }] };`);
+    await writeFile(path.join(root, 'index.html'), '<html><head></head><body><script type="module" src="/client/index.tsx"></script></body></html>');
+    const tags = await createBundle(root, config);
+    const tagHtml = await readFile(tags.staticFiles.indexHtml, 'utf8');
+    assert.match(tagHtml, /<section id="plugin-slot">\s*<!-- sporades:prerender-boundary-start first -->/);
+    assert.equal(tagHtml.split('<footer>second once</footer>').length - 1, 1);
+    assert.equal(tags.clientDiagnostics.warnings, undefined);
+    await writeFile(path.join(root, 'vite.config.mjs'), 'export default {};');
     // Explicit empty configuration still diagnoses stale names; omission is opt-out.
     await writeFile(path.join(root, 'index.html'), '<html><head></head><body><!-- sporades:prerender stale --><script type="module" src="/client/index.tsx"></script></body></html>');
     const empty = await createBundle(root, {...config, client:{...config.client, prerender:[]}});
