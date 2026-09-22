@@ -843,7 +843,7 @@ function safeMultipartLimitDetails(error) {
     if (error?.code !== "MULTIPART_LIMIT_EXCEEDED")
         return null;
     const details = error?.details;
-    const kinds = new Set(["maxPartBytes", "maxPartHeaderBytes", "maxFieldCount", "maxFieldBytes", "maxTotalFieldBytes", "maxFiles", "maxFileBytes", "fileMaxSizeBytes", "maxTotalFileBytes"]);
+    const kinds = new Set(["maxPartHeaderBytes", "maxFieldCount", "maxFieldBytes", "maxTotalFieldBytes", "maxFiles", "maxFileBytes", "fileMaxSizeBytes", "maxTotalFileBytes"]);
     if ((details?.partType !== "file" && details?.partType !== "field") || !kinds.has(details?.limitKind) || !Number.isInteger(details?.limit) || details.limit < 0)
         return null;
     return { partType: details.partType, limitKind: details.limitKind, limit: details.limit };
