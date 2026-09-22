@@ -742,6 +742,108 @@ test("module-package JavaScript helpers retain ESM import.meta.url semantics", a
   });
 });
 
+test("type-less JavaScript helpers use ESM syntax detection without string false positives", async () => {
+  await withTempDir(async (projectDir) => {
+    const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
+    await writeMinimalViteCapsule(projectDir, sourceHtml);
+    await writeFile(path.join(projectDir, "package.json"), '{}\n');
+    const nestedDir = path.join(projectDir, "renderer", "nested");
+    await mkdir(nestedDir, { recursive: true });
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'import render from "./renderer/nested/helper.js";\nexport default render;\n',
+    );
+    await writeFile(
+      path.join(nestedDir, "helper.js"),
+      `import { readFile } from "node:fs/promises";
+const misleading = "require(dynamic) __dirname __filename"; // export default and import.meta are syntax only outside this comment.
+const awaited = await Promise.resolve("type-less ESM syntax");
+export default async () => \`<main>\${awaited}|\${misleading.length > 0}|\${(await readFile(new URL("./content.txt", import.meta.url), "utf8")).trim()}</main>\`;
+`,
+    );
+    await writeFile(path.join(nestedDir, "content.txt"), "module-local import.meta.url\n");
+
+    const bundle = await createBundle(projectDir, { name: "typeless-esm-prerender", client: structuredClone(viteConfig) }, { publishLegacy: false });
+    try {
+      assert.match(
+        await readFile(bundle.staticFiles.indexHtml, "utf8"),
+        /<main>type-less ESM syntax\|true\|module-local import\.meta\.url<\/main>/,
+      );
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
+test("invalid renderer package metadata is identified without leaking Capsule paths", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = path.join(dir, "caf\u00e9 package capsule");
+    const projectAlias = path.join(dir, "package-alias");
+    await mkdir(projectDir);
+    await symlink(projectDir, projectAlias, "dir");
+    const nestedDir = path.join(projectDir, "renderer", "invalid");
+    await mkdir(nestedDir, { recursive: true });
+    await writeFile(path.join(projectDir, "package.json"), '{"type":"module"}\n');
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'import render from "./renderer/invalid/helper.js";\nexport default render;\n',
+    );
+    await writeFile(path.join(nestedDir, "package.json"), '{"type":"commonjs", invalid}\n');
+    await writeFile(path.join(nestedDir, "helper.js"), 'module.exports = () => "<main>unreachable</main>";\n');
+    const canonicalProject = await realpath(projectDir);
+    const aliases = [projectAlias, projectDir, canonicalProject];
+
+    await assert.rejects(
+      renderClientPrerenderFragment(
+        canonicalProject,
+        { name: "landing", module: "render-landing.mjs" },
+        aliases,
+      ),
+      (error) => {
+        assert.match(error.message, /invalid renderer package metadata at <project>\/renderer\/invalid\/package\.json/i);
+        const surfaced = JSON.stringify({ message: error.message, hint: error.hint, diagnostics: error.diagnostics, stack: error.stack });
+        for (const alias of aliases) assert.equal(surfaced.includes(alias), false, `leaked Capsule package path: ${alias}`);
+        return true;
+      },
+    );
+  });
+});
+
+test("package lookup stops at node_modules for a hoisted package without metadata", async () => {
+  await withTempDir(async (tempRoot) => {
+    const projectDir = path.join(tempRoot, "capsule");
+    const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
+    await writeMinimalViteCapsule(projectDir, sourceHtml);
+    await writeFile(path.join(tempRoot, "package.json"), '{"type":"module"}\n');
+    const dependencyDir = path.join(tempRoot, "node_modules", "hoisted-default-renderer");
+    await mkdir(dependencyDir, { recursive: true });
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'import render from "hoisted-default-renderer";\nexport default render;\n',
+    );
+    await writeFile(
+      path.join(dependencyDir, "index.js"),
+      `const path = require("node:path");
+const target = process.argv.length > 0 ? "./adjacent.cjs" : "./missing.cjs";
+module.exports = () => \`<main>\${path.basename(__dirname)}|\${path.basename(__filename)}|\${require(target)}</main>\`;
+`,
+    );
+    await writeFile(path.join(dependencyDir, "adjacent.cjs"), 'module.exports = "node_modules default CommonJS";\n');
+
+    const bundle = await createBundle(projectDir, { name: "hoisted-default-prerender", client: structuredClone(viteConfig) }, { publishLegacy: false });
+    try {
+      assert.match(
+        await readFile(bundle.staticFiles.indexHtml, "utf8"),
+        /<main>hoisted-default-renderer\|index\.js\|node_modules default CommonJS<\/main>/,
+      );
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
 test("a nested TypeScript CommonJS prerender helper keeps per-module paths and computed require", async () => {
   await withTempDir(async (projectDir) => {
     const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
