@@ -173,7 +173,7 @@ test('CommonJS module location fields identify each source helper and stay writa
     await writeFile(path.join(root, 'package.json'), '{"type":"module"}');
     for (const extension of ['cjs', 'ts', 'tsx']) {
       const file = path.join(root, `nested/helper.${extension}`);
-      await writeFile(file, 'module.exports = () => { const record = module; const initial = [record.filename, record.id, record.path]; record.filename = "reassigned"; return JSON.stringify([...initial, module.filename]); };');
+      await writeFile(file, 'var module; if (false) { var module; } module.exports = () => { const record = module; const initial = [record.filename, record.id, record.path]; record.filename = "reassigned"; return JSON.stringify([...initial, module.filename]); };');
       await writeFile(path.join(root, 'entry.mjs'), `import render from "./nested/helper.${extension}"; export default render;`);
       assert.deepEqual(JSON.parse(await renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'})), [file, file, path.dirname(file), 'reassigned']);
     }

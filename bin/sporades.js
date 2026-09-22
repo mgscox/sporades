@@ -73173,7 +73173,7 @@ function collectRendererScopes(node, scope, scopes) {
       if (node.kind === "var" && !declarationScope.parent) {
         const declared = { functionScope: true, bindings: /* @__PURE__ */ new Set() };
         addRendererBinding(declared, declaration.id);
-        for (const name2 of declared.bindings) if (!["require", "__dirname", "__filename"].includes(name2)) declarationScope.bindings.add(name2);
+        for (const name2 of declared.bindings) if (!["require", "module", "exports", "__dirname", "__filename"].includes(name2)) declarationScope.bindings.add(name2);
       } else addRendererBinding(declarationScope, declaration.id);
     }
   } else if (node.type === "ImportDeclaration") {

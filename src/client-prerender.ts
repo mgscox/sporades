@@ -668,7 +668,7 @@ function collectRendererScopes(
       if (node.kind === "var" && !declarationScope.parent) {
         const declared: RendererLexicalScope = { functionScope: true, bindings: new Set() };
         addRendererBinding(declared, declaration.id);
-        for (const name of declared.bindings) if (!["require", "__dirname", "__filename"].includes(name)) declarationScope.bindings.add(name);
+        for (const name of declared.bindings) if (!["require", "module", "exports", "__dirname", "__filename"].includes(name)) declarationScope.bindings.add(name);
       } else addRendererBinding(declarationScope, declaration.id);
     }
   } else if (node.type === "ImportDeclaration") {
