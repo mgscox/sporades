@@ -609,6 +609,44 @@ module.exports = () => {
   });
 });
 
+test("CommonJS helper injection preserves hashbangs and directive prologues", async () => {
+  await withTempDir(async (projectDir) => {
+    const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
+    await writeMinimalViteCapsule(projectDir, sourceHtml);
+    const nestedDir = path.join(projectDir, "renderer", "nested");
+    await mkdir(nestedDir, { recursive: true });
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'import render from "./renderer/nested/helper.cjs";\nexport default render;\n',
+    );
+    await writeFile(
+      path.join(nestedDir, "helper.cjs"),
+      `#!/usr/bin/env node
+"use strict";
+"sporades fixture directive";
+// The helper belongs after this complete prologue and its trivia.
+const target = process.argv.length > 0 ? "./adjacent.cjs" : "./missing.cjs";
+const adjacent = require(target);
+const resolved = require.resolve("./adjacent.cjs");
+function plainCall() { return this === undefined; }
+module.exports = () => \`<main>\${plainCall()}|\${adjacent}|\${resolved.endsWith("/renderer/nested/adjacent.cjs")}</main>\`;
+`,
+    );
+    await writeFile(path.join(nestedDir, "adjacent.cjs"), 'module.exports = "module-local hashbang require";\n');
+
+    const bundle = await createBundle(projectDir, { name: "hashbang-prerender", client: structuredClone(viteConfig) }, { publishLegacy: false });
+    try {
+      assert.match(
+        await readFile(bundle.staticFiles.indexHtml, "utf8"),
+        /<main>true\|module-local hashbang require\|true<\/main>/,
+      );
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
 test("a nested TypeScript CommonJS prerender helper keeps per-module paths and computed require", async () => {
   await withTempDir(async (projectDir) => {
     const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
