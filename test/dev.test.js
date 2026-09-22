@@ -4248,6 +4248,21 @@ test("Dev watches prerender modules and transitive code while retaining the last
         assert.ok((await page()).includes(`Installed ${packageName}`));
       }
       const absolute = path.join(dir, 'late-absolute.cjs');
+      const manifestPath = path.join(projectDir, 'package.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+      for (const [alias, target, renderer] of [
+        ['#copy', './render/alias-copy.ts', 'import copy from "#copy"; export default () => copy;'],
+        ['#computed/*', './render/*.cjs', 'export default () => { const name = "#computed/alias-computed"; return require(name); };'],
+      ]) {
+        manifest.imports = {[alias]:{node:target, default:target}};
+        await writeFile(manifestPath, JSON.stringify(manifest));
+        await writeFile(path.join(projectDir, 'render/landing.ts'), renderer);
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+        const targetFile = target.replace('*', 'alias-computed');
+        await writeFile(path.join(projectDir, targetFile), targetFile.endsWith('.ts') ? 'export default "Recovered package alias";' : 'module.exports = "Recovered computed alias";');
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Recovered (?:package|computed) alias/);
+      }
       for (const packageName of ['computed-export-copy', '@example/computed-export-copy']) {
         await writeFile(path.join(projectDir, 'render/landing.ts'), `export default () => { const target = ${JSON.stringify(`${packageName}/feature`)}; return require(target); };`);
         await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');

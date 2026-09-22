@@ -117,6 +117,9 @@ export async function renderClientPrerenderFragment(
     for (const dependency of outcome.dependencies ?? []) {
       if (typeof dependency === "string" && path.isAbsolute(dependency)) onDependency?.(dependency);
     }
+    for (const request of outcome.packageImports ?? []) {
+      await recordRendererPackageImport(request.specifier, path.dirname(request.filename), onDependency);
+    }
     if (outcome.kind === "not-function") {
       throw prerenderError(
         `Client prerender module for ${fragment.name} must default-export a zero-argument renderer.`,
@@ -204,6 +207,7 @@ function preserveRendererImportMetaUrl(
       const resolutionBypass = "sporadesRendererResolutionBypass";
       pluginBuild.onResolve({ filter: /.*/ }, async (args) => {
         if ((args.pluginData as { [resolutionBypass]?: boolean } | undefined)?.[resolutionBypass]) return undefined;
+        if (args.path.startsWith("#")) await recordRendererPackageImport(args.path, args.resolveDir || projectRoot, onDependency);
         const resolved = await pluginBuild.resolve(args.path, {
           importer: args.importer,
           kind: args.kind,
@@ -439,6 +443,61 @@ async function rendererNeedsCommonJsBoundaryNamespace(modulePath: string) {
     const parent = path.dirname(directory);
     if (parent === directory) return false;
     directory = parent;
+  }
+}
+
+async function recordRendererPackageImport(specifier: string, directory: string, onDependency?: (file: string) => void) {
+  if (!onDependency) return;
+  // Observe all matching conditional targets; Node/esbuild still decides which
+  // one resolves. This is a conservative watch graph, not a second resolver.
+  while (path.basename(directory) !== "node_modules") {
+    const manifest = path.join(directory, "package.json");
+    onDependency(manifest);
+    let configuration: { imports?: Record<string, unknown> };
+    try { configuration = JSON.parse(await readFile(manifest, "utf8")); }
+    catch (error) {
+      if (isMissingRendererPackageJson(error)) {
+        const parent = path.dirname(directory);
+        if (parent === directory) return;
+        directory = parent;
+        continue;
+      }
+      return;
+    }
+    const imports = configuration?.imports;
+    if (!imports || typeof imports !== "object") return;
+    const seen = new Set<string>();
+    const visitAlias = (alias: string) => {
+      if (seen.has(alias)) return;
+      seen.add(alias);
+      for (const [key, target] of Object.entries(imports)) {
+        const star = key.indexOf("*");
+        const suffix = star < 0 ? "" : key.slice(star + 1);
+        const matches = star < 0 ? key === alias : alias.startsWith(key.slice(0, star)) && alias.endsWith(suffix) && alias.length >= key.length - 1;
+        if (!matches) continue;
+        const match = star < 0 ? "" : alias.slice(star, suffix ? -suffix.length : undefined);
+        const visitTarget = (value: unknown) => {
+          if (Array.isArray(value)) { for (const entry of value) visitTarget(entry); return; }
+          if (value && typeof value === "object") { for (const entry of Object.values(value)) visitTarget(entry); return; }
+          if (typeof value !== "string") return;
+          const expanded = star < 0 ? value : value.replaceAll("*", match);
+          if (expanded.startsWith("#")) visitAlias(expanded);
+          else if (expanded.startsWith("./")) {
+            const candidate = path.resolve(directory, expanded);
+            if (isCanonicalDescendant(directory, candidate)) {
+              for (const extension of ["", ".tsx", ".ts", ".jsx", ".js", ".json", "/index.ts", "/index.js"]) onDependency(candidate + extension);
+            }
+          } else if (!path.isAbsolute(expanded) && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(expanded)) {
+            const packageName = expanded.split("/").slice(0, expanded.startsWith("@") ? 2 : 1).join("/");
+            const localRequire = createRequire(path.join(directory, "__sporades_prerender__.cjs"));
+            for (const base of localRequire.resolve.paths(expanded) ?? []) onDependency(path.join(base, packageName));
+          }
+        };
+        visitTarget(target);
+      }
+    };
+    visitAlias(specifier);
+    return;
   }
 }
 
@@ -1170,7 +1229,7 @@ type EsmRendererOutcome = (
   | { kind: "success"; rendered: string }
   | { kind: "not-function" }
   | { kind: "non-string"; resultType: string }
-  | { kind: "failure"; message: string }) & { dependencies?: string[]; runtimeSpecifiers?: string[] };
+  | { kind: "failure"; message: string }) & { dependencies?: string[]; runtimeSpecifiers?: string[]; packageImports?: Array<{specifier: string; filename: string}> };
 
 async function executeBundledRenderer(
   source: string,
@@ -1190,11 +1249,13 @@ const { createRequire, Module } = require("node:module");
 const { dirname, isAbsolute, resolve } = require("node:path");
 const dependencies = new Set();
 const runtimeSpecifiers = new Set();
+const packageImports = [];
 const originalRequire = Module.prototype.require;
 // Observe attempts before evaluation: failed CommonJS modules are evicted from
 // require.cache. This override lives only in the disposable renderer Worker.
 Module.prototype.require = function(specifier) {
   if (typeof specifier === "string") {
+    if (specifier.startsWith("#")) packageImports.push({specifier, filename:this.filename || workerData.modulePath});
     if (isAbsolute(specifier) || /^file:/i.test(specifier)) runtimeSpecifiers.add(specifier);
     const localRequire = createRequire(this.filename || workerData.modulePath);
     try {
@@ -1217,7 +1278,7 @@ function post(outcome) {
   // Cross-channel delivery is not ordered against Worker.exit. Keep the worker
   // alive after completion until the parent consumes the result and terminates it.
   completionPort.ref();
-  completionPort.postMessage({ ...outcome, dependencies: [...new Set([...dependencies, ...Object.keys(require.cache)])], runtimeSpecifiers: [...runtimeSpecifiers] });
+  completionPort.postMessage({ ...outcome, dependencies: [...new Set([...dependencies, ...Object.keys(require.cache)])], runtimeSpecifiers: [...runtimeSpecifiers], packageImports });
 }
 function safeMessage(error) {
   try {
