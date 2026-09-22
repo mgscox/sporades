@@ -66928,7 +66928,7 @@ function deepFreeze(value) {
 import { lstat as lstat2, readFile as readFile2, realpath as realpath2 } from "node:fs/promises";
 import path3 from "node:path";
 import { fileURLToPath, pathToFileURL as pathToFileURL2 } from "node:url";
-import { Worker as Worker2 } from "node:worker_threads";
+import { MessageChannel, Worker as Worker2 } from "node:worker_threads";
 
 // node_modules/acorn/dist/acorn.mjs
 var astralIdentifierCodes = [509, 0, 227, 0, 150, 4, 294, 9, 1368, 2, 2, 1, 6, 3, 41, 2, 5, 0, 166, 1, 574, 3, 9, 9, 7, 9, 32, 4, 318, 1, 78, 5, 71, 10, 50, 3, 123, 2, 54, 14, 32, 10, 3, 1, 11, 3, 46, 10, 8, 0, 46, 9, 7, 2, 37, 13, 2, 9, 6, 1, 45, 0, 13, 2, 49, 13, 9, 3, 2, 11, 83, 11, 7, 0, 3, 0, 158, 11, 6, 9, 7, 3, 56, 1, 2, 6, 3, 1, 3, 2, 10, 0, 11, 1, 3, 6, 4, 4, 68, 8, 2, 0, 3, 0, 2, 3, 2, 4, 2, 0, 15, 1, 83, 17, 10, 9, 5, 0, 82, 19, 13, 9, 214, 6, 3, 8, 28, 1, 83, 16, 16, 9, 82, 12, 9, 9, 7, 19, 58, 14, 5, 9, 243, 14, 166, 9, 71, 5, 2, 1, 3, 3, 2, 0, 2, 1, 13, 9, 120, 6, 3, 6, 4, 0, 29, 9, 41, 6, 2, 3, 9, 0, 10, 10, 47, 15, 199, 7, 137, 9, 54, 7, 2, 7, 17, 9, 57, 21, 2, 13, 123, 5, 4, 0, 2, 1, 2, 6, 2, 0, 9, 9, 49, 4, 2, 1, 2, 4, 9, 9, 55, 9, 266, 3, 10, 1, 2, 0, 49, 6, 4, 4, 14, 10, 5350, 0, 7, 14, 11465, 27, 2343, 9, 87, 9, 39, 4, 60, 6, 26, 9, 535, 9, 470, 0, 2, 54, 8, 3, 82, 0, 12, 1, 19628, 1, 4178, 9, 519, 45, 3, 22, 543, 4, 4, 5, 9, 7, 3, 6, 31, 3, 149, 2, 1418, 49, 513, 54, 5, 49, 9, 0, 15, 0, 23, 4, 2, 14, 1361, 6, 2, 16, 3, 6, 2, 1, 2, 4, 101, 0, 161, 6, 10, 9, 357, 0, 62, 13, 499, 13, 245, 1, 2, 9, 233, 0, 3, 0, 8, 1, 6, 0, 475, 6, 110, 6, 6, 9, 4759, 9, 787719, 239];
@@ -81709,10 +81709,38 @@ function isCanonicalDescendant(parent, candidate) {
 }
 async function executeBundledRenderer(source, format, modulePath, displayPath, projectRoots) {
   const bootstrap = String.raw`
-const { parentPort, workerData } = require("node:worker_threads");
-const { createRequire } = require("node:module");
-const { dirname } = require("node:path");
+const { workerData } = require("node:worker_threads");
+const completionPort = workerData.completionPort;
+delete workerData.completionPort;
+const { createRequire, Module } = require("node:module");
+const { dirname, isAbsolute, resolve } = require("node:path");
+const dependencies = new Set();
+const runtimeSpecifiers = new Set();
+const originalRequire = Module.prototype.require;
+// Observe attempts before evaluation: failed CommonJS modules are evicted from
+// require.cache. This override lives only in the disposable renderer Worker.
+Module.prototype.require = function(specifier) {
+  if (typeof specifier === "string") {
+    if (isAbsolute(specifier) || /^file:/i.test(specifier)) runtimeSpecifiers.add(specifier);
+    const localRequire = createRequire(this.filename || workerData.modulePath);
+    try {
+      const filename = localRequire.resolve(specifier);
+      if (isAbsolute(filename)) dependencies.add(filename);
+    } catch {
+      const candidates = specifier.startsWith(".") || isAbsolute(specifier)
+        ? [resolve(dirname(this.filename || workerData.modulePath), specifier)]
+        : (localRequire.resolve.paths(specifier) || []).map((base) => resolve(base, specifier));
+      for (const candidate of candidates) {
+        for (const suffix of ["", ".js", ".json", ".node", "/package.json", "/index.js", "/index.json", "/index.node"]) dependencies.add(candidate + suffix);
+      }
+    }
+  }
+  return originalRequire.apply(this, arguments);
+};
 globalThis.require = createRequire(workerData.modulePath);
+function post(outcome) {
+  completionPort.postMessage({ ...outcome, dependencies: [...new Set([...dependencies, ...Object.keys(require.cache)])], runtimeSpecifiers: [...runtimeSpecifiers] });
+}
 function safeMessage(error) {
   try {
     return error && typeof error === "object" && "message" in error ? String(error.message) : String(error);
@@ -81720,6 +81748,7 @@ function safeMessage(error) {
     return "Thrown error message unavailable.";
   }
 }
+process.once("uncaughtException", (error) => post({ kind: "failure", message: safeMessage(error) }));
 (async () => {
   try {
     const source = workerData.source + "\n//# sourceURL=" + workerData.displayPath + "\n";
@@ -81733,26 +81762,28 @@ function safeMessage(error) {
       const encoded = Buffer.from(source).toString("base64");
       namespace = await import("data:text/javascript;base64," + encoded);
     }
-    if (!namespace) return parentPort.postMessage({ kind: "not-function" });
-    if (typeof namespace.default !== "function") return parentPort.postMessage({ kind: "not-function" });
+    if (!namespace) return post({ kind: "not-function" });
+    if (typeof namespace.default !== "function") return post({ kind: "not-function" });
     const rendered = await namespace.default();
     if (typeof rendered !== "string") {
-      return parentPort.postMessage({ kind: "non-string", resultType: rendered === null ? "null" : typeof rendered });
+      return post({ kind: "non-string", resultType: rendered === null ? "null" : typeof rendered });
     }
-    parentPort.postMessage({ kind: "success", rendered });
+    post({ kind: "success", rendered });
   } catch (error) {
-    parentPort.postMessage({ kind: "failure", message: safeMessage(error) });
+    post({ kind: "failure", message: safeMessage(error) });
   }
 })();`;
+  const completion = new MessageChannel();
   const worker = new Worker2(bootstrap, {
     eval: true,
-    workerData: { source, format, modulePath, displayPath: displayPath.replaceAll("\\", "/") }
+    workerData: { source, format, modulePath, displayPath: displayPath.replaceAll("\\", "/"), completionPort: completion.port2 },
+    transferList: [completion.port2]
   });
   try {
     const outcome = await new Promise((resolve, reject) => {
       let settled = false;
       const cleanup = () => {
-        worker.off("message", onMessage);
+        completion.port1.off("message", onMessage);
         worker.off("error", onError);
         worker.off("exit", onExit);
       };
@@ -81767,16 +81798,31 @@ function safeMessage(error) {
       const onExit = (code) => settle(() => {
         reject(new Error(`renderer worker exited before returning a result (code ${code})`));
       });
-      worker.once("message", onMessage);
+      completion.port1.once("message", onMessage);
       worker.once("error", onError);
       worker.once("exit", onExit);
     });
     if (outcome.kind !== "failure") return outcome;
-    return { kind: "failure", message: boundedMessage(outcome.message, projectRoots) };
+    const runtimeRoots = new Set(projectRoots);
+    const aliases = [];
+    for (const filename of outcome.dependencies ?? []) {
+      if (path3.isAbsolute(filename) && !projectRoots.some((root) => filename === root || isCanonicalDescendant(root, filename))) {
+        addRendererDependencyRoot(runtimeRoots, filename);
+      }
+    }
+    for (const specifier of outcome.runtimeSpecifiers ?? []) {
+      const filename = rendererLocalFilePath(specifier);
+      if (!filename) continue;
+      const containedRoot = projectRoots.find((root) => filename === root || isCanonicalDescendant(root, filename));
+      const relative = containedRoot ? path3.relative(containedRoot, filename) : path3.basename(filename);
+      aliases.push([specifier, { replacement: relative ? `<project>/${relative.replaceAll("\\", "/")}` : "<project>", boundary: "path" }]);
+    }
+    return { ...outcome, message: boundedMessage(outcome.message, [...runtimeRoots], aliases) };
   } catch (error) {
     return { kind: "failure", message: boundedMessage(error, projectRoots) };
   } finally {
     await worker.terminate();
+    completion.port1.close();
   }
 }
 function boundedMessage(error, projectRoots = [], exactAliases = []) {
