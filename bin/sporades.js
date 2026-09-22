@@ -60613,8 +60613,7 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
   }
   let bundledSource;
   try {
-    const { build: build2, transform } = await import("esbuild");
-    const projectTsconfigRaw = await readOptionalFile(path3.join(projectRoot, "tsconfig.json"));
+    const { build: build2 } = await import("esbuild");
     const result = await build2({
       absWorkingDir: projectRoot,
       bundle: true,
@@ -60624,7 +60623,7 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
       logLevel: "silent",
       outdir: path3.join(projectRoot, ".sporades-prerender-output"),
       platform: "node",
-      plugins: [preserveRendererImportMetaUrl(transform, projectTsconfigRaw)],
+      plugins: [preserveRendererImportMetaUrl(build2, projectRoot)],
       sourcemap: false,
       target: "node22",
       write: false
@@ -60677,15 +60676,7 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
   }
   return rendered;
 }
-async function readOptionalFile(filePath) {
-  try {
-    return await readFile2(filePath, "utf8");
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return void 0;
-    throw error;
-  }
-}
-function preserveRendererImportMetaUrl(transform, projectTsconfigRaw) {
+function preserveRendererImportMetaUrl(esbuildBuild, projectRoot) {
   const loaders = /* @__PURE__ */ new Map([
     [".cjs", "js"],
     [".cts", "ts"],
@@ -60698,22 +60689,32 @@ function preserveRendererImportMetaUrl(transform, projectTsconfigRaw) {
   ]);
   return {
     name: "sporades-renderer-import-meta-url",
-    setup(build2) {
-      build2.onLoad({ filter: /\.[cm]?[jt]sx?$/, namespace: "file" }, async (args) => {
+    setup(pluginBuild) {
+      pluginBuild.onLoad({ filter: /\.[cm]?[jt]sx?$/, namespace: "file" }, async (args) => {
         const contents = await readFile2(args.path, "utf8");
         if (!contents.includes("import.meta.url")) return void 0;
         const loader = loaders.get(path3.extname(args.path));
         if (!loader) return void 0;
-        const result = await transform(contents, {
+        const result = await esbuildBuild({
+          absWorkingDir: projectRoot,
+          bundle: false,
           define: { "import.meta.url": JSON.stringify(pathToFileURL2(args.path).href) },
+          entryPoints: [args.path],
+          format: "esm",
           jsx: "preserve",
-          loader,
-          sourcefile: args.path,
+          logLevel: "silent",
+          outdir: path3.join(projectRoot, ".sporades-prerender-transform"),
+          platform: "node",
           target: "esnext",
-          ...projectTsconfigRaw === void 0 ? {} : { tsconfigRaw: projectTsconfigRaw }
+          write: false
         });
+        const outputs = result.outputFiles ?? [];
+        const javascript = outputs.filter((output) => output.path.endsWith(".js"));
+        if (outputs.length !== 1 || javascript.length !== 1 || !javascript[0]?.text) {
+          throw new Error("the import.meta.url transform produced unsupported output");
+        }
         return {
-          contents: result.code,
+          contents: javascript[0].text,
           loader,
           resolveDir: path3.dirname(args.path),
           watchFiles: [args.path]
