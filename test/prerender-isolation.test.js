@@ -187,3 +187,15 @@ test('CommonJS module location fields identify each source helper and stay writa
     }
   } finally { await rm(root, {recursive:true, force:true}); }
 });
+
+test('direct CommonJS eval fails explicitly instead of using entry-rooted wrappers', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-direct-eval-')));
+  try {
+    await mkdir(path.join(root, 'nested'));
+    await writeFile(path.join(root, 'entry.mjs'), 'import render from "./nested/helper.cjs"; export default render;');
+    await writeFile(path.join(root, 'nested/helper.cjs'), 'module.exports = () => eval("__dirname");');
+    await assert.rejects(renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'}), /Direct eval is unsupported/i);
+    await writeFile(path.join(root, 'nested/helper.cjs'), 'function local(eval) { return eval("local"); } module.exports = () => local(value => value);');
+    assert.equal(await renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'}), 'local');
+  } finally { await rm(root, {recursive:true, force:true}); }
+});

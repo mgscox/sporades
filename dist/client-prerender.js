@@ -4,6 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { MessageChannel, Worker } from "node:worker_threads";
 import { Parser } from "acorn";
 import jsx from "acorn-jsx";
+import { parse as parseHtml } from "parse5";
 import { redactBuildProjectRoots } from "./build-diagnostics.js";
 export function readClientPrerenderConfig(value, toolchain) {
     if (value === undefined)
@@ -208,7 +209,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
                 if (!loader)
                     return undefined;
                 const checksImports = contents.includes("import");
-                const requiresTransform = checksImports || preservesImportMetaUrl || (commonJsModule && /\b(?:require|module|__dirname|__filename)\b/.test(contents));
+                const requiresTransform = checksImports || preservesImportMetaUrl || (commonJsModule && /\b(?:require|module|eval|__dirname|__filename)\b/.test(contents));
                 if (!requiresTransform) {
                     if (args.namespace !== commonJsNamespace)
                         return undefined;
@@ -424,6 +425,11 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
     const rootScope = { functionScope: true, bindings: new Set() };
     const scopes = new WeakMap();
     collectRendererScopes(syntax, rootScope, scopes);
+    visitRendererSyntax(syntax, (node) => {
+        if (node.type === "CallExpression" && !node.optional && isRendererSyntaxNode(node.callee) && node.callee.type === "Identifier" && node.callee.name === "eval" && !rendererScopeBinds(scopes.get(node) ?? rootScope, "eval")) {
+            throw new Error("Direct eval is unsupported in CommonJS prerender modules; use explicit code so module-local wrapper bindings can be preserved.");
+        }
+    });
     const assignmentTargets = new WeakSet();
     collectRendererAssignmentTargets(syntax, assignmentTargets);
     const deleteOperands = new WeakSet();
@@ -807,241 +813,56 @@ export function placeClientPrerenderFragments(html, fragments) {
     return { html: replaced, warnings };
 }
 function scanClientPrerenderHtml(html) {
-    const lowerHtml = foldAsciiCase(html);
-    const rawTextElements = new Set(["iframe", "noembed", "noframes", "noscript", "plaintext", "script", "style", "textarea", "title", "xmp"]);
+    const errors = [];
+    const document = parseHtml(html, { scriptingEnabled: true, sourceCodeLocationInfo: true, onParseError: (error) => errors.push(error) });
     const markers = [];
-    const foreignElements = [];
     let bodyEnd;
     let problem;
-    let cursor = 0;
-    while (cursor < html.length) {
-        const tagStart = html.indexOf("<", cursor);
-        if (tagStart === -1)
-            break;
-        // In SVG/MathML this is character data, not a bogus HTML declaration.
-        // Its payload can contain both > and comment-shaped text.
-        if (foreignElements.length > 0 && html.startsWith("<![CDATA[", tagStart)) {
-            const cdataEnd = html.indexOf("]]>", tagStart + 9);
-            if (cdataEnd === -1) {
-                problem = "unterminated foreign-content CDATA section";
-                break;
-            }
-            cursor = cdataEnd + 3;
-            continue;
-        }
-        if (html.startsWith("<!--", tagStart)) {
-            const commentEnd = findHtmlCommentEnd(html, tagStart);
-            if (!commentEnd) {
-                problem = "unterminated HTML comment";
-                break;
-            }
-            const marker = /^\s*sporades:prerender(?:\s+([A-Za-z][A-Za-z0-9_-]{0,63}))?\s*$/.exec(html.slice(tagStart + 4, commentEnd.contentEnd));
-            if (marker)
-                markers.push({ start: tagStart, end: commentEnd.end, name: marker[1] });
-            cursor = commentEnd.end;
-            continue;
-        }
-        const tagKind = html[tagStart + 1];
-        if (tagKind === "!" || tagKind === "?") {
-            let declarationEnd = html.indexOf(">", tagStart + 2);
-            if (/^<!doctype\s/i.test(html.slice(tagStart, tagStart + 10))) {
-                let quote;
-                declarationEnd = -1;
-                for (let index = tagStart + 9; index < html.length; index += 1) {
-                    const character = html[index];
-                    if (quote) {
-                        if (character === quote)
-                            quote = undefined;
-                    }
-                    else if (character === "\"" || character === "'")
-                        quote = character;
-                    else if (character === ">") {
-                        declarationEnd = index;
-                        break;
-                    }
-                }
-            }
-            if (declarationEnd === -1) {
+    let unterminatedRaw = "raw text";
+    const rawText = new Set(["iframe", "noembed", "noframes", "noscript", "script", "style", "textarea", "title", "xmp"]);
+    const visit = (node) => {
+        const location = node.sourceCodeLocation;
+        if (node.nodeName === "#comment" && "data" in node && location) {
+            const source = html.slice(location.startOffset, location.endOffset);
+            if (!source.startsWith("<!--") && !source.endsWith(">"))
                 problem = "unterminated HTML declaration";
-                break;
-            }
-            cursor = declarationEnd + 1;
-            continue;
+            const marker = /^\s*sporades:prerender(?:\s+([A-Za-z][A-Za-z0-9_-]{0,63}))?\s*$/.exec(node.data);
+            if (marker)
+                markers.push({ start: location.startOffset, end: location.endOffset, name: marker[1] });
         }
-        const closing = tagKind === "/";
-        let nameStart = tagStart + (closing ? 2 : 1);
-        if (!/[A-Za-z]/.test(html[nameStart] ?? "")) {
-            if (closing) {
-                const bogusEnd = html.indexOf(">", nameStart);
-                if (bogusEnd === -1) {
-                    problem = "unterminated HTML declaration";
-                    break;
-                }
-                cursor = bogusEnd + 1;
+        if ("tagName" in node && node.namespaceURI === "http://www.w3.org/1999/xhtml" && location && "startTag" in location && location.startTag) {
+            if (node.tagName === "body")
+                bodyEnd = location.startTag.endOffset;
+            if (rawText.has(node.tagName)) {
+                if (!location.endTag)
+                    unterminatedRaw = node.tagName;
+                if (errors.some((error) => error.code === "unexpected-character-in-unquoted-attribute-value" && error.startOffset >= location.startTag.startOffset && error.startOffset < location.startTag.endOffset))
+                    problem = `malformed raw text element opener: ${node.tagName}`;
             }
-            else {
-                cursor = tagStart + 1;
-            }
-            continue;
         }
-        let nameEnd = nameStart + 1;
-        while (/[A-Za-z0-9:-]/.test(html[nameEnd] ?? ""))
-            nameEnd += 1;
-        const name = lowerHtml.slice(nameStart, nameEnd);
-        const tagBoundary = scanHtmlTagBoundary(html, nameEnd);
-        if (tagBoundary.nestedMarkup !== undefined) {
-            if (!closing && rawTextElements.has(name)) {
-                problem = `malformed raw text element opener: ${name}`;
-                break;
-            }
-            if (!closing && /[A-Za-z0-9]/.test(html[tagStart - 1] ?? "")) {
-                cursor = tagStart + 1;
-                continue;
-            }
+        if ("childNodes" in node)
+            for (const child of node.childNodes)
+                visit(child);
+        if ("tagName" in node && node.tagName === "template")
+            visit(node.content);
+    };
+    visit(document);
+    for (const error of errors) {
+        if (error.code === "eof-in-comment")
+            problem = "unterminated HTML comment";
+        else if (error.code === "eof-in-tag")
             problem = "unterminated HTML tag";
-            break;
-        }
-        const tagEnd = tagBoundary.end;
-        if (tagEnd === undefined) {
-            problem = "unterminated HTML tag";
-            break;
-        }
-        if (!closing && name === "body" && bodyEnd === undefined)
-            bodyEnd = tagEnd;
-        if (closing) {
-            const foreignIndex = foreignElements.lastIndexOf(name);
-            if (foreignIndex !== -1)
-                foreignElements.length = foreignIndex;
-        }
-        else if ((name === "svg" || name === "math") && !/\/\s*>$/.test(html.slice(tagStart, tagEnd))) {
-            foreignElements.push(name);
-        }
-        cursor = tagEnd;
-        if (!closing && rawTextElements.has(name)) {
-            if (name === "plaintext")
-                break;
-            const rawTextEnd = findRawTextElementEnd(html, lowerHtml, cursor, name);
-            if (rawTextEnd === undefined) {
-                problem = `unterminated raw text element: ${name}`;
-                break;
-            }
-            cursor = rawTextEnd;
-        }
+        else if (error.code === "eof-in-doctype")
+            problem = "unterminated HTML declaration";
+        else if (error.code === "abrupt-doctype-public-identifier" || error.code === "abrupt-doctype-system-identifier")
+            problem = "malformed HTML declaration";
+        else if (error.code === "eof-in-cdata")
+            problem = "unterminated foreign-content CDATA section";
+        else if (error.code === "eof-in-element-that-can-contain-only-text")
+            problem = `unterminated raw text element: ${unterminatedRaw}`;
     }
+    markers.sort((left, right) => left.start - right.start);
     return { bodyEnd, markers, problem };
-}
-function findHtmlCommentEnd(html, commentStart) {
-    const contentStart = commentStart + 4;
-    if (html[contentStart] === ">")
-        return { contentEnd: contentStart, end: contentStart + 1 };
-    if (html.startsWith("->", contentStart))
-        return { contentEnd: contentStart, end: contentStart + 2 };
-    const standardEnd = html.indexOf("-->", contentStart);
-    const bangEnd = html.indexOf("--!>", contentStart);
-    if (standardEnd === -1 && bangEnd === -1)
-        return undefined;
-    if (bangEnd !== -1 && (standardEnd === -1 || bangEnd < standardEnd)) {
-        return { contentEnd: bangEnd, end: bangEnd + 4 };
-    }
-    return { contentEnd: standardEnd, end: standardEnd + 3 };
-}
-function foldAsciiCase(value) {
-    return value.replace(/[A-Z]/g, (character) => String.fromCharCode(character.charCodeAt(0) + 32));
-}
-function scanHtmlTagBoundary(html, cursor) {
-    let state = "before-attribute-name";
-    let quote;
-    for (let index = cursor; index < html.length; index += 1) {
-        const character = html[index];
-        if (state === "attribute-value-quoted") {
-            if (character === quote) {
-                quote = undefined;
-                state = "after-attribute-value-quoted";
-            }
-            continue;
-        }
-        if (state === "before-attribute-value") {
-            if (/\s/.test(character))
-                continue;
-            if (character === "\"" || character === "'") {
-                quote = character;
-                state = "attribute-value-quoted";
-                continue;
-            }
-            if (character === ">")
-                return { end: index + 1 };
-            if (character === "<")
-                return { nestedMarkup: index };
-            state = "attribute-value-unquoted";
-            continue;
-        }
-        if (state === "attribute-value-unquoted") {
-            if (/\s/.test(character))
-                state = "before-attribute-name";
-            else if (character === ">")
-                return { end: index + 1 };
-            else if (character === "<")
-                return { nestedMarkup: index };
-            continue;
-        }
-        if (state === "attribute-name") {
-            if (/\s/.test(character))
-                state = "after-attribute-name";
-            else if (character === "=")
-                state = "before-attribute-value";
-            else if (character === ">")
-                return { end: index + 1 };
-            else if (character === "<")
-                return { nestedMarkup: index };
-            continue;
-        }
-        if (state === "after-attribute-name") {
-            if (/\s/.test(character))
-                continue;
-            if (character === "=")
-                state = "before-attribute-value";
-            else if (character === ">")
-                return { end: index + 1 };
-            else if (character === "<")
-                return { nestedMarkup: index };
-            else if (character !== "/")
-                state = "attribute-name";
-            continue;
-        }
-        if (state === "after-attribute-value-quoted") {
-            if (/\s/.test(character) || character === "/")
-                state = "before-attribute-name";
-            else if (character === ">")
-                return { end: index + 1 };
-            else if (character === "<")
-                return { nestedMarkup: index };
-            else
-                state = "attribute-name";
-            continue;
-        }
-        if (/\s/.test(character) || character === "/")
-            continue;
-        if (character === ">")
-            return { end: index + 1 };
-        if (character === "<")
-            return { nestedMarkup: index };
-        state = "attribute-name";
-    }
-    return {};
-}
-function findRawTextElementEnd(html, lowerHtml, cursor, name) {
-    const closingPrefix = `</${name}`;
-    while (cursor < html.length) {
-        const closingStart = lowerHtml.indexOf(closingPrefix, cursor);
-        if (closingStart === -1)
-            return undefined;
-        const boundary = html[closingStart + closingPrefix.length];
-        if (boundary === ">" || boundary === "/" || /\s/.test(boundary ?? "")) {
-            return scanHtmlTagBoundary(html, closingStart + closingPrefix.length).end;
-        }
-        cursor = closingStart + closingPrefix.length;
-    }
-    return undefined;
 }
 function isProjectRelativeModulePath(value) {
     if (!value || value.includes("\\") || path.posix.isAbsolute(value) || path.win32.parse(value).root)
