@@ -9,6 +9,19 @@ import { createMarkdownRenderer } from "vitepress";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+test("prerender configuration and module semantics are discoverable in canonical docs", async () => {
+  const reference = await readProjectFile("docs/reference/projects-and-configuration.md");
+  assert.match(reference, /client\.prerender/);
+  assert.match(reference, /sporades:prerender NAME/);
+  assert.match(reference, /immediately after the opening body/);
+  assert.match(reference, /\.\/prerender-modules\.md/);
+  const navigation = await readProjectFile("docs/.vitepress/config.mts");
+  assert.match(navigation, /link: "\/reference\/prerender-modules"/);
+  const modules = await readProjectFile("docs/reference/prerender-modules.md");
+  assert.match(modules, /CommonJS/);
+  assert.match(modules, /import\.meta\.url/);
+});
+
 async function readProjectFile(relativePath) {
   if (relativePath === "docs/user-guide.md") {
     const files = [
