@@ -28,5 +28,8 @@ cannot retain the owning module's wrapper bindings through bundling. Use explici
 code instead. Ordinary method calls such as `object.eval(...)` are unaffected.
 Sloppy-mode CommonJS `with` statements are rejected for the same reason: their
 dynamic scope can replace wrapper bindings at runtime. Use explicit properties.
+Top-level CommonJS `arguments` (also inherited by arrows) is unsupported; access
+`require`, `module`, `exports`, `__filename` and `__dirname` by name. Ordinary
+functions retain their own `arguments` objects.
 Renderer-only CSS, image or other asset output is unsupported;
 assets used by static HTML must already belong to the ordinary Vite client graph.

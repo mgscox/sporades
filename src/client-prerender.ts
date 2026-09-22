@@ -500,7 +500,13 @@ function specializeCommonJsRendererModule(contents: string, modulePath: string, 
   const rootScope: RendererLexicalScope = { functionScope: true, bindings: new Set() };
   const scopes = new WeakMap<object, RendererLexicalScope>();
   collectRendererScopes(syntax, rootScope, scopes);
-  visitRendererSyntax(syntax, (node) => {
+  const noTargets = new WeakSet<object>();
+  visitRendererSyntax(syntax, (node, parent, key) => {
+    if (node.type === "Identifier" && node.name === "arguments"
+      && !rendererScopeBinds(scopes.get(node) ?? rootScope, "arguments")
+      && isRendererIdentifierReference(node, parent, key, noTargets, noTargets)) {
+      throw new Error("Top-level CommonJS arguments are unsupported in prerender modules; use explicit module-local wrapper bindings instead.");
+    }
     if (node.type === "WithStatement") {
       throw new Error("With statements are unsupported in CommonJS prerender modules; use explicit bindings so module-local wrapper semantics can be preserved.");
     }
@@ -655,11 +661,11 @@ function collectRendererScopes(
   let activeScope = scope;
   if (node.type === "FunctionDeclaration") {
     addRendererBinding(scope, node.id);
-    activeScope = { parent: scope, functionScope: true, bindings: new Set() };
+    activeScope = { parent: scope, functionScope: true, bindings: new Set(["arguments"]) };
     addRendererBinding(activeScope, node.id);
     for (const parameter of (node.params as RendererSyntaxNode[] | undefined) ?? []) addRendererBinding(activeScope, parameter);
   } else if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
-    activeScope = { parent: scope, functionScope: true, bindings: new Set() };
+    activeScope = { parent: scope, functionScope: true, bindings: new Set(node.type === "FunctionExpression" ? ["arguments"] : []) };
     addRendererBinding(activeScope, node.id);
     for (const parameter of (node.params as RendererSyntaxNode[] | undefined) ?? []) addRendererBinding(activeScope, parameter);
   } else if (node.type === "ClassDeclaration") {
@@ -684,7 +690,7 @@ function collectRendererScopes(
       if (node.kind === "var" && !declarationScope.parent) {
         const declared: RendererLexicalScope = { functionScope: true, bindings: new Set() };
         addRendererBinding(declared, declaration.id);
-        for (const name of declared.bindings) if (!["require", "module", "exports", "__dirname", "__filename"].includes(name)) declarationScope.bindings.add(name);
+        for (const name of declared.bindings) if (!["require", "module", "exports", "__dirname", "__filename", "arguments"].includes(name)) declarationScope.bindings.add(name);
       } else addRendererBinding(declarationScope, declaration.id);
     }
   } else if (node.type === "ImportDeclaration") {
