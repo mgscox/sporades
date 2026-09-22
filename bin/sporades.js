@@ -73532,6 +73532,9 @@ Module.prototype.require = function(specifier) {
 };
 globalThis.require = createRequire(workerData.modulePath);
 function post(outcome) {
+  // Cross-channel delivery is not ordered against Worker.exit. Keep the worker
+  // alive after completion until the parent consumes the result and terminates it.
+  completionPort.ref();
   completionPort.postMessage({ ...outcome, dependencies: [...new Set([...dependencies, ...Object.keys(require.cache)])], runtimeSpecifiers: [...runtimeSpecifiers] });
 }
 function safeMessage(error) {

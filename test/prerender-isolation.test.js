@@ -133,5 +133,9 @@ exports.default = async () => {
   return '<main>Actual renderer result</main>';
 };`);
     assert.equal(await renderClientPrerenderFragment(root, {name:'landing', module:'entry.cjs'}), '<main>Actual renderer result</main>');
+    await writeFile(path.join(root, 'entry.cjs'), 'exports.default = () => "fast completion";');
+    for (let index = 0; index < 20; index += 1) {
+      assert.equal(await renderClientPrerenderFragment(root, {name:'landing', module:'entry.cjs'}), 'fast completion');
+    }
   } finally { await rm(root, {recursive:true, force:true}); }
 });
