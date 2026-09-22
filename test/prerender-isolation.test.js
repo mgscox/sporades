@@ -97,6 +97,14 @@ test('computed external require failures redact runtime paths and file URLs', as
   try {
     const missing = path.join(external, 'missing helper.cjs');
     for (const target of [missing, pathToFileURL(missing).href]) {
+      for (const resolver of ['require.resolve', 'module.require.resolve']) {
+        await writeFile(path.join(root, 'entry.cjs'), `exports.default = () => { const target = ${JSON.stringify(target)}; return ${resolver}(target); };`);
+        await assert.rejects(renderClientPrerenderFragment(root, {name:'landing', module:'entry.cjs'}), (error) => {
+          assert.doesNotMatch(error.message, /private-renderer-location-/);
+          assert.ok(error.message.includes('<project>'), error.message);
+          return true;
+        });
+      }
       await writeFile(path.join(root, 'entry.cjs'), `exports.default = () => { const target = ${JSON.stringify(target)}; return require(target); };`);
       await assert.rejects(renderClientPrerenderFragment(root, {name:'landing', module:'entry.cjs'}), (error) => {
         assert.doesNotMatch(error.message, /private-renderer-location-/);
