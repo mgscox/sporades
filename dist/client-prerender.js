@@ -1,7 +1,7 @@
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { Parser } from "acorn";
 import jsx from "acorn-jsx";
@@ -177,10 +177,11 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
                     with: args.with,
                 });
                 if (resolved.errors.length > 0) {
-                    if (path.isAbsolute(args.path)
-                        && path.resolve(args.path) !== path.resolve(projectRoot)
-                        && !isCanonicalDescendant(projectRoot, args.path)) {
-                        rendererDependencyRoots.add(path.dirname(args.path));
+                    const failedPath = rendererLocalFilePath(args.path);
+                    if (failedPath
+                        && path.resolve(failedPath) !== path.resolve(projectRoot)
+                        && !isCanonicalDescendant(projectRoot, failedPath)) {
+                        rendererDependencyRoots.add(path.dirname(failedPath));
                     }
                     return args.namespace === commonJsNamespace ? { errors: resolved.errors, warnings: resolved.warnings } : undefined;
                 }
@@ -263,6 +264,18 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
             pluginBuild.onLoad({ filter: /\.[cm]?[jt]sx?$/, namespace: commonJsNamespace }, loadRendererModule);
         },
     };
+}
+function rendererLocalFilePath(specifier) {
+    if (path.isAbsolute(specifier))
+        return specifier;
+    if (!specifier.startsWith("file:"))
+        return undefined;
+    try {
+        return fileURLToPath(specifier);
+    }
+    catch {
+        return undefined;
+    }
 }
 async function rendererModuleUsesCommonJs(modulePath, contents, projectRoot, packageModeCache) {
     const extension = path.extname(modulePath);

@@ -65280,7 +65280,7 @@ import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "nod
 import { createServer as createServer2 } from "node:http";
 import { appendFile, chmod as chmod2, cp, lstat as lstat9, mkdir as mkdir8, readdir as readdir3, readFile as readFile11, rename as rename6, rm as rm8, writeFile as writeFile7 } from "node:fs/promises";
 import path15 from "node:path";
-import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL4 } from "node:url";
+import { fileURLToPath as fileURLToPath3, pathToFileURL as pathToFileURL4 } from "node:url";
 
 // src/bundle-pipeline.ts
 import { lstat as lstat6, mkdir as mkdir4, readFile as readFile7, rename as rename4, rm as rm4, writeFile as writeFile3 } from "node:fs/promises";
@@ -66883,7 +66883,7 @@ function deepFreeze(value) {
 import { lstat as lstat2, readFile as readFile2, realpath as realpath2 } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path3 from "node:path";
-import { pathToFileURL as pathToFileURL2 } from "node:url";
+import { fileURLToPath, pathToFileURL as pathToFileURL2 } from "node:url";
 import { Worker as Worker2 } from "node:worker_threads";
 
 // node_modules/acorn/dist/acorn.mjs
@@ -72829,8 +72829,9 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
           with: args.with
         });
         if (resolved.errors.length > 0) {
-          if (path3.isAbsolute(args.path) && path3.resolve(args.path) !== path3.resolve(projectRoot) && !isCanonicalDescendant(projectRoot, args.path)) {
-            rendererDependencyRoots.add(path3.dirname(args.path));
+          const failedPath = rendererLocalFilePath(args.path);
+          if (failedPath && path3.resolve(failedPath) !== path3.resolve(projectRoot) && !isCanonicalDescendant(projectRoot, failedPath)) {
+            rendererDependencyRoots.add(path3.dirname(failedPath));
           }
           return args.namespace === commonJsNamespace ? { errors: resolved.errors, warnings: resolved.warnings } : void 0;
         }
@@ -72904,6 +72905,15 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
       pluginBuild.onLoad({ filter: /\.[cm]?[jt]sx?$/, namespace: commonJsNamespace }, loadRendererModule);
     }
   };
+}
+function rendererLocalFilePath(specifier) {
+  if (path3.isAbsolute(specifier)) return specifier;
+  if (!specifier.startsWith("file:")) return void 0;
+  try {
+    return fileURLToPath(specifier);
+  } catch {
+    return void 0;
+  }
 }
 async function rendererModuleUsesCommonJs(modulePath, contents, projectRoot, packageModeCache) {
   const extension = path3.extname(modulePath);
@@ -74836,9 +74846,9 @@ import path7 from "node:path";
 // src/package-root.ts
 import { existsSync } from "node:fs";
 import path6 from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 function resolveSporadesPackageRoot() {
-  let directory = path6.dirname(fileURLToPath(import.meta.url));
+  let directory = path6.dirname(fileURLToPath2(import.meta.url));
   for (; ; ) {
     if (existsSync(path6.join(directory, "package.json"))) {
       return directory;
@@ -121446,7 +121456,7 @@ var MAX_HOST_LOG_LINES = 1e4;
 var HOST_LOG_SOURCES = /* @__PURE__ */ new Set(["http", "stdout", "stderr"]);
 var HOST_HEALTH_PATH = "/__sporades/health";
 var DEFAULT_GITHUB_AUTODEPLOY_WORKFLOW = ".github/workflows/sporades-autodeploy.yml";
-var CLI_ROOT = path15.resolve(path15.dirname(fileURLToPath2(import.meta.url)), "..");
+var CLI_ROOT = path15.resolve(path15.dirname(fileURLToPath3(import.meta.url)), "..");
 main().catch((error) => {
   writeResult(
     {
@@ -126780,7 +126790,7 @@ function remoteHostHelperPath(profile) {
   return `${profile.remoteRoot}/bin/sporades-host-helper`;
 }
 function localHostHelperPath() {
-  return path15.join(path15.dirname(fileURLToPath2(import.meta.url)), "sporades-host-helper.js");
+  return path15.join(path15.dirname(fileURLToPath3(import.meta.url)), "sporades-host-helper.js");
 }
 function upgradeHostHelper(options) {
   const localHelper = localHostHelperPath();
