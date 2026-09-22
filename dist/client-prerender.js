@@ -250,7 +250,9 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
                 if (!loader)
                     return undefined;
                 const checksImports = contents.includes("import");
-                const requiresTransform = checksImports || (commonJsModule && /\b(?:require|module|eval|__dirname|__filename)\b/.test(contents));
+                // Parse every CommonJS module: dynamic scope and escaped identifiers
+                // cannot safely be detected by searching the original source text.
+                const requiresTransform = checksImports || commonJsModule;
                 if (!requiresTransform) {
                     if (args.namespace !== commonJsNamespace)
                         return undefined;
@@ -570,6 +572,9 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
     const scopes = new WeakMap();
     collectRendererScopes(syntax, rootScope, scopes);
     visitRendererSyntax(syntax, (node) => {
+        if (node.type === "WithStatement") {
+            throw new Error("With statements are unsupported in CommonJS prerender modules; use explicit bindings so module-local wrapper semantics can be preserved.");
+        }
         if (node.type === "CallExpression" && !node.optional && isRendererSyntaxNode(node.callee) && node.callee.type === "Identifier" && node.callee.name === "eval") {
             throw new Error("Direct eval is unsupported in CommonJS prerender modules; use explicit code so module-local wrapper bindings can be preserved.");
         }
@@ -907,11 +912,15 @@ export function validateClientPrerenderSourceHtml(html) {
         throw prerenderError("Client index.html contains a reserved prerender boundary comment.", "Remove Sporades private boundary comments from index.html and HTML plugins; the Bundle pipeline supplies them.");
     }
 }
-export function validateClientPrerenderOutputHtml(html, placements) {
-    if (placements === 0)
+export function validateClientPrerenderOutputHtml(html, expectedBoundaries) {
+    if (expectedBoundaries.length === 0)
         validateClientPrerenderSourceHtml(html);
-    else
-        validatePrerenderDomBoundaries(html, placements);
+    else {
+        const actual = validatePrerenderDomBoundaries(html, expectedBoundaries.length);
+        if (JSON.stringify(actual) !== JSON.stringify(expectedBoundaries)) {
+            throw prerenderError("Final Vite HTML replaced a reserved prerender boundary or its content.", "Keep Sporades-owned fragment ranges unchanged after transformIndexHtml; render final fragment content through its renderer.");
+        }
+    }
 }
 function hasReservedPrerenderBoundary(html) {
     const pending = [parseHtml(html, { scriptingEnabled: true })];
@@ -945,7 +954,7 @@ export function placeClientPrerenderFragments(html, fragments) {
         for (const name of new Set(placement.markers.flatMap((marker) => marker.name ? [marker.name] : []))) {
             warnings.push({ code: "PRERENDER_UNKNOWN_MARKER", fragment: name, message: `Unknown prerender marker "${name}" remains a comment in index.html.` });
         }
-        return { html, warnings, placements: 0 };
+        return { html, warnings, placements: 0, boundaries: [] };
     }
     if (placement.problem) {
         throw prerenderError(`Client prerender placement could not safely scan index.html: ${placement.problem}.`, "Fix the malformed HTML construct in index.html, then retry.");
@@ -985,12 +994,12 @@ export function placeClientPrerenderFragments(html, fragments) {
             warnings.push({ code: "PRERENDER_DUPLICATE_PLACEMENT", fragment: name, message: `Prerender fragment "${name}" is placed ${count} times in index.html.` });
     }
     const placements = [...counts.values()].reduce((sum, count) => sum + count, 0);
-    validatePrerenderDomBoundaries(replaced, placements);
+    const boundaries = validatePrerenderDomBoundaries(replaced, placements);
     if (prerenderDocumentRootAttributes(html) !== prerenderDocumentRootAttributes(replaced)) {
         throw prerenderError("Client prerender fragments mutate author-owned document-root attributes.", "Return fragment content rather than html or body elements; browsers merge their attributes into the existing document roots.");
     }
     validatePrerenderAuthorDom(html, replaced, new Set(placement.markers.filter((marker) => marker.name === undefined || byName.has(marker.name)).map((marker) => marker.start)));
-    return { html: replaced, warnings, placements };
+    return { html: replaced, warnings, placements, boundaries };
 }
 function validatePrerenderAuthorDom(source, output, consumedMarkers) {
     const original = parseHtml(source, { sourceCodeLocationInfo: true, scriptingEnabled: true });
@@ -1045,7 +1054,7 @@ function validatePrerenderAuthorDom(source, output, consumedMarkers) {
 }
 function validatePrerenderDomBoundaries(html, expectedPlacements) {
     if (expectedPlacements === 0)
-        return;
+        return [];
     const nodes = [];
     const implicitNodes = [];
     const boundaries = [];
@@ -1083,11 +1092,13 @@ function validatePrerenderDomBoundaries(html, expectedPlacements) {
     if (boundaries.length !== expectedPlacements * 2)
         throw invalid();
     boundaries.sort((left, right) => left.start - right.start);
+    const ownedRanges = [];
     for (let index = 0; index < boundaries.length; index += 2) {
         const start = boundaries[index];
         const end = boundaries[index + 1];
         if (start.kind !== "start" || end.kind !== "end" || start.name !== end.name || start.order >= end.order)
             throw invalid();
+        ownedRanges.push(html.slice(start.start, end.end));
         for (const node of nodes) {
             if (node.order === start.order || node.order === end.order)
                 continue;
@@ -1113,6 +1124,7 @@ function validatePrerenderDomBoundaries(html, expectedPlacements) {
                 throw invalid();
         }
     }
+    return ownedRanges;
 }
 function prerenderDocumentRootAttributes(html) {
     const roots = new Map();

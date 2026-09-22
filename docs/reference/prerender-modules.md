@@ -26,8 +26,13 @@ Direct CommonJS `eval(...)` call syntax is also rejected, including shadowed
 bindings that could receive the native evaluator, because string-hidden code
 cannot retain the owning module's wrapper bindings through bundling. Use explicit
 code instead. Ordinary method calls such as `object.eval(...)` are unaffected.
+Sloppy-mode CommonJS `with` statements are rejected for the same reason: their
+dynamic scope can replace wrapper bindings at runtime. Use explicit properties.
 Renderer-only CSS, image or other asset output is unsupported;
 assets used by static HTML must already belong to the ordinary Vite client graph.
+After placement in `transformIndexHtml`, later Vite output hooks must leave each
+Sporades-owned boundary pair and its enclosed HTML unchanged. Final validation
+rejects replacement ranges; derive final fragment content in the renderer.
 
 Computed CommonJS `require(variable)` supports CommonJS dependencies only.
 Runtime `require()` of ESM is disabled in the renderer Worker because Node's
