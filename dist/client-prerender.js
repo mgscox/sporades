@@ -215,7 +215,13 @@ function executeBundledRenderer(source, modulePath, displayPath) {
         : undefined;
 }
 function boundedMessage(error, projectRoots = []) {
-    const message = error && typeof error === "object" && "message" in error ? String(error.message) : String(error);
+    let message;
+    try {
+        message = error && typeof error === "object" && "message" in error ? String(error.message) : String(error);
+    }
+    catch {
+        message = "Thrown error message unavailable.";
+    }
     const redacted = redactBuildProjectRoots(message, projectRoots);
     return redacted.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
 }
