@@ -491,6 +491,80 @@ module.exports = async () => {
   });
 });
 
+test("class member names and labels stay literal while computed keys read CommonJS locations", async () => {
+  await withTempDir(async (projectDir) => {
+    const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
+    await writeMinimalViteCapsule(projectDir, sourceHtml);
+    const nestedDir = path.join(projectDir, "renderer", "nested");
+    await mkdir(nestedDir, { recursive: true });
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'import render from "./renderer/nested/helper.cjs";\nexport default render;\n',
+    );
+    await writeFile(
+      path.join(nestedDir, "helper.cjs"),
+      `class Fields {
+  __dirname = "instance-field";
+  static __filename = "static-field";
+  [__filename] = "computed-instance-field";
+  static [__dirname] = "computed-static-field";
+}
+class Methods {
+  __dirname() { return "instance-method"; }
+  static __filename() { return "static-method"; }
+  [__filename]() { return "computed-instance-method"; }
+  static [__dirname]() { return "computed-static-method"; }
+}
+class Accessors {
+  get __dirname() { return "instance-getter"; }
+  set __filename(value) { this.setterValue = value; }
+  static get require() { return "static-getter"; }
+  static set __dirname(value) { this.setterValue = value; }
+  get [__filename]() { return "computed-getter"; }
+}
+module.exports = () => {
+  const observed = [];
+  __dirname: for (let index = 0; index < 1; index++) { observed.push("break-label"); break __dirname; }
+  __filename: for (let index = 0; index < 1; index++) { observed.push("continue-label"); continue __filename; }
+  require: { observed.push("require-label"); break require; }
+  const fields = new Fields();
+  const methods = new Methods();
+  const accessors = new Accessors();
+  accessors.__filename = "instance-setter";
+  Accessors.__dirname = "static-setter";
+  observed.push(
+    fields.__dirname,
+    Fields.__filename,
+    fields[__filename],
+    Fields[__dirname],
+    methods.__dirname(),
+    Methods.__filename(),
+    methods[__filename](),
+    Methods[__dirname](),
+    accessors.__dirname,
+    accessors.setterValue,
+    Accessors.require,
+    Accessors.setterValue,
+    accessors[__filename],
+  );
+  return \`<main>\${observed.join("|")}</main>\`;
+};
+`,
+    );
+
+    const bundle = await createBundle(projectDir, { name: "member-key-prerender", client: structuredClone(viteConfig) }, { publishLegacy: false });
+    try {
+      assert.match(
+        await readFile(bundle.staticFiles.indexHtml, "utf8"),
+        /<main>break-label\|continue-label\|require-label\|instance-field\|static-field\|computed-instance-field\|computed-static-field\|instance-method\|static-method\|computed-instance-method\|computed-static-method\|instance-getter\|instance-setter\|static-getter\|static-setter\|computed-getter<\/main>/,
+      );
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
 test("a nested CommonJS prerender helper keeps per-module paths and computed require", async () => {
   await withTempDir(async (projectDir) => {
     const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
