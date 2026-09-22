@@ -193,6 +193,18 @@ test("marker scanning distinguishes prose quotes, malformed raw tags, and HTML C
   );
 });
 
+test("foreign-content CDATA preserves marker-shaped text and keeps body fallback", () => {
+  const fragment = { name: "landing", module: "render-landing.mjs" };
+  const marker = "<!-- sporades:prerender landing -->";
+  const rendered = "<main>static fragment</main>";
+  const bounded = `<!-- sporades:prerender-boundary-start landing -->${rendered}<!-- sporades:prerender-boundary-end landing -->`;
+  for (const foreign of ["svg", "math"]) {
+    const content = `<${foreign}><![CDATA[a > b ${marker}]]></${foreign}>`;
+    assert.equal(placeClientPrerenderFragment(`<html><body>${content}</body></html>`, fragment, rendered), `<html><body>${bounded}${content}</body></html>`);
+    assert.equal(placeClientPrerenderFragment(`<html><body>${content}${marker}</body></html>`, fragment, rendered), `<html><body>${content}${bounded}</body></html>`);
+  }
+});
+
 test("a prerender module can use a local CommonJS dependency that requires a Node builtin", async () => {
   await withTempDir(async (projectDir) => {
     const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
