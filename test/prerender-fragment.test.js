@@ -984,6 +984,62 @@ test("hoisted renderer build failures redact dependency paths outside the Capsul
   });
 });
 
+test("hoisted CommonJS runtime failures redact dependency paths outside the Capsule", async () => {
+  await withTempDir(async (tempRoot) => {
+    const projectDir = path.join(tempRoot, "capsule");
+    await mkdir(projectDir);
+    await writeFile(path.join(projectDir, "package.json"), '{"type":"module"}\n');
+    const dependencyDir = path.join(tempRoot, "node_modules", "throwing-default-renderer");
+    await mkdir(dependencyDir, { recursive: true });
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'import render from "throwing-default-renderer";\nexport default render;\n',
+    );
+    const dependencyFile = path.join(dependencyDir, "index.js");
+    await writeFile(dependencyFile, 'module.exports = () => { throw new Error(`dependency path ${__filename}`); };\n');
+    const canonicalProject = await realpath(projectDir);
+    const canonicalDependency = await realpath(dependencyFile);
+
+    await assert.rejects(
+      renderClientPrerenderFragment(canonicalProject, { name: "landing", module: "render-landing.mjs" }),
+      (error) => {
+        assert.match(error.message, /client prerender renderer for landing failed/i);
+        const surfaced = JSON.stringify({ message: error.message, hint: error.hint, diagnostics: error.diagnostics, stack: error.stack });
+        assert.equal(surfaced.includes(canonicalDependency), false, "leaked hoisted CommonJS runtime path");
+        return true;
+      },
+    );
+  });
+});
+
+test("top-level-await worker runtime failures redact hoisted dependency paths", async () => {
+  await withTempDir(async (tempRoot) => {
+    const projectDir = path.join(tempRoot, "capsule");
+    await mkdir(projectDir);
+    await writeFile(path.join(projectDir, "package.json"), '{"type":"module"}\n');
+    const dependencyDir = path.join(tempRoot, "node_modules", "throwing-worker-renderer");
+    await mkdir(dependencyDir, { recursive: true });
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'import render from "throwing-worker-renderer";\nawait Promise.resolve();\nexport default render;\n',
+    );
+    const dependencyFile = path.join(dependencyDir, "index.js");
+    await writeFile(dependencyFile, 'module.exports = () => { throw new Error(`worker dependency path ${__filename}`); };\n');
+    const canonicalProject = await realpath(projectDir);
+    const canonicalDependency = await realpath(dependencyFile);
+
+    await assert.rejects(
+      renderClientPrerenderFragment(canonicalProject, { name: "landing", module: "render-landing.mjs" }),
+      (error) => {
+        assert.match(error.message, /client prerender renderer for landing failed/i);
+        const surfaced = JSON.stringify({ message: error.message, hint: error.hint, diagnostics: error.diagnostics, stack: error.stack });
+        assert.equal(surfaced.includes(canonicalDependency), false, "leaked hoisted Worker runtime path");
+        return true;
+      },
+    );
+  });
+});
+
 test("a nested TypeScript CommonJS prerender helper keeps per-module paths and computed require", async () => {
   await withTempDir(async (projectDir) => {
     const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
