@@ -240,6 +240,8 @@ function specializeCommonJsRendererModule(contents: string, modulePath: string, 
   collectRendererScopes(syntax, rootScope, scopes);
   const assignmentTargets = new WeakSet<object>();
   collectRendererAssignmentTargets(syntax, assignmentTargets);
+  const deleteOperands = new WeakSet<object>();
+  collectRendererDeleteOperands(syntax, deleteOperands);
   const writtenWrapperNames = new Set<string>();
   visitRendererSyntax(syntax, (node) => {
     if (
@@ -295,7 +297,7 @@ function specializeCommonJsRendererModule(contents: string, modulePath: string, 
     if (
       node.type === "Identifier"
       && (node.name === "__dirname" || node.name === "__filename")
-      && isRendererIdentifierReference(node, parent, key, assignmentTargets)
+      && isRendererIdentifierReference(node, parent, key, assignmentTargets, deleteOperands)
       && !rendererScopeBinds(scope, node.name as string)
       && !writtenWrapperNames.has(node.name as string)
     ) {
@@ -416,6 +418,14 @@ function collectRendererAssignmentTargets(syntax: RendererSyntaxNode, targets: W
   });
 }
 
+function collectRendererDeleteOperands(syntax: RendererSyntaxNode, operands: WeakSet<object>) {
+  visitRendererSyntax(syntax, (node) => {
+    if (node.type === "UnaryExpression" && node.operator === "delete" && isRendererSyntaxNode(node.argument)) {
+      operands.add(node.argument);
+    }
+  });
+}
+
 function markRendererAssignmentTarget(value: unknown, targets: WeakSet<object>) {
   if (!isRendererSyntaxNode(value)) return;
   if (value.type === "Identifier") {
@@ -438,8 +448,9 @@ function isRendererIdentifierReference(
   parent: RendererSyntaxNode | undefined,
   key: string | undefined,
   assignmentTargets: WeakSet<object>,
+  deleteOperands: WeakSet<object>,
 ) {
-  if (assignmentTargets.has(node)) return false;
+  if (assignmentTargets.has(node) || deleteOperands.has(node)) return false;
   if (!parent) return true;
   if ((parent.type === "VariableDeclarator" && key === "id") || key === "params" || key === "id") return false;
   if ((parent.type === "MemberExpression" || parent.type === "Property") && key === "property" && parent.computed !== true) return false;

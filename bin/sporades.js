@@ -66439,6 +66439,8 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
   collectRendererScopes(syntax, rootScope, scopes);
   const assignmentTargets = /* @__PURE__ */ new WeakSet();
   collectRendererAssignmentTargets(syntax, assignmentTargets);
+  const deleteOperands = /* @__PURE__ */ new WeakSet();
+  collectRendererDeleteOperands(syntax, deleteOperands);
   const writtenWrapperNames = /* @__PURE__ */ new Set();
   visitRendererSyntax(syntax, (node) => {
     if (node.type === "Identifier" && assignmentTargets.has(node) && (node.name === "require" || node.name === "__dirname" || node.name === "__filename") && !rendererScopeBinds(scopes.get(node) ?? rootScope, node.name)) {
@@ -66473,7 +66475,7 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
       }
       return;
     }
-    if (node.type === "Identifier" && (node.name === "__dirname" || node.name === "__filename") && isRendererIdentifierReference(node, parent, key, assignmentTargets) && !rendererScopeBinds(scope, node.name) && !writtenWrapperNames.has(node.name)) {
+    if (node.type === "Identifier" && (node.name === "__dirname" || node.name === "__filename") && isRendererIdentifierReference(node, parent, key, assignmentTargets, deleteOperands) && !rendererScopeBinds(scope, node.name) && !writtenWrapperNames.has(node.name)) {
       const value = JSON.stringify(node.name === "__dirname" ? path3.dirname(modulePath) : modulePath);
       const shorthand = parent?.type === "Property" && parent.shorthand === true && parent.value === node;
       replacements.push({ start: node.start, end: node.end, value: shorthand ? `${String(node.name)}: ${value}` : value });
@@ -66577,6 +66579,13 @@ function collectRendererAssignmentTargets(syntax, targets) {
     }
   });
 }
+function collectRendererDeleteOperands(syntax, operands) {
+  visitRendererSyntax(syntax, (node) => {
+    if (node.type === "UnaryExpression" && node.operator === "delete" && isRendererSyntaxNode(node.argument)) {
+      operands.add(node.argument);
+    }
+  });
+}
 function markRendererAssignmentTarget(value, targets) {
   if (!isRendererSyntaxNode(value)) return;
   if (value.type === "Identifier") {
@@ -66593,8 +66602,8 @@ function markRendererAssignmentTarget(value, targets) {
     markRendererAssignmentTarget(value.argument ?? value.expression, targets);
   }
 }
-function isRendererIdentifierReference(node, parent, key, assignmentTargets) {
-  if (assignmentTargets.has(node)) return false;
+function isRendererIdentifierReference(node, parent, key, assignmentTargets, deleteOperands) {
+  if (assignmentTargets.has(node) || deleteOperands.has(node)) return false;
   if (!parent) return true;
   if (parent.type === "VariableDeclarator" && key === "id" || key === "params" || key === "id") return false;
   if ((parent.type === "MemberExpression" || parent.type === "Property") && key === "property" && parent.computed !== true) return false;

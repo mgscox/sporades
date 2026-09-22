@@ -465,10 +465,15 @@ test("deleting CommonJS location wrappers stays false without changing later rea
     await writeFile(
       path.join(nestedDir, "helper.cjs"),
       `const path = require("node:path");
-module.exports = () => {
+module.exports = async () => {
   const deletedDirectory = delete __dirname;
   const deletedFilename = delete __filename;
-  return \`<main>\${deletedDirectory}|\${deletedFilename}|\${path.basename(__dirname)}|\${path.basename(__filename)}</main>\`;
+  const type = typeof __dirname;
+  const voided = void __filename;
+  const awaitedDirectory = await __dirname;
+  function* filenames() { yield __filename; }
+  const yieldedFilename = filenames().next().value;
+  return \`<main>\${deletedDirectory}|\${deletedFilename}|\${type}|\${voided === undefined}|\${path.basename(awaitedDirectory)}|\${path.basename(yieldedFilename)}|\${path.basename(__dirname)}|\${path.basename(__filename)}</main>\`;
 };
 `,
     );
@@ -477,7 +482,7 @@ module.exports = () => {
     try {
       assert.match(
         await readFile(bundle.staticFiles.indexHtml, "utf8"),
-        /<main>false\|false\|nested\|helper\.cjs<\/main>/,
+        /<main>false\|false\|string\|true\|nested\|helper\.cjs\|nested\|helper\.cjs<\/main>/,
       );
     } finally {
       await bundle.releasePublicTreeLease();

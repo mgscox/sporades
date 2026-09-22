@@ -181,6 +181,8 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
     collectRendererScopes(syntax, rootScope, scopes);
     const assignmentTargets = new WeakSet();
     collectRendererAssignmentTargets(syntax, assignmentTargets);
+    const deleteOperands = new WeakSet();
+    collectRendererDeleteOperands(syntax, deleteOperands);
     const writtenWrapperNames = new Set();
     visitRendererSyntax(syntax, (node) => {
         if (node.type === "Identifier"
@@ -230,7 +232,7 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
         }
         if (node.type === "Identifier"
             && (node.name === "__dirname" || node.name === "__filename")
-            && isRendererIdentifierReference(node, parent, key, assignmentTargets)
+            && isRendererIdentifierReference(node, parent, key, assignmentTargets, deleteOperands)
             && !rendererScopeBinds(scope, node.name)
             && !writtenWrapperNames.has(node.name)) {
             const value = JSON.stringify(node.name === "__dirname" ? path.dirname(modulePath) : modulePath);
@@ -360,6 +362,13 @@ function collectRendererAssignmentTargets(syntax, targets) {
         }
     });
 }
+function collectRendererDeleteOperands(syntax, operands) {
+    visitRendererSyntax(syntax, (node) => {
+        if (node.type === "UnaryExpression" && node.operator === "delete" && isRendererSyntaxNode(node.argument)) {
+            operands.add(node.argument);
+        }
+    });
+}
 function markRendererAssignmentTarget(value, targets) {
     if (!isRendererSyntaxNode(value))
         return;
@@ -382,8 +391,8 @@ function markRendererAssignmentTarget(value, targets) {
         markRendererAssignmentTarget(value.argument ?? value.expression, targets);
     }
 }
-function isRendererIdentifierReference(node, parent, key, assignmentTargets) {
-    if (assignmentTargets.has(node))
+function isRendererIdentifierReference(node, parent, key, assignmentTargets, deleteOperands) {
+    if (assignmentTargets.has(node) || deleteOperands.has(node))
         return false;
     if (!parent)
         return true;
