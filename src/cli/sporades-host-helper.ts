@@ -98,7 +98,7 @@ try {
   if (text.length > 65536) { process.stdout.write(JSON.stringify({ kind: "invalid", status: response.status })); process.exit(0); }
   let body; try { body = JSON.parse(text); } catch { process.stdout.write(JSON.stringify({ kind: "invalid", status: response.status })); process.exit(0); }
   const checks = body?.data?.checks; const ready = body?.data?.runtime?.ready;
-  const valid = typeof body?.ok === "boolean" && typeof ready === "boolean" && typeof checks?.sqlite?.ok === "boolean" && typeof checks?.fileStorage?.ok === "boolean" && (checks?.fileInspection === undefined || typeof checks.fileInspection?.ok === "boolean");
+  const valid = typeof body?.ok === "boolean" && typeof ready === "boolean" && Number.isInteger(body?.data?.runtime?.fileMaxSizeBytes) && body.data.runtime.fileMaxSizeBytes > 0 && Number.isInteger(body?.data?.runtime?.httpMaxBodyBytes) && body.data.runtime.httpMaxBodyBytes > 0 && typeof checks?.sqlite?.ok === "boolean" && typeof checks?.fileStorage?.ok === "boolean" && (checks?.fileInspection === undefined || typeof checks.fileInspection?.ok === "boolean");
   process.stdout.write(JSON.stringify({ kind: "response", status: response.status, valid, ok: body?.ok === true, ready: ready === true, sqlite: checks?.sqlite?.ok === true, fileStorage: checks?.fileStorage?.ok === true, fileInspection: checks?.fileInspection === undefined ? null : checks.fileInspection?.ok === true }));
 } catch { process.stdout.write(JSON.stringify({ kind: "connection" })); }`;
 // Published by Cloudflare at https://www.cloudflare.com/ips/ and checked on 2026-08-21.

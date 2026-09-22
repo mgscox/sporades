@@ -709,7 +709,7 @@ if (args[0] === "exec") {
   const result = configured[Math.min(count, configured.length - 1)] || { status: 200, body: { ok: true, data: { runtime: { ready: true, fileMaxSizeBytes: 10_485_760, httpMaxBodyBytes: 1_048_576 }, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: true } } }, error: null } };
   if (statePath) writeFileSync(statePath, String(count + 1));
   if (result.stdout !== undefined) process.stdout.write(result.stdout);
-  else { const checks = result.body?.data?.checks; process.stdout.write(JSON.stringify({ kind: "response", status: result.status, valid: typeof result.body?.ok === "boolean" && typeof result.body?.data?.runtime?.ready === "boolean" && typeof checks?.sqlite?.ok === "boolean" && typeof checks?.fileStorage?.ok === "boolean" && (checks?.fileInspection === undefined || typeof checks.fileInspection?.ok === "boolean"), ok: result.body?.ok === true, ready: result.body?.data?.runtime?.ready === true, sqlite: checks?.sqlite?.ok === true, fileStorage: checks?.fileStorage?.ok === true, fileInspection: checks?.fileInspection === undefined ? null : checks.fileInspection?.ok === true })); }
+  else { const checks = result.body?.data?.checks; process.stdout.write(JSON.stringify({ kind: "response", status: result.status, valid: typeof result.body?.ok === "boolean" && typeof result.body?.data?.runtime?.ready === "boolean" && Number.isInteger(result.body?.data?.runtime?.fileMaxSizeBytes) && result.body.data.runtime.fileMaxSizeBytes > 0 && Number.isInteger(result.body?.data?.runtime?.httpMaxBodyBytes) && result.body.data.runtime.httpMaxBodyBytes > 0 && typeof checks?.sqlite?.ok === "boolean" && typeof checks?.fileStorage?.ok === "boolean" && (checks?.fileInspection === undefined || typeof checks.fileInspection?.ok === "boolean"), ok: result.body?.ok === true, ready: result.body?.data?.runtime?.ready === true, sqlite: checks?.sqlite?.ok === true, fileStorage: checks?.fileStorage?.ok === true, fileInspection: checks?.fileInspection === undefined ? null : checks.fileInspection?.ok === true })); }
   if (result.stderr) process.stderr.write(result.stderr);
   process.exit(Number(result.exitStatus || "0"));
 }
@@ -6845,6 +6845,43 @@ test("Hosted Capsule startup distinguishes delayed readiness, probe authenticati
     }
     const recordText = await readFile(fixture.registryRecordPath, "utf8");
     assert.equal(result.stdout.includes(JSON.parse(recordText).runtimeProbe.token), false);
+  });
+});
+
+test("Hosted Capsule startup rejects readiness without positive integer runtime bounds", async () => {
+  const validRuntime = { ready: true, fileMaxSizeBytes: 10_485_760, httpMaxBodyBytes: 1_048_576 };
+  for (const { name, runtime } of [
+    { name: "missing-file-max", runtime: { ready: true, httpMaxBodyBytes: validRuntime.httpMaxBodyBytes } },
+    { name: "missing-http-max", runtime: { ready: true, fileMaxSizeBytes: validRuntime.fileMaxSizeBytes } },
+    { name: "fractional-file-max", runtime: { ...validRuntime, fileMaxSizeBytes: 10.5 } },
+    { name: "fractional-http-max", runtime: { ...validRuntime, httpMaxBodyBytes: 10.5 } },
+  ]) await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: `runtime-readiness-${name}`, restart: false });
+    const lifecycle = await alignSealedFixtureWithBuiltLifecycle(fixture);
+    const docker = await installFakeDocker(path.join(dir, "docker"), { env: {
+      FAKE_DOCKER_RUNTIME_PROBE_RESULTS: JSON.stringify([{ status: 200, body: {
+        ok: true,
+        data: { runtime, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: true } } },
+        error: null,
+      } }]),
+    } });
+
+    const result = await runHostHelper({
+      action: "capsule.start",
+      host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+      capsule: { subname: fixture.subname },
+      lifecycle,
+      verification: { healthTimeoutMs: 25 },
+    }, { cwd: dir, env: docker.env });
+
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, false, `${name}: ${result.stdout}`);
+    assert.equal(output.error.message, "Hosted Capsule runtime did not become ready.");
+    assert.match(await readFile(fixture.routeFile, "utf8"), /respond "Hosted Capsule unavailable" 503/);
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    assert.equal(record.status, "failed");
+    assert.equal(record.releases.find((release) => release.id === record.currentRelease.id).failure.message, "Hosted Capsule runtime readiness failed (invalid).");
+    assert((await docker.calls()).some((call) => call.args[0] === "exec"), `${name}: authenticated runtime probe was not attempted`);
   });
 });
 

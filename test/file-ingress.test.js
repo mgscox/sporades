@@ -808,6 +808,52 @@ test("a malformed filename parameter over maxFieldBytes returns safe field detai
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("public endpoint errors allowlist handler-thrown multipart limit details", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-public-limit-details-")); let database;
+  try {
+    let thrownDetails;
+    const definition = capsule({ name: "public-limit-details", endpoints: {
+      probe: endpoint({ method: "GET", path: "/limit-details" }, () => {
+        throw Object.assign(new Error("private multipart failure"), { code: "MULTIPART_LIMIT_EXCEEDED", details: thrownDetails });
+      }),
+    } });
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "public-limit-details" }, definition);
+    const cases = [
+      {
+        name: "valid allowlisted details with extra private keys",
+        details: { partType: "file", limitKind: "maxFileBytes", limit: 32, filename: "private-name.txt", header: "private-header", content: "private-content" },
+        expected: { partType: "file", limitKind: "maxFileBytes", limit: 32 },
+      },
+      { name: "unknown limit kind", details: { partType: "file", limitKind: "privateLimit", limit: 32, filename: "unknown-kind-name.txt" } },
+      { name: "fractional limit", details: { partType: "file", limitKind: "maxFileBytes", limit: 10.5, header: "fractional-header" } },
+      { name: "negative limit", details: { partType: "field", limitKind: "maxFieldBytes", limit: -1, content: "negative-content" } },
+      { name: "bad part type", details: { partType: "attachment", limitKind: "maxFileBytes", limit: 32, filename: "bad-part-name.txt" } },
+    ];
+
+    for (const testCase of cases) {
+      thrownDetails = testCase.details;
+      const request = Object.assign(new EventEmitter(), { method: "GET", url: "/limit-details", headers: {}, aborted: false, destroyed: false, async *[Symbol.asyncIterator]() {} });
+      const response = { status: null, body: "", headers: {}, setHeader(name, value) { this.headers[name.toLowerCase()] = value; }, writeHead(status, headers = {}) { this.status = status; Object.assign(this.headers, headers); }, end(body = "") { this.body = String(body); } };
+      assert.equal(await routeEndpoint(database, request, response), true, testCase.name);
+      assert.equal(response.status, 500, testCase.name);
+      const body = JSON.parse(response.body);
+      assert.deepEqual(body, {
+        ok: false,
+        data: null,
+        error: {
+          code: "MULTIPART_LIMIT_EXCEEDED",
+          ...(testCase.expected ? { details: testCase.expected } : {}),
+          message: "Endpoint handler failed.",
+          hint: "Check the endpoint handler and retry the request.",
+        },
+      }, testCase.name);
+      for (const privateKey of ["filename", "header", "content"]) {
+        if (testCase.details[privateKey]) assert.equal(response.body.includes(testCase.details[privateKey]), false, `${testCase.name}: leaked ${privateKey}`);
+      }
+    }
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("multipart fields safely aggregate prototype-shaped names", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-field-keys-")); let database;
   try {
