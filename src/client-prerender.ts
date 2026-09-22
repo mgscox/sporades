@@ -1,6 +1,7 @@
-import { lstat, realpath } from "node:fs/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import type { ClientToolchainName } from "./client-capabilities.js";
 import { redactBuildProjectRoots } from "./build-diagnostics.js";
@@ -78,7 +79,7 @@ export async function renderClientPrerenderFragment(
 
   let bundledSource: string;
   try {
-    const { build } = await import("esbuild");
+    const { build, transform } = await import("esbuild");
     const result = await build({
       absWorkingDir: projectRoot,
       bundle: true,
@@ -88,6 +89,7 @@ export async function renderClientPrerenderFragment(
       logLevel: "silent",
       outdir: path.join(projectRoot, ".sporades-prerender-output"),
       platform: "node",
+      plugins: [preserveRendererImportMetaUrl(transform)],
       sourcemap: false,
       target: "node22",
       write: false,
@@ -141,6 +143,43 @@ export async function renderClientPrerenderFragment(
     );
   }
   return rendered;
+}
+
+function preserveRendererImportMetaUrl(transform: typeof import("esbuild").transform): import("esbuild").Plugin {
+  const loaders = new Map<string, import("esbuild").Loader>([
+    [".cjs", "js"],
+    [".cts", "ts"],
+    [".js", "js"],
+    [".jsx", "jsx"],
+    [".mjs", "js"],
+    [".mts", "ts"],
+    [".ts", "ts"],
+    [".tsx", "tsx"],
+  ]);
+  return {
+    name: "sporades-renderer-import-meta-url",
+    setup(build) {
+      build.onLoad({ filter: /\.[cm]?[jt]sx?$/, namespace: "file" }, async (args) => {
+        const contents = await readFile(args.path, "utf8");
+        if (!contents.includes("import.meta.url")) return undefined;
+        const loader = loaders.get(path.extname(args.path));
+        if (!loader) return undefined;
+        const result = await transform(contents, {
+          define: { "import.meta.url": JSON.stringify(pathToFileURL(args.path).href) },
+          jsx: "preserve",
+          loader,
+          sourcefile: args.path,
+          target: "node22",
+        });
+        return {
+          contents: result.code,
+          loader,
+          resolveDir: path.dirname(args.path),
+          watchFiles: [args.path],
+        };
+      });
+    },
+  };
 }
 
 export function placeClientPrerenderFragment(html: string, fragment: ClientPrerenderFragment, rendered: string): string {

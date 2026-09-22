@@ -1,6 +1,7 @@
-import { lstat, realpath } from "node:fs/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { redactBuildProjectRoots } from "./build-diagnostics.js";
 export function readClientPrerenderConfig(value, toolchain) {
     if (value === undefined)
@@ -53,7 +54,7 @@ export async function renderClientPrerenderFragment(projectRoot, fragment, proje
     }
     let bundledSource;
     try {
-        const { build } = await import("esbuild");
+        const { build, transform } = await import("esbuild");
         const result = await build({
             absWorkingDir: projectRoot,
             bundle: true,
@@ -63,6 +64,7 @@ export async function renderClientPrerenderFragment(projectRoot, fragment, proje
             logLevel: "silent",
             outdir: path.join(projectRoot, ".sporades-prerender-output"),
             platform: "node",
+            plugins: [preserveRendererImportMetaUrl(transform)],
             sourcemap: false,
             target: "node22",
             write: false,
@@ -98,6 +100,44 @@ export async function renderClientPrerenderFragment(projectRoot, fragment, proje
         throw prerenderError(`Client prerender renderer for ${fragment.name} returned a non-string result.`, `Return an HTML string or Promise<string> from ${fragment.module}.`, { fragment: fragment.name, resultType: rendered === null ? "null" : typeof rendered });
     }
     return rendered;
+}
+function preserveRendererImportMetaUrl(transform) {
+    const loaders = new Map([
+        [".cjs", "js"],
+        [".cts", "ts"],
+        [".js", "js"],
+        [".jsx", "jsx"],
+        [".mjs", "js"],
+        [".mts", "ts"],
+        [".ts", "ts"],
+        [".tsx", "tsx"],
+    ]);
+    return {
+        name: "sporades-renderer-import-meta-url",
+        setup(build) {
+            build.onLoad({ filter: /\.[cm]?[jt]sx?$/, namespace: "file" }, async (args) => {
+                const contents = await readFile(args.path, "utf8");
+                if (!contents.includes("import.meta.url"))
+                    return undefined;
+                const loader = loaders.get(path.extname(args.path));
+                if (!loader)
+                    return undefined;
+                const result = await transform(contents, {
+                    define: { "import.meta.url": JSON.stringify(pathToFileURL(args.path).href) },
+                    jsx: "preserve",
+                    loader,
+                    sourcefile: args.path,
+                    target: "node22",
+                });
+                return {
+                    contents: result.code,
+                    loader,
+                    resolveDir: path.dirname(args.path),
+                    watchFiles: [args.path],
+                };
+            });
+        },
+    };
 }
 export function placeClientPrerenderFragment(html, fragment, rendered) {
     const bounded = `<!-- sporades:prerender-boundary-start ${fragment.name} -->${rendered}<!-- sporades:prerender-boundary-end ${fragment.name} -->`;

@@ -58893,19 +58893,19 @@ import { spawnSync as spawnSync2 } from "node:child_process";
 import { createHash as createHash14, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes9, timingSafeEqual as timingSafeEqual5 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer as createServer2 } from "node:http";
-import { appendFile, chmod as chmod2, cp, lstat as lstat9, mkdir as mkdir8, readdir as readdir3, readFile as readFile10, rename as rename6, rm as rm8, writeFile as writeFile7 } from "node:fs/promises";
+import { appendFile, chmod as chmod2, cp, lstat as lstat9, mkdir as mkdir8, readdir as readdir3, readFile as readFile11, rename as rename6, rm as rm8, writeFile as writeFile7 } from "node:fs/promises";
 import path15 from "node:path";
-import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL2 } from "node:url";
+import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL3 } from "node:url";
 
 // src/bundle-pipeline.ts
-import { lstat as lstat6, mkdir as mkdir4, readFile as readFile6, rename as rename4, rm as rm4, writeFile as writeFile3 } from "node:fs/promises";
+import { lstat as lstat6, mkdir as mkdir4, readFile as readFile7, rename as rename4, rm as rm4, writeFile as writeFile3 } from "node:fs/promises";
 import path9 from "node:path";
 
 // src/client-toolchain.ts
 import path4 from "node:path";
-import { lstat as lstat3, readFile as readFile2, realpath as realpath3 } from "node:fs/promises";
+import { lstat as lstat3, readFile as readFile3, realpath as realpath3 } from "node:fs/promises";
 import { createRequire as createRequire2 } from "node:module";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL as pathToFileURL2 } from "node:url";
 
 // src/templates/client-runtime-template.ts
 function createClientRuntimeSource(options = {}) {
@@ -60495,9 +60495,10 @@ function deepFreeze(value) {
 }
 
 // src/client-prerender.ts
-import { lstat as lstat2, realpath as realpath2 } from "node:fs/promises";
+import { lstat as lstat2, readFile as readFile2, realpath as realpath2 } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path3 from "node:path";
+import { pathToFileURL } from "node:url";
 
 // src/build-diagnostics.ts
 import path2 from "node:path";
@@ -60608,7 +60609,7 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
   }
   let bundledSource;
   try {
-    const { build: build2 } = await import("esbuild");
+    const { build: build2, transform } = await import("esbuild");
     const result = await build2({
       absWorkingDir: projectRoot,
       bundle: true,
@@ -60618,6 +60619,7 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
       logLevel: "silent",
       outdir: path3.join(projectRoot, ".sporades-prerender-output"),
       platform: "node",
+      plugins: [preserveRendererImportMetaUrl(transform)],
       sourcemap: false,
       target: "node22",
       write: false
@@ -60669,6 +60671,42 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
     );
   }
   return rendered;
+}
+function preserveRendererImportMetaUrl(transform) {
+  const loaders = /* @__PURE__ */ new Map([
+    [".cjs", "js"],
+    [".cts", "ts"],
+    [".js", "js"],
+    [".jsx", "jsx"],
+    [".mjs", "js"],
+    [".mts", "ts"],
+    [".ts", "ts"],
+    [".tsx", "tsx"]
+  ]);
+  return {
+    name: "sporades-renderer-import-meta-url",
+    setup(build2) {
+      build2.onLoad({ filter: /\.[cm]?[jt]sx?$/, namespace: "file" }, async (args) => {
+        const contents = await readFile2(args.path, "utf8");
+        if (!contents.includes("import.meta.url")) return void 0;
+        const loader = loaders.get(path3.extname(args.path));
+        if (!loader) return void 0;
+        const result = await transform(contents, {
+          define: { "import.meta.url": JSON.stringify(pathToFileURL(args.path).href) },
+          jsx: "preserve",
+          loader,
+          sourcefile: args.path,
+          target: "node22"
+        });
+        return {
+          contents: result.code,
+          loader,
+          resolveDir: path3.dirname(args.path),
+          watchFiles: [args.path]
+        };
+      });
+    }
+  };
 }
 function placeClientPrerenderFragment(html, fragment, rendered) {
   const bounded = `<!-- sporades:prerender-boundary-start ${fragment.name} -->${rendered}<!-- sporades:prerender-boundary-end ${fragment.name} -->`;
@@ -61116,7 +61154,7 @@ async function loadProjectInfernoToolchain(projectRoot) {
 async function loadProjectCompilerToolchain(projectRoot, spec) {
   let projectManifest;
   try {
-    projectManifest = JSON.parse(await readFile2(path4.join(projectRoot, "package.json"), "utf8"));
+    projectManifest = JSON.parse(await readFile3(path4.join(projectRoot, "package.json"), "utf8"));
   } catch {
     throw projectToolchainError(spec.framework, `${spec.framework}/Vite could not read the Capsule package.json.`, spec.installHint);
   }
@@ -61141,7 +61179,7 @@ async function loadProjectCompilerToolchain(projectRoot, spec) {
     let installedManifest;
     let resolved;
     try {
-      installedManifest = JSON.parse(await readFile2(path4.join(packageDir, "package.json"), "utf8"));
+      installedManifest = JSON.parse(await readFile3(path4.join(packageDir, "package.json"), "utf8"));
       try {
         resolved = projectRequire.resolve(required.resolve);
       } catch {
@@ -61173,7 +61211,7 @@ async function loadProjectCompilerToolchain(projectRoot, spec) {
   const loaded = /* @__PURE__ */ new Map();
   for (const [packageName, resolved] of resolvedPackages) {
     try {
-      loaded.set(packageName, await import(pathToFileURL(resolved).href));
+      loaded.set(packageName, await import(pathToFileURL2(resolved).href));
     } catch (error) {
       throw projectToolchainError(
         spec.framework,
@@ -61343,7 +61381,7 @@ function hasHint(error) {
 
 // src/sealed-server-env.ts
 import { createCipheriv, createDecipheriv, createHash as createHash2, createPublicKey, generateKeyPairSync, privateDecrypt, publicEncrypt, randomBytes } from "node:crypto";
-import { lstat as lstat4, mkdir as mkdir2, readFile as readFile3, rename as rename2, rm as rm2, writeFile } from "node:fs/promises";
+import { lstat as lstat4, mkdir as mkdir2, readFile as readFile4, rename as rename2, rm as rm2, writeFile } from "node:fs/promises";
 import path5 from "node:path";
 var ENVELOPE_VERSION = 1;
 var KEY_ALGORITHM = "rsa";
@@ -61380,8 +61418,8 @@ async function ensureSealedServerEnvKeyPair(paths = sealedServerEnvPaths(process
 async function readKeyPair(paths) {
   try {
     const [publicKey, privateKey] = await Promise.all([
-      readFile3(paths.publicKey, "utf8"),
-      readFile3(paths.privateKey, "utf8")
+      readFile4(paths.publicKey, "utf8"),
+      readFile4(paths.privateKey, "utf8")
     ]);
     return {
       publicKey,
@@ -61435,7 +61473,7 @@ function unsealServerEnv(envelope, privateKey) {
 }
 async function readSealedServerEnv(paths) {
   try {
-    const envelope = JSON.parse(await readFile3(paths.envelope, "utf8"));
+    const envelope = JSON.parse(await readFile4(paths.envelope, "utf8"));
     validateEnvelope(envelope);
     return envelope;
   } catch (error) {
@@ -61473,7 +61511,7 @@ async function withSealedServerEnvMutationLock(paths, mutate) {
       try {
         return await mutate();
       } finally {
-        const owner = await readFile3(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+        const owner = await readFile4(ownerPath, "utf8").then(JSON.parse).catch(() => null);
         if (owner?.token !== token) {
           throw new Error("Sealed Server env mutation lock ownership changed.");
         }
@@ -61481,7 +61519,7 @@ async function withSealedServerEnvMutationLock(paths, mutate) {
       }
     } catch (error) {
       if (errorCode(error) !== "EEXIST") throw error;
-      const owner = await readFile3(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+      const owner = await readFile4(ownerPath, "utf8").then(JSON.parse).catch(() => null);
       const live = Number.isInteger(owner?.pid) && owner.pid > 0 && processIsLive(owner.pid);
       if (!live) {
         const ageMs = Date.now() - await lstat4(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
@@ -61504,7 +61542,7 @@ async function claimAndQuarantineStaleLock(lockDir, ownerPath, observedOwner, to
     if (errorCode(error) === "EEXIST") return false;
     throw error;
   }
-  const currentOwner = await readFile3(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+  const currentOwner = await readFile4(ownerPath, "utf8").then(JSON.parse).catch(() => null);
   if (!sameMutationLockOwner(currentOwner, observedOwner) || Number.isInteger(currentOwner?.pid) && currentOwner.pid > 0 && processIsLive(currentOwner.pid)) {
     await rm2(claimPath, { force: true });
     return false;
@@ -62118,7 +62156,7 @@ function field(kind) {
 }
 
 // src/templates/server-bundle-module-graph.ts
-import { readFile as readFile4 } from "node:fs/promises";
+import { readFile as readFile5 } from "node:fs/promises";
 import { isBuiltin } from "node:module";
 import path7 from "node:path";
 
@@ -62166,7 +62204,7 @@ function resolveServerBundleEntry() {
 async function createServerBundleModuleSource(options) {
   const { build: build2 } = await import("esbuild");
   const { packageRoot, entryPath } = resolveServerBundleEntry();
-  const entrySource = await readFile4(entryPath, "utf8");
+  const entrySource = await readFile5(entryPath, "utf8");
   const inputsModule = createBundleInputsModule(options);
   let result;
   try {
@@ -62239,7 +62277,7 @@ ${options.epilogue}
 }
 
 // src/public-tree.ts
-import { lstat as lstat5, mkdir as mkdir3, readdir as readdir2, readFile as readFile5, rename as rename3, rm as rm3, writeFile as writeFile2 } from "node:fs/promises";
+import { lstat as lstat5, mkdir as mkdir3, readdir as readdir2, readFile as readFile6, rename as rename3, rm as rm3, writeFile as writeFile2 } from "node:fs/promises";
 import { randomBytes as randomBytes2 } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -62380,7 +62418,7 @@ async function releasePublicTreeLease(tree) {
 async function readPublicTreeConsumer(buildDir, consumer) {
   validateConsumerName(consumer);
   const recordPath = path8.join(buildDir, ".public-trees", ".consumers", `${consumer}.json`);
-  const record = await readFile5(recordPath, "utf8").then(JSON.parse).catch((error) => {
+  const record = await readFile6(recordPath, "utf8").then(JSON.parse).catch((error) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
     throw error;
   });
@@ -62452,7 +62490,7 @@ async function removePublicTreeConsumer(buildDir, consumer, expectedCurrent) {
   }
 }
 async function verifyConsumerExpectation(recordPath, consumer, expected) {
-  const raw = await readFile5(recordPath, "utf8").catch((error) => {
+  const raw = await readFile6(recordPath, "utf8").catch((error) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
     throw error;
   });
@@ -62693,7 +62731,7 @@ async function createPublicTreeLease(treesDir, treeName) {
 }
 async function removePublicTreeLease(lease) {
   await stopOwnerHeartbeat(lease.token);
-  const record = await readFile5(lease.path, "utf8").then(JSON.parse).catch((error) => {
+  const record = await readFile6(lease.path, "utf8").then(JSON.parse).catch((error) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
     throw error;
   });
@@ -62714,7 +62752,7 @@ async function publicTreeLeaseStates(treesDir, now2) {
   const stale = /* @__PURE__ */ new Set();
   for (const entry of entries) {
     try {
-      const lease = JSON.parse(await readFile5(path8.join(leasesDir, entry), "utf8"));
+      const lease = JSON.parse(await readFile6(path8.join(leasesDir, entry), "utf8"));
       if (validLeaseRecord(lease)) {
         if (await leaseIsLive(lease, path8.join(leasesDir, entry), now2)) live.add(lease.tree);
         else stale.add(lease.tree);
@@ -62735,7 +62773,7 @@ async function removeStalePublicTreeLeases(treesDir, completedNames, now2) {
     const leasePath = path8.join(leasesDir, entry);
     let lease = null;
     try {
-      lease = JSON.parse(await readFile5(leasePath, "utf8"));
+      lease = JSON.parse(await readFile6(leasePath, "utf8"));
     } catch {
     }
     if (!validLeaseRecord(lease) || !completedNames.has(lease.tree) || !await leaseIsLive(lease, leasePath, now2)) {
@@ -62758,7 +62796,7 @@ async function leaseIsLive(lease, recordPath, now2) {
 }
 async function readActivePublicTreeReference(treesDir) {
   try {
-    return await validateActivePublicTreeReference(treesDir, await readFile5(path8.join(treesDir, "active.json"), "utf8"));
+    return await validateActivePublicTreeReference(treesDir, await readFile6(path8.join(treesDir, "active.json"), "utf8"));
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
     throw publicTreeError(
@@ -62791,7 +62829,7 @@ async function acquirePublicTreeLock(treesDir) {
       if (processStart === null) startOwnerHeartbeat(ownerPath, owner);
       return async () => {
         await stopOwnerHeartbeat(token);
-        const currentOwner = await readFile5(ownerPath, "utf8").then(JSON.parse).catch((error) => {
+        const currentOwner = await readFile6(ownerPath, "utf8").then(JSON.parse).catch((error) => {
           if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
           throw error;
         });
@@ -62803,7 +62841,7 @@ async function acquirePublicTreeLock(treesDir) {
       };
     } catch (error) {
       if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
-      const owner = await readFile5(path8.join(lockDir, "owner.json"), "utf8").then((raw) => JSON.parse(raw)).catch(() => null);
+      const owner = await readFile6(path8.join(lockDir, "owner.json"), "utf8").then((raw) => JSON.parse(raw)).catch(() => null);
       if (owner !== null && !await ownerIdentityIsLive(owner, path8.join(lockDir, "owner.json"))) {
         await rm3(lockDir, { recursive: true, force: true });
         continue;
@@ -62837,7 +62875,7 @@ function startOwnerHeartbeat(recordPath, record) {
   let inFlight = Promise.resolve();
   const heartbeatPath = ownerHeartbeatPath(recordPath, record.token);
   const refresh = async () => {
-    const current2 = await readFile5(recordPath, "utf8").then(JSON.parse).catch(() => null);
+    const current2 = await readFile6(recordPath, "utf8").then(JSON.parse).catch(() => null);
     if (!validOwnerRecord(current2) || current2.token !== record.token) {
       stopped = true;
       clearInterval(timer);
@@ -62867,7 +62905,7 @@ async function publishOwnerHeartbeat(recordPath, token, heartbeatAt, options = {
     await writeFile2(temporaryPath, `${JSON.stringify({ token, heartbeatAt })}
 `, { flag: "wx" });
     await options.afterTempWrite?.();
-    const currentOwner = await readFile5(recordPath, "utf8").then(JSON.parse).catch(() => null);
+    const currentOwner = await readFile6(recordPath, "utf8").then(JSON.parse).catch(() => null);
     if (!validOwnerRecord(currentOwner) || currentOwner.token !== token) {
       throw publicTreeError("Public tree ownership changed.", "Discard the obsolete heartbeat without replacing its successor.");
     }
@@ -62883,7 +62921,7 @@ function ownerHeartbeatPath(recordPath, token) {
 }
 async function readOwnerHeartbeat(recordPath, owner) {
   try {
-    const heartbeat = JSON.parse(await readFile5(ownerHeartbeatPath(recordPath, owner.token), "utf8"));
+    const heartbeat = JSON.parse(await readFile6(ownerHeartbeatPath(recordPath, owner.token), "utf8"));
     if (!(heartbeat && heartbeat.token === owner.token && Number.isFinite(heartbeat.heartbeatAt))) return Number.NaN;
     return heartbeat.heartbeatAt;
   } catch (error) {
@@ -62900,10 +62938,10 @@ async function removeOrphanedOwnerHeartbeats(treesDir) {
   const retained = /* @__PURE__ */ new Set();
   const leaseFiles = await readdir2(path8.join(treesDir, ".leases")).catch(() => []);
   for (const entry of leaseFiles) {
-    const lease = await readFile5(path8.join(treesDir, ".leases", entry), "utf8").then(JSON.parse).catch(() => null);
+    const lease = await readFile6(path8.join(treesDir, ".leases", entry), "utf8").then(JSON.parse).catch(() => null);
     if (validLeaseRecord(lease)) retained.add(lease.token);
   }
-  const lock = await readFile5(path8.join(treesDir, ".lifecycle-lock", "owner.json"), "utf8").then(JSON.parse).catch(() => null);
+  const lock = await readFile6(path8.join(treesDir, ".lifecycle-lock", "owner.json"), "utf8").then(JSON.parse).catch(() => null);
   if (validOwnerRecord(lock)) retained.add(lock.token);
   const heartbeatDir = path8.join(treesDir, ".owner-heartbeats");
   const heartbeatFiles = await readdir2(heartbeatDir).catch(() => []);
@@ -62927,7 +62965,7 @@ async function publicTreeConsumerNames(treesDir) {
   for (const entry of entries) {
     const recordPath = path8.join(consumersDir, entry);
     const consumer = entry.endsWith(".json") ? entry.slice(0, -5) : "";
-    const record = await readFile5(recordPath, "utf8").then(JSON.parse).catch(() => null);
+    const record = await readFile6(recordPath, "utf8").then(JSON.parse).catch(() => null);
     if (!validConsumerRecord(record, consumer)) {
       await rm3(recordPath, { recursive: true, force: true });
       continue;
@@ -62966,7 +63004,7 @@ async function getProcessStartIdentity(pid, options = {}) {
   const platform = options.platform ?? process.platform;
   if (platform === "linux") {
     try {
-      const stat = await readFile5(`/proc/${pid}/stat`, "utf8");
+      const stat = await readFile6(`/proc/${pid}/stat`, "utf8");
       const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
       return fields[19] ? `linux:${fields[19]}` : null;
     } catch {
@@ -63238,12 +63276,12 @@ async function createBundle(projectDir, config, options = {}) {
     try {
       previous = await Promise.all(legacyFiles.map(async (file) => ({
         target: file.target,
-        contents: await readFile6(file.target).catch((error) => {
+        contents: await readFile7(file.target).catch((error) => {
           if (errorDetails3(error).code === "ENOENT") return null;
           throw error;
         })
       })));
-      previousActiveTree = await readFile6(activeTreePath).catch((error) => {
+      previousActiveTree = await readFile7(activeTreePath).catch((error) => {
         if (errorDetails3(error).code === "ENOENT") return null;
         throw error;
       });
@@ -63334,7 +63372,7 @@ async function restoreLegacyBundleFiles(buildDir, previous) {
 }
 async function inspectActiveTreeState(filePath) {
   try {
-    return await parseActiveTreeState(await readFile6(filePath, "utf8"), path9.dirname(filePath));
+    return await parseActiveTreeState(await readFile7(filePath, "utf8"), path9.dirname(filePath));
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") return { kind: "missing" };
     return { kind: "invalid" };
@@ -63465,7 +63503,7 @@ async function bundleServerCapsuleModule(options) {
 }
 async function readServerEnvFile(envPath) {
   try {
-    const raw = await readFile6(envPath, "utf8");
+    const raw = await readFile7(envPath, "utf8");
     if (Buffer.byteLength(raw, "utf8") > 64 * 1024) {
       throw commandError3("Invalid server env file.", ".env.sporades.server must be 64KB or smaller.");
     }
@@ -63698,7 +63736,7 @@ function providerConfigurationHint(provider) {
 }
 async function readRequiredFile(filePath, message, hint) {
   try {
-    return await readFile6(filePath, "utf8");
+    return await readFile7(filePath, "utf8");
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
       throw commandError3(message, hint);
@@ -70485,8 +70523,8 @@ function createLocalFileStorageAdapter({ storagePath }) {
       await writeFile8(localFileVersionPath(storagePath, fileId, version3), bytes);
     },
     async readFileVersion({ fileId, version: version3 }) {
-      const { readFile: readFile11 } = await import("node:fs/promises");
-      return await readFile11(localFileVersionPath(storagePath, fileId, version3));
+      const { readFile: readFile12 } = await import("node:fs/promises");
+      return await readFile12(localFileVersionPath(storagePath, fileId, version3));
     },
     async openFileVersionStream({ fileId, version: version3 }) {
       const { createReadStream } = await import("node:fs");
@@ -111533,7 +111571,7 @@ ${removed.stderr}`)) failures.push(new Error("Dev File inspection container clea
 
 // src/capsule-services.ts
 import { randomBytes as randomBytes8 } from "node:crypto";
-import { mkdir as mkdir6, readFile as readFile7, rm as rm7, writeFile as writeFile5 } from "node:fs/promises";
+import { mkdir as mkdir6, readFile as readFile8, rm as rm7, writeFile as writeFile5 } from "node:fs/promises";
 import path12 from "node:path";
 var SUPPORTED_SERVICE_KEYS = /* @__PURE__ */ new Set(["database", "storage"]);
 var SUPPORTED_DATABASE_ENGINES = /* @__PURE__ */ new Set(["libsql", "postgres"]);
@@ -111598,7 +111636,7 @@ async function loadOrCreateCapsuleServiceCredentials(projectDir) {
   const credentialsPath = path12.join(projectDir, CAPSULE_SERVICES_CREDENTIALS_FILE);
   let existing = {};
   try {
-    const parsed = JSON.parse(await readFile7(credentialsPath, "utf8"));
+    const parsed = JSON.parse(await readFile8(credentialsPath, "utf8"));
     if (isRecord5(parsed)) {
       existing = parsed;
     }
@@ -112454,13 +112492,13 @@ function sanitizeScheduleInspectionEnvelope(envelope, invalid) {
 
 // src/cli/doctor.ts
 import { spawn as spawn2, spawnSync } from "node:child_process";
-import { lstat as lstat8, readFile as readFile9, realpath as realpath4 } from "node:fs/promises";
+import { lstat as lstat8, readFile as readFile10, realpath as realpath4 } from "node:fs/promises";
 import { connect } from "node:net";
 import path14 from "node:path";
 
 // src/cli/project-config.ts
 import { createHash as createHash13 } from "node:crypto";
-import { chmod, mkdir as mkdir7, readFile as readFile8, writeFile as writeFile6 } from "node:fs/promises";
+import { chmod, mkdir as mkdir7, readFile as readFile9, writeFile as writeFile6 } from "node:fs/promises";
 import path13 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
 var DEFAULT_CSP_DIRECTIVES = {
@@ -112764,7 +112802,7 @@ function readBaseImageUpdatePolicy(config) {
 }
 async function readRequiredFile2(filePath, message, hint) {
   try {
-    return await readFile8(filePath, "utf8");
+    return await readFile9(filePath, "utf8");
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       throw commandError(message, hint);
@@ -112774,7 +112812,7 @@ async function readRequiredFile2(filePath, message, hint) {
 }
 async function readAuthorizedKeysFile(filePath, index) {
   try {
-    return await readFile8(filePath, "utf8");
+    return await readFile9(filePath, "utf8");
   } catch {
     throw commandError(
       `Unable to read SSH authorized key file at ssh.authorizedKeys[${index}].`,
@@ -113050,7 +113088,7 @@ async function publicDevPostureCheck(options) {
 }
 async function readRunningPublicDevSession(projectDir) {
   try {
-    const session = JSON.parse(await readFile9(path14.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
+    const session = JSON.parse(await readFile10(path14.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
     return Boolean(session.publicDev || session.public || session.security?.cors?.publicDev);
   } catch {
     return false;
@@ -113108,7 +113146,7 @@ async function capsuleAuthoringAclPostureCheck(options) {
   const projectDir = typeof options.projectDir === "string" ? options.projectDir : process.cwd();
   const serverEntry = path14.join(projectDir, "server", "index.ts");
   try {
-    const serverSource = await readFile9(serverEntry, "utf8");
+    const serverSource = await readFile10(serverEntry, "utf8");
     const serverModuleSource = await bundleServerCapsuleModule({
       serverSource,
       serverSourcePath: serverEntry
@@ -113298,7 +113336,7 @@ async function resolveHostedDoctorTarget(options) {
 }
 async function readDoctorRemoteBinding(projectDir) {
   try {
-    const binding = JSON.parse(await readFile9(path14.join(projectDir, ".sporades", "remote-binding.json"), "utf8"));
+    const binding = JSON.parse(await readFile10(path14.join(projectDir, ".sporades", "remote-binding.json"), "utf8"));
     return binding && typeof binding === "object" && !Array.isArray(binding) ? binding : null;
   } catch {
     return null;
@@ -113940,7 +113978,7 @@ async function generatedComposeCheck(capsuleServices, projectDir, scope) {
   const composePath = path14.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
   let raw = "";
   try {
-    raw = await readFile9(composePath, "utf8");
+    raw = await readFile10(composePath, "utf8");
   } catch (error) {
     if (errorDetails(error).code !== "ENOENT") {
       throw error;
@@ -114090,7 +114128,7 @@ function dockerStatus(args, cwd) {
 }
 async function readOptionalJsonFile(filePath) {
   try {
-    return JSON.parse(await readFile9(filePath, "utf8"));
+    return JSON.parse(await readFile10(filePath, "utf8"));
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       return null;
@@ -115865,7 +115903,7 @@ async function createProjectFromLocalTemplate(options) {
 async function readLocalTemplateIgnoreRules(sourceDir) {
   let contents = "";
   try {
-    contents = await readFile10(path15.join(sourceDir, ".gitignore"), "utf8");
+    contents = await readFile11(path15.join(sourceDir, ".gitignore"), "utf8");
   } catch {
     return [];
   }
@@ -115897,8 +115935,8 @@ async function finalizeLocalTemplateProject(options, projectDir) {
   let packageJson;
   let projectConfig;
   try {
-    packageJson = JSON.parse(await readFile10(packagePath, "utf8"));
-    projectConfig = JSON.parse(await readFile10(configPath, "utf8"));
+    packageJson = JSON.parse(await readFile11(packagePath, "utf8"));
+    projectConfig = JSON.parse(await readFile11(configPath, "utf8"));
   } catch {
     throw commandError(
       "Local template must include valid package.json and sporades.json files.",
@@ -116094,7 +116132,7 @@ async function inspectDevSchedules(options) {
 }
 async function readActiveDevDatabaseServiceEnv(projectDir, command = "jobs") {
   try {
-    return JSON.parse(await readFile10(path15.join(projectDir, DEV_DATABASE_ENV_FILE), "utf8"));
+    return JSON.parse(await readFile11(path15.join(projectDir, DEV_DATABASE_ENV_FILE), "utf8"));
   } catch (error) {
     if (errorDetails(error).code !== "ENOENT") throw commandError("Invalid active Dev database adapter metadata.", `Restart \`sporades dev\`, then retry \`sporades ${command}\`.`);
   }
@@ -116109,7 +116147,7 @@ async function writeActiveDevDatabaseServiceEnv(projectDir, serviceEnv) {
   const databaseEnv = Object.fromEntries(Object.entries(serviceEnv).filter(([key, value]) => key.startsWith("SPORADES_SERVICE_DATABASE_") && typeof value === "string"));
   const filePath = path15.join(projectDir, DEV_DATABASE_ENV_FILE);
   await mkdir8(path15.dirname(filePath), { recursive: true });
-  const previous = await readFile10(filePath).catch((error) => {
+  const previous = await readFile11(filePath).catch((error) => {
     if (errorDetails(error).code === "ENOENT") return null;
     throw error;
   });
@@ -116774,14 +116812,14 @@ var stripeCallbackFactoryPromise;
 var stripeTeamBillingProviderFactoryPromise;
 async function stripeCallbackFactory(config) {
   if (!config.payments?.stripe?.enabled) return void 0;
-  stripeCallbackFactoryPromise ??= import(pathToFileURL2(
+  stripeCallbackFactoryPromise ??= import(pathToFileURL3(
     path15.join(resolveSporadesPackageRoot(), "dist", "stripe-webhook-runtime.js")
   ).href).then((module) => module.createStripeCallbackEndpoint);
   return await stripeCallbackFactoryPromise;
 }
 async function stripeTeamBillingProviderFactory(config) {
   if (!config.payments?.stripe?.enabled) return void 0;
-  stripeTeamBillingProviderFactoryPromise ??= import(pathToFileURL2(
+  stripeTeamBillingProviderFactoryPromise ??= import(pathToFileURL3(
     path15.join(resolveSporadesPackageRoot(), "dist", "stripe-team-billing-provider.js")
   ).href).then((module) => module.createStripeTeamBillingProvider);
   return await stripeTeamBillingProviderFactoryPromise;
@@ -117388,7 +117426,7 @@ function stripOneTrailingLineEnding(value) {
 async function readPortableSealedServerEnvEnvelope(filePath) {
   let envelope;
   try {
-    envelope = JSON.parse(await readFile10(filePath, "utf8"));
+    envelope = JSON.parse(await readFile11(filePath, "utf8"));
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       throw commandError(
@@ -119061,7 +119099,7 @@ async function writeAuthConfiguration(configPath, envPath, config, envValues) {
 }
 async function readRequiredFile3(filePath, message, hint) {
   try {
-    return await readFile10(filePath, "utf8");
+    return await readFile11(filePath, "utf8");
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       throw commandError(message, hint);
@@ -119071,7 +119109,7 @@ async function readRequiredFile3(filePath, message, hint) {
 }
 async function readContainerBinding(bindingPath) {
   try {
-    return JSON.parse(await readFile10(bindingPath, "utf8"));
+    return JSON.parse(await readFile11(bindingPath, "utf8"));
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       return null;
@@ -119087,7 +119125,7 @@ async function readContainerBinding(bindingPath) {
 }
 async function readRemoteBinding(projectDir) {
   try {
-    return JSON.parse(await readFile10(path15.join(projectDir, REMOTE_BINDING_FILE), "utf8"));
+    return JSON.parse(await readFile11(path15.join(projectDir, REMOTE_BINDING_FILE), "utf8"));
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       return null;
@@ -119117,7 +119155,7 @@ async function resolveHostPushTarget(config, options) {
 }
 async function readHostConfig() {
   try {
-    const parsed = JSON.parse(await readFile10(hostConfigPath(), "utf8"));
+    const parsed = JSON.parse(await readFile11(hostConfigPath(), "utf8"));
     return normaliseHostConfig(parsed);
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
@@ -119407,12 +119445,12 @@ async function createHostReleaseArchive(options) {
   }
   const releaseConfig = sanitizeHostedReleaseConfig(options.projectConfig, options.sshAccess);
   await Promise.all([
-    writeFile7(path15.join(packageDir, "server.mjs"), await readFile10(path15.join(options.bundle.buildDir, "server.mjs"), "utf8")),
+    writeFile7(path15.join(packageDir, "server.mjs"), await readFile11(path15.join(options.bundle.buildDir, "server.mjs"), "utf8")),
     writeFile7(path15.join(packageDir, "sporades.json"), `${JSON.stringify(releaseConfig, null, 2)}
 `)
   ]);
   if (options.bundle.containerMounts.serverEnv) {
-    await writeFile7(path15.join(packageDir, ".env.sporades.server"), await readFile10(options.bundle.containerMounts.serverEnv.host, "utf8"));
+    await writeFile7(path15.join(packageDir, ".env.sporades.server"), await readFile11(options.bundle.containerMounts.serverEnv.host, "utf8"));
   }
   if (sealedServerEnv) {
     await writeFile7(
@@ -119861,7 +119899,7 @@ async function writeGithubAutodeployWorkflow(options) {
     };
   }
   try {
-    await readFile10(outputPath, "utf8");
+    await readFile11(outputPath, "utf8");
     if (!options.force) {
       throw commandError(
         "GitHub Actions workflow already exists.",
@@ -120868,13 +120906,13 @@ async function acquireContainerLifecycleLock(projectDir) {
       await writeFile7(ownerPath, `${JSON.stringify({ pid: process.pid, processStart: await getProcessStartIdentity(process.pid), token })}
 `);
       return async () => {
-        const owner = await readFile10(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+        const owner = await readFile11(ownerPath, "utf8").then(JSON.parse).catch(() => null);
         if (owner?.token !== token) throw commandError("Container lifecycle lock ownership changed.", "Preserve the successor lifecycle lock.");
         await rm8(lockDir, { recursive: true, force: true });
       };
     } catch (error) {
       if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
-      const owner = await readFile10(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+      const owner = await readFile11(ownerPath, "utf8").then(JSON.parse).catch(() => null);
       if (owner === null) {
         const age = Date.now() - await lstat9(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
         if (age <= 1e3) {
