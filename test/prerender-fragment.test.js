@@ -1093,6 +1093,39 @@ test("noncanonical local file URL encodings redact the exact raw parent", async 
   });
 });
 
+test("raw file URL alias redaction does not consume sibling prefixes", async () => {
+  await withTempDir(async (tempRoot) => {
+    const projectDir = path.join(tempRoot, "capsule");
+    const targetDir = path.join(tempRoot, "URL renderer");
+    const siblingDir = path.join(tempRoot, "URL renderer-sibling");
+    await mkdir(projectDir);
+    await mkdir(targetDir);
+    await mkdir(siblingDir);
+    await writeFile(path.join(projectDir, "package.json"), '{"type":"module"}\n');
+    const canonicalProject = await realpath(projectDir);
+    const encodeNoncanonically = (value) => pathToFileURL(value).href.replace("URL", "%55%52%4c");
+    const missingUrl = encodeNoncanonically(path.join(await realpath(targetDir), "missing-sibling-check.mjs"));
+    const unrelatedSiblingUrl = encodeNoncanonically(path.join(await realpath(siblingDir), "keep-visible.mjs"));
+    const specifier = `${missingUrl}?source=${unrelatedSiblingUrl}#target-fragment`;
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      `import ${JSON.stringify(specifier)};\nexport default () => "<main>unreachable</main>";\n`,
+    );
+
+    await assert.rejects(
+      renderClientPrerenderFragment(canonicalProject, { name: "landing", module: "render-landing.mjs" }),
+      (error) => {
+        assert.equal(
+          error.message.includes(`<project>/missing-sibling-check.mjs?source=${unrelatedSiblingUrl}#target-fragment`),
+          true,
+          "raw sibling URL prefix was altered",
+        );
+        return true;
+      },
+    );
+  });
+});
+
 test("hoisted renderer build failures redact dependency paths outside the Capsule", async () => {
   await withTempDir(async (tempRoot) => {
     const projectDir = path.join(tempRoot, "capsule");
